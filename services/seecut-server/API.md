@@ -54,7 +54,7 @@ Request an upload with `POST /api/uploads`:
 }
 ```
 
-The server returns `{"upload_id":"upl_...","method":"PUT","upload_url":"https://...","expires_at":1700003600,"required_headers":{"Content-Type":"image/png"}}`. Use `purpose=team_asset` only after the user explicitly chooses to upload to the team. Use `purpose=generation_input` for local media temporarily relayed to a provider and omit `team_id`.
+The server returns `{"upload_id":"upl_...","method":"PUT","upload_url":"https://...","expires_at":1700003600,"required_headers":{"Content-Type":"image/png"}}`. Use `purpose=team_asset` only after the user explicitly chooses to upload to the team. Use `purpose=generation_input` for local media temporarily relayed to a provider and omit `team_id`. Generation inputs accept PNG, JPG, WebP, MP4, MOV, MP3 and WAV. The completed upload is inspected with `ffprobe`; its bytes must match the declared media family. Video and audio references must each be 2-15 seconds.
 
 After a team upload completes, call `POST /api/teams/{teamId}/assets` with `{"upload_id":"upl_..."}`. This explicit second step creates the cloud asset metadata. Listing and downloading use:
 
@@ -95,7 +95,7 @@ Order creation returns `ALIPAY_NOT_CONFIGURED` until all merchant fields and key
 | `GET` | `/api/generation/tasks/{taskId}` | Read durable worker state. |
 | `GET` | `/api/generation/tasks/{taskId}/outputs/{outputId}/content` | Authenticated result stream. |
 
-Generation submissions require an `Idempotency-Key` header and the unmodified `quote_id` plus quoted request fields. The Image2 model is configured by `SECUT_IMAGE2_MODEL` (default `gpt-image-2.5-flare`); video uses fixed Xiangxin model `sd_2.0_mini_special`. HTTP submission only queues the task. The durable worker submits and recovers polling after restart. Definite failure releases the hold. A verified local result captures it. Submission uncertainty produces `pending_reconcile`, keeps the hold and is not blindly resubmitted. An asynchronous Image2 response preserves its upstream task ID in this state; the current worker does not poll an Image2 task automatically.
+Generation submissions require an `Idempotency-Key` header and the unmodified `quote_id` plus quoted request fields. The Image2 model is configured by `SECUT_IMAGE2_MODEL` (default `gpt-image-2.5-flare`); video uses fixed Xiangxin model `sd_2.0_mini_special`. Video duration accepts every integer from 4 through 15 seconds and `generate_audio` is a strict boolean that defaults to `true`. A video request accepts at most nine ordered references: up to nine images, three videos and three audio clips. Reference video and audio totals are independently limited to 15 seconds, and audio cannot be the only reference type. The gateway registers each asset as `Image`, `Video` or `Audio` and sends only the matching `reference_images`, `reference_videos` and `reference_audios` arrays. HTTP submission only queues the task. The durable worker submits and recovers polling after restart. Definite failure releases the hold. A verified local result captures it. Submission uncertainty produces `pending_reconcile`, keeps the hold and is not blindly resubmitted. An asynchronous Image2 response preserves its upstream task ID in this state; the current worker does not poll an Image2 task automatically.
 
 Task status is one of `queued`, `submitting`, `provider_accepted`, `processing`, `validating`, `succeeded`, `failed`, `pending_reconcile`, or `expired`. A task enters `pending_reconcile` when submission or polling cannot be resolved safely; its credit hold remains in place and a submission with an unknown result is never repeated automatically. Successful outputs expire after the configured local TTL and then move the task to `expired`.
 
@@ -103,7 +103,7 @@ Before a task succeeds, the server downloads the provider result, checks its hos
 
 Production quotes require a configured full billing key for the complete normalized parameter set. The shorter `kind:model` price key is accepted only in development and test environments.
 
-Account endpoints are limited per source IP using `SECUT_AUTH_RATE_LIMIT_PER_MINUTE` and `SECUT_AUTH_RATE_LIMIT_WINDOW_SECONDS`. Passwords must be 10 to 128 characters. Provider and result requests reject redirects; result hosts are checked against `SECUT_PROVIDER_RESULT_HOSTS` before downloading. Provider JSON responses are bounded by `SECUT_MAX_PROVIDER_RESPONSE_BYTES`, and image reference files by `SECUT_MAX_REFERENCE_IMAGE_BYTES`.
+Account endpoints are limited per source IP using `SECUT_AUTH_RATE_LIMIT_PER_MINUTE` and `SECUT_AUTH_RATE_LIMIT_WINDOW_SECONDS`. Passwords must be 10 to 128 characters. Provider and result requests reject redirects; result hosts are checked against `SECUT_PROVIDER_RESULT_HOSTS` before downloading. Provider JSON responses are bounded by `SECUT_MAX_PROVIDER_RESPONSE_BYTES`. Image reference files are bounded by `SECUT_MAX_REFERENCE_IMAGE_BYTES`; video and audio reference files are bounded at 200 MiB and 15 MiB respectively.
 
 Successful quote response:
 

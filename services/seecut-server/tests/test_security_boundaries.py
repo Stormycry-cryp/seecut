@@ -75,14 +75,14 @@ class SecurityBoundaryTest(unittest.TestCase):
         self.assertEqual(context.exception.code, "IMAGE2_ASYNC_PENDING")
         self.assertEqual(context.exception.upstream_task_id, "img-task-1")
 
-    def test_xiangxin_asset_request_declares_image_type(self):
+    def test_xiangxin_asset_request_declares_media_type(self):
         client = XiangxinClient(self.config)
         with patch.object(client, "_request", return_value={}) as request:
-            client.register_asset("https://example.test/reference.png")
+            client.register_asset("https://example.test/reference.mp4", "Video")
         request.assert_called_once_with(
             "POST",
             "/v1/videos/assets",
-            {"assetType": "Image", "url": "https://example.test/reference.png"},
+            {"assetType": "Video", "url": "https://example.test/reference.mp4"},
         )
 
     def test_image_model_is_configurable_across_catalog_and_client(self):
@@ -97,6 +97,64 @@ class SecurityBoundaryTest(unittest.TestCase):
         self.assertEqual(model["id"], "gpt-image-2")
         self.assertEqual(normalized["model"], "gpt-image-2")
         self.assertEqual(Image2Client(config).model, "gpt-image-2")
+
+    def test_video_catalog_exposes_full_reference_contract(self):
+        asset_ids = [f"asset-{index}" for index in range(9)]
+        model, normalized = validate_request(
+            "video",
+            {
+                "model": "sd_2.0_mini_special",
+                "prompt": "multimodal reference",
+                "resolution": "720p",
+                "duration": 15,
+                "aspect_ratio": "adaptive",
+                "reference_asset_ids": asset_ids,
+            },
+        )
+        reference_spec = model["parameters"]["reference_asset_ids"]
+        self.assertEqual(reference_spec["max_items"], 9)
+        self.assertEqual(reference_spec["max_per_kind"], {"image": 9, "video": 3, "audio": 3})
+        self.assertEqual(
+            reference_spec["accepted_media"], ["image/*", "video/*", "audio/*"]
+        )
+        self.assertEqual(normalized["duration"], 15)
+        self.assertIs(normalized["generate_audio"], True)
+        for invalid_duration in (4.0, 15.0):
+            with self.assertRaises(ApiError):
+                validate_request(
+                    "video",
+                    {
+                        "model": "sd_2.0_mini_special",
+                        "prompt": "duration must be an integer",
+                        "resolution": "720p",
+                        "duration": invalid_duration,
+                        "aspect_ratio": "16:9",
+                    },
+                )
+        with self.assertRaises(ApiError):
+            validate_request(
+                "video",
+                {
+                    "model": "sd_2.0_mini_special",
+                    "prompt": "invalid sound flag",
+                    "resolution": "720p",
+                    "duration": 4,
+                    "aspect_ratio": "16:9",
+                    "generate_audio": "false",
+                },
+            )
+        with self.assertRaises(ApiError):
+            validate_request(
+                "video",
+                {
+                    "model": "sd_2.0_mini_special",
+                    "prompt": "too many references",
+                    "resolution": "720p",
+                    "duration": 4,
+                    "aspect_ratio": "16:9",
+                    "reference_asset_ids": asset_ids + ["asset-10"],
+                },
+            )
 
     def test_rate_limiter_is_per_key_and_windowed(self):
         limiter = InMemoryRateLimiter(2, 10)

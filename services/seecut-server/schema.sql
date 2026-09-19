@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS uploads (
     expires_at INTEGER NOT NULL,
     completed_at INTEGER,
     write_token TEXT,
+    media_kind TEXT CHECK (media_kind IN ('image', 'video', 'audio')),
+    duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
     created_at INTEGER NOT NULL
 );
 

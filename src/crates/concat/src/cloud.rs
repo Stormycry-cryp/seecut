@@ -133,6 +133,36 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
         let path = PathBuf::from(text(&req.body, "path"));
         let team = text(&req.body, "team");
         let purpose = text(&req.body, "purpose");
+        let kind = reference_kind(&path);
+        let mut preview = Value::Null;
+        if purpose == "generation_input" {
+            // Probe and thumbnail off the UI thread before uploading the media.
+            let info = concat_media::probe(&path)
+                .map_err(|_| ClientError::from("无法读取参考素材，请检查文件是否完整"))?;
+            if (kind == "audio" && info.audio.is_none())
+                || (kind != "audio" && info.video.is_none())
+            {
+                return Err("参考素材内容与文件格式不一致".into());
+            }
+            if let Ok(root) = library_root() {
+                use crate::personal_library::{Asset, AssetKind, AssetSource, thumbnail};
+                let asset = Asset {
+                    id: String::new(),
+                    name: String::new(),
+                    path: path.clone(),
+                    kind: match kind {
+                        "video" => AssetKind::Video,
+                        "audio" => AssetKind::Audio,
+                        _ => AssetKind::Image,
+                    },
+                    source: AssetSource::Imported,
+                    original_path: None,
+                    created_at: 0,
+                    trashed: false,
+                };
+                preview = json!(thumbnail(&asset, &root));
+            }
+        }
         let upload = crate::cloud_files::upload(
             &c.base,
             &c.token,
@@ -156,6 +186,8 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
         result["local_path"] = json!(path);
         result["client_id"] = req.body["client_id"].clone();
         result["status"] = json!("ready");
+        result["kind"] = json!(kind);
+        result["preview_path"] = preview;
         return Ok(result);
     }
     if req.path == "local:download" {
@@ -346,15 +378,32 @@ fn selected_model(ui: &SeeCut, state: &Cloud) -> String {
 
 // Rewrite complete mention tokens in one pass so renumbering cannot cascade.
 fn rewrite_mentions(prompt: &str, mut replacement: impl FnMut(usize) -> String) -> String {
+    rewrite_media_mentions(prompt, |kind, number| {
+        if kind == "图片" {
+            replacement(number)
+        } else {
+            format!("@[{kind}{number}]")
+        }
+    })
+}
+
+fn rewrite_media_mentions(
+    prompt: &str,
+    mut replacement: impl FnMut(&str, usize) -> String,
+) -> String {
     let mut result = String::new();
     let mut rest = prompt;
-    while let Some(start) = rest.find("@[图片") {
+    while let Some(start) = rest.find("@[") {
         result.push_str(&rest[..start]);
         let token = &rest[start..];
-        if let Some(end) = token.find(']')
-            && let Ok(number) = token["@[图片".len()..end].parse::<usize>()
+        let kind = ["图片", "视频", "音频"]
+            .into_iter()
+            .find(|kind| token[2..].starts_with(kind));
+        if let Some(kind) = kind
+            && let Some(end) = token.find(']')
+            && let Ok(number) = token[2 + kind.len()..end].parse::<usize>()
         {
-            result.push_str(&replacement(number));
+            result.push_str(&replacement(kind, number));
             rest = &token[end + 1..];
         } else {
             result.push('@');
@@ -365,17 +414,86 @@ fn rewrite_mentions(prompt: &str, mut replacement: impl FnMut(usize) -> String) 
     result
 }
 
+fn reference_kind(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" | "jpg" | "jpeg" | "webp" => "image",
+        "mp4" | "mov" => "video",
+        "mp3" | "wav" => "audio",
+        _ => "unsupported",
+    }
+}
+
+fn reference_label(kind: &str) -> &'static str {
+    match kind {
+        "video" => "视频",
+        "audio" => "音频",
+        _ => "图片",
+    }
+}
+
+fn reference_number(references: &[Value], index: usize) -> usize {
+    let kind = text(&references[index], "kind");
+    references[..=index]
+        .iter()
+        .filter(|v| text(v, "kind") == kind)
+        .count()
+}
+
+fn accepts_reference(model: &Value, kind: &str) -> bool {
+    model["parameters"]["reference_asset_ids"]["accepted_media"]
+        .as_array()
+        .is_some_and(|values| {
+            values
+                .iter()
+                .any(|value| value.as_str() == Some(&format!("{kind}/*")))
+        })
+}
+
 fn reference_validation(ui: &SeeCut, state: &Cloud) -> String {
+    let model = state
+        .models
+        .iter()
+        .find(|v| text(v, "id") == selected_model(ui, state))
+        .cloned()
+        .unwrap_or_default();
+    for kind in ["image", "video", "audio"] {
+        let count = state
+            .references
+            .iter()
+            .filter(|v| text(v, "kind") == kind)
+            .count();
+        if count > 0 && !accepts_reference(&model, kind) {
+            return format!(
+                "当前模型不支持{}参考，请移除对应素材",
+                reference_label(kind)
+            );
+        }
+        let limit = model["parameters"]["reference_asset_ids"]["max_per_kind"][kind]
+            .as_u64()
+            .unwrap_or(ui.get_reference_max().max(0) as u64) as usize;
+        if count > limit {
+            return format!("{}参考最多 {limit} 项", reference_label(kind));
+        }
+    }
+    if !state.references.is_empty() && state.references.iter().all(|v| text(v, "kind") == "audio") {
+        return "参考音频需要搭配至少一张图片或一段视频".into();
+    }
     if state
         .references
         .iter()
         .any(|v| text(v, "status") == "expired")
     {
-        return "参考图片已过期，请重新上传或移除".into();
+        return "参考素材已过期，请重新上传或移除".into();
     }
     if state.references.len() > ui.get_reference_max().max(0) as usize {
         return format!(
-            "当前模型最多支持 {} 张参考图片，请移除多余素材",
+            "当前模型最多支持 {} 项参考素材，请移除多余素材",
             ui.get_reference_max()
         );
     }
@@ -384,22 +502,33 @@ fn reference_validation(ui: &SeeCut, state: &Cloud) -> String {
         .iter()
         .any(|v| text(v, "status") == "failed")
     {
-        return "参考图片上传失败，请重试或移除".into();
+        return "参考素材上传失败，请重试或移除".into();
     }
     if state
         .references
         .iter()
         .any(|v| text(v, "status") != "ready")
     {
-        return "参考图片上传中".into();
+        return "参考素材上传中".into();
     }
-    if invalid_reference_prompt(&ui.get_prompt(), state.references.len()) {
+    let mut invalid = ui.get_prompt().contains("[已移除参考");
+    rewrite_media_mentions(&ui.get_prompt(), |kind, number| {
+        let count = state
+            .references
+            .iter()
+            .filter(|v| reference_label(&text(v, "kind")) == kind)
+            .count();
+        invalid |= number == 0 || number > count;
+        String::new()
+    });
+    if invalid {
         "提示词包含已移除或无效的素材引用，请修改后生成".into()
     } else {
         String::new()
     }
 }
 
+#[cfg(test)]
 fn invalid_reference_prompt(prompt: &str, count: usize) -> bool {
     let mut invalid = prompt.contains("[已移除参考图片]");
     rewrite_mentions(prompt, |n| {
@@ -430,17 +559,22 @@ fn remove_reference(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
         .iter()
         .position(|v| text(v, "client_id") == id);
     let Some(index) = index else { return };
+    let kind = reference_label(&text(&state.borrow().references[index], "kind"));
+    let number = reference_number(&state.borrow().references, index);
     state.borrow_mut().references.remove(index);
     state
         .borrow_mut()
         .pending
         .retain(|(name, _)| name != &format!("reference:{id}"));
     let ui = app.global::<SeeCut>();
-    let prompt = rewrite_mentions(&ui.get_prompt(), |n| {
-        if n == index + 1 {
-            "[已移除参考图片]".into()
+    let prompt = rewrite_media_mentions(&ui.get_prompt(), |label, n| {
+        if label != kind {
+            return format!("@[{label}{n}]");
+        }
+        if n == number {
+            format!("[已移除参考{kind}]")
         } else {
-            format!("@[图片{}]", if n > index + 1 { n - 1 } else { n })
+            format!("@[{kind}{}]", if n > number { n - 1 } else { n })
         }
     });
     ui.set_prompt(prompt.into());
@@ -462,7 +596,11 @@ fn insert_mention(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
     let Some(start) = mention_start(&prompt, cursor) else {
         return;
     };
-    let token = format!("@[图片{}] ", index + 1);
+    let kind = reference_label(&text(&state.borrow().references[index], "kind"));
+    let token = format!(
+        "@[{kind}{}] ",
+        reference_number(&state.borrow().references, index)
+    );
     prompt.replace_range(start..cursor, &token);
     ui.set_prompt(prompt.into());
     ui.set_prompt_cursor((start + token.len()) as i32);
@@ -472,9 +610,15 @@ fn insert_mention(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
 
 fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
     let video = ui.get_mode() != 0;
-    let prompt = rewrite_mentions(ui.get_prompt().trim(), |number| {
-        format!("第{number}张参考图片")
-    });
+    let prompt = if video {
+        rewrite_media_mentions(ui.get_prompt().trim(), |kind, number| {
+            format!("{kind}{number}")
+        })
+    } else {
+        rewrite_mentions(ui.get_prompt().trim(), |number| {
+            format!("第{number}张参考图片")
+        })
+    };
     let mut body =
         json!({"model": selected_model(ui, state), "operation":"generate", "prompt":prompt});
     let model_id = selected_model(ui, state);
@@ -488,6 +632,9 @@ fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
         body["resolution"] = parameter_value(&model, "resolution", ui.get_resolution_index());
         body["duration"] = parameter_value(&model, "duration", ui.get_duration_index());
         body["aspect_ratio"] = parameter_value(&model, "aspect_ratio", ui.get_ratio_index());
+        if model["parameters"].get("generate_audio").is_some() {
+            body["generate_audio"] = json!(ui.get_generate_audio());
+        }
     } else {
         body["size"] = parameter_value(&model, "size", ui.get_resolution_index());
         body["quality"] = parameter_value(&model, "quality", ui.get_quality_index());
@@ -1118,17 +1265,10 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
             .filter(|v| {
                 !v["trashed"].as_bool().unwrap_or(false)
                     && v["available"] == true
-                    && text(v, "kind") == "image"
+                    && (ui.get_mode() != 0 || text(v, "kind") == "image")
             })
             .filter(|v| text(v, "name").to_lowercase().contains(&reference_search))
-            .filter(|v| {
-                PathBuf::from(text(v, "path"))
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| {
-                        matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp")
-                    })
-            })
+            .filter(|v| reference_kind(&PathBuf::from(text(v, "path"))) != "unsupported")
             .map(row)
             .collect(),
     ));
@@ -1215,6 +1355,15 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
 }
 
 fn upload_personal_reference(app: &App, state: &Rc<RefCell<Cloud>>, path: String, name: String) {
+    if matches!(
+        reference_kind(std::path::Path::new(&path)),
+        "video" | "audio"
+    ) && app.global::<SeeCut>().get_mode() == 0
+    {
+        app.global::<SeeCut>().set_mode(1);
+        app.global::<SeeCut>().set_model_index(0);
+        update_model_options(app, state);
+    }
     let count = state.borrow().references.len();
     upload_file(app, state, path, "generation_input");
     let mut cloud = state.borrow_mut();
@@ -1238,7 +1387,9 @@ fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
             .iter()
             .filter(|v| text(v, "filename").to_lowercase().contains(&search))
             .filter(|v| {
-                !ui.get_asset_picker_open() || text(v, "content_type").starts_with("image/")
+                !ui.get_asset_picker_open()
+                    || ui.get_mode() != 0
+                    || text(v, "content_type").starts_with("image/")
             })
             .filter(|v| {
                 filter == 0
@@ -1270,19 +1421,24 @@ fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
     ));
 }
 fn render_references(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let cloud = state.borrow();
     app.global::<SeeCut>().set_references(rows(
-        state
-            .borrow()
+        cloud
             .references
             .iter()
             .enumerate()
             .map(|(index, v)| {
-                let path = PathBuf::from(text(v, "local_path"));
+                let path = PathBuf::from(text(v, "preview_path"));
                 CloudItem {
                     id: text(v, "client_id").into(),
                     name: text(v, "display_name").into(),
-                    kind: "image".into(),
-                    detail: format!("@[图片{}]", index + 1).into(),
+                    kind: text(v, "kind").into(),
+                    detail: format!(
+                        "@[{}{}]",
+                        reference_label(&text(v, "kind")),
+                        reference_number(&cloud.references, index)
+                    )
+                    .into(),
                     status: match text(v, "status").as_str() {
                         "ready" => "已上传",
                         "failed" => "上传失败",
@@ -1346,27 +1502,44 @@ fn upload_file(app: &App, state: &Rc<RefCell<Cloud>>, path: String, purpose: &st
     let mut client_id = String::new();
     if purpose == "generation_input" {
         let model_id = selected_model(&ui, &state.borrow());
-        let max = state
+        let model = state
             .borrow()
             .models
             .iter()
             .find(|v| text(v, "id") == model_id)
-            .and_then(|v| v["parameters"]["reference_asset_ids"]["max_items"].as_u64())
+            .cloned()
+            .unwrap_or_default();
+        let max = model["parameters"]["reference_asset_ids"]["max_items"]
+            .as_u64()
             .unwrap_or(0) as usize;
         if state.borrow().references.len() >= max {
-            ui.set_error(format!("当前模型最多支持 {max} 张参考图").into());
+            ui.set_error(format!("当前模型最多支持 {max} 项参考素材").into());
             return;
         }
-        if !PathBuf::from(&path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| matches!(e.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp"))
+        let kind = reference_kind(std::path::Path::new(&path));
+        if !accepts_reference(&model, kind) {
+            ui.set_error(
+                if ui.get_mode() == 0 {
+                    "图片生成支持 PNG、JPG、WebP 参考图"
+                } else {
+                    "视频参考支持 PNG、JPG、WebP、MP4、MOV、MP3、WAV"
+                }
+                .into(),
+            );
+            return;
+        }
+        let kind_max = model["parameters"]["reference_asset_ids"]["max_per_kind"][kind]
+            .as_u64()
+            .unwrap_or(max as u64) as usize;
+        if state
+            .borrow()
+            .references
+            .iter()
+            .filter(|v| text(v, "kind") == kind)
+            .count()
+            >= kind_max
         {
-            ui.set_error("当前模型仅支持 PNG、JPG、WebP 参考图片，不支持视频参考".into());
-            return;
-        }
-        if slint::Image::load_from_path(std::path::Path::new(&path)).is_err() {
-            ui.set_error("无法读取参考图片，请检查文件是否完整".into());
+            ui.set_error(format!("{}参考最多 {kind_max} 项", reference_label(kind)).into());
             return;
         }
         client_id = uuid::Uuid::new_v4().to_string();
@@ -1388,7 +1561,7 @@ fn upload_file(app: &App, state: &Rc<RefCell<Cloud>>, path: String, purpose: &st
         state
             .borrow_mut()
             .references
-            .push(json!({"client_id":client_id,"local_path":path,"display_name":display_name,"status":"uploading"}));
+            .push(json!({"client_id":client_id,"local_path":path,"kind":kind,"display_name":display_name,"status":"uploading"}));
         render_references(app, state);
         refresh_quote(app, state);
     }
@@ -1555,13 +1728,23 @@ fn update_model_options(app: &App, state: &Rc<RefCell<Cloud>>) {
         if video { "resolution" } else { "size" },
     ));
     ui.set_duration_index(parameter_default_index(&model, "duration"));
+    ui.set_supports_generation_audio(video && model["parameters"].get("generate_audio").is_some());
+    ui.set_generate_audio(
+        model["parameters"]["generate_audio"]["default"]
+            .as_bool()
+            .unwrap_or(true),
+    );
     ui.set_quality_index(parameter_default_index(&model, "quality"));
     let limit = model["parameters"]["reference_asset_ids"]["max_items"]
         .as_i64()
         .unwrap_or(0);
     ui.set_accepts_references(limit > 0);
     ui.set_reference_max(limit as i32);
-    ui.set_reference_limit(format!("PNG / JPG / WebP · 最多 {limit} 张").into());
+    ui.set_reference_limit(if video {
+        format!("全能参考 · 最多 {limit} 项\n图片 PNG/JPG/WebP，视频 MP4/MOV，音频 MP3/WAV\n视频、音频各最多 3 项，各累计 2–15 秒；音频需搭配图片或视频")
+    } else { format!("PNG / JPG / WebP · 最多 {limit} 张") }.into());
+    render_personal(app, state);
+    render_assets(app, state);
 }
 
 fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
@@ -1834,9 +2017,9 @@ pub fn bind(app: &App) {
         "members-refresh" if !team.is_empty()=>job(&app,&shared,"members".into(),request("GET",format!("/api/teams/{team}/members"),Value::Null)),
         "asset-delete"=>job(&app,&shared,"asset-change".into(),request("DELETE",format!("/api/teams/{team}/assets/{id}"),Value::Null)),
         "asset-restore"=>job(&app,&shared,"asset-change".into(),request("POST",format!("/api/teams/{team}/assets/{id}/restore"),Value::Null)),
-        "reference-browse"|"asset-upload"=>{if let Some(paths)=crate::platform::pick_files("选择素材",if name=="reference-browse"{Some(("图片",&["png","jpg","jpeg","webp"]))}else{None}){for path in paths{upload_file(&app,&shared,path.to_string_lossy().to_string(),if name=="asset-upload"{"team_asset"}else{"generation_input"});}}},
+        "reference-browse"|"asset-upload"=>{let extensions: &[&str] = if ui.get_mode()==0 { &["png","jpg","jpeg","webp"] } else { &["png","jpg","jpeg","webp","mp4","mov","mp3","wav"] }; if let Some(paths)=crate::platform::pick_files("选择素材",if name=="reference-browse"{Some(("参考素材",extensions))}else{None}){for path in paths{upload_file(&app,&shared,path.to_string_lossy().to_string(),if name=="asset-upload"{"team_asset"}else{"generation_input"});}}},
         "reference-drop"=>upload_file(&app,&shared,id.to_string(),"generation_input"),
-        "reference-team"=>{ui.set_asset_picker_open(true);ui.set_asset_picker_source(0);ui.set_personal_reference_search("".into());ui.set_trash_open(false);ui.set_asset_search("".into());ui.set_asset_filter(1);render_assets(&app,&shared);personal_job(&app,&shared,"list",Value::Null);},
+        "reference-team"=>{ui.set_asset_picker_open(true);ui.set_asset_picker_source(0);ui.set_personal_reference_search("".into());ui.set_trash_open(false);ui.set_asset_search("".into());ui.set_asset_filter(0);render_assets(&app,&shared);personal_job(&app,&shared,"list",Value::Null);},
         "reference-source" if ui.get_asset_picker_source()==1 => job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null)),
         "reference-remove"=>remove_reference(&app,&shared,id.as_str()),
         "reference-mention"=>insert_mention(&app,&shared,id.as_str()),
@@ -1854,9 +2037,9 @@ pub fn bind(app: &App) {
         "task-save-team"=>{let path=shared.borrow().local.get(id.as_str()).cloned();if team.is_empty(){ui.set_error("请先在团队资产中选择团队".into());}else if let Some(path)=path{upload_file(&app,&shared,path,"team_asset");}else{download_task(&app,&shared,id.as_str(),"save");ui.set_notice("下载完成后可保存到团队".into());}},
         "asset-preview"|"asset-download"|"asset-reference"|"asset-import"=>{
             if name=="asset-reference" {
-                let is_image=shared.borrow().assets.iter().find(|v|text(v,"id")==id.as_str()).is_some_and(|v|text(v,"content_type").starts_with("image/"));
-                if !is_image {ui.set_error("当前模型仅支持参考图片，不支持视频或音频参考".into());return;}
-                if shared.borrow().references.len()>=ui.get_reference_max().max(0) as usize {ui.set_error(format!("当前模型最多支持 {} 张参考图片",ui.get_reference_max()).into());return;}
+                let is_motion=shared.borrow().assets.iter().find(|v|text(v,"id")==id.as_str()).is_some_and(|v|text(v,"content_type").starts_with("video/") || text(v,"content_type").starts_with("audio/"));
+                if is_motion && ui.get_mode()==0 {ui.set_mode(1);ui.set_model_index(0);update_model_options(&app,&shared);}
+                if shared.borrow().references.len()>=ui.get_reference_max().max(0) as usize {ui.set_error(format!("当前模型最多支持 {} 项参考素材",ui.get_reference_max()).into());return;}
                 ui.set_asset_picker_open(false);ui.set_page(1);
             }
             download_asset(&app,&shared,id.as_str(),match name.as_str(){"asset-reference"=>"reference","asset-import"=>"import",_=>"preview"});
@@ -1890,6 +2073,7 @@ pub fn bind(app: &App) {
                 | "resolution"
                 | "quality"
                 | "duration"
+                | "generate-audio"
                 | "quantity"
         ) && app.global::<SeeCut>().get_signed_in()
         {
@@ -2069,14 +2253,14 @@ mod reference_tests {
     #[test]
     fn video_parameters_keep_numbers_and_reject_non_catalog_options() {
         let model = json!({"parameters": {
-            "duration": {"default":10,"values":[5,10]},
+            "duration": {"default":5,"values":[4,5,6,7,8,9,10,11,12,13,14,15]},
             "resolution": {"values":["720p"]},
             "aspect_ratio": {"values":["16:9","9:16","1:1"]}
         }});
-        assert_eq!(parameter_value(&model, "duration", 1), json!(10));
+        assert_eq!(parameter_value(&model, "duration", 11), json!(15));
         assert_eq!(
-            parameter_label("duration", &parameter_value(&model, "duration", 1)),
-            "10 秒"
+            parameter_label("duration", &parameter_value(&model, "duration", 11)),
+            "15 秒"
         );
         assert_eq!(parameter_default_index(&model, "duration"), 1);
         assert_eq!(parameter_value(&model, "resolution", 0), json!("720p"));
@@ -2109,6 +2293,59 @@ mod reference_tests {
             format!("第{n}张参考图片")
         });
         assert_eq!(result, "沿用第2张参考图片的衣服，保持第1张参考图片的脸");
+    }
+
+    #[test]
+    fn mixed_reference_numbers_follow_each_media_array() {
+        let references = vec![
+            json!({"kind":"image"}),
+            json!({"kind":"video"}),
+            json!({"kind":"image"}),
+            json!({"kind":"audio"}),
+            json!({"kind":"video"}),
+        ];
+        let numbers: Vec<_> = (0..references.len())
+            .map(|index| super::reference_number(&references, index))
+            .collect();
+        assert_eq!(numbers, [1, 1, 2, 1, 2]);
+        let prompt = "用@[图片2]主体，按@[视频2]运动，跟随@[音频1]节奏";
+        assert_eq!(
+            super::rewrite_media_mentions(prompt, |kind, n| format!("{kind}{n}")),
+            "用图片2主体，按视频2运动，跟随音频1节奏"
+        );
+        let removed = super::rewrite_media_mentions(prompt, |kind, n| {
+            if kind == "视频" {
+                format!("@[{kind}{}]", n - 1)
+            } else {
+                format!("@[{kind}{n}]")
+            }
+        });
+        assert_eq!(removed, "用@[图片2]主体，按@[视频1]运动，跟随@[音频1]节奏");
+        assert_eq!(
+            super::rewrite_media_mentions("@[视频x] @[音频] @hello", |_, _| panic!(
+                "invalid token"
+            )),
+            "@[视频x] @[音频] @hello"
+        );
+    }
+
+    #[test]
+    fn reference_types_follow_model_catalog() {
+        let image = json!({"parameters":{"reference_asset_ids":{"accepted_media":["image/*"]}}});
+        let video = json!({"parameters":{"reference_asset_ids":{"accepted_media":["image/*","video/*","audio/*"]}}});
+        for (path, kind) in [
+            ("A.PNG", "image"),
+            ("clip.MOV", "video"),
+            ("beat.wav", "audio"),
+            ("movie.webm", "unsupported"),
+        ] {
+            assert_eq!(super::reference_kind(std::path::Path::new(path)), kind);
+            assert_eq!(super::accepts_reference(&image, kind), kind == "image");
+            assert_eq!(
+                super::accepts_reference(&video, kind),
+                kind != "unsupported"
+            );
+        }
     }
 
     #[test]

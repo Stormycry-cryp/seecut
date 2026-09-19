@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, Slider } from "std-widgets.slint";
+import { Switch } from "../inspector/controls.slint";
 import { Theme, Select, SegmentedControl, IconButton, Glyph, Icon, Modal } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
 import { AppButton, CloudField, Label, Heading, EmptyState } from "components.slint";
@@ -32,7 +33,12 @@ component GenerationForm inherits Rectangle {
                         IconButton { glyph: Glyph.plus; label: "添加本地素材"; enabled: SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-browse", ""); } }
                         IconButton { glyph: Glyph.folder; label: "从资产库选择"; enabled: SeeCut.signed-in && SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
                     }
-                    for item in SeeCut.references: Rectangle {
+                    if SeeCut.references.length > 0: ScrollView {
+                      height: Math.min(214px, SeeCut.references.length * 74px - 8px);
+                      viewport-width: self.width;
+                      horizontal-scrollbar-policy: always-off;
+                      VerticalLayout { alignment: start; spacing: 8px;
+                       for item in SeeCut.references: Rectangle {
                         height: 66px;
                         border-radius: Theme.r-sm;
                         background: Theme.well;
@@ -41,6 +47,7 @@ component GenerationForm inherits Rectangle {
                             spacing: 8px;
                             Rectangle {
                                 width: 52px; height: 52px; background: Theme.stage; clip: true; border-radius: Theme.r-sm;
+                                Icon { x: 17px; y: 17px; size: 18px; glyph: item.kind == "video" ? Glyph.film : item.kind == "audio" ? Glyph.music : Glyph.image; tint: Theme.fg-dim; }
                                 Image { source: item.preview; width: 100%; height: 100%; image-fit: contain; }
                                 TouchArea { mouse-cursor: pointer; clicked => { SeeCut.action("reference-preview", item.id); } }
                             }
@@ -53,6 +60,8 @@ component GenerationForm inherits Rectangle {
                             VerticalLayout { alignment: center; IconButton { glyph: Glyph.close; label: "移除参考素材"; clicked => { SeeCut.action("reference-remove", item.id); } } }
                         }
                     }
+                      }
+                    }
                     if SeeCut.references.length < SeeCut.reference-max: Rectangle {
                         height: SeeCut.references.length == 0 ? 76px : 38px;
                         border-radius: Theme.r-sm;
@@ -62,7 +71,7 @@ component GenerationForm inherits Rectangle {
                         HorizontalLayout {
                             alignment: center; spacing: 8px;
                             VerticalLayout { alignment: center; Icon { glyph: Glyph.import; size: 18px; tint: Theme.fg-muted; } }
-                            Text { text: "上传参考图片"; color: Theme.fg-muted; vertical-alignment: center; }
+                            Text { text: "点击或拖入参考素材"; color: Theme.fg-muted; vertical-alignment: center; }
                         }
                         upload-touch := TouchArea { mouse-cursor: pointer; clicked => { SeeCut.action("reference-browse", ""); } }
                     }
@@ -110,7 +119,10 @@ component GenerationForm inherits Rectangle {
                                     opacity: item.ready ? 1 : 0.45;
                                     HorizontalLayout {
                                         spacing: 8px;
-                                        Image { source: item.preview; width: 34px; height: 34px; image-fit: cover; }
+                                        Rectangle { width: 34px; height: 34px;
+                                            Icon { x: 8px; y: 8px; size: 18px; glyph: item.kind == "video" ? Glyph.film : item.kind == "audio" ? Glyph.music : Glyph.image; tint: Theme.fg-dim; }
+                                            Image { source: item.preview; width: 100%; height: 100%; image-fit: cover; }
+                                        }
                                         Text { text: item.detail + "  " + item.name; min-width: 0px; color: Theme.fg; overflow: elide; vertical-alignment: center; }
                                     }
                                     mention-touch := TouchArea {
@@ -143,8 +155,29 @@ component GenerationForm inherits Rectangle {
                 }
                 if SeeCut.durations.length > 0: VerticalLayout {
                     spacing: 6px;
-                    Label { text: "时长"; }
-                    Select { options: SeeCut.durations; current: SeeCut.duration-index; changed(index) => { SeeCut.duration-index = index; SeeCut.changed("duration", index); } }
+                    HorizontalLayout {
+                        Label { text: "时长"; horizontal-stretch: 1; }
+                        Text { text: SeeCut.durations[SeeCut.duration-index]; color: Theme.fg; vertical-alignment: center; }
+                    }
+                    Slider {
+                        minimum: 0; maximum: SeeCut.durations.length - 1; step: 1;
+                        value: SeeCut.duration-index;
+                        changed(value) => { SeeCut.duration-index = round(value); SeeCut.can-generate = false; SeeCut.quote = ""; }
+                        released(value) => { SeeCut.changed("duration", SeeCut.duration-index); }
+                    }
+                    HorizontalLayout {
+                        Text { text: SeeCut.durations[0]; color: Theme.fg-dim; font-size: Theme.fs-sm; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: SeeCut.durations[SeeCut.durations.length - 1]; color: Theme.fg-dim; font-size: Theme.fs-sm; }
+                    }
+                }
+                if SeeCut.mode == 1 && SeeCut.supports-generation-audio: HorizontalLayout {
+                    padding-top: 6px; padding-bottom: 6px; spacing: 10px;
+                    Label { text: "生成声音"; horizontal-stretch: 1; }
+                    Text { text: SeeCut.generate-audio ? "开启" : "关闭"; color: Theme.fg-dim; vertical-alignment: center; }
+                    VerticalLayout { alignment: center;
+                        Switch { checked <=> SeeCut.generate-audio; toggled(checked) => { SeeCut.changed("generate-audio", ""); } }
+                    }
                 }
                 if SeeCut.quantities.length > 0: VerticalLayout {
                     spacing: 6px;
@@ -278,11 +311,11 @@ export component GenerationPage inherits Rectangle {
         VerticalLayout {
             padding: 16px; spacing: 10px;
             SegmentedControl { options: ["个人资产", "团队资产"]; current: SeeCut.asset-picker-source; changed(index) => { SeeCut.asset-picker-source = index; SeeCut.action("reference-source", ""); } }
-            if SeeCut.asset-picker-source == 0: CloudField { value <=> SeeCut.personal-reference-search; placeholder: "搜索个人图片"; edited(value) => { SeeCut.changed("personal-reference-search", value); } }
+            if SeeCut.asset-picker-source == 0: CloudField { value <=> SeeCut.personal-reference-search; placeholder: "搜索个人素材"; edited(value) => { SeeCut.changed("personal-reference-search", value); } }
             if SeeCut.asset-picker-source == 1: Select { options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); } }
             if SeeCut.asset-picker-source == 1: CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队素材"; edited(value) => { SeeCut.changed("asset-search", value); } }
             if SeeCut.asset-picker-source == 1 && SeeCut.team-names.length == 0: Text { text: "尚未加入团队"; color: Theme.fg-muted; }
-            if (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references.length == 0 : SeeCut.assets.length == 0): Text { text: SeeCut.busy ? "正在加载素材" : "暂无可用参考图片"; color: Theme.fg-muted; }
+            if (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references.length == 0 : SeeCut.assets.length == 0): Text { text: SeeCut.busy ? "正在加载素材" : "暂无可用参考素材"; color: Theme.fg-muted; }
             ScrollView {
                 height: Math.min(320px, root.height - 230px);
                 viewport-width: self.width; horizontal-scrollbar-policy: always-off;
@@ -294,7 +327,7 @@ export component GenerationPage inherits Rectangle {
                             padding: 6px; spacing: 10px;
                             Rectangle {
                                 width: 46px; height: 46px; background: Theme.stage;
-                                Icon { x: 14px; y: 14px; size: 18px; glyph: Glyph.image; tint: Theme.fg-dim; }
+                                Icon { x: 14px; y: 14px; size: 18px; glyph: asset.kind == "video" ? Glyph.film : asset.kind == "audio" ? Glyph.music : Glyph.image; tint: Theme.fg-dim; }
                                 Image { width: 100%; height: 100%; source: asset.preview; image-fit: contain; }
                             }
                             Text { text: asset.name; color: Theme.fg; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }

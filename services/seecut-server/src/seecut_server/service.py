@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import re
 import sqlite3
 import subprocess
@@ -37,6 +38,11 @@ from .network import open_no_redirect, read_limited
 
 
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+REFERENCE_IMAGE_CONTENT_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
+REFERENCE_VIDEO_CONTENT_TYPES = frozenset({"video/mp4", "video/quicktime"})
+REFERENCE_AUDIO_CONTENT_TYPES = frozenset({"audio/mpeg", "audio/wav"})
+REFERENCE_VIDEO_MAX_BYTES = 200 * 1024 * 1024
+REFERENCE_AUDIO_MAX_BYTES = 15 * 1024 * 1024
 
 
 class SeeCutService:
@@ -452,6 +458,121 @@ class SeeCutService:
 
     # Signed uploads and team asset metadata
 
+    def _validate_reference_upload(self, content_type: str, size_bytes: int) -> str:
+        if content_type in REFERENCE_IMAGE_CONTENT_TYPES:
+            if size_bytes > self.config.max_reference_image_bytes:
+                raise ApiError(413, "REFERENCE_IMAGE_TOO_LARGE", "参考图片单文件不能超过 20MB")
+            return "image"
+        if content_type in REFERENCE_VIDEO_CONTENT_TYPES:
+            if size_bytes > REFERENCE_VIDEO_MAX_BYTES:
+                raise ApiError(413, "REFERENCE_VIDEO_TOO_LARGE", "参考视频单文件不能超过 200MB")
+            return "video"
+        if content_type in REFERENCE_AUDIO_CONTENT_TYPES:
+            if size_bytes > REFERENCE_AUDIO_MAX_BYTES:
+                raise ApiError(413, "REFERENCE_AUDIO_TOO_LARGE", "参考音频单文件不能超过 15MB")
+            return "audio"
+        raise ApiError(
+            415,
+            "UNSUPPORTED_REFERENCE_MEDIA_TYPE",
+            "参考素材仅支持 PNG、JPG、WebP、MP4、MOV、MP3 和 WAV",
+        )
+
+    def _probe_generation_input_file(self, path: Path, content_type: str) -> tuple[str, int | None]:
+        declared_kind = self._validate_reference_upload(content_type, path.stat().st_size)
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_streams",
+                    "-show_format",
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-of",
+                    "json",
+                    str(path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+                check=True,
+            )
+            probe = json.loads(result.stdout.decode("utf-8"))
+        except FileNotFoundError as exc:
+            raise ApiError(503, "MEDIA_PROBE_UNAVAILABLE", "服务器无法校验参考素材") from exc
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise ApiError(422, "INVALID_REFERENCE_MEDIA", "参考素材无法解析") from exc
+
+        streams = probe.get("streams", []) if isinstance(probe, dict) else []
+        streams = [stream for stream in streams if isinstance(stream, dict)]
+        format_data = probe.get("format", {}) if isinstance(probe, dict) else {}
+        format_name = (
+            str(format_data.get("format_name") or "")
+            if isinstance(format_data, dict)
+            else ""
+        )
+        video_streams = [
+            stream
+            for stream in streams
+            if stream.get("codec_type") == "video"
+            and int(stream.get("width") or 0) > 0
+            and int(stream.get("height") or 0) > 0
+        ]
+        audio_streams = [stream for stream in streams if stream.get("codec_type") == "audio"]
+
+        if declared_kind == "image":
+            expected_codec = {
+                "image/png": "png",
+                "image/jpeg": "mjpeg",
+                "image/webp": "webp",
+            }[content_type]
+            if (
+                not video_streams
+                or video_streams[0].get("codec_name") != expected_codec
+                or audio_streams
+            ):
+                raise ApiError(422, "INVALID_REFERENCE_MEDIA", "参考图片内容与文件类型不匹配")
+            return declared_kind, None
+
+        if declared_kind == "video" and not video_streams:
+            raise ApiError(422, "INVALID_REFERENCE_MEDIA", "参考视频缺少可读取画面")
+        if declared_kind == "video" and not any(
+            item in format_name.split(",") for item in {"mov", "mp4"}
+        ):
+            raise ApiError(422, "INVALID_REFERENCE_MEDIA", "参考视频内容与文件类型不匹配")
+        expected_audio_format = {"audio/mpeg": "mp3", "audio/wav": "wav"}.get(content_type)
+        if declared_kind == "audio" and (
+            not audio_streams
+            or video_streams
+            or expected_audio_format not in format_name.split(",")
+        ):
+            raise ApiError(422, "INVALID_REFERENCE_MEDIA", "参考音频内容与文件类型不匹配")
+
+        duration_values: list[float] = []
+        if isinstance(format_data, dict):
+            try:
+                duration = float(format_data.get("duration") or 0)
+                if math.isfinite(duration):
+                    duration_values.append(duration)
+            except (TypeError, ValueError):
+                pass
+        for stream in streams:
+            try:
+                duration = float(stream.get("duration") or 0)
+                if math.isfinite(duration):
+                    duration_values.append(duration)
+            except (TypeError, ValueError):
+                pass
+        duration = max(duration_values, default=0)
+        if duration < 2 or duration > 15:
+            raise ApiError(
+                422,
+                "INVALID_REFERENCE_DURATION",
+                "参考视频和音频的时长需要在 2 到 15 秒之间",
+            )
+        return declared_kind, round(duration * 1000)
+
     def prepare_upload(
         self,
         user_id: str,
@@ -462,6 +583,7 @@ class SeeCutService:
         sha256: str | None = None,
         team_id: str | None = None,
     ) -> dict[str, Any]:
+        content_type = content_type.strip().lower()
         if purpose not in {"team_asset", "generation_input"}:
             raise ApiError(400, "INVALID_UPLOAD_PURPOSE", "上传用途无效")
         if purpose == "team_asset":
@@ -477,12 +599,8 @@ class SeeCutService:
             raise ApiError(400, "INVALID_FILE_SIZE", "文件大小超出允许范围")
         if not content_type.startswith(("image/", "video/", "audio/")):
             raise ApiError(400, "UNSUPPORTED_MEDIA_TYPE", "仅支持图片、视频和音频")
-        if (
-            purpose == "generation_input"
-            and content_type.startswith("image/")
-            and size_bytes > self.config.max_reference_image_bytes
-        ):
-            raise ApiError(413, "REFERENCE_IMAGE_TOO_LARGE", "参考图片单文件不能超过 20MB")
+        if purpose == "generation_input":
+            self._validate_reference_upload(content_type, size_bytes)
         if sha256 and not re.fullmatch(r"[a-fA-F0-9]{64}", sha256):
             raise ApiError(400, "INVALID_SHA256", "文件摘要格式无效")
         upload_id = new_id("upl")
@@ -526,6 +644,7 @@ class SeeCutService:
     def save_upload_stream(
         self, upload_id: str, stream: Any, content_length: int, content_type: str
     ) -> None:
+        content_type = content_type.strip().lower()
         now = self.now()
         claim = new_token()
         with self.db.connect() as connection:
@@ -548,6 +667,8 @@ class SeeCutService:
         temp_target = target.with_suffix(target.suffix + ".part." + token_digest(claim)[:12])
         digest = hashlib.sha256()
         remaining = content_length
+        media_kind: str | None = None
+        duration_ms: int | None = None
         try:
             with temp_target.open("wb") as output:
                 while remaining:
@@ -560,6 +681,10 @@ class SeeCutService:
             actual_sha256 = digest.hexdigest()
             if row["sha256"] and row["sha256"] != actual_sha256:
                 raise ApiError(400, "FILE_HASH_MISMATCH", "文件校验失败")
+            if row["purpose"] == "generation_input":
+                media_kind, duration_ms = self._probe_generation_input_file(
+                    temp_target, row["content_type"]
+                )
         except Exception:
             temp_target.unlink(missing_ok=True)
             with self.db.transaction(immediate=True) as connection:
@@ -571,8 +696,10 @@ class SeeCutService:
         temp_target.replace(target)
         with self.db.transaction(immediate=True) as connection:
             updated = connection.execute(
-                "UPDATE uploads SET completed_at=?,sha256=?,write_token=NULL WHERE id=? AND completed_at IS NULL AND write_token=?",
-                (now, actual_sha256, upload_id, claim),
+                """UPDATE uploads SET completed_at=?,sha256=?,write_token=NULL,
+                   media_kind=?,duration_ms=?
+                   WHERE id=? AND completed_at IS NULL AND write_token=?""",
+                (now, actual_sha256, media_kind, duration_ms, upload_id, claim),
             ).rowcount
         if not updated:
             target.unlink(missing_ok=True)
@@ -698,12 +825,26 @@ class SeeCutService:
     def register_generation_asset(self, user_id: str, upload_id: str) -> dict[str, Any]:
         with self.db.connect() as connection:
             row = connection.execute(
-                """SELECT id,expires_at,completed_at FROM uploads
+                """SELECT id,expires_at,completed_at,object_key,content_type,expected_size,
+                          media_kind,duration_ms FROM uploads
                    WHERE id=? AND owner_user_id=? AND purpose='generation_input'""",
                 (upload_id, user_id),
             ).fetchone()
         if not row or row["completed_at"] is None or row["expires_at"] < self.now():
             raise ApiError(400, "STAGING_UPLOAD_UNAVAILABLE", "临时素材不存在或尚未上传完成")
+        self._validate_reference_upload(row["content_type"], row["expected_size"])
+        media_kind = row["media_kind"]
+        duration_ms = row["duration_ms"]
+        if media_kind is None or (media_kind in {"video", "audio"} and duration_ms is None):
+            path = self.config.storage_path / row["object_key"]
+            if not path.is_file():
+                raise ApiError(400, "STAGING_UPLOAD_UNAVAILABLE", "临时素材文件不可用")
+            media_kind, duration_ms = self._probe_generation_input_file(path, row["content_type"])
+            with self.db.transaction(immediate=True) as connection:
+                connection.execute(
+                    "UPDATE uploads SET media_kind=?,duration_ms=? WHERE id=?",
+                    (media_kind, duration_ms, upload_id),
+                )
         generation_asset_id = new_id("gasset")
         expires_at = min(row["expires_at"], self.now() + 1800)
         with self.db.transaction(immediate=True) as connection:
@@ -715,10 +856,21 @@ class SeeCutService:
             )
         with self.db.connect() as connection:
             row = connection.execute(
-                """SELECT id,expires_at FROM generation_assets
-                   WHERE user_id=? AND upload_id=?""", (user_id, upload_id)
+                """SELECT generation_assets.id,generation_assets.expires_at,
+                          uploads.media_kind,uploads.duration_ms
+                   FROM generation_assets JOIN uploads ON uploads.id=generation_assets.upload_id
+                   WHERE generation_assets.user_id=? AND generation_assets.upload_id=?""",
+                (user_id, upload_id),
             ).fetchone()
-        return {"id": row["id"], "upload_id": upload_id, "expires_at": row["expires_at"]}
+        return {
+            "id": row["id"],
+            "upload_id": upload_id,
+            "media_kind": row["media_kind"],
+            "duration_seconds": (
+                None if row["duration_ms"] is None else row["duration_ms"] / 1000
+            ),
+            "expires_at": row["expires_at"],
+        }
 
     def _asset_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         result = {
@@ -1083,7 +1235,9 @@ class SeeCutService:
         request = dict(body)
         request.pop("kind", None)
         model, normalized = validate_request(kind, request, self.config.image2_model)
-        self._validate_generation_assets(user_id, normalized.get("reference_asset_ids", []))
+        self._validate_generation_assets(
+            user_id, normalized.get("reference_asset_ids", []), model
+        )
         key = billing_key(model, normalized)
         credits = self.config.model_prices.get(key)
         if credits is None and self.config.env in {"development", "test"}:
@@ -1135,7 +1289,9 @@ class SeeCutService:
         request.pop("quote_id", None)
         request.pop("kind", None)
         model, normalized = validate_request(kind, request, self.config.image2_model)
-        self._validate_generation_assets(user_id, normalized.get("reference_asset_ids", []))
+        self._validate_generation_assets(
+            user_id, normalized.get("reference_asset_ids", []), model
+        )
         canonical_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
         operation = normalized["operation"]
         now = self.now()
@@ -1218,17 +1374,117 @@ class SeeCutService:
 
         return self.get_generation_task(user_id, task_id)
 
-    def _validate_generation_assets(self, user_id: str, asset_ids: list[str]) -> None:
+    def _generation_asset_rows(self, user_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
         if not asset_ids:
-            return
+            return []
+        if len(set(asset_ids)) != len(asset_ids):
+            raise ApiError(422, "INVALID_PARAMETER", "参考素材不能重复")
         with self.db.connect() as connection:
             rows = connection.execute(
-                "SELECT id,expires_at FROM generation_assets WHERE user_id=? AND id IN (%s)"
+                """SELECT generation_assets.id,generation_assets.upload_id,
+                          generation_assets.provider_asset_id,
+                          generation_assets.expires_at asset_expires_at,
+                          uploads.expires_at upload_expires_at,uploads.completed_at,
+                          uploads.object_key,uploads.content_type,uploads.expected_size,
+                          uploads.media_kind,uploads.duration_ms
+                   FROM generation_assets JOIN uploads ON uploads.id=generation_assets.upload_id
+                   WHERE generation_assets.user_id=? AND generation_assets.id IN (%s)"""
                 % ",".join("?" for _ in asset_ids),
                 (user_id, *asset_ids),
             ).fetchall()
-        if len(rows) != len(set(asset_ids)) or any(row["expires_at"] < self.now() for row in rows):
+        if len(rows) != len(asset_ids):
             raise ApiError(422, "GENERATION_ASSET_UNAVAILABLE", "参考素材不存在或已过期")
+        rows_by_id = {row["id"]: dict(row) for row in rows}
+        ordered = [rows_by_id[asset_id] for asset_id in asset_ids]
+        now = self.now()
+        for row in ordered:
+            if (
+                row["asset_expires_at"] < now
+                or row["upload_expires_at"] < now
+                or row["completed_at"] is None
+            ):
+                raise ApiError(422, "GENERATION_ASSET_UNAVAILABLE", "参考素材不存在或已过期")
+            expected_kind = self._validate_reference_upload(
+                row["content_type"], row["expected_size"]
+            )
+            path = self.config.storage_path / row["object_key"]
+            if not path.is_file():
+                raise ApiError(422, "GENERATION_ASSET_UNAVAILABLE", "参考素材文件不可用")
+            if row["media_kind"] is None or (
+                expected_kind in {"video", "audio"} and row["duration_ms"] is None
+            ):
+                media_kind, duration_ms = self._probe_generation_input_file(
+                    path, row["content_type"]
+                )
+                with self.db.transaction(immediate=True) as connection:
+                    connection.execute(
+                        "UPDATE uploads SET media_kind=?,duration_ms=? WHERE id=?",
+                        (media_kind, duration_ms, row["upload_id"]),
+                    )
+                row["media_kind"] = media_kind
+                row["duration_ms"] = duration_ms
+            if row["media_kind"] != expected_kind:
+                raise ApiError(422, "INVALID_REFERENCE_MEDIA", "参考素材内容与文件类型不匹配")
+        return ordered
+
+    def _validate_generation_assets(
+        self, user_id: str, asset_ids: list[str], model: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        rows = self._generation_asset_rows(user_id, asset_ids)
+        if not rows:
+            return rows
+        spec = model.get("parameters", {}).get("reference_asset_ids", {})
+        accepted_kinds = {
+            str(media).split("/", 1)[0] for media in spec.get("accepted_media", [])
+        }
+        counts = {"image": 0, "video": 0, "audio": 0}
+        durations_ms = {"video": 0, "audio": 0}
+        duration_spec = spec.get("duration_seconds", {})
+        for row in rows:
+            kind = row["media_kind"]
+            if kind not in accepted_kinds:
+                raise ApiError(422, "UNSUPPORTED_REFERENCE_MEDIA_TYPE", "当前模型不支持该参考素材")
+            counts[kind] += 1
+            limits = duration_spec.get(kind)
+            if limits:
+                duration_ms = int(row["duration_ms"] or 0)
+                if not (
+                    limits["min_per_item"] * 1000
+                    <= duration_ms
+                    <= limits["max_per_item"] * 1000
+                ):
+                    raise ApiError(
+                        422,
+                        "INVALID_REFERENCE_DURATION",
+                        "参考视频和音频的时长需要在 2 到 15 秒之间",
+                    )
+                durations_ms[kind] += duration_ms
+
+        for kind, maximum in spec.get("max_per_kind", {}).items():
+            if counts.get(kind, 0) > maximum:
+                raise ApiError(
+                    422,
+                    "REFERENCE_KIND_LIMIT_EXCEEDED",
+                    f"参考{ {'image': '图片', 'video': '视频', 'audio': '音频'}[kind] }数量超出限制",
+                    {"kind": kind, "max_items": maximum},
+                )
+        for kind, limits in duration_spec.items():
+            if durations_ms.get(kind, 0) > limits["max_total"] * 1000:
+                raise ApiError(
+                    422,
+                    "REFERENCE_TOTAL_DURATION_EXCEEDED",
+                    f"参考{ {'video': '视频', 'audio': '音频'}[kind] }总时长不能超过 {limits['max_total']} 秒",
+                    {"kind": kind, "max_total_seconds": limits["max_total"]},
+                )
+        if spec.get("requires_visual_when_audio") and counts["audio"] and not (
+            counts["image"] or counts["video"]
+        ):
+            raise ApiError(
+                422,
+                "AUDIO_REFERENCE_REQUIRES_VISUAL",
+                "参考音频需要与至少一张图片或一段视频一起使用",
+            )
+        return rows
 
     def claim_generation_tasks(self, limit: int = 1) -> list[dict[str, Any]]:
         limit = 1
@@ -1293,25 +1549,22 @@ class SeeCutService:
         payload.pop("operation", None)
         reference_ids = payload.pop("reference_asset_ids", [])
         if reference_ids:
-            with self.db.connect() as connection:
-                rows = connection.execute(
-                    "SELECT id,upload_id,provider_asset_id,expires_at FROM generation_assets WHERE user_id=? AND id IN (%s)"
-                    % ",".join("?" for _ in reference_ids),
-                    (task["user_id"], *reference_ids),
-                ).fetchall()
-            if len(rows) != len(reference_ids) or any(row["expires_at"] < self.now() for row in rows):
-                raise ApiError(422, "GENERATION_ASSET_EXPIRED", "参考素材已过期，请重新上传")
-            rows_by_id = {row["id"]: row for row in rows}
-            rows = [rows_by_id[asset_id] for asset_id in reference_ids]
-            provider_ids: list[str] = []
+            rows = self._generation_asset_rows(task["user_id"], reference_ids)
+            provider_references: dict[str, list[str]] = {
+                "image": [],
+                "video": [],
+                "audio": [],
+            }
             for row in rows:
                 provider_id = row["provider_asset_id"]
                 if not provider_id:
                     path = f"/api/storage/staging/{row['upload_id']}"
-                    expires_at = min(row["expires_at"], self.now() + 1800)
+                    expires_at = min(row["asset_expires_at"], self.now() + 1800)
                     signature = sign_path(self.config.signing_secret, path, expires_at)
                     source_url = f"{self.config.public_base_url}{path}?expires={expires_at}&signature={signature}"
-                    upstream = self.xiangxin.register_asset(source_url)
+                    upstream = self.xiangxin.register_asset(
+                        source_url, row["media_kind"].title()
+                    )
                     data = upstream.get("data") if isinstance(upstream.get("data"), dict) else {}
                     provider_id = (
                         upstream.get("assetId")
@@ -1328,8 +1581,10 @@ class SeeCutService:
                             "UPDATE generation_assets SET provider_asset_id=? WHERE id=?",
                             (provider_id, row["id"]),
                         )
-                provider_ids.append(provider_id)
-            payload["reference_images"] = [f"assetId://{provider_id}" for provider_id in provider_ids]
+                provider_references[row["media_kind"]].append(f"assetId://{provider_id}")
+            for kind, references in provider_references.items():
+                if references:
+                    payload[f"reference_{kind}s"] = references
         return payload
 
     def _submit_image_task(self, task: dict[str, Any]) -> None:
@@ -1345,26 +1600,9 @@ class SeeCutService:
         self._store_binary_outputs(task["id"], output_bytes, ["image/png"] * len(output_bytes))
 
     def _generation_asset_files(self, user_id: str, asset_ids: list[str]) -> list[tuple[Path, str]]:
-        if not asset_ids:
-            return []
-        with self.db.connect() as connection:
-            rows = connection.execute(
-                """SELECT generation_assets.id,uploads.object_key,uploads.content_type,uploads.expected_size
-                   FROM generation_assets JOIN uploads ON uploads.id=generation_assets.upload_id
-                   WHERE generation_assets.user_id=? AND generation_assets.id IN (%s)"""
-                % ",".join("?" for _ in asset_ids),
-                (user_id, *asset_ids),
-            ).fetchall()
-        if len(rows) != len(set(asset_ids)):
-            raise ApiError(422, "GENERATION_ASSET_UNAVAILABLE", "参考素材不存在或已过期")
-        rows_by_id = {row["id"]: row for row in rows}
-        rows = [rows_by_id[asset_id] for asset_id in dict.fromkeys(asset_ids)]
-        if any(
-            not row["content_type"].startswith("image/")
-            or row["expected_size"] > self.config.max_reference_image_bytes
-            for row in rows
-        ):
-            raise ApiError(413, "REFERENCE_IMAGE_TOO_LARGE", "参考图片单文件不能超过 20MB")
+        rows = self._generation_asset_rows(user_id, asset_ids)
+        if any(row["media_kind"] != "image" for row in rows):
+            raise ApiError(422, "UNSUPPORTED_REFERENCE_MEDIA_TYPE", "图片编辑仅支持参考图片")
         return [(self.config.storage_path / row["object_key"], row["content_type"]) for row in rows]
 
     def _submit_video_task(self, task: dict[str, Any]) -> None:

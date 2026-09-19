@@ -37,9 +37,11 @@ class XiangxinClient:
     def get_video(self, task_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/videos/{task_id}")
 
-    def register_asset(self, source_url: str) -> dict[str, Any]:
+    def register_asset(self, source_url: str, asset_type: str) -> dict[str, Any]:
+        if asset_type not in {"Image", "Video", "Audio"}:
+            raise ValueError("asset_type must be Image, Video or Audio")
         return self._request(
-            "POST", "/v1/videos/assets", {"assetType": "Image", "url": source_url}
+            "POST", "/v1/videos/assets", {"assetType": asset_type, "url": source_url}
         )
 
     def _request(

@@ -6,7 +6,7 @@ from typing import Any
 from .errors import ApiError
 
 
-CATALOG_VERSION = "2026-09-19.1"
+CATALOG_VERSION = "2026-09-19.3"
 
 MODELS: list[dict[str, Any]] = [
     {
@@ -54,18 +54,35 @@ MODELS: list[dict[str, Any]] = [
                 "default": "720p",
                 "values": ["720p"],
             },
-            "duration": {"type": "enum", "required": True, "values": [5, 10]},
+            "duration": {
+                "type": "enum",
+                "value_type": "integer",
+                "required": True,
+                "default": 5,
+                "values": list(range(4, 16)),
+            },
             "aspect_ratio": {
                 "type": "enum",
                 "required": True,
-                "values": ["16:9", "9:16", "1:1"],
+                "values": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"],
+            },
+            "generate_audio": {
+                "type": "boolean",
+                "required": True,
+                "default": True,
             },
             "reference_asset_ids": {
                 "type": "asset_list",
                 "required": False,
                 "min_items": 0,
-                "max_items": 1,
-                "accepted_media": ["image/*"],
+                "max_items": 9,
+                "accepted_media": ["image/*", "video/*", "audio/*"],
+                "max_per_kind": {"image": 9, "video": 3, "audio": 3},
+                "duration_seconds": {
+                    "video": {"min_per_item": 2, "max_per_item": 15, "max_total": 15},
+                    "audio": {"min_per_item": 2, "max_per_item": 15, "max_total": 15},
+                },
+                "requires_visual_when_audio": True,
             },
         },
         "fixed_parameters": {},
@@ -125,14 +142,21 @@ def validate_request(
             if not isinstance(value, str) or not value.strip() or len(value) > spec["max_length"]:
                 raise ApiError(422, "INVALID_PARAMETER", f"参数无效：{name}", {"parameter": name})
             value = value.strip()
+        elif spec["type"] == "boolean":
+            if not isinstance(value, bool):
+                raise ApiError(422, "INVALID_PARAMETER", f"参数无效：{name}", {"parameter": name})
         elif spec["type"] == "enum":
-            if value not in spec["values"]:
+            if (
+                spec.get("value_type") == "integer" and type(value) is not int
+            ) or value not in spec["values"]:
                 raise ApiError(422, "INVALID_PARAMETER", f"参数无效：{name}", {"parameter": name})
         elif spec["type"] == "asset_list":
             if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
                 raise ApiError(422, "INVALID_PARAMETER", f"参数无效：{name}", {"parameter": name})
             if not spec["min_items"] <= len(value) <= spec["max_items"]:
                 raise ApiError(422, "INVALID_PARAMETER", f"参数数量无效：{name}", {"parameter": name})
+            if len(set(value)) != len(value):
+                raise ApiError(422, "INVALID_PARAMETER", f"参数包含重复素材：{name}", {"parameter": name})
         normalized[name] = value
     normalized.update(model["fixed_parameters"])
     return model, normalized
@@ -141,6 +165,13 @@ def validate_request(
 def billing_key(model: dict[str, Any], normalized: dict[str, Any]) -> str:
     dimensions: list[str] = []
     for name in model["billing_dimensions"]:
-        value = len(normalized.get("reference_asset_ids", [])) if name == "reference_count" else normalized.get(name)
+        # SeeCut currently prices video references as absent/present. Keep the
+        # established key name while collapsing 1-9 references into the
+        # existing reference_count=1 tier.
+        value = (
+            int(bool(normalized.get("reference_asset_ids", [])))
+            if name == "reference_count"
+            else normalized.get(name)
+        )
         dimensions.append(f"{name}={value}")
     return ":".join([model["provider"], model["id"], *dimensions])

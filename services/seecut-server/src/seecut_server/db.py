@@ -30,6 +30,10 @@ class Database:
             upload_columns = {row["name"] for row in connection.execute("PRAGMA table_info(uploads)")}
             if "write_token" not in upload_columns:
                 connection.execute("ALTER TABLE uploads ADD COLUMN write_token TEXT")
+            if "media_kind" not in upload_columns:
+                connection.execute("ALTER TABLE uploads ADD COLUMN media_kind TEXT")
+            if "duration_ms" not in upload_columns:
+                connection.execute("ALTER TABLE uploads ADD COLUMN duration_ms INTEGER")
             output_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(generation_outputs)")
             }

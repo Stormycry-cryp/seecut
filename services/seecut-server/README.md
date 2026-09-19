@@ -6,7 +6,7 @@ The first version uses Python's standard library, so it can run without download
 
 ## Run locally
 
-Python 3.12 or newer and `ffprobe` are required. The worker uses `ffprobe` to reject corrupt or empty provider media before capturing credits. Provider responses are bounded by `SECUT_MAX_PROVIDER_RESPONSE_BYTES`; image reference uploads are limited per file by `SECUT_MAX_REFERENCE_IMAGE_BYTES` (20 MiB by default).
+Python 3.12 or newer and `ffprobe` are required. Upload completion uses `ffprobe` to verify generation input type and duration, and the worker uses it to reject corrupt or empty provider media before capturing credits. Provider responses are bounded by `SECUT_MAX_PROVIDER_RESPONSE_BYTES`; image reference uploads are limited per file by `SECUT_MAX_REFERENCE_IMAGE_BYTES` (20 MiB by default), video references by 200 MiB, and audio references by 15 MiB.
 
 ```bash
 cd services/seecut-server
@@ -40,7 +40,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 - Teams created by a user and single-use, expiring invitation links.
 - Team asset metadata and signed upload/download URLs backed by local private storage.
 - Separate expiring staging uploads for generation inputs; staging uploads never become team assets implicitly.
-- Configured Image2 adapter (`SECUT_IMAGE2_MODEL`, default `gpt-image-2.5-flare`) and Xiangxin Seedance 2.0 Mini video adapter. Image2 responses that are asynchronous remain `pending_reconcile` with the upstream task ID and keep their credit hold.
+- Configured Image2 adapter (`SECUT_IMAGE2_MODEL`, default `gpt-image-2.5-flare`) and Xiangxin Seedance 2.0 Mini video adapter. Seedance accepts up to nine mixed image, video and audio references, 4-15 second output duration, and a `generate_audio` switch. Image2 responses that are asynchronous remain `pending_reconcile` with the upstream task ID and keep their credit hold.
 - Static model capability whitelist and parameter-bound credit quotes.
 - Durable generation worker with recovery, authenticated local result streaming, credit hold/capture/release, expiring local outputs and `pending_reconcile` states.
 - RSA2-signed Alipay web-payment URL, asynchronous notifications and signed order-query compensation. Merchant configuration comes only from environment variables and missing configuration returns `ALIPAY_NOT_CONFIGURED`.
@@ -66,7 +66,7 @@ export SECUT_MODEL_PRICES_JSON='{"image2:gpt-image-2.5-flare:operation=generate:
 
 No production generation task is accepted until its full billing key has a non-negative integer credit price.
 
-The current SeeCut preview uses **0 credits** for all 20 supported billing combinations of `gpt-image-2` and `sd_2.0_mini_special`. Zero is an explicit price, so a zero-balance account can submit; missing keys remain unavailable. Hold, capture and release still retain their idempotent ledger records with zero deltas. Upstream provider charges are independent of the user's credit price.
+The current SeeCut preview uses **0 credits** for all 176 supported billing combinations of `gpt-image-2` and `sd_2.0_mini_special`. Video reference counts are priced as two tiers: `reference_count=0` and `reference_count=1`, where the latter covers any request with 1-9 references. Zero is an explicit price, so a zero-balance account can submit; missing keys remain unavailable. Hold, capture and release still retain their idempotent ledger records with zero deltas. Upstream provider charges are independent of the user's credit price.
 
 Generated outputs expire after `SECUT_GENERATION_OUTPUT_TTL_SECONDS`. Periodic cleanup deletes expired personal outputs and unused generation staging files. It preserves team assets and staging inputs referenced by active tasks.
 

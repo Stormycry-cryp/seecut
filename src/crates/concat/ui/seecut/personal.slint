@@ -63,7 +63,7 @@ export component PersonalPage inherits Rectangle {
                         HorizontalLayout {
                             alignment: end; spacing: 4px;
                             if !SeeCut.personal-trash: IconButton { glyph: Glyph.eye; label: "预览"; enabled: asset.ready; clicked => { SeeCut.action("personal-preview", asset.id); } }
-                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.sparkle; label: "用于生成"; enabled: asset.ready && asset.kind == "image"; clicked => { SeeCut.action("personal-reference", asset.id); } }
+                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.sparkle; label: "用于生成"; enabled: asset.ready; clicked => { SeeCut.action("personal-reference", asset.id); } }
                             if !SeeCut.personal-trash: IconButton { glyph: Glyph.plus; label: "加入当前项目"; enabled: asset.ready && SeeCut.project-open; clicked => { SeeCut.action("personal-project", asset.id); } }
                             if !SeeCut.personal-trash: IconButton { glyph: Glyph.tag; label: "重命名"; enabled: !SeeCut.busy; clicked => { root.selected-id = asset.id; SeeCut.personal-rename = asset.name; root.dialog = 1; } }
                             if !SeeCut.personal-trash: IconButton { glyph: Glyph.export; label: "上传到团队"; enabled: asset.ready && !SeeCut.busy; clicked => { root.selected-id = asset.id; root.selected-name = asset.name; root.dialog = 2; SeeCut.action("personal-teams", ""); } }

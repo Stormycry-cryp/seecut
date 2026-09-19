@@ -9,6 +9,7 @@ import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from seecut_server.config import Config
@@ -57,6 +58,7 @@ class FakeXiangxin:
 
     def __init__(self):
         self.submit_calls = 0
+        self.asset_calls = []
         self.poll_error: XiangxinError | None = None
         self.poll_response: dict | None = None
         self.nested_response = False
@@ -77,7 +79,8 @@ class FakeXiangxin:
             return {"data": {"id": task_id, "status": "processing"}}
         return {"id": task_id, "status": "processing"}
 
-    def register_asset(self, source_url):
+    def register_asset(self, source_url, asset_type):
+        self.asset_calls.append((source_url, asset_type))
         if self.nested_asset_response:
             return {"data": {"assetId": "provider-asset"}}
         return {"assetId": "provider-asset"}
@@ -170,6 +173,23 @@ class GenerationRobustnessTest(unittest.TestCase):
         )
         return self.service.register_generation_asset(self.user_id, upload["upload_id"])
 
+    def synthetic_generation_asset(
+        self, filename: str, content_type: str, media_kind: str, duration_ms: int
+    ):
+        content = f"synthetic-{filename}".encode()
+        upload = self.service.prepare_upload(
+            self.user_id, "generation_input", filename, content_type, len(content)
+        )
+        with patch.object(
+            self.service,
+            "_probe_generation_input_file",
+            return_value=(media_kind, duration_ms),
+        ):
+            self.service.save_upload_stream(
+                upload["upload_id"], io.BytesIO(content), len(content), content_type
+            )
+        return self.service.register_generation_asset(self.user_id, upload["upload_id"])
+
     def test_expired_submitting_becomes_reconcile_without_second_post(self):
         task = self.video_task()
         claimed = self.service.claim_generation_tasks()[0]
@@ -207,6 +227,131 @@ class GenerationRobustnessTest(unittest.TestCase):
             task_row = connection.execute("SELECT * FROM generation_tasks WHERE id=?", (task["id"],)).fetchone()
         payload = self.service._task_payload(task_row)
         self.assertEqual(payload["reference_images"], ["assetId://provider-asset"])
+        self.assertNotIn("first_image", payload)
+        self.assertNotIn("last_image", payload)
+        self.assertNotIn("reference_videos", payload)
+        self.assertNotIn("reference_audios", payload)
+
+    def test_multimodal_video_payload_groups_reference_media(self):
+        image = self.generation_asset("reference.png")
+        video = self.synthetic_generation_asset(
+            "reference.mov", "video/quicktime", "video", 4_000
+        )
+        audio = self.synthetic_generation_asset(
+            "reference.wav", "audio/wav", "audio", 3_000
+        )
+        request = {
+            "model": "sd_2.0_mini_special",
+            "prompt": "use every reference",
+            "resolution": "720p",
+            "duration": 4,
+            "aspect_ratio": "adaptive",
+            "generate_audio": False,
+            "reference_asset_ids": [image["id"], video["id"], audio["id"]],
+        }
+        quote = self.service.quote_generation(self.user_id, "video", request)
+        self.assertTrue(quote["billing_key"].endswith("reference_count=1"))
+        task = self.service.create_generation_task(
+            self.user_id,
+            "video",
+            request | {"quote_id": quote["quote_id"]},
+            "mixed-reference-video",
+        )
+        with self.service.db.connect() as connection:
+            task_row = connection.execute(
+                "SELECT * FROM generation_tasks WHERE id=?", (task["id"],)
+            ).fetchone()
+
+        payload = self.service._task_payload(task_row)
+
+        self.assertEqual(payload["reference_images"], ["assetId://provider-asset"])
+        self.assertEqual(payload["reference_videos"], ["assetId://provider-asset"])
+        self.assertEqual(payload["reference_audios"], ["assetId://provider-asset"])
+        self.assertIs(payload["generate_audio"], False)
+        self.assertNotIn("first_image", payload)
+        self.assertNotIn("last_image", payload)
+        self.assertEqual(
+            [asset_type for _, asset_type in self.xiangxin.asset_calls],
+            ["Image", "Video", "Audio"],
+        )
+
+    def test_video_reference_semantic_limits_are_enforced(self):
+        audio = self.synthetic_generation_asset(
+            "audio-only.mp3", "audio/mpeg", "audio", 3_000
+        )
+        request = {
+            "model": "sd_2.0_mini_special",
+            "prompt": "audio only",
+            "resolution": "720p",
+            "duration": 5,
+            "aspect_ratio": "16:9",
+            "reference_asset_ids": [audio["id"]],
+        }
+        with self.assertRaises(ApiError) as context:
+            self.service.quote_generation(self.user_id, "video", request)
+        self.assertEqual(context.exception.code, "AUDIO_REFERENCE_REQUIRES_VISUAL")
+
+        videos = [
+            self.synthetic_generation_asset(
+                f"video-{index}.mp4", "video/mp4", "video", 3_000
+            )
+            for index in range(4)
+        ]
+        request["reference_asset_ids"] = [asset["id"] for asset in videos]
+        with self.assertRaises(ApiError) as context:
+            self.service.quote_generation(self.user_id, "video", request)
+        self.assertEqual(context.exception.code, "REFERENCE_KIND_LIMIT_EXCEEDED")
+
+        long_videos = [
+            self.synthetic_generation_asset(
+                f"long-video-{index}.mp4", "video/mp4", "video", 6_000
+            )
+            for index in range(3)
+        ]
+        request["reference_asset_ids"] = [asset["id"] for asset in long_videos]
+        with self.assertRaises(ApiError) as context:
+            self.service.quote_generation(self.user_id, "video", request)
+        self.assertEqual(context.exception.code, "REFERENCE_TOTAL_DURATION_EXCEEDED")
+
+    def test_generation_upload_rejects_spoofed_media_content(self):
+        upload = self.service.prepare_upload(
+            self.user_id, "generation_input", "fake.mp3", "audio/mpeg", len(PNG)
+        )
+        with self.assertRaises(ApiError) as context:
+            self.service.save_upload_stream(
+                upload["upload_id"], io.BytesIO(PNG), len(PNG), "audio/mpeg"
+            )
+        self.assertEqual(context.exception.code, "INVALID_REFERENCE_MEDIA")
+
+    def test_generation_media_probe_rejects_non_finite_duration_and_limits_protocols(self):
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as media:
+            media.write(b"synthetic-video")
+            media.flush()
+            probe = {
+                "format": {"format_name": "mov,mp4", "duration": "nan"},
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "codec_name": "h264",
+                        "width": 1280,
+                        "height": 720,
+                        "duration": "inf",
+                    }
+                ],
+            }
+            with patch(
+                "seecut_server.service.subprocess.run",
+                return_value=SimpleNamespace(stdout=json.dumps(probe).encode()),
+            ) as run:
+                with self.assertRaises(ApiError) as context:
+                    self.service._probe_generation_input_file(
+                        Path(media.name), "video/mp4"
+                    )
+        self.assertEqual(context.exception.code, "INVALID_REFERENCE_DURATION")
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[command.index("-protocol_whitelist") + 1], "file,pipe"
+        )
 
     def test_image_edit_preserves_reference_asset_order(self):
         first = self.generation_asset("first.png")

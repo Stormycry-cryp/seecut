@@ -42,7 +42,7 @@ class FakeXiangxin:
     def models(self):
         return {"data": [{"id": "image-model"}, {"id": "video-model"}]}
 
-    def register_asset(self, source_url):
+    def register_asset(self, source_url, asset_type):
         return {"assetId": "asset-1", "source_url_seen": source_url.startswith("http")}
 
 
@@ -116,7 +116,9 @@ class ServiceTest(unittest.TestCase):
     def test_team_asset_requires_explicit_team_upload(self):
         owner_id, _ = self.create_user("owner@example.com")
         team = self.service.create_team(owner_id, "Assets")
-        body = b"image-content"
+        body = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
         upload = self.service.prepare_upload(
             owner_id, "team_asset", "frame.png", "image/png", len(body), team_id=team["id"]
         )
