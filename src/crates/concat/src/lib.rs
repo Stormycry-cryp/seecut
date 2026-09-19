@@ -95,6 +95,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // same "no project open yet" no-op that a picked one does.
     let gpu = platform::select_backend(|paths| {
         Shell::with(|shell, app| {
+            if app.global::<ui::SeeCut>().get_page() == 1 {
+                for path in paths {
+                    app.global::<ui::SeeCut>().invoke_action("reference-drop".into(), path.to_string_lossy().into_owned().into());
+                }
+                return;
+            }
             {
                 let mut studio = shell.studio.borrow_mut();
                 studio.handle(Msg::Media(MediaMsg::Import(paths)));

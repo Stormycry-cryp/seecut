@@ -64,6 +64,9 @@ export component CloudField inherits Rectangle {
     in property <bool> multiline;
     in property <bool> enabled: true;
     callback edited(value: string);
+    callback cursor-moved(offset: int);
+    callback key-event(text: string) -> bool;
+    public function focus-at(offset: int) { input.focus(); input.set-selection-offsets(offset, offset); }
     min-height: root.multiline ? 128px : 34px;
     max-height: root.multiline ? 180px : 34px;
     background: Theme.field;
@@ -88,6 +91,8 @@ export component CloudField inherits Rectangle {
         selection-background-color: Theme.accent;
         selection-foreground-color: Theme.on-accent;
         edited => { root.edited(self.text); }
+        cursor-position-changed(position) => { root.cursor-moved(self.cursor-position-byte-offset); }
+        key-pressed(event) => { return root.key-event(event.text) ? EventResult.accept : EventResult.reject; }
     }
     if root.value == "": Text {
         x: 10px;

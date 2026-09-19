@@ -7,6 +7,7 @@ import { AppButton, CloudField, Label, Heading, EmptyState } from "components.sl
 
 component GenerationForm inherits Rectangle {
     background: Theme.panel;
+    property <int> mention-index;
     VerticalLayout {
         padding: 20px;
         spacing: 14px;
@@ -24,30 +25,95 @@ component GenerationForm inherits Rectangle {
                 spacing: 8px;
                 alignment: start;
                 Label { text: "提示词"; }
-                CloudField { value <=> SeeCut.prompt; multiline: true; placeholder: SeeCut.mode == 0 ? "描述画面、主体和风格" : "描述画面内容、动作和镜头"; edited(value) => { SeeCut.changed("prompt", value); } }
-                if SeeCut.accepts-references: VerticalLayout {
+                prompt := CloudField {
+                    value <=> SeeCut.prompt;
+                    multiline: true;
+                    placeholder: SeeCut.mode == 0 ? "描述画面、主体和风格" : "描述画面内容、动作和镜头";
+                    edited(value) => { SeeCut.changed("prompt", value); }
+                    cursor-moved(offset) => { SeeCut.prompt-cursor = offset; SeeCut.changed("prompt-cursor", offset); }
+                    key-event(text) => {
+                        if !SeeCut.mention-open { return false; }
+                        if text == Key.Escape { SeeCut.mention-open = false; return true; }
+                        if text == Key.DownArrow { root.mention-index = Math.min(root.mention-index + 1, SeeCut.references.length - 1); return true; }
+                        if text == Key.UpArrow { root.mention-index = Math.max(root.mention-index - 1, 0); return true; }
+                        if text == "\n" && root.mention-index >= 0 && root.mention-index < SeeCut.references.length {
+                            SeeCut.action("reference-mention", SeeCut.references[root.mention-index].id);
+                            prompt.focus-at(SeeCut.prompt-cursor);
+                            return true;
+                        }
+                        return false;
+                    }
+                }
+                if SeeCut.mention-open: Rectangle {
+                    background: Theme.well;
+                    border-radius: Theme.r-sm;
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 4px;
+                        if SeeCut.references.length == 0: Text { text: "暂无参考素材"; color: Theme.fg-dim; height: 28px; }
+                        for item[index] in SeeCut.references: Rectangle {
+                            height: 38px;
+                            background: mention-touch.has-hover || root.mention-index == index ? Theme.field-hover : Colors.transparent;
+                            opacity: item.ready ? 1 : 0.45;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Image { source: item.preview; width: 34px; height: 34px; image-fit: cover; }
+                                Text { text: item.detail + "  " + item.name; color: Theme.fg; overflow: elide; vertical-alignment: center; }
+                            }
+                            mention-touch := TouchArea {
+                                enabled: item.ready;
+                                mouse-cursor: pointer;
+                                clicked => { SeeCut.action("reference-mention", item.id); prompt.focus-at(SeeCut.prompt-cursor); }
+                            }
+                        }
+                        IconButton { glyph: Glyph.close; label: "关闭素材引用"; clicked => { SeeCut.mention-open = false; } }
+                    }
+                }
+                if SeeCut.accepts-references || SeeCut.references.length > 0: VerticalLayout {
                     spacing: 8px;
                     HorizontalLayout {
                         Label { text: "参考素材"; horizontal-stretch: 1; }
-                        IconButton { glyph: Glyph.plus; label: "添加本地素材"; enabled: !SeeCut.busy; clicked => { SeeCut.action("reference-browse", ""); } }
-                        IconButton { glyph: Glyph.folder; label: "选择团队素材"; enabled: SeeCut.signed-in && !SeeCut.busy; clicked => { SeeCut.action("reference-team", ""); } }
+                        Text { text: SeeCut.references.length + "/" + SeeCut.reference-max; color: Theme.fg-dim; vertical-alignment: center; }
+                        IconButton { glyph: Glyph.plus; label: "添加本地素材"; enabled: SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-browse", ""); } }
+                        IconButton { glyph: Glyph.folder; label: "选择团队素材"; enabled: SeeCut.signed-in && SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
                     }
-                    Text { text: "参考素材经服务器临时处理"; color: Theme.fg-dim; wrap: word-wrap; font-size: Theme.fs-sm; }
                     for item in SeeCut.references: Rectangle {
-                        height: 48px;
+                        height: 68px;
                         border-radius: Theme.r-sm;
                         background: Theme.well;
                         HorizontalLayout {
                             padding: 6px;
                             spacing: 8px;
-                            Image { source: item.preview; width: 36px; height: 36px; image-fit: cover; }
-                            Text { text: item.name; color: Theme.fg; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                            Rectangle {
+                                width: 54px; height: 54px; background: Theme.stage; clip: true; border-radius: Theme.r-sm;
+                                Image { source: item.preview; width: 100%; height: 100%; image-fit: contain; }
+                                TouchArea { mouse-cursor: pointer; clicked => { SeeCut.action("reference-preview", item.id); } }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1; alignment: center; spacing: 4px;
+                                Text { text: item.detail + "  " + item.name; color: Theme.fg; overflow: elide; }
+                                Text { text: item.status; color: item.status == "上传失败" ? Theme.danger : Theme.fg-dim; font-size: Theme.fs-sm; overflow: elide; }
+                            }
+                            if item.status == "上传失败": IconButton { glyph: Glyph.reset; label: "重试上传"; clicked => { SeeCut.action("reference-retry", item.id); } }
                             IconButton { glyph: Glyph.close; label: "移除参考素材"; clicked => { SeeCut.action("reference-remove", item.id); } }
                         }
                     }
-                    if SeeCut.references.length == 0: AppButton { label: "添加参考素材"; glyph: Glyph.import; enabled: !SeeCut.busy; clicked => { SeeCut.action("reference-browse", ""); } }
+                    if SeeCut.references.length < SeeCut.reference-max: Rectangle {
+                        height: SeeCut.references.length == 0 ? 76px : 38px;
+                        border-radius: Theme.r-sm;
+                        border-width: 1px;
+                        border-color: upload-touch.has-hover ? Theme.accent : Theme.line;
+                        background: upload-touch.has-hover ? Theme.field-hover : Theme.well;
+                        HorizontalLayout {
+                            alignment: center; spacing: 8px;
+                            Icon { glyph: Glyph.import; size: 18px; tint: Theme.fg-muted; }
+                            Text { text: "上传参考图片"; color: Theme.fg-muted; vertical-alignment: center; }
+                        }
+                        upload-touch := TouchArea { mouse-cursor: pointer; clicked => { SeeCut.action("reference-browse", ""); } }
+                    }
                     if SeeCut.reference-limit != "": Text { text: SeeCut.reference-limit; color: Theme.fg-dim; wrap: word-wrap; font-size: Theme.fs-sm; }
                 }
+                if SeeCut.reference-error != "": Text { text: SeeCut.reference-error; color: Theme.danger; wrap: word-wrap; font-size: Theme.fs-sm; }
                 Rectangle { height: 8px; }
                 Label { text: "模型"; }
                 Select { options: SeeCut.model-names; current: SeeCut.model-index; placeholder: "暂无可用模型"; enabled: SeeCut.model-names.length > 0; changed(index) => { SeeCut.model-index = index; SeeCut.changed("model", index); } }
@@ -187,6 +253,42 @@ export component GenerationPage inherits Rectangle {
             }
             if !root.narrow: Rectangle { width: 1px; background: Theme.line; }
             if !root.narrow || root.step == 1: GenerationResults { horizontal-stretch: 1; }
+        }
+    }
+    Modal {
+        open: SeeCut.asset-picker-open;
+        title: "选择团队参考素材";
+        glyph: Glyph.folder;
+        surface-width: Math.min(560px, root.width - 32px);
+        closed => { SeeCut.asset-picker-open = false; }
+        VerticalLayout {
+            padding: 16px; spacing: 10px;
+            Select { options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); } }
+            CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队素材"; edited(value) => { SeeCut.changed("asset-search", value); } }
+            if SeeCut.team-names.length == 0: Text { text: "尚未加入团队"; color: Theme.fg-muted; }
+            if SeeCut.assets.length == 0 && SeeCut.team-names.length > 0: Text { text: SeeCut.busy ? "正在加载素材" : "暂无可用参考图片"; color: Theme.fg-muted; }
+            ScrollView {
+                height: Math.min(320px, root.height - 230px);
+                viewport-width: self.width; horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    alignment: start; spacing: 6px;
+                    for asset in SeeCut.assets: Rectangle {
+                        height: 58px; background: Theme.well; border-radius: Theme.r-sm;
+                        HorizontalLayout {
+                            padding: 6px; spacing: 10px;
+                            Rectangle {
+                                width: 46px; height: 46px; background: Theme.stage;
+                                Icon { x: 14px; y: 14px; size: 18px; glyph: Glyph.image; tint: Theme.fg-dim; }
+                                Image { width: 100%; height: 100%; source: asset.preview; image-fit: contain; }
+                            }
+                            Text { text: asset.name; color: Theme.fg; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                            IconButton { glyph: Glyph.plus; label: "添加为参考素材"; enabled: !SeeCut.busy; clicked => { SeeCut.action("asset-reference", asset.id); } }
+                        }
+                    }
+                }
+            }
+            if SeeCut.busy: Text { text: "正在读取团队素材"; color: Theme.fg-dim; }
+            AppButton { label: "完成"; clicked => { SeeCut.asset-picker-open = false; } }
         }
     }
     Modal {

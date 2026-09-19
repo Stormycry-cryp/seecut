@@ -125,6 +125,8 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, String> {
             &request("POST", endpoint, json!({"upload_id":upload["upload_id"]})),
         )?;
         result["local_path"] = json!(path);
+        result["client_id"] = req.body["client_id"].clone();
+        result["status"] = json!("ready");
         return Ok(result);
     }
     if req.path == "local:download" {
@@ -232,6 +234,19 @@ fn poll(
         match result {
             Ok(value) => publish(&app, &state, &name, value),
             Err(error) => {
+                if let Some(id) = name.strip_prefix("reference:") {
+                    if let Some(item) = state
+                        .borrow_mut()
+                        .references
+                        .iter_mut()
+                        .find(|v| text(v, "client_id") == id)
+                    {
+                        item["status"] = json!("failed");
+                        item["error"] = json!(error);
+                    }
+                    render_references(&app, &state);
+                    refresh_quote(&app, &state);
+                }
                 if name == "generate" {
                     refresh_quote(&app, &state);
                 }
@@ -255,9 +270,133 @@ fn selected_model(ui: &SeeCut, state: &Cloud) -> String {
         .map(|m| text(m, "id"))
         .unwrap_or_default()
 }
+
+// Rewrite complete mention tokens in one pass so renumbering cannot cascade.
+fn rewrite_mentions(prompt: &str, mut replacement: impl FnMut(usize) -> String) -> String {
+    let mut result = String::new();
+    let mut rest = prompt;
+    while let Some(start) = rest.find("@[图片") {
+        result.push_str(&rest[..start]);
+        let token = &rest[start..];
+        if let Some(end) = token.find(']')
+            && let Ok(number) = token["@[图片".len()..end].parse::<usize>()
+        {
+            result.push_str(&replacement(number));
+            rest = &token[end + 1..];
+        } else {
+            result.push_str("@");
+            rest = &token[1..];
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
+fn reference_validation(ui: &SeeCut, state: &Cloud) -> String {
+    if state.references.len() > ui.get_reference_max().max(0) as usize {
+        return format!(
+            "当前模型最多支持 {} 张参考图片，请移除多余素材",
+            ui.get_reference_max()
+        );
+    }
+    if state
+        .references
+        .iter()
+        .any(|v| text(v, "status") == "failed")
+    {
+        return "参考图片上传失败，请重试或移除".into();
+    }
+    if state
+        .references
+        .iter()
+        .any(|v| text(v, "status") != "ready")
+    {
+        return "参考图片上传中".into();
+    }
+    if invalid_reference_prompt(&ui.get_prompt(), state.references.len()) {
+        "提示词包含已移除或无效的素材引用，请修改后生成".into()
+    } else {
+        String::new()
+    }
+}
+
+fn invalid_reference_prompt(prompt: &str, count: usize) -> bool {
+    let mut invalid = prompt.contains("[已移除参考图片]");
+    rewrite_mentions(prompt, |n| {
+        invalid |= n == 0 || n > count;
+        String::new()
+    });
+    invalid
+}
+
+fn mention_start(prompt: &str, cursor: usize) -> Option<usize> {
+    let before = prompt.get(..cursor)?;
+    let start = before.rfind('@')?;
+    let query = &before[start + 1..];
+    (!query.chars().any(|c| c.is_whitespace() || c == ']')).then_some(start)
+}
+
+fn update_mention(app: &App) {
+    let ui = app.global::<SeeCut>();
+    ui.set_mention_open(
+        mention_start(&ui.get_prompt(), ui.get_prompt_cursor().max(0) as usize).is_some(),
+    );
+}
+
+fn remove_reference(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
+    let index = state
+        .borrow()
+        .references
+        .iter()
+        .position(|v| text(v, "client_id") == id);
+    let Some(index) = index else { return };
+    state.borrow_mut().references.remove(index);
+    state
+        .borrow_mut()
+        .pending
+        .retain(|(name, _)| name != &format!("reference:{id}"));
+    let ui = app.global::<SeeCut>();
+    let prompt = rewrite_mentions(&ui.get_prompt(), |n| {
+        if n == index + 1 {
+            "[已移除参考图片]".into()
+        } else {
+            format!("@[图片{}]", if n > index + 1 { n - 1 } else { n })
+        }
+    });
+    ui.set_prompt(prompt.into());
+    ui.set_mention_open(false);
+    render_references(app, state);
+    refresh_quote(app, state);
+}
+
+fn insert_mention(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
+    let index = state
+        .borrow()
+        .references
+        .iter()
+        .position(|v| text(v, "client_id") == id && text(v, "status") == "ready");
+    let Some(index) = index else { return };
+    let ui = app.global::<SeeCut>();
+    let mut prompt = ui.get_prompt().to_string();
+    let cursor = ui.get_prompt_cursor().max(0) as usize;
+    let Some(start) = mention_start(&prompt, cursor) else {
+        return;
+    };
+    let token = format!("@[图片{}] ", index + 1);
+    prompt.replace_range(start..cursor, &token);
+    ui.set_prompt(prompt.into());
+    ui.set_prompt_cursor((start + token.len()) as i32);
+    ui.set_mention_open(false);
+    refresh_quote(app, state);
+}
+
 fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
     let video = ui.get_mode() != 0;
-    let mut body = json!({"model": selected_model(ui, state), "operation":"generate", "prompt":ui.get_prompt().trim()});
+    let prompt = rewrite_mentions(ui.get_prompt().trim(), |number| {
+        format!("第{number}张参考图片")
+    });
+    let mut body =
+        json!({"model": selected_model(ui, state), "operation":"generate", "prompt":prompt});
     if video {
         body["resolution"] = json!(
             ui.get_resolutions()
@@ -435,7 +574,10 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             state.borrow_mut().quote_body = current;
             ui.set_quote(format!("预计消耗 {credits} 积分").into());
             ui.set_insufficient_credits(ui.get_balance().parse::<i64>().unwrap_or(0) < credits);
-            ui.set_can_generate(!ui.get_prompt().trim().is_empty());
+            ui.set_can_generate(
+                !ui.get_prompt().trim().is_empty()
+                    && reference_validation(&ui, &state.borrow()).is_empty(),
+            );
         }
         "generate" => {
             state.borrow_mut().submission = None;
@@ -549,8 +691,18 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             }
             refresh_assets(app, state);
         }
-        "reference" => {
-            state.borrow_mut().references.push(value);
+        name if name.starts_with("reference:") => {
+            let id = name.trim_start_matches("reference:");
+            if let Some(item) = state
+                .borrow_mut()
+                .references
+                .iter_mut()
+                .find(|v| text(v, "client_id") == id)
+            {
+                let display_name = item["display_name"].clone();
+                *item = value;
+                item["display_name"] = display_name;
+            }
             render_references(app, state);
             refresh_quote(app, state);
         }
@@ -678,6 +830,9 @@ fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
             .iter()
             .filter(|v| text(v, "filename").to_lowercase().contains(&search))
             .filter(|v| {
+                !ui.get_asset_picker_open() || text(v, "content_type").starts_with("image/")
+            })
+            .filter(|v| {
                 filter == 0
                     || text(v, "content_type").starts_with(match filter {
                         1 => "image",
@@ -712,19 +867,22 @@ fn render_references(app: &App, state: &Rc<RefCell<Cloud>>) {
             .borrow()
             .references
             .iter()
-            .map(|v| {
+            .enumerate()
+            .map(|(index, v)| {
                 let path = PathBuf::from(text(v, "local_path"));
                 CloudItem {
-                    id: text(v, "id").into(),
-                    name: path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned()
-                        .into(),
+                    id: text(v, "client_id").into(),
+                    name: text(v, "display_name").into(),
                     kind: "image".into(),
+                    detail: format!("@[图片{}]", index + 1).into(),
+                    status: match text(v, "status").as_str() {
+                        "ready" => "已上传",
+                        "failed" => "上传失败",
+                        _ => "上传中",
+                    }
+                    .into(),
                     local: true,
-                    ready: true,
+                    ready: text(v, "status") == "ready",
                     preview: slint::Image::load_from_path(&path).unwrap_or_default(),
                     ..Default::default()
                 }
@@ -755,6 +913,11 @@ fn refresh_quote(app: &App, state: &Rc<RefCell<Cloud>>) {
     state.borrow_mut().quote_credits = None;
     ui.set_quote("".into());
     ui.set_insufficient_credits(false);
+    let reference_error = reference_validation(&ui, &state.borrow());
+    ui.set_reference_error(reference_error.clone().into());
+    if !reference_error.is_empty() {
+        return;
+    }
     if ui.get_signed_in() && !ui.get_prompt().trim().is_empty() {
         let mut body = generation_body(&ui, &state.borrow());
         body["kind"] = json!(if ui.get_mode() == 0 { "image" } else { "video" });
@@ -767,8 +930,13 @@ fn refresh_quote(app: &App, state: &Rc<RefCell<Cloud>>) {
     }
 }
 fn upload_file(app: &App, state: &Rc<RefCell<Cloud>>, path: String, purpose: &str) {
+    let ui = app.global::<SeeCut>();
+    if !ui.get_signed_in() {
+        ui.set_error("请先登录再上传素材".into());
+        return;
+    }
+    let mut client_id = String::new();
     if purpose == "generation_input" {
-        let ui = app.global::<SeeCut>();
         let model_id = selected_model(&ui, &state.borrow());
         let max = state
             .borrow()
@@ -777,14 +945,7 @@ fn upload_file(app: &App, state: &Rc<RefCell<Cloud>>, path: String, purpose: &st
             .find(|v| text(v, "id") == model_id)
             .and_then(|v| v["parameters"]["reference_asset_ids"]["max_items"].as_u64())
             .unwrap_or(0) as usize;
-        let pending = state
-            .borrow()
-            .pending
-            .iter()
-            .filter(|(n, _)| n == "reference")
-            .count()
-            + usize::from(state.borrow().active_name == "reference");
-        if state.borrow().references.len() + pending >= max {
+        if state.borrow().references.len() >= max {
             ui.set_error(format!("当前模型最多支持 {max} 张参考图").into());
             return;
         }
@@ -793,24 +954,49 @@ fn upload_file(app: &App, state: &Rc<RefCell<Cloud>>, path: String, purpose: &st
             .and_then(|e| e.to_str())
             .is_some_and(|e| matches!(e.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp"))
         {
-            ui.set_error("参考素材支持 PNG、JPG 和 WebP 图片".into());
+            ui.set_error("当前模型仅支持 PNG、JPG、WebP 参考图片，不支持视频参考".into());
             return;
         }
+        if slint::Image::load_from_path(std::path::Path::new(&path)).is_err() {
+            ui.set_error("无法读取参考图片，请检查文件是否完整".into());
+            return;
+        }
+        client_id = uuid::Uuid::new_v4().to_string();
+        let display_name = {
+            let c = state.borrow();
+            c.local
+                .iter()
+                .find(|(_, local_path)| *local_path == &path)
+                .and_then(|(id, _)| c.assets.iter().find(|asset| text(asset, "id") == *id))
+                .map(|asset| text(asset, "filename"))
+                .unwrap_or_else(|| {
+                    PathBuf::from(&path)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+        };
+        state
+            .borrow_mut()
+            .references
+            .push(json!({"client_id":client_id,"local_path":path,"display_name":display_name,"status":"uploading"}));
+        render_references(app, state);
+        refresh_quote(app, state);
     }
     let team = team_id(&app.global::<SeeCut>(), &state.borrow());
     job(
         app,
         state,
         if purpose == "team_asset" {
-            "asset-change"
+            "asset-change".to_owned()
         } else {
-            "reference"
-        }
-        .into(),
+            format!("reference:{client_id}")
+        },
         request(
             "POST",
             "local:upload",
-            json!({"path":path,"purpose":purpose,"team":if purpose=="team_asset"{team}else{String::new()}}),
+            json!({"path":path,"client_id":client_id,"purpose":purpose,"team":if purpose=="team_asset"{team}else{String::new()}}),
         ),
     );
 }
@@ -933,8 +1119,15 @@ fn update_model_options(app: &App, state: &Rc<RefCell<Cloud>>) {
             })
             .collect(),
     ));
-    ui.set_model_index(if models.is_empty() { -1 } else { 0 });
-    let model = models.first().cloned().unwrap_or_default();
+    ui.set_model_index(if models.is_empty() {
+        -1
+    } else {
+        ui.get_model_index().max(0).min(models.len() as i32 - 1)
+    });
+    let model = models
+        .get(ui.get_model_index().max(0) as usize)
+        .cloned()
+        .unwrap_or_default();
     let options = |name: &str| {
         model["parameters"][name]["values"]
             .as_array()
@@ -958,7 +1151,8 @@ fn update_model_options(app: &App, state: &Rc<RefCell<Cloud>>) {
         .as_i64()
         .unwrap_or(0);
     ui.set_accepts_references(limit > 0);
-    ui.set_reference_limit(format!("最多 {limit} 张图片").into());
+    ui.set_reference_max(limit as i32);
+    ui.set_reference_limit(format!("PNG / JPG / WebP · 最多 {limit} 张").into());
 }
 
 fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
@@ -999,6 +1193,9 @@ fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
     ui.set_insufficient_credits(false);
     ui.set_selected_task(-1);
     ui.set_save_team_task("".into());
+    ui.set_asset_picker_open(false);
+    ui.set_mention_open(false);
+    ui.set_reference_error("".into());
     ui.set_busy(false);
 }
 fn preferences_path() -> Option<PathBuf> {
@@ -1064,6 +1261,8 @@ pub fn bind(app: &App) {
         "order-refresh"=>job(&app,&shared,"order".into(),request("POST",format!("/api/orders/{id}/refresh"),Value::Null)),
         "navigate"=>match id.as_str(){"1"=>{refresh_models(&app,&shared);if ui.get_signed_in(){job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null));}},"2"=>job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null)),"3"=>{job(&app,&shared,"plans".into(),request("GET","/api/credit-plans",Value::Null));job(&app,&shared,"wallet".into(),request("GET","/api/wallet",Value::Null));job(&app,&shared,"orders".into(),request("GET","/api/orders",Value::Null));},_=>{}},
         "generate"=>{
+            let error = reference_validation(&ui, &shared.borrow());
+            if !error.is_empty() { ui.set_error(error.into()); return; }
             let mut body=generation_body(&ui,&shared.borrow());
             if shared.borrow().quote_id.is_empty()||body!=shared.borrow().quote_body{refresh_quote(&app,&shared);return}
             let previous=shared.borrow().submission.clone();
@@ -1082,12 +1281,31 @@ pub fn bind(app: &App) {
         "asset-delete"=>job(&app,&shared,"asset-change".into(),request("DELETE",format!("/api/teams/{team}/assets/{id}"),Value::Null)),
         "asset-restore"=>job(&app,&shared,"asset-change".into(),request("POST",format!("/api/teams/{team}/assets/{id}/restore"),Value::Null)),
         "reference-browse"|"asset-upload"=>{if let Some(paths)=crate::platform::pick_files("选择素材",if name=="reference-browse"{Some(("图片",&["png","jpg","jpeg","webp"]))}else{None}){for path in paths{upload_file(&app,&shared,path.to_string_lossy().to_string(),if name=="asset-upload"{"team_asset"}else{"generation_input"});}}},
-        "reference-team"=>{ui.set_page(2);job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null));},
-        "reference-remove"=>{shared.borrow_mut().references.retain(|v|text(v,"id")!=id.as_str());render_references(&app,&shared);refresh_quote(&app,&shared);},
+        "reference-drop"=>upload_file(&app,&shared,id.to_string(),"generation_input"),
+        "reference-team"=>{ui.set_asset_picker_open(true);ui.set_trash_open(false);ui.set_asset_search("".into());ui.set_asset_filter(1);render_assets(&app,&shared);job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null));},
+        "reference-remove"=>remove_reference(&app,&shared,id.as_str()),
+        "reference-mention"=>insert_mention(&app,&shared,id.as_str()),
+        "reference-preview"=>{if let Some(item)=shared.borrow().references.iter().find(|v|text(v,"client_id")==id.as_str()){open_file(&text(item,"local_path"));}},
+        "reference-retry"=>{
+            let item=shared.borrow().references.iter().find(|v|text(v,"client_id")==id.as_str()&&text(v,"status")=="failed").cloned();
+            if let Some(item)=item {
+                if let Some(reference)=shared.borrow_mut().references.iter_mut().find(|v|text(v,"client_id")==id.as_str()){reference["status"]=json!("uploading");}
+                render_references(&app,&shared);refresh_quote(&app,&shared);
+                job(&app,&shared,format!("reference:{id}"),request("POST","local:upload",json!({"path":item["local_path"],"client_id":id.to_string(),"purpose":"generation_input","team":""})));
+            }
+        },
         "task-select"=>{},
         "task-preview"|"task-download"|"task-import"=>download_task(&app,&shared,id.as_str(),if name=="task-import"{"import"}else{"preview"}),
         "task-save-team"=>{let path=shared.borrow().local.get(id.as_str()).cloned();if team.is_empty(){ui.set_error("请先在团队资产中选择团队".into());}else if let Some(path)=path{upload_file(&app,&shared,path,"team_asset");}else{download_task(&app,&shared,id.as_str(),"save");ui.set_notice("下载完成后可保存到团队".into());}},
-        "asset-preview"|"asset-download"|"asset-reference"|"asset-import"=>{download_asset(&app,&shared,id.as_str(),match name.as_str(){"asset-reference"=>"reference","asset-import"=>"import",_=>"preview"});if name=="asset-reference"{ui.set_page(1);}},
+        "asset-preview"|"asset-download"|"asset-reference"|"asset-import"=>{
+            if name=="asset-reference" {
+                let is_image=shared.borrow().assets.iter().find(|v|text(v,"id")==id.as_str()).is_some_and(|v|text(v,"content_type").starts_with("image/"));
+                if !is_image {ui.set_error("当前模型仅支持参考图片，不支持视频或音频参考".into());return;}
+                if shared.borrow().references.len()>=ui.get_reference_max().max(0) as usize {ui.set_error(format!("当前模型最多支持 {} 张参考图片",ui.get_reference_max()).into());return;}
+                ui.set_asset_picker_open(false);ui.set_page(1);
+            }
+            download_asset(&app,&shared,id.as_str(),match name.as_str(){"asset-reference"=>"reference","asset-import"=>"import",_=>"preview"});
+        },
         "local-folder-browse"=>{#[cfg(not(any(target_os="ios",target_os="android")))]if let Some(folder)=rfd::FileDialog::new().pick_folder(){ui.set_local_folder(folder.to_string_lossy().into_owned().into());shared.borrow_mut().folder=folder;save_preferences(&app,&shared);}},
         _=>{}
     }});
@@ -1099,9 +1317,14 @@ pub fn bind(app: &App) {
             save_preferences(&app, &shared);
         }
         if field == "mode" {
-            shared.borrow_mut().references.clear();
-            render_references(&app, &shared);
+            app.global::<SeeCut>().set_model_index(0);
             update_model_options(&app, &shared);
+        }
+        if field == "model" {
+            update_model_options(&app, &shared);
+        }
+        if field == "prompt" || field == "prompt-cursor" {
+            update_mention(&app);
         }
         if matches!(
             field.as_str(),
@@ -1145,4 +1368,50 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
         }
         heartbeat(weak, state);
     });
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::{invalid_reference_prompt, mention_start, rewrite_mentions};
+
+    #[test]
+    fn deleted_and_out_of_range_references_block_generation() {
+        assert!(invalid_reference_prompt("保持[已移除参考图片]的主体", 2));
+        assert!(invalid_reference_prompt("@[图片3]", 2));
+        assert!(invalid_reference_prompt("@[图片0]", 2));
+        assert!(invalid_reference_prompt("@[图片1]", 0));
+        assert!(!invalid_reference_prompt("@[图片2]中的衣服与@[图片1]中的背景", 2));
+    }
+
+    #[test]
+    fn provider_prompt_keeps_reference_numbers_and_chinese_context() {
+        let result = rewrite_mentions("沿用@[图片2]的衣服，保持@[图片1]的脸", |n| {
+            format!("第{n}张参考图片")
+        });
+        assert_eq!(result, "沿用第2张参考图片的衣服，保持第1张参考图片的脸");
+    }
+
+    #[test]
+    fn removing_reference_does_not_cascade_number_replacements() {
+        let result = rewrite_mentions("@[图片1] @[图片2] @[图片3] @[图片10]", |n| {
+            if n == 1 {
+                "[已移除参考图片]".into()
+            } else {
+                format!("@[图片{}]", n - 1)
+            }
+        });
+        assert_eq!(result, "[已移除参考图片] @[图片1] @[图片2] @[图片9]");
+    }
+
+    #[test]
+    fn mention_detection_uses_utf8_cursor_and_ignores_complete_tokens() {
+        let prompt = "参考@[图片1]，搭配@图 后文";
+        assert_eq!(
+            mention_start(prompt, "参考@[图片1]，搭配@图".len()),
+            Some("参考@[图片1]，搭配".len())
+        );
+        assert_eq!(mention_start(prompt, "参考@[图片1]".len()), None);
+        assert_eq!(mention_start(prompt, prompt.len()), None);
+        assert_eq!(mention_start(prompt, 1), None);
+    }
 }

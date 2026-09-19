@@ -38,6 +38,10 @@ export global SeeCut {
 
     in-out property <int> mode;
     in-out property <string> prompt;
+    in-out property <int> prompt-cursor;
+    in-out property <bool> mention-open;
+    in-out property <bool> asset-picker-open;
+    in-out property <string> reference-error;
     in-out property <[string]> model-names;
     in-out property <int> model-index;
     in-out property <[string]> ratios;
@@ -50,6 +54,7 @@ export global SeeCut {
     in-out property <int> quantity-index;
     in-out property <bool> accepts-references;
     in-out property <string> reference-limit;
+    in-out property <int> reference-max;
     in-out property <[CloudItem]> references;
     in-out property <string> quote;
     in-out property <bool> can-generate;
