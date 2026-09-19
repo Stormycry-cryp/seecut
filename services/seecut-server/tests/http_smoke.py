@@ -30,7 +30,7 @@ def main():
     password = secrets.token_urlsafe(24)
     account = call("POST", "/api/auth/register", {"email": email, "password": password})
     assert "verification_token" in account, "Use an isolated test server with test token exposure"
-    call("POST", "/api/auth/verify-email", {"token": account["verification_token"]})
+    call("POST", "/api/auth/verify-email", {"email": email, "token": account["verification_token"]})
     auth = call("POST", "/api/auth/login", {"email": email, "password": password})
     token = auth["access_token"]
     assert call("GET", "/api/auth/me")["email"] == email

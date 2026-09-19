@@ -118,7 +118,8 @@ class SecurityBoundaryTest(unittest.TestCase):
         database = Database(self.config.database_path, Path(__file__).resolve().parents[1] / "schema.sql")
         database.initialize()
         service = SeeCutService(self.config, database)
-        registration = service.register("image@example.test", "long-enough-password")
+        with patch.object(service.emailer, "send_token", return_value=None):
+            registration = service.register("image@example.test", "long-enough-password")
         with self.assertRaises(ApiError) as context:
             service.prepare_upload(
                 registration["user_id"], "generation_input", "large.png", "image/png", 21

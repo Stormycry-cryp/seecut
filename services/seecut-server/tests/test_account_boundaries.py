@@ -10,6 +10,13 @@ from seecut_server.config import Config
 from seecut_server.service import ApiError
 
 
+class FakeEmailSender:
+    configured = True
+
+    def send_token(self, email, purpose, token):
+        pass
+
+
 class AccountBoundariesTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -21,6 +28,7 @@ class AccountBoundariesTest(unittest.TestCase):
             "SECUT_EXPOSE_TEST_TOKENS": "true",
         }, clear=True):
             self.service = create_service(Config.from_env())
+        self.service.emailer = FakeEmailSender()
         self.owner = self.user("owner@example.test")
         self.member = self.user("member@example.test")
         self.outsider = self.user("outsider@example.test")
@@ -31,7 +39,7 @@ class AccountBoundariesTest(unittest.TestCase):
 
     def user(self, email):
         registered = self.service.register(email, "test-password-long-enough")
-        self.service.verify_email(registered["verification_token"])
+        self.service.verify_email(email, registered["verification_token"])
         return self.service.login(email, "test-password-long-enough")
 
     def join(self):
@@ -102,10 +110,10 @@ class AccountBoundariesTest(unittest.TestCase):
     def test_password_reset_revokes_old_sessions_and_token(self):
         reset = self.service.forgot_password("member@example.test")
         token = reset["reset_token"]
-        self.service.reset_password(token, "replacement-password-long")
+        self.service.reset_password("member@example.test", token, "replacement-password-long")
         with self.assertRaises(ApiError):
             self.service.authenticate(self.member["access_token"])
         with self.assertRaises(ApiError):
-            self.service.reset_password(token, "another-password-long")
+            self.service.reset_password("member@example.test", token, "another-password-long")
         login = self.service.login("member@example.test", "replacement-password-long")
         self.assertEqual(login["user"]["id"], self.member["user"]["id"])

@@ -37,6 +37,13 @@ class Database:
                 connection.execute(
                     "ALTER TABLE generation_outputs ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0"
                 )
+            email_token_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(email_tokens)")
+            }
+            if "failed_attempts" not in email_token_columns:
+                connection.execute(
+                    "ALTER TABLE email_tokens ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0"
+                )
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

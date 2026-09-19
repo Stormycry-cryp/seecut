@@ -80,6 +80,13 @@ class FakeXiangxin:
         return {"assetId": "provider-asset"}
 
 
+class FakeEmailSender:
+    configured = True
+
+    def send_token(self, email, purpose, token):
+        pass
+
+
 class GenerationRobustnessTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -113,12 +120,13 @@ class GenerationRobustnessTest(unittest.TestCase):
         self.service = SeeCutService(
             config,
             database,
+            emailer=FakeEmailSender(),
             image2=self.image2,
             xiangxin=self.xiangxin,
             clock=self.clock,
         )
         registration = self.service.register("worker@example.test", "password-long-enough")
-        self.service.verify_email(registration["verification_token"])
+        self.service.verify_email("worker@example.test", registration["verification_token"])
         self.user_id = self.service.login("worker@example.test", "password-long-enough")["user"]["id"]
         with database.transaction() as connection:
             connection.execute(

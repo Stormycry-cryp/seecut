@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS email_tokens (
     purpose TEXT NOT NULL CHECK (purpose IN ('verify_email', 'reset_password')),
     token_hash TEXT NOT NULL UNIQUE,
     expires_at INTEGER NOT NULL,
+    failed_attempts INTEGER NOT NULL DEFAULT 0,
     consumed_at INTEGER,
     created_at INTEGER NOT NULL
 );

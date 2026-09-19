@@ -96,7 +96,10 @@ class SeeCutHandler(BaseHTTPRequestHandler):
             body = self._json_body()
             return 201, self.service.register(str(body.get("email", "")), str(body.get("password", "")))
         if method == "POST" and path == "/api/auth/verify-email":
-            return 200, self.service.verify_email(str(self._json_body().get("token", "")))
+            body = self._json_body()
+            return 200, self.service.verify_email(
+                str(body.get("email", "")), str(body.get("token", ""))
+            )
         if method == "POST" and path == "/api/auth/resend-verification":
             return 202, self.service.resend_verification(str(self._json_body().get("email", "")))
         if method == "POST" and path == "/api/auth/login":
@@ -106,7 +109,11 @@ class SeeCutHandler(BaseHTTPRequestHandler):
             return 202, self.service.forgot_password(str(self._json_body().get("email", "")))
         if method == "POST" and path == "/api/auth/reset-password":
             body = self._json_body()
-            return 200, self.service.reset_password(str(body.get("token", "")), str(body.get("password", "")))
+            return 200, self.service.reset_password(
+                str(body.get("email", "")),
+                str(body.get("token", "")),
+                str(body.get("password", "")),
+            )
 
         if method == "POST" and path == "/api/payments/alipay/notify":
             fields = self._form_body()

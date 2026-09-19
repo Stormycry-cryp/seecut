@@ -22,7 +22,9 @@ from .db import Database
 from .emailer import EmailDeliveryError, EmailSender
 from .errors import ApiError
 from .security import (
+    email_token_digest,
     hash_password,
+    new_email_code,
     new_id,
     new_token,
     sign_path,
@@ -85,7 +87,7 @@ class SeeCutService:
             raise ApiError(400, "INVALID_PASSWORD", "密码长度需要在 10 到 128 个字符之间") from exc
         now = self.now()
         user_id = new_id("usr")
-        raw_token = new_token()
+        raw_token = new_email_code()
         try:
             with self.db.transaction(immediate=True) as connection:
                 connection.execute(
@@ -96,34 +98,37 @@ class SeeCutService:
                     "INSERT INTO wallets(user_id,available_credits,held_credits,updated_at) VALUES(?,0,0,?)",
                     (user_id, now),
                 )
-                self._insert_email_token(connection, user_id, "verify_email", raw_token, now)
+                token_id = self._insert_email_token(
+                    connection, user_id, normalized, "verify_email", raw_token, now
+                )
         except sqlite3.IntegrityError as exc:
             raise ApiError(409, "EMAIL_ALREADY_REGISTERED", "该邮箱已注册") from exc
 
-        delivery = "sent"
         try:
             self.emailer.send_token(normalized, "verify_email", raw_token)
         except EmailDeliveryError:
-            delivery = "not_configured" if not self.emailer.configured else "failed"
-        result: dict[str, Any] = {"user_id": user_id, "email": normalized, "email_delivery": delivery}
+            self._discard_email_token(token_id)
+            raise self._email_delivery_error()
+        result: dict[str, Any] = {"user_id": user_id, "email": normalized, "email_delivery": "sent"}
         if self.config.expose_test_tokens and self.config.env in {"development", "test"}:
             result["verification_token"] = raw_token
         return result
 
-    def verify_email(self, token: str) -> dict[str, Any]:
+    def verify_email(self, email: str, token: str) -> dict[str, Any]:
+        normalized = email.strip().lower()
         now = self.now()
         with self.db.transaction(immediate=True) as connection:
-            row = connection.execute(
-                "SELECT * FROM email_tokens WHERE token_hash=? AND purpose='verify_email'",
-                (token_digest(token),),
-            ).fetchone()
-            if not row or row["consumed_at"] is not None or row["expires_at"] < now:
-                raise ApiError(400, "INVALID_OR_EXPIRED_TOKEN", "验证链接无效或已过期")
-            connection.execute("UPDATE email_tokens SET consumed_at=? WHERE id=?", (now, row["id"]))
-            connection.execute(
-                "UPDATE users SET email_verified_at=?, updated_at=? WHERE id=?",
-                (now, now, row["user_id"]),
+            row = self._consume_email_token(
+                connection, normalized, "verify_email", token, now
             )
+            if row:
+                connection.execute("UPDATE email_tokens SET consumed_at=? WHERE id=?", (now, row["id"]))
+                connection.execute(
+                    "UPDATE users SET email_verified_at=?, updated_at=? WHERE id=?",
+                    (now, now, row["user_id"]),
+                )
+        if not row:
+            raise ApiError(400, "INVALID_OR_EXPIRED_TOKEN", "验证码无效或已过期")
         return {"verified": True}
 
     def resend_verification(self, email: str) -> dict[str, Any]:
@@ -135,14 +140,18 @@ class SeeCutService:
             ).fetchone()
         if not user or user["email_verified_at"] is not None:
             return result
-        token = new_token()
+        token = new_email_code()
         now = self.now()
         with self.db.transaction(immediate=True) as connection:
-            self._insert_email_token(connection, user["id"], "verify_email", token, now)
+            self._enforce_email_cooldown(connection, user["id"], "verify_email", now)
+            token_id = self._insert_email_token(
+                connection, user["id"], user["email"], "verify_email", token, now
+            )
         try:
             self.emailer.send_token(user["email"], "verify_email", token)
         except EmailDeliveryError:
-            pass
+            self._discard_email_token(token_id)
+            raise self._email_delivery_error()
         if self.config.expose_test_tokens and self.config.env in {"development", "test"}:
             result["verification_token"] = token
         return result
@@ -198,53 +207,120 @@ class SeeCutService:
         result: dict[str, Any] = {"accepted": True}
         if not user:
             return result
-        raw_token = new_token()
+        raw_token = new_email_code()
         now = self.now()
         with self.db.transaction(immediate=True) as connection:
-            self._insert_email_token(connection, user["id"], "reset_password", raw_token, now)
+            self._enforce_email_cooldown(connection, user["id"], "reset_password", now)
+            token_id = self._insert_email_token(
+                connection, user["id"], user["email"], "reset_password", raw_token, now
+            )
         try:
             self.emailer.send_token(user["email"], "reset_password", raw_token)
         except EmailDeliveryError:
-            pass
+            self._discard_email_token(token_id)
+            raise self._email_delivery_error()
         if self.config.expose_test_tokens and self.config.env in {"development", "test"}:
             result["reset_token"] = raw_token
         return result
 
-    def reset_password(self, token: str, password: str) -> dict[str, Any]:
+    def reset_password(self, email: str, token: str, password: str) -> dict[str, Any]:
+        normalized = email.strip().lower()
         try:
             encoded = hash_password(password)
         except ValueError as exc:
             raise ApiError(400, "INVALID_PASSWORD", "密码长度需要在 10 到 128 个字符之间") from exc
         now = self.now()
         with self.db.transaction(immediate=True) as connection:
-            row = connection.execute(
-                "SELECT * FROM email_tokens WHERE token_hash=? AND purpose='reset_password'",
-                (token_digest(token),),
-            ).fetchone()
-            if not row or row["consumed_at"] is not None or row["expires_at"] < now:
-                raise ApiError(400, "INVALID_OR_EXPIRED_TOKEN", "重置链接无效或已过期")
-            connection.execute("UPDATE email_tokens SET consumed_at=? WHERE id=?", (now, row["id"]))
-            connection.execute(
-                "UPDATE users SET password_hash=?,updated_at=? WHERE id=?",
-                (encoded, now, row["user_id"]),
+            row = self._consume_email_token(
+                connection, normalized, "reset_password", token, now
             )
-            connection.execute(
-                "UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
-                (now, row["user_id"]),
-            )
+            if row:
+                connection.execute("UPDATE email_tokens SET consumed_at=? WHERE id=?", (now, row["id"]))
+                connection.execute(
+                    "UPDATE users SET password_hash=?,updated_at=? WHERE id=?",
+                    (encoded, now, row["user_id"]),
+                )
+                connection.execute(
+                    "UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+                    (now, row["user_id"]),
+                )
+        if not row:
+            raise ApiError(400, "INVALID_OR_EXPIRED_TOKEN", "验证码无效或已过期")
         return {"reset": True}
 
     def _insert_email_token(
-        self, connection: sqlite3.Connection, user_id: str, purpose: str, token: str, now: int
+        self,
+        connection: sqlite3.Connection,
+        user_id: str,
+        email: str,
+        purpose: str,
+        token: str,
+        now: int,
+    ) -> str:
+        connection.execute(
+            "DELETE FROM email_tokens WHERE user_id=? AND purpose=?",
+            (user_id, purpose),
+        )
+        token_id = new_id("emt")
+        connection.execute(
+            """INSERT INTO email_tokens
+               (id,user_id,purpose,token_hash,expires_at,failed_attempts,created_at)
+               VALUES(?,?,?,?,?,0,?)""",
+            (token_id, user_id, purpose, email_token_digest(email, purpose, token), now + 1800, now),
+        )
+        return token_id
+
+    def _consume_email_token(
+        self,
+        connection: sqlite3.Connection,
+        email: str,
+        purpose: str,
+        token: str,
+        now: int,
+    ) -> sqlite3.Row | None:
+        row = connection.execute(
+            """SELECT email_tokens.* FROM email_tokens
+               JOIN users ON users.id=email_tokens.user_id
+               WHERE users.email=? COLLATE NOCASE AND email_tokens.purpose=?
+                 AND email_tokens.consumed_at IS NULL
+               ORDER BY email_tokens.created_at DESC LIMIT 1""",
+            (email, purpose),
+        ).fetchone()
+        if not row or row["expires_at"] < now or row["failed_attempts"] >= 5:
+            return None
+        expected = email_token_digest(email, purpose, token)
+        # Existing long tokens used a global digest. Keep them consumable during their short TTL.
+        legacy_expected = token_digest(token) if len(token) > 6 else None
+        if row["token_hash"] not in {expected, legacy_expected}:
+            connection.execute(
+                "UPDATE email_tokens SET failed_attempts=failed_attempts+1 WHERE id=?",
+                (row["id"],),
+            )
+            return None
+        return row
+
+    def _enforce_email_cooldown(
+        self, connection: sqlite3.Connection, user_id: str, purpose: str, now: int
     ) -> None:
-        connection.execute(
-            "UPDATE email_tokens SET consumed_at=? WHERE user_id=? AND purpose=? AND consumed_at IS NULL",
-            (now, user_id, purpose),
-        )
-        connection.execute(
-            "INSERT INTO email_tokens(id,user_id,purpose,token_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)",
-            (new_id("emt"), user_id, purpose, token_digest(token), now + 1800, now),
-        )
+        row = connection.execute(
+            "SELECT created_at FROM email_tokens WHERE user_id=? AND purpose=? ORDER BY created_at DESC LIMIT 1",
+            (user_id, purpose),
+        ).fetchone()
+        if row and row["created_at"] + 60 > now:
+            raise ApiError(
+                429,
+                "EMAIL_CODE_COOLDOWN",
+                "请求过于频繁，请稍后再试",
+                {"retry_after": row["created_at"] + 60 - now},
+            )
+
+    def _discard_email_token(self, token_id: str) -> None:
+        with self.db.transaction(immediate=True) as connection:
+            connection.execute("DELETE FROM email_tokens WHERE id=?", (token_id,))
+
+    @staticmethod
+    def _email_delivery_error() -> ApiError:
+        return ApiError(503, "EMAIL_DELIVERY_UNAVAILABLE", "邮件服务暂时不可用，请稍后重试")
 
     # Teams and one-time invitations
 

@@ -32,7 +32,7 @@ def main():
     email = f"provider-smoke-{secrets.token_hex(6)}@example.test"
     password = secrets.token_urlsafe(24)
     registration = call("POST", "/api/auth/register", {"email": email, "password": password})
-    call("POST", "/api/auth/verify-email", {"token": registration["verification_token"]})
+    call("POST", "/api/auth/verify-email", {"email": email, "token": registration["verification_token"]})
     account = call("POST", "/api/auth/login", {"email": email, "password": password})
     token = account["access_token"]
     with sqlite3.connect(args.database) as connection:

@@ -18,8 +18,16 @@ def new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def new_email_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
 def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def email_token_digest(email: str, purpose: str, token: str) -> str:
+    return token_digest(f"{email.strip().lower()}\0{purpose}\0{token}")
 
 
 def hash_password(password: str) -> str:

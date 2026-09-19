@@ -12,16 +12,18 @@ Errors use:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/auth/register` | Create a personal account and send an email-verification token. |
-| `POST` | `/api/auth/verify-email` | Consume a verification token. |
+| `POST` | `/api/auth/register` | Create a personal account and send a 6-digit email-verification code. |
+| `POST` | `/api/auth/verify-email` | Consume `{email, token}` for email verification. |
 | `POST` | `/api/auth/resend-verification` | Resend verification without revealing account existence. |
 | `POST` | `/api/auth/login` | Create a bearer session after email verification. |
 | `POST` | `/api/auth/logout` | Revoke the current session. |
 | `GET` | `/api/auth/me` | Read the current personal account. |
 | `POST` | `/api/auth/forgot-password` | Send a reset token without revealing account existence. |
-| `POST` | `/api/auth/reset-password` | Set a new password and revoke existing sessions. |
+| `POST` | `/api/auth/reset-password` | Consume `{email, token, password}`, set a new password and revoke existing sessions. |
 
 Development and test environments may return tokens in responses only when `SECUT_EXPOSE_TEST_TOKENS=true`. Production configuration cannot expose them.
+
+Email codes expire after 30 minutes, allow at most five incorrect attempts, and are bound to both the normalized email address and purpose. Resend requests for an existing account have a 60-second cooldown and may return `EMAIL_CODE_COOLDOWN` with `retry_after`. Unknown addresses still receive `202 {"accepted":true}` from resend and forgot-password. A configured-provider or delivery failure returns `503 EMAIL_DELIVERY_UNAVAILABLE`; the API does not report an email as sent in that case. Password reset does not change email-verification state.
 
 ## Teams and invitations
 

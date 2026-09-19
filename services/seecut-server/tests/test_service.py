@@ -84,7 +84,7 @@ class ServiceTest(unittest.TestCase):
 
     def create_user(self, email: str) -> tuple[str, str]:
         registration = self.service.register(email, "correct-horse-battery")
-        self.service.verify_email(registration["verification_token"])
+        self.service.verify_email(email, registration["verification_token"])
         login = self.service.login(email, "correct-horse-battery")
         return login["user"]["id"], login["access_token"]
 
@@ -94,7 +94,7 @@ class ServiceTest(unittest.TestCase):
         with self.assertRaises(ApiError) as context:
             self.service.login("user@example.com", "correct-horse-battery")
         self.assertEqual(context.exception.code, "EMAIL_NOT_VERIFIED")
-        self.service.verify_email(registration["verification_token"])
+        self.service.verify_email("user@example.com", registration["verification_token"])
         login = self.service.login("user@example.com", "correct-horse-battery")
         self.assertEqual(self.service.authenticate(login["access_token"])["email"], "user@example.com")
         self.service.logout(login["access_token"])
