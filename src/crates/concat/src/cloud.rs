@@ -3,7 +3,7 @@
 
 use crate::ui::{AccountEntry, App, CloudItem, CreditPlan, SeeCut};
 use serde_json::{Value, json};
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -166,6 +166,9 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, String> {
             .map_err(|_| "服务器返回了无效数据".into()),
         Err(ureq::Error::Status(code, response)) => {
             let body: Value = response.into_json().unwrap_or_default();
+            if text(&body["error"], "code").starts_with("GENERATION_ASSET_") {
+                return Err("参考素材已过期或不可用，请重新上传".into());
+            }
             Err(body
                 .pointer("/error/message")
                 .and_then(Value::as_str)
@@ -234,6 +237,17 @@ fn poll(
         match result {
             Ok(value) => publish(&app, &state, &name, value),
             Err(error) => {
+                if matches!(name.as_str(), "quote" | "generate")
+                    && error == "参考素材已过期或不可用，请重新上传"
+                {
+                    for item in &mut state.borrow_mut().references {
+                        if text(item, "status") == "ready" {
+                            item["status"] = json!("expired");
+                        }
+                    }
+                    render_references(&app, &state);
+                    refresh_quote(&app, &state);
+                }
                 if let Some(id) = name.strip_prefix("reference:") {
                     if let Some(item) = state
                         .borrow_mut()
@@ -284,7 +298,7 @@ fn rewrite_mentions(prompt: &str, mut replacement: impl FnMut(usize) -> String) 
             result.push_str(&replacement(number));
             rest = &token[end + 1..];
         } else {
-            result.push_str("@");
+            result.push('@');
             rest = &token[1..];
         }
     }
@@ -293,6 +307,13 @@ fn rewrite_mentions(prompt: &str, mut replacement: impl FnMut(usize) -> String) 
 }
 
 fn reference_validation(ui: &SeeCut, state: &Cloud) -> String {
+    if state
+        .references
+        .iter()
+        .any(|v| text(v, "status") == "expired")
+    {
+        return "参考图片已过期，请重新上传或移除".into();
+    }
     if state.references.len() > ui.get_reference_max().max(0) as usize {
         return format!(
             "当前模型最多支持 {} 张参考图片，请移除多余素材",
@@ -397,35 +418,20 @@ fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
     });
     let mut body =
         json!({"model": selected_model(ui, state), "operation":"generate", "prompt":prompt});
+    let model_id = selected_model(ui, state);
+    let model = state
+        .models
+        .iter()
+        .find(|model| text(model, "id") == model_id)
+        .cloned()
+        .unwrap_or_default();
     if video {
-        body["resolution"] = json!(
-            ui.get_resolutions()
-                .row_data(ui.get_resolution_index().max(0) as usize)
-                .unwrap_or_default()
-                .to_string()
-        );
-        body["duration"] = json!(
-            ui.get_durations()
-                .row_data(ui.get_duration_index().max(0) as usize)
-                .unwrap_or_default()
-                .to_string()
-                .parse::<i64>()
-                .unwrap_or(5)
-        );
-        body["aspect_ratio"] = json!(
-            ui.get_ratios()
-                .row_data(ui.get_ratio_index().max(0) as usize)
-                .unwrap_or_default()
-                .to_string()
-        );
+        body["resolution"] = parameter_value(&model, "resolution", ui.get_resolution_index());
+        body["duration"] = parameter_value(&model, "duration", ui.get_duration_index());
+        body["aspect_ratio"] = parameter_value(&model, "aspect_ratio", ui.get_ratio_index());
     } else {
-        body["size"] = json!(
-            ui.get_resolutions()
-                .row_data(ui.get_resolution_index().max(0) as usize)
-                .unwrap_or_default()
-                .to_string()
-        );
-        body["quality"] = json!("high");
+        body["size"] = parameter_value(&model, "size", ui.get_resolution_index());
+        body["quality"] = parameter_value(&model, "quality", ui.get_quality_index());
     }
     let references: Vec<_> = state.references.iter().map(|v| v["id"].clone()).collect();
     if !references.is_empty() {
@@ -435,6 +441,42 @@ fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
         }
     }
     body
+}
+
+fn parameter_value(model: &Value, name: &str, index: i32) -> Value {
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| model["parameters"][name]["values"].get(index))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn parameter_label(name: &str, value: &Value) -> String {
+    let raw = value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string());
+    match (name, raw.as_str()) {
+        ("size", "auto") => "自动".into(),
+        ("size", "1024x1024") => "1:1 · 1024 × 1024".into(),
+        ("size", "1536x1024") => "3:2 · 1536 × 1024".into(),
+        ("size", "1024x1536") => "2:3 · 1024 × 1536".into(),
+        ("quality", "high") => "高清".into(),
+        ("duration", _) => format!("{raw} 秒"),
+        _ => raw,
+    }
+}
+
+fn parameter_default_index(model: &Value, name: &str) -> i32 {
+    let parameter = &model["parameters"][name];
+    parameter["values"]
+        .as_array()
+        .and_then(|values| {
+            values
+                .iter()
+                .position(|value| value == &parameter["default"])
+        })
+        .unwrap_or(0) as i32
 }
 fn refresh_models(app: &App, state: &Rc<RefCell<Cloud>>) {
     job(
@@ -878,13 +920,13 @@ fn render_references(app: &App, state: &Rc<RefCell<Cloud>>) {
                     status: match text(v, "status").as_str() {
                         "ready" => "已上传",
                         "failed" => "上传失败",
+                        "expired" => "已过期",
                         _ => "上传中",
                     }
                     .into(),
                     local: true,
                     ready: text(v, "status") == "ready",
                     preview: slint::Image::load_from_path(&path).unwrap_or_default(),
-                    ..Default::default()
                 }
             })
             .collect(),
@@ -1133,20 +1175,21 @@ fn update_model_options(app: &App, state: &Rc<RefCell<Cloud>>) {
             .as_array()
             .into_iter()
             .flatten()
-            .map(|v| {
-                v.as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| v.to_string())
-            })
+            .map(|v| parameter_label(name, v))
             .collect()
     };
     ui.set_ratios(strings(options("aspect_ratio")));
     ui.set_resolutions(strings(options(if video { "resolution" } else { "size" })));
     ui.set_durations(strings(options("duration")));
+    ui.set_qualities(strings(options("quality")));
     ui.set_quantities(strings(vec![]));
-    ui.set_ratio_index(0);
-    ui.set_resolution_index(0);
-    ui.set_duration_index(0);
+    ui.set_ratio_index(parameter_default_index(&model, "aspect_ratio"));
+    ui.set_resolution_index(parameter_default_index(
+        &model,
+        if video { "resolution" } else { "size" },
+    ));
+    ui.set_duration_index(parameter_default_index(&model, "duration"));
+    ui.set_quality_index(parameter_default_index(&model, "quality"));
     let limit = model["parameters"]["reference_asset_ids"]["max_items"]
         .as_i64()
         .unwrap_or(0);
@@ -1287,7 +1330,7 @@ pub fn bind(app: &App) {
         "reference-mention"=>insert_mention(&app,&shared,id.as_str()),
         "reference-preview"=>{if let Some(item)=shared.borrow().references.iter().find(|v|text(v,"client_id")==id.as_str()){open_file(&text(item,"local_path"));}},
         "reference-retry"=>{
-            let item=shared.borrow().references.iter().find(|v|text(v,"client_id")==id.as_str()&&text(v,"status")=="failed").cloned();
+            let item=shared.borrow().references.iter().find(|v|text(v,"client_id")==id.as_str()&&matches!(text(v,"status").as_str(),"failed"|"expired")).cloned();
             if let Some(item)=item {
                 if let Some(reference)=shared.borrow_mut().references.iter_mut().find(|v|text(v,"client_id")==id.as_str()){reference["status"]=json!("uploading");}
                 render_references(&app,&shared);refresh_quote(&app,&shared);
@@ -1328,7 +1371,14 @@ pub fn bind(app: &App) {
         }
         if matches!(
             field.as_str(),
-            "mode" | "model" | "prompt" | "ratio" | "resolution" | "duration" | "quantity"
+            "mode"
+                | "model"
+                | "prompt"
+                | "ratio"
+                | "resolution"
+                | "quality"
+                | "duration"
+                | "quantity"
         ) && app.global::<SeeCut>().get_signed_in()
         {
             refresh_quote(&app, &shared);
@@ -1372,7 +1422,60 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
 
 #[cfg(test)]
 mod reference_tests {
-    use super::{invalid_reference_prompt, mention_start, rewrite_mentions};
+    use super::{
+        invalid_reference_prompt, mention_start, parameter_default_index, parameter_label,
+        parameter_value, rewrite_mentions,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn friendly_image_labels_keep_exact_catalog_request_values() {
+        let model = json!({"parameters": {
+            "size": {"default":"auto", "values":["auto", "1024x1024", "1536x1024", "1024x1536"]},
+            "quality": {"default":"high", "values":["high"]}
+        }});
+        for (index, raw, label) in [
+            (0, "auto", "自动"),
+            (1, "1024x1024", "1:1 · 1024 × 1024"),
+            (2, "1536x1024", "3:2 · 1536 × 1024"),
+            (3, "1024x1536", "2:3 · 1024 × 1536"),
+        ] {
+            let value = parameter_value(&model, "size", index);
+            assert_eq!(value, json!(raw));
+            assert_eq!(parameter_label("size", &value), label);
+        }
+        assert_eq!(parameter_value(&model, "quality", 0), json!("high"));
+        assert_eq!(
+            parameter_label("quality", &parameter_value(&model, "quality", 0)),
+            "高清"
+        );
+        assert_eq!(parameter_default_index(&model, "quality"), 0);
+    }
+
+    #[test]
+    fn video_parameters_keep_numbers_and_reject_non_catalog_options() {
+        let model = json!({"parameters": {
+            "duration": {"default":10,"values":[5,10]},
+            "resolution": {"values":["720p"]},
+            "aspect_ratio": {"values":["16:9","9:16","1:1"]}
+        }});
+        assert_eq!(parameter_value(&model, "duration", 1), json!(10));
+        assert_eq!(
+            parameter_label("duration", &parameter_value(&model, "duration", 1)),
+            "10 秒"
+        );
+        assert_eq!(parameter_default_index(&model, "duration"), 1);
+        assert_eq!(parameter_value(&model, "resolution", 0), json!("720p"));
+        assert_eq!(
+            parameter_value(&model, "resolution", 1),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            parameter_value(&model, "duration", -1),
+            serde_json::Value::Null
+        );
+        assert_eq!(parameter_value(&model, "aspect_ratio", 1), json!("9:16"));
+    }
 
     #[test]
     fn deleted_and_out_of_range_references_block_generation() {
@@ -1380,7 +1483,10 @@ mod reference_tests {
         assert!(invalid_reference_prompt("@[图片3]", 2));
         assert!(invalid_reference_prompt("@[图片0]", 2));
         assert!(invalid_reference_prompt("@[图片1]", 0));
-        assert!(!invalid_reference_prompt("@[图片2]中的衣服与@[图片1]中的背景", 2));
+        assert!(!invalid_reference_prompt(
+            "@[图片2]中的衣服与@[图片1]中的背景",
+            2
+        ));
     }
 
     #[test]
