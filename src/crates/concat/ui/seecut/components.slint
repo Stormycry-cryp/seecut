@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { Theme, Glyph, Icon, FocusRing, Tip } from "../primitives/primitives.slint";
+import { SeeCut } from "state.slint";
+
+export component AppButton inherits Rectangle {
+    in property <string> label;
+    in property <Glyph> glyph;
+    in property <bool> primary;
+    in property <bool> danger;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 32px;
+    horizontal-stretch: 0;
+    min-width: caption.preferred-width + 24px + (root.glyph == Glyph.none ? 0px : 22px);
+    border-radius: Theme.r;
+    opacity: root.enabled ? 1 : 0.4;
+    background: root.primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : touch.has-hover ? Theme.field-hover : Theme.field;
+    border-width: 1px;
+    border-color: root.primary ? Theme.accent : Theme.line;
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
+    property <bool> ring;
+    property <brush> ink: root.primary ? Theme.on-accent : root.danger ? Theme.danger : Theme.fg;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: center;
+        if root.glyph != Glyph.none: VerticalLayout {
+            alignment: center;
+            Icon { glyph: root.glyph; size: 14px; tint: root.ink; }
+        }
+        caption := Text { text: root.label; color: root.ink; vertical-alignment: center; }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { focus.focus(); root.clicked(); }
+    }
+    FocusRing { active: root.ring; radius: Theme.r; }
+}
+
+export component CloudField inherits Rectangle {
+    in-out property <string> value;
+    in property <string> placeholder;
+    in property <bool> password;
+    in property <bool> multiline;
+    in property <bool> enabled: true;
+    callback edited(value: string);
+    min-height: root.multiline ? 128px : 34px;
+    max-height: root.multiline ? 180px : 34px;
+    background: Theme.field;
+    border-radius: Theme.r;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.line;
+    clip: true;
+    opacity: root.enabled ? 1 : 0.45;
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: text; clicked => { input.focus(); } }
+    input := TextInput {
+        x: 10px;
+        y: root.multiline ? 10px : (parent.height - self.height) / 2;
+        width: parent.width - 20px;
+        height: root.multiline ? parent.height - 20px : self.preferred-height;
+        text <=> root.value;
+        enabled: root.enabled;
+        color: Theme.fg;
+        font-size: Theme.fs-lg;
+        single-line: !root.multiline;
+        wrap: root.multiline ? word-wrap : no-wrap;
+        input-type: root.password ? InputType.password : InputType.text;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.on-accent;
+        edited => { root.edited(self.text); }
+    }
+    if root.value == "": Text {
+        x: 10px;
+        y: root.multiline ? 10px : (parent.height - self.height) / 2;
+        width: parent.width - 20px;
+        height: self.preferred-height;
+        text: root.placeholder;
+        color: Theme.fg-dim;
+        font-size: Theme.fs-lg;
+        wrap: word-wrap;
+    }
+}
+
+export component Label inherits Text {
+    color: Theme.fg-muted;
+    font-size: Theme.fs;
+    vertical-alignment: center;
+    min-height: 20px;
+}
+
+export component Heading inherits Text {
+    color: Theme.fg;
+    font-size: Theme.fs-xl;
+    font-weight: Theme.weight-title;
+    min-height: 24px;
+    vertical-alignment: center;
+}
+
+export component EmptyState inherits VerticalLayout {
+    in property <Glyph> glyph: Glyph.folder;
+    in property <string> title;
+    in property <string> detail;
+    alignment: center;
+    spacing: 10px;
+    HorizontalLayout { alignment: center; Icon { glyph: root.glyph; size: 28px; tint: Theme.fg-dim; } }
+    Text { text: root.title; color: Theme.fg; font-size: Theme.fs-xl; horizontal-alignment: center; wrap: word-wrap; }
+    if root.detail != "": Text { text: root.detail; color: Theme.fg-dim; horizontal-alignment: center; wrap: word-wrap; }
+}
+
+export component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <Glyph> glyph;
+    in property <int> page;
+    in property <bool> compact;
+    property <bool> selected: SeeCut.page == root.page;
+    min-height: 40px;
+    max-height: 40px;
+    border-radius: Theme.r;
+    background: root.selected ? Theme.field-active : touch.has-hover ? Theme.field : Colors.transparent;
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
+    property <bool> ring;
+    accessible-role: button;
+    accessible-label: root.label;
+    function open() { SeeCut.page = root.page; SeeCut.action("navigate", root.page); }
+    focus := FocusScope {
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" { root.open(); return EventResult.accept; }
+            return EventResult.reject;
+        }
+    }
+    HorizontalLayout {
+        padding-left: root.compact ? 13px : 12px;
+        padding-right: 10px;
+        spacing: 10px;
+        VerticalLayout { alignment: center; Icon { glyph: root.glyph; size: 18px; tint: root.selected ? Theme.accent : Theme.fg-muted; } }
+        if !root.compact: Text { text: root.label; color: root.selected ? Theme.fg : Theme.fg-muted; vertical-alignment: center; }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.open(); } }
+    FocusRing { active: root.ring; radius: Theme.r; }
+    Tip { text: root.label; active: root.compact && touch.has-hover; }
+}
+
+export component AppRail inherits Rectangle {
+    in property <bool> compact;
+    width: root.compact ? 60px : 148px;
+    background: Theme.panel;
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+        Text { text: root.compact ? "S" : "SeeCut"; color: Theme.fg; font-size: 18px; font-weight: Theme.weight-display; height: 42px; vertical-alignment: center; horizontal-alignment: root.compact ? center : left; }
+        NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; compact: root.compact; }
+        NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; compact: root.compact; }
+        NavItem { label: "团队资产"; glyph: Glyph.folder; page: 2; compact: root.compact; }
+        Rectangle { vertical-stretch: 1; }
+        NavItem { label: "积分"; glyph: Glyph.tag; page: 3; compact: root.compact; }
+        NavItem { label: SeeCut.signed-in ? "账号" : "登录"; glyph: Glyph.lock; page: 4; compact: root.compact; }
+    }
+    Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.line; }
+}

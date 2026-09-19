@@ -32,6 +32,8 @@ mod ui {
 }
 
 mod chips;
+mod cloud;
+mod cloud_files;
 mod dock;
 mod format;
 mod gpu;
@@ -117,6 +119,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
 
     let app = App::new()?;
+    cloud::bind(&app);
     app.set_macos(platform::MACOS);
 
     let studio = Studio::new(host);

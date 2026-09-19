@@ -40,6 +40,7 @@ import { ParamFormat } from "inspector/controls.slint";
 import { ToastData, ToastLayer } from "primitives/toast.slint";
 import { TooltipLayer } from "primitives/tooltip.slint";
 import { Workspace } from "workspace/workspace.slint";
+import { AppRail, CloudWorkbench, SeeCut, CloudItem, CreditPlan, AccountEntry } from "seecut/workbench.slint";
 import {
     ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
     SelectedClipData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
@@ -56,11 +57,11 @@ export {
     SelectedClipData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
-    CaptionsSheetData, SpeechSheetData,
+    CaptionsSheetData, SpeechSheetData, SeeCut, CloudItem, CreditPlan, AccountEntry,
 }
 
 export component App inherits Window {
-    title: "Concat";
+    title: "SeeCut";
     background: Theme.page;
     default-font-family: Theme.font;
     default-font-size: Theme.fs;
@@ -87,6 +88,7 @@ export component App inherits Window {
     // until a press lands on a pane's floor. Each of those teardowns hands
     // the focus back here on the way out.
     changed on-start => {
+        SeeCut.project-open = !root.on-start;
         if (!root.on-start) {
             keys.focus();
         }
@@ -299,17 +301,17 @@ export component App inherits Window {
             keys: @keys(Control + S);
             // Nothing on the launch screen has a project to act on, which is
             // why the strip up there is missing the menus this belongs to.
-            enabled: !root.on-start;
+            enabled: !root.on-start && SeeCut.page == 0;
             activated => { root.app-menu-selected("save"); }
         }
         KeyBinding {
             keys: @keys(Control + Z);
-            enabled: !root.on-start;
+            enabled: !root.on-start && SeeCut.page == 0;
             activated => { root.app-menu-selected("undo"); }
         }
         KeyBinding {
             keys: @keys(Control + Shift + Z);
-            enabled: !root.on-start;
+            enabled: !root.on-start && SeeCut.page == 0;
             activated => { root.app-menu-selected("redo"); }
         }
 
@@ -320,7 +322,7 @@ export component App inherits Window {
         // its own letters and spaces before a key can walk up to this
         // scope, which is what keeps typing a title from cutting a clip.
         key-pressed(event) => {
-            if (root.on-start) {
+            if (root.on-start || SeeCut.page != 0) {
                 return reject;
             }
             // The command key arrives as meta on a Mac and as control
@@ -395,7 +397,7 @@ export component App inherits Window {
 
             TitleBar {
                 macos: root.macos;
-                minimal: root.on-start;
+                minimal: root.on-start || SeeCut.page != 0;
                 project-name: root.project-name;
                 status: root.project-status;
 
@@ -419,31 +421,36 @@ export component App inherits Window {
                 export-clicked => { root.export-clicked(); }
             }
 
-            if root.on-start: StartScreen {
+            Rectangle {
                 vertical-stretch: 1;
+                min-width: 0px;
+                min-height: 0px;
+                rail := AppRail { x: 0; y: 0; compact: root.width < 1120px; height: parent.height; }
+                if SeeCut.page != 0: CloudWorkbench { x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%; }
+                if SeeCut.page == 0: Rectangle {
+                    x: rail.width;
+                    width: Math.max(0px, parent.width - rail.width);
+                    height: 100%;
 
-                data: root.start;
-                resolutions: root.start-resolutions;
-                rates: root.start-rates;
-                recents: root.recents;
+                    if root.on-start: StartScreen {
+                        data: root.start;
+                        resolutions: root.start-resolutions;
+                        rates: root.start-rates;
+                        recents: root.recents;
 
-                name-edited(name) => { root.start-name-edited(name); }
-                location-edited(path) => { root.start-location-edited(path); }
-                browse => { root.start-browse(); }
-                resolution-changed(index) => { root.start-resolution-changed(index); }
-                rate-changed(index) => { root.start-rate-changed(index); }
-                create => { root.start-create(); }
-                open-recent(path) => { root.start-open-recent(path); }
-                forget-recent(path) => { root.start-forget-recent(path); }
-                dismiss-error => { root.start-dismiss-error(); }
-            }
+                        name-edited(name) => { root.start-name-edited(name); }
+                        location-edited(path) => { root.start-location-edited(path); }
+                        browse => { root.start-browse(); }
+                        resolution-changed(index) => { root.start-resolution-changed(index); }
+                        rate-changed(index) => { root.start-rate-changed(index); }
+                        create => { root.start-create(); }
+                        open-recent(path) => { root.start-open-recent(path); }
+                        forget-recent(path) => { root.start-forget-recent(path); }
+                        dismiss-error => { root.start-dismiss-error(); }
+                    }
 
-            // Everything the workspace shows now reads the Editor global, so
-            // nothing is passed to it: it is a box with four seats in it, and
-            // the views inside those seats reach the state directly. See
-            // editor.slint.
-            if !root.on-start: Workspace {
-                vertical-stretch: 1;
+                    if !root.on-start: Workspace { }
+                }
             }
         }
     }

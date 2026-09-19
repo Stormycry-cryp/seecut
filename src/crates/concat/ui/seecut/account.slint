@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { ScrollView, CheckBox } from "std-widgets.slint";
+import { Theme, SegmentedControl, Glyph, IconButton } from "../primitives/primitives.slint";
+import { SeeCut } from "state.slint";
+import { AppButton, CloudField, Label, Heading, EmptyState } from "components.slint";
+
+export component AccountPage inherits Rectangle {
+    account-scroll := ScrollView {
+        viewport-width: self.width;
+        horizontal-scrollbar-policy: always-off;
+        VerticalLayout {
+            width: account-scroll.visible-width;
+            padding: 28px;
+            spacing: 16px;
+            alignment: start;
+            if !SeeCut.signed-in: HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    min-width: 0px;
+                    max-width: 360px;
+                    preferred-width: 360px;
+                    spacing: 12px;
+                    Heading { text: SeeCut.auth-mode == 2 ? "重置密码" : SeeCut.auth-mode == 3 ? "验证邮箱" : SeeCut.auth-mode == 1 ? "注册 SeeCut" : "登录 SeeCut"; }
+                    if SeeCut.auth-mode < 2: SegmentedControl {
+                        options: ["登录", "注册"];
+                        current: SeeCut.auth-mode;
+                        changed(index) => { SeeCut.auth-mode = index; SeeCut.error = ""; }
+                    }
+                    Label { text: "邮箱"; }
+                    CloudField { value <=> SeeCut.auth-email; placeholder: "输入邮箱地址"; enabled: !SeeCut.busy; }
+                    if SeeCut.auth-mode < 2 || (SeeCut.auth-mode == 2 && SeeCut.auth-token != ""): VerticalLayout {
+                        spacing: 6px;
+                        Label { text: SeeCut.auth-mode == 2 ? "新密码" : "密码"; }
+                        CloudField { value <=> SeeCut.auth-password; password: true; placeholder: SeeCut.auth-mode == 0 ? "输入密码" : "至少 10 位字符"; enabled: !SeeCut.busy; }
+                    }
+                    if SeeCut.auth-mode >= 2: VerticalLayout {
+                        spacing: 6px;
+                        Label { text: "邮件验证码"; }
+                        CloudField { value <=> SeeCut.auth-token; placeholder: "输入邮件中的验证码"; enabled: !SeeCut.busy; }
+                    }
+                    AppButton {
+                        label: SeeCut.busy ? "请稍候" : SeeCut.auth-mode == 0 ? "登录" : SeeCut.auth-mode == 1 ? "注册" : SeeCut.auth-mode == 3 ? "验证邮箱" : SeeCut.auth-token == "" ? "发送重置邮件" : "重置密码";
+                        primary: true;
+                        enabled: !SeeCut.busy && SeeCut.auth-email != "" && (SeeCut.auth-mode >= 2 || SeeCut.auth-password != "");
+                        clicked => { SeeCut.action(SeeCut.auth-mode == 0 ? "login" : SeeCut.auth-mode == 1 ? "register" : SeeCut.auth-mode == 3 ? "verify-email" : SeeCut.auth-token == "" ? "password-reset-request" : "password-reset-confirm", ""); }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        AppButton { label: SeeCut.auth-mode < 2 ? "忘记密码" : "返回登录"; clicked => { SeeCut.auth-mode = SeeCut.auth-mode < 2 ? 2 : 0; SeeCut.auth-password = ""; SeeCut.auth-token = ""; SeeCut.error = ""; } }
+                        if SeeCut.auth-mode == 3: AppButton { label: "重新发送"; enabled: !SeeCut.busy; clicked => { SeeCut.action("verification-resend", ""); } }
+                    }
+                }
+            }
+            if SeeCut.signed-in: VerticalLayout {
+                spacing: 12px;
+                Heading { text: "个人账号"; }
+                Text { text: SeeCut.email; color: Theme.fg; font-size: 16px; overflow: elide; min-width: 0px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    AppButton { label: "修改密码"; clicked => { SeeCut.action("change-password", ""); } }
+                    AppButton { label: "退出登录"; enabled: !SeeCut.busy; clicked => { SeeCut.action("logout", ""); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+            Rectangle { height: 12px; }
+            Rectangle { height: 1px; background: Theme.line; }
+            Heading { text: "偏好设置"; }
+            Label { text: "生成结果保存位置"; }
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: SeeCut.local-folder == "" ? "尚未选择" : SeeCut.local-folder; color: Theme.fg-muted; overflow: elide; min-width: 0px; vertical-alignment: center; horizontal-stretch: 1; }
+                AppButton { label: "选择文件夹"; glyph: Glyph.folder; clicked => { SeeCut.action("local-folder-browse", ""); } }
+            }
+            CheckBox { text: "减少动态效果"; checked <=> SeeCut.reduced-motion; toggled => { SeeCut.changed("reduced-motion", self.checked ? "true" : "false"); } }
+            Label { text: "服务地址"; }
+            HorizontalLayout {
+                spacing: 8px;
+                CloudField { value <=> SeeCut.server-url; placeholder: "https://"; enabled: !SeeCut.busy; }
+                AppButton { label: "连接"; enabled: !SeeCut.busy && SeeCut.server-url != ""; clicked => { SeeCut.action("server-connect", SeeCut.server-url); } }
+            }
+        }
+    }
+}
+
+export component CreditsPage inherits Rectangle {
+    property <int> tab;
+    credits-scroll := ScrollView {
+        viewport-width: self.width;
+        horizontal-scrollbar-policy: always-off;
+        VerticalLayout {
+            width: credits-scroll.visible-width;
+            padding: 24px;
+            spacing: 18px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 36px;
+                VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "可用积分"; }
+                    Text { text: SeeCut.balance; color: Theme.fg; font-size: 30px; font-weight: Theme.weight-title; }
+                }
+                VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "冻结积分"; }
+                    Text { text: SeeCut.frozen; color: Theme.fg-muted; font-size: 30px; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                IconButton { glyph: Glyph.reset; label: "刷新余额"; enabled: SeeCut.signed-in && !SeeCut.busy; clicked => { SeeCut.action("wallet-refresh", ""); } }
+            }
+            Rectangle { height: 1px; background: Theme.line; }
+            Heading { text: "充值积分"; }
+            if !SeeCut.signed-in: AppButton { label: "登录后充值"; primary: true; clicked => { SeeCut.page = 4; } }
+            if SeeCut.signed-in && SeeCut.plans.length == 0: Label { text: "暂无可用套餐"; }
+            for plan in SeeCut.plans: Rectangle {
+                height: 78px;
+                border-radius: Theme.r;
+                border-width: 1px;
+                border-color: Theme.line;
+                background: Theme.panel;
+                HorizontalLayout {
+                    padding: 16px;
+                    spacing: 18px;
+                    VerticalLayout {
+                        spacing: 5px;
+                        Text { text: plan.name; color: Theme.fg; font-weight: Theme.weight-title; }
+                        Text { text: plan.credits; color: Theme.fg-muted; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: plan.price; color: Theme.fg; vertical-alignment: center; font-size: 18px; }
+                    AppButton { label: "购买"; primary: true; enabled: SeeCut.signed-in && !SeeCut.busy; clicked => { SeeCut.action("purchase", plan.id); } }
+                }
+            }
+            Rectangle { height: 8px; }
+            SegmentedControl { options: ["积分明细", "充值订单"]; current <=> root.tab; }
+            if root.tab == 0 && SeeCut.ledger.length == 0: EmptyState { glyph: Glyph.rows; title: "暂无积分记录"; }
+            if root.tab == 1 && SeeCut.orders.length == 0: EmptyState { glyph: Glyph.rows; title: "暂无充值订单"; }
+            for entry in (root.tab == 0 ? SeeCut.ledger : SeeCut.orders): Rectangle {
+                height: 62px;
+                HorizontalLayout {
+                    spacing: 16px;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Text { text: entry.title; color: Theme.fg; overflow: elide; }
+                        Text { text: entry.detail; color: Theme.fg-dim; font-size: Theme.fs-sm; overflow: elide; }
+                    }
+                    Text { text: entry.value; color: Theme.fg-muted; vertical-alignment: center; }
+                    if root.tab == 1: IconButton { glyph: Glyph.reset; label: "查询订单状态"; clicked => { SeeCut.action("order-refresh", entry.id); } }
+                }
+                Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.line; }
+            }
+        }
+    }
+}

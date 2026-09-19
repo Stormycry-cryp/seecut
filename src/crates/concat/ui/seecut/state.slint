@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+export struct CloudItem {
+    id: string,
+    name: string,
+    detail: string,
+    status: string,
+    kind: string,
+    preview: image,
+    ready: bool,
+    local: bool,
+}
+
+export struct CreditPlan {
+    id: string,
+    name: string,
+    price: string,
+    credits: string,
+}
+
+export struct AccountEntry {
+    id: string,
+    title: string,
+    detail: string,
+    value: string,
+}
+
+export global SeeCut {
+    in-out property <int> page: 0;
+    in-out property <bool> busy;
+    in-out property <string> error;
+    in-out property <string> notice;
+    in-out property <bool> signed-in;
+    in-out property <string> email;
+    in-out property <string> balance: "--";
+    in-out property <string> frozen: "--";
+    in-out property <bool> project-open;
+
+    in-out property <int> mode;
+    in-out property <string> prompt;
+    in-out property <[string]> model-names;
+    in-out property <int> model-index;
+    in-out property <[string]> ratios;
+    in-out property <int> ratio-index;
+    in-out property <[string]> resolutions;
+    in-out property <int> resolution-index;
+    in-out property <[string]> durations;
+    in-out property <int> duration-index;
+    in-out property <[string]> quantities;
+    in-out property <int> quantity-index;
+    in-out property <bool> accepts-references;
+    in-out property <string> reference-limit;
+    in-out property <[CloudItem]> references;
+    in-out property <string> quote;
+    in-out property <bool> can-generate;
+    in-out property <bool> insufficient-credits;
+    in-out property <[CloudItem]> tasks;
+    in-out property <int> selected-task: -1;
+
+    in-out property <[string]> team-names;
+    in-out property <int> team-index: -1;
+    in-out property <string> team-name;
+    in-out property <string> invite-input;
+    in-out property <string> invite-url;
+    in-out property <string> invite-detail;
+    in-out property <bool> team-owner;
+    in-out property <[AccountEntry]> members;
+    in-out property <[CloudItem]> assets;
+    in-out property <string> asset-search;
+    in-out property <int> asset-filter;
+    in-out property <bool> trash-open;
+    in-out property <[CreditPlan]> plans;
+    in-out property <[AccountEntry]> ledger;
+    in-out property <[AccountEntry]> orders;
+
+    in-out property <int> auth-mode;
+    in-out property <string> auth-email;
+    in-out property <string> auth-password;
+    in-out property <string> auth-token;
+    in-out property <string> server-url;
+    in-out property <string> local-folder;
+    in-out property <bool> reduced-motion;
+
+    callback action(name: string, id: string);
+    callback changed(field: string, value: string);
+}
