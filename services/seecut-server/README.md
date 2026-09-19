@@ -35,7 +35,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ## Current scope
 
 - Email registration, email verification, login, logout and password reset tokens.
-- Provider-neutral email delivery configuration with an SMTP implementation.
+- Provider-neutral email delivery with SMTP and Tencent Cloud SES template API implementations.
 - Personal sessions and personal wallets.
 - Teams created by a user and single-use, expiring invitation links.
 - Team asset metadata and signed upload/download URLs backed by local private storage.
@@ -50,7 +50,7 @@ The local signed storage implementation is an interface-compatible first step. P
 
 ### Tencent Cloud SES
 
-Use `.env.tencent.example` as the production template. It targets Tencent Cloud SES in `ap-guangzhou`, where `mail.stormycry.cloud` is already verified, and reserves `seecut@mail.stormycry.cloud` as the SeeCut sender. Before deployment, register that exact sender address in SES and create dedicated SeeCut SMTP credentials. Put those credentials only in the protected server environment file, then verify a real registration and password-reset delivery through the candidate environment. The SMTP client connects to the Guangzhou endpoint at `gz-smtp.qcloudmail.com:465` over implicit TLS, validates the server certificate and hostname, and authenticates with explicit `AUTH LOGIN`. Generic SMTP deployments keep STARTTLS and automatic authentication as their defaults.
+Use `.env.tencent.example` as the production template. It targets Tencent Cloud SES in `ap-guangzhou`, where `mail.stormycry.cloud` is already verified, and uses `seecut@mail.stormycry.cloud` as the SeeCut sender. Create separate approved templates for email verification and password reset; each template must contain the `{{code}}` variable. Configure a dedicated SecretId and SecretKey only in the protected server environment, then verify a real registration and password-reset delivery through the candidate environment. The API sends both messages as trigger emails. Generic SMTP configuration remains available in `.env.example` for compatible providers.
 
 Alipay remains deferred. The Tencent template intentionally leaves all Alipay settings empty, so credit orders remain unavailable until merchant configuration is approved and supplied.
 

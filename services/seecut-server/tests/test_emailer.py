@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import io
+import json
 import os
+import re
 import ssl
 import unittest
 from unittest.mock import patch
@@ -51,6 +54,20 @@ class FakeSmtp(FakeSmtpBase):
 
 class FakeSmtpSsl(FakeSmtpBase):
     pass
+
+
+class FakeHttpResponse:
+    def __init__(self, payload: dict):
+        self.stream = io.BytesIO(json.dumps(payload).encode("utf-8"))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self, size=-1):
+        return self.stream.read(size)
 
 
 class EmailSenderTest(unittest.TestCase):
@@ -142,6 +159,75 @@ class EmailSenderTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ConfigError, "requires TLS"):
                 Config.from_env()
+
+    def test_tencent_ses_signs_template_requests_and_selects_template_by_purpose(self):
+        with patch.dict(
+            os.environ,
+            {
+                "SECUT_ENV": "test",
+                "SECUT_EMAIL_PROVIDER": "tencent_ses",
+                "SECUT_EMAIL_FROM": "seecut@mail.stormycry.cloud",
+                "SECUT_TENCENT_SES_REGION": "ap-guangzhou",
+                "SECUT_TENCENT_SES_SECRET_ID": "test-secret-id",
+                "SECUT_TENCENT_SES_SECRET_KEY": "test-secret-key-never-send",
+                "SECUT_TENCENT_SES_VERIFY_TEMPLATE_ID": "60101",
+                "SECUT_TENCENT_SES_RESET_TEMPLATE_ID": "60102",
+            },
+            clear=True,
+        ):
+            sender = EmailSender(Config.from_env())
+
+        requests = []
+
+        def open_request(request, timeout):
+            requests.append((request, timeout))
+            return FakeHttpResponse(
+                {"Response": {"MessageId": f"message-{len(requests)}", "RequestId": "request-id"}}
+            )
+
+        with (
+            patch("seecut_server.emailer.time.time", return_value=1_700_000_000),
+            patch("seecut_server.emailer.open_no_redirect", side_effect=open_request),
+        ):
+            sender.send_token("person@example.test", "verify_email", "verify-123456")
+            sender.send_token("person@example.test", "reset_password", "reset-654321")
+
+        self.assertTrue(sender.configured)
+        self.assertEqual(len(requests), 2)
+        bodies = [json.loads(request.data.decode("utf-8")) for request, _timeout in requests]
+        self.assertEqual([body["Template"]["TemplateID"] for body in bodies], [60101, 60102])
+        self.assertEqual(
+            [json.loads(body["Template"]["TemplateData"]) for body in bodies],
+            [{"code": "verify-123456"}, {"code": "reset-654321"}],
+        )
+        self.assertEqual(
+            [body["Subject"] for body in bodies],
+            ["验证你的 SeeCut 邮箱", "重置 SeeCut 密码"],
+        )
+        for (request, timeout), body in zip(requests, bodies, strict=True):
+            self.assertEqual(request.full_url, "https://ses.tencentcloudapi.com/")
+            self.assertEqual(request.get_method(), "POST")
+            self.assertEqual(timeout, 15)
+            self.assertEqual(body["FromEmailAddress"], "seecut@mail.stormycry.cloud")
+            self.assertEqual(body["Destination"], ["person@example.test"])
+            self.assertEqual(body["TriggerType"], 1)
+            self.assertEqual(request.get_header("Content-type"), "application/json")
+            self.assertEqual(request.get_header("X-tc-action"), "SendEmail")
+            self.assertEqual(request.get_header("X-tc-region"), "ap-guangzhou")
+            self.assertEqual(request.get_header("X-tc-timestamp"), "1700000000")
+            self.assertEqual(request.get_header("X-tc-version"), "2020-10-02")
+            authorization = request.get_header("Authorization")
+            self.assertRegex(
+                authorization,
+                re.compile(
+                    r"^TC3-HMAC-SHA256 Credential=test-secret-id/2023-11-14/ses/tc3_request, "
+                    r"SignedHeaders=content-type;host, Signature=[0-9a-f]{64}$"
+                ),
+            )
+            serialized_request = request.data + "\n".join(
+                f"{key}:{value}" for key, value in request.header_items()
+            ).encode("utf-8")
+            self.assertNotIn(b"test-secret-key-never-send", serialized_request)
 
 
 if __name__ == "__main__":

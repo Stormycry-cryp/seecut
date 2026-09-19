@@ -17,6 +17,19 @@ def _bool(name: str, default: bool) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_positive_int(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ConfigError(f"{name} must be a positive integer")
+    return parsed
+
+
 @dataclass(frozen=True)
 class Config:
     env: str
@@ -40,6 +53,11 @@ class Config:
     smtp_ssl: bool
     smtp_starttls: bool
     smtp_auth_method: str
+    tencent_ses_region: str
+    tencent_ses_secret_id: str
+    tencent_ses_secret_key: str
+    tencent_ses_verify_template_id: int | None
+    tencent_ses_reset_template_id: int | None
     expose_test_tokens: bool
     xiangxin_base_url: str
     xiangxin_api_key: str
@@ -122,6 +140,15 @@ class Config:
             smtp_ssl=smtp_ssl,
             smtp_starttls=smtp_starttls,
             smtp_auth_method=smtp_auth_method,
+            tencent_ses_region=os.getenv("SECUT_TENCENT_SES_REGION", "ap-guangzhou").strip(),
+            tencent_ses_secret_id=os.getenv("SECUT_TENCENT_SES_SECRET_ID", ""),
+            tencent_ses_secret_key=os.getenv("SECUT_TENCENT_SES_SECRET_KEY", ""),
+            tencent_ses_verify_template_id=_optional_positive_int(
+                "SECUT_TENCENT_SES_VERIFY_TEMPLATE_ID"
+            ),
+            tencent_ses_reset_template_id=_optional_positive_int(
+                "SECUT_TENCENT_SES_RESET_TEMPLATE_ID"
+            ),
             expose_test_tokens=_bool("SECUT_EXPOSE_TEST_TOKENS", False),
             xiangxin_base_url=os.getenv("SECUT_XIANGXIN_BASE_URL", "https://xiangxinai123.xyz").rstrip("/"),
             xiangxin_api_key=os.getenv("SECUT_XIANGXIN_API_KEY", ""),
@@ -160,9 +187,18 @@ class Config:
     def email_configured(self) -> bool:
         if self.email_provider == "disabled":
             return False
-        if self.email_provider != "smtp":
-            return False
-        return bool(self.email_from and self.smtp_host)
+        if self.email_provider == "smtp":
+            return bool(self.email_from and self.smtp_host)
+        if self.email_provider == "tencent_ses":
+            return bool(
+                self.email_from
+                and self.tencent_ses_region
+                and self.tencent_ses_secret_id
+                and self.tencent_ses_secret_key
+                and self.tencent_ses_verify_template_id
+                and self.tencent_ses_reset_template_id
+            )
+        return False
 
     def alipay_configured(self) -> bool:
         paths = [self.alipay_public_key_path, self.alipay_merchant_private_key_path]
