@@ -41,7 +41,7 @@ import { ToastData, ToastLayer } from "primitives/toast.slint";
 import { TooltipLayer } from "primitives/tooltip.slint";
 import { Workspace } from "workspace/workspace.slint";
 import { AppRail, CloudWorkbench, SeeCut, CloudItem, CreditPlan, AccountEntry } from "seecut/workbench.slint";
-import { AuthDialog, AgentPanel, EditorBridgeBar, WorkflowFeedback } from "seecut/shell.slint";
+import { AuthDialog, EditorBridgeBar, WorkflowFeedback } from "seecut/shell.slint";
 import { AssetPicker } from "seecut/asset-picker.slint";
 import {
     ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
@@ -431,16 +431,16 @@ export component App inherits Window {
                 vertical-stretch: 1;
                 min-width: 0px;
                 min-height: 0px;
-                property <bool> agent-overlay: root.width < 1280px;
-                property <length> agent-space: SeeCut.agent-open && !self.agent-overlay ? 300px : 0px;
+                // Future Agent mounts beside the shared workspace and uses the same project/asset commands.
+                // Reserve the integration boundary without exposing an empty panel.
                 rail := AppRail { x: 0; y: 0; compact: root.width < 1120px; height: parent.height; }
-                if SeeCut.page != 0: CloudWorkbench { x: rail.width; width: Math.max(0px, parent.width - rail.width - parent.agent-space); height: 100%; }
+                if SeeCut.page != 0: CloudWorkbench { x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%; }
                 if SeeCut.page == 0: Rectangle {
                     x: rail.width;
-                    width: Math.max(0px, parent.width - rail.width - parent.agent-space);
+                    width: Math.max(0px, parent.width - rail.width);
                     height: 100%;
                     VerticalLayout {
-                    EditorBridgeBar { project-name: root.project-name; }
+                    if root.on-start: EditorBridgeBar { project-name: root.project-name; }
                     WorkflowFeedback { }
                     if root.on-start: StartScreen {
                         vertical-stretch: 1;
@@ -463,11 +463,6 @@ export component App inherits Window {
                     if !root.on-start: Workspace { vertical-stretch: 1; }
                     }
                 }
-                if SeeCut.agent-open && workspace-area.agent-overlay: Rectangle {
-                    x: rail.width; width: parent.width - rail.width; height: 100%; background: Theme.overlay;
-                    TouchArea { clicked => { SeeCut.agent-open = false; } }
-                }
-                if SeeCut.agent-open: AgentPanel { x: parent.width - self.width; width: Math.min(300px, parent.width - rail.width); height: 100%; project-name: root.project-name; }
             }
         }
     }

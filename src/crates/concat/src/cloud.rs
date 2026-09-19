@@ -300,8 +300,46 @@ fn session_expired(error: &ClientError) -> bool {
                 | "INVALID_SESSION"
                 | "INVALID_ACCESS_TOKEN"
                 | "AUTHENTICATION_REQUIRED"
+                | "AUTH_REQUIRED"
                 | "UNAUTHORIZED"
         )
+}
+
+fn request_requires_auth(req: &Request) -> bool {
+    match req.path.as_str() {
+        "/api/capabilities" => false,
+        path if path.starts_with("/api/auth/") && path != "/api/auth/logout" => false,
+        path if path.starts_with("local:library-") => false,
+        _ => true,
+    }
+}
+
+fn can_start_request(signed_in: bool, req: &Request) -> bool {
+    signed_in || !request_requires_auth(req)
+}
+
+fn should_surface_job_error(
+    signed_in: bool,
+    auth_open: bool,
+    current_error_empty: bool,
+    name: &str,
+    authentication_error: bool,
+) -> bool {
+    if !signed_in && !is_auth_job(name) && authentication_error {
+        return false;
+    }
+    is_auth_job(name) || !is_background_job(name) || (!auth_open && current_error_empty)
+}
+
+fn is_cloud_identity_error(message: &str) -> bool {
+    matches!(
+        message,
+        "请先登录" | "登录状态已失效，请重新登录" | "请求失败 (401)"
+    )
+}
+
+fn should_clear_identity_error_for_target(target: i32, message: &str) -> bool {
+    matches!(target, 0 | 5) && is_cloud_identity_error(message)
 }
 
 fn sync_operation_state(app: &App, state: &Rc<RefCell<Cloud>>) {
@@ -320,7 +358,14 @@ fn sync_operation_state(app: &App, state: &Rc<RefCell<Cloud>>) {
 }
 
 fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
-    if app.global::<SeeCut>().get_busy() {
+    let ui = app.global::<SeeCut>();
+    if !can_start_request(ui.get_signed_in(), &req) {
+        if !is_background_job(&name) && name != "logout" {
+            show_auth(app, state, None);
+        }
+        return;
+    }
+    if ui.get_busy() {
         let mut c = state.borrow_mut();
         if matches!(name.as_str(), "quote" | "tasks" | "wallet") {
             c.pending.retain(|(n, _)| n != &name);
@@ -450,10 +495,13 @@ fn poll(
                 if name == "generate" {
                     refresh_quote(&app, &state);
                 }
-                if is_auth_job(&name)
-                    || !is_background_job(&name)
-                    || (!ui.get_auth_open() && ui.get_error().is_empty())
-                {
+                if should_surface_job_error(
+                    ui.get_signed_in(),
+                    ui.get_auth_open(),
+                    ui.get_error().is_empty(),
+                    &name,
+                    session_expired(&error),
+                ) {
                     ui.set_error(error.message.into());
                 }
             }
@@ -787,6 +835,9 @@ fn parameter_default_index(model: &Value, name: &str) -> i32 {
         .unwrap_or(0) as i32
 }
 fn refresh_models(app: &App, state: &Rc<RefCell<Cloud>>) {
+    if !app.global::<SeeCut>().get_signed_in() {
+        return;
+    }
     job(
         app,
         state,
@@ -840,16 +891,14 @@ fn load_page(app: &App, state: &Rc<RefCell<Cloud>>, page: i32) {
     ui.set_page(page);
     match page {
         5 => personal_job(app, state, "list", Value::Null),
-        1 => {
+        1 if ui.get_signed_in() => {
             refresh_models(app, state);
-            if ui.get_signed_in() {
-                job(
-                    app,
-                    state,
-                    "tasks".into(),
-                    request("GET", "/api/generation/tasks", Value::Null),
-                );
-            }
+            job(
+                app,
+                state,
+                "tasks".into(),
+                request("GET", "/api/generation/tasks", Value::Null),
+            );
         }
         2 => job(
             app,
@@ -883,6 +932,9 @@ fn load_page(app: &App, state: &Rc<RefCell<Cloud>>, page: i32) {
 
 fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
     let ui = app.global::<SeeCut>();
+    if should_clear_identity_error_for_target(target, ui.get_error().as_str()) {
+        ui.set_error("".into());
+    }
     match navigation_decision(ui.get_page(), target, ui.get_signed_in()) {
         NavigationDecision::Open(page) => load_page(app, state, page),
         NavigationDecision::Authenticate { target, .. } => show_auth(app, state, Some(target)),
@@ -1719,6 +1771,9 @@ fn render_references(app: &App, state: &Rc<RefCell<Cloud>>) {
 }
 fn refresh_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
+    if !ui.get_signed_in() {
+        return;
+    }
     let id = team_id(&ui, &state.borrow());
     if !id.is_empty() {
         job(
@@ -2567,11 +2622,12 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
 #[cfg(test)]
 mod reference_tests {
     use super::{
-        DEFAULT_API_URL, NavigationDecision, auth_request, auth_return_target,
+        DEFAULT_API_URL, NavigationDecision, auth_request, auth_return_target, can_start_request,
         cancel_pending_imports, configured_api_url, enqueue_pending_import,
-        enqueue_personal_reference, invalid_reference_prompt, is_background_job, mention_start,
-        navigation_decision, parameter_default_index, parameter_label, parameter_value,
-        resume_pending_imports, rewrite_mentions,
+        enqueue_personal_reference, invalid_reference_prompt, is_background_job,
+        is_cloud_identity_error, mention_start, navigation_decision, parameter_default_index,
+        parameter_label, parameter_value, request, request_requires_auth, resume_pending_imports,
+        rewrite_mentions, should_clear_identity_error_for_target, should_surface_job_error,
     };
     use serde_json::json;
 
@@ -2671,6 +2727,47 @@ mod reference_tests {
         for name in ["generate", "local", "asset-change", "personal"] {
             assert!(!is_background_job(name), "{name}");
         }
+    }
+
+    #[test]
+    fn signed_out_cloud_requests_stop_before_authenticated_endpoints() {
+        let models = request("GET", "/api/generation/models", serde_json::Value::Null);
+        let assets = request("GET", "/api/teams/team-1/assets", serde_json::Value::Null);
+        let capabilities = request("GET", "/api/capabilities", serde_json::Value::Null);
+        let login = request("POST", "/api/auth/login", json!({}));
+        let personal = request("POST", "local:library-list", serde_json::Value::Null);
+
+        assert!(request_requires_auth(&models));
+        assert!(request_requires_auth(&assets));
+        assert!(!request_requires_auth(&capabilities));
+        assert!(!request_requires_auth(&login));
+        assert!(!request_requires_auth(&personal));
+        assert!(!can_start_request(false, &models));
+        assert!(can_start_request(true, &models));
+    }
+
+    #[test]
+    fn stale_unauthenticated_errors_do_not_escape_to_local_workflows() {
+        assert!(!should_surface_job_error(
+            false, false, true, "models", true,
+        ));
+        assert!(!should_surface_job_error(
+            false, true, false, "assets", true,
+        ));
+        assert!(should_surface_job_error(false, true, false, "login", true,));
+        assert!(should_surface_job_error(
+            false, false, true, "personal", false,
+        ));
+        assert!(is_cloud_identity_error("请先登录"));
+        assert!(is_cloud_identity_error("登录状态已失效，请重新登录"));
+        assert!(!is_cloud_identity_error("无法读取导入素材"));
+        assert!(should_clear_identity_error_for_target(0, "请先登录"));
+        assert!(should_clear_identity_error_for_target(5, "请先登录"));
+        assert!(!should_clear_identity_error_for_target(1, "请先登录"));
+        assert!(!should_clear_identity_error_for_target(
+            0,
+            "无法读取导入素材",
+        ));
     }
 
     #[test]

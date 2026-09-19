@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Theme, Glyph } from "../primitives/primitives.slint";
+import { Theme } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
 import { GenerationPage } from "generation.slint";
 import { AccountPage, CreditsPage } from "account.slint";
 import { TeamPage } from "team.slint";
 import { PersonalPage } from "personal.slint";
-import { Heading, AppButton } from "components.slint";
+import { Heading } from "components.slint";
 import { WorkflowFeedback } from "shell.slint";
 
 export { SeeCut, CloudItem, CreditPlan, AccountEntry } from "state.slint";
@@ -18,16 +18,13 @@ export component CloudWorkbench inherits Rectangle {
     background: Theme.page;
     VerticalLayout {
         Rectangle {
-            height: 58px;
+            height: 46px;
             background: Theme.panel;
             HorizontalLayout {
                 padding-left: 20px;
                 padding-right: 20px;
                 spacing: 12px;
                 Heading { text: SeeCut.page == 1 ? "生成" : SeeCut.page == 2 ? "团队资产" : SeeCut.page == 5 ? "个人资产" : SeeCut.page == 3 ? "积分" : "账号"; horizontal-stretch: 1; }
-                if SeeCut.project-open: AppButton { label: "返回剪辑"; glyph: Glyph.film; clicked => { SeeCut.action("navigate", "0"); } }
-                if !SeeCut.signed-in: AppButton { label: "登录"; clicked => { SeeCut.action("auth-open", ""); } }
-                AppButton { label: "Agent"; clicked => { SeeCut.agent-open = !SeeCut.agent-open; } }
             }
             Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.line; }
         }

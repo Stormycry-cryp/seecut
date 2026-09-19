@@ -25,13 +25,13 @@ component GenerationForm inherits Rectangle {
                 padding-right: 4px;
                 spacing: 8px;
                 alignment: start;
-                if SeeCut.accepts-references || SeeCut.references.length > 0: VerticalLayout {
+                if !SeeCut.signed-in || SeeCut.accepts-references || SeeCut.references.length > 0: VerticalLayout {
                     spacing: 8px;
                     HorizontalLayout {
                         Label { text: "参考素材"; horizontal-stretch: 1; }
-                        Text { text: SeeCut.references.length + "/" + SeeCut.reference-max; color: Theme.fg-dim; vertical-alignment: center; }
-                        IconButton { glyph: Glyph.plus; label: "添加本地素材"; enabled: SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-browse", ""); } }
-                        IconButton { glyph: Glyph.folder; label: "从资产库选择"; enabled: SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
+                        if SeeCut.reference-max > 0: Text { text: SeeCut.references.length + "/" + SeeCut.reference-max; color: Theme.fg-dim; vertical-alignment: center; }
+                        IconButton { glyph: Glyph.plus; label: "添加本地素材"; enabled: !SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-browse", ""); } }
+                        IconButton { glyph: Glyph.folder; label: "从资产库选择"; enabled: !SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
                     }
                     if SeeCut.references.length > 0: ScrollView {
                       height: Math.min(214px, SeeCut.references.length * 74px - 8px);
@@ -62,7 +62,7 @@ component GenerationForm inherits Rectangle {
                     }
                       }
                     }
-                    if SeeCut.references.length < SeeCut.reference-max: Rectangle {
+                    if !SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max: Rectangle {
                         height: SeeCut.references.length == 0 ? 76px : 38px;
                         border-radius: Theme.r-sm;
                         border-width: 1px;
@@ -81,6 +81,9 @@ component GenerationForm inherits Rectangle {
                 Rectangle { height: 8px; }
                 Label { text: "提示词"; }
                 prompt := CloudField {
+                    background: Theme.well;
+                    min-height: 110px;
+                    max-height: 150px;
                     value <=> SeeCut.prompt;
                     multiline: true;
                     placeholder: SeeCut.mode == 0 ? "描述画面、主体和风格" : "描述画面内容、动作和镜头";
@@ -136,8 +139,14 @@ component GenerationForm inherits Rectangle {
                         HorizontalLayout { Rectangle { horizontal-stretch: 1; } IconButton { glyph: Glyph.close; label: "关闭素材引用"; clicked => { SeeCut.mention-open = false; } } }
                     }
                 }
-                Label { text: "模型"; }
-                Select { options: SeeCut.model-names; current: SeeCut.model-index; placeholder: "暂无可用模型"; enabled: SeeCut.model-names.length > 0; changed(index) => { SeeCut.model-index = index; SeeCut.changed("model", index); } }
+                HorizontalLayout {
+                    Label { text: "模型"; horizontal-stretch: 1; }
+                    if SeeCut.signed-in && SeeCut.model-names.length == 0: AppButton {
+                        label: "重新加载"; subtle: true; enabled: !SeeCut.busy;
+                        clicked => { SeeCut.action("navigate", "1"); }
+                    }
+                }
+                Select { options: SeeCut.model-names; current: SeeCut.model-index; placeholder: SeeCut.signed-in ? "模型尚未加载" : "登录后加载模型"; enabled: SeeCut.signed-in && SeeCut.model-names.length > 0; changed(index) => { SeeCut.model-index = index; SeeCut.changed("model", index); } }
                 if SeeCut.ratios.length > 0: VerticalLayout {
                     spacing: 6px;
                     Label { text: "画面比例"; }
@@ -213,7 +222,7 @@ component GenerationResults inherits Rectangle {
             Heading { text: "生成记录"; horizontal-stretch: 1; }
             IconButton { glyph: Glyph.reset; label: "刷新生成记录"; enabled: SeeCut.signed-in && !SeeCut.working; clicked => { SeeCut.action("tasks-refresh", ""); } }
         }
-        if SeeCut.tasks.length == 0: EmptyState { glyph: Glyph.image; title: "暂无生成记录"; }
+        if SeeCut.tasks.length == 0: EmptyState { glyph: Glyph.image; title: "生成结果将在这里展示"; detail: SeeCut.signed-in ? "添加参考素材，写下提示词，开始创作。" : "登录后可生成图片、视频，并查看生成记录。"; }
         if root.has-selection: Rectangle {
             min-height: 120px;
             max-height: 280px;

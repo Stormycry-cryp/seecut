@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Theme, Modal, Glyph, Icon, IconButton } from "../primitives/primitives.slint";
+import { Theme, Modal, Glyph, IconButton, Button } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
 import { AccountPage } from "account.slint";
-import { AppButton, Heading } from "components.slint";
+import { AppButton } from "components.slint";
 
 export component AuthDialog inherits Modal {
     open: SeeCut.auth-open;
@@ -65,28 +65,7 @@ export component EditorBridgeBar inherits Rectangle {
     HorizontalLayout {
         padding-left: 16px; padding-right: 12px; spacing: 8px;
         Text { text: SeeCut.project-open ? root.project-name : "剪辑项目"; color: Theme.fg; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
-        AppButton { label: "资产库"; glyph: Glyph.folder; enabled: !SeeCut.working; clicked => { SeeCut.action("project-assets", ""); } }
-        AppButton { label: "去生成"; glyph: Glyph.sparkle; clicked => { SeeCut.action("navigate", "1"); } }
-        AppButton { label: "Agent"; clicked => { SeeCut.agent-open = !SeeCut.agent-open; } }
+        Button { label: "从资产库导入"; glyph: Glyph.folder; ghost: true; enabled: !SeeCut.working; clicked => { SeeCut.action("project-assets", ""); } }
     }
     Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.line; }
-}
-
-// A stable workspace companion slot. Agent execution is a later feature.
-export component AgentPanel inherits Rectangle {
-    in property <string> project-name;
-    background: Theme.panel;
-    Rectangle { width: 1px; height: 100%; background: Theme.line; }
-    VerticalLayout {
-        padding: 16px; spacing: 16px;
-        HorizontalLayout {
-            Heading { text: "Agent"; horizontal-stretch: 1; }
-            IconButton { glyph: Glyph.close; label: "收起 Agent"; clicked => { SeeCut.agent-open = false; } }
-        }
-        Text { text: "即将开放"; color: Theme.fg-dim; }
-        Rectangle { height: 1px; background: Theme.line; }
-        Text { text: SeeCut.project-open ? "当前项目 · " + root.project-name : "还没有打开剪辑项目"; color: Theme.fg-muted; wrap: word-wrap; }
-        Text { text: "未来在这里用对话生成内容、整理素材，并协助完成剪辑。"; color: Theme.fg-muted; wrap: word-wrap; }
-        Rectangle { vertical-stretch: 1; }
-    }
 }
