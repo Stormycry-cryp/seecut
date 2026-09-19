@@ -30,7 +30,7 @@ component GenerationForm inherits Rectangle {
                         Label { text: "参考素材"; horizontal-stretch: 1; }
                         Text { text: SeeCut.references.length + "/" + SeeCut.reference-max; color: Theme.fg-dim; vertical-alignment: center; }
                         IconButton { glyph: Glyph.plus; label: "添加本地素材"; enabled: SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-browse", ""); } }
-                        IconButton { glyph: Glyph.folder; label: "选择团队素材"; enabled: SeeCut.signed-in && SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
+                        IconButton { glyph: Glyph.folder; label: "从资产库选择"; enabled: SeeCut.signed-in && SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
                     }
                     for item in SeeCut.references: Rectangle {
                         height: 66px;
@@ -271,22 +271,24 @@ export component GenerationPage inherits Rectangle {
     }
     Modal {
         open: SeeCut.asset-picker-open;
-        title: "选择团队参考素材";
+        title: "选择参考素材";
         glyph: Glyph.folder;
         surface-width: Math.min(560px, root.width - 32px);
         closed => { SeeCut.asset-picker-open = false; }
         VerticalLayout {
             padding: 16px; spacing: 10px;
-            Select { options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); } }
-            CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队素材"; edited(value) => { SeeCut.changed("asset-search", value); } }
-            if SeeCut.team-names.length == 0: Text { text: "尚未加入团队"; color: Theme.fg-muted; }
-            if SeeCut.assets.length == 0 && SeeCut.team-names.length > 0: Text { text: SeeCut.busy ? "正在加载素材" : "暂无可用参考图片"; color: Theme.fg-muted; }
+            SegmentedControl { options: ["个人资产", "团队资产"]; current: SeeCut.asset-picker-source; changed(index) => { SeeCut.asset-picker-source = index; SeeCut.action("reference-source", ""); } }
+            if SeeCut.asset-picker-source == 0: CloudField { value <=> SeeCut.personal-reference-search; placeholder: "搜索个人图片"; edited(value) => { SeeCut.changed("personal-reference-search", value); } }
+            if SeeCut.asset-picker-source == 1: Select { options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); } }
+            if SeeCut.asset-picker-source == 1: CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队素材"; edited(value) => { SeeCut.changed("asset-search", value); } }
+            if SeeCut.asset-picker-source == 1 && SeeCut.team-names.length == 0: Text { text: "尚未加入团队"; color: Theme.fg-muted; }
+            if (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references.length == 0 : SeeCut.assets.length == 0): Text { text: SeeCut.busy ? "正在加载素材" : "暂无可用参考图片"; color: Theme.fg-muted; }
             ScrollView {
                 height: Math.min(320px, root.height - 230px);
                 viewport-width: self.width; horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
                     alignment: start; spacing: 6px;
-                    for asset in SeeCut.assets: Rectangle {
+                    for asset in (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references : SeeCut.assets): Rectangle {
                         height: 58px; background: Theme.well; border-radius: Theme.r-sm;
                         HorizontalLayout {
                             padding: 6px; spacing: 10px;
@@ -296,12 +298,12 @@ export component GenerationPage inherits Rectangle {
                                 Image { width: 100%; height: 100%; source: asset.preview; image-fit: contain; }
                             }
                             Text { text: asset.name; color: Theme.fg; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                            IconButton { glyph: Glyph.plus; label: "添加为参考素材"; enabled: !SeeCut.busy; clicked => { SeeCut.action("asset-reference", asset.id); } }
+                            IconButton { glyph: Glyph.plus; label: "添加为参考素材"; enabled: !SeeCut.busy; clicked => { SeeCut.action(SeeCut.asset-picker-source == 0 ? "personal-reference" : "asset-reference", asset.id); } }
                         }
                     }
                 }
             }
-            if SeeCut.busy: Text { text: "正在读取团队素材"; color: Theme.fg-dim; }
+            if SeeCut.busy: Text { text: "正在读取素材"; color: Theme.fg-dim; }
             AppButton { label: "完成"; clicked => { SeeCut.asset-picker-open = false; } }
         }
     }

@@ -39,6 +39,7 @@ mod format;
 mod gpu;
 mod host;
 mod i18n;
+mod personal_library;
 mod platform;
 /// What a phone's own crate installs before the window runs: the way to
 /// the system's file picker. See `platform::pick_files_async`.
@@ -95,10 +96,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // same "no project open yet" no-op that a picked one does.
     let gpu = platform::select_backend(|paths| {
         Shell::with(|shell, app| {
-            if app.global::<ui::SeeCut>().get_page() == 1 {
+            let page = app.global::<ui::SeeCut>().get_page();
+            if page == 1 || page == 5 {
                 for path in paths {
                     app.global::<ui::SeeCut>().invoke_action(
-                        "reference-drop".into(),
+                        if page == 5 {
+                            "personal-drop"
+                        } else {
+                            "reference-drop"
+                        }
+                        .into(),
                         path.to_string_lossy().into_owned().into(),
                     );
                 }

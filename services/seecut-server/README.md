@@ -66,6 +66,8 @@ export SECUT_MODEL_PRICES_JSON='{"image2:gpt-image-2.5-flare:operation=generate:
 
 No production generation task is accepted until its full billing key has a non-negative integer credit price.
 
+The current SeeCut preview uses **0 credits** for all 20 supported billing combinations of `gpt-image-2` and `sd_2.0_mini_special`. Zero is an explicit price, so a zero-balance account can submit; missing keys remain unavailable. Hold, capture and release still retain their idempotent ledger records with zero deltas. Upstream provider charges are independent of the user's credit price.
+
 Generated outputs expire after `SECUT_GENERATION_OUTPUT_TTL_SECONDS`. Periodic cleanup deletes expired personal outputs and unused generation staging files. It preserves team assets and staging inputs referenced by active tasks.
 
 Credit plans must be created by an administrative migration once product pricing is approved. The server does not seed invented prices. A development-only example is:

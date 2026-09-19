@@ -58,6 +58,7 @@ class FakeXiangxin:
     def __init__(self):
         self.submit_calls = 0
         self.poll_error: XiangxinError | None = None
+        self.poll_response: dict | None = None
         self.nested_response = False
         self.nested_asset_response = False
 
@@ -70,6 +71,8 @@ class FakeXiangxin:
     def get_video(self, task_id):
         if self.poll_error:
             raise self.poll_error
+        if self.poll_response is not None:
+            return self.poll_response
         if self.nested_response:
             return {"data": {"id": task_id, "status": "processing"}}
         return {"id": task_id, "status": "processing"}
@@ -445,6 +448,104 @@ class GenerationRobustnessTest(unittest.TestCase):
                 {"model": "gpt-image-2.5-flare", "prompt": "priced request"},
             )
         self.assertEqual(context.exception.code, "MODEL_PRICE_NOT_CONFIGURED")
+
+    def test_zero_price_image_succeeds_with_zero_balance_without_credit_movement(self):
+        image_model = "gpt-image-2"
+        billing_key = f"image2:{image_model}:operation=generate:size=auto:quality=high"
+        service = SeeCutService(
+            replace(
+                self.service.config,
+                env="production",
+                image2_model=image_model,
+                model_prices={billing_key: 0},
+            ),
+            self.service.db,
+            image2=self.image2,
+            xiangxin=self.xiangxin,
+            clock=self.clock,
+        )
+        with service.db.transaction() as connection:
+            connection.execute(
+                "UPDATE wallets SET available_credits=0, held_credits=0 WHERE user_id=?",
+                (self.user_id,),
+            )
+
+        request = {"model": image_model, "prompt": "zero-price image"}
+        quote = service.quote_generation(self.user_id, "image", request)
+        task = service.create_generation_task(
+            self.user_id,
+            "image",
+            request | {"quote_id": quote["quote_id"]},
+            "zero-price-image",
+        )
+        service.process_generation_task(service.claim_generation_tasks()[0])
+
+        self.assertEqual(quote["credits"], 0)
+        self.assertEqual(service.get_generation_task(self.user_id, task["id"])["status"], "succeeded")
+        self.assertEqual(service.wallet(self.user_id)["available_credits"], 0)
+        self.assertEqual(service.wallet(self.user_id)["held_credits"], 0)
+        with service.db.connect() as connection:
+            entries = connection.execute(
+                """SELECT kind,delta_available,delta_held FROM ledger_entries
+                   WHERE reference_id=? ORDER BY rowid""",
+                (task["id"],),
+            ).fetchall()
+        self.assertEqual(
+            [(row["kind"], row["delta_available"], row["delta_held"]) for row in entries],
+            [("hold", 0, 0), ("capture", 0, 0)],
+        )
+
+    def test_zero_price_video_failure_releases_without_credit_movement(self):
+        billing_key = (
+            "xiangxin:sd_2.0_mini_special:resolution=720p:duration=5:"
+            "aspect_ratio=16:9:reference_count=0"
+        )
+        service = SeeCutService(
+            replace(self.service.config, env="production", model_prices={billing_key: 0}),
+            self.service.db,
+            image2=self.image2,
+            xiangxin=self.xiangxin,
+            clock=self.clock,
+        )
+        with service.db.transaction() as connection:
+            connection.execute(
+                "UPDATE wallets SET available_credits=0, held_credits=0 WHERE user_id=?",
+                (self.user_id,),
+            )
+
+        request = {
+            "model": "sd_2.0_mini_special",
+            "prompt": "zero-price video",
+            "resolution": "720p",
+            "duration": 5,
+            "aspect_ratio": "16:9",
+        }
+        quote = service.quote_generation(self.user_id, "video", request)
+        task = service.create_generation_task(
+            self.user_id,
+            "video",
+            request | {"quote_id": quote["quote_id"]},
+            "zero-price-video",
+        )
+        service.process_generation_task(service.claim_generation_tasks()[0])
+        self.clock.value += 11
+        self.xiangxin.poll_response = {"id": "video-upstream", "status": "failed", "error": "rejected"}
+        service.process_generation_task(service.claim_generation_tasks()[0])
+
+        self.assertEqual(quote["credits"], 0)
+        self.assertEqual(service.get_generation_task(self.user_id, task["id"])["status"], "failed")
+        self.assertEqual(service.wallet(self.user_id)["available_credits"], 0)
+        self.assertEqual(service.wallet(self.user_id)["held_credits"], 0)
+        with service.db.connect() as connection:
+            entries = connection.execute(
+                """SELECT kind,delta_available,delta_held FROM ledger_entries
+                   WHERE reference_id=? ORDER BY rowid""",
+                (task["id"],),
+            ).fetchall()
+        self.assertEqual(
+            [(row["kind"], row["delta_available"], row["delta_held"]) for row in entries],
+            [("hold", 0, 0), ("release", 0, 0)],
+        )
 
 
 if __name__ == "__main__":

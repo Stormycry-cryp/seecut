@@ -5,6 +5,7 @@ import { SeeCut } from "state.slint";
 import { GenerationPage } from "generation.slint";
 import { AccountPage, CreditsPage } from "account.slint";
 import { TeamPage } from "team.slint";
+import { PersonalPage } from "personal.slint";
 import { Heading, AppButton } from "components.slint";
 
 export { SeeCut, CloudItem, CreditPlan, AccountEntry } from "state.slint";
@@ -22,7 +23,7 @@ export component CloudWorkbench inherits Rectangle {
                 padding-left: 20px;
                 padding-right: 20px;
                 spacing: 12px;
-                Heading { text: SeeCut.page == 1 ? "生成" : SeeCut.page == 2 ? "团队资产" : SeeCut.page == 3 ? "积分" : "账号"; horizontal-stretch: 1; }
+                Heading { text: SeeCut.page == 1 ? "生成" : SeeCut.page == 2 ? "团队资产" : SeeCut.page == 5 ? "个人资产" : SeeCut.page == 3 ? "积分" : "账号"; horizontal-stretch: 1; }
                 if SeeCut.signed-in: Text { text: SeeCut.balance + " 积分"; color: Theme.fg-muted; vertical-alignment: center; }
                 if !SeeCut.signed-in && SeeCut.page != 4: AppButton { label: "登录"; clicked => { SeeCut.page = 4; } }
             }
@@ -56,6 +57,7 @@ export component CloudWorkbench inherits Rectangle {
         }
         if SeeCut.page == 1: GenerationPage { width: 100%; vertical-stretch: 1; }
         if SeeCut.page == 2: TeamPage { width: 100%; vertical-stretch: 1; }
+        if SeeCut.page == 5: PersonalPage { width: 100%; vertical-stretch: 1; }
         if SeeCut.page == 3: CreditsPage { width: 100%; vertical-stretch: 1; }
         if SeeCut.page == 4: AccountPage { width: 100%; vertical-stretch: 1; }
     }

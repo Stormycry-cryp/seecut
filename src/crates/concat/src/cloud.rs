@@ -50,6 +50,8 @@ struct Cloud {
     quote_body: Value,
     pending: VecDeque<(String, Request)>,
     assets: Vec<Value>,
+    personal: Vec<Value>,
+    pending_personal_reference: Option<(String, String)>,
     references: Vec<Value>,
     local: HashMap<String, String>,
     folder: PathBuf,
@@ -124,6 +126,9 @@ fn base_url(raw: &str) -> Result<String, String> {
 }
 
 fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
+    if req.path.starts_with("local:library-") {
+        return library_call(c, req).map_err(Into::into);
+    }
     if req.path == "local:upload" {
         let path = PathBuf::from(text(&req.body, "path"));
         let team = text(&req.body, "team");
@@ -551,6 +556,13 @@ fn team_id(ui: &SeeCut, state: &Cloud) -> String {
 fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
     let ui = app.global::<SeeCut>();
     match name {
+        "personal" => {
+            state.borrow_mut().personal = items(&value);
+            render_personal(app, state);
+            if !text(&value, "notice").is_empty() {
+                ui.set_notice(text(&value, "notice").into());
+            }
+        }
         "login" => {
             let token = text(&value, "access_token");
             if token.is_empty() {
@@ -667,6 +679,10 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 .cloned()
                 .unwrap_or_else(|| items(&value));
             update_model_options(app, state);
+            let reference = state.borrow_mut().pending_personal_reference.take();
+            if let Some((path, name)) = reference {
+                upload_personal_reference(app, state, path, name);
+            }
         }
         "quote" => {
             let current = generation_body(&ui, &state.borrow());
@@ -822,6 +838,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
         "local" => {
             let path = text(&value, "path");
             let id = text(&value, "id");
+            let generated = id.starts_with("gen_");
             state.borrow_mut().local.insert(id, path.clone());
             let folder = state.borrow().folder.clone();
             let _ = std::fs::create_dir_all(&folder);
@@ -832,9 +849,12 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             render_assets(app, state);
             match text(&value, "intent").as_str() {
                 "preview" => open_file(&path),
-                "import" => import_file(app, path),
-                "reference" => upload_file(app, state, path, "generation_input"),
+                "import" => import_file(app, path.clone()),
+                "reference" => upload_file(app, state, path.clone(), "generation_input"),
                 _ => {}
+            }
+            if generated {
+                personal_job(app, state, "register", json!({"path":path}));
             }
         }
         "purchase" | "order" | "orders" => {
@@ -941,6 +961,272 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
             .collect(),
     ));
 }
+fn library_root() -> Result<PathBuf, String> {
+    concat_host::AppDirs::locate()
+        .map(|dirs| dirs.data.join("personal-library"))
+        .map_err(|error| format!("无法打开个人资产库：{error}"))
+}
+
+fn library_call(c: &Cloud, req: &Request) -> Result<Value, String> {
+    let root = library_root()?;
+    library_call_at(c, req, &root)
+}
+
+fn library_call_at(c: &Cloud, req: &Request, root: &std::path::Path) -> Result<Value, String> {
+    use crate::personal_library::{AssetKind, Library};
+    let mut library = Library::load(root)?;
+    let id = text(&req.body, "id");
+    if !id.is_empty() && library.get(&id).is_none() {
+        return Err("未找到该个人资产，请刷新后重试".into());
+    }
+    let notice = match req.path.as_str() {
+        "local:library-import" => {
+            let asset = library.import(text(&req.body, "path"))?;
+            let id = asset.id.clone();
+            library.restore(&id)?;
+            "已导入个人资产库"
+        }
+        "local:library-register" => {
+            library.register_generated(text(&req.body, "path"))?;
+            ""
+        }
+        "local:library-rename" => {
+            library.rename(&id, text(&req.body, "name"))?;
+            "已重命名"
+        }
+        "local:library-trash" => {
+            library.trash(&id)?;
+            "已移入回收站"
+        }
+        "local:library-restore" => {
+            library.restore(&id)?;
+            "已恢复资产"
+        }
+        "local:library-list" => {
+            // Recover existing SeeCut outputs, including files saved before the library existed.
+            match std::fs::read_dir(&c.folder) {
+                Ok(entries) => {
+                    for entry in entries {
+                        let path = entry
+                            .map_err(|error| format!("无法读取结果目录：{error}"))?
+                            .path();
+                        let generated = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                name.starts_with("gen_")
+                                    && matches!(
+                                        path.extension().and_then(|ext| ext.to_str()),
+                                        Some("png" | "mp4")
+                                    )
+                            });
+                        if generated && path.is_file() {
+                            library.register_generated(path)?;
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("无法读取结果目录：{error}")),
+            }
+            ""
+        }
+        _ => return Err("未知的个人资产操作".into()),
+    };
+    let items: Vec<Value> = library
+        .items()
+        .iter()
+        .rev()
+        .map(|asset| {
+            let mut value = serde_json::to_value(asset).unwrap_or_default();
+            let metadata = asset.path.metadata().ok().filter(|m| m.is_file());
+            value["available"] = json!(metadata.is_some());
+            value["bytes"] = json!(metadata.map(|m| m.len()).unwrap_or(0));
+            if !asset.trashed && asset.kind != AssetKind::Audio {
+                value["thumbnail"] = json!(crate::personal_library::thumbnail(asset, root));
+            }
+            value
+        })
+        .collect();
+    Ok(json!({"items":items,"notice":notice}))
+}
+
+fn personal_job(app: &App, state: &Rc<RefCell<Cloud>>, operation: &str, body: Value) {
+    job(
+        app,
+        state,
+        "personal".into(),
+        request("POST", format!("local:library-{operation}"), body),
+    );
+}
+
+fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let ui = app.global::<SeeCut>();
+    let search = ui.get_personal_search().to_lowercase();
+    let reference_search = ui.get_personal_reference_search().to_lowercase();
+    let kind = match ui.get_personal_filter() {
+        1 => "image",
+        2 => "video",
+        3 => "audio",
+        _ => "",
+    };
+    let source = match ui.get_personal_source() {
+        1 => "imported",
+        2 => "generated",
+        _ => "",
+    };
+    let cloud = state.borrow();
+    let row = |v: &Value| CloudItem {
+        id: text(v, "id").into(),
+        name: text(v, "name").into(),
+        detail: format!(
+            "{} · {} · {:.1} MB",
+            match text(v, "kind").as_str() {
+                "image" => "图片",
+                "video" => "视频",
+                _ => "音频",
+            },
+            if text(v, "source") == "generated" {
+                "生成结果"
+            } else {
+                "本地导入"
+            },
+            v["bytes"].as_u64().unwrap_or(0) as f64 / 1_048_576.
+        )
+        .into(),
+        kind: text(v, "kind").into(),
+        ready: v["available"].as_bool().unwrap_or(false),
+        local: true,
+        preview: slint::Image::load_from_path(std::path::Path::new(&text(v, "thumbnail")))
+            .unwrap_or_default(),
+        ..Default::default()
+    };
+    ui.set_personal_assets(rows(
+        cloud
+            .personal
+            .iter()
+            .filter(|v| v["trashed"].as_bool().unwrap_or(false) == ui.get_personal_trash())
+            .filter(|v| text(v, "name").to_lowercase().contains(&search))
+            .filter(|v| kind.is_empty() || text(v, "kind") == kind)
+            .filter(|v| source.is_empty() || text(v, "source") == source)
+            .map(row)
+            .collect(),
+    ));
+    ui.set_personal_references(rows(
+        cloud
+            .personal
+            .iter()
+            .filter(|v| {
+                !v["trashed"].as_bool().unwrap_or(false)
+                    && v["available"] == true
+                    && text(v, "kind") == "image"
+            })
+            .filter(|v| text(v, "name").to_lowercase().contains(&reference_search))
+            .filter(|v| {
+                PathBuf::from(text(v, "path"))
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp")
+                    })
+            })
+            .map(row)
+            .collect(),
+    ));
+}
+
+fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str) {
+    let ui = app.global::<SeeCut>();
+    match action {
+        "personal-refresh" => personal_job(app, state, "list", Value::Null),
+        "personal-browse" => {
+            if let Some(paths) = crate::platform::pick_files("导入个人素材", None) {
+                for path in paths {
+                    personal_job(app, state, "import", json!({"path":path}));
+                }
+            }
+        }
+        "personal-drop" => personal_job(app, state, "import", json!({"path":id})),
+        "personal-folder" => match library_root() {
+            Ok(path) => open_file(&path.to_string_lossy()),
+            Err(error) => ui.set_error(error.into()),
+        },
+        "personal-teams" => {
+            if ui.get_signed_in() {
+                job(
+                    app,
+                    state,
+                    "teams".into(),
+                    request("GET", "/api/teams", Value::Null),
+                );
+            }
+        }
+        "personal-rename" | "personal-trash" | "personal-restore" => personal_job(
+            app,
+            state,
+            action.trim_start_matches("personal-"),
+            json!({"id":id,"name":ui.get_personal_rename().trim()}),
+        ),
+        _ => {
+            let asset = state
+                .borrow()
+                .personal
+                .iter()
+                .find(|v| text(v, "id") == id)
+                .cloned();
+            let Some(asset) = asset else {
+                ui.set_error("未找到该个人资产，请刷新后重试".into());
+                return;
+            };
+            let path = text(&asset, "path");
+            if !PathBuf::from(&path).is_file() {
+                ui.set_error("本地文件已移动或丢失".into());
+                return;
+            }
+            match action {
+                "personal-preview" => open_file(&path),
+                "personal-project" => import_file(app, path),
+                "personal-reference" => {
+                    if !ui.get_signed_in() {
+                        ui.set_error("登录后可使用生成服务".into());
+                        ui.set_page(4);
+                        return;
+                    }
+                    ui.set_page(1);
+                    ui.set_asset_picker_open(false);
+                    if state.borrow().models.is_empty() {
+                        state.borrow_mut().pending_personal_reference =
+                            Some((path, text(&asset, "name")));
+                        refresh_models(app, state);
+                        return;
+                    }
+                    upload_personal_reference(app, state, path, text(&asset, "name"));
+                }
+                "personal-upload" => {
+                    if team_id(&ui, &state.borrow()).is_empty() {
+                        ui.set_error("请选择要上传的团队".into());
+                        return;
+                    }
+                    upload_file(app, state, path, "team_asset");
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn upload_personal_reference(app: &App, state: &Rc<RefCell<Cloud>>, path: String, name: String) {
+    let count = state.borrow().references.len();
+    upload_file(app, state, path, "generation_input");
+    let mut cloud = state.borrow_mut();
+    if cloud.references.len() > count {
+        if let Some(reference) = cloud.references.last_mut() {
+            reference["display_name"] = json!(name);
+        }
+        drop(cloud);
+        render_references(app, state);
+    }
+}
+
 fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     let search = ui.get_asset_search().to_lowercase();
@@ -1288,6 +1574,7 @@ fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
     cloud.assets.clear();
     cloud.teams.clear();
     cloud.references.clear();
+    cloud.pending_personal_reference = None;
     cloud.local.clear();
     cloud.orders.clear();
     cloud.submission = None;
@@ -1515,6 +1802,7 @@ pub fn bind(app: &App) {
     let weak = app.as_weak();
     let shared = state.clone();
     app.global::<SeeCut>().on_action(move |name, id| { let Some(app)=weak.upgrade() else{return}; let ui=app.global::<SeeCut>(); let team=team_id(&ui,&shared.borrow()); match name.as_str() {
+        name if name.starts_with("personal-") => personal_action(&app,&shared,name,id.as_str()),
         "auth-submit" => submit_auth(&app, &shared),
         "auth-switch" if !ui.get_busy() => { switch_auth(&ui, id.parse::<i32>().unwrap_or(0).clamp(0, 4)); },
         "auth-resend" => send_auth_code(&app, &shared, ui.get_auth_mode()),
@@ -1525,7 +1813,7 @@ pub fn bind(app: &App) {
         "tasks-refresh"=>job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null)),
         "purchase"=>job(&app,&shared,"purchase".into(),request("POST","/api/orders",json!({"plan_id":id.to_string()}))),
         "order-refresh"=>job(&app,&shared,"order".into(),request("POST",format!("/api/orders/{id}/refresh"),Value::Null)),
-        "navigate"=>match id.as_str(){"1"=>{refresh_models(&app,&shared);if ui.get_signed_in(){job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null));}},"2"=>job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null)),"3"=>{job(&app,&shared,"plans".into(),request("GET","/api/credit-plans",Value::Null));job(&app,&shared,"wallet".into(),request("GET","/api/wallet",Value::Null));job(&app,&shared,"orders".into(),request("GET","/api/orders",Value::Null));},_=>{}},
+        "navigate"=>match id.as_str(){"5"=>personal_job(&app,&shared,"list",Value::Null),"1"=>{refresh_models(&app,&shared);if ui.get_signed_in(){job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null));}},"2"=>job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null)),"3"=>{job(&app,&shared,"plans".into(),request("GET","/api/credit-plans",Value::Null));job(&app,&shared,"wallet".into(),request("GET","/api/wallet",Value::Null));job(&app,&shared,"orders".into(),request("GET","/api/orders",Value::Null));},_=>{}},
         "generate"=>{
             let error = reference_validation(&ui, &shared.borrow());
             if !error.is_empty() { ui.set_error(error.into()); return; }
@@ -1548,7 +1836,8 @@ pub fn bind(app: &App) {
         "asset-restore"=>job(&app,&shared,"asset-change".into(),request("POST",format!("/api/teams/{team}/assets/{id}/restore"),Value::Null)),
         "reference-browse"|"asset-upload"=>{if let Some(paths)=crate::platform::pick_files("选择素材",if name=="reference-browse"{Some(("图片",&["png","jpg","jpeg","webp"]))}else{None}){for path in paths{upload_file(&app,&shared,path.to_string_lossy().to_string(),if name=="asset-upload"{"team_asset"}else{"generation_input"});}}},
         "reference-drop"=>upload_file(&app,&shared,id.to_string(),"generation_input"),
-        "reference-team"=>{ui.set_asset_picker_open(true);ui.set_trash_open(false);ui.set_asset_search("".into());ui.set_asset_filter(1);render_assets(&app,&shared);job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null));},
+        "reference-team"=>{ui.set_asset_picker_open(true);ui.set_asset_picker_source(0);ui.set_personal_reference_search("".into());ui.set_trash_open(false);ui.set_asset_search("".into());ui.set_asset_filter(1);render_assets(&app,&shared);personal_job(&app,&shared,"list",Value::Null);},
+        "reference-source" if ui.get_asset_picker_source()==1 => job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null)),
         "reference-remove"=>remove_reference(&app,&shared,id.as_str()),
         "reference-mention"=>insert_mention(&app,&shared,id.as_str()),
         "reference-preview"=>{if let Some(item)=shared.borrow().references.iter().find(|v|text(v,"client_id")==id.as_str()){open_file(&text(item,"local_path"));}},
@@ -1621,6 +1910,9 @@ pub fn bind(app: &App) {
         if field == "asset-search" || field == "asset-filter" {
             render_assets(&app, &shared);
         }
+        if field.starts_with("personal-") {
+            render_personal(&app, &shared);
+        }
     });
     auth_countdown(app.as_weak());
     heartbeat(app.as_weak(), state);
@@ -1651,6 +1943,55 @@ mod reference_tests {
         parameter_default_index, parameter_label, parameter_value, rewrite_mentions,
     };
     use serde_json::json;
+
+    #[test]
+    fn personal_library_bridge_recovers_results_and_preserves_trash_without_login() {
+        let root =
+            std::env::temp_dir().join(format!("seecut-library-bridge-{}", uuid::Uuid::new_v4()));
+        let output = root.join("results");
+        let library = root.join("library");
+        std::fs::create_dir_all(&output).unwrap();
+        let path = output.join("gen_existing.png");
+        let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 4, 4);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[160; 48])
+            .unwrap();
+        let cloud = super::Cloud {
+            folder: output,
+            ..Default::default()
+        };
+        let run = |operation: &str, body| {
+            super::library_call_at(
+                &cloud,
+                &super::request("POST", format!("local:library-{operation}"), body),
+                &library,
+            )
+            .unwrap()
+        };
+        let first = run("list", serde_json::Value::Null);
+        assert_eq!(first["items"].as_array().unwrap().len(), 1);
+        assert_eq!(first["items"][0]["available"], true);
+        assert_eq!(first["items"][0]["source"], "generated");
+        assert!(std::path::Path::new(first["items"][0]["thumbnail"].as_str().unwrap()).is_file());
+        let id = first["items"][0]["id"].clone();
+        run("rename", json!({"id":id,"name":"已完成图片"}));
+        run("trash", json!({"id":id}));
+        let refreshed = run("list", serde_json::Value::Null);
+        assert_eq!(refreshed["items"].as_array().unwrap().len(), 1);
+        assert_eq!(refreshed["items"][0]["trashed"], true);
+        assert_eq!(refreshed["items"][0]["name"], "已完成图片");
+        assert!(path.exists());
+        let restored = run("restore", json!({"id":id}));
+        assert_eq!(restored["items"][0]["trashed"], false);
+        std::fs::remove_file(path).unwrap();
+        let missing = run("list", serde_json::Value::Null);
+        assert_eq!(missing["items"][0]["available"], false);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn ordinary_launch_uses_online_service_and_development_requires_override() {
