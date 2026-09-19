@@ -26,8 +26,13 @@ export struct AccountEntry {
 }
 
 export global SeeCut {
-    in-out property <int> page: 0;
+    in-out property <int> page: 1;
     in-out property <bool> busy;
+    in-out property <bool> working;
+    in-out property <bool> auth-open: true;
+    in-out property <bool> auth-busy;
+    in-out property <bool> agent-open;
+    in-out property <int> pending-import-count;
     in-out property <string> error;
     in-out property <string> notice;
     in-out property <bool> signed-in;
@@ -41,6 +46,7 @@ export global SeeCut {
     in-out property <int> prompt-cursor;
     in-out property <bool> mention-open;
     in-out property <bool> asset-picker-open;
+    in-out property <string> asset-picker-purpose: "reference";
     in-out property <int> asset-picker-source;
     in-out property <[CloudItem]> personal-assets;
     in-out property <[CloudItem]> personal-references;

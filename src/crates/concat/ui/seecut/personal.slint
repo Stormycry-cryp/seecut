@@ -16,7 +16,7 @@ export component PersonalPage inherits Rectangle {
             spacing: 8px;
             Text { text: SeeCut.personal-trash ? "回收站" : "本机资产"; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; }
             IconButton { glyph: Glyph.folder; label: "打开资产文件夹"; clicked => { SeeCut.action("personal-folder", ""); } }
-            AppButton { label: "导入素材"; glyph: Glyph.import; primary: true; enabled: !SeeCut.busy; clicked => { SeeCut.action("personal-browse", ""); } }
+            AppButton { label: "导入素材"; glyph: Glyph.import; primary: true; enabled: !SeeCut.working; clicked => { SeeCut.action("personal-browse", ""); } }
         }
         Text { text: "素材保存在本机，支持拖入图片、视频和音频。"; color: Theme.fg-dim; font-size: Theme.fs-sm; wrap: word-wrap; }
         CloudField { value <=> SeeCut.personal-search; placeholder: "搜索个人资产"; edited(value) => { SeeCut.changed("personal-search", value); } }
@@ -26,9 +26,9 @@ export component PersonalPage inherits Rectangle {
             Select { width: 108px; options: ["全部来源", "本地导入", "生成结果"]; current: SeeCut.personal-source; changed(index) => { SeeCut.personal-source = index; SeeCut.changed("personal-source", index); } }
             Rectangle { horizontal-stretch: 1; }
             IconButton { glyph: Glyph.trash; label: "回收站"; checked: SeeCut.personal-trash; clicked => { SeeCut.personal-trash = !SeeCut.personal-trash; SeeCut.changed("personal-trash", ""); } }
-            IconButton { glyph: Glyph.reset; label: "刷新个人资产"; enabled: !SeeCut.busy; clicked => { SeeCut.action("personal-refresh", ""); } }
+            IconButton { glyph: Glyph.reset; label: "刷新个人资产"; enabled: !SeeCut.working; clicked => { SeeCut.action("personal-refresh", ""); } }
         }
-        if SeeCut.personal-assets.length == 0: EmptyState { glyph: Glyph.image; title: SeeCut.busy ? "正在读取资产" : SeeCut.personal-search != "" ? "没有找到相关资产" : SeeCut.personal-trash ? "回收站为空" : "暂无个人资产"; }
+        if SeeCut.personal-assets.length == 0: EmptyState { glyph: Glyph.image; title: SeeCut.working ? "正在读取资产" : SeeCut.personal-search != "" ? "没有找到相关资产" : SeeCut.personal-trash ? "回收站为空" : "暂无个人资产"; }
         if SeeCut.personal-assets.length > 0: ScrollView {
             viewport-width: self.width;
             horizontal-scrollbar-policy: always-off;
@@ -64,11 +64,11 @@ export component PersonalPage inherits Rectangle {
                             alignment: end; spacing: 4px;
                             if !SeeCut.personal-trash: IconButton { glyph: Glyph.eye; label: "预览"; enabled: asset.ready; clicked => { SeeCut.action("personal-preview", asset.id); } }
                             if !SeeCut.personal-trash: IconButton { glyph: Glyph.sparkle; label: "用于生成"; enabled: asset.ready; clicked => { SeeCut.action("personal-reference", asset.id); } }
-                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.plus; label: "加入当前项目"; enabled: asset.ready && SeeCut.project-open; clicked => { SeeCut.action("personal-project", asset.id); } }
-                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.tag; label: "重命名"; enabled: !SeeCut.busy; clicked => { root.selected-id = asset.id; SeeCut.personal-rename = asset.name; root.dialog = 1; } }
-                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.export; label: "上传到团队"; enabled: asset.ready && !SeeCut.busy; clicked => { root.selected-id = asset.id; root.selected-name = asset.name; root.dialog = 2; SeeCut.action("personal-teams", ""); } }
-                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.trash; label: "移入回收站"; danger: true; enabled: !SeeCut.busy; clicked => { SeeCut.action("personal-trash", asset.id); } }
-                            if SeeCut.personal-trash: IconButton { glyph: Glyph.reset; label: "恢复资产"; enabled: !SeeCut.busy; clicked => { SeeCut.action("personal-restore", asset.id); } }
+                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.plus; label: SeeCut.project-open ? "导入当前项目" : "导入剪辑项目"; enabled: asset.ready && !SeeCut.working; clicked => { SeeCut.action("personal-project", asset.id); } }
+                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.tag; label: "重命名"; enabled: !SeeCut.working; clicked => { root.selected-id = asset.id; SeeCut.personal-rename = asset.name; root.dialog = 1; } }
+                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.export; label: "上传到团队"; enabled: asset.ready && !SeeCut.working; clicked => { root.selected-id = asset.id; root.selected-name = asset.name; root.dialog = 2; SeeCut.action("personal-teams", ""); } }
+                            if !SeeCut.personal-trash: IconButton { glyph: Glyph.trash; label: "移入回收站"; danger: true; enabled: !SeeCut.working; clicked => { SeeCut.action("personal-trash", asset.id); } }
+                            if SeeCut.personal-trash: IconButton { glyph: Glyph.reset; label: "恢复资产"; enabled: !SeeCut.working; clicked => { SeeCut.action("personal-restore", asset.id); } }
                         }
                     }
                 }
@@ -89,12 +89,12 @@ export component PersonalPage inherits Rectangle {
                 Text { text: "“" + root.selected-name + "”将长期保存到云端，所选团队成员均可查看和下载。"; color: Theme.fg-muted; wrap: word-wrap; }
                 if SeeCut.signed-in: Select { options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); } }
                 if SeeCut.signed-in && SeeCut.team-names.length == 0: Text { text: "尚未加入团队"; color: Theme.fg-muted; }
-                if !SeeCut.signed-in: AppButton { label: "登录"; clicked => { root.dialog = 0; SeeCut.page = 4; } }
+                if !SeeCut.signed-in: AppButton { label: "登录"; clicked => { root.dialog = 0; SeeCut.action("auth-open", ""); } }
             }
             HorizontalLayout {
                 alignment: end; spacing: 8px;
                 AppButton { label: "取消"; clicked => { root.dialog = 0; } }
-                AppButton { label: root.dialog == 1 ? "保存" : "确认上传"; primary: true; enabled: !SeeCut.busy && (root.dialog == 1 ? SeeCut.personal-rename != "" : SeeCut.signed-in && SeeCut.team-index >= 0); clicked => { SeeCut.action(root.dialog == 1 ? "personal-rename" : "personal-upload", root.selected-id); root.dialog = 0; } }
+                AppButton { label: root.dialog == 1 ? "保存" : "确认上传"; primary: true; enabled: !SeeCut.working && (root.dialog == 1 ? SeeCut.personal-rename != "" : SeeCut.signed-in && SeeCut.team-index >= 0); clicked => { SeeCut.action(root.dialog == 1 ? "personal-rename" : "personal-upload", root.selected-id); root.dialog = 0; } }
             }
         }
     }

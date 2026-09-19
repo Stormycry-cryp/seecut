@@ -31,7 +31,7 @@ component GenerationForm inherits Rectangle {
                         Label { text: "参考素材"; horizontal-stretch: 1; }
                         Text { text: SeeCut.references.length + "/" + SeeCut.reference-max; color: Theme.fg-dim; vertical-alignment: center; }
                         IconButton { glyph: Glyph.plus; label: "添加本地素材"; enabled: SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-browse", ""); } }
-                        IconButton { glyph: Glyph.folder; label: "从资产库选择"; enabled: SeeCut.signed-in && SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
+                        IconButton { glyph: Glyph.folder; label: "从资产库选择"; enabled: SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
                     }
                     if SeeCut.references.length > 0: ScrollView {
                       height: Math.min(214px, SeeCut.references.length * 74px - 8px);
@@ -189,13 +189,13 @@ component GenerationForm inherits Rectangle {
         Rectangle { height: 1px; background: Theme.line; }
         if SeeCut.quote != "": Text { text: SeeCut.quote; color: Theme.fg-muted; wrap: word-wrap; }
         AppButton {
-            label: !SeeCut.signed-in ? "登录后生成" : SeeCut.insufficient-credits ? (SeeCut.payment-enabled ? "充值积分" : "查看积分") : SeeCut.busy ? "请稍候" : SeeCut.mode == 0 ? "生成图片" : "生成视频";
+            label: !SeeCut.signed-in ? "登录后生成" : SeeCut.insufficient-credits ? (SeeCut.payment-enabled ? "充值积分" : "查看积分") : SeeCut.working ? "请稍候" : SeeCut.mode == 0 ? "生成图片" : "生成视频";
             glyph: Glyph.sparkle;
             primary: true;
-            enabled: !SeeCut.busy && (!SeeCut.signed-in || SeeCut.insufficient-credits || SeeCut.can-generate);
+            enabled: !SeeCut.working && (!SeeCut.signed-in || SeeCut.insufficient-credits || SeeCut.can-generate);
             clicked => {
-                if !SeeCut.signed-in { SeeCut.page = 4; }
-                else if SeeCut.insufficient-credits { SeeCut.page = 3; SeeCut.action("navigate", "3"); }
+                if !SeeCut.signed-in { SeeCut.action("auth-open", ""); }
+                else if SeeCut.insufficient-credits { SeeCut.action("navigate", "3"); }
                 else { SeeCut.action("generate", ""); }
             }
         }
@@ -211,7 +211,7 @@ component GenerationResults inherits Rectangle {
         spacing: 12px;
         HorizontalLayout {
             Heading { text: "生成记录"; horizontal-stretch: 1; }
-            IconButton { glyph: Glyph.reset; label: "刷新生成记录"; enabled: SeeCut.signed-in && !SeeCut.busy; clicked => { SeeCut.action("tasks-refresh", ""); } }
+            IconButton { glyph: Glyph.reset; label: "刷新生成记录"; enabled: SeeCut.signed-in && !SeeCut.working; clicked => { SeeCut.action("tasks-refresh", ""); } }
         }
         if SeeCut.tasks.length == 0: EmptyState { glyph: Glyph.image; title: "暂无生成记录"; }
         if root.has-selection: Rectangle {
@@ -236,10 +236,11 @@ component GenerationResults inherits Rectangle {
             }
         }
         if root.has-selection && SeeCut.tasks[SeeCut.selected-task].ready: HorizontalLayout {
-            spacing: 12px;
+            spacing: 8px;
+            AppButton { glyph: Glyph.plus; label: SeeCut.project-open ? "导入当前项目" : "开始剪辑"; primary: true; enabled: !SeeCut.working; clicked => { SeeCut.action("task-import", SeeCut.tasks[SeeCut.selected-task].id); } }
+            AppButton { label: "个人资产"; clicked => { SeeCut.action("navigate", "5"); } }
             IconButton { glyph: Glyph.export; label: "下载到本机"; clicked => { SeeCut.action("task-download", SeeCut.tasks[SeeCut.selected-task].id); } }
-            IconButton { glyph: Glyph.folder; label: "保存到团队资产库"; enabled: SeeCut.signed-in; clicked => { SeeCut.save-team-task = SeeCut.tasks[SeeCut.selected-task].id; } }
-            IconButton { glyph: Glyph.plus; label: "加入当前项目"; enabled: SeeCut.project-open; clicked => { SeeCut.action("task-import", SeeCut.tasks[SeeCut.selected-task].id); } }
+            IconButton { glyph: Glyph.folder; label: "保存到团队资产库"; enabled: SeeCut.signed-in; clicked => { SeeCut.save-team-task = SeeCut.tasks[SeeCut.selected-task].id; SeeCut.action("personal-teams", ""); } }
             Rectangle { horizontal-stretch: 1; }
         }
         if SeeCut.tasks.length > 0: ScrollView {
@@ -303,44 +304,6 @@ export component GenerationPage inherits Rectangle {
         }
     }
     Modal {
-        open: SeeCut.asset-picker-open;
-        title: "选择参考素材";
-        glyph: Glyph.folder;
-        surface-width: Math.min(560px, root.width - 32px);
-        closed => { SeeCut.asset-picker-open = false; }
-        VerticalLayout {
-            padding: 16px; spacing: 10px;
-            SegmentedControl { options: ["个人资产", "团队资产"]; current: SeeCut.asset-picker-source; changed(index) => { SeeCut.asset-picker-source = index; SeeCut.action("reference-source", ""); } }
-            if SeeCut.asset-picker-source == 0: CloudField { value <=> SeeCut.personal-reference-search; placeholder: "搜索个人素材"; edited(value) => { SeeCut.changed("personal-reference-search", value); } }
-            if SeeCut.asset-picker-source == 1: Select { options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); } }
-            if SeeCut.asset-picker-source == 1: CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队素材"; edited(value) => { SeeCut.changed("asset-search", value); } }
-            if SeeCut.asset-picker-source == 1 && SeeCut.team-names.length == 0: Text { text: "尚未加入团队"; color: Theme.fg-muted; }
-            if (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references.length == 0 : SeeCut.assets.length == 0): Text { text: SeeCut.busy ? "正在加载素材" : "暂无可用参考素材"; color: Theme.fg-muted; }
-            ScrollView {
-                height: Math.min(320px, root.height - 230px);
-                viewport-width: self.width; horizontal-scrollbar-policy: always-off;
-                VerticalLayout {
-                    alignment: start; spacing: 6px;
-                    for asset in (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references : SeeCut.assets): Rectangle {
-                        height: 58px; background: Theme.well; border-radius: Theme.r-sm;
-                        HorizontalLayout {
-                            padding: 6px; spacing: 10px;
-                            Rectangle {
-                                width: 46px; height: 46px; background: Theme.stage;
-                                Icon { x: 14px; y: 14px; size: 18px; glyph: asset.kind == "video" ? Glyph.film : asset.kind == "audio" ? Glyph.music : Glyph.image; tint: Theme.fg-dim; }
-                                Image { width: 100%; height: 100%; source: asset.preview; image-fit: contain; }
-                            }
-                            Text { text: asset.name; color: Theme.fg; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                            IconButton { glyph: Glyph.plus; label: "添加为参考素材"; enabled: !SeeCut.busy; clicked => { SeeCut.action(SeeCut.asset-picker-source == 0 ? "personal-reference" : "asset-reference", asset.id); } }
-                        }
-                    }
-                }
-            }
-            if SeeCut.busy: Text { text: "正在读取素材"; color: Theme.fg-dim; }
-            AppButton { label: "完成"; clicked => { SeeCut.asset-picker-open = false; } }
-        }
-    }
-    Modal {
         open: SeeCut.save-team-task != "";
         title: "保存到团队资产库";
         glyph: Glyph.folder;
@@ -349,21 +312,22 @@ export component GenerationPage inherits Rectangle {
         VerticalLayout {
             padding: 20px;
             spacing: 16px;
+            if SeeCut.team-names.length > 0: Select { options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择保存到的团队"; changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); } }
             Text {
-                text: SeeCut.team-index < 0 ? "请先选择要保存到的团队。" : "文件将上传到“" + SeeCut.team-names[SeeCut.team-index] + "”，团队成员均可查看和下载。";
+                text: SeeCut.team-index < 0 ? "加入或创建团队后，即可共享这份生成结果。" : "文件将长期保存到“" + SeeCut.team-names[SeeCut.team-index] + "”，团队成员均可查看和下载。";
                 color: Theme.fg-muted;
                 wrap: word-wrap;
             }
+            if SeeCut.team-names.length == 0: AppButton { label: "创建或加入团队"; clicked => { SeeCut.action("navigate", "2"); } }
             HorizontalLayout {
                 spacing: 8px;
                 AppButton { label: "取消"; clicked => { SeeCut.save-team-task = ""; } }
                 AppButton {
-                    label: SeeCut.team-index < 0 ? "选择团队" : "上传到团队";
+                    label: "确认上传";
                     primary: true;
-                    enabled: !SeeCut.busy;
+                    enabled: !SeeCut.working && SeeCut.team-index >= 0;
                     clicked => {
-                        if SeeCut.team-index < 0 { SeeCut.page = 2; SeeCut.action("navigate", "2"); }
-                        else { SeeCut.action("task-save-team", SeeCut.save-team-task); }
+                        SeeCut.action("task-save-team", SeeCut.save-team-task);
                         SeeCut.save-team-task = "";
                     }
                 }

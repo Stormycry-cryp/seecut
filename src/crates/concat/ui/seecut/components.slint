@@ -66,6 +66,8 @@ export component CloudField inherits Rectangle {
     in property <bool> multiline;
     in property <bool> enabled: true;
     callback edited(value: string);
+    in property <bool> auto-focus;
+    init => { if root.auto-focus { input.focus(); } }
     callback cursor-moved(offset: int);
     callback key-event(text: string) -> bool;
     public function focus-at(offset: int) { input.focus(); input.set-selection-offsets(offset, offset); }
@@ -156,7 +158,7 @@ export component NavItem inherits Rectangle {
     property <bool> ring;
     accessible-role: button;
     accessible-label: root.label;
-    function open() { SeeCut.page = root.page; SeeCut.action("navigate", root.page); }
+    function open() { SeeCut.action("navigate", root.page); }
     focus := FocusScope {
         focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
         focus-lost(reason) => { root.ring = false; }
@@ -185,12 +187,14 @@ export component AppRail inherits Rectangle {
         padding: 8px;
         spacing: 4px;
         Text { text: root.compact ? "S" : "SeeCut"; color: Theme.fg; font-size: 18px; font-weight: Theme.weight-display; height: 42px; vertical-alignment: center; horizontal-alignment: root.compact ? center : left; }
-        NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; compact: root.compact; }
         NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; compact: root.compact; }
+        NavItem { label: SeeCut.project-open ? "当前剪辑" : "剪辑项目"; glyph: Glyph.film; page: 0; compact: root.compact; }
+        Rectangle { height: 12px; }
+        if !root.compact: Text { text: "素材"; color: Theme.fg-dim; font-size: Theme.fs-sm; height: 22px; vertical-alignment: center; }
         NavItem { label: "个人资产"; glyph: Glyph.image; page: 5; compact: root.compact; }
         NavItem { label: "团队资产"; glyph: Glyph.folder; page: 2; compact: root.compact; }
         Rectangle { vertical-stretch: 1; }
-        NavItem { label: "积分"; glyph: Glyph.tag; page: 3; compact: root.compact; }
+        NavItem { label: SeeCut.signed-in ? SeeCut.balance + " 积分" : "积分"; glyph: Glyph.tag; page: 3; compact: root.compact; }
         NavItem { label: SeeCut.signed-in ? "账号" : "登录"; glyph: Glyph.lock; page: 4; compact: root.compact; }
     }
     Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.line; }

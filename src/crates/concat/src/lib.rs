@@ -96,7 +96,22 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // same "no project open yet" no-op that a picked one does.
     let gpu = platform::select_backend(|paths| {
         Shell::with(|shell, app| {
-            let page = app.global::<ui::SeeCut>().get_page();
+            let cloud = app.global::<ui::SeeCut>();
+            if cloud.get_auth_open() {
+                return;
+            }
+            if cloud.get_asset_picker_open() {
+                if cloud.get_asset_picker_source() == 0 {
+                    for path in paths {
+                        cloud.invoke_action(
+                            "personal-drop".into(),
+                            path.to_string_lossy().into_owned().into(),
+                        );
+                    }
+                }
+                return;
+            }
+            let page = cloud.get_page();
             if page == 1 || page == 5 {
                 for path in paths {
                     app.global::<ui::SeeCut>().invoke_action(

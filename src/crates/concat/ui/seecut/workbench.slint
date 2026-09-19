@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Theme, IconButton, Glyph } from "../primitives/primitives.slint";
+import { Theme, Glyph } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
 import { GenerationPage } from "generation.slint";
 import { AccountPage, CreditsPage } from "account.slint";
 import { TeamPage } from "team.slint";
 import { PersonalPage } from "personal.slint";
 import { Heading, AppButton } from "components.slint";
+import { WorkflowFeedback } from "shell.slint";
 
 export { SeeCut, CloudItem, CreditPlan, AccountEntry } from "state.slint";
 export { AppRail } from "components.slint";
@@ -24,37 +25,13 @@ export component CloudWorkbench inherits Rectangle {
                 padding-right: 20px;
                 spacing: 12px;
                 Heading { text: SeeCut.page == 1 ? "生成" : SeeCut.page == 2 ? "团队资产" : SeeCut.page == 5 ? "个人资产" : SeeCut.page == 3 ? "积分" : "账号"; horizontal-stretch: 1; }
-                if SeeCut.signed-in: Text { text: SeeCut.balance + " 积分"; color: Theme.fg-muted; vertical-alignment: center; }
-                if !SeeCut.signed-in && SeeCut.page != 4: AppButton { label: "登录"; clicked => { SeeCut.page = 4; } }
+                if SeeCut.project-open: AppButton { label: "返回剪辑"; glyph: Glyph.film; clicked => { SeeCut.action("navigate", "0"); } }
+                if !SeeCut.signed-in: AppButton { label: "登录"; clicked => { SeeCut.action("auth-open", ""); } }
+                AppButton { label: "Agent"; clicked => { SeeCut.agent-open = !SeeCut.agent-open; } }
             }
             Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.line; }
         }
-        if SeeCut.error != "" && (SeeCut.page != 4 || (SeeCut.signed-in && SeeCut.auth-mode < 2)): Rectangle {
-            min-height: 44px;
-            background: Theme.danger-soft;
-            HorizontalLayout {
-                padding-left: 20px;
-                padding-right: 12px;
-                padding-top: 8px;
-                padding-bottom: 8px;
-                spacing: 12px;
-                Text { text: SeeCut.error; color: Theme.danger; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
-                IconButton { glyph: Glyph.close; label: "关闭提示"; clicked => { SeeCut.error = ""; } }
-            }
-        }
-        if SeeCut.notice != "" && (SeeCut.page != 4 || (SeeCut.signed-in && SeeCut.auth-mode < 2)): Rectangle {
-            min-height: 40px;
-            background: Theme.field;
-            HorizontalLayout {
-                padding-left: 20px;
-                padding-right: 12px;
-                padding-top: 8px;
-                padding-bottom: 8px;
-                spacing: 12px;
-                Text { text: SeeCut.notice; color: Theme.fg-muted; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
-                IconButton { glyph: Glyph.close; label: "关闭提示"; clicked => { SeeCut.notice = ""; } }
-            }
-        }
+        WorkflowFeedback { }
         if SeeCut.page == 1: GenerationPage { width: 100%; vertical-stretch: 1; }
         if SeeCut.page == 2: TeamPage { width: 100%; vertical-stretch: 1; }
         if SeeCut.page == 5: PersonalPage { width: 100%; vertical-stretch: 1; }

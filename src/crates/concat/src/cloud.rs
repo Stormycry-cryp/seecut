@@ -17,6 +17,7 @@ use url::Url;
 const DEFAULT_API_URL: &str = "https://seecut.stormycry.cloud";
 
 struct ClientError {
+    status: u16,
     code: String,
     message: String,
     retry_after: i32,
@@ -25,6 +26,7 @@ struct ClientError {
 impl From<String> for ClientError {
     fn from(message: String) -> Self {
         Self {
+            status: 0,
             code: String::new(),
             message,
             retry_after: 0,
@@ -51,7 +53,10 @@ struct Cloud {
     pending: VecDeque<(String, Request)>,
     assets: Vec<Value>,
     personal: Vec<Value>,
-    pending_personal_reference: Option<(String, String)>,
+    pending_personal_references: VecDeque<(String, String)>,
+    pending_team_picker: bool,
+    auth_return_page: Option<i32>,
+    pending_imports: Vec<PathBuf>,
     references: Vec<Value>,
     local: HashMap<String, String>,
     folder: PathBuf,
@@ -188,6 +193,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
         result["status"] = json!("ready");
         result["kind"] = json!(kind);
         result["preview_path"] = preview;
+        result["intent_team"] = json!(team);
         return Ok(result);
     }
     if req.path == "local:download" {
@@ -202,7 +208,12 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
             &url,
             &PathBuf::from(text(&req.body, "path")),
         )?;
-        return Ok(json!({"id":req.body["id"],"path":path,"intent":req.body["intent"]}));
+        return Ok(json!({
+            "id": req.body["id"],
+            "path": path,
+            "intent": req.body["intent"],
+            "intent_team": req.body["intent_team"],
+        }));
     }
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(60))
@@ -237,6 +248,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
                     .unwrap_or_else(|| format!("请求失败 ({code})"))
             };
             Err(ClientError {
+                status: code,
                 code: error_code,
                 message,
                 retry_after: body
@@ -250,6 +262,63 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
     }
 }
 
+fn is_auth_job(name: &str) -> bool {
+    matches!(
+        name,
+        "login"
+            | "register"
+            | "verify-email"
+            | "verification-resend"
+            | "password-reset-request"
+            | "password-reset-confirm"
+    )
+}
+
+fn is_background_job(name: &str) -> bool {
+    matches!(
+        name,
+        "quote"
+            | "tasks"
+            | "wallet"
+            | "capabilities"
+            | "models"
+            | "teams"
+            | "assets"
+            | "members"
+            | "plans"
+            | "orders"
+            | "local-cache"
+            | "personal-cache"
+    )
+}
+
+fn session_expired(error: &ClientError) -> bool {
+    error.status == 401
+        || matches!(
+            error.code.as_str(),
+            "SESSION_EXPIRED"
+                | "INVALID_SESSION"
+                | "INVALID_ACCESS_TOKEN"
+                | "AUTHENTICATION_REQUIRED"
+                | "UNAUTHORIZED"
+        )
+}
+
+fn sync_operation_state(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let cloud = state.borrow();
+    let names = std::iter::once(cloud.active_name.as_str())
+        .filter(|name| !name.is_empty())
+        .chain(cloud.pending.iter().map(|(name, _)| name.as_str()));
+    let (mut auth_busy, mut working) = (false, false);
+    for name in names {
+        auth_busy |= is_auth_job(name);
+        working |= !is_auth_job(name) && !is_background_job(name);
+    }
+    let ui = app.global::<SeeCut>();
+    ui.set_auth_busy(auth_busy);
+    ui.set_working(working);
+}
+
 fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
     if app.global::<SeeCut>().get_busy() {
         let mut c = state.borrow_mut();
@@ -257,6 +326,8 @@ fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
             c.pending.retain(|(n, _)| n != &name);
         }
         c.pending.push_back((name, req));
+        drop(c);
+        sync_operation_state(app, state);
         return;
     }
     let snapshot = state.borrow().clone();
@@ -269,8 +340,12 @@ fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
     let weak = app.as_weak();
     let state = state.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    app.global::<SeeCut>().set_busy(true);
-    app.global::<SeeCut>().set_error("".into());
+    let ui = app.global::<SeeCut>();
+    ui.set_busy(true);
+    if !is_background_job(&name) {
+        ui.set_error("".into());
+    }
+    sync_operation_state(app, &state);
     std::thread::spawn(move || {
         let result = call(&snapshot, &req).map(|mut value| {
             if req.path == "/api/generation/quote" {
@@ -309,6 +384,26 @@ fn poll(
             Ok(value) => publish(&app, &state, &name, value),
             Err(error) => {
                 let ui = app.global::<SeeCut>();
+                if ui.get_signed_in()
+                    && name != "logout"
+                    && !is_auth_job(&name)
+                    && session_expired(&error)
+                {
+                    clear_session(&app, &state, true);
+                    switch_auth(&ui, 0);
+                    ui.set_auth_open(true);
+                    ui.set_error("登录状态已失效，请重新登录".into());
+                    sync_operation_state(&app, &state);
+                    return;
+                }
+                if name == "logout" {
+                    clear_session(&app, &state, false);
+                    switch_auth(&ui, 0);
+                    ui.set_auth_open(true);
+                    ui.set_notice("已在本机退出登录".into());
+                    sync_operation_state(&app, &state);
+                    return;
+                }
                 if name == "login" {
                     ui.set_auth_password("".into());
                     if error.code == "EMAIL_NOT_VERIFIED" {
@@ -355,12 +450,19 @@ fn poll(
                 if name == "generate" {
                     refresh_quote(&app, &state);
                 }
-                ui.set_error(error.message.into());
+                if is_auth_job(&name)
+                    || !is_background_job(&name)
+                    || (!ui.get_auth_open() && ui.get_error().is_empty())
+                {
+                    ui.set_error(error.message.into());
+                }
             }
         }
         let next = state.borrow_mut().pending.pop_front();
         if let Some((name, req)) = next {
             job(&app, &state, name, req)
+        } else {
+            sync_operation_state(&app, &state);
         }
     });
 }
@@ -700,10 +802,97 @@ fn team_id(ui: &SeeCut, state: &Cloud) -> String {
         .unwrap_or_default()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavigationDecision {
+    Open(i32),
+    Authenticate { stay: i32, target: i32 },
+}
+
+fn navigation_decision(current: i32, target: i32, signed_in: bool) -> NavigationDecision {
+    let target = target.clamp(0, 5);
+    if !signed_in && matches!(target, 2..=4) {
+        NavigationDecision::Authenticate {
+            stay: current,
+            target,
+        }
+    } else {
+        NavigationDecision::Open(target)
+    }
+}
+
+fn auth_return_target(pending: Option<i32>, current: i32) -> i32 {
+    pending.unwrap_or(current).clamp(0, 5)
+}
+
+fn show_auth(app: &App, state: &Rc<RefCell<Cloud>>, target: Option<i32>) {
+    let ui = app.global::<SeeCut>();
+    if let Some(target) = target {
+        state.borrow_mut().auth_return_page = Some(target.clamp(0, 5));
+    }
+    if !ui.get_signed_in() {
+        switch_auth(&ui, 0);
+    }
+    ui.set_auth_open(true);
+}
+
+fn load_page(app: &App, state: &Rc<RefCell<Cloud>>, page: i32) {
+    let ui = app.global::<SeeCut>();
+    ui.set_page(page);
+    match page {
+        5 => personal_job(app, state, "list", Value::Null),
+        1 => {
+            refresh_models(app, state);
+            if ui.get_signed_in() {
+                job(
+                    app,
+                    state,
+                    "tasks".into(),
+                    request("GET", "/api/generation/tasks", Value::Null),
+                );
+            }
+        }
+        2 => job(
+            app,
+            state,
+            "teams".into(),
+            request("GET", "/api/teams", Value::Null),
+        ),
+        3 => {
+            job(
+                app,
+                state,
+                "plans".into(),
+                request("GET", "/api/credit-plans", Value::Null),
+            );
+            job(
+                app,
+                state,
+                "wallet".into(),
+                request("GET", "/api/wallet", Value::Null),
+            );
+            job(
+                app,
+                state,
+                "orders".into(),
+                request("GET", "/api/orders", Value::Null),
+            );
+        }
+        _ => {}
+    }
+}
+
+fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
+    let ui = app.global::<SeeCut>();
+    match navigation_decision(ui.get_page(), target, ui.get_signed_in()) {
+        NavigationDecision::Open(page) => load_page(app, state, page),
+        NavigationDecision::Authenticate { target, .. } => show_auth(app, state, Some(target)),
+    }
+}
+
 fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
     let ui = app.global::<SeeCut>();
     match name {
-        "personal" => {
+        "personal" | "personal-cache" => {
             state.borrow_mut().personal = items(&value);
             render_personal(app, state);
             if !text(&value, "notice").is_empty() {
@@ -716,12 +905,12 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 ui.set_error("登录响应缺少会话凭据".into());
                 return;
             }
-            clear(app, state);
+            clear_session(app, state, true);
             state.borrow_mut().token = token;
             ui.set_signed_in(true);
             ui.set_email(ui.get_auth_email());
             ui.set_auth_password("".into());
-            ui.set_page(1);
+            ui.set_auth_open(false);
             let uid = text(&value["user"], "id");
             let history_name = format!("{uid}-history.json");
             let history = state.borrow().folder.join(&history_name);
@@ -742,15 +931,27 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 "wallet".into(),
                 request("GET", "/api/wallet", Value::Null),
             );
-            refresh_models(app, state);
-            job(
-                app,
-                state,
-                "tasks".into(),
-                request("GET", "/api/generation/tasks", Value::Null),
-            );
+            let target =
+                auth_return_target(state.borrow_mut().auth_return_page.take(), ui.get_page());
+            load_page(app, state, target);
+            let pending_team_picker = std::mem::take(&mut state.borrow_mut().pending_team_picker);
+            if pending_team_picker {
+                job(
+                    app,
+                    state,
+                    "teams".into(),
+                    request("GET", "/api/teams", Value::Null),
+                );
+            }
+            if !state.borrow().pending_personal_references.is_empty() && target != 1 {
+                refresh_models(app, state);
+            }
         }
-        "logout" => clear(app, state),
+        "logout" => {
+            clear_session(app, state, false);
+            switch_auth(&ui, 0);
+            ui.set_auth_open(true);
+        }
         "register" => {
             switch_auth(&ui, 3);
             email_notice(app, &value);
@@ -760,7 +961,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
         }
         "verify-email" | "password-reset-confirm" => {
             if name == "password-reset-confirm" {
-                clear(app, state);
+                clear_session(app, state, false);
             }
             switch_auth(&ui, 0);
             ui.set_notice(
@@ -826,9 +1027,15 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 .cloned()
                 .unwrap_or_else(|| items(&value));
             update_model_options(app, state);
-            let reference = state.borrow_mut().pending_personal_reference.take();
-            if let Some((path, name)) = reference {
-                upload_personal_reference(app, state, path, name);
+            if ui.get_signed_in() {
+                let pending = std::mem::take(&mut state.borrow_mut().pending_personal_references);
+                if !pending.is_empty() {
+                    ui.set_asset_picker_open(false);
+                    ui.set_page(1);
+                }
+                for (path, name) in pending {
+                    upload_personal_reference(app, state, path, name);
+                }
             }
         }
         "quote" => {
@@ -890,7 +1097,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     .get(&id)
                     .is_some_and(|p| std::path::Path::new(p).is_file());
                 if needs_download && state.borrow_mut().download_attempts.insert(id.clone()) {
-                    download_task(app, state, &id, "save");
+                    download_task(app, state, &id, "cache", "");
                 }
             }
         }
@@ -965,7 +1172,10 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 state.borrow_mut().local.insert(text(&value, "id"), path);
                 ui.set_notice("已上传到团队资产库".into());
             }
-            refresh_assets(app, state);
+            let uploaded_team = text(&value, "intent_team");
+            if uploaded_team.is_empty() || uploaded_team == team_id(&ui, &state.borrow()) {
+                refresh_assets(app, state);
+            }
         }
         name if name.starts_with("reference:") => {
             let id = name.trim_start_matches("reference:");
@@ -982,7 +1192,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             render_references(app, state);
             refresh_quote(app, state);
         }
-        "local" => {
+        "local" | "local-cache" => {
             let path = text(&value, "path");
             let id = text(&value, "id");
             let generated = id.starts_with("gen_");
@@ -994,14 +1204,32 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             }
             render_tasks(app, state);
             render_assets(app, state);
-            match text(&value, "intent").as_str() {
+            let intent = text(&value, "intent");
+            match intent.as_str() {
                 "preview" => open_file(&path),
-                "import" => import_file(app, path.clone()),
+                "import" => import_or_queue(app, state, path.clone()),
                 "reference" => upload_file(app, state, path.clone(), "generation_input"),
+                "download" => ui.set_notice("结果已保存到本机".into()),
+                "save-team" => upload_file_for_team(
+                    app,
+                    state,
+                    path.clone(),
+                    "team_asset",
+                    text(&value, "intent_team"),
+                ),
                 _ => {}
             }
             if generated {
-                personal_job(app, state, "register", json!({"path":path}));
+                if intent == "cache" {
+                    job(
+                        app,
+                        state,
+                        "personal-cache".into(),
+                        request("POST", "local:library-register", json!({"path":path})),
+                    );
+                } else {
+                    personal_job(app, state, "register", json!({"path":path}));
+                }
             }
         }
         "purchase" | "order" | "orders" => {
@@ -1221,6 +1449,8 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
         2 => "generated",
         _ => "",
     };
+    let imports_into_project =
+        ui.get_asset_picker_open() && ui.get_asset_picker_purpose().as_str() == "import";
     let cloud = state.borrow();
     let row = |v: &Value| CloudItem {
         id: text(v, "id").into(),
@@ -1265,13 +1495,29 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
             .filter(|v| {
                 !v["trashed"].as_bool().unwrap_or(false)
                     && v["available"] == true
-                    && (ui.get_mode() != 0 || text(v, "kind") == "image")
+                    && (imports_into_project || ui.get_mode() != 0 || text(v, "kind") == "image")
             })
             .filter(|v| text(v, "name").to_lowercase().contains(&reference_search))
-            .filter(|v| reference_kind(&PathBuf::from(text(v, "path"))) != "unsupported")
+            .filter(|v| {
+                imports_into_project
+                    || reference_kind(&PathBuf::from(text(v, "path"))) != "unsupported"
+            })
             .map(row)
             .collect(),
     ));
+}
+
+fn enqueue_personal_reference(
+    queue: &mut VecDeque<(String, String)>,
+    path: String,
+    name: String,
+) -> bool {
+    if queue.iter().any(|(queued, _)| queued == &path) {
+        false
+    } else {
+        queue.push_back((path, name));
+        true
+    }
 }
 
 fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str) {
@@ -1298,6 +1544,9 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                     "teams".into(),
                     request("GET", "/api/teams", Value::Null),
                 );
+            } else {
+                state.borrow_mut().pending_team_picker = true;
+                show_auth(app, state, None);
             }
         }
         "personal-rename" | "personal-trash" | "personal-restore" => personal_job(
@@ -1324,18 +1573,29 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
             }
             match action {
                 "personal-preview" => open_file(&path),
-                "personal-project" => import_file(app, path),
+                "personal-project" => {
+                    ui.set_asset_picker_open(false);
+                    import_or_queue(app, state, path);
+                }
                 "personal-reference" => {
                     if !ui.get_signed_in() {
-                        ui.set_error("登录后可使用生成服务".into());
-                        ui.set_page(4);
+                        ui.set_asset_picker_open(false);
+                        enqueue_personal_reference(
+                            &mut state.borrow_mut().pending_personal_references,
+                            path,
+                            text(&asset, "name"),
+                        );
+                        show_auth(app, state, Some(1));
                         return;
                     }
                     ui.set_page(1);
                     ui.set_asset_picker_open(false);
                     if state.borrow().models.is_empty() {
-                        state.borrow_mut().pending_personal_reference =
-                            Some((path, text(&asset, "name")));
+                        enqueue_personal_reference(
+                            &mut state.borrow_mut().pending_personal_references,
+                            path,
+                            text(&asset, "name"),
+                        );
                         refresh_models(app, state);
                         return;
                     }
@@ -1380,6 +1640,8 @@ fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     let search = ui.get_asset_search().to_lowercase();
     let filter = ui.get_asset_filter();
+    let imports_into_project =
+        ui.get_asset_picker_open() && ui.get_asset_picker_purpose().as_str() == "import";
     let cloud = state.borrow();
     ui.set_assets(rows(
         cloud
@@ -1388,6 +1650,7 @@ fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
             .filter(|v| text(v, "filename").to_lowercase().contains(&search))
             .filter(|v| {
                 !ui.get_asset_picker_open()
+                    || imports_into_project
                     || ui.get_mode() != 0
                     || text(v, "content_type").starts_with("image/")
             })
@@ -1494,9 +1757,42 @@ fn refresh_quote(app: &App, state: &Rc<RefCell<Cloud>>) {
     }
 }
 fn upload_file(app: &App, state: &Rc<RefCell<Cloud>>, path: String, purpose: &str) {
+    let team = if purpose == "team_asset" {
+        team_id(&app.global::<SeeCut>(), &state.borrow())
+    } else {
+        String::new()
+    };
+    upload_file_for_team(app, state, path, purpose, team);
+}
+
+fn upload_file_for_team(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    path: String,
+    purpose: &str,
+    team: String,
+) {
     let ui = app.global::<SeeCut>();
     if !ui.get_signed_in() {
-        ui.set_error("请先登录再上传素材".into());
+        if purpose == "generation_input" {
+            let name = PathBuf::from(&path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            enqueue_personal_reference(
+                &mut state.borrow_mut().pending_personal_references,
+                path,
+                name,
+            );
+            show_auth(app, state, Some(1));
+        } else {
+            show_auth(app, state, Some(2));
+        }
+        return;
+    }
+    if purpose == "team_asset" && team.is_empty() {
+        ui.set_error("请选择要上传的团队".into());
         return;
     }
     let mut client_id = String::new();
@@ -1565,7 +1861,6 @@ fn upload_file(app: &App, state: &Rc<RefCell<Cloud>>, path: String, purpose: &st
         render_references(app, state);
         refresh_quote(app, state);
     }
-    let team = team_id(&app.global::<SeeCut>(), &state.borrow());
     job(
         app,
         state,
@@ -1581,7 +1876,7 @@ fn upload_file(app: &App, state: &Rc<RefCell<Cloud>>, path: String, purpose: &st
         ),
     );
 }
-fn download_task(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str) {
+fn download_task(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str, intent_team: &str) {
     let c = state.borrow().clone();
     if let Some(path) = c
         .local
@@ -1590,7 +1885,15 @@ fn download_task(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str) 
     {
         match intent {
             "preview" => open_file(path),
-            "import" => import_file(app, path.clone()),
+            "import" => import_or_queue(app, state, path.clone()),
+            "download" => app.global::<SeeCut>().set_notice("结果已保存到本机".into()),
+            "save-team" => upload_file_for_team(
+                app,
+                state,
+                path.clone(),
+                "team_asset",
+                intent_team.to_owned(),
+            ),
             _ => {}
         }
         return;
@@ -1607,17 +1910,35 @@ fn download_task(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str) 
         job(
             app,
             state,
-            "local".into(),
+            if intent == "cache" {
+                "local-cache".into()
+            } else {
+                "local".into()
+            },
             request(
                 "GET",
                 "local:download",
-                json!({"id":id,"url":out["download_url"],"path":path,"intent":intent}),
+                json!({"id":id,"url":out["download_url"],"path":path,"intent":intent,"intent_team":intent_team}),
             ),
         );
     }
 }
 fn download_asset(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str) {
     let c = state.borrow().clone();
+    if let Some(path) = c
+        .local
+        .get(id)
+        .filter(|path| std::path::Path::new(path).is_file())
+    {
+        match intent {
+            "preview" => open_file(path),
+            "import" => import_or_queue(app, state, path.clone()),
+            "reference" => upload_file(app, state, path.clone(), "generation_input"),
+            "download" => app.global::<SeeCut>().set_notice("素材已保存到本机".into()),
+            _ => {}
+        }
+        return;
+    }
     let team = team_id(&app.global::<SeeCut>(), &c);
     if let Some(asset) = c.assets.iter().find(|v| text(v, "id") == id) {
         let filename = text(asset, "filename");
@@ -1632,7 +1953,7 @@ fn download_asset(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str)
             request(
                 "GET",
                 "local:download",
-                json!({"id":id,"endpoint":format!("/api/teams/{team}/assets/{id}/download"),"path":c.folder.join(format!("{id}.{ext}")),"intent":intent}),
+                json!({"id":id,"endpoint":format!("/api/teams/{team}/assets/{id}/download"),"path":c.folder.join(format!("{id}.{ext}")),"intent":intent,"intent_team":""}),
             ),
         );
     }
@@ -1643,13 +1964,70 @@ fn open_file(path: &str) {
         let _ = opener::open(path);
     }
 }
-fn import_file(app: &App, path: String) {
+
+fn enqueue_pending_import(queue: &mut Vec<PathBuf>, path: PathBuf) -> bool {
+    if queue.iter().any(|queued| queued == &path) {
+        false
+    } else {
+        queue.push(path);
+        true
+    }
+}
+
+fn resume_pending_imports(queue: &mut Vec<PathBuf>) -> Vec<PathBuf> {
+    std::mem::take(queue)
+}
+
+fn cancel_pending_imports(queue: &mut Vec<PathBuf>) -> usize {
+    let count = queue.len();
+    queue.clear();
+    count
+}
+
+fn import_paths(app: &App, paths: Vec<PathBuf>) {
+    if paths.is_empty() {
+        return;
+    }
     app.global::<SeeCut>().set_page(0);
+    app.global::<SeeCut>().set_notice("".into());
     crate::host::on_ui(move |studio, _, _| {
         studio.handle(crate::panes::Msg::Media(
-            crate::panes::media_bin::MediaMsg::Import(vec![PathBuf::from(path)]),
+            crate::panes::media_bin::MediaMsg::Import(paths),
         ))
     });
+}
+
+fn import_or_queue(app: &App, state: &Rc<RefCell<Cloud>>, path: String) {
+    let ui = app.global::<SeeCut>();
+    if ui.get_project_open() {
+        import_paths(app, vec![PathBuf::from(path)]);
+        return;
+    }
+    let count = {
+        let mut cloud = state.borrow_mut();
+        enqueue_pending_import(&mut cloud.pending_imports, PathBuf::from(path));
+        cloud.pending_imports.len()
+    };
+    ui.set_pending_import_count(count as i32);
+    ui.set_page(0);
+    ui.set_notice("".into());
+}
+
+fn project_ready(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let paths = resume_pending_imports(&mut state.borrow_mut().pending_imports);
+    let ui = app.global::<SeeCut>();
+    ui.set_project_open(true);
+    ui.set_pending_import_count(0);
+    import_paths(app, paths);
+}
+
+fn cancel_project_import(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let count = cancel_pending_imports(&mut state.borrow_mut().pending_imports);
+    let ui = app.global::<SeeCut>();
+    ui.set_pending_import_count(0);
+    if count > 0 {
+        ui.set_notice("".into());
+    }
 }
 fn task_item(v: &Value) -> CloudItem {
     let status = text(v, "status");
@@ -1747,7 +2125,7 @@ fn update_model_options(app: &App, state: &Rc<RefCell<Cloud>>) {
     render_assets(app, state);
 }
 
-fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
+fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bool) {
     let mut cloud = state.borrow_mut();
     cloud.token.clear();
     cloud.quote_id.clear();
@@ -1756,8 +2134,20 @@ fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
     cloud.tasks.clear();
     cloud.assets.clear();
     cloud.teams.clear();
-    cloud.references.clear();
-    cloud.pending_personal_reference = None;
+    if preserve_auth_intent {
+        for reference in &mut cloud.references {
+            reference["id"] = Value::Null;
+            reference["status"] = json!("expired");
+            reference["error"] = json!("登录状态已变化，请重新上传");
+        }
+    } else {
+        cloud.references.clear();
+    }
+    if !preserve_auth_intent {
+        cloud.pending_personal_references.clear();
+        cloud.pending_team_picker = false;
+        cloud.auth_return_page = None;
+    }
     cloud.local.clear();
     cloud.orders.clear();
     cloud.submission = None;
@@ -1772,7 +2162,11 @@ fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
     ui.set_frozen("--".into());
     ui.set_tasks(rows(Vec::new()));
     ui.set_assets(rows(vec![]));
-    ui.set_references(rows(vec![]));
+    if preserve_auth_intent {
+        render_references(app, state);
+    } else {
+        ui.set_references(rows(vec![]));
+    }
     ui.set_members(rows(vec![]));
     ui.set_ledger(rows(vec![]));
     ui.set_orders(rows(vec![]));
@@ -1787,10 +2181,21 @@ fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
     ui.set_insufficient_credits(false);
     ui.set_selected_task(-1);
     ui.set_save_team_task("".into());
-    ui.set_asset_picker_open(false);
+    if !preserve_auth_intent {
+        ui.set_asset_picker_open(false);
+    }
     ui.set_mention_open(false);
-    ui.set_reference_error("".into());
+    ui.set_reference_error(
+        if preserve_auth_intent && !state.borrow().references.is_empty() {
+            "登录状态已变化，请逐项重传参考素材"
+        } else {
+            ""
+        }
+        .into(),
+    );
     ui.set_busy(false);
+    ui.set_working(false);
+    ui.set_auth_busy(false);
 }
 fn preferences_path() -> Option<PathBuf> {
     concat_host::AppDirs::locate()
@@ -1884,7 +2289,7 @@ fn auth_request(
 
 fn submit_auth(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
-    if ui.get_busy() {
+    if ui.get_auth_busy() {
         return;
     }
     match auth_request(
@@ -1908,7 +2313,7 @@ fn submit_auth(app: &App, state: &Rc<RefCell<Cloud>>) {
 
 fn send_auth_code(app: &App, state: &Rc<RefCell<Cloud>>, mode: i32) {
     let ui = app.global::<SeeCut>();
-    if ui.get_busy() || ui.get_auth_resend_seconds() > 0 {
+    if ui.get_auth_busy() || ui.get_auth_resend_seconds() > 0 {
         return;
     }
     match normalized_auth_email(ui.get_auth_email().as_str()) {
@@ -1977,6 +2382,9 @@ pub fn bind(app: &App) {
         .set_reduced_motion(saved["reduced_motion"].as_bool().unwrap_or(false));
     app.global::<SeeCut>()
         .set_local_folder(folder.to_string_lossy().into_owned().into());
+    app.global::<SeeCut>().set_page(1);
+    app.global::<SeeCut>().set_auth_open(true);
+    app.global::<SeeCut>().set_pending_import_count(0);
     let state = Rc::new(RefCell::new(Cloud {
         base,
         folder,
@@ -1986,18 +2394,45 @@ pub fn bind(app: &App) {
     let shared = state.clone();
     app.global::<SeeCut>().on_action(move |name, id| { let Some(app)=weak.upgrade() else{return}; let ui=app.global::<SeeCut>(); let team=team_id(&ui,&shared.borrow()); match name.as_str() {
         name if name.starts_with("personal-") => personal_action(&app,&shared,name,id.as_str()),
+        "auth-open" => show_auth(&app,&shared,id.parse::<i32>().ok()),
+        "auth-close" if !ui.get_auth_busy() => {
+            ui.set_auth_open(false);
+            ui.set_error("".into());
+            ui.set_notice("".into());
+            if !ui.get_signed_in() && ui.get_page()==4 { ui.set_page(1); }
+            ui.set_auth_password("".into());
+            ui.set_auth_password_confirm("".into());
+            ui.set_auth_token("".into());
+            if !ui.get_signed_in() {
+                let mut cloud=shared.borrow_mut();
+                cloud.auth_return_page=None;
+                cloud.pending_team_picker=false;
+                cloud.pending_personal_references.clear();
+            }
+        },
         "auth-submit" => submit_auth(&app, &shared),
-        "auth-switch" if !ui.get_busy() => { switch_auth(&ui, id.parse::<i32>().unwrap_or(0).clamp(0, 4)); },
+        "auth-switch" if !ui.get_auth_busy() => {
+            let mode=id.parse::<i32>().unwrap_or(0).clamp(0,4);
+            if mode==0 && ui.get_signed_in() && matches!(ui.get_auth_mode(),2|4) {
+                ui.set_auth_open(false);
+                ui.set_page(4);
+                shared.borrow_mut().auth_return_page=None;
+            } else { switch_auth(&ui,mode); }
+        },
         "auth-resend" => send_auth_code(&app, &shared, ui.get_auth_mode()),
-        "auth-verify-start" => { if let Err(error) = normalized_auth_email(ui.get_auth_email().as_str()) { ui.set_error(error.into()); } else if !ui.get_busy() { switch_auth(&ui, 3); send_auth_code(&app, &shared, 3); } },
-        "change-password"=>{ui.set_auth_email(ui.get_email());switch_auth(&ui,2);},
+        "auth-verify-start" => { if let Err(error) = normalized_auth_email(ui.get_auth_email().as_str()) { ui.set_error(error.into()); } else if !ui.get_auth_busy() { switch_auth(&ui, 3); send_auth_code(&app, &shared, 3); } },
+        "change-password"=>{ui.set_auth_email(ui.get_email());switch_auth(&ui,2);ui.set_auth_open(true);},
         "logout"=>job(&app,&shared,"logout".into(),request("POST","/api/auth/logout",Value::Null)),
         "wallet-refresh"=>job(&app,&shared,"wallet".into(),request("GET","/api/wallet",Value::Null)),
         "tasks-refresh"=>job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null)),
         "purchase"=>job(&app,&shared,"purchase".into(),request("POST","/api/orders",json!({"plan_id":id.to_string()}))),
         "order-refresh"=>job(&app,&shared,"order".into(),request("POST",format!("/api/orders/{id}/refresh"),Value::Null)),
-        "navigate"=>match id.as_str(){"5"=>personal_job(&app,&shared,"list",Value::Null),"1"=>{refresh_models(&app,&shared);if ui.get_signed_in(){job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null));}},"2"=>job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null)),"3"=>{job(&app,&shared,"plans".into(),request("GET","/api/credit-plans",Value::Null));job(&app,&shared,"wallet".into(),request("GET","/api/wallet",Value::Null));job(&app,&shared,"orders".into(),request("GET","/api/orders",Value::Null));},_=>{}},
+        "navigate"=>navigate(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
+        "project-assets"=>{ui.set_asset_picker_open(true);ui.set_asset_picker_purpose("import".into());ui.set_asset_picker_source(0);ui.set_personal_reference_search("".into());ui.set_trash_open(false);ui.set_asset_search("".into());ui.set_asset_filter(0);render_personal(&app,&shared);render_assets(&app,&shared);personal_job(&app,&shared,"list",Value::Null);},
+        "project-ready"=>project_ready(&app,&shared),
+        "cancel-project-import"=>cancel_project_import(&app,&shared),
         "generate"=>{
+            if !ui.get_signed_in(){show_auth(&app,&shared,Some(1));return;}
             let error = reference_validation(&ui, &shared.borrow());
             if !error.is_empty() { ui.set_error(error.into()); return; }
             let mut body=generation_body(&ui,&shared.borrow());
@@ -2019,8 +2454,8 @@ pub fn bind(app: &App) {
         "asset-restore"=>job(&app,&shared,"asset-change".into(),request("POST",format!("/api/teams/{team}/assets/{id}/restore"),Value::Null)),
         "reference-browse"|"asset-upload"=>{let extensions: &[&str] = if ui.get_mode()==0 { &["png","jpg","jpeg","webp"] } else { &["png","jpg","jpeg","webp","mp4","mov","mp3","wav"] }; if let Some(paths)=crate::platform::pick_files("选择素材",if name=="reference-browse"{Some(("参考素材",extensions))}else{None}){for path in paths{upload_file(&app,&shared,path.to_string_lossy().to_string(),if name=="asset-upload"{"team_asset"}else{"generation_input"});}}},
         "reference-drop"=>upload_file(&app,&shared,id.to_string(),"generation_input"),
-        "reference-team"=>{ui.set_asset_picker_open(true);ui.set_asset_picker_source(0);ui.set_personal_reference_search("".into());ui.set_trash_open(false);ui.set_asset_search("".into());ui.set_asset_filter(0);render_assets(&app,&shared);personal_job(&app,&shared,"list",Value::Null);},
-        "reference-source" if ui.get_asset_picker_source()==1 => job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null)),
+        "reference-team"=>{ui.set_asset_picker_open(true);ui.set_asset_picker_purpose("reference".into());ui.set_asset_picker_source(0);ui.set_personal_reference_search("".into());ui.set_trash_open(false);ui.set_asset_search("".into());ui.set_asset_filter(0);render_personal(&app,&shared);render_assets(&app,&shared);personal_job(&app,&shared,"list",Value::Null);},
+        "reference-source" if ui.get_asset_picker_source()==1 => {if ui.get_signed_in(){job(&app,&shared,"teams".into(),request("GET","/api/teams",Value::Null));}else{shared.borrow_mut().pending_team_picker=true;show_auth(&app,&shared,None);}},
         "reference-remove"=>remove_reference(&app,&shared,id.as_str()),
         "reference-mention"=>insert_mention(&app,&shared,id.as_str()),
         "reference-preview"=>{if let Some(item)=shared.borrow().references.iter().find(|v|text(v,"client_id")==id.as_str()){open_file(&text(item,"local_path"));}},
@@ -2033,8 +2468,10 @@ pub fn bind(app: &App) {
             }
         },
         "task-select"=>{},
-        "task-preview"|"task-download"|"task-import"=>download_task(&app,&shared,id.as_str(),if name=="task-import"{"import"}else{"preview"}),
-        "task-save-team"=>{let path=shared.borrow().local.get(id.as_str()).cloned();if team.is_empty(){ui.set_error("请先在团队资产中选择团队".into());}else if let Some(path)=path{upload_file(&app,&shared,path,"team_asset");}else{download_task(&app,&shared,id.as_str(),"save");ui.set_notice("下载完成后可保存到团队".into());}},
+        "task-preview"=>download_task(&app,&shared,id.as_str(),"preview",""),
+        "task-download"=>download_task(&app,&shared,id.as_str(),"download",""),
+        "task-import"=>download_task(&app,&shared,id.as_str(),"import",""),
+        "task-save-team"=>{if team.is_empty(){ui.set_error("请先选择要保存到的团队".into());}else{ui.set_notice("".into());download_task(&app,&shared,id.as_str(),"save-team",&team);}},
         "asset-preview"|"asset-download"|"asset-reference"|"asset-import"=>{
             if name=="asset-reference" {
                 let is_motion=shared.borrow().assets.iter().find(|v|text(v,"id")==id.as_str()).is_some_and(|v|text(v,"content_type").starts_with("video/") || text(v,"content_type").starts_with("audio/"));
@@ -2042,7 +2479,8 @@ pub fn bind(app: &App) {
                 if shared.borrow().references.len()>=ui.get_reference_max().max(0) as usize {ui.set_error(format!("当前模型最多支持 {} 项参考素材",ui.get_reference_max()).into());return;}
                 ui.set_asset_picker_open(false);ui.set_page(1);
             }
-            download_asset(&app,&shared,id.as_str(),match name.as_str(){"asset-reference"=>"reference","asset-import"=>"import",_=>"preview"});
+            if name=="asset-import" {ui.set_asset_picker_open(false);}
+            download_asset(&app,&shared,id.as_str(),match name.as_str(){"asset-reference"=>"reference","asset-import"=>"import","asset-download"=>"download",_=>"preview"});
         },
         "local-folder-browse"=>{#[cfg(not(any(target_os="ios",target_os="android")))]if let Some(folder)=rfd::FileDialog::new().pick_folder(){ui.set_local_folder(folder.to_string_lossy().into_owned().into());shared.borrow_mut().folder=folder;save_preferences(&app,&shared);}},
         _=>{}
@@ -2091,8 +2529,14 @@ pub fn bind(app: &App) {
             shared.borrow_mut().invite_id.clear();
             refresh_assets(&app, &shared);
         }
-        if field == "asset-search" || field == "asset-filter" {
+        if matches!(
+            field.as_str(),
+            "asset-search" | "asset-filter" | "asset-picker-purpose"
+        ) {
             render_assets(&app, &shared);
+        }
+        if field == "asset-picker-purpose" {
+            render_personal(&app, &shared);
         }
         if field.starts_with("personal-") {
             render_personal(&app, &shared);
@@ -2123,8 +2567,11 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
 #[cfg(test)]
 mod reference_tests {
     use super::{
-        DEFAULT_API_URL, auth_request, configured_api_url, invalid_reference_prompt, mention_start,
-        parameter_default_index, parameter_label, parameter_value, rewrite_mentions,
+        DEFAULT_API_URL, NavigationDecision, auth_request, auth_return_target,
+        cancel_pending_imports, configured_api_url, enqueue_pending_import,
+        enqueue_personal_reference, invalid_reference_prompt, is_background_job, mention_start,
+        navigation_decision, parameter_default_index, parameter_label, parameter_value,
+        resume_pending_imports, rewrite_mentions,
     };
     use serde_json::json;
 
@@ -2189,6 +2636,85 @@ mod reference_tests {
             configured_api_url(Some("http://127.0.0.1:8797")),
             "http://127.0.0.1:8797"
         );
+    }
+
+    #[test]
+    fn signed_out_navigation_keeps_the_current_page_and_returns_after_login() {
+        assert_eq!(
+            navigation_decision(1, 2, false),
+            NavigationDecision::Authenticate { stay: 1, target: 2 }
+        );
+        assert_eq!(
+            navigation_decision(1, 5, false),
+            NavigationDecision::Open(5)
+        );
+        assert_eq!(navigation_decision(1, 3, true), NavigationDecision::Open(3));
+        assert_eq!(auth_return_target(Some(2), 1), 2);
+        assert_eq!(auth_return_target(None, 1), 1);
+    }
+
+    #[test]
+    fn refresh_jobs_do_not_present_as_foreground_work() {
+        for name in [
+            "tasks",
+            "quote",
+            "wallet",
+            "capabilities",
+            "models",
+            "teams",
+            "assets",
+            "local-cache",
+            "personal-cache",
+        ] {
+            assert!(is_background_job(name), "{name}");
+        }
+        for name in ["generate", "local", "asset-change", "personal"] {
+            assert!(!is_background_job(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn pending_project_imports_dedupe_cancel_and_resume_once() {
+        let first = std::path::PathBuf::from("/tmp/first.png");
+        let second = std::path::PathBuf::from("/tmp/second.mp4");
+        let mut pending = Vec::new();
+        assert!(enqueue_pending_import(&mut pending, first.clone()));
+        assert!(!enqueue_pending_import(&mut pending, first.clone()));
+        assert!(enqueue_pending_import(&mut pending, second.clone()));
+        assert_eq!(pending.len(), 2);
+
+        let resumed = resume_pending_imports(&mut pending);
+        assert_eq!(resumed, vec![first.clone(), second.clone()]);
+        assert!(pending.is_empty());
+        assert!(resume_pending_imports(&mut pending).is_empty());
+
+        assert!(enqueue_pending_import(&mut pending, first));
+        assert!(enqueue_pending_import(&mut pending, second));
+        assert_eq!(cancel_pending_imports(&mut pending), 2);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn signed_out_reference_intents_keep_multiple_unique_files() {
+        let mut pending = std::collections::VecDeque::new();
+        assert!(enqueue_personal_reference(
+            &mut pending,
+            "/tmp/first.png".into(),
+            "first.png".into(),
+        ));
+        assert!(enqueue_personal_reference(
+            &mut pending,
+            "/tmp/second.png".into(),
+            "second.png".into(),
+        ));
+        assert!(!enqueue_personal_reference(
+            &mut pending,
+            "/tmp/first.png".into(),
+            "duplicate.png".into(),
+        ));
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending.pop_front().unwrap().1, "first.png");
+        assert_eq!(pending.pop_front().unwrap().1, "second.png");
     }
 
     #[test]

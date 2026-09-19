@@ -10,6 +10,8 @@ import { TextAlignment } from "../timeline/model.slint";
 import { CatalogueEntryData, Library } from "../inspector/clip-inspector.slint";
 import { SearchField } from "../inspector/controls.slint";
 import { Select } from "../primitives/select.slint";
+import { IconButton } from "../primitives/primitives.slint";
+import { SeeCut } from "../seecut/state.slint";
 
 // The library pane: a strip of pages across the top, then a narrow category
 // sidebar and the browsing area beside it. Media is the bin; Text adds a
@@ -1791,6 +1793,7 @@ export component MediaPane inherits Rectangle {
                         busy: root.importing;
                         clicked => { root.import-media(); }
                     }
+                    IconButton { glyph: Glyph.folder; label: "从个人 / 团队资产库导入"; enabled: !SeeCut.working; clicked => { SeeCut.action("project-assets", ""); } }
                     Rectangle { horizontal-stretch: 1; }
                     // Sort, and sort only: narrowing the bin by kind is the
                     // sidebar's, where each kind carries its count and the

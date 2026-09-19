@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { Theme, Modal, Glyph, Icon, IconButton } from "../primitives/primitives.slint";
+import { SeeCut } from "state.slint";
+import { AccountPage } from "account.slint";
+import { AppButton, Heading } from "components.slint";
+
+export component AuthDialog inherits Modal {
+    open: SeeCut.auth-open;
+    title: "SeeCut 账户";
+    glyph: Glyph.lock;
+    surface-width: Math.min(460px, root.width - 32px);
+    surface-height: Math.min(640px, root.height - 40px);
+    dismissable: !SeeCut.auth-busy;
+    closed => { SeeCut.action("auth-close", ""); }
+    if SeeCut.auth-open: FocusScope {
+        vertical-stretch: 1;
+        key-pressed(event) => {
+            if event.text == Key.Escape && !SeeCut.auth-busy { SeeCut.action("auth-close", ""); return accept; }
+            return reject;
+        }
+        VerticalLayout {
+            AccountPage { authentication: true; vertical-stretch: 1; }
+            if !SeeCut.signed-in: HorizontalLayout {
+                padding-left: 24px; padding-right: 24px; padding-bottom: 16px;
+                alignment: center;
+                AppButton { label: "先使用本地剪辑和个人资产"; subtle: true; enabled: !SeeCut.auth-busy; clicked => { SeeCut.action("auth-close", ""); SeeCut.action("navigate", "0"); } }
+            }
+        }
+    }
+}
+
+export component WorkflowFeedback inherits VerticalLayout {
+    spacing: 0px;
+    if SeeCut.pending-import-count > 0 && SeeCut.page == 0: Rectangle {
+        min-height: 48px; background: Theme.field-active;
+        HorizontalLayout {
+            padding: 10px; spacing: 8px;
+            Text { text: "已选 " + SeeCut.pending-import-count + " 项素材。创建或打开项目后自动导入。"; color: Theme.fg; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+            AppButton { label: "取消导入"; subtle: true; clicked => { SeeCut.action("cancel-project-import", ""); } }
+        }
+    }
+    if !SeeCut.auth-open && !SeeCut.asset-picker-open && SeeCut.error != "": Rectangle {
+        min-height: 42px; background: Theme.danger-soft;
+        HorizontalLayout {
+            padding: 10px; spacing: 8px;
+            Text { text: SeeCut.error; color: Theme.danger; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+            IconButton { glyph: Glyph.close; label: "关闭提示"; clicked => { SeeCut.error = ""; } }
+        }
+    }
+    if !SeeCut.auth-open && !SeeCut.asset-picker-open && SeeCut.notice != "" && SeeCut.pending-import-count == 0: Rectangle {
+        min-height: 38px; background: Theme.field;
+        HorizontalLayout {
+            padding: 8px; spacing: 8px;
+            Text { text: SeeCut.notice; color: Theme.fg-muted; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+            IconButton { glyph: Glyph.close; label: "关闭提示"; clicked => { SeeCut.notice = ""; } }
+        }
+    }
+}
+
+export component EditorBridgeBar inherits Rectangle {
+    in property <string> project-name;
+    height: 46px;
+    background: Theme.panel;
+    HorizontalLayout {
+        padding-left: 16px; padding-right: 12px; spacing: 8px;
+        Text { text: SeeCut.project-open ? root.project-name : "剪辑项目"; color: Theme.fg; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+        AppButton { label: "资产库"; glyph: Glyph.folder; enabled: !SeeCut.working; clicked => { SeeCut.action("project-assets", ""); } }
+        AppButton { label: "去生成"; glyph: Glyph.sparkle; clicked => { SeeCut.action("navigate", "1"); } }
+        AppButton { label: "Agent"; clicked => { SeeCut.agent-open = !SeeCut.agent-open; } }
+    }
+    Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.line; }
+}
+
+// A stable workspace companion slot. Agent execution is a later feature.
+export component AgentPanel inherits Rectangle {
+    in property <string> project-name;
+    background: Theme.panel;
+    Rectangle { width: 1px; height: 100%; background: Theme.line; }
+    VerticalLayout {
+        padding: 16px; spacing: 16px;
+        HorizontalLayout {
+            Heading { text: "Agent"; horizontal-stretch: 1; }
+            IconButton { glyph: Glyph.close; label: "收起 Agent"; clicked => { SeeCut.agent-open = false; } }
+        }
+        Text { text: "即将开放"; color: Theme.fg-dim; }
+        Rectangle { height: 1px; background: Theme.line; }
+        Text { text: SeeCut.project-open ? "当前项目 · " + root.project-name : "还没有打开剪辑项目"; color: Theme.fg-muted; wrap: word-wrap; }
+        Text { text: "未来在这里用对话生成内容、整理素材，并协助完成剪辑。"; color: Theme.fg-muted; wrap: word-wrap; }
+        Rectangle { vertical-stretch: 1; }
+    }
+}

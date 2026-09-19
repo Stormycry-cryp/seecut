@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Select, SegmentedControl, Glyph, Icon, Modal } from "../primitives/primitives.slint";
+import { SeeCut } from "state.slint";
+import { AppButton, CloudField } from "components.slint";
+
+export component AssetPicker inherits Modal {
+    open: SeeCut.asset-picker-open;
+    title: SeeCut.asset-picker-purpose == "import" ? "从资产库导入项目" : "选择参考素材";
+    glyph: Glyph.folder;
+    surface-width: Math.min(640px, root.width - 32px);
+    surface-height: Math.min(640px, root.height - 32px);
+    closed => { SeeCut.asset-picker-open = false; }
+    FocusScope {
+        enabled: !SeeCut.auth-open;
+        vertical-stretch: 1;
+        key-pressed(event) => { if event.text == Key.Escape { SeeCut.asset-picker-open = false; return accept; } return reject; }
+        VerticalLayout {
+            padding: 16px; spacing: 10px;
+            SegmentedControl { options: ["个人资产", "团队资产"]; current: SeeCut.asset-picker-source; changed(index) => { SeeCut.asset-picker-source = index; SeeCut.action("reference-source", ""); } }
+            Text { text: SeeCut.asset-picker-purpose == "import" ? (SeeCut.project-open ? "素材将加入当前项目素材箱，可继续拖入时间线。" : "选好素材后，创建或打开项目即可继续导入。") : "选择素材后，在提示词中输入 @ 引用。"; color: Theme.fg-dim; wrap: word-wrap; }
+            if SeeCut.asset-picker-source == 0: CloudField { auto-focus: true; value <=> SeeCut.personal-reference-search; placeholder: "搜索个人素材"; edited(value) => { SeeCut.changed("personal-reference-search", value); } }
+            if SeeCut.asset-picker-source == 1 && SeeCut.signed-in: Select { options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); } }
+            if SeeCut.asset-picker-source == 1 && SeeCut.signed-in: CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队素材"; edited(value) => { SeeCut.changed("asset-search", value); } }
+            if SeeCut.asset-picker-source == 1 && !SeeCut.signed-in: AppButton { label: "登录查看团队资产"; clicked => { SeeCut.action("auth-open", ""); } }
+            if SeeCut.asset-picker-source == 1 && SeeCut.signed-in && SeeCut.team-names.length == 0: AppButton { label: "创建或加入团队"; clicked => { SeeCut.asset-picker-open = false; SeeCut.action("navigate", "2"); } }
+            if (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references.length == 0 : SeeCut.assets.length == 0): Text { text: SeeCut.working ? "正在加载素材" : "暂无可用素材"; color: Theme.fg-muted; }
+            ScrollView {
+                min-height: 80px; vertical-stretch: 1;
+                viewport-width: self.width; horizontal-scrollbar-policy: always-off;
+                VerticalLayout {
+                    alignment: start; spacing: 6px;
+                    for asset in (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references : SeeCut.assets): Rectangle {
+                        height: 58px; background: Theme.well; border-radius: Theme.r-sm;
+                        HorizontalLayout {
+                            padding: 6px; spacing: 10px;
+                            Rectangle {
+                                width: 46px; height: 46px; background: Theme.stage;
+                                Icon { x: 14px; y: 14px; size: 18px; glyph: asset.kind == "video" ? Glyph.film : asset.kind == "audio" ? Glyph.music : Glyph.image; tint: Theme.fg-dim; }
+                                Image { width: 100%; height: 100%; source: asset.preview; image-fit: contain; }
+                            }
+                            Text { text: asset.name; color: Theme.fg; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                            AppButton { glyph: Glyph.plus; label: SeeCut.asset-picker-purpose == "import" ? "导入" : "添加参考"; enabled: !SeeCut.working; clicked => { SeeCut.action(SeeCut.asset-picker-purpose == "import" ? (SeeCut.asset-picker-source == 0 ? "personal-project" : "asset-import") : (SeeCut.asset-picker-source == 0 ? "personal-reference" : "asset-reference"), asset.id); } }
+                        }
+                    }
+                }
+            }
+            if SeeCut.error != "": Text { text: SeeCut.error; color: Theme.danger; wrap: word-wrap; }
+            if SeeCut.asset-picker-source == 0: AppButton { label: "导入本地素材到个人资产"; glyph: Glyph.import; enabled: !SeeCut.working; clicked => { SeeCut.action("personal-browse", ""); } }
+            if SeeCut.working: Text { text: "正在读取素材"; color: Theme.fg-dim; }
+            AppButton { label: "完成"; clicked => { SeeCut.asset-picker-open = false; } }
+        }
+    }
+}
