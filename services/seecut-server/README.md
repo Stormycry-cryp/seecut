@@ -48,6 +48,10 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 The local signed storage implementation is an interface-compatible first step. Production deployment can replace it with private COS upload/download signatures without changing the client workflow.
 
+### Tencent Cloud SES
+
+Use `.env.tencent.example` as the production template. It uses Tencent Cloud SES SMTP at `smtp.qcloudmail.com:587` with STARTTLS and sends from `no-reply@stormycry.cloud`. The sender address must first be verified in Tencent Cloud SES; keep the SMTP username and password in the server-only environment file. The template leaves Alipay unset, so credit orders remain unavailable until merchant settings are added.
+
 ## Configuration
 
 All supported variables are documented in `.env.example`. `GET /api/capabilities` reports whether email, Xiangxin and Alipay configuration is complete without revealing credential values.
