@@ -1319,6 +1319,8 @@ class SeeCutService:
             )
             return
         url = upstream.get("result_url") or upstream.get("video_url") or data.get("result_url") or data.get("video_url")
+        if isinstance(url, str) and url.startswith("/"):
+            url = self.config.xiangxin_base_url.rstrip("/") + url
         if status in {"completed", "succeeded", "success"} and isinstance(url, str):
             self._set_task_status(task["id"], "validating", upstream)
             content, content_type = self._download_provider_result(url, "video")
@@ -1332,7 +1334,11 @@ class SeeCutService:
             parsed.hostname == host or parsed.hostname.endswith("." + host) for host in self.config.provider_result_hosts
         ):
             raise ApiError(502, "PROVIDER_RESULT_HOST_DENIED", "上游结果地址不在允许范围")
-        request = urllib.request.Request(url, headers={"Accept": "image/*,video/*"})
+        headers = {"Accept": "image/*,video/*"}
+        provider_host = urllib.parse.urlsplit(self.config.xiangxin_base_url).hostname
+        if provider_host and parsed.hostname == provider_host and self.config.xiangxin_api_key:
+            headers["Authorization"] = f"Bearer {self.config.xiangxin_api_key}"
+        request = urllib.request.Request(url, headers=headers)
         try:
             with open_no_redirect(request, timeout=self.config.provider_timeout_seconds) as response:
                 content_type = response.headers.get_content_type()
