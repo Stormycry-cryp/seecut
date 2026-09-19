@@ -11,48 +11,105 @@ export component AccountPage inherits Rectangle {
         horizontal-scrollbar-policy: always-off;
         VerticalLayout {
             width: account-scroll.visible-width;
-            padding: 28px;
-            spacing: 16px;
+            padding: 24px;
+            spacing: 20px;
             alignment: start;
-            if !SeeCut.signed-in: HorizontalLayout {
+            if !SeeCut.signed-in || SeeCut.auth-mode >= 2: HorizontalLayout {
                 alignment: center;
                 VerticalLayout {
                     min-width: 0px;
-                    max-width: 360px;
-                    preferred-width: 360px;
-                    spacing: 12px;
-                    Heading { text: SeeCut.auth-mode == 2 ? "重置密码" : SeeCut.auth-mode == 3 ? "验证邮箱" : SeeCut.auth-mode == 1 ? "注册 SeeCut" : "登录 SeeCut"; }
-                    if SeeCut.auth-mode < 2: SegmentedControl {
-                        options: ["登录", "注册"];
-                        current: SeeCut.auth-mode;
-                        changed(index) => { SeeCut.auth-mode = index; SeeCut.error = ""; }
+                    max-width: 380px;
+                    preferred-width: 380px;
+                    spacing: 16px;
+                    Rectangle { height: 16px; }
+                    Heading {
+                        text: SeeCut.auth-mode == 0 ? "登录 SeeCut" : SeeCut.auth-mode == 1 ? "创建账号" : SeeCut.auth-mode == 2 ? "找回密码" : SeeCut.auth-mode == 3 ? "验证邮箱" : "设置新密码";
+                        font-size: 24px;
                     }
-                    Label { text: "邮箱"; }
-                    CloudField { value <=> SeeCut.auth-email; placeholder: "输入邮箱地址"; enabled: !SeeCut.busy; }
-                    if SeeCut.auth-mode < 2 || (SeeCut.auth-mode == 2 && SeeCut.auth-token != ""): VerticalLayout {
+                    if SeeCut.auth-mode == 1: Text { text: "使用邮箱创建个人账号"; color: Theme.fg-muted; wrap: word-wrap; }
+                    if SeeCut.auth-mode == 2: Text { text: "输入注册邮箱，获取重置密码的验证码"; color: Theme.fg-muted; wrap: word-wrap; }
+                    if SeeCut.auth-mode < 3: VerticalLayout {
                         spacing: 6px;
-                        Label { text: SeeCut.auth-mode == 2 ? "新密码" : "密码"; }
-                        CloudField { value <=> SeeCut.auth-password; password: true; placeholder: SeeCut.auth-mode == 0 ? "输入密码" : "至少 10 位字符"; enabled: !SeeCut.busy; }
+                        Label { text: "邮箱"; }
+                        email := CloudField {
+                            value <=> SeeCut.auth-email;
+                            placeholder: "name@example.com";
+                            enabled: !SeeCut.busy && !SeeCut.signed-in;
+                            key-event(text) => { if text == "\n" { SeeCut.action("auth-submit", ""); return true; } return false; }
+                        }
                     }
-                    if SeeCut.auth-mode >= 2: VerticalLayout {
-                        spacing: 6px;
-                        Label { text: "邮件验证码"; }
-                        CloudField { value <=> SeeCut.auth-token; placeholder: "输入邮件中的验证码"; enabled: !SeeCut.busy; }
-                    }
-                    AppButton {
-                        label: SeeCut.busy ? "请稍候" : SeeCut.auth-mode == 0 ? "登录" : SeeCut.auth-mode == 1 ? "注册" : SeeCut.auth-mode == 3 ? "验证邮箱" : SeeCut.auth-token == "" ? "发送重置邮件" : "重置密码";
-                        primary: true;
-                        enabled: !SeeCut.busy && SeeCut.auth-email != "" && (SeeCut.auth-mode >= 2 || SeeCut.auth-password != "");
-                        clicked => { SeeCut.action(SeeCut.auth-mode == 0 ? "login" : SeeCut.auth-mode == 1 ? "register" : SeeCut.auth-mode == 3 ? "verify-email" : SeeCut.auth-token == "" ? "password-reset-request" : "password-reset-confirm", ""); }
-                    }
-                    HorizontalLayout {
+                    if SeeCut.auth-mode >= 3: VerticalLayout {
                         spacing: 8px;
-                        AppButton { label: SeeCut.auth-mode < 2 ? "忘记密码" : "返回登录"; clicked => { SeeCut.auth-mode = SeeCut.auth-mode < 2 ? 2 : 0; SeeCut.auth-password = ""; SeeCut.auth-token = ""; SeeCut.error = ""; } }
-                        if SeeCut.auth-mode == 3: AppButton { label: "重新发送"; enabled: !SeeCut.busy; clicked => { SeeCut.action("verification-resend", ""); } }
+                        Text { text: SeeCut.auth-email; color: Theme.fg-muted; wrap: word-wrap; min-width: 0px; }
+                        Label { text: "邮件验证码"; }
+                        CloudField {
+                            value <=> SeeCut.auth-token;
+                            placeholder: "输入 6 位验证码";
+                            enabled: !SeeCut.busy;
+                            key-event(text) => { if text == "\n" { SeeCut.action("auth-submit", ""); return true; } return false; }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            AppButton { label: SeeCut.auth-resend-seconds > 0 ? SeeCut.auth-resend-seconds + " 秒后重发" : "重新发送验证码"; subtle: true; enabled: !SeeCut.busy && SeeCut.auth-resend-seconds == 0; clicked => { SeeCut.action("auth-resend", ""); } }
+                            Rectangle { horizontal-stretch: 1; }
+                            if !SeeCut.signed-in: AppButton { label: "更换邮箱"; subtle: true; enabled: !SeeCut.busy; clicked => { SeeCut.action("auth-switch", SeeCut.auth-mode == 4 ? "2" : "0"); } }
+                        }
+                    }
+                    if SeeCut.auth-mode < 2 || SeeCut.auth-mode == 4: VerticalLayout {
+                        spacing: 6px;
+                        Label { text: SeeCut.auth-mode == 4 ? "新密码" : "密码"; }
+                        CloudField {
+                            value <=> SeeCut.auth-password;
+                            password: true;
+                            placeholder: SeeCut.auth-mode == 0 ? "输入密码" : "设置密码";
+                            enabled: !SeeCut.busy;
+                            key-event(text) => { if text == "\n" { SeeCut.action("auth-submit", ""); return true; } return false; }
+                        }
+                        if SeeCut.auth-mode != 0: Text { text: "10–128 个字符"; color: Theme.fg-dim; font-size: Theme.fs-sm; }
+                    }
+                    if SeeCut.auth-mode == 1 || SeeCut.auth-mode == 4: VerticalLayout {
+                        spacing: 6px;
+                        Label { text: "确认密码"; }
+                        CloudField {
+                            value <=> SeeCut.auth-password-confirm;
+                            password: true;
+                            placeholder: "再次输入密码";
+                            enabled: !SeeCut.busy;
+                            key-event(text) => { if text == "\n" { SeeCut.action("auth-submit", ""); return true; } return false; }
+                        }
+                    }
+                    if SeeCut.error != "": Text { text: SeeCut.error; color: Theme.danger; wrap: word-wrap; min-width: 0px; }
+                    if SeeCut.notice != "": Text { text: SeeCut.notice; color: Theme.fg-muted; wrap: word-wrap; min-width: 0px; }
+                    AppButton {
+                        label: SeeCut.busy ? "正在处理…" : SeeCut.auth-mode == 0 ? "登录" : SeeCut.auth-mode == 1 ? "创建账号" : SeeCut.auth-mode == 2 ? "发送验证码" : SeeCut.auth-mode == 3 ? "验证邮箱" : "保存新密码";
+                        primary: true;
+                        height: 40px;
+                        horizontal-stretch: 1;
+                        enabled: !SeeCut.busy;
+                        clicked => { SeeCut.action("auth-submit", ""); }
+                    }
+                    if SeeCut.auth-mode == 0: HorizontalLayout {
+                        spacing: 4px;
+                        AppButton { label: "创建账号"; subtle: true; enabled: !SeeCut.busy; clicked => { SeeCut.action("auth-switch", "1"); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        AppButton { label: "忘记密码"; subtle: true; enabled: !SeeCut.busy; clicked => { SeeCut.action("auth-switch", "2"); } }
+                    }
+                    if SeeCut.auth-mode == 0: AppButton {
+                        label: "继续验证邮箱";
+                        subtle: true;
+                        enabled: !SeeCut.busy;
+                        clicked => { SeeCut.action("auth-verify-start", ""); }
+                    }
+                    if SeeCut.auth-mode > 0: AppButton {
+                        label: SeeCut.signed-in ? "返回账号" : SeeCut.auth-mode == 1 ? "已有账号？登录" : "返回登录";
+                        glyph: SeeCut.auth-mode == 1 ? Glyph.none : Glyph.chevron-left;
+                        subtle: true;
+                        enabled: !SeeCut.busy;
+                        clicked => { SeeCut.action("auth-switch", "0"); }
                     }
                 }
             }
-            if SeeCut.signed-in: VerticalLayout {
+            if SeeCut.signed-in && SeeCut.auth-mode < 2: VerticalLayout {
                 spacing: 12px;
                 Heading { text: "个人账号"; }
                 Text { text: SeeCut.email; color: Theme.fg; font-size: 16px; overflow: elide; min-width: 0px; }
@@ -63,6 +120,8 @@ export component AccountPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                 }
             }
+            if SeeCut.signed-in && SeeCut.auth-mode < 2: VerticalLayout {
+            spacing: 16px;
             Rectangle { height: 12px; }
             Rectangle { height: 1px; background: Theme.line; }
             Heading { text: "偏好设置"; }
@@ -73,11 +132,6 @@ export component AccountPage inherits Rectangle {
                 AppButton { label: "选择文件夹"; glyph: Glyph.folder; clicked => { SeeCut.action("local-folder-browse", ""); } }
             }
             CheckBox { text: "减少动态效果"; checked <=> SeeCut.reduced-motion; toggled => { SeeCut.changed("reduced-motion", self.checked ? "true" : "false"); } }
-            Label { text: "服务地址"; }
-            HorizontalLayout {
-                spacing: 8px;
-                CloudField { value <=> SeeCut.server-url; placeholder: "https://"; enabled: !SeeCut.busy; }
-                AppButton { label: "连接"; enabled: !SeeCut.busy && SeeCut.server-url != ""; clicked => { SeeCut.action("server-connect", SeeCut.server-url); } }
             }
         }
     }

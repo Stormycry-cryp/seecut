@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Theme, Glyph, Icon, FocusRing, Tip } from "../primitives/primitives.slint";
+import { Theme, Glyph, Icon, IconButton, FocusRing, Tip } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
 
 export component AppButton inherits Rectangle {
@@ -8,6 +8,7 @@ export component AppButton inherits Rectangle {
     in property <Glyph> glyph;
     in property <bool> primary;
     in property <bool> danger;
+    in property <bool> subtle;
     in property <bool> enabled: true;
     callback clicked();
     height: 32px;
@@ -15,13 +16,13 @@ export component AppButton inherits Rectangle {
     min-width: caption.preferred-width + 24px + (root.glyph == Glyph.none ? 0px : 22px);
     border-radius: Theme.r;
     opacity: root.enabled ? 1 : 0.4;
-    background: root.primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+    background: root.subtle ? Colors.transparent : root.primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
         : touch.has-hover ? Theme.field-hover : Theme.field;
-    border-width: 1px;
+    border-width: root.subtle ? 0px : 1px;
     border-color: root.primary ? Theme.accent : Theme.line;
     animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
     property <bool> ring;
-    property <brush> ink: root.primary ? Theme.on-accent : root.danger ? Theme.danger : Theme.fg;
+    property <brush> ink: root.primary ? Theme.on-accent : root.danger ? Theme.danger : root.subtle ? Theme.accent : Theme.fg;
     accessible-role: button;
     accessible-label: root.label;
     accessible-enabled: root.enabled;
@@ -61,6 +62,7 @@ export component CloudField inherits Rectangle {
     in-out property <string> value;
     in property <string> placeholder;
     in property <bool> password;
+    property <bool> revealed;
     in property <bool> multiline;
     in property <bool> enabled: true;
     callback edited(value: string);
@@ -79,7 +81,7 @@ export component CloudField inherits Rectangle {
     input := TextInput {
         x: 10px;
         y: root.multiline ? 10px : (parent.height - self.height) / 2;
-        width: parent.width - 20px;
+        width: parent.width - (root.password ? 46px : 20px);
         height: root.multiline ? parent.height - 20px : self.preferred-height;
         text <=> root.value;
         enabled: root.enabled;
@@ -87,12 +89,20 @@ export component CloudField inherits Rectangle {
         font-size: Theme.fs-lg;
         single-line: !root.multiline;
         wrap: root.multiline ? word-wrap : no-wrap;
-        input-type: root.password ? InputType.password : InputType.text;
+        input-type: root.password && !root.revealed ? InputType.password : InputType.text;
         selection-background-color: Theme.accent;
         selection-foreground-color: Theme.on-accent;
         edited => { root.edited(self.text); }
         cursor-position-changed(position) => { root.cursor-moved(self.cursor-position-byte-offset); }
         key-pressed(event) => { return root.key-event(event.text) ? EventResult.accept : EventResult.reject; }
+    }
+    if root.password: IconButton {
+        x: parent.width - self.width - 3px;
+        y: (parent.height - self.height) / 2;
+        glyph: Glyph.eye;
+        label: root.revealed ? "隐藏密码" : "显示密码";
+        enabled: root.enabled;
+        clicked => { root.revealed = !root.revealed; input.focus(); }
     }
     if root.value == "": Text {
         x: 10px;

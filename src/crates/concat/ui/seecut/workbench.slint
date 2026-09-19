@@ -28,7 +28,7 @@ export component CloudWorkbench inherits Rectangle {
             }
             Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.line; }
         }
-        if SeeCut.error != "": Rectangle {
+        if SeeCut.error != "" && (SeeCut.page != 4 || (SeeCut.signed-in && SeeCut.auth-mode < 2)): Rectangle {
             min-height: 44px;
             background: Theme.danger-soft;
             HorizontalLayout {
@@ -41,7 +41,7 @@ export component CloudWorkbench inherits Rectangle {
                 IconButton { glyph: Glyph.close; label: "关闭提示"; clicked => { SeeCut.error = ""; } }
             }
         }
-        if SeeCut.notice != "": Rectangle {
+        if SeeCut.notice != "" && (SeeCut.page != 4 || (SeeCut.signed-in && SeeCut.auth-mode < 2)): Rectangle {
             min-height: 40px;
             background: Theme.field;
             HorizontalLayout {

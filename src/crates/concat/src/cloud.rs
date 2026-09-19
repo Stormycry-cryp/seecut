@@ -14,6 +14,30 @@ use std::{
 };
 use url::Url;
 
+const DEFAULT_API_URL: &str = "https://seecut.stormycry.cloud";
+
+struct ClientError {
+    code: String,
+    message: String,
+    retry_after: i32,
+}
+
+impl From<String> for ClientError {
+    fn from(message: String) -> Self {
+        Self {
+            code: String::new(),
+            message,
+            retry_after: 0,
+        }
+    }
+}
+
+impl From<&str> for ClientError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
 #[derive(Clone, Default)]
 struct Cloud {
     base: String,
@@ -99,7 +123,7 @@ fn base_url(raw: &str) -> Result<String, String> {
     Ok(raw.trim().trim_end_matches('/').to_owned())
 }
 
-fn call(c: &Cloud, req: &Request) -> Result<Value, String> {
+fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
     if req.path == "local:upload" {
         let path = PathBuf::from(text(&req.body, "path"));
         let team = text(&req.body, "team");
@@ -166,16 +190,26 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, String> {
             .map_err(|_| "服务器返回了无效数据".into()),
         Err(ureq::Error::Status(code, response)) => {
             let body: Value = response.into_json().unwrap_or_default();
-            if text(&body["error"], "code").starts_with("GENERATION_ASSET_") {
-                return Err("参考素材已过期或不可用，请重新上传".into());
-            }
-            Err(body
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("请求失败 ({code})")))
+            let error_code = text(&body["error"], "code");
+            let message = if error_code.starts_with("GENERATION_ASSET_") {
+                "参考素材已过期或不可用，请重新上传".into()
+            } else {
+                body.pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("请求失败 ({code})"))
+            };
+            Err(ClientError {
+                code: error_code,
+                message,
+                retry_after: body
+                    .pointer("/error/retry_after")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    .clamp(0, 3600) as i32,
+            })
         }
-        Err(_) => Err("连接中断，请检查服务器后重试".into()),
+        Err(_) => Err("暂时无法连接 SeeCut，请检查网络后重试".into()),
     }
 }
 
@@ -217,7 +251,7 @@ fn poll(
     state: Rc<RefCell<Cloud>>,
     name: String,
     epoch: u64,
-    rx: std::sync::mpsc::Receiver<Result<Value, String>>,
+    rx: std::sync::mpsc::Receiver<Result<Value, ClientError>>,
 ) {
     slint::Timer::single_shot(Duration::from_millis(80), move || {
         let Some(app) = weak.upgrade() else { return };
@@ -237,8 +271,28 @@ fn poll(
         match result {
             Ok(value) => publish(&app, &state, &name, value),
             Err(error) => {
+                let ui = app.global::<SeeCut>();
+                if name == "login" {
+                    ui.set_auth_password("".into());
+                    if error.code == "EMAIL_NOT_VERIFIED" {
+                        switch_auth(&ui, 3);
+                    }
+                }
+                if name == "register" && error.code == "EMAIL_ALREADY_REGISTERED" {
+                    switch_auth(&ui, 0);
+                }
+                if name == "register" && error.code == "EMAIL_DELIVERY_UNAVAILABLE" {
+                    switch_auth(&ui, 3);
+                }
+                if matches!(
+                    name.as_str(),
+                    "verification-resend" | "password-reset-request"
+                ) && error.retry_after > 0
+                {
+                    ui.set_auth_resend_seconds(error.retry_after);
+                }
                 if matches!(name.as_str(), "quote" | "generate")
-                    && error == "参考素材已过期或不可用，请重新上传"
+                    && error.code.starts_with("GENERATION_ASSET_")
                 {
                     for item in &mut state.borrow_mut().references {
                         if text(item, "status") == "ready" {
@@ -256,7 +310,7 @@ fn poll(
                         .find(|v| text(v, "client_id") == id)
                     {
                         item["status"] = json!("failed");
-                        item["error"] = json!(error);
+                        item["error"] = json!(error.message);
                     }
                     render_references(&app, &state);
                     refresh_quote(&app, &state);
@@ -264,7 +318,7 @@ fn poll(
                 if name == "generate" {
                     refresh_quote(&app, &state);
                 }
-                app.global::<SeeCut>().set_error(error.into());
+                ui.set_error(error.message.into());
             }
         }
         let next = state.borrow_mut().pending.pop_front();
@@ -539,17 +593,34 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
         }
         "logout" => clear(app, state),
         "register" => {
-            ui.set_auth_mode(3);
-            ui.set_auth_password("".into());
+            switch_auth(&ui, 3);
             email_notice(app, &value);
+            if value["email_delivery"] == "sent" {
+                ui.set_auth_resend_seconds(60);
+            }
         }
         "verify-email" | "password-reset-confirm" => {
-            ui.set_auth_mode(0);
-            ui.set_auth_token("".into());
-            ui.set_auth_password("".into());
-            ui.set_notice("操作完成，请登录".into());
+            if name == "password-reset-confirm" {
+                clear(app, state);
+            }
+            switch_auth(&ui, 0);
+            ui.set_notice(
+                if name == "verify-email" {
+                    "邮箱验证成功，请登录"
+                } else {
+                    "密码已更新，请使用新密码登录"
+                }
+                .into(),
+            );
         }
-        "verification-resend" | "password-reset-request" => email_notice(app, &value),
+        "verification-resend" | "password-reset-request" => {
+            let mode = if name == "verification-resend" { 3 } else { 4 };
+            if ui.get_auth_mode() != mode {
+                switch_auth(&ui, mode);
+            }
+            email_notice(app, &value);
+            ui.set_auth_resend_seconds(60);
+        }
         "wallet" => {
             ui.set_ledger(rows(
                 value["ledger"]
@@ -833,7 +904,16 @@ fn email_notice(app: &App, value: &Value) {
     } else if value["email_delivery"] == "failed" {
         ui.set_error("邮件发送失败，请稍后重新发送".into());
     } else {
-        ui.set_notice("请查收邮件".into());
+        ui.set_notice(
+            if value["email_delivery"] == "sent" {
+                "验证码已发送，30 分钟内有效。重新发送后请使用最新验证码。"
+            } else if ui.get_auth_mode() == 4 {
+                "若该邮箱已注册，你将收到重置验证码，请检查收件箱和垃圾邮件。"
+            } else {
+                "若该邮箱尚未验证，你将收到验证码，请检查收件箱和垃圾邮件。"
+            }
+            .into(),
+        );
     }
 }
 fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
@@ -1231,6 +1311,7 @@ fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
     ui.set_invite_url("".into());
     ui.set_auth_token("".into());
     ui.set_auth_password("".into());
+    ui.set_auth_password_confirm("".into());
     ui.set_can_generate(false);
     ui.set_quote("".into());
     ui.set_insufficient_credits(false);
@@ -1246,12 +1327,162 @@ fn preferences_path() -> Option<PathBuf> {
         .ok()
         .map(|dirs| dirs.config.join("seecut.json"))
 }
+
+fn configured_api_url(override_url: Option<&str>) -> String {
+    override_url
+        .and_then(|url| base_url(url).ok())
+        .unwrap_or_else(|| DEFAULT_API_URL.into())
+}
+
+fn switch_auth(ui: &SeeCut, mode: i32) {
+    ui.set_auth_mode(mode);
+    if mode < 3 {
+        ui.set_auth_resend_seconds(0);
+    }
+    ui.set_auth_password("".into());
+    ui.set_auth_password_confirm("".into());
+    ui.set_auth_token("".into());
+    ui.set_error("".into());
+    ui.set_notice("".into());
+}
+
+fn normalized_auth_email(raw: &str) -> Result<String, String> {
+    let email = raw.trim().to_lowercase();
+    if email.len() > 254
+        || email.chars().any(char::is_whitespace)
+        || !email.split_once('@').is_some_and(|(name, host)| {
+            !name.is_empty() && host.contains('.') && !host.contains('@') && !host.ends_with('.')
+        })
+    {
+        return Err("请输入有效的邮箱地址".into());
+    }
+    Ok(email)
+}
+
+fn auth_request(
+    mode: i32,
+    email: &str,
+    password: &str,
+    confirmation: &str,
+    code: &str,
+) -> Result<(String, Request), String> {
+    let email = normalized_auth_email(email)?;
+    if matches!(mode, 0 | 1 | 4) && password.is_empty() {
+        return Err("请输入密码".into());
+    }
+    if matches!(mode, 1 | 4) {
+        if !(10..=128).contains(&password.chars().count()) {
+            return Err("密码需要 10 到 128 个字符".into());
+        }
+        if password != confirmation {
+            return Err("两次输入的密码不一致".into());
+        }
+    }
+    let code = code.trim();
+    if matches!(mode, 3 | 4) && (code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit())) {
+        return Err("请输入邮件中的 6 位验证码".into());
+    }
+    let (name, endpoint, body) = match mode {
+        0 => ("login", "login", json!({"email":email,"password":password})),
+        1 => (
+            "register",
+            "register",
+            json!({"email":email,"password":password}),
+        ),
+        2 => (
+            "password-reset-request",
+            "forgot-password",
+            json!({"email":email}),
+        ),
+        3 => (
+            "verify-email",
+            "verify-email",
+            json!({"email":email,"token":code}),
+        ),
+        4 => (
+            "password-reset-confirm",
+            "reset-password",
+            json!({"email":email,"token":code,"password":password}),
+        ),
+        _ => return Err("请返回登录后重试".into()),
+    };
+    Ok((
+        name.into(),
+        request("POST", format!("/api/auth/{endpoint}"), body),
+    ))
+}
+
+fn submit_auth(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let ui = app.global::<SeeCut>();
+    if ui.get_busy() {
+        return;
+    }
+    match auth_request(
+        ui.get_auth_mode(),
+        ui.get_auth_email().as_str(),
+        ui.get_auth_password().as_str(),
+        ui.get_auth_password_confirm().as_str(),
+        ui.get_auth_token().as_str(),
+    ) {
+        Ok((name, req)) => {
+            ui.set_auth_email(text(&req.body, "email").into());
+            ui.set_notice("".into());
+            job(app, state, name, req);
+        }
+        Err(error) => {
+            ui.set_notice("".into());
+            ui.set_error(error.into());
+        }
+    }
+}
+
+fn send_auth_code(app: &App, state: &Rc<RefCell<Cloud>>, mode: i32) {
+    let ui = app.global::<SeeCut>();
+    if ui.get_busy() || ui.get_auth_resend_seconds() > 0 {
+        return;
+    }
+    match normalized_auth_email(ui.get_auth_email().as_str()) {
+        Ok(email) => {
+            ui.set_auth_email(email.clone().into());
+            ui.set_notice("".into());
+            let (name, endpoint) = if mode == 4 {
+                ("password-reset-request", "forgot-password")
+            } else {
+                ("verification-resend", "resend-verification")
+            };
+            job(
+                app,
+                state,
+                name.into(),
+                request(
+                    "POST",
+                    format!("/api/auth/{endpoint}"),
+                    json!({"email":email}),
+                ),
+            );
+        }
+        Err(error) => ui.set_error(error.into()),
+    }
+}
+
+fn auth_countdown(weak: slint::Weak<App>) {
+    slint::Timer::single_shot(Duration::from_secs(1), move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let ui = app.global::<SeeCut>();
+        ui.set_auth_resend_seconds((ui.get_auth_resend_seconds() - 1).max(0));
+        auth_countdown(weak);
+    });
+}
+
 fn save_preferences(app: &App, state: &Rc<RefCell<Cloud>>) {
     let Some(path) = preferences_path() else {
         return;
     };
     let c = state.borrow();
-    let data = json!({"server":c.base,"folder":c.folder,"reduced_motion":app.global::<SeeCut>().get_reduced_motion()});
+    let data =
+        json!({"folder":c.folder,"reduced_motion":app.global::<SeeCut>().get_reduced_motion()});
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -1264,14 +1495,7 @@ pub fn bind(app: &App) {
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
-    let base = base_url(&std::env::var("SEECUT_API_URL").unwrap_or_else(|_| {
-        saved["server"]
-            .as_str()
-            .unwrap_or("http://127.0.0.1:8787")
-            .into()
-    }))
-    .unwrap_or_else(|_| "http://127.0.0.1:8787".into());
-    app.global::<SeeCut>().set_server_url(base.clone().into());
+    let base = configured_api_url(std::env::var("SEECUT_API_URL").ok().as_deref());
     let folder = saved["folder"]
         .as_str()
         .map(PathBuf::from)
@@ -1291,13 +1515,12 @@ pub fn bind(app: &App) {
     let weak = app.as_weak();
     let shared = state.clone();
     app.global::<SeeCut>().on_action(move |name, id| { let Some(app)=weak.upgrade() else{return}; let ui=app.global::<SeeCut>(); let team=team_id(&ui,&shared.borrow()); match name.as_str() {
-        "login"|"register" => job(&app,&shared,name.to_string(),request("POST",format!("/api/auth/{name}"),json!({"email":ui.get_auth_email().to_string(),"password":ui.get_auth_password().to_string()}))),
-        "verify-email"=>job(&app,&shared,name.to_string(),request("POST","/api/auth/verify-email",json!({"token":ui.get_auth_token().to_string()}))),
-        "verification-resend"|"password-reset-request"=>job(&app,&shared,name.to_string(),request("POST",if name=="verification-resend"{"/api/auth/resend-verification"}else{"/api/auth/forgot-password"},json!({"email":ui.get_auth_email().to_string()}))),
-        "password-reset-confirm"=>job(&app,&shared,name.to_string(),request("POST","/api/auth/reset-password",json!({"token":ui.get_auth_token().to_string(),"password":ui.get_auth_password().to_string()}))),
-        "change-password"=>{ui.set_auth_email(ui.get_email());job(&app,&shared,"password-reset-request".into(),request("POST","/api/auth/forgot-password",json!({"email":ui.get_email().to_string()})));ui.set_auth_mode(2);ui.set_signed_in(false);},
+        "auth-submit" => submit_auth(&app, &shared),
+        "auth-switch" if !ui.get_busy() => { switch_auth(&ui, id.parse::<i32>().unwrap_or(0).clamp(0, 4)); },
+        "auth-resend" => send_auth_code(&app, &shared, ui.get_auth_mode()),
+        "auth-verify-start" => { if let Err(error) = normalized_auth_email(ui.get_auth_email().as_str()) { ui.set_error(error.into()); } else if !ui.get_busy() { switch_auth(&ui, 3); send_auth_code(&app, &shared, 3); } },
+        "change-password"=>{ui.set_auth_email(ui.get_email());switch_auth(&ui,2);},
         "logout"=>job(&app,&shared,"logout".into(),request("POST","/api/auth/logout",Value::Null)),
-        "server-connect"=>{match base_url(id.as_str()){Ok(base)=>{clear(&app,&shared);shared.borrow_mut().base=base;save_preferences(&app,&shared);job(&app,&shared,"connect".into(),request("GET","/api/capabilities",Value::Null));},Err(error)=>ui.set_error(error.into())}},
         "wallet-refresh"=>job(&app,&shared,"wallet".into(),request("GET","/api/wallet",Value::Null)),
         "tasks-refresh"=>job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null)),
         "purchase"=>job(&app,&shared,"purchase".into(),request("POST","/api/orders",json!({"plan_id":id.to_string()}))),
@@ -1399,6 +1622,7 @@ pub fn bind(app: &App) {
             render_assets(&app, &shared);
         }
     });
+    auth_countdown(app.as_weak());
     heartbeat(app.as_weak(), state);
 }
 fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
@@ -1423,10 +1647,59 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
 #[cfg(test)]
 mod reference_tests {
     use super::{
-        invalid_reference_prompt, mention_start, parameter_default_index, parameter_label,
-        parameter_value, rewrite_mentions,
+        DEFAULT_API_URL, auth_request, configured_api_url, invalid_reference_prompt, mention_start,
+        parameter_default_index, parameter_label, parameter_value, rewrite_mentions,
     };
     use serde_json::json;
+
+    #[test]
+    fn ordinary_launch_uses_online_service_and_development_requires_override() {
+        assert_eq!(configured_api_url(None), DEFAULT_API_URL);
+        assert_eq!(configured_api_url(Some("invalid")), DEFAULT_API_URL);
+        assert_eq!(
+            configured_api_url(Some("http://remote.example.com")),
+            DEFAULT_API_URL
+        );
+        assert_eq!(
+            configured_api_url(Some("http://127.0.0.1:8797")),
+            "http://127.0.0.1:8797"
+        );
+    }
+
+    #[test]
+    fn email_code_requests_are_bound_to_email_and_keep_leading_zeroes() {
+        let (name, req) = auth_request(3, " User@Example.com ", "", "", " 001234 ").unwrap();
+        assert_eq!(name, "verify-email");
+        assert_eq!(
+            req.body,
+            json!({"email":"user@example.com","token":"001234"})
+        );
+        let (_, req) = auth_request(
+            4,
+            "user@example.com",
+            "new-password",
+            "new-password",
+            "001234",
+        )
+        .unwrap();
+        assert_eq!(req.path, "/api/auth/reset-password");
+        assert_eq!(req.body["email"], "user@example.com");
+        assert_eq!(req.body["password"], "new-password");
+        assert!(auth_request(3, "user@example.com", "", "", "12345").is_err());
+    }
+
+    #[test]
+    fn account_forms_reject_mismatched_passwords_and_invalid_email() {
+        assert!(
+            auth_request(1, "user@example.com", "long-password", "other-password", "").is_err()
+        );
+        assert!(auth_request(1, "user@example.com", "short", "short", "").is_err());
+        assert!(auth_request(2, "wrong address", "", "", "").is_err());
+        assert!(auth_request(0, "user@example.com", "existing", "", "").is_ok());
+        let (name, req) = auth_request(2, "user@example.com", "", "", "").unwrap();
+        assert_eq!(name, "password-reset-request");
+        assert_eq!(req.body, json!({"email":"user@example.com"}));
+    }
 
     #[test]
     fn friendly_image_labels_keep_exact_catalog_request_values() {
