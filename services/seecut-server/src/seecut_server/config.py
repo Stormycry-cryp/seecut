@@ -37,7 +37,9 @@ class Config:
     smtp_port: int
     smtp_username: str
     smtp_password: str
+    smtp_ssl: bool
     smtp_starttls: bool
+    smtp_auth_method: str
     expose_test_tokens: bool
     xiangxin_base_url: str
     xiangxin_api_key: str
@@ -85,6 +87,19 @@ class Config:
         if not secret:
             secret = "development-only-signing-secret-change-me"
 
+        smtp_ssl = _bool("SECUT_SMTP_SSL", False)
+        smtp_starttls = _bool("SECUT_SMTP_STARTTLS", True)
+        smtp_username = os.getenv("SECUT_SMTP_USERNAME", "")
+        smtp_auth_method = os.getenv("SECUT_SMTP_AUTH_METHOD", "auto").strip().lower()
+        if smtp_ssl and smtp_starttls:
+            raise ConfigError("SECUT_SMTP_SSL and SECUT_SMTP_STARTTLS cannot both be enabled")
+        if smtp_auth_method not in {"auto", "login"}:
+            raise ConfigError("SECUT_SMTP_AUTH_METHOD must be auto or login")
+        if env not in {"development", "test"} and smtp_username and not (
+            smtp_ssl or smtp_starttls
+        ):
+            raise ConfigError("SMTP authentication requires TLS outside development and test")
+
         return cls(
             env=env,
             host=os.getenv("SECUT_HOST", "127.0.0.1"),
@@ -102,9 +117,11 @@ class Config:
             email_from=os.getenv("SECUT_EMAIL_FROM", ""),
             smtp_host=os.getenv("SECUT_SMTP_HOST", ""),
             smtp_port=int(os.getenv("SECUT_SMTP_PORT", "587")),
-            smtp_username=os.getenv("SECUT_SMTP_USERNAME", ""),
+            smtp_username=smtp_username,
             smtp_password=os.getenv("SECUT_SMTP_PASSWORD", ""),
-            smtp_starttls=_bool("SECUT_SMTP_STARTTLS", True),
+            smtp_ssl=smtp_ssl,
+            smtp_starttls=smtp_starttls,
+            smtp_auth_method=smtp_auth_method,
             expose_test_tokens=_bool("SECUT_EXPOSE_TEST_TOKENS", False),
             xiangxin_base_url=os.getenv("SECUT_XIANGXIN_BASE_URL", "https://xiangxinai123.xyz").rstrip("/"),
             xiangxin_api_key=os.getenv("SECUT_XIANGXIN_API_KEY", ""),

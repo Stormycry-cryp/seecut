@@ -1225,6 +1225,8 @@ class SeeCutService:
                 ).fetchall()
             if len(rows) != len(reference_ids) or any(row["expires_at"] < self.now() for row in rows):
                 raise ApiError(422, "GENERATION_ASSET_EXPIRED", "参考素材已过期，请重新上传")
+            rows_by_id = {row["id"]: row for row in rows}
+            rows = [rows_by_id[asset_id] for asset_id in reference_ids]
             provider_ids: list[str] = []
             for row in rows:
                 provider_id = row["provider_asset_id"]
@@ -1279,6 +1281,8 @@ class SeeCutService:
             ).fetchall()
         if len(rows) != len(set(asset_ids)):
             raise ApiError(422, "GENERATION_ASSET_UNAVAILABLE", "参考素材不存在或已过期")
+        rows_by_id = {row["id"]: row for row in rows}
+        rows = [rows_by_id[asset_id] for asset_id in dict.fromkeys(asset_ids)]
         if any(
             not row["content_type"].startswith("image/")
             or row["expected_size"] > self.config.max_reference_image_bytes

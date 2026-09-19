@@ -4,6 +4,7 @@ import json
 import mimetypes
 import re
 import urllib.parse
+from ipaddress import ip_address
 from urllib.parse import quote
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -14,6 +15,23 @@ from .security import verify_path_signature
 from .errors import ApiError
 from .service import SeeCutService
 from .xiangxin import XiangxinError
+
+
+def _rate_limit_client_ip(peer_ip: str, real_ip_headers: list[str]) -> str:
+    try:
+        peer = ip_address(peer_ip)
+    except ValueError:
+        return "unknown"
+
+    mapped_peer = getattr(peer, "ipv4_mapped", None)
+    if not (peer.is_loopback or mapped_peer is not None and mapped_peer.is_loopback):
+        return str(peer)
+    if len(real_ip_headers) != 1:
+        return str(peer)
+    try:
+        return str(ip_address(real_ip_headers[0]))
+    except ValueError:
+        return str(peer)
 
 
 class SeeCutHandler(BaseHTTPRequestHandler):
@@ -60,7 +78,11 @@ class SeeCutHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/auth/"):
             limiter = getattr(self.server, "auth_rate_limiter", None)
-            client_ip = self.client_address[0] if self.client_address else "unknown"
+            peer_ip = self.client_address[0] if self.client_address else ""
+            client_ip = _rate_limit_client_ip(
+                peer_ip,
+                self.headers.get_all("X-Real-IP", []),
+            )
             if limiter is not None and not limiter.allow(client_ip):
                 retry_after = getattr(self.server, "auth_rate_limit_window_seconds", 60)
                 raise ApiError(429, "AUTH_RATE_LIMITED", "请求过于频繁，请稍后再试", {"retry_after": retry_after})

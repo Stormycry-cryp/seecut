@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import os
 import tempfile
 import threading
@@ -37,12 +38,17 @@ class FakeImage2:
     def __init__(self, content: bytes = PNG):
         self.content = content
         self.calls = 0
+        self.edit_calls = []
         self.error: Image2Error | None = None
 
     def create(self, body):
         self.calls += 1
         if self.error:
             raise self.error
+        return [self.content]
+
+    def edit(self, body, images):
+        self.edit_calls.append((body, images))
         return [self.content]
 
 
@@ -144,6 +150,15 @@ class GenerationRobustnessTest(unittest.TestCase):
             self.user_id, "video", request | {"quote_id": quote["quote_id"]}, key
         )
 
+    def generation_asset(self, filename: str, content: bytes = PNG):
+        upload = self.service.prepare_upload(
+            self.user_id, "generation_input", filename, "image/png", len(content)
+        )
+        self.service.save_upload_stream(
+            upload["upload_id"], io.BytesIO(content), len(content), "image/png"
+        )
+        return self.service.register_generation_asset(self.user_id, upload["upload_id"])
+
     def test_expired_submitting_becomes_reconcile_without_second_post(self):
         task = self.video_task()
         claimed = self.service.claim_generation_tasks()[0]
@@ -181,6 +196,60 @@ class GenerationRobustnessTest(unittest.TestCase):
             task_row = connection.execute("SELECT * FROM generation_tasks WHERE id=?", (task["id"],)).fetchone()
         payload = self.service._task_payload(task_row)
         self.assertEqual(payload["reference_images"], ["assetId://provider-asset"])
+
+    def test_image_edit_preserves_reference_asset_order(self):
+        first = self.generation_asset("first.png")
+        second = self.generation_asset("second.png")
+        reference_ids = [second["id"], first["id"]]
+        request = {
+            "model": "gpt-image-2.5-flare",
+            "operation": "edit",
+            "prompt": "use the references in order",
+            "reference_asset_ids": reference_ids,
+        }
+        quote = self.service.quote_generation(self.user_id, "image", request)
+        self.service.create_generation_task(
+            self.user_id,
+            "image",
+            request | {"quote_id": quote["quote_id"]},
+            "ordered-image-edit",
+        )
+
+        self.service.process_generation_task(self.service.claim_generation_tasks()[0])
+
+        _, images = self.image2.edit_calls[0]
+        self.assertEqual([path.name for path, _ in images], ["second.png", "first.png"])
+
+    def test_video_payload_preserves_reference_asset_order(self):
+        first = self.generation_asset("first-video-reference.png")
+        second = self.generation_asset("second-video-reference.png")
+        with self.service.db.transaction() as connection:
+            connection.execute(
+                "UPDATE generation_assets SET provider_asset_id=? WHERE id=?",
+                ("provider-first", first["id"]),
+            )
+            connection.execute(
+                "UPDATE generation_assets SET provider_asset_id=? WHERE id=?",
+                ("provider-second", second["id"]),
+            )
+        task = {
+            "user_id": self.user_id,
+            "request_json": json.dumps(
+                {
+                    "model": "sd_2.0_mini_special",
+                    "operation": "generate",
+                    "prompt": "use the references in order",
+                    "reference_asset_ids": [second["id"], first["id"]],
+                }
+            ),
+        }
+
+        payload = self.service._task_payload(task)
+
+        self.assertEqual(
+            payload["reference_images"],
+            ["assetId://provider-second", "assetId://provider-first"],
+        )
 
     def test_polling_error_keeps_hold_for_reconcile(self):
         task = self.video_task()

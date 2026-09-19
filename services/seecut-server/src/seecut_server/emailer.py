@@ -6,6 +6,8 @@ from email.message import EmailMessage
 
 from .config import Config
 
+SMTP_LOCAL_HOSTNAME = "seecut.stormycry.cloud"
+
 
 class EmailDeliveryError(RuntimeError):
     pass
@@ -30,11 +32,24 @@ class EmailSender:
         message["Subject"] = subject
         message.set_content(f"{action}验证码：{token}\n\n该验证码将在 30 分钟后失效。")
         try:
-            with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=15) as client:
+            context = ssl.create_default_context()
+            smtp_class = smtplib.SMTP_SSL if self.config.smtp_ssl else smtplib.SMTP
+            smtp_options = {
+                "timeout": 15,
+                "local_hostname": SMTP_LOCAL_HOSTNAME,
+            }
+            if self.config.smtp_ssl:
+                smtp_options["context"] = context
+            with smtp_class(self.config.smtp_host, self.config.smtp_port, **smtp_options) as client:
                 if self.config.smtp_starttls:
-                    client.starttls(context=ssl.create_default_context())
+                    client.starttls(context=context)
                 if self.config.smtp_username:
-                    client.login(self.config.smtp_username, self.config.smtp_password)
+                    if self.config.smtp_auth_method == "login":
+                        client.ehlo_or_helo_if_needed()
+                        responses = iter((self.config.smtp_username, self.config.smtp_password))
+                        client.auth("LOGIN", lambda _challenge: next(responses), initial_response_ok=False)
+                    else:
+                        client.login(self.config.smtp_username, self.config.smtp_password)
                 client.send_message(message)
         except (OSError, smtplib.SMTPException) as exc:
             raise EmailDeliveryError("email delivery failed") from exc
