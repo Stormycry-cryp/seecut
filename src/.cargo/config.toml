@@ -1,0 +1,13 @@
+# Where the FFmpeg development build lives is machine configuration, not
+# repository configuration: concat-media links FFmpeg through
+# ffmpeg-the-third, which finds it by pkg-config or by FFMPEG_DIR pointing
+# at an unpacked shared build. Set those in your own environment, never
+# here - a machine path committed to this file breaks every other checkout.
+
+# No incremental caches. They are a speed-up for the second build of one
+# crate and a tax on the disk for everything else: a session of edits across
+# the workspace leaves tens of gigabytes of them behind. The shipping builds
+# run on GitHub Actions; a machine here needs `cargo check` and the tests of
+# the crates it is changing, and those are quick without.
+[build]
+incremental = false
