@@ -22,6 +22,7 @@ struct Cloud {
     models: Vec<Value>,
     tasks: Vec<Value>,
     quote_id: String,
+    quote_credits: Option<i64>,
     quote_body: Value,
     pending: VecDeque<(String, Request)>,
     assets: Vec<Value>,
@@ -230,7 +231,12 @@ fn poll(
         state.borrow_mut().active_name.clear();
         match result {
             Ok(value) => publish(&app, &state, &name, value),
-            Err(error) => app.global::<SeeCut>().set_error(error.into()),
+            Err(error) => {
+                if name == "generate" {
+                    refresh_quote(&app, &state);
+                }
+                app.global::<SeeCut>().set_error(error.into());
+            }
         }
         let next = state.borrow_mut().pending.pop_front();
         if let Some((name, req)) = next {
@@ -333,6 +339,12 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             job(
                 app,
                 state,
+                "capabilities".into(),
+                request("GET", "/api/capabilities", Value::Null),
+            );
+            job(
+                app,
+                state,
                 "wallet".into(),
                 request("GET", "/api/wallet", Value::Null),
             );
@@ -392,6 +404,9 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     .to_string()
                     .into(),
             );
+            if let Some(credits) = state.borrow().quote_credits {
+                ui.set_insufficient_credits(ui.get_balance().parse::<i64>().unwrap_or(0) < credits);
+            }
         }
         "models" => {
             state.borrow_mut().models = value
@@ -416,6 +431,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             }
             let credits = value["credits"].as_i64().unwrap_or(0);
             state.borrow_mut().quote_id = text(&value, "quote_id");
+            state.borrow_mut().quote_credits = Some(credits);
             state.borrow_mut().quote_body = current;
             ui.set_quote(format!("预计消耗 {credits} 积分").into());
             ui.set_insufficient_credits(ui.get_balance().parse::<i64>().unwrap_or(0) < credits);
@@ -423,7 +439,10 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
         }
         "generate" => {
             state.borrow_mut().submission = None;
+            state.borrow_mut().quote_id.clear();
+            ui.set_can_generate(false);
             ui.set_notice("任务已提交".into());
+            ui.set_selected_task(0);
             job(
                 app,
                 state,
@@ -433,8 +452,18 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
         }
         "tasks" => {
             let tasks = items(&value);
+            let changed = state.borrow().tasks != tasks;
             state.borrow_mut().tasks = tasks.clone();
             render_tasks(app, state);
+            if changed {
+                job(
+                    app,
+                    state,
+                    "wallet".into(),
+                    request("GET", "/api/wallet", Value::Null),
+                );
+                refresh_quote(app, state);
+            }
             for task in tasks.iter().filter(|v| text(v, "status") == "succeeded") {
                 let id = text(task, "id");
                 let needs_download = !state
@@ -512,7 +541,14 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             state.borrow_mut().assets = items(&value);
             render_assets(app, state);
         }
-        "asset-change" => refresh_assets(app, state),
+        "asset-change" => {
+            let path = text(&value, "local_path");
+            if !path.is_empty() {
+                state.borrow_mut().local.insert(text(&value, "id"), path);
+                ui.set_notice("已上传到团队资产库".into());
+            }
+            refresh_assets(app, state);
+        }
         "reference" => {
             state.borrow_mut().references.push(value);
             render_references(app, state);
@@ -528,6 +564,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 let _ = std::fs::write(folder.join(&state.borrow().history_name), bytes);
             }
             render_tasks(app, state);
+            render_assets(app, state);
             match text(&value, "intent").as_str() {
                 "preview" => open_file(&path),
                 "import" => import_file(app, path),
@@ -562,17 +599,16 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     })
                     .collect(),
             ));
-            if name == "purchase" {
-                if let Some(raw) = value.pointer("/payment_action/url").and_then(Value::as_str) {
-                    if Url::parse(raw).is_ok_and(|u| {
-                        u.scheme() == "https"
-                            && u.host_str().is_some_and(|h| {
-                                h == "openapi.alipay.com" || h == "openapi-sandbox.dl.alipaydev.com"
-                            })
-                    }) {
-                        open_file(raw);
-                    }
-                }
+            if name == "purchase"
+                && let Some(raw) = value.pointer("/payment_action/url").and_then(Value::as_str)
+                && Url::parse(raw).is_ok_and(|u| {
+                    u.scheme() == "https"
+                        && u.host_str().is_some_and(|h| {
+                            h == "openapi.alipay.com" || h == "openapi-sandbox.dl.alipaydev.com"
+                        })
+                })
+            {
+                open_file(raw);
             }
             job(
                 app,
@@ -581,9 +617,17 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 request("GET", "/api/wallet", Value::Null),
             );
         }
-        "connect" => {
-            ui.set_notice("已连接服务器".into());
-            refresh_models(app, state);
+        "connect" | "capabilities" => {
+            ui.set_payment_enabled(
+                value
+                    .pointer("/payment/live_initiation_enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            );
+            if name == "connect" {
+                ui.set_notice("已连接服务器".into());
+                refresh_models(app, state);
+            }
         }
         _ => {}
     }
@@ -607,6 +651,12 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
                 let mut item = task_item(v);
                 if let Some(path) = c.local.get(&text(v, "id")) {
                     item.local = std::path::Path::new(path).is_file();
+                    if item.local {
+                        item.ready = true;
+                        if text(v, "status") == "expired" {
+                            item.status = "已保存到本机".into();
+                        }
+                    }
                     if text(v, "kind") == "image" {
                         item.preview = slint::Image::load_from_path(std::path::Path::new(path))
                             .unwrap_or_default();
@@ -621,9 +671,9 @@ fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     let search = ui.get_asset_search().to_lowercase();
     let filter = ui.get_asset_filter();
+    let cloud = state.borrow();
     ui.set_assets(rows(
-        state
-            .borrow()
+        cloud
             .assets
             .iter()
             .filter(|v| text(v, "filename").to_lowercase().contains(&search))
@@ -645,6 +695,12 @@ fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
                     .unwrap_or("file")
                     .into(),
                 ready: true,
+                preview: cloud
+                    .local
+                    .get(&text(v, "id"))
+                    .filter(|_| text(v, "content_type").starts_with("image/"))
+                    .and_then(|path| slint::Image::load_from_path(std::path::Path::new(path)).ok())
+                    .unwrap_or_default(),
                 ..Default::default()
             })
             .collect(),
@@ -696,6 +752,9 @@ fn refresh_quote(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     ui.set_can_generate(false);
     state.borrow_mut().quote_id.clear();
+    state.borrow_mut().quote_credits = None;
+    ui.set_quote("".into());
+    ui.set_insufficient_credits(false);
     if ui.get_signed_in() && !ui.get_prompt().trim().is_empty() {
         let mut body = generation_body(&ui, &state.borrow());
         body["kind"] = json!(if ui.get_mode() == 0 { "image" } else { "video" });
@@ -769,25 +828,25 @@ fn download_task(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str) 
         }
         return;
     }
-    if let Some(task) = c.tasks.iter().find(|v| text(v, "id") == id) {
-        if let Some(out) = task["outputs"].as_array().and_then(|v| v.first()) {
-            let ext = if text(task, "kind") == "video" {
-                "mp4"
-            } else {
-                "png"
-            };
-            let path = c.folder.join(format!("{id}.{ext}"));
-            job(
-                app,
-                state,
-                "local".into(),
-                request(
-                    "GET",
-                    "local:download",
-                    json!({"id":id,"url":out["download_url"],"path":path,"intent":intent}),
-                ),
-            );
-        }
+    if let Some(task) = c.tasks.iter().find(|v| text(v, "id") == id)
+        && let Some(out) = task["outputs"].as_array().and_then(|v| v.first())
+    {
+        let ext = if text(task, "kind") == "video" {
+            "mp4"
+        } else {
+            "png"
+        };
+        let path = c.folder.join(format!("{id}.{ext}"));
+        job(
+            app,
+            state,
+            "local".into(),
+            request(
+                "GET",
+                "local:download",
+                json!({"id":id,"url":out["download_url"],"path":path,"intent":intent}),
+            ),
+        );
     }
 }
 fn download_asset(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str) {
@@ -906,6 +965,7 @@ fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
     let mut cloud = state.borrow_mut();
     cloud.token.clear();
     cloud.quote_id.clear();
+    cloud.quote_credits = None;
     cloud.pending.clear();
     cloud.tasks.clear();
     cloud.assets.clear();
@@ -935,6 +995,10 @@ fn clear(app: &App, state: &Rc<RefCell<Cloud>>) {
     ui.set_auth_token("".into());
     ui.set_auth_password("".into());
     ui.set_can_generate(false);
+    ui.set_quote("".into());
+    ui.set_insufficient_credits(false);
+    ui.set_selected_task(-1);
+    ui.set_save_team_task("".into());
     ui.set_busy(false);
 }
 fn preferences_path() -> Option<PathBuf> {
@@ -1002,10 +1066,10 @@ pub fn bind(app: &App) {
         "generate"=>{
             let mut body=generation_body(&ui,&shared.borrow());
             if shared.borrow().quote_id.is_empty()||body!=shared.borrow().quote_body{refresh_quote(&app,&shared);return}
-            body["quote_id"]=json!(shared.borrow().quote_id.clone());
             let previous=shared.borrow().submission.clone();
             let key=previous.filter(|(b,_)|b==&body).map(|(_,k)|k).unwrap_or_else(||uuid::Uuid::new_v4().to_string());
             shared.borrow_mut().submission=Some((body.clone(),key.clone()));
+            body["quote_id"]=json!(shared.borrow().quote_id.clone());
             let endpoint=if ui.get_mode()==0{"/api/generation/images"}else{"/api/generation/videos"};let mut req=request("POST",endpoint,body);req.idem=Some(key);job(&app,&shared,"generate".into(),req);
         },
         "team-create"=>job(&app,&shared,"team-create".into(),request("POST","/api/teams",json!({"name":ui.get_team_name().to_string()}))),
@@ -1022,7 +1086,7 @@ pub fn bind(app: &App) {
         "reference-remove"=>{shared.borrow_mut().references.retain(|v|text(v,"id")!=id.as_str());render_references(&app,&shared);refresh_quote(&app,&shared);},
         "task-select"=>{},
         "task-preview"|"task-download"|"task-import"=>download_task(&app,&shared,id.as_str(),if name=="task-import"{"import"}else{"preview"}),
-        "task-save-team"=>{let path=shared.borrow().local.get(id.as_str()).cloned();if team.is_empty(){ui.set_error("请先在团队资产中选择团队".into());}else if let Some(path)=path{#[cfg(not(any(target_os="ios",target_os="android")))]if rfd::MessageDialog::new().set_title("保存到团队资产").set_description("文件将上传到当前团队，团队成员均可访问。").set_buttons(rfd::MessageButtons::OkCancel).show()==rfd::MessageDialogResult::Ok{upload_file(&app,&shared,path,"team_asset");}}else{download_task(&app,&shared,id.as_str(),"save");ui.set_notice("下载完成后可保存到团队".into());}},
+        "task-save-team"=>{let path=shared.borrow().local.get(id.as_str()).cloned();if team.is_empty(){ui.set_error("请先在团队资产中选择团队".into());}else if let Some(path)=path{upload_file(&app,&shared,path,"team_asset");}else{download_task(&app,&shared,id.as_str(),"save");ui.set_notice("下载完成后可保存到团队".into());}},
         "asset-preview"|"asset-download"|"asset-reference"|"asset-import"=>{download_asset(&app,&shared,id.as_str(),match name.as_str(){"asset-reference"=>"reference","asset-import"=>"import",_=>"preview"});if name=="asset-reference"{ui.set_page(1);}},
         "local-folder-browse"=>{#[cfg(not(any(target_os="ios",target_os="android")))]if let Some(folder)=rfd::FileDialog::new().pick_folder(){ui.set_local_folder(folder.to_string_lossy().into_owned().into());shared.borrow_mut().folder=folder;save_preferences(&app,&shared);}},
         _=>{}

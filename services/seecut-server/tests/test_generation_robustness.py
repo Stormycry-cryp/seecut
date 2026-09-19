@@ -13,6 +13,7 @@ from unittest.mock import patch
 from seecut_server.config import Config
 from seecut_server.db import Database
 from seecut_server.errors import ApiError
+from seecut_server.image2 import Image2Error
 from seecut_server.service import SeeCutService
 from seecut_server.xiangxin import XiangxinError
 
@@ -36,9 +37,12 @@ class FakeImage2:
     def __init__(self, content: bytes = PNG):
         self.content = content
         self.calls = 0
+        self.error: Image2Error | None = None
 
     def create(self, body):
         self.calls += 1
+        if self.error:
+            raise self.error
         return [self.content]
 
 
@@ -190,6 +194,41 @@ class GenerationRobustnessTest(unittest.TestCase):
         self.assertEqual(current["status"], "pending_reconcile")
         self.assertEqual(self.service.wallet(self.user_id)["held_credits"], 12)
 
+    def test_async_image_pending_is_not_claimed_or_resubmitted(self):
+        self.image2.error = Image2Error(
+            "IMAGE2_ASYNC_PENDING",
+            "still processing",
+            True,
+            "image-upstream",
+        )
+        task = self.image_task()
+        self.service.process_generation_task(self.service.claim_generation_tasks()[0])
+
+        current = self.service.get_generation_task(self.user_id, task["id"])
+        self.assertEqual(current["status"], "pending_reconcile")
+        self.assertEqual(current["upstream_task_id"], "image-upstream")
+        self.assertEqual(self.image2.calls, 1)
+        self.clock.value += 301
+        self.assertEqual(self.service.claim_generation_tasks(), [])
+        self.assertEqual(self.image2.calls, 1)
+        wallet = self.service.wallet(self.user_id)
+        self.assertEqual(wallet["available_credits"], 93)
+        self.assertEqual(wallet["held_credits"], 7)
+
+    def test_success_clears_stale_reconcile_error(self):
+        task = self.image_task()
+        with self.service.db.transaction() as connection:
+            connection.execute(
+                "UPDATE generation_tasks SET error_code=?,error_message=? WHERE id=?",
+                ("PROVIDER_RESULT_UNAVAILABLE", "temporary failure", task["id"]),
+            )
+
+        self.service.process_generation_task(self.service.claim_generation_tasks()[0])
+
+        current = self.service.get_generation_task(self.user_id, task["id"])
+        self.assertEqual(current["status"], "succeeded")
+        self.assertIsNone(current["error"])
+
     def test_idempotency_conflict_rejects_different_payload(self):
         task = self.image_task("same-key")
         other = {"model": "gpt-image-2.5-flare", "prompt": "different product"}
@@ -200,6 +239,41 @@ class GenerationRobustnessTest(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, "IDEMPOTENCY_CONFLICT")
         self.assertEqual(self.service.get_generation_task(self.user_id, task["id"])["prompt"], "clean product")
+
+    def test_existing_task_accepts_new_quote_with_same_idempotency_key(self):
+        request = {"model": "gpt-image-2.5-flare", "prompt": "stable retry"}
+        first_quote = self.service.quote_generation(self.user_id, "image", request)
+        original = self.service.create_generation_task(
+            self.user_id,
+            "image",
+            request | {"quote_id": first_quote["quote_id"]},
+            "stable-key",
+        )
+
+        self.clock.value += 601
+        replacement_quote = self.service.quote_generation(self.user_id, "image", request)
+        recovered = self.service.create_generation_task(
+            self.user_id,
+            "image",
+            request | {"quote_id": replacement_quote["quote_id"]},
+            "stable-key",
+        )
+
+        self.assertEqual(recovered["id"], original["id"])
+        with self.service.db.connect() as connection:
+            task_count = connection.execute(
+                "SELECT COUNT(*) FROM generation_tasks WHERE user_id=?",
+                (self.user_id,),
+            ).fetchone()[0]
+            hold_count = connection.execute(
+                "SELECT COUNT(*) FROM wallet_holds WHERE user_id=?",
+                (self.user_id,),
+            ).fetchone()[0]
+        self.assertEqual(task_count, 1)
+        self.assertEqual(hold_count, 1)
+        wallet = self.service.wallet(self.user_id)
+        self.assertEqual(wallet["available_credits"], 93)
+        self.assertEqual(wallet["held_credits"], 7)
 
     def test_quote_is_consumed_once_under_concurrent_submissions(self):
         request = {"model": "gpt-image-2.5-flare", "prompt": "one quoted request"}

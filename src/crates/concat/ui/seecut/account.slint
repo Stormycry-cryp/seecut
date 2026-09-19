@@ -110,9 +110,10 @@ export component CreditsPage inherits Rectangle {
             }
             Rectangle { height: 1px; background: Theme.line; }
             Heading { text: "充值积分"; }
-            if !SeeCut.signed-in: AppButton { label: "登录后充值"; primary: true; clicked => { SeeCut.page = 4; } }
-            if SeeCut.signed-in && SeeCut.plans.length == 0: Label { text: "暂无可用套餐"; }
-            for plan in SeeCut.plans: Rectangle {
+            if !SeeCut.payment-enabled: Label { text: "充值暂未开放"; }
+            if SeeCut.payment-enabled && !SeeCut.signed-in: AppButton { label: "登录后充值"; primary: true; clicked => { SeeCut.page = 4; } }
+            if SeeCut.payment-enabled && SeeCut.signed-in && SeeCut.plans.length == 0: Label { text: "暂无可用套餐"; }
+            for plan in (SeeCut.payment-enabled ? SeeCut.plans : []): Rectangle {
                 height: 78px;
                 border-radius: Theme.r;
                 border-width: 1px;

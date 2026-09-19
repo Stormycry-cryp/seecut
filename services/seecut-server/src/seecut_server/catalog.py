@@ -94,6 +94,7 @@ def public_catalog(image_model_id: str | None = None) -> dict[str, Any]:
         for model in models:
             if model["kind"] == "image":
                 model["id"] = image_model_id
+                model["display_name"] = "Flare" if image_model_id == "gpt-image-2.5-flare" else image_model_id
     return {"catalog_version": CATALOG_VERSION, "models": models}
 
 

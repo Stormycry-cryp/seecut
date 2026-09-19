@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import smtplib
+import ssl
 from email.message import EmailMessage
 
 from .config import Config
@@ -31,10 +32,9 @@ class EmailSender:
         try:
             with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=15) as client:
                 if self.config.smtp_starttls:
-                    client.starttls()
+                    client.starttls(context=ssl.create_default_context())
                 if self.config.smtp_username:
                     client.login(self.config.smtp_username, self.config.smtp_password)
                 client.send_message(message)
         except (OSError, smtplib.SMTPException) as exc:
             raise EmailDeliveryError("email delivery failed") from exc
-

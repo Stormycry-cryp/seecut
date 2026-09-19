@@ -1172,8 +1172,9 @@ class SeeCutService:
             )
             rows = connection.execute(
                 """SELECT * FROM generation_tasks
-                   WHERE (status IN ('queued','provider_accepted','processing','validating')
-                          OR (status='pending_reconcile' AND upstream_task_id IS NOT NULL))
+                   WHERE (status='queued'
+                          OR (kind='video' AND status IN ('provider_accepted','processing','validating'))
+                          OR (kind='video' AND status='pending_reconcile' AND upstream_task_id IS NOT NULL))
                      AND next_attempt_at<=?
                      AND (lease_expires_at IS NULL OR lease_expires_at<?)
                    ORDER BY created_at LIMIT ?""",
@@ -1387,7 +1388,8 @@ class SeeCutService:
                     ),
                 )
             connection.execute(
-                "UPDATE generation_tasks SET status='succeeded',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=?",
+                """UPDATE generation_tasks SET status='succeeded',error_code=NULL,error_message=NULL,
+                   lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=?""",
                 (now, task_id),
             )
             if hold and hold["state"] == "held":
