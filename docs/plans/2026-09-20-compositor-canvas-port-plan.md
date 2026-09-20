@@ -193,7 +193,7 @@ concat/ui/canvas/
 | P2 混合模式 | blend.rs：CPU 参考 13 种 ✅ + WGSL（P3） | ✅ CPU 参考落地：15 项测试含 colorBurn/Dodge alpha 语义、非可分离模式与规范勘误 |
 | P3 GPU 合成 | 蒙版/裁剪/组/调整图层进 shader；mipmap 金字塔 | ✅ 已落地（`gpu.rs`，feature="gpu"）：ping-pong 逐层 fragment pass，11 项与 CPU 参考对拍 ≤1 字节；脏矩形上传 + Frame::id 常驻纹理 + mipmap（对应用户提出的四个性能问题）。踩坑记录：uniform u32 必须按原生字节写（`as f32` 位型损坏全部 gated 行为）；Overlay 分支按源色；SetSat 需写回原通道位。 |
 | P4 画布交互 | 视口/导航 + Slint 画布 + 工具手势 + 蚂蚁线 | 🔶 大头已落地：P4a `viewport.rs`（CanvasViewport + Navigator，14 项单测）；P4b studio 集成（`canvas-pane.slint` + `panes/canvas.rs`，PaneKind.canvas，TouchArea→NavInput 单手势控制器跨平台，CanvasGpu 走 monitor 共享 wgpu 设备零拷贝上屏，工具栏 move/hand/zoom/fit + 缩放读数 + 空态打开图像）。剩余：变换 overlay + 蚂蚁线 + 工具内的绘制/选区手势（随 P5/P6） |
-| P5 绘画引擎 | 笔刷 WGSL 覆盖 + tile 管线 + 仿制/修复/模糊 | 未开始；出口判据 = §5 上游实测数字（含抬笔 <20 ms） |
+| P5 绘画引擎 | 笔刷 WGSL 覆盖 + tile 管线 + 仿制/修复/模糊 | 🔶 CPU 参考已落地（`brush.rs`，15 项测试）：连续光密度积分（8 点 Gauss–Legendre、coverage=1−exp(−density) 封顶 20）、永久密度浮点 tile 缓冲 + preview-only tail、向心 Catmull–Rom 自适应细分、硬头抗锯齿轮廓、source-over/擦除合成。稀疏/稠密采样等价、不透明度整笔封顶、tail 替换无残留、tile 边界连续均过测。剩余：WGSL compute 覆盖 + 与 CPU 对拍、接线 canvas-pane 脏矩形、仿制/修复/模糊 |
 | P6 选区与工具 | 选区 5 种 + 魔棒/内容填充（C 编译进）+ 形状/渐变/吸管/裁剪 | 未开始 |
 | P7 UI 与集成 | 图层面板/调整弹层/导出；素材箱↔画布↔时间线流转；按 §2.4 对齐存档字段 | 未开始 |
 
