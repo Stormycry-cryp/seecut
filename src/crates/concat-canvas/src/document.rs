@@ -29,6 +29,14 @@ use crate::pixels::PixelId;
 )]
 pub struct LayerId(pub(crate) u64);
 
+impl LayerId {
+    /// The identity's number, for UI rows and keys. Meaningless on its own;
+    /// uniqueness within a document is the whole contract.
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 /// A whole canvas: its size and its layers, back to front in the root
 /// group's `children`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

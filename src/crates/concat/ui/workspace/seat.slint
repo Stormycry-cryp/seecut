@@ -7,7 +7,7 @@ import { DockSide } from "../dock.slint";
 import { PaneKind } from "pane-switcher.slint";
 import { Editor } from "../editor.slint";
 import { ConfigPane } from "config-pane.slint";
-import { CanvasPane } from "canvas-pane.slint";
+import { CanvasPane, CanvasLayerData } from "canvas-pane.slint";
 import { MediaPane } from "media-pane.slint";
 import { PreviewPane } from "preview-pane.slint";
 import { TimelinePane } from "timeline-pane.slint";
@@ -202,6 +202,21 @@ export component Seat inherits Rectangle {
             stage-w: Editor.canvas-stage-w;
             stage-h: Editor.canvas-stage-h;
             tool: Editor.canvas-tool;
+            brush-diameter <=> Editor.canvas-brush-diameter;
+            brush-opacity <=> Editor.canvas-brush-opacity;
+            brush-hardness <=> Editor.canvas-brush-hardness;
+            brush-color <=> Editor.canvas-brush-color;
+            has-selection: Editor.canvas-has-selection;
+            selection-x: Editor.canvas-selection-x;
+            selection-y: Editor.canvas-selection-y;
+            selection-w: Editor.canvas-selection-w;
+            selection-h: Editor.canvas-selection-h;
+            marquee-x: Editor.canvas-marquee-x;
+            marquee-y: Editor.canvas-marquee-y;
+            marquee-w: Editor.canvas-marquee-w;
+            marquee-h: Editor.canvas-marquee-h;
+            layers <=> Editor.canvas-layers;
+            active-layer: Editor.canvas-active-layer;
 
             nav-scroll(dx, dy, zoom-modifier, x, y) => {
                 Editor.canvas-scroll(dx, dy, zoom-modifier, x, y);
@@ -215,6 +230,30 @@ export component Seat inherits Rectangle {
             canvas-resized(width, height) => { Editor.canvas-resized(width, height); }
             canvas-open => { Editor.canvas-open(); }
             tool-changed(index) => { Editor.canvas-tool-changed(index); }
+            brush-press(x, y) => { Editor.canvas-brush-press(x, y); }
+            brush-move(x, y) => { Editor.canvas-brush-move(x, y); }
+            brush-release => { Editor.canvas-brush-release(); }
+            brush-size-changed(value) => { Editor.canvas-brush-size-changed(value); }
+            brush-opacity-changed(value) => { Editor.canvas-brush-opacity-changed(value); }
+            brush-hardness-changed(value) => { Editor.canvas-brush-hardness-changed(value); }
+            brush-color-changed(index) => { Editor.canvas-brush-color-changed(index); }
+            canvas-undo => { Editor.canvas-undo(); }
+            canvas-redo => { Editor.canvas-redo(); }
+            marquee-press(x, y) => { Editor.canvas-marquee-press(x, y); }
+            marquee-move(x, y) => { Editor.canvas-marquee-move(x, y); }
+            marquee-release => { Editor.canvas-marquee-release(); }
+            wand-click(x, y) => { Editor.canvas-wand-click(x, y); }
+            select-all => { Editor.canvas-select-all(); }
+            deselect => { Editor.canvas-deselect(); }
+            fill-selection => { Editor.canvas-fill-selection(); }
+            delete-selection => { Editor.canvas-delete-selection(); }
+            layer-picked(index) => { Editor.canvas-layer-picked(index); }
+            layer-visibility-toggled(index) => { Editor.canvas-layer-visibility-toggled(index); }
+            layer-opacity-changed(index, opacity) => { Editor.canvas-layer-opacity-changed(index, opacity); }
+            layer-added => { Editor.canvas-layer-added(); }
+            layer-deleted(index) => { Editor.canvas-layer-deleted(index); }
+            layer-moved(index, direction) => { Editor.canvas-layer-moved(index, direction); }
+            export-png => { Editor.canvas-export-png(); }
         }
 
     if root.kind == PaneKind.inspector: ConfigPane {

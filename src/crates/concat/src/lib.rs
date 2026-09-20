@@ -953,6 +953,113 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_canvas_tool_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Tool(index)));
     }));
+    editor.on_canvas_brush_press(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushPress {
+            x: f64::from(x),
+            y: f64::from(y),
+        }));
+    }));
+    editor.on_canvas_brush_move(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushMove(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_brush_release(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushRelease));
+    }));
+    editor.on_canvas_brush_size_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushSize(
+            f64::from(value),
+        )));
+    }));
+    editor.on_canvas_brush_opacity_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushOpacity(
+            f64::from(value),
+        )));
+    }));
+    editor.on_canvas_brush_hardness_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushHardness(
+            f64::from(value),
+        )));
+    }));
+    editor.on_canvas_brush_color_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushColor(
+            index.max(0) as usize,
+        )));
+    }));
+    editor.on_canvas_undo(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Undo));
+    }));
+    editor.on_canvas_redo(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Redo));
+    }));
+    editor.on_canvas_marquee_press(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::MarqueePress {
+            x: f64::from(x),
+            y: f64::from(y),
+        }));
+    }));
+    editor.on_canvas_marquee_move(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::MarqueeMove(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_marquee_release(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::MarqueeRelease));
+    }));
+    editor.on_canvas_wand_click(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::WandClick {
+            x: f64::from(x),
+            y: f64::from(y),
+        }));
+    }));
+    editor.on_canvas_select_all(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::SelectAll));
+    }));
+    editor.on_canvas_deselect(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Deselect));
+    }));
+    editor.on_canvas_fill_selection(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::FillSelection));
+    }));
+    editor.on_canvas_delete_selection(on_window!(|state| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::DeleteSelection,
+        ));
+    }));
+    editor.on_canvas_layer_picked(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerPick(
+            index,
+        )));
+    }));
+    editor.on_canvas_layer_visibility_toggled(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::LayerToggleVisibility(index),
+        ));
+    }));
+    editor.on_canvas_layer_opacity_changed(on_window!(|state, index: i32, opacity: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerOpacity(
+            index, opacity,
+        )));
+    }));
+    editor.on_canvas_layer_added(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerAdd));
+    }));
+    editor.on_canvas_layer_deleted(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerDelete(
+            index,
+        )));
+    }));
+    editor.on_canvas_layer_moved(on_window!(|state, index: i32, direction: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerMove(
+            index, direction,
+        )));
+    }));
+    editor.on_canvas_export_png(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ExportPng));
+    }));
 
     // ── the stage ──
     editor.on_stage_pressed(on_window!(|state, x: f32, y: f32, additive: bool| {

@@ -54,7 +54,9 @@ pub(crate) struct PathState {
 }
 
 impl PathState {
-    /// A fresh path with no samples yet.
+    /// A fresh path with no samples yet. Only the GPU stroke builds one
+    /// outright; the CPU stroke's first `append` seeds its own.
+    #[cfg(feature = "gpu")]
     pub(crate) fn new() -> Self {
         Self {
             samples: Vec::new(),
@@ -456,6 +458,15 @@ impl BrushStroke {
             .collect();
         let lookup = |tx: usize, ty: usize| self.tile_coverage(tx, ty);
         composite_coverage(self.width, &self.settings, &tiles, &lookup, base);
+    }
+
+    /// Composites only the named tiles, for incremental painting: a host
+    /// that keeps the layer's pre-stroke pixels re-copies just the tiles
+    /// this update changed and stamps them, so each pointer event costs
+    /// its new geometry and nothing else. The tile indices are `(tx, ty)`.
+    pub fn composite_tiles(&self, base: &mut [u8], tiles: &[(usize, usize)]) {
+        let lookup = |tx: usize, ty: usize| self.tile_coverage(tx, ty);
+        composite_coverage(self.width, &self.settings, tiles, &lookup, base);
     }
 
     /// Tiles with any permanent or tail coverage, as (tx, ty).

@@ -3,13 +3,14 @@
 
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Glyph, Icon } from "../icons.slint";
 import { IconButton } from "../primitives/panel.slint";
+import { Knob } from "../primitives/knob.slint";
 import { Pane, PaneHeader } from "pane.slint";
 import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
 
 // The canvas: the image editor's own viewport, in a seat of its own.
-//
 // Where the monitor's view state lives in this file - fitted until a gesture
 // takes it, then free - the canvas's lives in Rust, in the Navigator. The
 // reasons are the original's: the gestures there span inputs (a zoom-tool
@@ -24,6 +25,23 @@ import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
 // the honest ground for an image editor and is not drawn yet - the frame the
 // compositor returns is straight-alpha over nothing, and a checker wants a
 // pattern behind the image, which is a slint layer away.
+
+// The tray's palette, matching the Rust pane's own: same swatches, same
+// order, so an index means one colour on both sides of the boundary.
+export global Palette {
+    in property <[color]> colors: [
+        #1e1e22, #ebebf0, #d43b37, #eb982f, #ebcd3e, #58a84e, #3a76cd, #8a4ecd,
+    ];
+}
+
+// One row of the layers panel, as Rust publishes it.
+export struct CanvasLayerData {
+    id: int,
+    name: string,
+    hidden: bool,
+    opacity: float,
+    active: bool,
+}
 
 export component CanvasPane inherits Rectangle {
     /// The composed document, at the view's zoom, already placed by the
@@ -42,8 +60,25 @@ export component CanvasPane inherits Rectangle {
     /// The document's box on screen, in viewport pixels, already zoomed.
     in property <float> stage-w;
     in property <float> stage-h;
-    /// 0 move, 1 hand, 2 zoom.
+    /// 0 move, 1 hand, 2 zoom, 3 brush, 4 eraser.
     in property <int> tool;
+    /// The brush the painting tools drive; the knobs read and write these.
+    in-out property <float> brush-diameter: 24;
+    in-out property <float> brush-opacity: 1;
+    in-out property <float> brush-hardness: 0.8;
+    /// The selected colour swatch, as its index into the tray's palette.
+    in-out property <int> brush-color: 0;
+    /// The selection's box, in viewport pixels, drawn over the stage.
+    in property <bool> has-selection;
+    in property <float> selection-x;
+    in property <float> selection-y;
+    in property <float> selection-w;
+    in property <float> selection-h;
+    /// The marquee drag's box, in viewport pixels, while it is in flight.
+    in property <float> marquee-x;
+    in property <float> marquee-y;
+    in property <float> marquee-w;
+    in property <float> marquee-h;
 
     // ── gestures, reported rather than handled ──────────────────────────
     //
@@ -67,6 +102,42 @@ export component CanvasPane inherits Rectangle {
     callback canvas-open();
     /// The tray's tool picker.
     callback tool-changed(index: int);
+    /// A paint stroke went down, moved, ended - viewport pixels, like the
+    /// navigation gestures.
+    callback brush-press(x: float, y: float);
+    callback brush-move(x: float, y: float);
+    callback brush-release();
+    /// The brush options' knobs.
+    callback brush-size-changed(value: float);
+    callback brush-opacity-changed(value: float);
+    callback brush-hardness-changed(value: float);
+    callback brush-color-changed(index: int);
+    /// The pixel history of the open document.
+    callback canvas-undo();
+    callback canvas-redo();
+    /// The marquee drag and the wand's click, in viewport pixels.
+    callback marquee-press(x: float, y: float);
+    callback marquee-move(x: float, y: float);
+    callback marquee-release();
+    callback wand-click(x: float, y: float);
+    /// Selection-level edits.
+    callback select-all();
+    callback deselect();
+    callback fill-selection();
+    callback delete-selection();
+    /// The layers panel: rows published front-to-back, and the edits the
+    /// rows drive. `active-layer` is the picked row's index, and the
+    /// footer's delete and reorder buttons act on it.
+    in property <[CanvasLayerData]> layers;
+    in property <int> active-layer: -1;
+    callback layer-picked(index: int);
+    callback layer-visibility-toggled(index: int);
+    callback layer-opacity-changed(index: int, opacity: float);
+    callback layer-added();
+    callback layer-deleted(index: int);
+    callback layer-moved(index: int, direction: int);
+    /// Export the composed canvas as a PNG.
+    callback export-png();
 
     /// The corner button: show something else in this pane's seat.
     callback pane-picked(kind: PaneKind);
@@ -116,8 +187,9 @@ export component CanvasPane inherits Rectangle {
             }
         }
 
-        // ── the well ─────────────────────────────────────────────────────
-        well := Rectangle {
+        // ── the well and the layers panel ────────────────────────────────
+        HorizontalLayout {
+            well := Rectangle {
             vertical-stretch: 1;
             background: Theme.well;
             clip: true;
@@ -206,15 +278,38 @@ export component CanvasPane inherits Rectangle {
                 }
             }
 
+            // The selection's outline, and the marquee's box while a drag
+            // is in flight - both in well coordinates, the frame the view
+            // conversions speak.
+            if root.has-selection: Rectangle {
+                x: root.selection-x * 1px;
+                y: root.selection-y * 1px;
+                width: root.selection-w * 1px;
+                height: root.selection-h * 1px;
+                border-width: 1px;
+                border-color: Theme.accent;
+            }
+            if root.marquee-w > 0 && root.marquee-h > 0: Rectangle {
+                x: root.marquee-x * 1px;
+                y: root.marquee-y * 1px;
+                width: root.marquee-w * 1px;
+                height: root.marquee-h * 1px;
+                border-width: 1px;
+                border-color: Theme.accent;
+                opacity: 0.7;
+            }
+
             // The gesture floor, over the stage and the empty state alike:
             // panning an empty well does nothing, and reporting it costs
             // less than asking whether it was worth it.
             floor := TouchArea {
                 property <bool> panning;
                 property <bool> zooming;
+                property <bool> painting;
+                property <bool> marqueeing;
                 mouse-cursor: self.panning ? MouseCursor.grabbing
                     : root.tool == 1 ? MouseCursor.grab
-                    : root.tool == 2 ? MouseCursor.crosshair
+                    : root.tool >= 2 ? MouseCursor.crosshair
                     : MouseCursor.default;
 
                 scroll-event(event) => {
@@ -235,6 +330,17 @@ export component CanvasPane inherits Rectangle {
                             self.zooming = true;
                             root.nav-zoom-press(self.mouse-x / 1px, self.mouse-y / 1px,
                                 event.modifiers.alt);
+                        } else if (event.button == PointerEventButton.left
+                            && root.tool >= 3 && root.tool <= 4) {
+                            self.painting = true;
+                            root.brush-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else if (event.button == PointerEventButton.left
+                            && root.tool == 5) {
+                            self.marqueeing = true;
+                            root.marquee-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else if (event.button == PointerEventButton.left
+                            && root.tool == 6) {
+                            root.wand-click(self.mouse-x / 1px, self.mouse-y / 1px);
                         }
                     } else if (event.kind == PointerEventKind.up
                         || event.kind == PointerEventKind.cancel) {
@@ -243,6 +349,14 @@ export component CanvasPane inherits Rectangle {
                             self.zooming = false;
                             root.nav-release(event.modifiers.alt);
                         }
+                        if (self.painting) {
+                            self.painting = false;
+                            root.brush-release();
+                        }
+                        if (self.marqueeing) {
+                            self.marqueeing = false;
+                            root.marquee-release();
+                        }
                     }
                 }
                 moved => {
@@ -250,10 +364,126 @@ export component CanvasPane inherits Rectangle {
                         root.nav-pan-move(self.mouse-x / 1px, self.mouse-y / 1px);
                     } else if (self.zooming) {
                         root.nav-zoom-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (self.painting) {
+                        root.brush-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (self.marqueeing) {
+                        root.marquee-move(self.mouse-x / 1px, self.mouse-y / 1px);
                     }
                 }
                 // The monitor's own way back: a double-click fits.
                 double-clicked => { root.nav-fit(); }
+            }
+        }
+
+            // The layers panel: the document's stack, front-to-back, with
+            // visibility, opacity and reorder on each row.
+            if root.has-document: Rectangle {
+                width: 172px;
+                background: Theme.panel;
+
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: 1px;
+                    background: Theme.line;
+                }
+
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: I18n.t("Layers");
+                            color: Theme.fg-dim;
+                            font-family: Theme.font-technical;
+                            font-size: Theme.fs;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        IconButton {
+                            glyph: Glyph.plus;
+                            label: I18n.t("Add layer");
+                            clicked => { root.layer-added(); }
+                        }
+                    }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 2px;
+                            for layer[i] in root.layers: Rectangle {
+                                height: 30px;
+                                border-radius: Theme.r;
+                                background: layer.active ? Theme.field-hover : row-touch.has-hover ? Theme.field-hover : transparent;
+                                // The pick: the row's floor, under the eye
+                                // and the knob, which declare after it.
+                                row-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.layer-picked(i); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 66px;
+                                    spacing: 6px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        IconButton {
+                                            glyph: layer.hidden ? Glyph.eye-off : Glyph.eye;
+                                            label: layer.hidden ? I18n.t("Show layer") : I18n.t("Hide layer");
+                                            clicked => { root.layer-visibility-toggled(i); }
+                                        }
+                                    }
+                                    Text {
+                                        text: layer.name;
+                                        color: layer.active ? Theme.fg : Theme.fg-dim;
+                                        font-size: Theme.fs;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Knob {
+                                    x: parent.width - self.width - 40px;
+                                    y: (parent.height - self.height) / 2;
+                                    diameter: 22px;
+                                    travel: 60px;
+                                    value: layer.opacity;
+                                    minimum: 0.05;
+                                    maximum: 1;
+                                    default-value: 1;
+                                    changed(value) => { root.layer-opacity-changed(i, value); }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 2px;
+                        alignment: start;
+                        IconButton {
+                            glyph: Glyph.chevron-up;
+                            label: I18n.t("Move layer up");
+                            clicked => { root.layer-moved(root.active-layer, 1); }
+                        }
+                        IconButton {
+                            glyph: Glyph.chevron-down;
+                            label: I18n.t("Move layer down");
+                            clicked => { root.layer-moved(root.active-layer, -1); }
+                        }
+                        IconButton {
+                            glyph: Glyph.trash;
+                            label: I18n.t("Delete layer");
+                            clicked => { root.layer-deleted(root.active-layer); }
+                        }
+                        IconButton {
+                            glyph: Glyph.export;
+                            label: I18n.t("Export as PNG");
+                            clicked => { root.export-png(); }
+                        }
+                    }
+                }
             }
         }
 
@@ -277,7 +507,8 @@ export component CanvasPane inherits Rectangle {
 
                 // Leading: the tools. Move is the plain pointer, the one
                 // painting and selecting will hang off; hand pans; zoom is
-                // the original's drag-right-to-zoom-in tool.
+                // the original's drag-right-to-zoom-in tool; brush and
+                // eraser paint, sharing one settings block.
                 HorizontalLayout {
                     horizontal-stretch: 1;
                     spacing: 2px;
@@ -310,16 +541,144 @@ export component CanvasPane inherits Rectangle {
                             clicked => { root.tool-changed(2); }
                         }
                     }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.brush;
+                            label: I18n.t("Brush tool");
+                            checked: root.tool == 3;
+                            clicked => { root.tool-changed(3); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.eraser;
+                            label: I18n.t("Eraser tool");
+                            checked: root.tool == 4;
+                            clicked => { root.tool-changed(4); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.box-select;
+                            label: I18n.t("Marquee tool");
+                            checked: root.tool == 5;
+                            clicked => { root.tool-changed(5); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.wand;
+                            label: I18n.t("Magic wand tool");
+                            checked: root.tool == 6;
+                            clicked => { root.tool-changed(6); }
+                        }
+                    }
                 }
 
-                // Trailing: the way back, and the way in. Fit mirrors the
-                // monitor's; Open shares the empty state's job for when an
-                // image is already up.
+                // Middle: the brush's own strip, only while a paint tool
+                // is up - size, opacity and hardness as knobs, the palette
+                // as swatches.
+                if root.tool >= 3: HorizontalLayout {
+                    horizontal-stretch: 2;
+                    alignment: center;
+                    spacing: 6px;
+
+                    Knob {
+                        diameter: 38px;
+                        travel: 100px;
+                        value: root.brush-diameter;
+                        minimum: 1;
+                        maximum: 400;
+                        precision: 0;
+                        default-value: 24;
+                        changed(value) => { root.brush-size-changed(value); }
+                    }
+                    Knob {
+                        diameter: 38px;
+                        travel: 100px;
+                        value: root.brush-opacity;
+                        minimum: 0.01;
+                        maximum: 1;
+                        default-value: 1;
+                        changed(value) => { root.brush-opacity-changed(value); }
+                    }
+                    Knob {
+                        diameter: 38px;
+                        travel: 100px;
+                        value: root.brush-hardness;
+                        minimum: 0;
+                        maximum: 1;
+                        default-value: 0.8;
+                        changed(value) => { root.brush-hardness-changed(value); }
+                    }
+                    for color[i] in Palette.colors: Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        y: 0;
+                        border-radius: Theme.r;
+                        background: color;
+                        border-width: 1px;
+                        border-color: i == root.brush-color ? Theme.fg : Theme.line;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.brush-color-changed(i); }
+                        }
+                    }
+                }
+
+                // Trailing: the way back, twice over - the pixel history's
+                // undo and redo, then the view's fit and the way in.
                 HorizontalLayout {
                     horizontal-stretch: 1;
                     spacing: 2px;
                     alignment: end;
 
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.undo;
+                            label: I18n.t("Undo");
+                            clicked => { root.canvas-undo(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.redo;
+                            label: I18n.t("Redo");
+                            clicked => { root.canvas-redo(); }
+                        }
+                    }
+                    // The selection's own way back: fill it with the brush
+                    // colour, clear it, or drop the selection itself.
+                    if root.has-selection: VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.paint-bucket;
+                            label: I18n.t("Fill selection");
+                            clicked => { root.fill-selection(); }
+                        }
+                    }
+                    if root.has-selection: VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.trash;
+                            label: I18n.t("Delete selection");
+                            clicked => { root.delete-selection(); }
+                        }
+                    }
+                    if root.has-selection: VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.close;
+                            label: I18n.t("Deselect");
+                            clicked => { root.deselect(); }
+                        }
+                    }
                     VerticalLayout {
                         alignment: center;
                         IconButton {

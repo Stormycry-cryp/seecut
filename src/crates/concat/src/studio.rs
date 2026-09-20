@@ -5484,6 +5484,56 @@ impl Studio {
         editor.set_canvas_stage_w(self.canvas.stage.0 as f32);
         editor.set_canvas_stage_h(self.canvas.stage.1 as f32);
         editor.set_canvas_tool(self.canvas.tool as i32);
+        editor.set_canvas_brush_diameter(self.canvas.brush.diameter as f32);
+        editor.set_canvas_brush_opacity(self.canvas.brush.opacity as f32);
+        editor.set_canvas_brush_hardness(self.canvas.brush.hardness as f32);
+        editor.set_canvas_brush_color(self.canvas.brush_color_index as i32);
+        let publish_rect = |set_x: &dyn Fn(f32),
+                            set_y: &dyn Fn(f32),
+                            set_w: &dyn Fn(f32),
+                            set_h: &dyn Fn(f32),
+                            rect: Option<(f64, f64, f64, f64)>| {
+            let (x, y, w, h) = rect.unwrap_or((0.0, 0.0, 0.0, 0.0));
+            set_x(x as f32);
+            set_y(y as f32);
+            set_w(w as f32);
+            set_h(h as f32);
+        };
+        publish_rect(
+            &|v| editor.set_canvas_selection_x(v),
+            &|v| editor.set_canvas_selection_y(v),
+            &|v| editor.set_canvas_selection_w(v),
+            &|v| editor.set_canvas_selection_h(v),
+            self.canvas.selection_view,
+        );
+        editor.set_canvas_has_selection(self.canvas.selection.is_some());
+        publish_rect(
+            &|v| editor.set_canvas_marquee_x(v),
+            &|v| editor.set_canvas_marquee_y(v),
+            &|v| editor.set_canvas_marquee_w(v),
+            &|v| editor.set_canvas_marquee_h(v),
+            self.canvas.marquee_view,
+        );
+        // The layers panel: rows front-to-back, and the picked row's index.
+        let rows: Vec<CanvasLayerData> = self
+            .canvas
+            .layers_data()
+            .into_iter()
+            .map(|(id, name, hidden, opacity, active)| CanvasLayerData {
+                id: id as i32,
+                name: name.into(),
+                hidden,
+                opacity,
+                active,
+            })
+            .collect();
+        editor.set_canvas_active_layer(
+            rows.iter()
+                .position(|row| row.active)
+                .map(|index| index as i32)
+                .unwrap_or(-1),
+        );
+        editor.set_canvas_layers(slint::ModelRc::new(slint::VecModel::from(rows)));
     }
 
     /// The menus, the dialogs, the bin and the engine lists.

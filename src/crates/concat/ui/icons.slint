@@ -113,6 +113,11 @@ export enum Glyph {
     // the cutout's brushes
     brush,
     eraser,
+    undo,
+    redo,
+    box-select,
+    wand,
+    paint-bucket,
 }
 
 component Stroked inherits Path {
@@ -542,6 +547,43 @@ export component Icon inherits Rectangle {
         commands: "M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2"
             + " 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21"
             + " M5.082 11.09l8.828 8.828";
+    }
+
+    // lucide/undo-2
+    if root.glyph == Glyph.undo: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M9 14 4 9l5-5 M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5"
+            + " 5.5H11";
+    }
+
+    // lucide/redo-2
+    if root.glyph == Glyph.redo: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "m15 14 5-5-5-5 M20 9H9.5A5.5 5.5 0 0 0 4 14.5v0A5.5 5.5 0 0 0 9.5"
+            + " 20H13";
+    }
+
+    // lucide/box-select: the four corner brackets crossed by the diagonal.
+    if root.glyph == Glyph.box-select: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M5 3a2 2 0 0 0-2 2 M19 3a2 2 0 0 1 2 2 M21 19a2 2 0 0 1-2 2"
+            + " M5 21a2 2 0 0 1-2-2 M9 3h1 M10 21h1 M3 9v1 M21 9v1 M3 14v1"
+            + " M21 14v1 M14 3h1 M13 21h1 M3 3l18 18";
+    }
+
+    // lucide/wand-2
+    if root.glyph == Glyph.wand: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21"
+            + " 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0"
+            + " 0 0 0-1.72Z M5 6v4 M7 8H3 M19 14v4 M21 16h-4";
+    }
+
+    // lucide/paint-bucket
+    if root.glyph == Glyph.paint-bucket: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"
+            + " m5 2 5 5 M2 13h15 M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z";
     }
 
     // lucide/step-forward

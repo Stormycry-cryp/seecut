@@ -38,6 +38,7 @@ pub mod document;
 pub mod gpu;
 pub mod history;
 pub mod pixels;
+pub mod selection;
 pub mod viewport;
 
 pub use blend::BlendMode;
@@ -53,4 +54,5 @@ pub use document::{
 pub use gpu::{CanvasGpu, DirtyRect};
 pub use history::{DocumentHistory, Snapshot};
 pub use pixels::{PixelId, PixelStore};
+pub use selection::{Mask, SelectionShape, erase_region, fill_region, move_region, pick_color};
 pub use viewport::{CanvasViewport, NavInput, Navigator};

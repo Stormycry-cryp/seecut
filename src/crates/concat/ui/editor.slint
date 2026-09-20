@@ -8,6 +8,7 @@ import {
 import { MediaFilter, MediaItemData, TextPresetData } from "workspace/media-pane.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { PaneKind } from "workspace/pane-switcher.slint";
+import { CanvasLayerData } from "workspace/canvas-pane.slint";
 import { MenuItemData } from "primitives/context-menu.slint";
 import {
     ClipData, ClipField, ClipTextField, DropData, SelectedClipData,
@@ -243,8 +244,29 @@ export global Editor {
     /// The document's box on screen, in viewport pixels, already zoomed.
     in-out property <float> canvas-stage-w;
     in-out property <float> canvas-stage-h;
-    /// 0 move, 1 hand, 2 zoom.
+    /// 0 move, 1 hand, 2 zoom, 3 brush, 4 eraser.
     in-out property <int> canvas-tool;
+    /// The brush the painting tools drive; Rust holds the truth, the knobs
+    /// echo it back.
+    in-out property <float> canvas-brush-diameter: 24;
+    in-out property <float> canvas-brush-opacity: 1;
+    in-out property <float> canvas-brush-hardness: 0.8;
+    /// The selected colour swatch, as its palette index.
+    in-out property <int> canvas-brush-color: 0;
+    /// The selection's box, in viewport pixels, for the overlay.
+    in-out property <bool> canvas-has-selection;
+    in-out property <float> canvas-selection-x;
+    in-out property <float> canvas-selection-y;
+    in-out property <float> canvas-selection-w;
+    in-out property <float> canvas-selection-h;
+    /// The marquee drag's box, in viewport pixels, while it is in flight.
+    in-out property <float> canvas-marquee-x;
+    in-out property <float> canvas-marquee-y;
+    in-out property <float> canvas-marquee-w;
+    in-out property <float> canvas-marquee-h;
+    /// The layers panel's rows, front-to-back, and the picked row.
+    in-out property <[CanvasLayerData]> canvas-layers;
+    in-out property <int> canvas-active-layer: -1;
 
     /// The wheel or trackpad scroll: pixel deltas, whether ctrl/cmd makes it
     /// a zoom, and where over the viewport it happened.
@@ -262,6 +284,37 @@ export global Editor {
     callback canvas-resized(width: float, height: float);
     callback canvas-open();
     callback canvas-tool-changed(index: int);
+    /// A paint stroke, in viewport pixels.
+    callback canvas-brush-press(x: float, y: float);
+    callback canvas-brush-move(x: float, y: float);
+    callback canvas-brush-release();
+    /// The brush options' knobs.
+    callback canvas-brush-size-changed(value: float);
+    callback canvas-brush-opacity-changed(value: float);
+    callback canvas-brush-hardness-changed(value: float);
+    callback canvas-brush-color-changed(index: int);
+    /// The open document's pixel history.
+    callback canvas-undo();
+    callback canvas-redo();
+    /// The marquee drag and the wand's click, in viewport pixels.
+    callback canvas-marquee-press(x: float, y: float);
+    callback canvas-marquee-move(x: float, y: float);
+    callback canvas-marquee-release();
+    callback canvas-wand-click(x: float, y: float);
+    /// Selection-level edits.
+    callback canvas-select-all();
+    callback canvas-deselect();
+    callback canvas-fill-selection();
+    callback canvas-delete-selection();
+    /// The layers panel.
+    callback canvas-layer-picked(index: int);
+    callback canvas-layer-visibility-toggled(index: int);
+    callback canvas-layer-opacity-changed(index: int, opacity: float);
+    callback canvas-layer-added();
+    callback canvas-layer-deleted(index: int);
+    callback canvas-layer-moved(index: int, direction: int);
+    /// Export the composed canvas as a PNG.
+    callback canvas-export-png();
 
     // ── the timeline ──
     in-out property <[TimelineTabData]> timeline-tabs;
