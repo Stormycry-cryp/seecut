@@ -34,13 +34,150 @@ export global Palette {
     ];
 }
 
-// One row of the layers panel, as Rust publishes it.
+// One row of the layers panel, as Rust publishes it: the row's node, its
+// nesting depth for the indent, and whether it is a group whose children
+// are shown (`expanded`) or not.
 export struct CanvasLayerData {
     id: int,
     name: string,
     hidden: bool,
     opacity: float,
     active: bool,
+    depth: int,
+    expanded: bool,
+    group: bool,
+}
+
+// One control point of a curves channel, normalized `0..1` on both axes:
+// `x` the input, `y` the output.
+export struct CanvasCurvePoint {
+    x: float,
+    y: float,
+}
+
+// One drawn segment of a curves polyline, precomputed in Rust: both
+// endpoints in normalized editor coordinates (`y` already flipped to
+// the screen's downward axis).
+export struct CanvasCurveSegment {
+    x: float,
+    y: float,
+    x2: float,
+    y2: float,
+}
+
+// The curves editor: a square plot, the identity's diagonal for
+// reference, the curve as little rotated strokes, and every control
+// point a handle the pointer can drag. The math that places a segment
+// or clamps a drag lives in Rust; the editor only converts between its
+// own box and the normalized frame both sides speak.
+component CurveEditor inherits Rectangle {
+    in property <[CanvasCurvePoint]> points;
+    in property <[CanvasCurveSegment]> segments;
+    in property <color> tint;
+    callback point-set(index: int, x: float, y: float);
+    callback point-add(x: float, y: float);
+    callback point-remove(index: int);
+
+    background: Theme.field;
+    border-width: 1px;
+    border-color: Theme.line-strong;
+    clip: true;
+
+    // The quarter grid, under everything.
+    Rectangle {
+        x: parent.width / 2 - 0.5px;
+        y: 0;
+        width: 1px;
+        height: parent.height;
+        background: Theme.line;
+        opacity: 0.5;
+    }
+    Rectangle {
+        x: 0;
+        y: parent.height / 2 - 0.5px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.line;
+        opacity: 0.5;
+    }
+
+    // The identity, faint: the curve the adjustment does nothing with.
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        commands: "M 0 100 L 100 0";
+        stroke: Theme.line-strong;
+        stroke-width: 1px;
+    }
+
+    // Where a tap lands a fresh point - under the handles, so a tap on
+    // one of those stays a grab.
+    TouchArea {
+        mouse-cursor: crosshair;
+        clicked => {
+            root.point-add(self.mouse-x / parent.width,
+                1 - self.mouse-y / parent.height);
+        }
+    }
+
+    // The curve itself, one stroke per consecutive pair, drawn in the
+    // editor's own normalized frame.
+    for seg in root.segments: Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 1;
+        viewbox-height: 1;
+        commands: "M \{seg.x} \{seg.y} L \{seg.x2} \{seg.y2}";
+        stroke: root.tint;
+        stroke-width: 1.5px;
+    }
+
+    // The handles: eight points of grabbable curve. A drag reports the
+    // normalized position; a double click asks for the point back,
+    // which Rust refuses for the two corners.
+    for pt[i] in root.points: Rectangle {
+        x: pt.x * parent.width - self.width / 2;
+        y: (1 - pt.y) * parent.height - self.height / 2;
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: Theme.raised;
+        border-width: 1px;
+        border-color: root.tint;
+
+        property <float> drag-x0;
+        property <float> drag-y0;
+        property <length> drag-mx;
+        property <length> drag-my;
+        property <bool> dragging;
+
+        TouchArea {
+            mouse-cursor: MouseCursor.grab;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    parent.dragging = true;
+                    parent.drag-x0 = pt.x;
+                    parent.drag-y0 = pt.y;
+                    parent.drag-mx = self.mouse-x;
+                    parent.drag-my = self.mouse-y;
+                } else {
+                    parent.dragging = false;
+                }
+            }
+            moved => {
+                if (parent.dragging) {
+                    root.point-set(i,
+                        Math.clamp(parent.drag-x0
+                            + (self.mouse-x - parent.drag-mx) / root.width, 0, 1),
+                        Math.clamp(parent.drag-y0
+                            - (self.mouse-y - parent.drag-my) / root.height, 0, 1));
+                }
+            }
+            double-clicked => { root.point-remove(i); }
+        }
+    }
 }
 
 // One knob of the active adjustment, as Rust publishes it: the label, the
@@ -153,12 +290,30 @@ export component CanvasPane inherits Rectangle {
     /// the row is not an adjustment) and its knobs.
     in property <int> adjustment-kind: 0;
     in property <[CanvasAdjustmentParam]> adjustment-params;
+    /// The active row's curves, three channels of normalized points. The
+    /// editor reads one at a time, by the channel tab it has up.
+    in property <[CanvasCurvePoint]> curve-red;
+    in property <[CanvasCurvePoint]> curve-green;
+    in property <[CanvasCurvePoint]> curve-blue;
+    /// The same three channels as drawn strokes, precomputed in Rust:
+    /// start corner, length and angle, all normalized to the editor's
+    /// square.
+    in property <[CanvasCurveSegment]> curve-segments-red;
+    in property <[CanvasCurveSegment]> curve-segments-green;
+    in property <[CanvasCurveSegment]> curve-segments-blue;
     /// The marching ants' phase, stepped by a timer in Rust: `0..3`, a
     /// quarter of the dash period each step.
     in property <int> ants;
     /// The layers panel's adjustment popup, open or not. Local state: no
     /// round trip, the panel decides nothing else about it.
     property <bool> adjustment-open: false;
+    /// The curves editor's channel tab: `0` red, `1` green, `2` blue.
+    property <int> curve-channel: 0;
+    /// The channel tab's points and segments, picked by the tab.
+    property <[CanvasCurvePoint]> curve-points: root.curve-channel == 0 ? root.curve-red
+        : root.curve-channel == 1 ? root.curve-green : root.curve-blue;
+    property <[CanvasCurveSegment]> curve-segments: root.curve-channel == 0 ? root.curve-segments-red
+        : root.curve-channel == 1 ? root.curve-segments-green : root.curve-segments-blue;
 
     // ── gestures, reported rather than handled ──────────────────────────
     //
@@ -214,12 +369,22 @@ export component CanvasPane inherits Rectangle {
     callback layer-visibility-toggled(index: int);
     callback layer-opacity-changed(index: int, opacity: float);
     callback layer-added();
+    /// A new group, above the active row.
+    callback layer-group-added();
+    /// The group at the row folded or unfolded.
+    callback layer-folded(index: int);
     callback layer-deleted(index: int);
     callback layer-moved(index: int, direction: int);
     /// The adjustment panel: a kind picked out of the popup, and one of
     /// the active adjustment's knobs turned.
     callback adjustment-added(kind: int);
     callback adjustment-param-changed(index: int, value: float);
+    /// The curves editor, on the channel (`0` red, `1` green, `2` blue):
+    /// a control point moved by index, a fresh point dropped in, and a
+    /// point taken back out - coordinates normalized `0..1`.
+    callback curve-set(channel: int, index: int, x: float, y: float);
+    callback curve-add(channel: int, x: float, y: float);
+    callback curve-remove(channel: int, index: int);
     /// Export the composed canvas as a PNG.
     callback export-png();
     /// Save the whole document as a `.comp` project package.
@@ -480,6 +645,33 @@ export component CanvasPane inherits Rectangle {
                 }
                 // The monitor's own way back: a double-click fits.
                 double-clicked => { root.nav-fit(); }
+
+                // The brush's shadow on the canvas: the stroke's own
+                // diameter at the view's zoom, riding the pointer while a
+                // paint tool is up. A dark ring under the light one keeps
+                // the circle legible on any ground.
+                if root.tool >= 3 && root.tool <= 4 && root.has-document
+                    && floor.has-hover: Rectangle {
+                    x: floor.mouse-x - self.width / 2;
+                    y: floor.mouse-y - self.height / 2;
+                    width: Math.max(root.brush-diameter * root.zoom / 100, 6) * 1px;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: transparent;
+                    border-width: 1px;
+                    border-color: #ffffffcc;
+
+                    Rectangle {
+                        x: -1px;
+                        y: -1px;
+                        width: parent.width + 2px;
+                        height: parent.height + 2px;
+                        border-radius: self.width / 2;
+                        background: transparent;
+                        border-width: 1px;
+                        border-color: #00000066;
+                    }
+                }
             }
         }
 
@@ -519,6 +711,11 @@ export component CanvasPane inherits Rectangle {
                             clicked => { adjustment-open = !adjustment-open; }
                         }
                         IconButton {
+                            glyph: Glyph.folder-plus;
+                            label: I18n.t("Add group");
+                            clicked => { root.layer-group-added(); }
+                        }
+                        IconButton {
                             glyph: Glyph.plus;
                             label: I18n.t("Add layer");
                             clicked => { root.layer-added(); }
@@ -540,9 +737,21 @@ export component CanvasPane inherits Rectangle {
                                     clicked => { root.layer-picked(i); }
                                 }
                                 HorizontalLayout {
-                                    padding-left: 6px;
+                                    // The indent: one step per nesting
+                                    // level, so the tree reads at a glance.
+                                    padding-left: 6px + layer.depth * 12px;
                                     padding-right: 66px;
                                     spacing: 6px;
+                                    // The group's fold: a chevron that
+                                    // opens and shuts the row's children.
+                                    if layer.group: VerticalLayout {
+                                        alignment: center;
+                                        IconButton {
+                                            glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right;
+                                            label: layer.expanded ? I18n.t("Fold group") : I18n.t("Unfold group");
+                                            clicked => { root.layer-folded(i); }
+                                        }
+                                    }
                                     VerticalLayout {
                                         alignment: center;
                                         IconButton {
@@ -597,6 +806,66 @@ export component CanvasPane inherits Rectangle {
                                 horizontal-alignment: center;
                                 overflow: elide;
                             }
+                        }
+                    }
+
+                    // The curves editor: a channel tab per curve, then the
+                    // plot. Drag a handle to bend, tap the plot to add a
+                    // point, double-click a handle to take it back.
+                    if root.adjustment-kind == 7: VerticalLayout {
+                        spacing: 4px;
+                        HorizontalLayout {
+                            spacing: 2px;
+                            alignment: start;
+                            for tab[t] in [
+                                { name: "R", tint: #e05a55 },
+                                { name: "G", tint: #58a84e },
+                                { name: "B", tint: #4a83d4 },
+                            ]: Rectangle {
+                                width: 22px;
+                                height: 18px;
+                                border-radius: Theme.r;
+                                background: root.curve-channel == t ? Theme.field-hover : Theme.field;
+                                border-width: 1px;
+                                border-color: root.curve-channel == t ? tab.tint : Theme.line;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.curve-channel = t; }
+                                }
+                                Text {
+                                    text: tab.name;
+                                    color: root.curve-channel == t ? tab.tint : Theme.fg-dim;
+                                    font-family: Theme.font-technical;
+                                    font-size: Theme.fs;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        CurveEditor {
+                            width: parent.width;
+                            height: parent.width;
+                            points: root.curve-points;
+                            segments: root.curve-segments;
+                            tint: root.curve-channel == 0 ? #e05a55
+                                : root.curve-channel == 1 ? #58a84e : #4a83d4;
+                            point-set(index, x, y) => {
+                                root.curve-set(root.curve-channel, index, x, y);
+                            }
+                            point-add(x, y) => {
+                                root.curve-add(root.curve-channel, x, y);
+                            }
+                            point-remove(index) => {
+                                root.curve-remove(root.curve-channel, index);
+                            }
+                        }
+                        Text {
+                            text: I18n.t("Drag to bend, click to add, double-click to remove");
+                            color: Theme.fg-dim;
+                            font-size: Theme.fs - 1px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                            wrap: word-wrap;
                         }
                     }
 
@@ -669,6 +938,7 @@ export component CanvasPane inherits Rectangle {
                             { kind: 4, name: I18n.t("Hue & Saturation") },
                             { kind: 5, name: I18n.t("Gradient map") },
                             { kind: 6, name: I18n.t("Grain") },
+                            { kind: 7, name: I18n.t("Curves") },
                         ]: Rectangle {
                             height: 22px;
                             border-radius: Theme.r;

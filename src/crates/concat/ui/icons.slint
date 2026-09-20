@@ -110,6 +110,7 @@ export enum Glyph {
     info,
     help,
     folder,
+    folder-plus,
     // the cutout's brushes
     brush,
     eraser,
@@ -200,6 +201,13 @@ export component Icon inherits Rectangle {
         size: root.size; tint: root.tint; weight: root.weight;
         commands: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9"
             + "A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z";
+    }
+
+    // lucide/folder-plus
+    if root.glyph == Glyph.folder-plus: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9"
+            + "A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z M12 10v6 M9 13h6";
     }
 
     // lucide/plus

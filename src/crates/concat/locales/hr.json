@@ -753,5 +753,11 @@
   "In white": "Ulazna bijela",
   "Out black": "Izlazna crna",
   "Out white": "Izlazna bijela",
-  "Save project": "Spremi projekt"
+  "Save project": "Spremi projekt",
+  "Add group": "Dodaj grupu",
+  "Fold group": "Skupi grupu",
+  "Unfold group": "Proširi grupu",
+  "Curves": "Krivulje",
+  "Group {0}": "Grupa {0}",
+  "Drag to bend, click to add, double-click to remove": "Povuci za savijanje, kliknite za dodavanje, dvokliknite za uklanjanje"
 }

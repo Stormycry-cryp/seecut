@@ -753,5 +753,11 @@
   "In white": "Giriş beyazı",
   "Out black": "Çıkış siyahı",
   "Out white": "Çıkış beyazı",
-  "Save project": "Projeyi kaydet"
+  "Save project": "Projeyi kaydet",
+  "Add group": "Grup ekle",
+  "Fold group": "Grubu kapat",
+  "Unfold group": "Grubu aç",
+  "Curves": "Eğriler",
+  "Group {0}": "Grup {0}",
+  "Drag to bend, click to add, double-click to remove": "Bükme için sürükleyin, eklemek için tıklayın, kaldırmak için çift tıklayın"
 }

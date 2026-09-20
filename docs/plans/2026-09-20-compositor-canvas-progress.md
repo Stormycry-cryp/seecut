@@ -235,3 +235,64 @@ cargo check -p concat --no-default-features --features wgpu
   checker 图层、Ants 组件）
 - `concat/ui/editor.slint`、`workspace/seat.slint`（全局与转发）
 - `concat/locales/*.json` ×13（12 词条）
+
+---
+
+## 七、P9：笔刷光标、图层分组、Curves 编辑器 + 全量校验（2026-09-21）
+
+### 1. 笔刷光标预览
+- 手势层内嵌跟随指针的圆环：直径 = 笔刷尺寸 × zoom，亮环叠深环，
+  任何底色可辨；仅 brush/eraser 且有文档且指针悬停时显示。
+  零往返——圆环直接绑定 TouchArea 的 mouse-x/mouse-y，不经过 Rust。
+
+### 2. 图层分组 UI（全栈）
+- 引擎早已支持嵌套（new_group/move_node/find），本轮补 UI 与接线：
+  - `rows()`：面板行的单一事实来源——深度优先反转遍历 + 折叠集合过滤，
+    带 `(node, depth)`。所有面板索引（pick/visibility/opacity/fold/
+    move/delete）统一切到该列表，**顺带修复旧代码面板行
+    （root.children）与 walk()（含根）索引空间错位的隐患**。
+  - 行模型扩为 8 元组 `LayerRow`（+depth/expanded/group），面板按
+    depth×12px 缩进，组行显示折叠 chevron；折叠状态是窗格工作区状态
+    （HashSet<LayerId>），不入 .comp（与 Photoshop 一致）。
+  - CanvasMsg::LayerAddGroup / LayerFold；移动收敛为
+    `move_within_container`（组内上/下，UI 与 agent 共用）。
+  - agent 新增 `agent_layer_group / agent_layer_fold /
+    agent_layer_move_into`（移入组/移回根，走引擎 move_node 的
+    子树防环校验）。UI 拖拽入组留待后续（引擎已就绪）。
+
+### 3. Curves 调整图层（第 7 类，全栈）
+- 默认曲线 = 恒等 (0,0)-(1,1)；每通道独立点集，按输入排序，
+  上限 16 点/通道。
+- 编辑协议：`CurveSet(channel,index,x,y)`（端点只给输出、中间点
+  clamp 在邻点间 ±0.001 防交叉）、`CurveAdd`（按输入排序插入）、
+  `CurveRemove`（角点拒绝删除，长度守卫先行防空表下溢）。
+- UI：R/G/B 通道页签 + 方形曲线编辑器（CurveEditor 组件）——
+  拖柄改点、点击加点、双击删点；线段几何（两端点，y 已翻转到屏幕
+  轴）由 Rust 预计算发布（`curve_segments`，因 Slint 无法按下标
+  索引模型/Rectangle 无 rotation），Path 动态 commands 串绘制。
+- GPU/CPU 合成引擎无需改动——Curves LUT 通道本已完备。
+
+### 4. 审查发现与修复
+- **下溢隐患**：`remove_curve_point` 原守卫顺序在空点表（畸形
+  .comp 可构造 `Curves { red: [] }`）时 `len()-1` 下溢 panic——
+  改为长度检查先行。
+- **索引错位**：agent 层操作原先用 `document.walk()`（其文档注释
+  声称含根但实际不含，而面板行是 root.children——两层不一致），
+  全部统一到 `rows()`。
+- 5 处 clippy（2×collapsible_if 收敛进 move_within_container、
+  2×type_complexity 引入 LayerRow 别名、1×rows 内 if 合并）。
+
+### 5. 验证（全量回归）
+- concat-canvas（gpu）：**134 全绿**；
+- concat（wgpu）：**60 全绿**（+分组折叠行序 1 项、曲线协议往返
+  1 项，含"曲线抬升红通道"的合成级断言）；
+- clippy `-D warnings` 双 crate 干净；
+- i18n：6 个新词条 × 13 语言全量补齐（Add group / Fold group /
+  Unfold group / Group {0} / Curves / 曲线编辑器提示语）。
+- agent 接口清单核对：35 个 `agent_*` 方法（本轮 +6），UI 与
+  agent 共用同一私有路径，无旁路。
+
+### 6. 剩余待办
+- 图层面板拖拽入组（引擎 move_node 已就绪，缺 UI 手势）
+- GradientMap 双色 / 蒙版绘制 UI、压感（Slint 上游）
+- 真机全链路手测

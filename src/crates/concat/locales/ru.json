@@ -753,5 +753,11 @@
   "In white": "Входной белый",
   "Out black": "Выходной чёрный",
   "Out white": "Выходной белый",
-  "Save project": "Сохранить проект"
+  "Save project": "Сохранить проект",
+  "Add group": "Добавить группу",
+  "Fold group": "Свернуть группу",
+  "Unfold group": "Развернуть группу",
+  "Curves": "Кривые",
+  "Group {0}": "Группа {0}",
+  "Drag to bend, click to add, double-click to remove": "Потяните, чтобы изогнуть; щелчок — добавить; двойной щелчок — удалить"
 }

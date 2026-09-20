@@ -753,5 +753,11 @@
   "In white": "入力白",
   "Out black": "出力黒",
   "Out white": "出力白",
-  "Save project": "プロジェクトを保存"
+  "Save project": "プロジェクトを保存",
+  "Add group": "グループを追加",
+  "Fold group": "グループを折りたたむ",
+  "Unfold group": "グループを展開",
+  "Curves": "トーンカーブ",
+  "Group {0}": "グループ {0}",
+  "Drag to bend, click to add, double-click to remove": "ドラッグで曲げる、クリックで追加、ダブルクリックで削除"
 }

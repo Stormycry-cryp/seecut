@@ -753,5 +753,11 @@
   "In white": "입력 화이트",
   "Out black": "출력 블랙",
   "Out white": "출력 화이트",
-  "Save project": "프로젝트 저장"
+  "Save project": "프로젝트 저장",
+  "Add group": "그룹 추가",
+  "Fold group": "그룹 접기",
+  "Unfold group": "그룹 펼치기",
+  "Curves": "커브",
+  "Group {0}": "그룹 {0}",
+  "Drag to bend, click to add, double-click to remove": "드래그하여 굽히고, 클릭하여 추가하고, 두 번 클릭하여 제거합니다"
 }

@@ -57,6 +57,12 @@ const PALETTE: &[[u8; 3]] = &[
     [138, 78, 205],
 ];
 
+/// One row of the layers panel, front-to-back: identity, name, hidden,
+/// opacity, active, nesting depth, whether the group's children are
+/// shown, and whether the row is a group at all. The tuple the panel
+/// publishes and the agent reads.
+pub type LayerRow = (u64, String, bool, f32, bool, usize, bool, bool);
+
 /// Everything that can happen to the canvas.
 #[derive(Debug)]
 pub enum CanvasMsg {
@@ -133,6 +139,9 @@ pub enum CanvasMsg {
     LayerToggleVisibility(i32),
     LayerOpacity(i32, f32),
     LayerAdd,
+    LayerAddGroup,
+    /// Fold or unfold the group at the row - the panel's collapsed set.
+    LayerFold(i32),
     LayerDelete(i32),
     LayerMove(i32, i32),
     /// The adjustment panel's picker: one of the kinds
@@ -142,6 +151,16 @@ pub enum CanvasMsg {
     /// One of the active adjustment's parameters, by its index in
     /// [`CanvasPane::adjustment_state`]'s list.
     AdjustmentParam(i32, f64),
+    /// The active curves adjustment's channel (`0` red, `1` green, `2`
+    /// blue): one control point moved, by its index, to a normalized
+    /// position. The endpoints' inputs stay pinned.
+    CurveSet(i32, i32, f64, f64),
+    /// A new control point on the active curves adjustment's channel,
+    /// inserted where the sorted input puts it.
+    CurveAdd(i32, f64, f64),
+    /// A control point off the active curves adjustment's channel, by its
+    /// index; the endpoints refuse to leave.
+    CurveRemove(i32, i32),
     /// Export the composed canvas as a PNG, through a save dialog.
     ExportPng,
     /// Save the whole document - tree, ids and pixels - as a `.comp`
@@ -212,6 +231,9 @@ pub struct CanvasPane {
     /// image per open document: the stage stretches it, so a square keeps
     /// its place in document space at any zoom.
     pub checker: slint::Image,
+    /// The groups the panel has folded, by identity. Workspace state, not
+    /// document state: a save carries the tree, not which boxes were shut.
+    collapsed: std::collections::HashSet<concat_canvas::LayerId>,
 }
 
 impl Default for CanvasPane {
@@ -249,6 +271,7 @@ impl Default for CanvasPane {
             gpu: None,
             failed: false,
             checker: slint::Image::default(),
+            collapsed: std::collections::HashSet::new(),
         }
     }
 }
@@ -433,53 +456,62 @@ impl CanvasPane {
                 self.render(studio);
             }
             CanvasMsg::LayerPick(index) => {
-                let Some(document) = &self.document else {
+                // The id and the paint target come out before anything
+                // moves: the rows borrow the tree, and the assignment
+                // below writes through it.
+                let picked = self
+                    .rows()
+                    .get(index.max(0) as usize)
+                    .map(|(node, _)| (node.id(), node_image_pixels(node)));
+                let Some((id, pixels)) = picked else {
                     return;
                 };
-                let nodes = document.walk();
-                let Some(node) = nodes.get(index as usize) else {
-                    return;
-                };
-                self.active = Some(node.id());
+                self.active = Some(id);
                 // Painting lands on the picked layer when it can hold
                 // pixels; groups and adjustments fall back to the base.
-                self.layer = node_image_pixels(node);
+                self.layer = pixels;
                 self.sync_view();
             }
             CanvasMsg::LayerToggleVisibility(index) => {
+                let target = self
+                    .rows()
+                    .get(index.max(0) as usize)
+                    .map(|(node, _)| node.id());
+                let Some(id) = target else {
+                    return;
+                };
                 let Some(document) = self.document.as_mut() else {
                     return;
                 };
-                let nodes = document.walk();
-                if let Some(node) = nodes.get(index as usize) {
-                    let id = node.id();
-                    match document.find_mut(id) {
-                        Some(LayerNode::Layer(layer)) => layer.hidden = !layer.hidden,
-                        Some(LayerNode::Group(group)) => group.hidden = !group.hidden,
-                        Some(LayerNode::Adjustment(adjustment)) => {
-                            adjustment.hidden = !adjustment.hidden;
-                        }
-                        None => {}
+                match document.find_mut(id) {
+                    Some(LayerNode::Layer(layer)) => layer.hidden = !layer.hidden,
+                    Some(LayerNode::Group(group)) => group.hidden = !group.hidden,
+                    Some(LayerNode::Adjustment(adjustment)) => {
+                        adjustment.hidden = !adjustment.hidden;
                     }
+                    None => {}
                 }
                 self.sync_view();
                 self.render(studio);
             }
             CanvasMsg::LayerOpacity(index, opacity) => {
+                let target = self
+                    .rows()
+                    .get(index.max(0) as usize)
+                    .map(|(node, _)| node.id());
+                let Some(id) = target else {
+                    return;
+                };
                 let Some(document) = self.document.as_mut() else {
                     return;
                 };
-                let nodes = document.walk();
-                if let Some(node) = nodes.get(index as usize) {
-                    let id = node.id();
-                    match document.find_mut(id) {
-                        Some(LayerNode::Layer(layer)) => layer.opacity = opacity.clamp(0.0, 1.0),
-                        Some(LayerNode::Group(group)) => group.opacity = opacity.clamp(0.0, 1.0),
-                        Some(LayerNode::Adjustment(adjustment)) => {
-                            adjustment.opacity = opacity.clamp(0.0, 1.0)
-                        }
-                        None => {}
+                match document.find_mut(id) {
+                    Some(LayerNode::Layer(layer)) => layer.opacity = opacity.clamp(0.0, 1.0),
+                    Some(LayerNode::Group(group)) => group.opacity = opacity.clamp(0.0, 1.0),
+                    Some(LayerNode::Adjustment(adjustment)) => {
+                        adjustment.opacity = opacity.clamp(0.0, 1.0)
                     }
+                    None => {}
                 }
                 self.render(studio);
             }
@@ -502,16 +534,39 @@ impl CanvasPane {
                 self.sync_view();
                 self.render(studio);
             }
+            CanvasMsg::LayerAddGroup => {
+                self.add_group();
+                self.render(studio);
+            }
+            CanvasMsg::LayerFold(index) => {
+                let fold = self.rows().get(index.max(0) as usize).and_then(|(node, _)| {
+                    match node {
+                        LayerNode::Group(group) => Some(group.id),
+                        _ => None,
+                    }
+                });
+                let Some(id) = fold else {
+                    return;
+                };
+                if !self.collapsed.remove(&id) {
+                    self.collapsed.insert(id);
+                }
+                self.sync_view();
+                self.render(studio);
+            }
             CanvasMsg::LayerDelete(index) => {
+                let target = self
+                    .rows()
+                    .get(index.max(0) as usize)
+                    .map(|(node, _)| node.id());
+                let Some(id) = target else {
+                    return;
+                };
                 let Some(document) = self.document.as_mut() else {
                     return;
                 };
-                let nodes = document.walk();
-                let Some(node) = nodes.get(index as usize) else {
-                    return;
-                };
-                let id = node.id();
                 document.remove(id);
+                self.collapsed.remove(&id);
                 self.store.retain_document(document);
                 // The active layer follows: the topmost image layer left.
                 let topmost = document
@@ -526,27 +581,16 @@ impl CanvasPane {
                 self.render(studio);
             }
             CanvasMsg::LayerMove(index, direction) => {
-                let Some(document) = self.document.as_mut() else {
+                let target = self
+                    .rows()
+                    .get(index.max(0) as usize)
+                    .map(|(node, _)| node.id());
+                let Some(id) = target else {
                     return;
                 };
-                let nodes = document.walk();
-                let Some(node) = nodes.get(index as usize) else {
-                    return;
-                };
-                let id = node.id();
-                let from = document
-                    .root
-                    .children
-                    .iter()
-                    .position(|c| c.id() == id)
-                    .unwrap_or(index as usize);
-                // The panel lists front-to-back, the children are back-to-
-                // front: up in the panel is down in the children.
-                let to = (from as i64 - i64::from(direction)).max(0) as usize;
-                if to < document.root.children.len() {
-                    let node = document.root.children.remove(from);
-                    document.root.children.insert(to, node);
-                }
+                // The node moves within whatever container holds it - the
+                // root, or the group it sits in.
+                self.move_within_container(id, direction);
                 self.sync_view();
                 self.render(studio);
             }
@@ -556,6 +600,18 @@ impl CanvasPane {
             }
             CanvasMsg::AdjustmentParam(index, value) => {
                 self.set_adjustment_param(index, value as f32);
+                self.render(studio);
+            }
+            CanvasMsg::CurveSet(channel, index, x, y) => {
+                self.set_curve_point(channel, index, x, y);
+                self.render(studio);
+            }
+            CanvasMsg::CurveAdd(channel, x, y) => {
+                self.add_curve_point(channel, x, y);
+                self.render(studio);
+            }
+            CanvasMsg::CurveRemove(channel, index) => {
+                self.remove_curve_point(channel, index);
                 self.render(studio);
             }
             CanvasMsg::ExportPng => self.export_png(studio),
@@ -770,24 +826,76 @@ impl CanvasPane {
         }
     }
 
-    /// The layers panel's rows, front-to-back: identity, name, visibility,
-    /// opacity, and whether the row is the active one.
-    pub fn layers_data(&self) -> Vec<(u64, String, bool, f32, bool)> {
+    /// The rows the panel shows, front-to-back: the tree walked depth-first
+    /// and reversed, with the folded groups' descendants left out. A row
+    /// carries its depth, so the panel can indent. Every panel index -
+    /// pick, visibility, opacity, fold, move, delete - is an index into
+    /// this list, which is what keeps a panel row and a tree node the same
+    /// thing at any depth.
+    fn rows(&self) -> Vec<(&LayerNode, usize)> {
+        fn walk_group<'a>(
+            group: &'a concat_canvas::LayerGroup,
+            depth: usize,
+            collapsed: &std::collections::HashSet<concat_canvas::LayerId>,
+            out: &mut Vec<(&'a LayerNode, usize)>,
+        ) {
+            for node in group.children.iter().rev() {
+                out.push((node, depth));
+                if let LayerNode::Group(child) = node
+                    && !collapsed.contains(&child.id)
+                {
+                    walk_group(child, depth + 1, collapsed, out);
+                }
+            }
+        }
         let Some(document) = self.document.as_ref() else {
             return Vec::new();
         };
-        document
-            .root
-            .children
+        let mut out = Vec::new();
+        walk_group(&document.root, 0, &self.collapsed, &mut out);
+        out
+    }
+
+    /// The node `id` moves within its own container - up when
+    /// `direction` is one, down when it is minus one - the panel's
+    /// front-to-back flipped into the children's back-to-front. A move
+    /// past either end stays put.
+    fn move_within_container(&mut self, id: concat_canvas::LayerId, direction: i32) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        if let Some(children) = children_holding(&mut document.root, id)
+            && let Some(from) = children.iter().position(|c| c.id() == id)
+        {
+            let to = (from as i64 - i64::from(direction)).max(0) as usize;
+            if to < children.len() {
+                let moved = children.remove(from);
+                children.insert(to, moved);
+            }
+        }
+    }
+
+    /// The layers panel's rows, front-to-back: identity, name, visibility,
+    /// opacity, whether the row is the active one, its nesting depth, and
+    /// whether it is a group holding its children (with those children
+    /// shown). Folded groups still show their own row.
+    pub fn layers_data(&self) -> Vec<LayerRow> {
+        self.rows()
             .iter()
-            .rev()
-            .map(|node| {
+            .map(|(node, depth)| {
+                let expanded = match node {
+                    LayerNode::Group(group) => !self.collapsed.contains(&group.id),
+                    _ => false,
+                };
                 (
                     node.id().as_u64(),
                     node.name().to_owned(),
                     node.hidden(),
                     node.opacity(),
                     self.active == Some(node.id()),
+                    *depth,
+                    matches!(node, LayerNode::Group(_)),
+                    expanded,
                 )
             })
             .collect()
@@ -918,6 +1026,149 @@ impl CanvasPane {
             // The kinds with no numeric parameters take no edits.
             Adjustment::Invert | Adjustment::GradientMap { .. } | Adjustment::Curves { .. } => {}
         }
+    }
+
+    /// Adds a group above the active node, the way a new layer lands:
+    /// the panel's "new group" is an insertion relative to what is
+    /// picked, and a nested or absent pick lands the group at the top of
+    /// the root. A group holds nothing until layers move into it, and
+    /// paints nothing, so the paint target falls back to the topmost
+    /// image layer.
+    fn add_group(&mut self) {
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
+        let count = document.walk().len();
+        let index = self
+            .active
+            .and_then(|id| {
+                document
+                    .root
+                    .children
+                    .iter()
+                    .position(|child| child.id() == id)
+            })
+            .map(|position| position + 1);
+        let name = tf("Group {0}", &[&count.to_string()]).to_string();
+        let document = self.document.as_mut().expect("checked above");
+        let id = document.new_group(name);
+        if let Some(index) = index {
+            let from = document
+                .root
+                .children
+                .iter()
+                .position(|child| child.id() == id)
+                .expect("just appended");
+            let node = document.root.children.remove(from);
+            let to = index.min(document.root.children.len());
+            document.root.children.insert(to, node);
+        }
+        self.active = Some(id);
+        self.layer = document
+            .root
+            .children
+            .iter()
+            .rev()
+            .find_map(node_image_pixels);
+        self.sync_view();
+    }
+
+    /// The active curves adjustment's channels, as the editor publishes
+    /// them: red, green, blue, each the channel's control points as
+    /// normalized `(input, output)` pairs sorted by input. Anything else
+    /// on the active row publishes an empty list.
+    pub fn curve_channels(&self) -> Vec<Vec<(f32, f32)>> {
+        let Some(document) = self.document.as_ref() else {
+            return Vec::new();
+        };
+        let Some(node) = self.active.and_then(|id| document.find(id)) else {
+            return Vec::new();
+        };
+        let LayerNode::Adjustment(adjustment) = node else {
+            return Vec::new();
+        };
+        let Adjustment::Curves { red, green, blue } = &adjustment.adjustment else {
+            return Vec::new();
+        };
+        vec![red.clone(), green.clone(), blue.clone()]
+    }
+
+    /// The active curves adjustment's channel, `0` red, `1` green, `2`
+    /// blue, as the mutable point list.
+    fn curve_channel_mut(&mut self, channel: i32) -> Option<&mut Vec<(f32, f32)>> {
+        let document = self.document.as_mut()?;
+        let id = self.active?;
+        let LayerNode::Adjustment(adjustment) = document.find_mut(id)? else {
+            return None;
+        };
+        let Adjustment::Curves { red, green, blue } = &mut adjustment.adjustment else {
+            return None;
+        };
+        Some(match channel {
+            0 => red,
+            1 => green,
+            _ => blue,
+        })
+    }
+
+    /// Moves the channel's control point `index` to `(x, y)`, both in
+    /// `0..1`. The endpoints keep their places at the corners and give
+    /// only their output; a middle point keeps the sorted input order,
+    /// stopping just short of crossing a neighbour.
+    fn set_curve_point(&mut self, channel: i32, index: i32, x: f64, y: f64) {
+        let Some(points) = self.curve_channel_mut(channel) else {
+            return;
+        };
+        let index = index.max(0) as usize;
+        if index >= points.len() {
+            return;
+        }
+        let y = (y as f32).clamp(0.0, 1.0);
+        if index == 0 {
+            points[0].1 = y;
+            return;
+        }
+        if index == points.len() - 1 {
+            points[index].1 = y;
+            return;
+        }
+        let x = (x as f32).clamp(0.0, 1.0);
+        let low = points[index - 1].0 + 0.001;
+        let high = points[index + 1].0 - 0.001;
+        points[index].0 = x.clamp(low, high);
+        points[index].1 = y;
+    }
+
+    /// Inserts a control point on the channel at `(x, y)`, where the
+    /// sorted input puts it. Sixteen points to a channel: a curve that
+    /// needs more wants a different tool.
+    fn add_curve_point(&mut self, channel: i32, x: f64, y: f64) {
+        let Some(points) = self.curve_channel_mut(channel) else {
+            return;
+        };
+        if points.len() >= 16 {
+            return;
+        }
+        let x = (x as f32).clamp(0.0, 1.0);
+        let y = (y as f32).clamp(0.0, 1.0);
+        let at = points.partition_point(|(input, _)| *input < x);
+        points.insert(at, (x, y));
+    }
+
+    /// Drops the channel's control point `index`. The two corners stay,
+    /// so a curve is never fewer than the identity it starts as.
+    fn remove_curve_point(&mut self, channel: i32, index: i32) {
+        let Some(points) = self.curve_channel_mut(channel) else {
+            return;
+        };
+        let index = index.max(0) as usize;
+        // The length check leads: a short or empty channel - a hand off a
+        // malformed project file can make one - refuses before the
+        // endpoint arithmetic runs.
+        if points.len() < 3 || index == 0 || index >= points.len() - 1 {
+            return;
+        }
+        points.remove(index);
     }
 
     /// Composites the document and writes it out as a PNG, through a save
@@ -1371,52 +1622,58 @@ impl CanvasPane {
     /// pick, toggle visibility, set opacity (0..1), add, delete, and move
     /// (`direction` -1 up, 1 down) - the panel's own verbs, on its rows.
     pub fn agent_layer_pick(&mut self, row: i32) {
-        let Some(document) = &self.document else {
+        let picked = self
+            .rows()
+            .get(row.max(0) as usize)
+            .map(|(node, _)| (node.id(), node_image_pixels(node)));
+        let Some((id, pixels)) = picked else {
             return;
         };
-        let nodes = document.walk();
-        let Some(node) = nodes.get(row as usize) else {
-            return;
-        };
-        self.active = Some(node.id());
-        self.layer = node_image_pixels(node);
+        self.active = Some(id);
+        self.layer = pixels;
         self.sync_view();
     }
 
     pub fn agent_layer_toggle_visibility(&mut self, row: i32) {
+        let target = self
+            .rows()
+            .get(row.max(0) as usize)
+            .map(|(node, _)| node.id());
+        let Some(id) = target else {
+            return;
+        };
         let Some(document) = self.document.as_mut() else {
             return;
         };
-        let nodes = document.walk();
-        if let Some(node) = nodes.get(row as usize) {
-            let id = node.id();
-            match document.find_mut(id) {
-                Some(LayerNode::Layer(layer)) => layer.hidden = !layer.hidden,
-                Some(LayerNode::Group(group)) => group.hidden = !group.hidden,
-                Some(LayerNode::Adjustment(adjustment)) => {
-                    adjustment.hidden = !adjustment.hidden;
-                }
-                None => {}
+        match document.find_mut(id) {
+            Some(LayerNode::Layer(layer)) => layer.hidden = !layer.hidden,
+            Some(LayerNode::Group(group)) => group.hidden = !group.hidden,
+            Some(LayerNode::Adjustment(adjustment)) => {
+                adjustment.hidden = !adjustment.hidden;
             }
-            self.sync_view();
+            None => {}
         }
+        self.sync_view();
     }
 
     pub fn agent_layer_opacity(&mut self, row: i32, opacity: f32) {
+        let target = self
+            .rows()
+            .get(row.max(0) as usize)
+            .map(|(node, _)| node.id());
+        let Some(id) = target else {
+            return;
+        };
         let Some(document) = self.document.as_mut() else {
             return;
         };
-        let nodes = document.walk();
-        if let Some(node) = nodes.get(row as usize) {
-            let id = node.id();
-            match document.find_mut(id) {
-                Some(LayerNode::Layer(layer)) => layer.opacity = opacity.clamp(0.0, 1.0),
-                Some(LayerNode::Group(group)) => group.opacity = opacity.clamp(0.0, 1.0),
-                Some(LayerNode::Adjustment(adjustment)) => {
-                    adjustment.opacity = opacity.clamp(0.0, 1.0);
-                }
-                None => {}
+        match document.find_mut(id) {
+            Some(LayerNode::Layer(layer)) => layer.opacity = opacity.clamp(0.0, 1.0),
+            Some(LayerNode::Group(group)) => group.opacity = opacity.clamp(0.0, 1.0),
+            Some(LayerNode::Adjustment(adjustment)) => {
+                adjustment.opacity = opacity.clamp(0.0, 1.0);
             }
+            None => {}
         }
     }
 
@@ -1439,15 +1696,18 @@ impl CanvasPane {
     }
 
     pub fn agent_layer_delete(&mut self, row: i32) {
+        let target = self
+            .rows()
+            .get(row.max(0) as usize)
+            .map(|(node, _)| node.id());
+        let Some(id) = target else {
+            return;
+        };
         let Some(document) = self.document.as_mut() else {
             return;
         };
-        let nodes = document.walk();
-        let Some(node) = nodes.get(row as usize) else {
-            return;
-        };
-        let id = node.id();
         document.remove(id);
+        self.collapsed.remove(&id);
         self.store.retain_document(document);
         let topmost = document
             .root
@@ -1461,27 +1721,14 @@ impl CanvasPane {
     }
 
     pub fn agent_layer_move(&mut self, row: i32, direction: i32) {
-        let Some(document) = self.document.as_mut() else {
+        let target = self
+            .rows()
+            .get(row.max(0) as usize)
+            .map(|(node, _)| node.id());
+        let Some(id) = target else {
             return;
         };
-        let nodes = document.walk();
-        let Some(node) = nodes.get(row as usize) else {
-            return;
-        };
-        let id = node.id();
-        let from = document
-            .root
-            .children
-            .iter()
-            .position(|c| c.id() == id)
-            .unwrap_or(row as usize);
-        // The panel lists front-to-back, the children are back-to-front:
-        // up in the panel is down in the children.
-        let to = (from as i64 - i64::from(direction)).max(0) as usize;
-        if to < document.root.children.len() {
-            let node = document.root.children.remove(from);
-            document.root.children.insert(to, node);
-        }
+        self.move_within_container(id, direction);
         self.sync_view();
     }
 
@@ -1510,9 +1757,93 @@ impl CanvasPane {
     }
 
     /// The layers panel's rows, front-to-back - the same rows the panel
-    /// shows, and the row indexes the layer methods take.
-    pub fn agent_layers(&self) -> Vec<(u64, String, bool, f32, bool)> {
+    /// shows, and the row indexes the layer methods take: identity, name,
+    /// visibility, opacity, active, nesting depth, group-with-children-
+    /// shown, and whether the row is a group at all.
+    pub fn agent_layers(&self) -> Vec<LayerRow> {
         self.layers_data()
+    }
+
+    /// Adds a group above the active row - the panel's "new group"
+    /// without the panel.
+    pub fn agent_layer_group(&mut self) {
+        self.add_group();
+    }
+
+    /// Moves the node at `row` into the group at `into`, appended at the
+    /// back of that group's children (its front in the panel). `into` of
+    /// `None` sends the node back to the root. The engine's own
+    /// `move_node` does the walking; the row indexes are the panel's.
+    pub fn agent_layer_move_into(&mut self, row: i32, into: Option<i32>) {
+        // Both row lookups run off one borrowed listing, and both facts
+        // come out as owned ids before the tree is touched.
+        let rows = self.rows();
+        let moving = rows.get(row.max(0) as usize).map(|(node, _)| node.id());
+        let target = into
+            .and_then(|group_row| rows.get(group_row.max(0) as usize))
+            .and_then(|(node, _)| match node {
+                LayerNode::Group(group) => Some(group.id),
+                _ => None,
+            });
+        drop(rows);
+        let Some(moving) = moving else {
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        // The append index: the back of the target's children, which is
+        // its front in the panel. An empty target takes the node at 0.
+        let index = match target {
+            Some(into) => document
+                .group_mut(into)
+                .map(|group| group.children.len())
+                .unwrap_or(0),
+            None => document.root.children.len(),
+        };
+        document.move_node(moving, target, index);
+        self.sync_view();
+    }
+
+    /// Folds or unfolds the group at `row`, the way the panel's chevron
+    /// does. A row that is not a group does nothing.
+    pub fn agent_layer_fold(&mut self, row: i32) {
+        let fold = self.rows().get(row.max(0) as usize).and_then(|(node, _)| {
+            match node {
+                LayerNode::Group(group) => Some(group.id),
+                _ => None,
+            }
+        });
+        let Some(id) = fold else {
+            return;
+        };
+        if !self.collapsed.remove(&id) {
+            self.collapsed.insert(id);
+        }
+        self.sync_view();
+    }
+
+    /// The active row's curves channels, as the editor reads them:
+    /// `[red, green, blue]`, each the sorted `(input, output)` points in
+    /// `0..1`. Empty when the row is not a curves adjustment.
+    pub fn agent_curve_channels(&self) -> Vec<Vec<(f32, f32)>> {
+        self.curve_channels()
+    }
+
+    /// Moves the curves control point `index` on `channel` to `(x, y)`.
+    pub fn agent_curve_set(&mut self, channel: i32, index: i32, x: f64, y: f64) {
+        self.set_curve_point(channel, index, x, y);
+    }
+
+    /// Inserts a curves control point on `channel` at `(x, y)`.
+    pub fn agent_curve_add(&mut self, channel: i32, x: f64, y: f64) {
+        self.add_curve_point(channel, x, y);
+    }
+
+    /// Drops the curves control point `index` on `channel`; the corners
+    /// refuse to leave.
+    pub fn agent_curve_remove(&mut self, channel: i32, index: i32) {
+        self.remove_curve_point(channel, index);
     }
 
     /// The brush as it is set right now.
@@ -1521,9 +1852,8 @@ impl CanvasPane {
     }
 
     /// Adds an adjustment of `kind` above the active layer - the kinds
-    /// [`ADJUSTMENT_KINDS`] numbers, `1` Invert through `6` Grain - and
-    /// makes it the active row. The kinds a hand cannot reach yet (the
-    /// panel has no Curves entry) stay reachable here.
+    /// [`ADJUSTMENT_KINDS`] numbers, `1` Invert through `7` Curves - and
+    /// makes it the active row.
     pub fn agent_adjustment_add(&mut self, kind: i32) {
         self.add_adjustment(kind);
     }
@@ -1639,7 +1969,56 @@ const ADJUSTMENT_KINDS: &[(i32, &str)] = &[
     (4, "Hue & Saturation"),
     (5, "Gradient map"),
     (6, "Grain"),
+    (7, "Curves"),
 ];
+
+/// One drawn stroke of a curves polyline, as the editor draws it: both
+/// endpoints in normalized editor coordinates, with the output axis
+/// already flipped to the screen's downward one. The editor is square,
+/// so normalized numbers place a stroke at any size it draws at.
+pub struct CurveSegment {
+    pub x: f32,
+    pub y: f32,
+    pub x2: f32,
+    pub y2: f32,
+}
+
+/// The polyline's strokes, one per consecutive pair of control points.
+pub fn curve_segments(points: &[(f32, f32)]) -> Vec<CurveSegment> {
+    points
+        .windows(2)
+        .map(|pair| {
+            let (x0, y0) = pair[0];
+            let (x1, y1) = pair[1];
+            CurveSegment {
+                x: x0,
+                y: 1.0 - y0,
+                x2: x1,
+                y2: 1.0 - y1,
+            }
+        })
+        .collect()
+}
+
+/// The children vector that holds `id`, at any depth: the root's own, or
+/// the group the node sits in. A first immutable pass picks the branch,
+/// so the mutable descent re-borrows cleanly.
+fn children_holding(
+    group: &mut concat_canvas::LayerGroup,
+    id: concat_canvas::LayerId,
+) -> Option<&mut Vec<LayerNode>> {
+    if group.children.iter().any(|child| child.id() == id) {
+        return Some(&mut group.children);
+    }
+    let branch = group.children.iter().position(|child| match child {
+        LayerNode::Group(nested) => nested.find(id).is_some(),
+        _ => false,
+    })?;
+    match &mut group.children[branch] {
+        LayerNode::Group(nested) => children_holding(nested, id),
+        _ => None,
+    }
+}
 
 /// The kind number of an adjustment, as the panel publishes it.
 fn adjustment_kind(adjustment: &Adjustment) -> i32 {
@@ -1687,6 +2066,11 @@ fn default_adjustment(kind: i32) -> Option<Adjustment> {
             high: [1.0, 1.0, 1.0],
         }),
         6 => Some(Adjustment::Grain { amount: 0.0 }),
+        7 => Some(Adjustment::Curves {
+            red: vec![(0.0, 0.0), (1.0, 1.0)],
+            green: vec![(0.0, 0.0), (1.0, 1.0)],
+            blue: vec![(0.0, 0.0), (1.0, 1.0)],
+        }),
         _ => None,
     }
 }
@@ -2072,7 +2456,7 @@ mod tests {
         let (_, parameters) = pane.agent_adjustment_state();
         assert_eq!(parameters[0].1, 4.0, "stops clamp at four");
         // A parameter edit on a non-adjustment row is a no-op, not a panic.
-        pane.agent_layer_pick(0);
+        pane.agent_layer_pick(1);
         pane.agent_adjustment_param(0, 1.0);
         assert!(matches!(
             pane.document.as_ref().expect("open").find(
@@ -2126,5 +2510,138 @@ mod tests {
         std::fs::create_dir_all(&junk).expect("junk");
         assert!(back.agent_open(&junk).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_group_folds_and_its_rows_keep_their_indexes() {
+        let (mut pane, _) = painting_pane();
+        // One more layer, then a group above both: the panel reads
+        // group, layer, layer, front to back, the group at depth zero
+        // and the others one step in.
+        pane.agent_layer_add();
+        pane.agent_layer_group();
+        let rows = pane.agent_layers();
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].6, "the front row is a group");
+        assert_eq!(rows[0].5, 0, "the group sits at the root's depth");
+        assert_eq!(rows[1].5, 0, "the layers beside it sit at the root too");
+        assert!(!rows[1].6, "a layer is not a group");
+
+        // A layer into the group: the panel shows the group's row, the
+        // layer it now holds a step deeper, and the layer still outside.
+        pane.agent_layer_move_into(2, Some(0));
+        let rows = pane.agent_layers();
+        assert_eq!(rows.len(), 3, "folding aside, every row still shows");
+        assert_eq!(rows[1].5, 1, "the adopted layer sits one step in");
+        assert_eq!(rows[2].5, 0, "the outside layer stays at the root");
+
+        // Folding the group hides its children from the rows - and the
+        // indexes the rest of the panel uses follow the folded list.
+        pane.agent_layer_fold(0);
+        assert_eq!(
+            pane.agent_layers().len(),
+            2,
+            "the adopted layer folded away, the outside one stayed"
+        );
+        // The folded row still toggles: unfold puts everything back.
+        pane.agent_layer_fold(0);
+        assert_eq!(pane.agent_layers().len(), 3, "the children came back");
+
+        // Moving the group moves with it everything it holds: up in the
+        // panel makes it the root's first child, ahead of the layer.
+        pane.agent_layer_move(0, 1);
+        let rows = pane.agent_layers();
+        assert!(!rows[0].6, "the outside layer now leads the panel");
+        assert!(rows[1].6, "the group follows, children and all");
+    }
+
+    #[test]
+    fn a_curves_adjustment_round_trips_through_the_editor_protocol() {
+        let (mut pane, _) = painting_pane();
+        pane.agent_adjustment_add(7); // Curves
+        let channels = pane.agent_curve_channels();
+        assert_eq!(channels.len(), 3);
+        for points in &channels {
+            assert_eq!(
+                points,
+                &vec![(0.0, 0.0), (1.0, 1.0)],
+                "a fresh curve is the identity"
+            );
+        }
+
+        // A middle point lands where the input sorts it, and moving it
+        // respects its neighbours' inputs without crossing them.
+        pane.agent_curve_add(0, 0.5, 0.6);
+        pane.agent_curve_add(0, 0.25, 0.3);
+        let red = pane.agent_curve_channels()[0].clone();
+        assert_eq!(red, vec![(0.0, 0.0), (0.25, 0.3), (0.5, 0.6), (1.0, 1.0)]);
+
+        // A drag pushes the point at 0.5 toward 0.25; it stops short of
+        // its left neighbour rather than crossing it.
+        pane.agent_curve_set(0, 2, 0.1, 0.6);
+        let red = pane.agent_curve_channels()[0].clone();
+        assert!(red[2].0 > red[1].0, "the input kept its order");
+        assert_eq!(red[2].1, 0.6, "the output took the drag");
+
+        // The corners give only their output, never their place.
+        pane.agent_curve_set(0, 0, 0.9, 0.2);
+        pane.agent_curve_set(0, 3, 0.1, 0.8);
+        let red = pane.agent_curve_channels()[0].clone();
+        assert_eq!(red[0].0, 0.0);
+        assert_eq!(red[0].1, 0.2);
+        assert_eq!(red[3].0, 1.0);
+        assert_eq!(red[3].1, 0.8);
+
+        // Removing a middle point works; removing a corner does not.
+        pane.agent_curve_remove(0, 2);
+        assert_eq!(pane.agent_curve_channels()[0].len(), 3);
+        pane.agent_curve_remove(0, 0);
+        assert_eq!(pane.agent_curve_channels()[0].len(), 3);
+
+        // The drawn strokes carry the geometry the editor plots with:
+        // the first stroke starts at the (0, 0.2) corner - screen y 0.8,
+        // the output axis flipped - and runs to the input 0.25 point.
+        let segments = curve_segments(&pane.agent_curve_channels()[0].clone());
+        assert_eq!(segments.len(), 2);
+        let first = &segments[0];
+        assert!((first.x - 0.0).abs() < 1e-6 && (first.y - 0.8).abs() < 1e-6);
+        assert!((first.x2 - 0.25).abs() < 1e-6);
+
+        // Paint beneath the curve - the adjustment colours whatever the
+        // layers under it already show - and compare against the same
+        // stroke with no adjustment over it.
+        pane.set_tool(3);
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        let document = pane.document.as_ref().expect("open");
+        let pixel = concat_canvas::compose(document, &pane.store)
+            .pixel(150, 100)
+            .expect("a painted pixel");
+        let plain = {
+            let (mut pane, _) = painting_pane();
+            pane.set_tool(3);
+            pane.brush_press(150.0, 100.0);
+            pane.brush_release();
+            concat_canvas::compose(
+                pane.document.as_ref().expect("open"),
+                &pane.store,
+            )
+            .pixel(150, 100)
+            .expect("a painted pixel")
+        };
+        assert!(
+            pixel[0] > plain[0],
+            "the lifted curve lifted the red channel"
+        );
+
+        // The other channels keep their identity while red bends.
+        assert_eq!(
+            pane.agent_curve_channels()[1],
+            vec![(0.0, 0.0), (1.0, 1.0)]
+        );
+
+        // A non-curves row publishes no curves at all.
+        pane.agent_layer_pick(1);
+        assert!(pane.agent_curve_channels().is_empty());
     }
 }

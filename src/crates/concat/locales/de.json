@@ -753,5 +753,11 @@
   "In white": "Weißpunkt",
   "Out black": "Ausgabe-Schwarz",
   "Out white": "Ausgabe-Weiß",
-  "Save project": "Projekt sichern"
+  "Save project": "Projekt sichern",
+  "Add group": "Gruppe hinzufügen",
+  "Fold group": "Gruppe zuklappen",
+  "Unfold group": "Gruppe aufklappen",
+  "Curves": "Kurven",
+  "Group {0}": "Gruppe {0}",
+  "Drag to bend, click to add, double-click to remove": "Ziehen zum Biegen, Klicken zum Hinzufügen, Doppelklicken zum Entfernen"
 }

@@ -753,5 +753,11 @@
   "In white": "输入白点",
   "Out black": "输出黑点",
   "Out white": "输出白点",
-  "Save project": "保存工程"
+  "Save project": "保存工程",
+  "Add group": "添加分组",
+  "Fold group": "折叠分组",
+  "Unfold group": "展开分组",
+  "Curves": "曲线",
+  "Group {0}": "分组 {0}",
+  "Drag to bend, click to add, double-click to remove": "拖动弯曲，点击加点，双击删点"
 }

@@ -753,5 +753,11 @@
   "In white": "Blanc d'entrée",
   "Out black": "Noir de sortie",
   "Out white": "Blanc de sortie",
-  "Save project": "Enregistrer le projet"
+  "Save project": "Enregistrer le projet",
+  "Add group": "Ajouter un groupe",
+  "Fold group": "Replier le groupe",
+  "Unfold group": "Déplier le groupe",
+  "Curves": "Courbes",
+  "Group {0}": "Groupe {0}",
+  "Drag to bend, click to add, double-click to remove": "Glisser pour courber, cliquer pour ajouter, double-cliquer pour retirer"
 }

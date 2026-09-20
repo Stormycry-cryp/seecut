@@ -753,5 +753,11 @@
   "In white": "輸入白點",
   "Out black": "輸出黑點",
   "Out white": "輸出白點",
-  "Save project": "儲存專案"
+  "Save project": "儲存專案",
+  "Add group": "新增群組",
+  "Fold group": "收合群組",
+  "Unfold group": "展開群組",
+  "Curves": "曲線",
+  "Group {0}": "群組 {0}",
+  "Drag to bend, click to add, double-click to remove": "拖曳彎曲，點擊加點，雙擊刪點"
 }

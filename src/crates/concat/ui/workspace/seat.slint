@@ -220,6 +220,12 @@ export component Seat inherits Rectangle {
             checker: Editor.canvas-checker;
             adjustment-kind: Editor.canvas-adjustment-kind;
             adjustment-params <=> Editor.canvas-adjustment-params;
+            curve-red <=> Editor.canvas-curve-red;
+            curve-green <=> Editor.canvas-curve-green;
+            curve-blue <=> Editor.canvas-curve-blue;
+            curve-segments-red <=> Editor.canvas-curve-segments-red;
+            curve-segments-green <=> Editor.canvas-curve-segments-green;
+            curve-segments-blue <=> Editor.canvas-curve-segments-blue;
             ants: Editor.canvas-ants;
 
             nav-scroll(dx, dy, zoom-modifier, x, y) => {
@@ -255,10 +261,15 @@ export component Seat inherits Rectangle {
             layer-visibility-toggled(index) => { Editor.canvas-layer-visibility-toggled(index); }
             layer-opacity-changed(index, opacity) => { Editor.canvas-layer-opacity-changed(index, opacity); }
             layer-added => { Editor.canvas-layer-added(); }
+            layer-group-added => { Editor.canvas-layer-group-added(); }
+            layer-folded(index) => { Editor.canvas-layer-folded(index); }
             layer-deleted(index) => { Editor.canvas-layer-deleted(index); }
             layer-moved(index, direction) => { Editor.canvas-layer-moved(index, direction); }
             adjustment-added(kind) => { Editor.canvas-adjustment-added(kind); }
             adjustment-param-changed(index, value) => { Editor.canvas-adjustment-param-changed(index, value); }
+            curve-set(channel, index, x, y) => { Editor.canvas-curve-set(channel, index, x, y); }
+            curve-add(channel, x, y) => { Editor.canvas-curve-add(channel, x, y); }
+            curve-remove(channel, index) => { Editor.canvas-curve-remove(channel, index); }
             export-png => { Editor.canvas-export-png(); }
             save-comp => { Editor.canvas-save-comp(); }
         }

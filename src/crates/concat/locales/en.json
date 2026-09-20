@@ -753,5 +753,11 @@
   "In white": "In white",
   "Out black": "Out black",
   "Out white": "Out white",
-  "Save project": "Save project"
+  "Save project": "Save project",
+  "Add group": "Add group",
+  "Fold group": "Fold group",
+  "Unfold group": "Unfold group",
+  "Curves": "Curves",
+  "Group {0}": "Group {0}",
+  "Drag to bend, click to add, double-click to remove": "Drag to bend, click to add, double-click to remove"
 }

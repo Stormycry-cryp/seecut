@@ -5519,13 +5519,18 @@ impl Studio {
             .canvas
             .layers_data()
             .into_iter()
-            .map(|(id, name, hidden, opacity, active)| CanvasLayerData {
-                id: id as i32,
-                name: name.into(),
-                hidden,
-                opacity,
-                active,
-            })
+            .map(
+                |(id, name, hidden, opacity, active, depth, expanded, group)| CanvasLayerData {
+                    id: id as i32,
+                    name: name.into(),
+                    hidden,
+                    opacity,
+                    active,
+                    depth: depth as i32,
+                    expanded,
+                    group,
+                },
+            )
             .collect();
         editor.set_canvas_active_layer(
             rows.iter()
@@ -5549,6 +5554,45 @@ impl Studio {
             })
             .collect();
         editor.set_canvas_adjustment_params(slint::ModelRc::new(slint::VecModel::from(params)));
+        // The active row's curves, as the editor draws them: three
+        // channels of sorted (input, output) points, plus the same three
+        // as precomputed strokes, normalized to the editor's square.
+        let mut curve_red = Vec::new();
+        let mut curve_green = Vec::new();
+        let mut curve_blue = Vec::new();
+        let mut seg_red = Vec::new();
+        let mut seg_green = Vec::new();
+        let mut seg_blue = Vec::new();
+        for (channel, points) in self.canvas.curve_channels().into_iter().enumerate() {
+            let (out, segs) = match channel {
+                0 => (&mut curve_red, &mut seg_red),
+                1 => (&mut curve_green, &mut seg_green),
+                _ => (&mut curve_blue, &mut seg_blue),
+            };
+            out.extend(points.iter().map(|&(x, y)| CanvasCurvePoint { x, y }));
+            segs.extend(
+                crate::panes::canvas::curve_segments(&points)
+                    .into_iter()
+                    .map(|segment| CanvasCurveSegment {
+                        x: segment.x,
+                        y: segment.y,
+                        x2: segment.x2,
+                        y2: segment.y2,
+                    }),
+            );
+        }
+        editor.set_canvas_curve_red(slint::ModelRc::new(slint::VecModel::from(curve_red)));
+        editor.set_canvas_curve_green(slint::ModelRc::new(slint::VecModel::from(curve_green)));
+        editor.set_canvas_curve_blue(slint::ModelRc::new(slint::VecModel::from(curve_blue)));
+        editor.set_canvas_curve_segments_red(slint::ModelRc::new(slint::VecModel::from(
+            seg_red,
+        )));
+        editor.set_canvas_curve_segments_green(slint::ModelRc::new(slint::VecModel::from(
+            seg_green,
+        )));
+        editor.set_canvas_curve_segments_blue(slint::ModelRc::new(slint::VecModel::from(
+            seg_blue,
+        )));
     }
 
     /// The menus, the dialogs, the bin and the engine lists.

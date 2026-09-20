@@ -1075,6 +1075,34 @@ pub fn run() -> Result<(), slint::PlatformError> {
             ));
         }
     ));
+    editor.on_canvas_layer_group_added(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerAddGroup));
+    }));
+    editor.on_canvas_layer_folded(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerFold(index)));
+    }));
+    editor.on_canvas_curve_set(on_window!(
+        |state, channel: i32, index: i32, x: f32, y: f32| {
+            state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::CurveSet(
+                channel,
+                index,
+                f64::from(x),
+                f64::from(y),
+            )));
+        }
+    ));
+    editor.on_canvas_curve_add(on_window!(|state, channel: i32, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::CurveAdd(
+            channel,
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_curve_remove(on_window!(|state, channel: i32, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::CurveRemove(
+            channel, index,
+        )));
+    }));
 
     // ── the stage ──
     editor.on_stage_pressed(on_window!(|state, x: f32, y: f32, additive: bool| {

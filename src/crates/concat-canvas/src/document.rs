@@ -503,7 +503,9 @@ impl LayerGroup {
         }
     }
 
-    fn find(&self, id: LayerId) -> Option<&LayerNode> {
+    /// The node an id names within this group, at any depth. The
+    /// document's own `find` is this over the root.
+    pub fn find(&self, id: LayerId) -> Option<&LayerNode> {
         for child in &self.children {
             if child.id() == id {
                 return Some(child);
