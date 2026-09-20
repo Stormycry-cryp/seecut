@@ -29,6 +29,7 @@
 //!   resolution however small the layer is made ([`document::LayerTransform`]).
 
 pub mod blend;
+pub mod brush;
 pub mod compositor;
 pub mod document;
 #[cfg(feature = "gpu")]
@@ -38,6 +39,7 @@ pub mod pixels;
 pub mod viewport;
 
 pub use blend::BlendMode;
+pub use brush::{BrushError, BrushSettings, BrushStroke, TILE_SIZE, spacing_fraction};
 pub use compositor::{apply_one, compose, curve_at_bytes};
 pub use document::{
     Adjustment, AdjustmentLayer, CLIP_CHAIN_LIMIT, DocumentError, ImageDocument, ImageLayer,
