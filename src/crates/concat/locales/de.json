@@ -741,5 +741,17 @@
   "{0} months ago": "vor {0} Monaten",
   "{0} strokes": "{0} Striche",
   "{0}m {1}s left": "noch {0} min {1} s",
-  "{0}s left": "noch {0} s"
+  "{0}s left": "noch {0} s",
+  "Adjustments": "Anpassungen",
+  "Add adjustment": "Anpassung hinzufügen",
+  "Hue & Saturation": "Farbton & Sättigung",
+  "Gradient map": "Verlaufszuordnung",
+  "Stops": "Blenden",
+  "Hue": "Farbton",
+  "Gamma": "Gamma",
+  "In black": "Schwarzpunkt",
+  "In white": "Weißpunkt",
+  "Out black": "Ausgabe-Schwarz",
+  "Out white": "Ausgabe-Weiß",
+  "Save project": "Projekt sichern"
 }

@@ -741,5 +741,17 @@
   "{0} months ago": "{0}개월 전",
   "{0} strokes": "스트로크 {0}개",
   "{0}m {1}s left": "{0}분 {1}초 남음",
-  "{0}s left": "{0}초 남음"
+  "{0}s left": "{0}초 남음",
+  "Adjustments": "조정",
+  "Add adjustment": "조정 추가",
+  "Hue & Saturation": "색조 및 채도",
+  "Gradient map": "그라디언트 맵",
+  "Stops": "스톱",
+  "Hue": "색조",
+  "Gamma": "감마",
+  "In black": "입력 블랙",
+  "In white": "입력 화이트",
+  "Out black": "출력 블랙",
+  "Out white": "출력 화이트",
+  "Save project": "프로젝트 저장"
 }

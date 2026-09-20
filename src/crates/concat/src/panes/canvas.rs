@@ -24,8 +24,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use concat_canvas::{
-    BrushSettings, BrushStroke, CanvasGpu, CanvasViewport, ImageDocument, LayerNode, Mask,
-    NavInput, Navigator, PixelId, PixelStore, SelectionShape, erase_region, fill_region,
+    Adjustment, BrushSettings, BrushStroke, CanvasGpu, CanvasViewport, ImageDocument, LayerNode,
+    Mask, NavInput, Navigator, PixelId, PixelStore, SelectionShape, erase_region, fill_region,
 };
 use concat_core::frame::Frame;
 use slint::SharedPixelBuffer;
@@ -135,8 +135,18 @@ pub enum CanvasMsg {
     LayerAdd,
     LayerDelete(i32),
     LayerMove(i32, i32),
+    /// The adjustment panel's picker: one of the kinds
+    /// [`ADJUSTMENT_KINDS`] lists, added above the active layer so it
+    /// colours everything beneath it.
+    AdjustmentAdd(i32),
+    /// One of the active adjustment's parameters, by its index in
+    /// [`CanvasPane::adjustment_state`]'s list.
+    AdjustmentParam(i32, f64),
     /// Export the composed canvas as a PNG, through a save dialog.
     ExportPng,
+    /// Save the whole document - tree, ids and pixels - as a `.comp`
+    /// project package, through a save dialog.
+    SaveComp,
 }
 
 /// The canvas pane's state.
@@ -198,6 +208,10 @@ pub struct CanvasPane {
     /// Said once: a canvas that cannot compose says so, and then stops
     /// repeating itself.
     failed: bool,
+    /// The transparency checkerboard at the document's own pixel size, one
+    /// image per open document: the stage stretches it, so a square keeps
+    /// its place in document space at any zoom.
+    pub checker: slint::Image,
 }
 
 impl Default for CanvasPane {
@@ -234,6 +248,7 @@ impl Default for CanvasPane {
             marquee_view: None,
             gpu: None,
             failed: false,
+            checker: slint::Image::default(),
         }
     }
 }
@@ -535,7 +550,16 @@ impl CanvasPane {
                 self.sync_view();
                 self.render(studio);
             }
+            CanvasMsg::AdjustmentAdd(kind) => {
+                self.add_adjustment(kind);
+                self.render(studio);
+            }
+            CanvasMsg::AdjustmentParam(index, value) => {
+                self.set_adjustment_param(index, value as f32);
+                self.render(studio);
+            }
             CanvasMsg::ExportPng => self.export_png(studio),
+            CanvasMsg::SaveComp => self.save_comp_dialog(studio),
         }
     }
 
@@ -769,6 +793,133 @@ impl CanvasPane {
             .collect()
     }
 
+    /// The active node's adjustment, as the panel publishes it: its kind
+    /// ([`ADJUSTMENT_KINDS`]' numbering, `0` when the row is not an
+    /// adjustment) and its editable parameters as `(label, value, minimum,
+    /// maximum)` triples in a fixed order.
+    pub fn adjustment_state(&self) -> (i32, Vec<(String, f32, f32, f32)>) {
+        let Some(document) = self.document.as_ref() else {
+            return (0, Vec::new());
+        };
+        let Some(node) = self.active.and_then(|id| document.find(id)) else {
+            return (0, Vec::new());
+        };
+        let LayerNode::Adjustment(adjustment) = node else {
+            return (0, Vec::new());
+        };
+        let kind = adjustment_kind(&adjustment.adjustment);
+        (kind, adjustment_parameters(&adjustment.adjustment))
+    }
+
+    /// Adds an adjustment of `kind` above the active layer, so it colours
+    /// everything beneath it - the whole point of the placement. A new
+    /// adjustment becomes the active row; there is nothing to paint on it,
+    /// so the paint target falls back to the topmost image layer.
+    fn add_adjustment(&mut self, kind: i32) {
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
+        // The insertion index: just above the active node in the children,
+        // which is above it in the panel too. A nested or absent active
+        // row lands the adjustment at the top of the root.
+        let index = self
+            .active
+            .and_then(|id| {
+                document
+                    .root
+                    .children
+                    .iter()
+                    .position(|child| child.id() == id)
+            })
+            .map(|position| position + 1);
+        let name = adjustment_label(kind);
+        let Some(adjustment) = default_adjustment(kind) else {
+            return;
+        };
+        let document = self.document.as_mut().expect("checked above");
+        let id = document.new_adjustment(name, adjustment);
+        // `new_adjustment` appended; move it into place now that we can.
+        if let Some(index) = index {
+            let from = document
+                .root
+                .children
+                .iter()
+                .position(|child| child.id() == id)
+                .expect("just appended");
+            let node = document.root.children.remove(from);
+            let to = index.min(document.root.children.len());
+            document.root.children.insert(to, node);
+        }
+        self.active = Some(id);
+        // Adjustments hold no pixels; the tools keep working on the
+        // topmost image layer beneath them.
+        self.layer = document
+            .root
+            .children
+            .iter()
+            .rev()
+            .find_map(node_image_pixels);
+        self.sync_view();
+    }
+
+    /// Sets the active adjustment's parameter `index` (the order
+    /// [`adjustment_parameters`] lists them in) to `value`, clamped into
+    /// the parameter's own range.
+    fn set_adjustment_param(&mut self, index: i32, value: f32) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(LayerNode::Adjustment(adjustment)) = document.find_mut(id) else {
+            return;
+        };
+        let parameters = adjustment_parameters(&adjustment.adjustment);
+        let Some((_, _, minimum, maximum)) = parameters.get(index.max(0) as usize) else {
+            return;
+        };
+        let value = value.clamp(*minimum, *maximum);
+        match &mut adjustment.adjustment {
+            Adjustment::Exposure { stops } => {
+                if index == 0 {
+                    *stops = value;
+                }
+            }
+            Adjustment::Levels {
+                in_black,
+                in_white,
+                gamma,
+                out_black,
+                out_white,
+            } => match index {
+                0 => *in_black = value,
+                1 => *in_white = value,
+                2 => *gamma = value,
+                3 => *out_black = value,
+                4 => *out_white = value,
+                _ => {}
+            },
+            Adjustment::HueSaturation {
+                hue,
+                saturation,
+                lightness,
+            } => match index {
+                0 => *hue = value,
+                1 => *saturation = value,
+                2 => *lightness = value,
+                _ => {}
+            },
+            Adjustment::Grain { amount } => {
+                if index == 0 {
+                    *amount = value;
+                }
+            }
+            // The kinds with no numeric parameters take no edits.
+            Adjustment::Invert | Adjustment::GradientMap { .. } | Adjustment::Curves { .. } => {}
+        }
+    }
+
     /// Composites the document and writes it out as a PNG, through a save
     /// dialog. The GPU path reads its own texture back; the CPU path
     /// composites from the store.
@@ -811,6 +962,146 @@ impl CanvasPane {
             .map(|d| (f64::from(d.width), f64::from(d.height)))
     }
 
+    /// Saves the open document as a `.comp` project package, through a
+    /// save dialog seeded with the open file's stem.
+    fn save_comp_dialog(&mut self, studio: &mut Studio) {
+        if self.document.is_none() {
+            return;
+        }
+        let stem = match self.name.rsplit_once('.') {
+            Some((stem, _)) => stem.to_owned(),
+            None => self.name.clone(),
+        };
+        let Some(path) = crate::platform::save_file(
+            &tf("Save project", &[]),
+            &format!("{stem}.comp"),
+            Some(("Concat project", &["comp"])),
+        ) else {
+            return;
+        };
+        if let Err(error) = self.save_comp(&path) {
+            log::warn!("canvas: {error}");
+            studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
+        }
+    }
+
+    /// Writes the document as a `.comp` package: `manifest.json` - the
+    /// format version, the canvas box, and the document tree exactly as
+    /// serde sees it - beside `images/<pixel id>.png` for every bitmap the
+    /// tree still names, layers and masks alike. The package is staged in
+    /// a sibling temporary directory and swapped in, so a failed save
+    /// leaves the previous save untouched.
+    fn save_comp(&self, path: &Path) -> Result<(), String> {
+        let Some(document) = self.document.as_ref() else {
+            return Err(tf("No image open", &[]));
+        };
+        // Every bitmap the document names, layers and masks at any depth.
+        let mut used = Vec::new();
+        document.collect_pixels(&mut used);
+        used.sort();
+        used.dedup();
+
+        let staging = sibling_temp(path);
+        std::fs::create_dir_all(staging.join("images"))
+            .map_err(|e| format!("save: {e}"))?;
+        for id in &used {
+            let Some(frame) = self.store.get(*id) else {
+                std::fs::remove_dir_all(&staging).ok();
+                return Err(format!("save: pixels {id:?} are gone"));
+            };
+            let bytes = encode_png(&frame)?;
+            std::fs::write(
+                staging.join("images").join(format!("{}.png", id.as_u64())),
+                bytes,
+            )
+            .map_err(|e| format!("save: {e}"))?;
+        }
+        let manifest = serde_json::json!({
+            "concat-project": 1,
+            "width": document.width,
+            "height": document.height,
+            "document": document,
+        })
+        .to_string();
+        std::fs::write(staging.join("manifest.json"), manifest)
+            .map_err(|e| format!("save: {e}"))?;
+
+        // The swap: the staging takes the target's place, and the previous
+        // save is only dropped once the new one is fully in place.
+        replace_package(&staging, path)?;
+        Ok(())
+    }
+
+    /// Reads a `.comp` package back: the manifest's document tree keeps
+    /// its ids, every bitmap it names is decoded and restored under the
+    /// same id, and the tree is validated before anything is shown. The
+    /// returned pixels were never re-minted, so a save of the re-opened
+    /// document is byte-for-byte the same tree again.
+    fn load_comp(&mut self, path: &Path) -> Result<(), String> {
+        let manifest_bytes = std::fs::read(path.join("manifest.json"))
+            .map_err(|e| format!("open: {e}"))?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_bytes).map_err(|e| format!("open: {e}"))?;
+        if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(1) {
+            return Err("open: not a concat project".into());
+        }
+        let document: ImageDocument =
+            serde_json::from_value(manifest.get("document").cloned().ok_or("open: no document")?)
+                .map_err(|e| format!("open: {e}"))?;
+        if document.width == 0 || document.height == 0 {
+            return Err("open: empty canvas".into());
+        }
+        document.validate().map_err(|e| format!("open: {e}"))?;
+
+        let mut used = Vec::new();
+        document.collect_pixels(&mut used);
+        used.sort();
+        used.dedup();
+        let mut store = PixelStore::new();
+        for id in &used {
+            let file = path.join("images").join(format!("{}.png", id.as_u64()));
+            let bytes = std::fs::read(&file).map_err(|e| format!("open: {e}"))?;
+            let (width, height, rgba) = decode_png(&bytes)?;
+            let frame = Frame::from_rgba(width, height, rgba).ok_or("open: empty image")?;
+            store.restore(*id, frame);
+        }
+
+        self.document = Some(document);
+        self.store = store;
+        // The active row: the topmost image layer, as a fresh open starts.
+        let topmost = self
+            .document
+            .as_ref()
+            .expect("just set")
+            .root
+            .children
+            .iter()
+            .rev()
+            .find(|node| matches!(node, LayerNode::Layer(_)));
+        self.active = topmost.map(LayerNode::id);
+        self.layer = topmost.and_then(node_image_pixels);
+        self.selection = None;
+        self.marquee = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.failed = false;
+        let (width, height) = self
+            .document
+            .as_ref()
+            .map(|d| (d.width, d.height))
+            .expect("just set");
+        self.checker = checker_image(width, height);
+        let size = (f64::from(width), f64::from(height));
+        self.nav.set_document(Some(size));
+        self.nav.viewport_mut().fit(size);
+        self.sync_view();
+        Ok(())
+    }
+
     /// Reads the view out of the navigator into the published fields. The
     /// zoom readout and the stage box follow the navigator; the pane
     /// carries no view state of its own. The selection and the in-flight
@@ -848,9 +1139,26 @@ impl CanvasPane {
         Some((vx, vy, f64::from(w) * zoom, f64::from(h) * zoom))
     }
 
-    /// Opens an image as a one-layer document: decoded straight-alpha, one
-    /// layer the size of the canvas, the view fitted to it.
+    /// Opens a path: a `.comp` project package loads as the document it
+    /// saved; anything else decodes as one image, one layer the size of
+    /// the canvas, the view fitted to it.
     fn open(&mut self, path: &Path, studio: &mut Studio) {
+        if path.is_dir() {
+            match self.load_comp(path) {
+                Ok(()) => {
+                    self.failed = false;
+                    self.render(studio);
+                }
+                Err(error) => {
+                    log::warn!("canvas: {error}");
+                    if !self.failed {
+                        self.failed = true;
+                        studio.notify(&tf("Could not open {0}", &[&error]), true);
+                    }
+                }
+            }
+            return;
+        }
         match decode(path) {
             Ok(frame) => {
                 let (width, height) = (frame.width(), frame.height());
@@ -872,6 +1180,7 @@ impl CanvasPane {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 self.failed = false;
+                self.checker = checker_image(width, height);
                 // The view starts over: fitted to what was just opened, in
                 // whatever box the pane has.
                 let size = (f64::from(width), f64::from(height));
@@ -1210,6 +1519,77 @@ impl CanvasPane {
     pub fn agent_brush(&self) -> concat_canvas::BrushSettings {
         self.brush
     }
+
+    /// Adds an adjustment of `kind` above the active layer - the kinds
+    /// [`ADJUSTMENT_KINDS`] numbers, `1` Invert through `6` Grain - and
+    /// makes it the active row. The kinds a hand cannot reach yet (the
+    /// panel has no Curves entry) stay reachable here.
+    pub fn agent_adjustment_add(&mut self, kind: i32) {
+        self.add_adjustment(kind);
+    }
+
+    /// Sets the active adjustment's parameter `index` to `value`, the
+    /// order [`Self::adjustment_state`] publishes them in.
+    pub fn agent_adjustment_param(&mut self, index: i32, value: f32) {
+        self.set_adjustment_param(index, value);
+    }
+
+    /// The active row's adjustment: `(kind, parameters)` exactly as the
+    /// panel reads it, `(0, [])` when the row is not an adjustment.
+    pub fn agent_adjustment_state(&self) -> (i32, Vec<(String, f32, f32, f32)>) {
+        self.adjustment_state()
+    }
+
+    /// The kinds the popup offers, in order - the contract an agent needs
+    /// to offer the same menu the panel does.
+    pub fn agent_adjustment_kinds(&self) -> Vec<(i32, &'static str)> {
+        ADJUSTMENT_KINDS.to_vec()
+    }
+
+    /// Writes the open document to `path` as a `.comp` project package -
+    /// the save without the dialog.
+    pub fn agent_save_comp(&mut self, path: &Path) -> Result<(), String> {
+        self.save_comp(path)
+    }
+
+    /// Opens a `.comp` project package, or an image, from `path` - the
+    /// open without the dialog.
+    pub fn agent_open(&mut self, path: &Path) -> Result<(), String> {
+        if path.is_dir() {
+            self.load_comp(path)
+        } else {
+            match decode(path) {
+                Ok(frame) => {
+                    let (width, height) = (frame.width(), frame.height());
+                    let mut document = ImageDocument::new(width, height);
+                    let pixels = self.store.put(frame);
+                    let base = document.new_layer(
+                        path.file_stem().unwrap_or_default().to_string_lossy(),
+                        pixels,
+                    );
+                    self.document = Some(document);
+                    self.layer = Some(pixels);
+                    self.active = Some(base);
+                    self.selection = None;
+                    self.marquee = None;
+                    self.undo_stack.clear();
+                    self.redo_stack.clear();
+                    self.name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.failed = false;
+                    self.checker = checker_image(width, height);
+                    let size = (f64::from(width), f64::from(height));
+                    self.nav.set_document(Some(size));
+                    self.nav.viewport_mut().fit(size);
+                    self.sync_view();
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
+    }
 }
 
 /// Composites on the CPU and hands Slint the pixels - the path when the
@@ -1245,6 +1625,167 @@ fn node_image_pixels(node: &LayerNode) -> Option<PixelId> {
         LayerNode::Layer(layer) => Some(layer.pixels),
         LayerNode::Group(_) | LayerNode::Adjustment(_) => None,
     }
+}
+
+/// The adjustment kinds the panel offers, as the boundary numbers them:
+/// `1` Invert, `2` Exposure, `3` Levels, `4` Hue & Saturation, `5`
+/// Gradient map, `6` Grain. `0` means "not an adjustment"; `7` is Curves,
+/// which the document round-trips but the popup does not yet offer, a
+/// curve wanting handles rather than knobs.
+const ADJUSTMENT_KINDS: &[(i32, &str)] = &[
+    (1, "Invert"),
+    (2, "Exposure"),
+    (3, "Levels"),
+    (4, "Hue & Saturation"),
+    (5, "Gradient map"),
+    (6, "Grain"),
+];
+
+/// The kind number of an adjustment, as the panel publishes it.
+fn adjustment_kind(adjustment: &Adjustment) -> i32 {
+    match adjustment {
+        Adjustment::Invert => 1,
+        Adjustment::Exposure { .. } => 2,
+        Adjustment::Levels { .. } => 3,
+        Adjustment::HueSaturation { .. } => 4,
+        Adjustment::GradientMap { .. } => 5,
+        Adjustment::Grain { .. } => 6,
+        Adjustment::Curves { .. } => 7,
+    }
+}
+
+/// The adjustment kind's display name, localized.
+fn adjustment_label(kind: i32) -> String {
+    let key = ADJUSTMENT_KINDS
+        .iter()
+        .find(|(number, _)| *number == kind)
+        .map(|(_, key)| *key)
+        .unwrap_or("Adjustments");
+    tf(key, &[])
+}
+
+/// A fresh adjustment of `kind`, its parameters at their neutral values -
+/// the ones that change nothing until a knob moves.
+fn default_adjustment(kind: i32) -> Option<Adjustment> {
+    match kind {
+        1 => Some(Adjustment::Invert),
+        2 => Some(Adjustment::Exposure { stops: 0.0 }),
+        3 => Some(Adjustment::Levels {
+            in_black: 0.0,
+            in_white: 1.0,
+            gamma: 1.0,
+            out_black: 0.0,
+            out_white: 1.0,
+        }),
+        4 => Some(Adjustment::HueSaturation {
+            hue: 0.0,
+            saturation: 0.0,
+            lightness: 0.0,
+        }),
+        5 => Some(Adjustment::GradientMap {
+            low: [0.0, 0.0, 0.0],
+            high: [1.0, 1.0, 1.0],
+        }),
+        6 => Some(Adjustment::Grain { amount: 0.0 }),
+        _ => None,
+    }
+}
+
+/// The adjustment's editable parameters, in the fixed order an index
+/// means: `(label, value, minimum, maximum)`. The kinds a slider cannot
+/// express - a gradient map's two colours, a curve's points - publish
+/// nothing.
+fn adjustment_parameters(adjustment: &Adjustment) -> Vec<(String, f32, f32, f32)> {
+    match adjustment {
+        Adjustment::Invert | Adjustment::GradientMap { .. } | Adjustment::Curves { .. } => {
+            Vec::new()
+        }
+        Adjustment::Exposure { stops } => {
+            vec![(tf("Stops", &[]), *stops, -4.0, 4.0)]
+        }
+        Adjustment::Levels {
+            in_black,
+            in_white,
+            gamma,
+            out_black,
+            out_white,
+        } => vec![
+            (tf("In black", &[]), *in_black, 0.0, 1.0),
+            (tf("In white", &[]), *in_white, 0.0, 1.0),
+            (tf("Gamma", &[]), *gamma, 0.1, 3.0),
+            (tf("Out black", &[]), *out_black, 0.0, 1.0),
+            (tf("Out white", &[]), *out_white, 0.0, 1.0),
+        ],
+        Adjustment::HueSaturation {
+            hue,
+            saturation,
+            lightness,
+        } => vec![
+            (tf("Hue", &[]), *hue, -180.0, 180.0),
+            (tf("Saturation", &[]), *saturation, -1.0, 1.0),
+            (tf("Lightness", &[]), *lightness, -1.0, 1.0),
+        ],
+        Adjustment::Grain { amount } => {
+            vec![(tf("Amount", &[]), *amount, 0.0, 1.0)]
+        }
+    }
+}
+
+/// The transparency checkerboard, at the document's own pixel size: 16
+/// document pixels to a square, light and dark, `(0, 0)` light. The stage
+/// stretches it to whatever the zoom says, so a square keeps its place in
+/// document space. Very large documents cap at 2048 a side and stretch
+/// from there - a checker of square one is still a checker.
+fn checker_image(width: u32, height: u32) -> slint::Image {
+    const CHECK: u32 = 16;
+    const LIGHT: [u8; 3] = [255, 255, 255];
+    const DARK: [u8; 3] = [203, 203, 203];
+    let (width, height) = (width.clamp(1, 2048), height.clamp(1, 2048));
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            let even = (x / CHECK + y / CHECK).is_multiple_of(2);
+            let colour = if even { LIGHT } else { DARK };
+            let at = ((y * width + x) * 4) as usize;
+            pixels[at..at + 3].copy_from_slice(&colour);
+            pixels[at + 3] = 255;
+        }
+    }
+    let buffer =
+        SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pixels, width, height);
+    slint::Image::from_rgba8(buffer)
+}
+
+/// A temporary directory beside `path`, unique to this process: the
+/// staging ground of an atomic package save.
+fn sibling_temp(path: &Path) -> std::path::PathBuf {
+    path.with_extension(format!("tmp-{}", std::process::id()))
+}
+
+/// Moves `staging` onto `target`: a previous package steps aside first,
+/// the staging takes its place, and only then is the old one dropped. A
+/// failure on the way puts the previous package back, so a save either
+/// lands whole or leaves what was there.
+fn replace_package(staging: &Path, target: &Path) -> Result<(), String> {
+    let aside = target.with_extension("old");
+    let had_previous = target.exists();
+    if had_previous {
+        std::fs::rename(target, &aside).map_err(|e| format!("save: {e}"))?;
+    }
+    if let Err(error) = std::fs::rename(staging, target) {
+        if had_previous {
+            std::fs::rename(&aside, target).ok();
+        }
+        return Err(format!("save: {error}"));
+    }
+    if had_previous {
+        if aside.is_dir() {
+            std::fs::remove_dir_all(&aside).map_err(|e| format!("save: {e}"))?;
+        } else {
+            std::fs::remove_file(&aside).map_err(|e| format!("save: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Encodes a frame as PNG bytes.
@@ -1503,5 +2044,87 @@ mod tests {
             empty.agent_export_png(&path).is_err(),
             "nothing open, no export"
         );
+    }
+
+    #[test]
+    fn an_adjustment_lands_above_the_active_layer_and_publishes_its_knobs() {
+        let (mut pane, _) = painting_pane();
+        // The active base layer, then the adjustment added above it.
+        pane.agent_layer_pick(0);
+        pane.agent_adjustment_add(2); // Exposure
+
+        let rows = pane.agent_layers();
+        assert_eq!(rows.len(), 2, "the adjustment joined the stack");
+        // The panel lists front-to-back; the adjustment went in above the
+        // base, so it is the front row - and it became the active one.
+        assert_eq!(rows[0].0, pane.active.expect("active").as_u64());
+        // It is an adjustment: no pixels of its own.
+        assert!(pane.layer.is_some(), "painting falls back to the base");
+
+        let (kind, parameters) = pane.agent_adjustment_state();
+        assert_eq!(kind, 2);
+        assert_eq!(parameters.len(), 1);
+        assert_eq!(parameters[0].0, tf("Stops", &[]));
+        assert_eq!(parameters[0].1, 0.0, "a fresh exposure changes nothing");
+
+        // One stop brighter, clamped into the parameter's own range.
+        pane.agent_adjustment_param(0, 5.0);
+        let (_, parameters) = pane.agent_adjustment_state();
+        assert_eq!(parameters[0].1, 4.0, "stops clamp at four");
+        // A parameter edit on a non-adjustment row is a no-op, not a panic.
+        pane.agent_layer_pick(0);
+        pane.agent_adjustment_param(0, 1.0);
+        assert!(matches!(
+            pane.document.as_ref().expect("open").find(
+                pane.active.expect("active")
+            ),
+            Some(LayerNode::Layer(_))
+        ));
+    }
+
+    #[test]
+    fn a_project_package_round_trips_through_a_save_and_a_load() {
+        let (mut pane, pixels) = painting_pane();
+        // Paint something so the saved bitmap differs from a blank one,
+        // then add an adjustment so the tree is not trivial.
+        pane.set_tool(3);
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        pane.agent_adjustment_add(6); // Grain
+        let tree = pane.document.as_ref().expect("open").to_json().expect("json");
+
+        let dir = std::env::temp_dir().join("concat-agent-comp");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("round-trip.comp");
+        pane.agent_save_comp(&path).expect("the save wrote");
+        assert!(path.join("manifest.json").is_file());
+        assert!(path.join("images").read_dir().expect("images").next().is_some());
+
+        // A fresh pane loads the package: the same tree, the same pixel
+        // ids, the painted stroke back.
+        let mut back = CanvasPane::default();
+        back.agent_open(&path).expect("the package opened");
+        assert_eq!(
+            back.document.as_ref().expect("open").to_json().expect("json"),
+            tree,
+            "the tree round-trips exactly"
+        );
+        let frame = back.store.get(pixels).expect("pixels");
+        let alpha: Vec<u8> = frame.pixels()[3..].iter().step_by(4).copied().collect();
+        assert!(alpha.iter().any(|&a| a > 0), "the stroke came back");
+
+        // Minting continues past the restored ids.
+        let fresh = back.store.put(concat_core::frame::Frame::black(1, 1));
+        assert!(
+            fresh.as_u64() > pixels.as_u64(),
+            "the counter sits above the save's ids"
+        );
+
+        let _ = std::fs::remove_dir_all(&path);
+        // A directory that is not a project is refused, not crashed on.
+        let junk = dir.join("junk.comp");
+        std::fs::create_dir_all(&junk).expect("junk");
+        assert!(back.agent_open(&junk).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

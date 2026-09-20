@@ -8,7 +8,7 @@ import {
 import { MediaFilter, MediaItemData, TextPresetData } from "workspace/media-pane.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { PaneKind } from "workspace/pane-switcher.slint";
-import { CanvasLayerData } from "workspace/canvas-pane.slint";
+import { CanvasLayerData, CanvasAdjustmentParam } from "workspace/canvas-pane.slint";
 import { MenuItemData } from "primitives/context-menu.slint";
 import {
     ClipData, ClipField, ClipTextField, DropData, SelectedClipData,
@@ -267,6 +267,14 @@ export global Editor {
     /// The layers panel's rows, front-to-back, and the picked row.
     in-out property <[CanvasLayerData]> canvas-layers;
     in-out property <int> canvas-active-layer: -1;
+    /// The transparency checkerboard, at the document's own pixel size.
+    in-out property <image> canvas-checker;
+    /// The active row's adjustment: its kind (`0` when it is not one) and
+    /// its knobs, as the panel publishes them.
+    in-out property <int> canvas-adjustment-kind: 0;
+    in-out property <[CanvasAdjustmentParam]> canvas-adjustment-params;
+    /// The marching ants' phase, stepped by a timer in Rust.
+    in-out property <int> canvas-ants: 0;
 
     /// The wheel or trackpad scroll: pixel deltas, whether ctrl/cmd makes it
     /// a zoom, and where over the viewport it happened.
@@ -313,8 +321,13 @@ export global Editor {
     callback canvas-layer-added();
     callback canvas-layer-deleted(index: int);
     callback canvas-layer-moved(index: int, direction: int);
+    /// The adjustment panel.
+    callback canvas-adjustment-added(kind: int);
+    callback canvas-adjustment-param-changed(index: int, value: float);
     /// Export the composed canvas as a PNG.
     callback canvas-export-png();
+    /// Save the whole document as a `.comp` project package.
+    callback canvas-save-comp();
 
     // ── the timeline ──
     in-out property <[TimelineTabData]> timeline-tabs;

@@ -741,5 +741,17 @@
   "{0} months ago": "{0} 個月前",
   "{0} strokes": "{0} 筆筆畫",
   "{0}m {1}s left": "剩餘 {0} 分 {1} 秒",
-  "{0}s left": "剩餘 {0} 秒"
+  "{0}s left": "剩餘 {0} 秒",
+  "Adjustments": "調整",
+  "Add adjustment": "新增調整",
+  "Hue & Saturation": "色相/飽和度",
+  "Gradient map": "漸層對應",
+  "Stops": "檔",
+  "Hue": "色相",
+  "Gamma": "Gamma",
+  "In black": "輸入黑點",
+  "In white": "輸入白點",
+  "Out black": "輸出黑點",
+  "Out white": "輸出白點",
+  "Save project": "儲存專案"
 }

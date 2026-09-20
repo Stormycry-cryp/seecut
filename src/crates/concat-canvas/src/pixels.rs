@@ -21,7 +21,18 @@ use std::sync::Arc;
 use concat_core::frame::Frame;
 
 /// A layer's pixels, by name. Never zero.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct PixelId(pub(crate) u64);
 
 impl PixelId {
@@ -29,6 +40,12 @@ impl PixelId {
     /// it. Documents are only handed out with every id filled, but a
     /// `Default` is convenient for `#[derive]` on the UI's view models.
     pub const NONE: PixelId = PixelId(0);
+
+    /// The identity's number, for file names and UI keys. Meaningless on
+    /// its own; uniqueness within a document is the whole contract.
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
 }
 
 /// The bitmaps a document's layers and masks name.
@@ -56,6 +73,18 @@ impl PixelStore {
         self.next += 1;
         self.frames.insert(id, Arc::new(frame));
         id
+    }
+
+    /// Puts a bitmap back under the name a saved project gave it, and keeps
+    /// the minting counter past it - what loading a project does, so a
+    /// re-opened document re-mints nothing its ids already name. Two
+    /// restores of one id leave the last frame there, and the counter
+    /// unchanged.
+    pub fn restore(&mut self, id: PixelId, frame: Frame) {
+        if id != PixelId::NONE {
+            self.frames.insert(id, Arc::new(frame));
+            self.next = self.next.max(id.0 + 1);
+        }
     }
 
     /// Swaps the bitmap a name refers to, keeping the name. The brush's
@@ -161,5 +190,20 @@ mod tests {
         let b = store.get(id).expect("still there");
         assert!(Arc::ptr_eq(&a, &b));
         assert_eq!(a.width(), 4);
+    }
+
+    #[test]
+    fn restore_rebuilds_a_save_and_minting_continues_past_it() {
+        let mut store = PixelStore::new();
+        // A save's ids can be any shape; restore takes them as they are.
+        store.restore(PixelId(7), Frame::black(3, 3));
+        assert_eq!(store.get(PixelId(7)).expect("restored").width(), 3);
+        assert!(store.contains(PixelId(7)));
+        // The next put cannot collide with a restored id.
+        let fresh = store.put(Frame::black(1, 1));
+        assert!(fresh.0 > 7);
+        // NONE stays nothing, and disturbs no counter.
+        store.restore(PixelId::NONE, Frame::black(1, 1));
+        assert!(store.get(PixelId::NONE).is_none());
     }
 }

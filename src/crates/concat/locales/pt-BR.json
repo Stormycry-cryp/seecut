@@ -741,5 +741,17 @@
   "{0} months ago": "há {0} meses",
   "{0} strokes": "{0} traços",
   "{0}m {1}s left": "faltam {0} min {1} s",
-  "{0}s left": "faltam {0} s"
+  "{0}s left": "faltam {0} s",
+  "Adjustments": "Ajustes",
+  "Add adjustment": "Adicionar ajuste",
+  "Hue & Saturation": "Matiz e saturação",
+  "Gradient map": "Mapa de gradiente",
+  "Stops": "Stops",
+  "Hue": "Matiz",
+  "Gamma": "Gama",
+  "In black": "Preto de entrada",
+  "In white": "Branco de entrada",
+  "Out black": "Preto de saída",
+  "Out white": "Branco de saída",
+  "Save project": "Salvar projeto"
 }

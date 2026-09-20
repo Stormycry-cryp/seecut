@@ -741,5 +741,17 @@
   "{0} months ago": "{0} mesi fa",
   "{0} strokes": "{0} tratti",
   "{0}m {1}s left": "{0} min {1} s rimanenti",
-  "{0}s left": "{0} s rimanenti"
+  "{0}s left": "{0} s rimanenti",
+  "Adjustments": "Regolazioni",
+  "Add adjustment": "Aggiungi regolazione",
+  "Hue & Saturation": "Tonalità e saturazione",
+  "Gradient map": "Mappa sfumatura",
+  "Stops": "Passi",
+  "Hue": "Tonalità",
+  "Gamma": "Gamma",
+  "In black": "Nero in ingresso",
+  "In white": "Bianco in ingresso",
+  "Out black": "Nero in uscita",
+  "Out white": "Bianco in uscita",
+  "Save project": "Salva progetto"
 }

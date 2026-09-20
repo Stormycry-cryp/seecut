@@ -5534,6 +5534,21 @@ impl Studio {
                 .unwrap_or(-1),
         );
         editor.set_canvas_layers(slint::ModelRc::new(slint::VecModel::from(rows)));
+        // The checker under the picture, the active row's adjustment and
+        // its knobs - the same publish, one block over.
+        editor.set_canvas_checker(self.canvas.checker.clone());
+        let (kind, parameters) = self.canvas.adjustment_state();
+        editor.set_canvas_adjustment_kind(kind);
+        let params: Vec<CanvasAdjustmentParam> = parameters
+            .into_iter()
+            .map(|(label, value, minimum, maximum)| CanvasAdjustmentParam {
+                label: label.into(),
+                value,
+                minimum,
+                maximum,
+            })
+            .collect();
+        editor.set_canvas_adjustment_params(slint::ModelRc::new(slint::VecModel::from(params)));
     }
 
     /// The menus, the dialogs, the bin and the engine lists.

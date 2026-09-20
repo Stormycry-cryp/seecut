@@ -170,3 +170,68 @@ cargo check -p concat --no-default-features --features wgpu
 - `move_region`/浮选区是简化版（无自由变换插值），自由变换（旋转/缩放采样）在 P7
   结合 `LayerTransform` 决定是否上 GPU。
 - 内容填充（ContentFill C 算法）与仿制/修复/模糊属 P6/P7 边缘，当前排期为 P7 可选项。
+
+---
+
+## 六、P8：调整图层 UI、.comp 工程、质感补遗（2026-09-21）
+
+### 1. 调整图层弹层与参数编辑（全栈打通）
+- GPU 侧本轮确认已完备：`gpu.rs` shader `adjust_one` 七种 pass_kind
+  （Invert/Exposure/Levels/HueSat/GradientMap/Grain/Curves-LUT）+ CPU
+  `apply_one` 对拍。缺的只有 UI 与接线，本轮补齐。
+- `canvas.rs`：`CanvasMsg::AdjustmentAdd(kind)/AdjustmentParam(index, value)`；
+  新调整插到活跃图层正上方（子数组 active 位置 +1，嵌套/无活跃则置顶），
+  成为活跃行；绘画目标回落到最上层图像层。
+- 种类编号即边界契约：1 Invert、2 Exposure、3 Levels、4 Hue & Saturation、
+  5 Gradient map、6 Grain（7 Curves 文档可往返、弹层暂不出——曲线要手柄不要旋钮）。
+- 参数发布：`adjustment_state() -> (kind, [(label, value, min, max)])`，
+  Slint 侧 `CanvasAdjustmentParam` 行 + 小旋钮（Knob 26px），改完按索引写回
+  并 clamp 到参数自身量程。
+- UI：图层面板头部 sliders 按钮 → 弹出菜单（六类）；活跃行是调整图层时
+  面板底部出现参数旋钮排。弹层开关是面板本地状态，外点关闭层在其下方。
+- agent 接口同步补齐：`agent_adjustment_add / agent_adjustment_param /
+  agent_adjustment_state / agent_adjustment_kinds`。
+
+### 2. .comp 工程格式（Concat 自有格式 v1）
+- 结构：`<name>.comp/manifest.json`（`concat-project:1` + 画布尺寸 +
+  `ImageDocument` 原样 serde JSON，含全部 id/变换/调整参数）+
+  `images/<pixel-id>.png`（图层与蒙版统一，按 `collect_pixels` 清单）。
+- 保存：兄弟临时目录（`.tmp-<pid>`）暂存 → `replace_package` 三步换入
+  （旧包先让位 `.old`，新包就位后才删旧包；中途失败旧包复位）。
+- 打开：manifest 校验（版本/尺寸/`doc.validate()` 剪裁链）→ 逐 id 解码
+  PNG → `PixelStore::restore`（新原语：按保存的 id 复位、计数器越过最大 id，
+  再铸不撞车）→ 树与像素零重铸，往返后再保存的树字节一致。
+- `PixelId` 补 `Ord/PartialOrd/as_u64()`（文件名与排序需要）。
+- UI：面板底部 save 按钮（对话框），`CanvasMsg::SaveComp`；打开按路径分发
+  （`.comp` 目录走 load_comp）。agent：`agent_save_comp / agent_open`。
+
+### 3. 质感补遗
+- **透明棋盘格**：`checker_image(w,h)` 按文档像素生成 16px 方格（(0,0) 亮，
+  上限 2048 后拉伸），开图/载工程时生成一次随 publish 发布；stage 内
+  image-fit:fill 铺在合成帧之下——方格随缩放与画面像素同步缩放，
+  文档空间语义正确，零每帧成本。
+- **蚂蚁线**：Slint Path 无虚线（只有 TextStrokeStyle），改用自适应周期
+  短划线方案：`Ants` 组件四边 `for` 铺白色 dash（周期 = max(8, span/80)
+  px，封顶每边 80 段），相位由 Rust `slint::Timer`（120ms）步进
+  `Editor.canvas-ants` 0..3，每步 1/4 周期 → 无缝爬行。
+- **压感：被上游阻塞**。核实 slint 1.17 `PointerEvent`（i-slint-common
+  builtin_structs）仅 button/kind/modifiers/touch_finger_id，无 pressure。
+  待上游暴露后接入笔刷直径/流量（任务 #17）。
+
+### 4. 验证
+- concat-canvas（gpu 变体）：**134 全绿**（+restore 原语 1 项）；
+- concat（wgpu 变体）：**58 全绿**（+调整图层发布/写入 1 项、.comp 往返 1 项）；
+- clippy `-D warnings` 双 crate 干净（is_multiple_of、nonminimal_bool 两处修正）；
+- i18n：12 个新词条 × 13 个语言全量补齐（顺序保持，diff 每文件 +13 行），
+  覆盖测试通过。
+
+### 5. 新增/改动文件
+- `concat-canvas/src/pixels.rs`（restore + Ord/as_u64 + 测试）
+- `concat/src/panes/canvas.rs`（调整图层全套、.comp 存取、checker、agent、测试）
+- `concat/src/studio.rs`（publish checker/adjustment）
+- `concat/src/lib.rs`（3 个回调注册 + 蚂蚁线 Timer）
+- `concat/ui/icons.slint`（sliders/save 两个 lucide glyph）
+- `concat/ui/workspace/canvas-pane.slint`（CanvasAdjustmentParam、弹层、旋钮排、
+  checker 图层、Ants 组件）
+- `concat/ui/editor.slint`、`workspace/seat.slint`（全局与转发）
+- `concat/locales/*.json` ×13（12 词条）

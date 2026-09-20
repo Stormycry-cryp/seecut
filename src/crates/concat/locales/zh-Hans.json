@@ -741,5 +741,17 @@
   "{0} months ago": "{0} 个月前",
   "{0} strokes": "{0} 笔",
   "{0}m {1}s left": "剩余 {0} 分 {1} 秒",
-  "{0}s left": "剩余 {0} 秒"
+  "{0}s left": "剩余 {0} 秒",
+  "Adjustments": "调整",
+  "Add adjustment": "添加调整",
+  "Hue & Saturation": "色相/饱和度",
+  "Gradient map": "渐变映射",
+  "Stops": "档",
+  "Hue": "色相",
+  "Gamma": "Gamma",
+  "In black": "输入黑点",
+  "In white": "输入白点",
+  "Out black": "输出黑点",
+  "Out white": "输出白点",
+  "Save project": "保存工程"
 }

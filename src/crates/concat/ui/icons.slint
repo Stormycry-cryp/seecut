@@ -118,6 +118,9 @@ export enum Glyph {
     box-select,
     wand,
     paint-bucket,
+    // the canvas's adjustment panel and project save
+    sliders,
+    save,
 }
 
 component Stroked inherits Path {
@@ -584,6 +587,21 @@ export component Icon inherits Rectangle {
         size: root.size; tint: root.tint; weight: root.weight;
         commands: "m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"
             + " m5 2 5 5 M2 13h15 M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z";
+    }
+
+    // lucide/sliders-horizontal: the adjustment panel's opener.
+    if root.glyph == Glyph.sliders: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M21 4h-7 M10 4H3 M21 12h-9 M8 12H3 M21 20h-5 M12 20H3"
+            + " M14 2v4 M8 10v4 M16 18v4";
+    }
+
+    // lucide/save: the project save.
+    if root.glyph == Glyph.save: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2"
+            + " 2 0 0 1-2-2V5a2 2 0 0 1 2-2z M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"
+            + " M7 3v4a1 1 0 0 0 1 1h7";
     }
 
     // lucide/step-forward

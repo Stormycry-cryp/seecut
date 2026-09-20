@@ -741,5 +741,17 @@
   "{0} months ago": "{0} か月前",
   "{0} strokes": "{0} ストローク",
   "{0}m {1}s left": "残り {0} 分 {1} 秒",
-  "{0}s left": "残り {0} 秒"
+  "{0}s left": "残り {0} 秒",
+  "Adjustments": "調整",
+  "Add adjustment": "調整レイヤーを追加",
+  "Hue & Saturation": "色相・彩度",
+  "Gradient map": "グラデーションマップ",
+  "Stops": "段数",
+  "Hue": "色相",
+  "Gamma": "ガンマ",
+  "In black": "入力黒",
+  "In white": "入力白",
+  "Out black": "出力黒",
+  "Out white": "出力白",
+  "Save project": "プロジェクトを保存"
 }

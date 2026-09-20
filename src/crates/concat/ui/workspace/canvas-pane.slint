@@ -43,6 +43,72 @@ export struct CanvasLayerData {
     active: bool,
 }
 
+// One knob of the active adjustment, as Rust publishes it: the label, the
+// value, and the range it clamps into.
+export struct CanvasAdjustmentParam {
+    label: string,
+    value: float,
+    minimum: float,
+    maximum: float,
+}
+
+// The marching ants: white dashes crawling over the selection's accent
+// border, the two-tone read of "this box is live". Slint's Path has no
+// dash stroke, so the dashes are tiny rectangles - which is why the dash
+// period adapts to the box (eight screen pixels at first, stretching just
+// enough to keep the count bounded at eighty per edge) and why the phase
+// steps a quarter period per tick from Rust's timer: the crawl wraps
+// seamlessly whatever the period turned out to be.
+component Ants inherits Rectangle {
+    in property <length> box-x;
+    in property <length> box-y;
+    in property <length> box-w;
+    in property <length> box-h;
+    in property <int> phase;
+    x: root.box-x;
+    y: root.box-y;
+    width: root.box-w;
+    height: root.box-h;
+
+    property <length> span: Math.max(root.box-w, root.box-h);
+    property <float> steps: Math.min(Math.max(Math.ceil(span / 8px), 2), 80);
+    property <length> period: Math.max(span / root.steps, 8px);
+    property <length> dash: root.period * 0.45;
+    // A quarter period per tick, four ticks to the seamless wrap.
+    property <length> crawl: root.phase * root.period / 4;
+    property <int> h-count: Math.ceil(root.box-w / root.period) + 1;
+    property <int> v-count: Math.ceil(root.box-h / root.period) + 1;
+
+    for d[i] in root.h-count: Rectangle {
+        x: i * parent.period - parent.crawl;
+        y: 0;
+        width: parent.dash;
+        height: 1px;
+        background: white;
+    }
+    for d[i] in root.h-count: Rectangle {
+        x: i * parent.period - parent.crawl;
+        y: parent.height - 1px;
+        width: parent.dash;
+        height: 1px;
+        background: white;
+    }
+    for d[i] in root.v-count: Rectangle {
+        x: 0;
+        y: i * parent.period - parent.crawl;
+        width: 1px;
+        height: parent.dash;
+        background: white;
+    }
+    for d[i] in root.v-count: Rectangle {
+        x: parent.width - 1px;
+        y: i * parent.period - parent.crawl;
+        width: 1px;
+        height: parent.dash;
+        background: white;
+    }
+}
+
 export component CanvasPane inherits Rectangle {
     /// The composed document, at the view's zoom, already placed by the
     /// compositor. Empty until an image is open.
@@ -79,6 +145,20 @@ export component CanvasPane inherits Rectangle {
     in property <float> marquee-y;
     in property <float> marquee-w;
     in property <float> marquee-h;
+    /// The transparency checkerboard, at the document's own pixel size;
+    /// the stage stretches it, so a square keeps its document-space place
+    /// at any zoom.
+    in property <image> checker;
+    /// The active row's adjustment: its kind (Rust's numbering, `0` when
+    /// the row is not an adjustment) and its knobs.
+    in property <int> adjustment-kind: 0;
+    in property <[CanvasAdjustmentParam]> adjustment-params;
+    /// The marching ants' phase, stepped by a timer in Rust: `0..3`, a
+    /// quarter of the dash period each step.
+    in property <int> ants;
+    /// The layers panel's adjustment popup, open or not. Local state: no
+    /// round trip, the panel decides nothing else about it.
+    property <bool> adjustment-open: false;
 
     // ── gestures, reported rather than handled ──────────────────────────
     //
@@ -136,8 +216,14 @@ export component CanvasPane inherits Rectangle {
     callback layer-added();
     callback layer-deleted(index: int);
     callback layer-moved(index: int, direction: int);
+    /// The adjustment panel: a kind picked out of the popup, and one of
+    /// the active adjustment's knobs turned.
+    callback adjustment-added(kind: int);
+    callback adjustment-param-changed(index: int, value: float);
     /// Export the composed canvas as a PNG.
     callback export-png();
+    /// Save the whole document as a `.comp` project package.
+    callback save-comp();
 
     /// The corner button: show something else in this pane's seat.
     callback pane-picked(kind: PaneKind);
@@ -211,6 +297,20 @@ export component CanvasPane inherits Rectangle {
                 border-color: Theme.line-strong;
                 clip: true;
 
+                // The checker under the picture: the honest ground for a
+                // transparency the frame carries straight-alpha. It lives
+                // at the document's own pixel size and stretches with the
+                // stage, so its squares scale with the zoom the way the
+                // picture's pixels do.
+                if root.has-document && root.checker.width > 0: Image {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.checker;
+                    image-fit: fill;
+                }
+
                 if root.has-document && root.frame.width > 0: Image {
                     x: 0;
                     y: 0;
@@ -280,7 +380,8 @@ export component CanvasPane inherits Rectangle {
 
             // The selection's outline, and the marquee's box while a drag
             // is in flight - both in well coordinates, the frame the view
-            // conversions speak.
+            // conversions speak. The ants crawl over the accent border
+            // while the selection rests.
             if root.has-selection: Rectangle {
                 x: root.selection-x * 1px;
                 y: root.selection-y * 1px;
@@ -288,6 +389,13 @@ export component CanvasPane inherits Rectangle {
                 height: root.selection-h * 1px;
                 border-width: 1px;
                 border-color: Theme.accent;
+            }
+            if root.has-selection: Ants {
+                box-x: root.selection-x * 1px;
+                box-y: root.selection-y * 1px;
+                box-w: root.selection-w * 1px;
+                box-h: root.selection-h * 1px;
+                phase: root.ants;
             }
             if root.marquee-w > 0 && root.marquee-h > 0: Rectangle {
                 x: root.marquee-x * 1px;
@@ -376,7 +484,8 @@ export component CanvasPane inherits Rectangle {
         }
 
             // The layers panel: the document's stack, front-to-back, with
-            // visibility, opacity and reorder on each row.
+            // visibility, opacity and reorder on each row - and the
+            // adjustments the stack can take, offered in a popup.
             if root.has-document: Rectangle {
                 width: 172px;
                 background: Theme.panel;
@@ -402,6 +511,12 @@ export component CanvasPane inherits Rectangle {
                             font-size: Theme.fs;
                             vertical-alignment: center;
                             horizontal-stretch: 1;
+                        }
+                        IconButton {
+                            glyph: Glyph.sliders;
+                            label: I18n.t("Add adjustment");
+                            checked: adjustment-open;
+                            clicked => { adjustment-open = !adjustment-open; }
                         }
                         IconButton {
                             glyph: Glyph.plus;
@@ -459,6 +574,32 @@ export component CanvasPane inherits Rectangle {
                         }
                     }
 
+                    // The active adjustment's knobs: published as rows of
+                    // (label, value, range) and turned back by index.
+                    if root.adjustment-kind > 0 && root.adjustment-params.length > 0: HorizontalLayout {
+                        spacing: 4px;
+                        for param[i] in root.adjustment-params: VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 1px;
+                            Knob {
+                                diameter: 26px;
+                                travel: 60px;
+                                value: param.value;
+                                minimum: param.minimum;
+                                maximum: param.maximum;
+                                default-value: param.value;
+                                changed(value) => { root.adjustment-param-changed(i, value); }
+                            }
+                            Text {
+                                text: param.label;
+                                color: Theme.fg-dim;
+                                font-size: Theme.fs - 1px;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
                     HorizontalLayout {
                         spacing: 2px;
                         alignment: start;
@@ -481,6 +622,73 @@ export component CanvasPane inherits Rectangle {
                             glyph: Glyph.export;
                             label: I18n.t("Export as PNG");
                             clicked => { root.export-png(); }
+                        }
+                        IconButton {
+                            glyph: Glyph.save;
+                            label: I18n.t("Save project");
+                            clicked => { root.save-comp(); }
+                        }
+                    }
+                }
+
+                // The adjustment popup: the kinds the engine knows, over
+                // the panel. Picking one adds it above the active layer
+                // and closes the popup. The closer is a sibling under it,
+                // so a tap anywhere else in the panel falls through to
+                // closing rather than to whatever was under the tap.
+                if adjustment-open: TouchArea {
+                    clicked => { adjustment-open = false; }
+                }
+                if adjustment-open: Rectangle {
+                    x: parent.width - self.width - 8px;
+                    y: 30px;
+                    width: 128px;
+                    background: Theme.raised;
+                    border-width: 1px;
+                    border-color: Theme.line-strong;
+                    border-radius: Theme.r;
+                    drop-shadow-blur: 8px;
+                    drop-shadow-color: #0003;
+
+                    VerticalLayout {
+                        padding: 4px;
+                        spacing: 1px;
+
+                        Text {
+                            text: I18n.t("Adjustments");
+                            color: Theme.fg-dim;
+                            font-family: Theme.font-technical;
+                            font-size: Theme.fs;
+                            height: 18px;
+                            vertical-alignment: center;
+                        }
+                        for kind[ki] in [
+                            { kind: 1, name: I18n.t("Invert") },
+                            { kind: 2, name: I18n.t("Exposure") },
+                            { kind: 3, name: I18n.t("Levels") },
+                            { kind: 4, name: I18n.t("Hue & Saturation") },
+                            { kind: 5, name: I18n.t("Gradient map") },
+                            { kind: 6, name: I18n.t("Grain") },
+                        ]: Rectangle {
+                            height: 22px;
+                            border-radius: Theme.r;
+                            background: kind-touch.has-hover ? Theme.field-hover : transparent;
+                            kind-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.adjustment-added(kind.kind);
+                                    adjustment-open = false;
+                                }
+                            }
+                            Text {
+                                x: 6px;
+                                text: kind.name;
+                                color: Theme.fg;
+                                font-size: Theme.fs;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                width: parent.width - 12px;
+                            }
                         }
                     }
                 }

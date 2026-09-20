@@ -1060,6 +1060,21 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_canvas_export_png(on_window!(|state| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ExportPng));
     }));
+    editor.on_canvas_save_comp(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::SaveComp));
+    }));
+    editor.on_canvas_adjustment_added(on_window!(|state, kind: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::AdjustmentAdd(
+            kind,
+        )));
+    }));
+    editor.on_canvas_adjustment_param_changed(on_window!(
+        |state, index: i32, value: f32| {
+            state.handle(Msg::Canvas(
+                crate::panes::canvas::CanvasMsg::AdjustmentParam(index, f64::from(value)),
+            ));
+        }
+    ));
 
     // ── the stage ──
     editor.on_stage_pressed(on_window!(|state, x: f32, y: f32, additive: bool| {
@@ -1549,6 +1564,24 @@ pub fn run() -> Result<(), slint::PlatformError> {
         shell.studio.borrow_mut().refresh_art();
         shell.studio.borrow().publish(&app, &shell.models);
     }
+
+    // The marching ants' clock: four steps to a seamless wrap, ticked only
+    // so long as the process lives. A step is a property write; when no
+    // selection shows, the write re-renders nothing.
+    let ants = slint::Timer::default();
+    let ants_window = app.as_weak();
+    ants.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(120),
+        move || {
+            if let Some(app) = ants_window.upgrade() {
+                let next = (app.global::<Editor>().get_canvas_ants() + 1) % 4;
+                app.global::<Editor>().set_canvas_ants(next);
+            }
+        },
+    );
+    // The timer is the animation's only owner; the event loop outlives it.
+    std::mem::forget(ants);
 
     let result = app.run();
     log::info!("close: event loop exited (ok={})", result.is_ok());

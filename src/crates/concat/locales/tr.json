@@ -741,5 +741,17 @@
   "{0} months ago": "{0} ay önce",
   "{0} strokes": "{0} fırça darbesi",
   "{0}m {1}s left": "{0} dk {1} sn kaldı",
-  "{0}s left": "{0} sn kaldı"
+  "{0}s left": "{0} sn kaldı",
+  "Adjustments": "Ayarlamalar",
+  "Add adjustment": "Ayarlama ekle",
+  "Hue & Saturation": "Renk tonu ve doygunluk",
+  "Gradient map": "Degrade eşlemesi",
+  "Stops": "Adımlar",
+  "Hue": "Renk tonu",
+  "Gamma": "Gama",
+  "In black": "Giriş siyahı",
+  "In white": "Giriş beyazı",
+  "Out black": "Çıkış siyahı",
+  "Out white": "Çıkış beyazı",
+  "Save project": "Projeyi kaydet"
 }

@@ -741,5 +741,17 @@
   "{0} months ago": "prije {0} mjeseci",
   "{0} strokes": "{0} poteza",
   "{0}m {1}s left": "preostalo {0}m {1}s",
-  "{0}s left": "preostalo {0}s"
+  "{0}s left": "preostalo {0}s",
+  "Adjustments": "Prilagodbe",
+  "Add adjustment": "Dodaj prilagodbu",
+  "Hue & Saturation": "Nijansa i zasićenost",
+  "Gradient map": "Mapa gradijenta",
+  "Stops": "Koraci",
+  "Hue": "Nijansa",
+  "Gamma": "Gamma",
+  "In black": "Ulazna crna",
+  "In white": "Ulazna bijela",
+  "Out black": "Izlazna crna",
+  "Out white": "Izlazna bijela",
+  "Save project": "Spremi projekt"
 }
