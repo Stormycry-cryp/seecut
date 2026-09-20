@@ -1,0 +1,343 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+
+import { I18n } from "../i18n.slint";
+import { Theme } from "../theme/theme.slint";
+import { Glyph, Icon } from "../icons.slint";
+import { IconButton } from "../primitives/panel.slint";
+import { Pane, PaneHeader } from "pane.slint";
+import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
+
+// The canvas: the image editor's own viewport, in a seat of its own.
+//
+// Where the monitor's view state lives in this file - fitted until a gesture
+// takes it, then free - the canvas's lives in Rust, in the Navigator. The
+// reasons are the original's: the gestures there span inputs (a zoom-tool
+// drag is a press, moves, and a release that must know whether it stayed
+// put), and a state machine that spans events belongs to the model, not to
+// whichever TouchArea saw the first one. This pane is then a thin layer:
+// every gesture it recognises is reported and forgotten, and the next frame
+// comes back with the view already moved.
+//
+// The stage sits on the same sunken well the monitor uses, and the ground
+// under the picture is the same stage colour. A transparency checkerboard is
+// the honest ground for an image editor and is not drawn yet - the frame the
+// compositor returns is straight-alpha over nothing, and a checker wants a
+// pattern behind the image, which is a slint layer away.
+
+export component CanvasPane inherits Rectangle {
+    /// The composed document, at the view's zoom, already placed by the
+    /// compositor. Empty until an image is open.
+    in property <image> frame;
+    /// Whether there is a document to show at all.
+    in property <bool> has-document;
+    /// The open image's name, as the header readout.
+    in property <string> document-name;
+    /// The view's zoom, in percent. 100 is one image pixel to one screen
+    /// pixel at the current scale.
+    in property <float> zoom;
+    /// The view's offset from centre, in viewport pixels, as Rust holds it.
+    in property <float> pan-x;
+    in property <float> pan-y;
+    /// The document's box on screen, in viewport pixels, already zoomed.
+    in property <float> stage-w;
+    in property <float> stage-h;
+    /// 0 move, 1 hand, 2 zoom.
+    in property <int> tool;
+
+    // ── gestures, reported rather than handled ──────────────────────────
+    //
+    // Positions are in viewport pixels - `mouse-x / 1px` - because that is
+    // the frame Navigator works in. Scroll deltas arrive as lengths and go
+    // as their pixel counts; `zoom-modifier` is ctrl or cmd held, the
+    // wheel's substitute for a pinch.
+    callback nav-scroll(delta-x: float, delta-y: float, zoom-modifier: bool,
+        x: float, y: float);
+    callback nav-pan-press(x: float, y: float);
+    callback nav-pan-move(x: float, y: float);
+    callback nav-zoom-press(x: float, y: float, alt: bool);
+    callback nav-zoom-move(x: float, y: float);
+    /// The pointer went up, whichever drag was live. `alt` rides along for
+    /// the zoom tool, whose plain click steps out with it.
+    callback nav-release(alt: bool);
+    callback nav-fit();
+    /// The viewport's box, on the way up: fit and the anchors need it.
+    callback canvas-resized(width: float, height: float);
+    /// Open an image into the canvas.
+    callback canvas-open();
+    /// The tray's tool picker.
+    callback tool-changed(index: int);
+
+    /// The corner button: show something else in this pane's seat.
+    callback pane-picked(kind: PaneKind);
+    in property <int> pane-seat;
+    in property <bool> pane-removable: true;
+    callback pane-removed();
+
+    Pane {
+        PaneHeader {
+            title: I18n.t("Canvas");
+
+            // What is open, and how close. Both facts, not controls: the
+            // zoom is steered by the gestures and the wheel, the way the
+            // monitor's frame size is steered by the ratio picker.
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.document-name;
+                    color: Theme.fg-dim;
+                    font-family: Theme.font-technical;
+                    font-size: Theme.fs;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.has-document ? "\{Math.round(root.zoom)}%" : "";
+                    color: Theme.fg-dim;
+                    font-family: Theme.font-technical;
+                    font-size: Theme.fs;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                PaneSwitcher {
+                    kind: PaneKind.canvas;
+                    seat: root.pane-seat;
+                    removable: root.pane-removable;
+                    picked(kind) => { root.pane-picked(kind); }
+                    removed => { root.pane-removed(); }
+                }
+            }
+        }
+
+        // ── the well ─────────────────────────────────────────────────────
+        well := Rectangle {
+            vertical-stretch: 1;
+            background: Theme.well;
+            clip: true;
+
+            // Reported on the way up: the pane may be squeezed at any time,
+            // and a fit computed for last year's box is a fit that crops.
+            changed width => { root.canvas-resized(self.width / 1px, self.height / 1px); }
+            changed height => { root.canvas-resized(self.width / 1px, self.height / 1px); }
+
+            // The stage: the document's box, placed by the view Rust holds.
+            // Centred when the pan is zero, then exactly where the pan says.
+            stage := Rectangle {
+                x: (parent.width - self.width) / 2 + root.pan-x * 1px;
+                y: (parent.height - self.height) / 2 + root.pan-y * 1px;
+                width: root.stage-w * 1px;
+                height: root.stage-h * 1px;
+                background: Theme.stage;
+                border-width: 1px;
+                border-color: Theme.line-strong;
+                clip: true;
+
+                if root.has-document && root.frame.width > 0: Image {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.frame;
+                    image-fit: fill;
+                }
+            }
+
+            // The empty state, where the stage would be.
+            if !root.has-document: VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    alignment: center;
+                    Icon {
+                        glyph: Glyph.image;
+                        size: 22px;
+                        tint: Theme.fg-dim;
+                    }
+                }
+
+                Text {
+                    text: I18n.t("No image open");
+                    color: Theme.fg-dim;
+                    font-size: Theme.fs;
+                    horizontal-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        // The text's own width, plus the icon and the
+                        // paddings either side: a button as wide as what
+                        // it says, in whatever language it says it.
+                        width: open-text.preferred-width + 16px + 6px + 12px + 16px;
+                        height: 26px;
+                        border-radius: Theme.r;
+                        background: open-touch.has-hover ? Theme.field-hover : Theme.field;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Icon {
+                                glyph: Glyph.folder;
+                                size: 12px;
+                                tint: Theme.fg;
+                            }
+                            open-text := Text {
+                                text: I18n.t("Open image");
+                                color: Theme.fg;
+                                font-size: Theme.fs;
+                                vertical-alignment: center;
+                            }
+                        }
+                        open-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.canvas-open(); }
+                        }
+                    }
+                }
+            }
+
+            // The gesture floor, over the stage and the empty state alike:
+            // panning an empty well does nothing, and reporting it costs
+            // less than asking whether it was worth it.
+            floor := TouchArea {
+                property <bool> panning;
+                property <bool> zooming;
+                mouse-cursor: self.panning ? MouseCursor.grabbing
+                    : root.tool == 1 ? MouseCursor.grab
+                    : root.tool == 2 ? MouseCursor.crosshair
+                    : MouseCursor.default;
+
+                scroll-event(event) => {
+                    root.nav-scroll(event.delta-x / 1px, event.delta-y / 1px,
+                        event.modifiers.control || event.modifiers.meta,
+                        self.mouse-x / 1px, self.mouse-y / 1px);
+                    return EventResult.accept;
+                }
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        if (event.button == PointerEventButton.middle
+                            || (event.button == PointerEventButton.left
+                                && root.tool == 1)) {
+                            self.panning = true;
+                            root.nav-pan-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else if (event.button == PointerEventButton.left
+                            && root.tool == 2) {
+                            self.zooming = true;
+                            root.nav-zoom-press(self.mouse-x / 1px, self.mouse-y / 1px,
+                                event.modifiers.alt);
+                        }
+                    } else if (event.kind == PointerEventKind.up
+                        || event.kind == PointerEventKind.cancel) {
+                        if (self.panning || self.zooming) {
+                            self.panning = false;
+                            self.zooming = false;
+                            root.nav-release(event.modifiers.alt);
+                        }
+                    }
+                }
+                moved => {
+                    if (self.panning) {
+                        root.nav-pan-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (self.zooming) {
+                        root.nav-zoom-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    }
+                }
+                // The monitor's own way back: a double-click fits.
+                double-clicked => { root.nav-fit(); }
+            }
+        }
+
+        // ── the tray ─────────────────────────────────────────────────────
+        Rectangle {
+            height: 46px;
+            background: Theme.panel;
+
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: 1px;
+                background: Theme.line;
+            }
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 8px;
+
+                // Leading: the tools. Move is the plain pointer, the one
+                // painting and selecting will hang off; hand pans; zoom is
+                // the original's drag-right-to-zoom-in tool.
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    alignment: start;
+
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.pointer;
+                            label: I18n.t("Move tool");
+                            checked: root.tool == 0;
+                            clicked => { root.tool-changed(0); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.hand;
+                            label: I18n.t("Hand tool");
+                            checked: root.tool == 1;
+                            clicked => { root.tool-changed(1); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.search;
+                            label: I18n.t("Zoom tool");
+                            checked: root.tool == 2;
+                            clicked => { root.tool-changed(2); }
+                        }
+                    }
+                }
+
+                // Trailing: the way back, and the way in. Fit mirrors the
+                // monitor's; Open shares the empty state's job for when an
+                // image is already up.
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    alignment: end;
+
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.fit;
+                            label: I18n.t("Fit the canvas to the pane");
+                            clicked => { root.nav-fit(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            glyph: Glyph.folder;
+                            label: I18n.t("Open image");
+                            clicked => { root.canvas-open(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -223,6 +223,46 @@ export global Editor {
     callback cutout-subject(index: int);
     callback cutout-clear();
 
+    // ── the canvas ──
+    //
+    // The image editor's viewport, in a seat of its own. Every number in it
+    // is published from the Navigator in Rust — the view's zoom and offset,
+    // the document's box — and every gesture is reported to it, so this
+    // block is readouts and reports and nothing decides here.
+    /// The composed document, already placed by the compositor. Empty until
+    /// an image is open.
+    in-out property <image> canvas-frame;
+    in-out property <bool> canvas-has-document;
+    /// The open image's file name.
+    in-out property <string> canvas-name;
+    /// The view's zoom, in percent of one image pixel to one screen pixel.
+    in-out property <float> canvas-zoom;
+    /// The view's offset from centre, in viewport pixels.
+    in-out property <float> canvas-pan-x;
+    in-out property <float> canvas-pan-y;
+    /// The document's box on screen, in viewport pixels, already zoomed.
+    in-out property <float> canvas-stage-w;
+    in-out property <float> canvas-stage-h;
+    /// 0 move, 1 hand, 2 zoom.
+    in-out property <int> canvas-tool;
+
+    /// The wheel or trackpad scroll: pixel deltas, whether ctrl/cmd makes it
+    /// a zoom, and where over the viewport it happened.
+    callback canvas-scroll(dx: float, dy: float, zoom-modifier: bool,
+        x: float, y: float);
+    callback canvas-pan-press(x: float, y: float);
+    callback canvas-pan-move(x: float, y: float);
+    callback canvas-zoom-press(x: float, y: float, alt: bool);
+    callback canvas-zoom-move(x: float, y: float);
+    /// The pointer went up, whichever drag was live; `alt` rides for the
+    /// zoom tool's click-step.
+    callback canvas-release(alt: bool);
+    callback canvas-fit();
+    /// The viewport's box, on the way up.
+    callback canvas-resized(width: float, height: float);
+    callback canvas-open();
+    callback canvas-tool-changed(index: int);
+
     // ── the timeline ──
     in-out property <[TimelineTabData]> timeline-tabs;
     in-out property <int> timeline-current-tab;

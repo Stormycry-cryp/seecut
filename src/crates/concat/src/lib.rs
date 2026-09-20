@@ -880,6 +880,80 @@ pub fn run() -> Result<(), slint::PlatformError> {
         state.play_toggle();
     }));
 
+    // ── the canvas ──
+    //
+    // Open is the picker's own flow, asynchronous like the import's; every
+    // other callback is a gesture report, and the pane re-renders in the
+    // handler - on this thread, the one the renderer submits from.
+    editor.on_canvas_open(on_window!(|_state| {
+        platform::pick_files_async(
+            &i18n::t("Open image"),
+            Some((
+                i18n::t("Images").as_str(),
+                &["png", "jpg", "jpeg", "webp", "bmp"],
+            )),
+            |paths| {
+                on_ui(move |studio, _, _| {
+                    studio.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Picked(paths)))
+                })
+            },
+        );
+    }));
+    editor.on_canvas_resized(on_window!(|state, width: f32, height: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Resized(
+            f64::from(width),
+            f64::from(height),
+        )));
+    }));
+    editor.on_canvas_scroll(on_window!(|state,
+                                        dx: f32,
+                                        dy: f32,
+                                        zoom_modifier: bool,
+                                        x: f32,
+                                        y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Scroll {
+            dx: f64::from(dx),
+            dy: f64::from(dy),
+            zoom_modifier,
+            x: f64::from(x),
+            y: f64::from(y),
+        }));
+    }));
+    editor.on_canvas_pan_press(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::PanPress(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_pan_move(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::PanMove(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_zoom_press(on_window!(|state, x: f32, y: f32, alt: bool| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ZoomPress {
+            x: f64::from(x),
+            y: f64::from(y),
+            alt,
+        }));
+    }));
+    editor.on_canvas_zoom_move(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ZoomMove(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_release(on_window!(|state, alt: bool| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Release(alt)));
+    }));
+    editor.on_canvas_fit(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Fit));
+    }));
+    editor.on_canvas_tool_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Tool(index)));
+    }));
+
     // ── the stage ──
     editor.on_stage_pressed(on_window!(|state, x: f32, y: f32, additive: bool| {
         state.stage_pressed(x, y, additive);

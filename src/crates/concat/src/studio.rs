@@ -562,6 +562,8 @@ pub struct Studio {
     pub clipboard: Option<Clip>,
     /// The monitor: its frame, and the requests for the next.
     pub monitor: crate::panes::monitor::MonitorPane,
+    /// The image editor's canvas: its document, and the view over it.
+    pub canvas: crate::panes::canvas::CanvasPane,
 
     // ── the sheets and menus ──
     pub export: crate::panes::export::ExportPane,
@@ -1224,6 +1226,7 @@ impl Studio {
             transport: slint::Timer::default(),
             clipboard: None,
             monitor: crate::panes::monitor::MonitorPane::default(),
+            canvas: crate::panes::canvas::CanvasPane::default(),
             export: Default::default(),
             settings: crate::panes::settings::SettingsPane::default(),
             relink: crate::panes::relink::RelinkPane::default(),
@@ -4674,6 +4677,11 @@ impl Studio {
                 pane.update(msg, self);
                 self.monitor = pane;
             }
+            crate::panes::Msg::Canvas(msg) => {
+                let mut pane = std::mem::take(&mut self.canvas);
+                pane.update(msg, self);
+                self.canvas = pane;
+            }
         }
     }
 
@@ -4763,6 +4771,7 @@ impl Studio {
         self.publish_lanes(app, models);
         self.publish_chrome(app, models);
         self.publish_dock(app, models);
+        self.publish_canvas(app);
     }
 
     pub fn publish_dock(&self, _app: &App, models: &Models) {
@@ -5460,6 +5469,21 @@ impl Studio {
                 }
             },
         );
+    }
+
+    /// The canvas pane's readouts: the picture and the view Rust holds.
+    /// Values, not models, so it rides in whichever publish is running.
+    fn publish_canvas(&self, app: &App) {
+        let editor = app.global::<Editor>();
+        editor.set_canvas_frame(self.canvas.image.clone());
+        editor.set_canvas_has_document(self.canvas.document.is_some());
+        editor.set_canvas_name(self.canvas.name.as_str().into());
+        editor.set_canvas_zoom(self.canvas.zoom as f32);
+        editor.set_canvas_pan_x(self.canvas.pan.0 as f32);
+        editor.set_canvas_pan_y(self.canvas.pan.1 as f32);
+        editor.set_canvas_stage_w(self.canvas.stage.0 as f32);
+        editor.set_canvas_stage_h(self.canvas.stage.1 as f32);
+        editor.set_canvas_tool(self.canvas.tool as i32);
     }
 
     /// The menus, the dialogs, the bin and the engine lists.

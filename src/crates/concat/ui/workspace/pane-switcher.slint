@@ -32,6 +32,8 @@ export enum PaneKind {
     media,
     /// the monitor
     preview,
+    /// the image editor's canvas
+    canvas,
     /// details, adjust, text, the preset stacks
     inspector,
     /// tabs, tray, lanes
@@ -42,6 +44,7 @@ export global Panes {
     public pure function label(kind: PaneKind) -> string {
         return kind == PaneKind.media ? I18n.t("Library")
             : kind == PaneKind.preview ? I18n.t("Preview")
+            : kind == PaneKind.canvas ? I18n.t("Canvas")
             : kind == PaneKind.inspector ? I18n.t("Inspector")
             : I18n.t("Timeline");
     }
@@ -52,17 +55,19 @@ export global Panes {
     public pure function id(kind: PaneKind) -> string {
         return kind == PaneKind.media ? "media"
             : kind == PaneKind.preview ? "preview"
+            : kind == PaneKind.canvas ? "canvas"
             : kind == PaneKind.inspector ? "inspector"
             : "timeline";
     }
 
     /// The mark a view is known by, and the one the corner button wears.
     /// Chosen to be tellable apart at 13px rather than to be the most literal
-    /// picture of each: a strip of film, a still frame, the inspector's own
-    /// sliders, and a stack of lanes.
+    /// picture of each: a strip of film, a still frame, the painter's brush,
+    /// the inspector's own sliders, and a stack of lanes.
     public pure function glyph(kind: PaneKind) -> Glyph {
         return kind == PaneKind.media ? Glyph.film
             : kind == PaneKind.preview ? Glyph.image
+            : kind == PaneKind.canvas ? Glyph.brush
             : kind == PaneKind.inspector ? Glyph.settings
             : Glyph.rows;
     }
@@ -445,6 +450,10 @@ export component AddPaneButton inherits Rectangle {
                 SwitchRow {
                     kind: PaneKind.preview;
                     chosen => { menu.close(); root.added(PaneKind.preview); }
+                }
+                SwitchRow {
+                    kind: PaneKind.canvas;
+                    chosen => { menu.close(); root.added(PaneKind.canvas); }
                 }
                 SwitchRow {
                     kind: PaneKind.inspector;

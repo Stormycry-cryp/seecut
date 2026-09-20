@@ -7,6 +7,7 @@ import { DockSide } from "../dock.slint";
 import { PaneKind } from "pane-switcher.slint";
 import { Editor } from "../editor.slint";
 import { ConfigPane } from "config-pane.slint";
+import { CanvasPane } from "canvas-pane.slint";
 import { MediaPane } from "media-pane.slint";
 import { PreviewPane } from "preview-pane.slint";
 import { TimelinePane } from "timeline-pane.slint";
@@ -179,6 +180,41 @@ export component Seat inherits Rectangle {
             }
             stage-dragged(x, y, snap) => { Editor.stage-dragged(x, y, snap); }
             stage-released => { Editor.stage-released(); }
+        }
+
+    if root.kind == PaneKind.canvas: CanvasPane {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.height;
+
+            pane-picked(kind) => { root.picked(kind); }
+            pane-seat: root.index;
+            pane-removable: Editor.seats.length > 1;
+            pane-removed => { root.removed(); }
+
+            frame: Editor.canvas-frame;
+            has-document: Editor.canvas-has-document;
+            document-name: Editor.canvas-name;
+            zoom: Editor.canvas-zoom;
+            pan-x: Editor.canvas-pan-x;
+            pan-y: Editor.canvas-pan-y;
+            stage-w: Editor.canvas-stage-w;
+            stage-h: Editor.canvas-stage-h;
+            tool: Editor.canvas-tool;
+
+            nav-scroll(dx, dy, zoom-modifier, x, y) => {
+                Editor.canvas-scroll(dx, dy, zoom-modifier, x, y);
+            }
+            nav-pan-press(x, y) => { Editor.canvas-pan-press(x, y); }
+            nav-pan-move(x, y) => { Editor.canvas-pan-move(x, y); }
+            nav-zoom-press(x, y, alt) => { Editor.canvas-zoom-press(x, y, alt); }
+            nav-zoom-move(x, y) => { Editor.canvas-zoom-move(x, y); }
+            nav-release(alt) => { Editor.canvas-release(alt); }
+            nav-fit => { Editor.canvas-fit(); }
+            canvas-resized(width, height) => { Editor.canvas-resized(width, height); }
+            canvas-open => { Editor.canvas-open(); }
+            tool-changed(index) => { Editor.canvas-tool-changed(index); }
         }
 
     if root.kind == PaneKind.inspector: ConfigPane {

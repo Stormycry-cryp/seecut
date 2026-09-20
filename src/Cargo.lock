@@ -1195,6 +1195,7 @@ name = "concat"
 version = "0.2.2"
 dependencies = [
  "concat-api",
+ "concat-canvas",
  "concat-core",
  "concat-effects",
  "concat-export",
@@ -1254,9 +1255,11 @@ name = "concat-canvas"
 version = "0.2.2"
 dependencies = [
  "concat-core",
+ "pollster",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "wgpu",
 ]
 
 [[package]]
