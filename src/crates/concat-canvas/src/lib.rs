@@ -35,6 +35,7 @@ pub mod document;
 pub mod gpu;
 pub mod history;
 pub mod pixels;
+pub mod viewport;
 
 pub use blend::BlendMode;
 pub use compositor::{apply_one, compose, curve_at_bytes};
@@ -46,3 +47,4 @@ pub use document::{
 pub use gpu::{CanvasGpu, DirtyRect};
 pub use history::{DocumentHistory, Snapshot};
 pub use pixels::{PixelId, PixelStore};
+pub use viewport::{CanvasViewport, NavInput, Navigator};
