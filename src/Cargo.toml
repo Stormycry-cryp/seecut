@@ -21,6 +21,9 @@ concat-speech = { path = "crates/concat-speech" }
 concat-effects = { path = "crates/concat-effects" }
 concat-text = { path = "crates/concat-text" }
 concat-vision = { path = "crates/concat-vision" }
+# The image-editing canvas: layer documents, blend modes and edit history,
+# ported from Compositor's design (see docs/plans/2026-09-20-compositor-canvas-port-plan.md).
+concat-canvas = { path = "crates/concat-canvas" }
 concat = { path = "crates/concat" }
 
 serde_json = "1"

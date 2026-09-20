@@ -1250,6 +1250,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "concat-canvas"
+version = "0.2.2"
+dependencies = [
+ "concat-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "concat-cli"
 version = "0.2.2"
 dependencies = [

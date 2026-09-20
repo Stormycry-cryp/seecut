@@ -1,0 +1,21 @@
+[package]
+name = "concat-canvas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "The image-editing canvas: layer documents, blend modes and edit history, ported from Compositor's design."
+
+# The document model and the blend mathematics are ports of Compositor
+# (https://github.com/robbietilton/Compositor, MIT) into Concat's Rust stack;
+# see docs/plans/2026-09-20-compositor-canvas-port-plan.md and
+# THIRD_PARTY_NOTICES.md for the attribution the MIT licence requires.
+[dependencies]
+concat-core.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

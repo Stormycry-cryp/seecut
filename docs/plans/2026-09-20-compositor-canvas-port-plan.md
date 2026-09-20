@@ -36,8 +36,15 @@
    块对齐 halving 网格 + 边距，避免分块重采样的接缝与像素漂移。
 4. **SeparableBlend**：Core Graphics 的 colorBurn/colorDodge 忽略源透明度（作者实测发现），
    所以这两个模式单独走 Core Image 回退。**移植时用 WGSL 统一实现正确的 PDF 语义。**
-5. **混合模式 14 种**：normal/multiply/screen/overlay/darken/lighten/difference/colorDodge/colorBurn/
-   hue/saturation/color/luminosity（hue/sat/color/luminosity 需要 OkLab 式色空间换算）。
+5. **混合模式 13 种**：normal/multiply/screen/overlay/darken/lighten/difference/colorDodge/colorBurn/
+   hue/saturation/color/luminosity（后四种是非可分离模式，走 SetLum/SetSat 而非逐通道）。
+   上游为 colorBurn/colorDodge 单独做了 Core Image 回退，因为它实测 Core Graphics 忽略源 alpha；
+   移植时用统一的 PDF 32000 公式一次解决（`concat-canvas/src/blend.rs` 已实现）。
+6. **笔刷不是简单叠加**（见上游 `docs/brush-performance.md`）：沿平滑指针路径扫连续圆头，
+   对**光密度沿路径积分**再转覆盖率（早期版本取最大衰减，两条羽化边相交处会出现硬折痕）；
+   软头间距 2.5% 直径、硬头 1.5%；永久密度存 float tile 缓冲，未定尾巴单独存放可整体替换；
+   opacity 封顶整条笔划。抬笔同步提交不可变 RasterSnapshot（tile 共享 + 空间索引合并）。
+   **这些细节必须原样移植，否则性能与观感都会退化。**
 
 ### 2.3 文档模型
 
@@ -47,9 +54,24 @@
 - `DocumentHistory`：值快照 undo（图层共享不可变 CGImage，零像素拷贝；100 条 / 256MB 上限）。
 - 选区：`Selection`（矩形/椭圆/套索/多边形/魔棒）+ 浮动选区像素（FloatingSelection）。
 
-### 2.4 功能清单（移植验收范围）
+### 2.4 上游存档格式（`.comp` v1–v6，P7 的移植清单）
 
-图层与组、混合模式×14、不透明度、图层蒙版（画/填/反/羽化/模糊/独立变换）、裁剪蒙版、组蒙版、
+上游 `docs/project-format.md` 记录了一份 package 格式，是移植持久化层时的权威参照：
+`manifest.json` + `images/<layer UUID>.png`，sRGB 工作空间，图层自下而上排列，变换与像素分离存储
+（嵌入 PNG 保留原始像素，变换只是数字），因此项目不依赖原始素材文件是否还在。
+版本演进即功能演进史：v2 分组（`parentID`/`isGroup`，子节点引用已存在分组，数组顺序=兄弟顺序，
+分组无图）、v3 每层 `opacity`/`blendMode`、v4 图层蒙版（8 位灰度**无 alpha**，白显黑隐，
+归一化范围与图层矩形一致，允许 1×1 均匀蒙版）、v5 `maskSourceID`（即裁剪蒙版：引用另一图层的
+活 alpha，"Option 点击取下方兄弟为基"，多个从属层可共享一个基）、v6 分组蒙版
+（分组是 pass-through，分组蒙版与每个后代自身蒙版及外层蒙版相乘；裁剪蒙版覆盖率不受影响）。
+上限：单边 30,000 px、源像素总量 1 亿、10,000 图层、manifest 4 MiB、单资源 512 MiB；
+undo 历史与视口是 session-only，不存入文件。
+移植取舍：JSON 结构用 serde 重写并保留我们的 id 语义（见 `concat-canvas/src/document.rs`），
+不做 `.comp` 兼容读取；上表是**字段与校验规则的清单**，P7 逐条对齐。
+
+### 2.5 功能清单（移植验收范围）
+
+图层与组、混合模式×13、不透明度、图层蒙版（画/填/反/羽化/模糊/独立变换）、裁剪蒙版、组蒙版、
 调整图层×6、合并/盖印、非破坏变换（移动/缩放/旋转/翻转/自由扭曲）、多选区工具、内容识别填充、
 画笔（大小/硬度/不透明度/Shift 直线）、修复画笔、仿制图章、模糊工具、渐变、形状、吸管、色板、
 色阶/曲线/色相饱和度/曝光/渐变映射/颗粒/反相、高斯与运动模糊、添加噪点、镜头校正、背景移除、
@@ -76,7 +98,7 @@ crates/concat-canvas/
   src/
     document.rs     # ImageDocument / LayerNode(组+图层) / 蒙版 / 调整图层参数 —— 纯数据
     history.rs      # 值快照 undo（对齐 DocumentHistory：条目上限+字节预算+挂起合并）
-    blend.rs        # 14 种混合模式：CPU 参考实现（用于测试）+ 语义常量
+    blend.rs        # 13 种混合模式：CPU 参考实现 + 对拍常量（已落地）
     pyramid.rs      # mipmap 半减链（GPU 原生 mipmap 替代 vImage Lanczos 链）
     tiles.rs        # 笔刷分块更新（256 活块 / 1024 提交块，对齐 halving 网格）
     brush.rs        # 笔刷覆盖 compute（WGSL 翻译 MetalBrushCoverage 的 continuousBrush）
@@ -88,7 +110,7 @@ crates/concat-canvas/
 关键决策：
 - **GPU 合成替代 CPU 合成**。原方案 drawRect/CPU CGContext 是它的性能瓶颈所在；我们沿用 concat-render
   的双实现模式：CPU 参考实现保证正确性（`cargo test` 对拍），WgpuCompositor 扩展为支持
-  蒙版/组/裁剪/14 种混合的画布合成器，全部走 fragment/compute shader。**性能预期优于原方案**
+  蒙版/组/裁剪/13 种混合的画布合成器，全部走 fragment/compute shader。**性能预期优于原方案**
   （原方案只有笔刷覆盖率在 GPU）。
 - **mipmap 替代 DownsampleCache**。GPU 原生 mipmap 生成即"每级严格 2×"的半减链，
   语义与 TiledLayerRenderer 的网格对齐约定天然一致；锐利缩小用线性 mipmap 采样 +
@@ -138,33 +160,50 @@ concat/ui/canvas/
 
 ## 五、性能论证（不输原方案的依据）
 
+**上游自报的实测基线**（`docs/brush-performance.md`，2026-09-12，4000×4000 文档、800 px 笔刷、
+0% 硬度、100% 不透明度、原生 1000×1000 窗口 fit 缩放，Debug 构建，同步 CPU 计时）：
+
+| 场景 | 改进前 | 改进后（上游现状） |
+|---|---:|---:|
+| 指针更新中位数 / p95（空白绘制层） | 6.54 / 11.98 ms | 2.64 / 3.70 ms |
+| 抬笔（首笔 / 次笔） | 1058 / 1002 ms | 8.71 / 8.14 ms |
+| 指针更新中位数 / p95（已有不透明 4K 层） | — | 2.80 / 5.38 ms，抬笔 5.2–6.2 ms |
+| 40 px 笔刷 | — | 0.36–0.47 ms 中位数，抬笔 1.3–4.8 ms |
+
+**这组数字就是验收线**：我们的移植若在同一场景下明显更慢，即为回归。
+
+逐项依据：
+
 1. 合成路径：原 = CPU CGContext 逐层 drawRect（每帧全画布 CPU 混合）；
    新 = GPU fragment shader 逐层混合 + 蒙版采样，显示器速率下 GPU 占用远低于 CPU。**优于原方案。**
 2. 缩小显示：原 = vImage Lanczos 链（CPU，100M 像素缓存预算）；
    新 = GPU mipmap（显存，硬件生成）。质量同级（各向异性过滤下更好），成本更低。**持平或优。**
-3. 笔刷：原 = Metal compute 覆盖率 + CPU tile 重组；新 = 同一算法的 WGSL 翻译 + 同样 tile 尺寸。**持平。**
+3. 笔刷：原 = Metal compute 覆盖率 + CPU tile 重组；新 = 同一算法的 WGSL 翻译 + 同样 tile 尺寸
+   （256 活块 / 1024 提交块），密度积分与尾巴替换语义保持一致。**目标持平**，
+   P5 的出口判据直接采用上表数字。
 4. 像素滤镜（色阶/曲线/魔棒/修复）：原 = C 循环；新 = 同一批 C 文件直接编译（cc crate），
    热路径逐步迁 WGSL compute（魔棒/内容填充首迁，天然并行）。**起步持平，终点更优。**
 5. CPU 参考实现只跑测试，不进发布路径（与 concat-render 现状一致）。
 
 ## 六、阶段划分
 
-| 阶段 | 内容 | 出口判据 |
+| 阶段 | 内容 | 状态与出口判据 |
 |---|---|---|
-| P1 文档模型 | document.rs + history.rs + 序列化 | 单测：undo/redo/嵌套组/序列化往返 |
-| P2 混合模式 | blend.rs：CPU 参考 14 种 + WGSL；对拍测试 | CPU/GPU 对拍全部通过（含 colorBurn/Dodge alpha 语义） |
+| P1 文档模型 | document.rs + history.rs + pixels.rs + serde | ✅ 已落地：42 项单测（undo/redo/嵌套组移动/裁剪链接校验/序列化往返/PixelStore 回收） |
+| P2 混合模式 | blend.rs：CPU 参考 13 种 ✅ + WGSL（P3） | ✅ CPU 参考落地：15 项测试含 colorBurn/Dodge alpha 语义、非可分离模式与规范勘误 |
 | P3 GPU 合成 | 蒙版/裁剪/组/调整图层进 WgpuCompositor；mipmap 金字塔 | 4K 画布 60fps 滚动/缩放；与 CPU 参考对拍 |
 | P4 画布交互 | Slint 画布 + 手势状态机 + 变换 overlay + 蚂蚁线 | 平移/缩放/旋转/翻转/自由扭曲可操作 |
-| P5 绘画引擎 | 笔刷 WGSL 覆盖 + tile 管线 + 仿制/修复/模糊 | 4K 画布大笔刷不掉帧；tile 无接缝 |
+| P5 绘画引擎 | 笔刷 WGSL 覆盖 + tile 管线 + 仿制/修复/模糊 | 达到 §5 上游实测数字（含抬笔 <20 ms） |
 | P6 选区与工具 | 选区 5 种 + 魔棒/内容填充（C 编译进）+ 形状/渐变/吸管/裁剪 | 与原方案功能对齐清单勾完 |
-| P7 UI 与集成 | 图层面板/调整弹层/导出；素材箱↔画布↔时间线流转 | 全流程人工验收 + Windows/macOS 双平台构建绿 |
+| P7 UI 与集成 | 图层面板/调整弹层/导出；素材箱↔画布↔时间线流转；按 §2.4 对齐存档字段 | 全流程人工验收 + Windows/macOS 双平台构建绿 |
 
 每阶段独立可合并，CPU 参考实现对拍是每阶段的硬门槛（沿用 concat-render 的测试纪律）。
 
 ## 七、许可与合规
 
-- Compositor 是 MIT：并入 AGPL-3.0 项目单向兼容。C 像素文件与 Metal shader 的翻译件
-  保留原作者版权行，统一登记进 `THIRD_PARTY_NOTICES.md`（该文件已有先例）。
+- Compositor 是 MIT（版权方 Wonder Assembly LLC）：并入 AGPL-3.0 单向兼容。
+  完整 MIT 文本已登记在仓库根 `THIRD_PARTY_NOTICES.md`（"Compositor — the image canvas, ported"），
+  每个源文件头的 `Ported from …` 注记标明出处。
 - compositor-reference 目录仅为参考阅读，**不进入**仓库；移植产物全部是 Rust/Slint/WGSL 重写。
 
 ## 八、风险
@@ -174,4 +213,5 @@ concat/ui/canvas/
 2. 曲线/色相饱和度的 GPU 实现与 CPU 对拍可能有浮点容差 —— 参考实现容忍 1/255 级差。
 3. Slint 大画布重绘成本：画布用独立 wgpu 纹理 + Image 元素呈现，避免走 Slint 场景图
    （monitor 已验证此路径可行）。
-4. 工作量估计：P1–P7 全量约 15k–20k 行 Rust+Slint，多轮完成；本分支只先落 P1 骨架与本文档。
+4. 工作量估计：P1–P7 全量约 15k–20k 行 Rust+Slint，多轮完成。
+   已落地 P1 + P2 的 CPU 参考（`src/crates/concat-canvas`，约 1.3k 行含测试）。
