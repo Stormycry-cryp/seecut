@@ -18,7 +18,7 @@
 pub const TILE_SIZE: usize = 256;
 
 /// Optical density saturates here; `1 - exp(-20)` rounds to full coverage.
-const DENSITY_CAP: f32 = 20.0;
+pub(crate) const DENSITY_CAP: f32 = 20.0;
 
 /// A stroke in flight over one layer. Paint coordinates are layer pixels.
 pub struct BrushStroke {
@@ -29,19 +29,107 @@ pub struct BrushStroke {
     spacing: f32,
     /// The antialias width of a hard tip's rim, in pixels.
     antialias: f32,
-    /// The last pointer samples; the curve needs one sample past each piece.
-    samples: Vec<(f64, f64)>,
-    /// Settled curve pieces not yet integrated (this update's new geometry).
-    settled: Vec<Segment>,
-    /// The provisional straight run to the cursor.
-    tail: Vec<Segment>,
+    /// The path the pointer drew: settled pieces and the provisional tail.
+    path: PathState,
     /// Tiles the tail touched on the last update, to clear its preview.
     tail_keys: Vec<usize>,
     tiles: std::collections::HashMap<usize, Tile>,
 }
 
 /// A curve piece in layer pixels: from (x1, y1) to (x2, y2).
-type Segment = [f32; 4];
+pub(crate) type Segment = [f32; 4];
+
+/// The pointer-path state machine, shared by the CPU and GPU strokes:
+/// raw pointer samples in, settled curve pieces and the provisional tail
+/// out. The newest piece of path is drawn first as a provisional straight
+/// tail, then replaced by the curve when the next sample arrives (or by
+/// [`PathState::flush`]); the stroke never trails the cursor.
+pub(crate) struct PathState {
+    /// The last pointer samples; the curve needs one sample past each piece.
+    samples: Vec<(f64, f64)>,
+    /// Settled curve pieces not yet integrated (this update's new geometry).
+    settled: Vec<Segment>,
+    /// The provisional straight run to the cursor.
+    tail: Vec<Segment>,
+}
+
+impl PathState {
+    /// A fresh path with no samples yet.
+    pub(crate) fn new() -> Self {
+        Self {
+            samples: Vec::new(),
+            settled: Vec::new(),
+            tail: Vec::new(),
+        }
+    }
+
+    /// Records a pointer sample; `false` when the point is ignored
+    /// (non-finite, or a repeat of the previous sample).
+    pub(crate) fn append(&mut self, point: (f64, f64)) -> bool {
+        if !point.0.is_finite() || !point.1.is_finite() {
+            return false;
+        }
+        if self.samples.last() == Some(&point) {
+            return false;
+        }
+        self.samples.push(point);
+        if self.samples.len() > 4 {
+            self.samples.remove(0);
+        }
+        let n = self.samples.len();
+        self.settled = if n == 1 {
+            vec![segment(point, point)]
+        } else if n >= 3 {
+            continuous_curve(
+                self.samples[n - 3],
+                self.samples[n - 2],
+                self.samples[n.saturating_sub(4)],
+                self.samples[n - 1],
+            )
+        } else {
+            Vec::new()
+        };
+        self.tail = if n >= 2 {
+            vec![segment(self.samples[n - 2], point)]
+        } else {
+            Vec::new()
+        };
+        true
+    }
+
+    /// Replaces the provisional tail with the stroke's final curve piece
+    /// and clears it. Safe to call repeatedly.
+    pub(crate) fn flush(&mut self) {
+        let n = self.samples.len();
+        if n >= 2 {
+            self.settled = continuous_curve(
+                self.samples[n - 2],
+                self.samples[n - 1],
+                self.samples[n.saturating_sub(3)],
+                self.samples[n - 1],
+            );
+            self.samples = vec![self.samples[n - 1]];
+        }
+        self.tail.clear();
+    }
+
+    /// The settled curve pieces this update integrates.
+    pub(crate) fn settled(&self) -> &[Segment] {
+        &self.settled
+    }
+
+    /// Drains the settled pieces: they are this update's to integrate, and
+    /// the next call sees an empty list until the path settles new ones.
+    /// Both strokes must integrate exactly once per piece.
+    pub(crate) fn take_settled(&mut self) -> Vec<Segment> {
+        std::mem::take(&mut self.settled)
+    }
+
+    /// The provisional straight run to the cursor, preview-only.
+    pub(crate) fn tail(&self) -> &[Segment] {
+        &self.tail
+    }
+}
 
 /// One brush: geometry, tip feel, and what it lays down.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,6 +153,8 @@ pub enum BrushError {
     BadSettings,
     /// The layer or the touched area is too large to paint on.
     TooLarge,
+    /// No usable GPU adapter or device for the GPU stroke.
+    GpuUnavailable,
 }
 
 struct Tile {
@@ -78,7 +168,7 @@ struct Tile {
 }
 
 impl BrushSettings {
-    fn validate(&self) -> Result<(), BrushError> {
+    pub(crate) fn validate(&self) -> Result<(), BrushError> {
         if !self.diameter.is_finite() || !(1.0..=2000.0).contains(&self.diameter) {
             return Err(BrushError::BadSettings);
         }
@@ -136,7 +226,7 @@ fn segment_distance_squared(p: (f32, f32), s: Segment) -> f32 {
 /// integrated along the part of the segment the tip reaches, divided by the
 /// deposition spacing. Eight-point Gauss-Legendre, clipped to the tip's
 /// support, so sparse and dense pointer events paint identically.
-fn segment_density(
+pub(crate) fn segment_density(
     p: (f32, f32),
     s: Segment,
     radius: f32,
@@ -199,9 +289,11 @@ impl BrushStroke {
             settings,
             spacing: spacing.max(0.25),
             antialias: 1.0,
-            samples: Vec::new(),
-            settled: Vec::new(),
-            tail: Vec::new(),
+            path: PathState {
+                samples: Vec::new(),
+                settled: Vec::new(),
+                tail: Vec::new(),
+            },
             tail_keys: Vec::new(),
             tiles: std::collections::HashMap::new(),
         })
@@ -217,70 +309,43 @@ impl BrushStroke {
     /// the next sample arrives (or by [`Self::flush`]); the stroke never
     /// trails the cursor. Returns the tiles whose preview changed.
     pub fn append(&mut self, point: (f64, f64)) -> Vec<(usize, usize)> {
-        if !point.0.is_finite() || !point.1.is_finite() {
+        if !self.path.append(point) {
             return Vec::new();
         }
-        if self.samples.last() == Some(&point) {
-            return Vec::new();
-        }
-        self.samples.push(point);
-        if self.samples.len() > 4 {
-            self.samples.remove(0);
-        }
-        let n = self.samples.len();
-        self.settled = if n == 1 {
-            vec![segment(point, point)]
-        } else if n >= 3 {
-            continuous_curve(
-                self.samples[n - 3],
-                self.samples[n - 2],
-                self.samples[n.saturating_sub(4)],
-                self.samples[n - 1],
-            )
-        } else {
-            Vec::new()
-        };
-        self.tail = if n >= 2 {
-            vec![segment(self.samples[n - 2], point)]
-        } else {
-            Vec::new()
-        };
         self.update()
     }
 
     /// Replaces the provisional tail with the stroke's final curve piece and
     /// clears it. Safe to call repeatedly.
     pub fn flush(&mut self) -> Vec<(usize, usize)> {
-        let n = self.samples.len();
-        if n >= 2 {
-            self.settled = continuous_curve(
-                self.samples[n - 2],
-                self.samples[n - 1],
-                self.samples[n.saturating_sub(3)],
-                self.samples[n - 1],
-            );
-            self.samples = vec![self.samples[n - 1]];
-        }
-        self.tail.clear();
+        self.path.flush();
         self.update()
     }
 
-    /// Integrates this update's settled pieces into the permanent density,
-    /// re-derives the tail preview, and reports every tile that changed.
     fn update(&mut self) -> Vec<(usize, usize)> {
         let radius = (self.settings.diameter / 2.0) as f32;
         let hardness = self.settings.hardness as f32;
         let antialias = self.antialias;
         let spacing = self.spacing;
         let mut changed = self.tail_keys.clone();
-        let mut keys = self.touched_keys(&self.settled);
-        let tail_keys = self.touched_keys(&self.tail);
+        let mut keys = self.touched_keys(self.path.settled());
+        let tail_keys = self.touched_keys(self.path.tail());
         keys.extend(tail_keys.iter().copied());
         keys.extend(self.tail_keys.iter().copied());
+        // A tile the settled pieces and the tail share must appear once:
+        // each settled piece integrates exactly once per update, or soft
+        // tips double-count wherever the tail overlaps them.
+        keys.sort_unstable();
+        keys.dedup();
         self.tail_keys = tail_keys;
         // The segment lists are read per pixel; own them outside the tile
         // borrow. The tail is preview-only and lives on.
-        let settled = std::mem::take(&mut self.settled);
+        let settled = self.path.take_settled();
+        #[cfg(test)]
+        eprintln!(
+            "[cpu update] settled={:?} spacing={} radius={}",
+            settled, self.spacing, radius
+        );
 
         for key in keys {
             let tile = self.tile_mut(key);
@@ -352,6 +417,7 @@ impl BrushStroke {
             );
             let value = if hardness >= 1.0 {
                 let tail = self
+                    .path
                     .tail
                     .iter()
                     .map(|s| {
@@ -366,6 +432,7 @@ impl BrushStroke {
                 permanent.max(tail)
             } else {
                 let tail: f32 = self
+                    .path
                     .tail
                     .iter()
                     .map(|s| segment_density(p, *s, radius, hardness, self.antialias, self.spacing))
@@ -382,52 +449,13 @@ impl BrushStroke {
     /// touched tiles. Paint: source-over of the colour at coverage x opacity.
     /// Erase: the coverage scales the existing alpha down.
     pub fn composite(&self, base: &mut [u8]) {
-        let opacity = self.settings.opacity as f32;
-        let (r, g, b) = (
-            f32::from(self.settings.color[0]),
-            f32::from(self.settings.color[1]),
-            f32::from(self.settings.color[2]),
-        );
-        for tile in self.tiles.values() {
-            let coverage = match self.tile_coverage(tile.x / TILE_SIZE, tile.y / TILE_SIZE) {
-                Some(c) => c,
-                None => continue,
-            };
-            for (index, &c) in coverage.iter().enumerate() {
-                if c == 0 {
-                    continue;
-                }
-                let alpha = f32::from(c) / 255.0 * opacity;
-                let x = tile.x + index % tile.width;
-                let y = tile.y + index / tile.width;
-                let pixel = (y * self.width as usize + x) * 4;
-                if pixel + 3 >= base.len() {
-                    continue;
-                }
-                if self.settings.erasing {
-                    let keep = 1.0 - alpha;
-                    base[pixel + 3] = (f32::from(base[pixel + 3]) * keep).round() as u8;
-                } else {
-                    let (ba, keep) = (f32::from(base[pixel + 3]) / 255.0, 1.0 - alpha);
-                    let out_a = alpha + ba * keep;
-                    if out_a <= 0.0 {
-                        for offset in 0..4 {
-                            base[pixel + offset] = 0;
-                        }
-                        continue;
-                    }
-                    let mix = |paint: f32, base_channel: f32| {
-                        ((paint * alpha + base_channel * ba * keep) / out_a)
-                            .round()
-                            .clamp(0.0, 255.0) as u8
-                    };
-                    base[pixel] = mix(r, f32::from(base[pixel]));
-                    base[pixel + 1] = mix(g, f32::from(base[pixel + 1]));
-                    base[pixel + 2] = mix(b, f32::from(base[pixel + 2]));
-                    base[pixel + 3] = (out_a * 255.0).round() as u8;
-                }
-            }
-        }
+        let tiles: Vec<(usize, usize)> = self
+            .tiles
+            .values()
+            .map(|t| (t.x / TILE_SIZE, t.y / TILE_SIZE))
+            .collect();
+        let lookup = |tx: usize, ty: usize| self.tile_coverage(tx, ty);
+        composite_coverage(self.width, &self.settings, &tiles, &lookup, base);
     }
 
     /// Tiles with any permanent or tail coverage, as (tx, ty).
@@ -446,29 +474,13 @@ impl BrushStroke {
     }
 
     fn touched_keys(&self, segments: &[Segment]) -> Vec<usize> {
-        let reach = (self.settings.diameter / 2.0 + 2.0) as f32;
-        let mut keys = Vec::new();
-        for s in segments {
-            let min_x = (s[0].min(s[2]) - reach).max(0.0);
-            let min_y = (s[1].min(s[3]) - reach).max(0.0);
-            let max_x = (s[0].max(s[2]) + reach).min(self.width as f32);
-            let max_y = (s[1].max(s[3]) + reach).min(self.height as f32);
-            if min_x >= max_x || min_y >= max_y {
-                continue;
-            }
-            let tx0 = min_x as usize / TILE_SIZE;
-            let ty0 = min_y as usize / TILE_SIZE;
-            let tx1 = (max_x.ceil() as usize).saturating_sub(1) / TILE_SIZE;
-            let ty1 = (max_y.ceil() as usize).saturating_sub(1) / TILE_SIZE;
-            for ty in ty0..=ty1 {
-                for tx in tx0..=tx1 {
-                    keys.push(ty * self.columns() + tx);
-                }
-            }
-        }
-        keys.sort_unstable();
-        keys.dedup();
-        keys
+        segment_keys(
+            self.width,
+            self.height,
+            self.columns(),
+            self.settings.diameter,
+            segments,
+        )
     }
 
     fn tile_mut(&mut self, key: usize) -> &mut Tile {
@@ -493,10 +505,106 @@ fn segment(a: (f64, f64), b: (f64, f64)) -> Segment {
     [a.0 as f32, a.1 as f32, b.0 as f32, b.1 as f32]
 }
 
+/// The tiles any of `segments` may touch, as flat `ty * columns + tx` keys,
+/// padded by the tip's reach. Shared by the CPU and GPU strokes.
+pub(crate) fn segment_keys(
+    width: u32,
+    height: u32,
+    columns: usize,
+    diameter: f64,
+    segments: &[Segment],
+) -> Vec<usize> {
+    let reach = (diameter / 2.0 + 2.0) as f32;
+    let mut keys = Vec::new();
+    for s in segments {
+        let min_x = (s[0].min(s[2]) - reach).max(0.0);
+        let min_y = (s[1].min(s[3]) - reach).max(0.0);
+        let max_x = (s[0].max(s[2]) + reach).min(width as f32);
+        let max_y = (s[1].max(s[3]) + reach).min(height as f32);
+        if min_x >= max_x || min_y >= max_y {
+            continue;
+        }
+        let tx0 = min_x as usize / TILE_SIZE;
+        let ty0 = min_y as usize / TILE_SIZE;
+        let tx1 = (max_x.ceil() as usize).saturating_sub(1) / TILE_SIZE;
+        let ty1 = (max_y.ceil() as usize).saturating_sub(1) / TILE_SIZE;
+        for ty in ty0..=ty1 {
+            for tx in tx0..=tx1 {
+                keys.push(ty * columns + tx);
+            }
+        }
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+/// Composites 8-bit coverage tiles onto a layer's pixels - the shared tail
+/// end of both strokes' [`BrushStroke::composite`]. `tiles` are the
+/// (tx, ty) tiles to visit; `coverage` answers a tile with its per-pixel
+/// coverage bytes, or None when the tile carries nothing. The layer's
+/// width strides the pixel indexing; `base` bounds the rest.
+pub(crate) fn composite_coverage(
+    width: u32,
+    settings: &BrushSettings,
+    tiles: &[(usize, usize)],
+    coverage: &dyn Fn(usize, usize) -> Option<Vec<u8>>,
+    base: &mut [u8],
+) {
+    let opacity = settings.opacity as f32;
+    let (r, g, b) = (
+        f32::from(settings.color[0]),
+        f32::from(settings.color[1]),
+        f32::from(settings.color[2]),
+    );
+    for &(tx, ty) in tiles {
+        let tile_x = tx * TILE_SIZE;
+        let tile_y = ty * TILE_SIZE;
+        let tw = (TILE_SIZE as u32).min(width.saturating_sub(tile_x as u32)) as usize;
+        let Some(cover) = coverage(tx, ty) else {
+            continue;
+        };
+        for (index, &c) in cover.iter().enumerate() {
+            if c == 0 {
+                continue;
+            }
+            let alpha = f32::from(c) / 255.0 * opacity;
+            let x = tile_x + index % tw;
+            let y = tile_y + index / tw;
+            let pixel = (y * width as usize + x) * 4;
+            if pixel + 3 >= base.len() {
+                continue;
+            }
+            if settings.erasing {
+                let keep = 1.0 - alpha;
+                base[pixel + 3] = (f32::from(base[pixel + 3]) * keep).round() as u8;
+            } else {
+                let (ba, keep) = (f32::from(base[pixel + 3]) / 255.0, 1.0 - alpha);
+                let out_a = alpha + ba * keep;
+                if out_a <= 0.0 {
+                    for offset in 0..4 {
+                        base[pixel + offset] = 0;
+                    }
+                    continue;
+                }
+                let mix = |paint: f32, base_channel: f32| {
+                    ((paint * alpha + base_channel * ba * keep) / out_a)
+                        .round()
+                        .clamp(0.0, 255.0) as u8
+                };
+                base[pixel] = mix(r, f32::from(base[pixel]));
+                base[pixel + 1] = mix(g, f32::from(base[pixel + 1]));
+                base[pixel + 2] = mix(b, f32::from(base[pixel + 2]));
+                base[pixel + 3] = (out_a * 255.0).round() as u8;
+            }
+        }
+    }
+}
+
 /// Centripetal Catmull-Rom between `start` and `end`, adaptively subdivided
 /// until the centerline is within 0.2 pixels of the spline. Straight movement
 /// stays one segment even at 4K.
-fn continuous_curve(
+pub(crate) fn continuous_curve(
     start: (f64, f64),
     end: (f64, f64),
     before: (f64, f64),
@@ -805,7 +913,7 @@ mod tests {
         // A repeat and a NaN change nothing.
         assert!(stroke.append((50.0, 50.0)).is_empty());
         assert!(stroke.append((f64::NAN, 0.0)).is_empty());
-        assert_eq!(stroke.samples.len(), 1);
+        assert_eq!(stroke.path.samples.len(), 1);
         // A point past the layer edge is clipped by the tiles, not rejected -
         // like the original, which only rejected non-finite input.
         assert!(!stroke.append((400.0, 50.0)).is_empty());

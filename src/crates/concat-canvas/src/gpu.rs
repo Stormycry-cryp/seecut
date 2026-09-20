@@ -741,6 +741,18 @@ impl CanvasGpu {
         self.masks.remove(&id);
     }
 
+    /// The device the compositor renders on. Callers that add their own
+    /// passes on the same device - the brush, the viewport - read it, so
+    /// everything shares one queue and nothing crosses a device boundary.
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// The queue the compositor renders on. See [`Self::device`].
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
     // ----- composition ----------------------------------------------
 
     /// Composites the document and leaves the result on the GPU - the path

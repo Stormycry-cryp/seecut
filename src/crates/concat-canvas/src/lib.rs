@@ -30,6 +30,8 @@
 
 pub mod blend;
 pub mod brush;
+#[cfg(feature = "gpu")]
+pub mod brush_gpu;
 pub mod compositor;
 pub mod document;
 #[cfg(feature = "gpu")]
@@ -40,6 +42,8 @@ pub mod viewport;
 
 pub use blend::BlendMode;
 pub use brush::{BrushError, BrushSettings, BrushStroke, TILE_SIZE, spacing_fraction};
+#[cfg(feature = "gpu")]
+pub use brush_gpu::BrushStrokeGpu;
 pub use compositor::{apply_one, compose, curve_at_bytes};
 pub use document::{
     Adjustment, AdjustmentLayer, CLIP_CHAIN_LIMIT, DocumentError, ImageDocument, ImageLayer,
