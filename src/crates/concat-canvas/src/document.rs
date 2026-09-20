@@ -574,12 +574,13 @@ impl LayerNode {
 /// is undone by changing this back.
 ///
 /// The order is scale, then flip, then rotation, then translation, all about
-/// the layer's centre; the centre sits at `(x, y)` in canvas pixels.
+/// the layer's centre; the centre sits `x/y` away from the canvas centre, so
+/// the default places a bitmap of the canvas' own size exactly over it.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LayerTransform {
-    /// The layer's centre, horizontal, in canvas pixels.
+    /// The layer centre's offset from the canvas centre, horizontal.
     pub x: f32,
-    /// The layer's centre, vertical, in canvas pixels.
+    /// The layer centre's offset from the canvas centre, vertical.
     pub y: f32,
     /// Horizontal scale, `1.0` the bitmap's own size.
     pub scale_x: f32,

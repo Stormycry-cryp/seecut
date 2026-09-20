@@ -29,11 +29,13 @@
 //!   resolution however small the layer is made ([`document::LayerTransform`]).
 
 pub mod blend;
+pub mod compositor;
 pub mod document;
 pub mod history;
 pub mod pixels;
 
 pub use blend::BlendMode;
+pub use compositor::{apply_one, compose};
 pub use document::{
     Adjustment, AdjustmentLayer, CLIP_CHAIN_LIMIT, DocumentError, ImageDocument, ImageLayer,
     LayerGroup, LayerId, LayerMask, LayerNode, LayerSampling, LayerTransform,
