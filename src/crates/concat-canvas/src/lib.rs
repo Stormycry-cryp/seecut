@@ -31,14 +31,18 @@
 pub mod blend;
 pub mod compositor;
 pub mod document;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod history;
 pub mod pixels;
 
 pub use blend::BlendMode;
-pub use compositor::{apply_one, compose};
+pub use compositor::{apply_one, compose, curve_at_bytes};
 pub use document::{
     Adjustment, AdjustmentLayer, CLIP_CHAIN_LIMIT, DocumentError, ImageDocument, ImageLayer,
     LayerGroup, LayerId, LayerMask, LayerNode, LayerSampling, LayerTransform,
 };
+#[cfg(feature = "gpu")]
+pub use gpu::{CanvasGpu, DirtyRect};
 pub use history::{DocumentHistory, Snapshot};
 pub use pixels::{PixelId, PixelStore};

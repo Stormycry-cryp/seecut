@@ -52,20 +52,6 @@ impl Buffer {
         }
     }
 
-    fn from_frame(frame: &Frame) -> Self {
-        let width = frame.width();
-        let height = frame.height();
-        let mut pixels = Vec::with_capacity((width as usize) * (height as usize));
-        for chunk in frame.pixels().chunks_exact(4) {
-            pixels.push([chunk[0], chunk[1], chunk[2], chunk[3]]);
-        }
-        Self {
-            width,
-            height,
-            pixels,
-        }
-    }
-
     fn to_frame(&self) -> Frame {
         let mut flat = Vec::with_capacity(self.pixels.len() * 4);
         for pixel in &self.pixels {
@@ -88,12 +74,6 @@ impl Buffer {
 /// edited.
 fn fetch(store: &PixelStore, id: crate::pixels::PixelId) -> Option<Arc<Frame>> {
     store.get(id)
-}
-
-/// Whether a transform places the bitmap exactly over the canvas, which
-/// lets `blend_layer` skip resampling whole.
-fn is_identity(transform: &crate::document::LayerTransform) -> bool {
-    *transform == crate::document::LayerTransform::default()
 }
 
 /// One composition pass over a document. Holds the clip-coverage cache, so
@@ -155,12 +135,15 @@ impl<'a> Composer<'a> {
     }
 
     /// One bitmap layer over the backdrop: sample, mask, clip, blend.
+    /// The bitmap is always resampled through its transform, which centres
+    /// it on the canvas - a bitmap of the canvas' own size lands exactly
+    /// aligned, a smaller one is cropped to the middle, a larger one
+    /// letterboxes.
     fn blend_layer(&self, layer: &ImageLayer, backdrop: &mut Buffer) {
-        let bitmap = match fetch(self.store, layer.pixels) {
-            Some(frame) if is_identity(&layer.transform) => Buffer::from_frame(&frame),
-            Some(frame) => self.sample_transformed(&frame, &layer.transform, layer.sampling),
-            None => return,
+        let Some(frame) = fetch(self.store, layer.pixels) else {
+            return;
         };
+        let bitmap = self.sample_transformed(&frame, &layer.transform, layer.sampling);
         let clip = layer.clips_to.and_then(|base| self.coverage_of(base));
         for y in 0..backdrop.height {
             for x in 0..backdrop.width {
@@ -575,6 +558,13 @@ pub fn apply_one(adjustment: &Adjustment, pixel: [u8; 4]) -> [u8; 4] {
     [out[0], out[1], out[2], pixel[3]]
 }
 
+/// The curve read at `v`, quantized to the byte the LUT texture carries.
+/// Public because both backends build their curves from it - the GPU's
+/// lookup table is these exact bytes.
+pub fn curve_at_bytes(points: &[(f32, f32)], v: f32) -> u8 {
+    (curve_at(points, v).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 /// Rec.601 luma, the weight the gradient map and the grain read by.
 fn luminance(rgb: [u8; 3]) -> f32 {
     (0.299 * rgb[0] as f32 + 0.587 * rgb[1] as f32 + 0.114 * rgb[2] as f32) / 255.0
@@ -695,6 +685,22 @@ fn mix(backdrop: [u8; 4], adjusted: [u8; 4], weight: f32) -> [u8; 4] {
 mod tests {
     use super::*;
     use crate::document::{ImageLayer, LayerTransform};
+
+    impl Buffer {
+        fn from_frame(frame: &Frame) -> Self {
+            let width = frame.width();
+            let height = frame.height();
+            let mut pixels = Vec::with_capacity((width as usize) * (height as usize));
+            for chunk in frame.pixels().chunks_exact(4) {
+                pixels.push([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            }
+            Self {
+                width,
+                height,
+                pixels,
+            }
+        }
+    }
 
     struct World {
         document: ImageDocument,

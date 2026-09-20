@@ -11,11 +11,18 @@ description = "The image-editing canvas: layer documents, blend modes and edit h
 # (https://github.com/robbietilton/Compositor, MIT) into Concat's Rust stack;
 # see docs/plans/2026-09-20-compositor-canvas-port-plan.md and
 # THIRD_PARTY_NOTICES.md for the attribution the MIT licence requires.
+[features]
+# The wgpu compositor, behind a feature like concat-render's: the parity
+# tests and the app turn it on; document-model work never pays for it.
+gpu = ["dep:wgpu", "dep:pollster"]
+
 [dependencies]
 concat-core.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 [lints]
 workspace = true

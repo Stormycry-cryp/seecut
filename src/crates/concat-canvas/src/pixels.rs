@@ -58,6 +58,16 @@ impl PixelStore {
         id
     }
 
+    /// Swaps the bitmap a name refers to, keeping the name. The brush's
+    /// commit: the document tree never changes, so a history snapshot taken
+    /// before the stroke still shares the old `Arc` - undo is a `replace`
+    /// back, zero pixels copied.
+    pub fn replace(&mut self, id: PixelId, frame: Frame) {
+        if id != PixelId::NONE {
+            self.frames.insert(id, Arc::new(frame));
+        }
+    }
+
     /// The bitmap a name refers to, for as long as something holds the arc.
     pub fn get(&self, id: PixelId) -> Option<Arc<Frame>> {
         if id == PixelId::NONE {
@@ -126,6 +136,20 @@ mod tests {
         let mut store = PixelStore::new();
         store.put(Frame::black(1, 1));
         assert!(!store.contains(PixelId::NONE));
+        assert!(store.get(PixelId::NONE).is_none());
+    }
+
+    #[test]
+    fn replace_keeps_the_name_and_swaps_the_bitmap() {
+        let mut store = PixelStore::new();
+        let id = store.put(Frame::black(4, 4));
+        let before = store.get(id).expect("before");
+        store.replace(id, Frame::black(6, 6));
+        let after = store.get(id).expect("after");
+        assert_eq!(after.width(), 6);
+        assert!(!Arc::ptr_eq(&before, &after));
+        // NONE stays nothing, whatever arrives.
+        store.replace(PixelId::NONE, Frame::black(1, 1));
         assert!(store.get(PixelId::NONE).is_none());
     }
 
