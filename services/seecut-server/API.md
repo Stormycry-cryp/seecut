@@ -114,7 +114,7 @@ Successful quote response:
 Task response:
 
 ```json
-{"id":"gen_...","kind":"image","model":"gpt-image-2.5-flare","operation":"generate","prompt":"...","quoted_credits":12,"status":"succeeded","error":null,"outputs":[{"id":"out_...","content_type":"image/png","size_bytes":12345,"sha256":"...","created_at":1700000010,"download_url":"/api/generation/tasks/gen_.../outputs/out_.../content"}],"created_at":1700000000,"updated_at":1700000010}
+{"id":"gen_...","kind":"image","model":"gpt-image-2.5-flare","operation":"generate","prompt":"...","request":{"model":"gpt-image-2.5-flare","operation":"generate","prompt":"...","size":"auto","quality":"high"},"quoted_credits":12,"status":"succeeded","error":null,"outputs":[{"id":"out_...","content_type":"image/png","size_bytes":12345,"sha256":"...","created_at":1700000010,"download_url":"/api/generation/tasks/gen_.../outputs/out_.../content"}],"created_at":1700000000,"updated_at":1700000010}
 ```
 
 ## Team asset lifecycle

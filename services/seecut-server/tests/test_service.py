@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import base64
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -150,6 +151,10 @@ class ServiceTest(unittest.TestCase):
             "request-1",
         )
         self.assertEqual(task["status"], "queued")
+        self.assertEqual(task["request"]["model"], "gpt-image-2.5-flare")
+        self.assertEqual(task["request"]["prompt"], "a clean studio image")
+        self.assertNotIn("quote_id", task["request"])
+        self.assertNotIn("provider", task["request"])
         for claimed in self.service.claim_generation_tasks():
             self.service.process_generation_task(claimed)
         task = self.service.get_generation_task(user_id, task["id"])
@@ -165,6 +170,48 @@ class ServiceTest(unittest.TestCase):
         )
         self.assertEqual(duplicate["id"], task["id"])
         self.assertEqual(self.service.wallet(user_id)["available_credits"], 13)
+
+    def test_generation_task_request_exposes_only_public_generation_fields(self):
+        user_id, _ = self.create_user("request-snapshot@example.com")
+        with self.service.db.transaction() as connection:
+            connection.execute(
+                "UPDATE wallets SET available_credits=20 WHERE user_id=?", (user_id,)
+            )
+        request = {"model": "gpt-image-2.5-flare", "prompt": "public prompt"}
+        quote = self.service.quote_generation(user_id, "image", request)
+        task = self.service.create_generation_task(
+            user_id,
+            "image",
+            request | {"quote_id": quote["quote_id"]},
+            "request-public-fields",
+        )
+        with self.service.db.transaction() as connection:
+            stored = connection.execute(
+                "SELECT request_json FROM generation_tasks WHERE id=?", (task["id"],)
+            ).fetchone()
+            injected = json.loads(stored["request_json"])
+            injected.update(
+                {
+                    "provider": "internal-provider",
+                    "api_key": "secret-never-return",
+                    "worker_context": {"attempt": 3},
+                }
+            )
+            connection.execute(
+                "UPDATE generation_tasks SET request_json=? WHERE id=?",
+                (json.dumps(injected), task["id"]),
+            )
+
+        public = self.service.get_generation_task(user_id, task["id"])["request"]
+        self.assertEqual(public["model"], "gpt-image-2.5-flare")
+        self.assertEqual(public["prompt"], "public prompt")
+        self.assertEqual(public["size"], "auto")
+        self.assertEqual(public["quality"], "high")
+        self.assertNotIn("provider", public)
+        self.assertNotIn("api_key", public)
+        self.assertNotIn("worker_context", public)
+        self.assertNotIn("n", public)
+        self.assertNotIn("output_format", public)
 
     def test_alipay_configuration_failure_is_explicit(self):
         user_id, _ = self.create_user("payer@example.com")

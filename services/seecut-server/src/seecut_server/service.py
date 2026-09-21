@@ -1969,6 +1969,12 @@ class SeeCutService:
             item = dict(output)
             item["download_url"] = f"/api/generation/tasks/{row['id']}/outputs/{output['id']}/content"
             output_dicts.append(item)
+        try:
+            stored_request = json.loads(row["request_json"])
+        except (TypeError, ValueError):
+            request = None
+        else:
+            request = self._public_generation_request(stored_request)
         return {
             "id": row["id"],
             "kind": row["kind"],
@@ -1976,6 +1982,10 @@ class SeeCutService:
             "operation": row["operation"],
             "upstream_task_id": row["upstream_task_id"],
             "prompt": row["prompt"],
+            # The canonical user request contains only validated generation
+            # fields. Provider responses, credentials and internal worker
+            # context remain server-side.
+            "request": request,
             "quoted_credits": row["quoted_credits"],
             "status": row["status"],
             "error": (
@@ -1987,3 +1997,21 @@ class SeeCutService:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+
+    @staticmethod
+    def _public_generation_request(request: Any) -> dict[str, Any] | None:
+        if not isinstance(request, dict):
+            return None
+        public_fields = (
+            "model",
+            "operation",
+            "prompt",
+            "size",
+            "quality",
+            "resolution",
+            "duration",
+            "aspect_ratio",
+            "generate_audio",
+            "reference_asset_ids",
+        )
+        return {key: request[key] for key in public_fields if key in request}
