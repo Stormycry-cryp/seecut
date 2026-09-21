@@ -369,3 +369,28 @@ cargo check -p concat --no-default-features --features wgpu
 - 压感（阻塞：Slint 1.17 PointerEvent 无 pressure 字段）
 - 蒙版启用/停用与删除的 UI 露出（引擎与 agent 已就绪）
 - 真机全链路手测、Windows 验证、打包上线硬化
+
+## 九、P11：蒙版启用/停用与移除 UI + macOS 测试包（2026-09-21）
+
+### 1. 蒙版控制露出（引擎早备好，本轮接 UI）
+- 行元组扩到 11 位：新增 `mask_enabled`（`node.mask().map(|m| m.enabled)`，
+  无蒙版时恒 true）；`CanvasLayerData` 加 `mask-enabled` 字段，studio 映射同步。
+- UI：chip 反映启用态（停用时半透明 0.45）；chip 处于"绘制中"的行追加两个
+  按钮——整幅启用/停用（Painting 中可见）与移除蒙版；该行右内边距动态放宽
+  （66px → 116px）避让不透明度旋钮。
+- 回调链重接：`canvas-layer-mask-removed` / `canvas-layer-mask-enable-toggled`
+  经 editor → seat → lib.rs → `CanvasMsg::LayerMaskRemove/Toggle`（P10 删掉的
+  两个变体重新上岗，UI 此前未用故删，现在补回消息与处理分支）。
+
+### 2. 验证
+- concat（wgpu）：**64 全绿**（+1：蒙版停用/复用往返——停用时像素全保留、
+  合成不再读蒙版、画笔目标不丢）；
+- clippy `-D warnings` 干净；i18n 3 词条 × 13 语言（Mask on/off、Remove mask）。
+
+### 3. macOS 测试包
+- `cargo build --release` → outputs/Concat.app（ad-hoc 签名）+ zip；
+- 二进制自包含（locale `include_str!` 编译进内），无外部资源依赖。
+
+### 4. 剩余待办（收敛中）
+- 压感（阻塞：Slint 1.17 PointerEvent 无 pressure 字段，等上游）
+- Windows 真机验证、安装器、性能基线、上线硬化
