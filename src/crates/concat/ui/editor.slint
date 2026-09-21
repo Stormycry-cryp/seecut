@@ -338,6 +338,10 @@ export global Editor {
     callback canvas-layer-dropped(source: int, target: int, below: bool);
     /// A white mask over the active row, the painting tools pointed at.
     callback canvas-layer-mask-added();
+    /// The active mask, gone.
+    callback canvas-layer-mask-removed();
+    /// The active mask applied or set aside, whole.
+    callback canvas-layer-mask-enable-toggled();
     /// The mask chip on a row was clicked: pick it and paint its mask,
     /// or stop painting when it already was the one.
     callback canvas-layer-mask-paint-toggled(index: int);

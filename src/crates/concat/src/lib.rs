@@ -1067,6 +1067,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_canvas_layer_mask_added(on_window!(|state| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerMaskAdd));
     }));
+    editor.on_canvas_layer_mask_removed(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerMaskRemove));
+    }));
+    editor.on_canvas_layer_mask_enable_toggled(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerMaskToggle));
+    }));
     editor.on_canvas_layer_mask_paint_toggled(on_window!(|state, index: i32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerMaskPaint(
             index,

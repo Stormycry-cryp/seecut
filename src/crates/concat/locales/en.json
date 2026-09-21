@@ -762,5 +762,8 @@
   "Drag to bend, click to add, double-click to remove": "Drag to bend, click to add, double-click to remove",
   "Add mask": "Add mask",
   "Paint mask": "Paint mask",
-  "Stop painting mask": "Stop painting mask"
+  "Stop painting mask": "Stop painting mask",
+  "Mask on": "Mask on",
+  "Mask off": "Mask off",
+  "Remove mask": "Remove mask"
 }

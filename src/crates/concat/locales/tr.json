@@ -762,5 +762,8 @@
   "Drag to bend, click to add, double-click to remove": "Bükme için sürükleyin, eklemek için tıklayın, kaldırmak için çift tıklayın",
   "Add mask": "Maske ekle",
   "Paint mask": "Maske çiz",
-  "Stop painting mask": "Maske çizmeyi durdur"
+  "Stop painting mask": "Maske çizmeyi durdur",
+  "Mask on": "Maskeyi aç",
+  "Mask off": "Maskeyi kapat",
+  "Remove mask": "Maskeyi kaldır"
 }

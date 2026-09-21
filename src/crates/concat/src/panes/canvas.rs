@@ -61,9 +61,12 @@ const PALETTE: &[[u8; 3]] = &[
 /// One row of the layers panel, front-to-back: identity, name, hidden,
 /// opacity, active, nesting depth, whether the group's children are
 /// shown, whether the row is a group at all, whether the row carries a
-/// mask, and whether that mask is the one the painting tools are on. The
-/// tuple the panel publishes and the agent reads.
-pub type LayerRow = (u64, String, bool, f32, bool, usize, bool, bool, bool, bool);
+/// mask, whether that mask is the one the painting tools are on, and
+/// whether that mask is enabled at all. The tuple the panel publishes
+/// and the agent reads.
+pub type LayerRow = (
+    u64, String, bool, f32, bool, usize, bool, bool, bool, bool, bool,
+);
 
 /// Everything that can happen to the canvas.
 #[derive(Debug)]
@@ -154,6 +157,10 @@ pub enum CanvasMsg {
     /// A white mask over the active node, the painting tools pointed at
     /// it.
     LayerMaskAdd,
+    /// The active node's mask, gone.
+    LayerMaskRemove,
+    /// The active node's mask applied or set aside, whole.
+    LayerMaskToggle,
     /// The mask chip on the row was clicked: pick the row and paint its
     /// mask - or, when the row is already the one being painted, stop.
     LayerMaskPaint(i32),
@@ -622,6 +629,14 @@ impl CanvasPane {
             }
             CanvasMsg::LayerMaskAdd => {
                 self.add_mask();
+                self.render(studio);
+            }
+            CanvasMsg::LayerMaskRemove => {
+                self.remove_mask();
+                self.render(studio);
+            }
+            CanvasMsg::LayerMaskToggle => {
+                self.toggle_mask();
                 self.render(studio);
             }
             CanvasMsg::LayerMaskPaint(index) => {
@@ -1206,8 +1221,9 @@ impl CanvasPane {
     /// The layers panel's rows, front-to-back: identity, name, visibility,
     /// opacity, whether the row is the active one, its nesting depth,
     /// whether the group's children are shown, whether the row is a group
-    /// at all, whether it carries a mask, and whether that mask is the
-    /// one being painted. Folded groups still show their own row.
+    /// at all, whether it carries a mask, whether that mask is the one
+    /// being painted, and whether that mask is enabled. Folded groups
+    /// still show their own row.
     pub fn layers_data(&self) -> Vec<LayerRow> {
         self.rows()
             .iter()
@@ -1217,6 +1233,7 @@ impl CanvasPane {
                     _ => false,
                 };
                 let active = self.active == Some(node.id());
+                let mask = node.mask();
                 (
                     node.id().as_u64(),
                     node.name().to_owned(),
@@ -1226,8 +1243,9 @@ impl CanvasPane {
                     *depth,
                     expanded,
                     matches!(node, LayerNode::Group(_)),
-                    node.mask().is_some(),
+                    mask.is_some(),
                     self.paint_mask && active,
+                    mask.map(|m| m.enabled).unwrap_or(true),
                 )
             })
             .collect()
@@ -2092,7 +2110,8 @@ impl CanvasPane {
     /// shows, and the row indexes the layer methods take: identity, name,
     /// visibility, opacity, active, nesting depth, whether the group's
     /// children are shown, whether the row is a group at all, whether it
-    /// carries a mask, and whether that mask is the one being painted.
+    /// carries a mask, whether that mask is the one being painted, and
+    /// whether that mask is enabled.
     pub fn agent_layers(&self) -> Vec<LayerRow> {
         self.layers_data()
     }
@@ -3191,6 +3210,61 @@ mod tests {
         pane.agent_layer_mask_remove(0);
         assert!(!pane.agent_paint_mask(), "no mask, no mask painting");
         assert!(pane.store.get(mask_id).is_none(), "the pixels went too");
+    }
+
+    #[test]
+    fn a_mask_sets_aside_and_applies_whole() {
+        let (mut pane, _) = painting_pane();
+        // Something on the layer for the mask to hide.
+        pane.set_tool(3);
+        pane.brush.color = [10, 20, 30];
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        pane.agent_layer_mask_add(0);
+        pane.brush.color = [0, 0, 0];
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+
+        // The fresh mask is enabled, and it hides the dab.
+        let rows = pane.agent_layers();
+        assert!(rows[0].8, "the row carries a mask");
+        assert!(rows[0].9, "that mask is the one being painted");
+        assert!(rows[0].10, "and it is enabled");
+        let document = pane.document.clone().expect("open");
+        assert_eq!(
+            concat_canvas::compose(&document, &pane.store)
+                .pixel(150, 100)
+                .expect("the painted pixel")[3],
+            0,
+            "black on the mask hides what is under it"
+        );
+
+        // Setting the mask aside keeps every pixel - painted or not -
+        // and stops the compositing from reading it.
+        pane.agent_layer_mask_toggle(0);
+        assert!(!pane.agent_layers()[0].10, "the mask is set aside");
+        let document = pane.document.clone().expect("open");
+        assert_eq!(
+            concat_canvas::compose(&document, &pane.store)
+                .pixel(150, 100)
+                .expect("the painted pixel")[3],
+            255,
+            "a set-aside mask hides nothing"
+        );
+
+        // Applied again, the painted black goes back to work - and the
+        // brush still points at the same mask the whole time.
+        assert!(pane.agent_paint_mask(), "the tools never left the mask");
+        pane.agent_layer_mask_toggle(0);
+        assert!(pane.agent_layers()[0].10, "the mask applies again");
+        let document = pane.document.clone().expect("open");
+        assert_eq!(
+            concat_canvas::compose(&document, &pane.store)
+                .pixel(150, 100)
+                .expect("the painted pixel")[3],
+            0,
+            "the hiding came back with the mask"
+        );
     }
 
     #[test]

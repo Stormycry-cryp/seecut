@@ -762,5 +762,8 @@
   "Drag to bend, click to add, double-click to remove": "ドラッグで曲げる、クリックで追加、ダブルクリックで削除",
   "Add mask": "マスクを追加",
   "Paint mask": "マスクを描画",
-  "Stop painting mask": "マスクの描画を停止"
+  "Stop painting mask": "マスクの描画を停止",
+  "Mask on": "マスク有効",
+  "Mask off": "マスク無効",
+  "Remove mask": "マスクを削除"
 }

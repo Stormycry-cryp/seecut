@@ -5520,7 +5520,7 @@ impl Studio {
             .layers_data()
             .into_iter()
             .map(
-                |(id, name, hidden, opacity, active, depth, expanded, group, masked, mask_paint)| {
+                |(id, name, hidden, opacity, active, depth, expanded, group, masked, mask_paint, mask_enabled)| {
                     CanvasLayerData {
                         id: id as i32,
                         name: name.into(),
@@ -5532,6 +5532,7 @@ impl Studio {
                         group,
                         masked,
                         mask_paint,
+                        mask_enabled,
                     }
                 },
             )

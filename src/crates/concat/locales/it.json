@@ -762,5 +762,8 @@
   "Drag to bend, click to add, double-click to remove": "Trascina per piegare, clicca per aggiungere, doppio clic per rimuovere",
   "Add mask": "Aggiungi maschera",
   "Paint mask": "Dipingi maschera",
-  "Stop painting mask": "Smetti di dipingere la maschera"
+  "Stop painting mask": "Smetti di dipingere la maschera",
+  "Mask on": "Attiva maschera",
+  "Mask off": "Disattiva maschera",
+  "Remove mask": "Rimuovi maschera"
 }

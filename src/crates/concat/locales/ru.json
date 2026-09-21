@@ -762,5 +762,8 @@
   "Drag to bend, click to add, double-click to remove": "Потяните, чтобы изогнуть; щелчок — добавить; двойной щелчок — удалить",
   "Add mask": "Добавить маску",
   "Paint mask": "Рисовать по маске",
-  "Stop painting mask": "Прекратить рисование по маске"
+  "Stop painting mask": "Прекратить рисование по маске",
+  "Mask on": "Включить маску",
+  "Mask off": "Выключить маску",
+  "Remove mask": "Удалить маску"
 }

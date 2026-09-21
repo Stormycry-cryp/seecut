@@ -762,5 +762,8 @@
   "Drag to bend, click to add, double-click to remove": "拖曳彎曲，點擊加點，雙擊刪點",
   "Add mask": "新增遮罩",
   "Paint mask": "繪製遮罩",
-  "Stop painting mask": "停止繪製遮罩"
+  "Stop painting mask": "停止繪製遮罩",
+  "Mask on": "啟用遮罩",
+  "Mask off": "停用遮罩",
+  "Remove mask": "移除遮罩"
 }

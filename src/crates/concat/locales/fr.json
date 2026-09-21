@@ -762,5 +762,8 @@
   "Drag to bend, click to add, double-click to remove": "Glisser pour courber, cliquer pour ajouter, double-cliquer pour retirer",
   "Add mask": "Ajouter un masque",
   "Paint mask": "Peindre le masque",
-  "Stop painting mask": "Arrêter de peindre le masque"
+  "Stop painting mask": "Arrêter de peindre le masque",
+  "Mask on": "Activer le masque",
+  "Mask off": "Désactiver le masque",
+  "Remove mask": "Supprimer le masque"
 }

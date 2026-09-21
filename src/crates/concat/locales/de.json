@@ -762,5 +762,8 @@
   "Drag to bend, click to add, double-click to remove": "Ziehen zum Biegen, Klicken zum Hinzufügen, Doppelklicken zum Entfernen",
   "Add mask": "Maske hinzufügen",
   "Paint mask": "Maske malen",
-  "Stop painting mask": "Malen stoppen"
+  "Stop painting mask": "Malen stoppen",
+  "Mask on": "Maske ein",
+  "Mask off": "Maske aus",
+  "Remove mask": "Maske entfernen"
 }

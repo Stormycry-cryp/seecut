@@ -49,6 +49,7 @@ export struct CanvasLayerData {
     group: bool,
     masked: bool,
     mask-paint: bool,
+    mask-enabled: bool,
 }
 
 // One control point of a curves channel, normalized `0..1` on both axes:
@@ -397,6 +398,10 @@ export component CanvasPane inherits Rectangle {
     callback layer-dropped(source: int, target: int, below: bool);
     /// A white mask over the active row, the painting tools pointed at.
     callback layer-mask-added();
+    /// The active mask, gone.
+    callback layer-mask-removed();
+    /// The active mask applied or set aside, whole.
+    callback layer-mask-enable-toggled();
     /// The mask chip on the row was clicked: pick it and paint its mask,
     /// or stop painting when it already was the one.
     callback layer-mask-paint-toggled(index: int);
@@ -816,8 +821,11 @@ export component CanvasPane inherits Rectangle {
                                 HorizontalLayout {
                                     // The indent: one step per nesting
                                     // level, so the tree reads at a glance.
+                                    // A row whose mask is under the brush
+                                    // carries two more buttons, so it
+                                    // keeps clear of the opacity knob.
                                     padding-left: 6px + layer.depth * 12px;
-                                    padding-right: 66px;
+                                    padding-right: layer.mask-paint ? 116px : 66px;
                                     spacing: 6px;
                                     // The group's fold: a chevron that
                                     // opens and shuts the row's children.
@@ -840,13 +848,36 @@ export component CanvasPane inherits Rectangle {
                                     // The mask chip: only on rows that
                                     // carry a mask, lit while this very
                                     // mask is the one being painted.
+                                    // A disabled mask dims its chip;
+                                    // while this row's mask is the one
+                                    // under the brush, two more buttons
+                                    // offer whole-mask on/off and take
+                                    // the mask away.
                                     if layer.masked: VerticalLayout {
                                         alignment: center;
                                         IconButton {
                                             glyph: Glyph.mask;
                                             checked: layer.mask-paint;
+                                            opacity: layer.mask-enabled ? 1 : 0.45;
                                             label: layer.mask-paint ? I18n.t("Stop painting mask") : I18n.t("Paint mask");
                                             clicked => { root.layer-mask-paint-toggled(i); }
+                                        }
+                                    }
+                                    if layer.masked && layer.mask-paint: VerticalLayout {
+                                        alignment: center;
+                                        IconButton {
+                                            glyph: Glyph.mask;
+                                            checked: layer.mask-enabled;
+                                            label: layer.mask-enabled ? I18n.t("Mask off") : I18n.t("Mask on");
+                                            clicked => { root.layer-mask-enable-toggled(); }
+                                        }
+                                    }
+                                    if layer.masked && layer.mask-paint: VerticalLayout {
+                                        alignment: center;
+                                        IconButton {
+                                            glyph: Glyph.trash;
+                                            label: I18n.t("Remove mask");
+                                            clicked => { root.layer-mask-removed(); }
                                         }
                                     }
                                     Text {

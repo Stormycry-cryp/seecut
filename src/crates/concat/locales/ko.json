@@ -762,5 +762,8 @@
   "Drag to bend, click to add, double-click to remove": "드래그하여 굽히고, 클릭하여 추가하고, 두 번 클릭하여 제거합니다",
   "Add mask": "마스크 추가",
   "Paint mask": "마스크 그리기",
-  "Stop painting mask": "마스크 그리기 중지"
+  "Stop painting mask": "마스크 그리기 중지",
+  "Mask on": "마스크 켜기",
+  "Mask off": "마스크 끄기",
+  "Remove mask": "마스크 제거"
 }
