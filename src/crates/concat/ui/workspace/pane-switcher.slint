@@ -238,7 +238,7 @@ export component PaneSwitcher inherits Rectangle {
     /// by whoever places it — the same rule the context menu follows, and the
     /// same reason: a layout cannot report its height back up before it has
     /// somewhere to be laid out.
-    property <length> menu-h: 4 * 26px + 9px + 26px + 8px;
+    property <length> menu-h: 5 * 26px + 9px + 26px + 8px;
 
     // The mark, a gap, and the chevron, with even padding either side.
     property <length> mark: 14px;
@@ -344,7 +344,7 @@ export component PaneSwitcher inherits Rectangle {
                 padding: 4px;
                 alignment: start;
 
-                // Written out rather than looped: four is the whole list, and
+                // Written out rather than looped: five is the whole list, and
                 // a `for` over it would need the array to exist somewhere the
                 // rows could reach, which is more machinery than the rows.
                 SwitchRow {
@@ -356,6 +356,11 @@ export component PaneSwitcher inherits Rectangle {
                     kind: PaneKind.preview;
                     current: root.kind == PaneKind.preview;
                     chosen => { menu.close(); root.picked(PaneKind.preview); }
+                }
+                SwitchRow {
+                    kind: PaneKind.canvas;
+                    current: root.kind == PaneKind.canvas;
+                    chosen => { menu.close(); root.picked(PaneKind.canvas); }
                 }
                 SwitchRow {
                     kind: PaneKind.inspector;
@@ -390,7 +395,7 @@ export component AddPaneButton inherits Rectangle {
     callback added(kind: PaneKind);
 
     property <length> menu-w: 168px;
-    property <length> menu-h: 4 * 26px + 8px;
+    property <length> menu-h: 5 * 26px + 8px;
 
     width: 24px;
     height: 24px;
