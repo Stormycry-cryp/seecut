@@ -759,5 +759,8 @@
   "Unfold group": "Grubu aç",
   "Curves": "Eğriler",
   "Group {0}": "Grup {0}",
-  "Drag to bend, click to add, double-click to remove": "Bükme için sürükleyin, eklemek için tıklayın, kaldırmak için çift tıklayın"
+  "Drag to bend, click to add, double-click to remove": "Bükme için sürükleyin, eklemek için tıklayın, kaldırmak için çift tıklayın",
+  "Add mask": "Maske ekle",
+  "Paint mask": "Maske çiz",
+  "Stop painting mask": "Maske çizmeyi durdur"
 }

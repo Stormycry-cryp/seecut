@@ -759,5 +759,8 @@
   "Unfold group": "Proširi grupu",
   "Curves": "Krivulje",
   "Group {0}": "Grupa {0}",
-  "Drag to bend, click to add, double-click to remove": "Povuci za savijanje, kliknite za dodavanje, dvokliknite za uklanjanje"
+  "Drag to bend, click to add, double-click to remove": "Povuci za savijanje, kliknite za dodavanje, dvokliknite za uklanjanje",
+  "Add mask": "Dodaj masku",
+  "Paint mask": "Crtaj masku",
+  "Stop painting mask": "Prestani crtati masku"
 }

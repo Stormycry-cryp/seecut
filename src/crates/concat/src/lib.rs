@@ -1057,6 +1057,28 @@ pub fn run() -> Result<(), slint::PlatformError> {
             index, direction,
         )));
     }));
+    editor.on_canvas_layer_dropped(on_window!(
+        |state, source: i32, target: i32, below: bool| {
+            state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerDrop(
+                source, target, below,
+            )));
+        }
+    ));
+    editor.on_canvas_layer_mask_added(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerMaskAdd));
+    }));
+    editor.on_canvas_layer_mask_paint_toggled(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerMaskPaint(
+            index,
+        )));
+    }));
+    editor.on_canvas_gradient_color_changed(on_window!(
+        |state, slot: i32, index: i32| {
+            state.handle(Msg::Canvas(
+                crate::panes::canvas::CanvasMsg::GradientColor(slot, index),
+            ));
+        }
+    ));
     editor.on_canvas_export_png(on_window!(|state| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ExportPng));
     }));

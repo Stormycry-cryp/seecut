@@ -759,5 +759,8 @@
   "Unfold group": "Déplier le groupe",
   "Curves": "Courbes",
   "Group {0}": "Groupe {0}",
-  "Drag to bend, click to add, double-click to remove": "Glisser pour courber, cliquer pour ajouter, double-cliquer pour retirer"
+  "Drag to bend, click to add, double-click to remove": "Glisser pour courber, cliquer pour ajouter, double-cliquer pour retirer",
+  "Add mask": "Ajouter un masque",
+  "Paint mask": "Peindre le masque",
+  "Stop painting mask": "Arrêter de peindre le masque"
 }

@@ -759,5 +759,8 @@
   "Unfold group": "展开分组",
   "Curves": "曲线",
   "Group {0}": "分组 {0}",
-  "Drag to bend, click to add, double-click to remove": "拖动弯曲，点击加点，双击删点"
+  "Drag to bend, click to add, double-click to remove": "拖动弯曲，点击加点，双击删点",
+  "Add mask": "添加蒙版",
+  "Paint mask": "绘制蒙版",
+  "Stop painting mask": "停止绘制蒙版"
 }

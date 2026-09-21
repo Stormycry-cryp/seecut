@@ -759,5 +759,8 @@
   "Unfold group": "展開群組",
   "Curves": "曲線",
   "Group {0}": "群組 {0}",
-  "Drag to bend, click to add, double-click to remove": "拖曳彎曲，點擊加點，雙擊刪點"
+  "Drag to bend, click to add, double-click to remove": "拖曳彎曲，點擊加點，雙擊刪點",
+  "Add mask": "新增遮罩",
+  "Paint mask": "繪製遮罩",
+  "Stop painting mask": "停止繪製遮罩"
 }

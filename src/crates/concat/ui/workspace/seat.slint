@@ -265,6 +265,10 @@ export component Seat inherits Rectangle {
             layer-folded(index) => { Editor.canvas-layer-folded(index); }
             layer-deleted(index) => { Editor.canvas-layer-deleted(index); }
             layer-moved(index, direction) => { Editor.canvas-layer-moved(index, direction); }
+            layer-dropped(source, target, below) => { Editor.canvas-layer-dropped(source, target, below); }
+            layer-mask-added => { Editor.canvas-layer-mask-added(); }
+            layer-mask-paint-toggled(index) => { Editor.canvas-layer-mask-paint-toggled(index); }
+            gradient-color-changed(slot, index) => { Editor.canvas-gradient-color-changed(slot, index); }
             adjustment-added(kind) => { Editor.canvas-adjustment-added(kind); }
             adjustment-param-changed(index, value) => { Editor.canvas-adjustment-param-changed(index, value); }
             curve-set(channel, index, x, y) => { Editor.canvas-curve-set(channel, index, x, y); }

@@ -759,5 +759,8 @@
   "Unfold group": "Unfold group",
   "Curves": "Curves",
   "Group {0}": "Group {0}",
-  "Drag to bend, click to add, double-click to remove": "Drag to bend, click to add, double-click to remove"
+  "Drag to bend, click to add, double-click to remove": "Drag to bend, click to add, double-click to remove",
+  "Add mask": "Add mask",
+  "Paint mask": "Paint mask",
+  "Stop painting mask": "Stop painting mask"
 }

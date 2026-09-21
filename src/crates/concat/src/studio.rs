@@ -5520,15 +5520,19 @@ impl Studio {
             .layers_data()
             .into_iter()
             .map(
-                |(id, name, hidden, opacity, active, depth, expanded, group)| CanvasLayerData {
-                    id: id as i32,
-                    name: name.into(),
-                    hidden,
-                    opacity,
-                    active,
-                    depth: depth as i32,
-                    expanded,
-                    group,
+                |(id, name, hidden, opacity, active, depth, expanded, group, masked, mask_paint)| {
+                    CanvasLayerData {
+                        id: id as i32,
+                        name: name.into(),
+                        hidden,
+                        opacity,
+                        active,
+                        depth: depth as i32,
+                        expanded,
+                        group,
+                        masked,
+                        mask_paint,
+                    }
                 },
             )
             .collect();
@@ -5554,6 +5558,21 @@ impl Studio {
             })
             .collect();
         editor.set_canvas_adjustment_params(slint::ModelRc::new(slint::VecModel::from(params)));
+        // The active gradient map's two colours, as the swatches read
+        // them; the defaults stand in when the row is not one.
+        let (low, high) = self
+            .canvas
+            .gradient_colors()
+            .unwrap_or(([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]));
+        let ramp = |rgb: [f32; 3]| {
+            slint::Color::from_rgb_u8(
+                (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            )
+        };
+        editor.set_canvas_gradient_low(ramp(low));
+        editor.set_canvas_gradient_high(ramp(high));
         // The active row's curves, as the editor draws them: three
         // channels of sorted (input, output) points, plus the same three
         // as precomputed strokes, normalized to the editor's square.

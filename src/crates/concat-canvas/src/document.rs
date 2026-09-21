@@ -534,8 +534,19 @@ impl LayerGroup {
     }
 
     fn take(&mut self, id: LayerId) -> Option<LayerNode> {
-        let index = self.children.iter().position(|node| node.id() == id)?;
-        Some(self.children.remove(index))
+        if let Some(index) = self.children.iter().position(|node| node.id() == id) {
+            return Some(self.children.remove(index));
+        }
+        // The node may sit at any depth - a move or a delete of a row
+        // inside a group reaches it through this walk.
+        for child in &mut self.children {
+            if let LayerNode::Group(group) = child
+                && let Some(node) = group.take(id)
+            {
+                return Some(node);
+            }
+        }
+        None
     }
 
     fn collect_pixels(&self, out: &mut Vec<PixelId>) {

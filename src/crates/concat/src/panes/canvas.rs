@@ -24,8 +24,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use concat_canvas::{
-    Adjustment, BrushSettings, BrushStroke, CanvasGpu, CanvasViewport, ImageDocument, LayerNode,
-    Mask, NavInput, Navigator, PixelId, PixelStore, SelectionShape, erase_region, fill_region,
+    Adjustment, BrushSettings, BrushStroke, CanvasGpu, CanvasViewport, ImageDocument, LayerMask,
+    LayerNode, Mask, NavInput, Navigator, PixelId, PixelStore, SelectionShape, erase_region,
+    fill_region,
 };
 use concat_core::frame::Frame;
 use slint::SharedPixelBuffer;
@@ -59,9 +60,10 @@ const PALETTE: &[[u8; 3]] = &[
 
 /// One row of the layers panel, front-to-back: identity, name, hidden,
 /// opacity, active, nesting depth, whether the group's children are
-/// shown, and whether the row is a group at all. The tuple the panel
-/// publishes and the agent reads.
-pub type LayerRow = (u64, String, bool, f32, bool, usize, bool, bool);
+/// shown, whether the row is a group at all, whether the row carries a
+/// mask, and whether that mask is the one the painting tools are on. The
+/// tuple the panel publishes and the agent reads.
+pub type LayerRow = (u64, String, bool, f32, bool, usize, bool, bool, bool, bool);
 
 /// Everything that can happen to the canvas.
 #[derive(Debug)]
@@ -144,6 +146,20 @@ pub enum CanvasMsg {
     LayerFold(i32),
     LayerDelete(i32),
     LayerMove(i32, i32),
+    /// A drag on the panel dropped the row `source` onto the row
+    /// `target`: below it when `below` says so - which is into the
+    /// target when the target is a group, the Photoshop drop-on-the-name
+    /// read - and just above it otherwise.
+    LayerDrop(i32, i32, bool),
+    /// A white mask over the active node, the painting tools pointed at
+    /// it.
+    LayerMaskAdd,
+    /// The mask chip on the row was clicked: pick the row and paint its
+    /// mask - or, when the row is already the one being painted, stop.
+    LayerMaskPaint(i32),
+    /// The active gradient map's low (`0`) or high (`1`) colour, as an
+    /// index into the tray's [`PALETTE`].
+    GradientColor(i32, i32),
     /// The adjustment panel's picker: one of the kinds
     /// [`ADJUSTMENT_KINDS`] lists, added above the active layer so it
     /// colours everything beneath it.
@@ -234,6 +250,11 @@ pub struct CanvasPane {
     /// The groups the panel has folded, by identity. Workspace state, not
     /// document state: a save carries the tree, not which boxes were shut.
     collapsed: std::collections::HashSet<concat_canvas::LayerId>,
+    /// Whether the painting tools are on the active row's mask rather
+    /// than its pixels. The target itself is [`CanvasPane::paint_target`]'s
+    /// to say: a mode without a mask under it paints the pixels, so the
+    /// flag can never strand a stroke.
+    pub paint_mask: bool,
 }
 
 impl Default for CanvasPane {
@@ -272,6 +293,7 @@ impl Default for CanvasPane {
             failed: false,
             checker: slint::Image::default(),
             collapsed: std::collections::HashSet::new(),
+            paint_mask: false,
         }
     }
 }
@@ -594,6 +616,22 @@ impl CanvasPane {
                 self.sync_view();
                 self.render(studio);
             }
+            CanvasMsg::LayerDrop(source, target, below) => {
+                self.move_row_onto(source, target, below);
+                self.render(studio);
+            }
+            CanvasMsg::LayerMaskAdd => {
+                self.add_mask();
+                self.render(studio);
+            }
+            CanvasMsg::LayerMaskPaint(index) => {
+                self.mask_chip_click(index);
+                self.sync_view();
+            }
+            CanvasMsg::GradientColor(slot, index) => {
+                self.set_gradient_color(slot, index);
+                self.render(studio);
+            }
             CanvasMsg::AdjustmentAdd(kind) => {
                 self.add_adjustment(kind);
                 self.render(studio);
@@ -653,10 +691,11 @@ impl CanvasPane {
         self.sync_view();
     }
 
-    /// Fill or clear whatever is selected on the active layer: one undo
-    /// entry, one whole-rect re-upload, one recomposite.
+    /// Fill or clear whatever is selected on the paint target - the
+    /// active layer's pixels, or its mask while mask painting is up: one
+    /// undo entry, one whole-rect re-upload, one recomposite.
     fn edit_selection(&mut self, kind: EditKind) {
-        let Some(layer) = self.layer else {
+        let Some(layer) = self.paint_target() else {
             return;
         };
         let Some(mask) = &self.selection else {
@@ -670,11 +709,16 @@ impl CanvasPane {
             EditKind::Fill => fill_region(&mut frame, mask, self.brush.color),
             EditKind::Delete => erase_region(&mut frame, mask),
         }
+        let on_mask = self.is_mask_pixels(layer);
         self.undo_stack.push((layer, before));
         self.redo_stack.clear();
         self.store.replace(layer, frame.clone());
         if let Some(gpu) = &mut self.gpu {
-            gpu.upload(layer, &frame, None);
+            if on_mask {
+                gpu.refresh_mask(layer, &frame);
+            } else {
+                gpu.upload(layer, &frame, None);
+            }
         }
     }
 
@@ -688,14 +732,14 @@ impl CanvasPane {
         }
     }
 
-    /// Starts a stroke: the layer's pixels are snapshotted for the undo
-    /// entry and for the tiles' base, a scratch frame is copied once, and
-    /// the first dab goes down. Pixel work only; the caller renders.
+    /// Starts a stroke: the paint target's pixels are snapshotted for the
+    /// undo entry and for the tiles' base, a scratch frame is copied once,
+    /// and the first dab goes down. Pixel work only; the caller renders.
     fn brush_press(&mut self, x: f64, y: f64) {
         let Some((w, h)) = self.document_size().map(|(w, h)| (w as u32, h as u32)) else {
             return;
         };
-        let Some(layer) = self.layer else {
+        let Some(layer) = self.paint_target() else {
             return;
         };
         // A second press while one stroke is live finishes it first: two
@@ -749,14 +793,19 @@ impl CanvasPane {
     /// (the stroke's coverage is cumulative, so a tile is always built
     /// from the base, never over an earlier stamp), the store keeps the
     /// working pixels when no compositor will upload them, and the GPU's
-    /// resident texture takes just those rectangles.
+    /// resident texture takes just those rectangles. A stroke on a mask
+    /// keeps the store current and re-uploads the mask texture whole -
+    /// masks sample their red channel straight off their own resident,
+    /// and a per-tile upload has nothing to say to one.
     fn commit_tiles(&mut self, changed: &[(usize, usize)]) {
         if changed.is_empty() {
             return;
         }
-        let Some(layer) = self.layer else {
+        let Some(layer) = self.paint_target() else {
             return;
         };
+        // Read before the scratch frame is borrowed out of the pane.
+        let on_mask = self.painting_mask();
         let (Some(base), Some(scratch)) = (self.stroke_base.clone(), self.stroke_scratch.as_mut())
         else {
             return;
@@ -768,6 +817,15 @@ impl CanvasPane {
         }
         if let Some(stroke) = &self.stroke {
             stroke.composite_tiles(scratch.pixels_mut(), changed);
+        }
+        if on_mask {
+            // The store stays the mask's truth, and the mask texture
+            // re-uploads whole; a mask has no tile residents to poke.
+            self.store.replace(layer, scratch.clone());
+            if let Some(gpu) = &mut self.gpu {
+                gpu.refresh_mask(layer, scratch);
+            }
+            return;
         }
         match &mut self.gpu {
             Some(gpu) => {
@@ -792,7 +850,8 @@ impl CanvasPane {
 
     /// Steps the pixel history back one edit. The undone pixels move to
     /// the redo stack; the resident texture re-uploads whole, which an
-    /// undo's single frame can afford.
+    /// undo's single frame can afford. A mask entry re-uploads as a mask
+    /// - the two residents are keyed apart, and the wrong one goes unseen.
     fn undo(&mut self) {
         if self.stroke.is_some() {
             return;
@@ -803,13 +862,19 @@ impl CanvasPane {
         if let Some(current) = self.store.get(layer) {
             self.redo_stack.push((layer, current));
         }
+        let on_mask = self.is_mask_pixels(layer);
         self.store.replace(layer, (*before).clone());
         if let Some(gpu) = &mut self.gpu {
-            gpu.upload(layer, &before, None);
+            if on_mask {
+                gpu.refresh_mask(layer, &before);
+            } else {
+                gpu.upload(layer, &before, None);
+            }
         }
     }
 
-    /// Steps the pixel history forward one undone edit.
+    /// Steps the pixel history forward one undone edit. Masks upload as
+    /// masks, for the same reason [`CanvasPane::undo`] gives.
     fn redo(&mut self) {
         if self.stroke.is_some() {
             return;
@@ -820,9 +885,14 @@ impl CanvasPane {
         if let Some(current) = self.store.get(layer) {
             self.undo_stack.push((layer, current));
         }
+        let on_mask = self.is_mask_pixels(layer);
         self.store.replace(layer, (*after).clone());
         if let Some(gpu) = &mut self.gpu {
-            gpu.upload(layer, &after, None);
+            if on_mask {
+                gpu.refresh_mask(layer, &after);
+            } else {
+                gpu.upload(layer, &after, None);
+            }
         }
     }
 
@@ -875,10 +945,269 @@ impl CanvasPane {
         }
     }
 
+    /// A panel drag landed the row `source` on the row `target`. Below a
+    /// group means into it, at the back of its children - its front in
+    /// the panel, where a freshly adopted layer reads first; below a
+    /// layer, or above anything, means a sibling slot beside the target.
+    /// A group never lands inside its own subtree, and a drop on the
+    /// moving row itself is a no-op, not a shuffle.
+    fn move_row_onto(&mut self, source: i32, target: i32, below: bool) {
+        let rows = self.rows();
+        let moving = rows.get(source.max(0) as usize).map(|(node, _)| node.id());
+        let Some(target_row) = rows.get(target.max(0) as usize) else {
+            return;
+        };
+        let target_id = target_row.0.id();
+        let into = below && matches!(target_row.0, LayerNode::Group(_));
+        let Some(moving) = moving else {
+            return;
+        };
+        if target_id == moving {
+            return;
+        }
+        // The target cannot live inside the moved subtree: for the into
+        // case `move_node` refuses, and for the sibling case the target
+        // would vanish with the take, so both are refused up front.
+        let inside_moved = matches!(
+            self.document.as_ref().and_then(|d| d.find(moving)),
+            Some(LayerNode::Group(group)) if group.find(target_id).is_some()
+        );
+        if inside_moved {
+            return;
+        }
+        drop(rows);
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        if into {
+            let index = document
+                .group_mut(target_id)
+                .map(|group| group.children.len())
+                .unwrap_or(0);
+            document.move_node(moving, Some(target_id), index);
+        } else {
+            // Take the mover out first, then find the target's slot
+            // again - the take shifts the very slot when both share a
+            // container - and slide the mover in above or below it.
+            let Some(node) = document.take_node(moving) else {
+                return;
+            };
+            match locate_node(&mut document.root, target_id) {
+                Some((children, position)) => {
+                    let index = if below { position } else { position + 1 };
+                    children.insert(index.min(children.len()), node);
+                }
+                // Unreachable after the refusal above; the mover goes
+                // back to the root rather than being dropped.
+                None => document.root.children.push(node),
+            }
+        }
+        self.sync_view();
+    }
+
+    /// The pixels the painting tools land on: the active row's mask
+    /// while mask painting is up and the row has one, the picked layer's
+    /// pixels otherwise. A mode without a mask under it falls through,
+    /// so a stroke is never lost.
+    fn paint_target(&self) -> Option<PixelId> {
+        if self.paint_mask
+            && let Some(document) = self.document.as_ref()
+            && let Some(node) = self.active.and_then(|id| document.find(id))
+            && let Some(mask) = node.mask()
+        {
+            return Some(mask.pixels);
+        }
+        self.layer
+    }
+
+    /// Whether a stroke right now would land on a mask rather than on a
+    /// layer's own pixels. [`CanvasPane::paint_target`] picks the pixels;
+    /// this picks the plumbing - masks re-upload whole.
+    fn painting_mask(&self) -> bool {
+        self.paint_mask && self.paint_target() != self.layer
+    }
+
+    /// Whether the pixel id names a mask anywhere in the open document.
+    fn is_mask_pixels(&self, id: PixelId) -> bool {
+        let Some(document) = self.document.as_ref() else {
+            return false;
+        };
+        document
+            .walk()
+            .iter()
+            .any(|node| node.mask().map(|mask| mask.pixels) == Some(id))
+    }
+
+    /// A white mask over the active node - show everything, paint it
+    /// down from there - sized to the canvas, and the painting tools
+    /// pointed at it. A node that has a mask already takes no second.
+    fn add_mask(&mut self) {
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
+        if document.find(id).and_then(|node| node.mask()).is_some() {
+            return;
+        }
+        let pixels = vec![255u8; Frame::byte_len(document.width, document.height)];
+        let frame = Frame::from_rgba(document.width, document.height, pixels)
+            .expect("the mask is sized to the canvas");
+        let mask_id = self.store.put(frame);
+        let document = self.document.as_mut().expect("checked above");
+        match document.find_mut(id) {
+            Some(LayerNode::Layer(layer)) => layer.mask = Some(LayerMask::new(mask_id)),
+            Some(LayerNode::Group(group)) => group.mask = Some(LayerMask::new(mask_id)),
+            Some(LayerNode::Adjustment(adjustment)) => {
+                adjustment.mask = Some(LayerMask::new(mask_id));
+            }
+            None => {
+                // Nothing names the mask; the store does not keep it.
+                self.store.retain_document(document);
+            }
+        }
+        self.paint_mask = true;
+        self.sync_view();
+    }
+
+    /// The active node's mask, gone. The mode falls with it, so the
+    /// tools are never left pointing at pixels nothing names.
+    fn remove_mask(&mut self) {
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        match document.find_mut(id) {
+            Some(LayerNode::Layer(layer)) => layer.mask = None,
+            Some(LayerNode::Group(group)) => group.mask = None,
+            Some(LayerNode::Adjustment(adjustment)) => adjustment.mask = None,
+            None => return,
+        }
+        self.paint_mask = false;
+        self.store.retain_document(document);
+        self.sync_view();
+    }
+
+    /// The active node's mask applied or set aside, whole - the mask
+    /// itself and everything painted into it stays.
+    fn toggle_mask(&mut self) {
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let found = match document.find_mut(id) {
+            Some(LayerNode::Layer(layer)) => {
+                if let Some(mask) = &mut layer.mask {
+                    mask.enabled = !mask.enabled;
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(LayerNode::Group(group)) => {
+                if let Some(mask) = &mut group.mask {
+                    mask.enabled = !mask.enabled;
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(LayerNode::Adjustment(adjustment)) => {
+                if let Some(mask) = &mut adjustment.mask {
+                    mask.enabled = !mask.enabled;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        };
+        if found {
+            self.sync_view();
+        }
+    }
+
+    /// The mask chip on a row was clicked: pick the row, and either
+    /// start painting its mask or - when this very row was already the
+    /// one being painted - stop.
+    fn mask_chip_click(&mut self, index: i32) {
+        let picked = self
+            .rows()
+            .get(index.max(0) as usize)
+            .map(|(node, _)| (node.id(), node_image_pixels(node), node.mask().is_some()));
+        let Some((id, pixels, masked)) = picked else {
+            return;
+        };
+        if !masked {
+            return;
+        }
+        if self.paint_mask && self.active == Some(id) {
+            self.paint_mask = false;
+            return;
+        }
+        self.active = Some(id);
+        self.layer = pixels;
+        self.paint_mask = true;
+        self.sync_view();
+    }
+
+    /// The active gradient map's colours, as the panel publishes them:
+    /// `(low, high)`, each RGB in `0..1`. `None` when the row is not a
+    /// gradient map.
+    pub fn gradient_colors(&self) -> Option<([f32; 3], [f32; 3])> {
+        let document = self.document.as_ref()?;
+        let node = self.active.and_then(|id| document.find(id))?;
+        let LayerNode::Adjustment(adjustment) = node else {
+            return None;
+        };
+        match &adjustment.adjustment {
+            Adjustment::GradientMap { low, high } => Some((*low, *high)),
+            _ => None,
+        }
+    }
+
+    /// Sets the active gradient map's low (`0`) or high (`1`) colour
+    /// from the tray palette's `index`. Any other kind of row, or an
+    /// index past the palette, is a no-op.
+    fn set_gradient_color(&mut self, slot: i32, index: i32) {
+        let Some(color) = PALETTE.get(index.max(0) as usize) else {
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(LayerNode::Adjustment(adjustment)) = document.find_mut(id) else {
+            return;
+        };
+        if let Adjustment::GradientMap { low, high } = &mut adjustment.adjustment {
+            // The palette speaks 0..255 bytes; the adjustment speaks
+            // 0..1 floats. The same colour either way.
+            let rgb = [
+                f32::from(color[0]) / 255.0,
+                f32::from(color[1]) / 255.0,
+                f32::from(color[2]) / 255.0,
+            ];
+            if slot == 0 {
+                *low = rgb;
+            } else {
+                *high = rgb;
+            }
+        }
+    }
+
     /// The layers panel's rows, front-to-back: identity, name, visibility,
-    /// opacity, whether the row is the active one, its nesting depth, and
-    /// whether it is a group holding its children (with those children
-    /// shown). Folded groups still show their own row.
+    /// opacity, whether the row is the active one, its nesting depth,
+    /// whether the group's children are shown, whether the row is a group
+    /// at all, whether it carries a mask, and whether that mask is the
+    /// one being painted. Folded groups still show their own row.
     pub fn layers_data(&self) -> Vec<LayerRow> {
         self.rows()
             .iter()
@@ -887,15 +1216,18 @@ impl CanvasPane {
                     LayerNode::Group(group) => !self.collapsed.contains(&group.id),
                     _ => false,
                 };
+                let active = self.active == Some(node.id());
                 (
                     node.id().as_u64(),
                     node.name().to_owned(),
                     node.hidden(),
                     node.opacity(),
-                    self.active == Some(node.id()),
+                    active,
                     *depth,
-                    matches!(node, LayerNode::Group(_)),
                     expanded,
+                    matches!(node, LayerNode::Group(_)),
+                    node.mask().is_some(),
+                    self.paint_mask && active,
                 )
             })
             .collect()
@@ -1758,8 +2090,9 @@ impl CanvasPane {
 
     /// The layers panel's rows, front-to-back - the same rows the panel
     /// shows, and the row indexes the layer methods take: identity, name,
-    /// visibility, opacity, active, nesting depth, group-with-children-
-    /// shown, and whether the row is a group at all.
+    /// visibility, opacity, active, nesting depth, whether the group's
+    /// children are shown, whether the row is a group at all, whether it
+    /// carries a mask, and whether that mask is the one being painted.
     pub fn agent_layers(&self) -> Vec<LayerRow> {
         self.layers_data()
     }
@@ -1803,6 +2136,64 @@ impl CanvasPane {
         };
         document.move_node(moving, target, index);
         self.sync_view();
+    }
+
+    /// The panel drag, without the panel: the row `source` dropped onto
+    /// the row `target`, into the target when `below` says so and the
+    /// target is a group, beside it otherwise. The same resolution the
+    /// gesture's drop gets.
+    pub fn agent_layer_drop(&mut self, source: i32, target: i32, below: bool) {
+        self.move_row_onto(source, target, below);
+    }
+
+    /// A white mask over the row's node - the panel's "add mask" without
+    /// the panel - and the painting tools pointed at it.
+    pub fn agent_layer_mask_add(&mut self, row: i32) {
+        let picked = self
+            .rows()
+            .get(row.max(0) as usize)
+            .map(|(node, _)| (node.id(), node_image_pixels(node)));
+        if let Some((id, pixels)) = picked {
+            self.active = Some(id);
+            self.layer = pixels;
+            self.add_mask();
+        }
+    }
+
+    /// The row's node's mask, gone.
+    pub fn agent_layer_mask_remove(&mut self, row: i32) {
+        let target = self
+            .rows()
+            .get(row.max(0) as usize)
+            .map(|(node, _)| node.id());
+        if let Some(id) = target {
+            self.active = Some(id);
+            self.remove_mask();
+        }
+    }
+
+    /// The row's node's mask applied or set aside, whole.
+    pub fn agent_layer_mask_toggle(&mut self, row: i32) {
+        let target = self
+            .rows()
+            .get(row.max(0) as usize)
+            .map(|(node, _)| node.id());
+        if let Some(id) = target {
+            self.active = Some(id);
+            self.toggle_mask();
+        }
+    }
+
+    /// Whether the painting tools are on the active row's mask - the
+    /// mode the mask chip toggles.
+    pub fn agent_paint_mask(&self) -> bool {
+        self.paint_mask
+    }
+
+    /// Sets the active gradient map's low (`0`) or high (`1`) colour
+    /// from the tray palette's `index`.
+    pub fn agent_gradient_color(&mut self, slot: i32, index: i32) {
+        self.set_gradient_color(slot, index);
     }
 
     /// Folds or unfolds the group at `row`, the way the panel's chevron
@@ -2016,6 +2407,26 @@ fn children_holding(
     })?;
     match &mut group.children[branch] {
         LayerNode::Group(nested) => children_holding(nested, id),
+        _ => None,
+    }
+}
+
+/// The children vector that holds `id`, with the id's slot in it - the
+/// tree walk a sibling-slot insertion needs. The root group included,
+/// since the root's children are the panel's flat rows.
+fn locate_node(
+    group: &mut concat_canvas::LayerGroup,
+    id: concat_canvas::LayerId,
+) -> Option<(&mut Vec<LayerNode>, usize)> {
+    if let Some(position) = group.children.iter().position(|child| child.id() == id) {
+        return Some((&mut group.children, position));
+    }
+    let branch = group
+        .children
+        .iter()
+        .position(|child| matches!(child, LayerNode::Group(nested) if nested.find(id).is_some()))?;
+    match &mut group.children[branch] {
+        LayerNode::Group(nested) => locate_node(nested, id),
         _ => None,
     }
 }
@@ -2523,9 +2934,11 @@ mod tests {
         let rows = pane.agent_layers();
         assert_eq!(rows.len(), 3);
         assert!(rows[0].6, "the front row is a group");
+        assert!(rows[0].7, "the group's row is a group at all");
         assert_eq!(rows[0].5, 0, "the group sits at the root's depth");
         assert_eq!(rows[1].5, 0, "the layers beside it sit at the root too");
-        assert!(!rows[1].6, "a layer is not a group");
+        assert!(!rows[1].6 && !rows[1].7, "a layer is neither group nor expanded");
+        assert!(!rows.iter().any(|row| row.8), "nothing carries a mask yet");
 
         // A layer into the group: the panel shows the group's row, the
         // layer it now holds a step deeper, and the layer still outside.
@@ -2544,8 +2957,17 @@ mod tests {
             "the adopted layer folded away, the outside one stayed"
         );
         // The folded row still toggles: unfold puts everything back.
+        // The flag order matters here: a folded group is a group whose
+        // children are not shown - the pair the chevron reads.
         pane.agent_layer_fold(0);
-        assert_eq!(pane.agent_layers().len(), 3, "the children came back");
+        let rows = pane.agent_layers();
+        assert_eq!(rows.len(), 3, "the children came back");
+        assert!(rows[0].6 && rows[0].7, "unfolded: shown children, is a group");
+        pane.agent_layer_fold(0);
+        let rows = pane.agent_layers();
+        assert_eq!(rows.len(), 2);
+        assert!(!rows[0].6 && rows[0].7, "folded: children hidden, still a group");
+        pane.agent_layer_fold(0);
 
         // Moving the group moves with it everything it holds: up in the
         // panel makes it the root's first child, ahead of the layer.
@@ -2643,5 +3065,173 @@ mod tests {
         // A non-curves row publishes no curves at all.
         pane.agent_layer_pick(1);
         assert!(pane.agent_curve_channels().is_empty());
+    }
+
+    #[test]
+    fn a_drag_reorders_and_adopts_through_the_drop_rule() {
+        let (mut pane, _) = painting_pane();
+        pane.agent_layer_add();
+        pane.agent_layer_group();
+        // Rows: group, added layer, base layer - front to back.
+        let rows = pane.agent_layers();
+        assert!(rows[0].7, "the group leads the panel");
+        let group_id = rows[0].0;
+
+        // The base row dropped below the group's row goes into the group:
+        // the bottom half of a group row is the drop-on-the-name read.
+        pane.agent_layer_drop(2, 0, true);
+        let rows = pane.agent_layers();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[1].5, 1, "the base sits one step in, adopted");
+        assert_eq!(rows[0].0, group_id, "the group keeps its identity");
+
+        // The added row - row 2 since the adoption - dropped above the
+        // base's row lands just above it, in the same group.
+        pane.agent_layer_drop(2, 1, false);
+        let rows = pane.agent_layers();
+        assert_eq!(rows[0].0, group_id, "the group still leads");
+        assert_eq!(rows[1].5, 1, "the base stays one step in");
+        assert_eq!(rows[2].5, 1, "the added row joined it there");
+
+        // The group dropped onto its own child is refused: a group never
+        // lands inside its own subtree.
+        pane.agent_layer_drop(0, 1, true);
+        let rows = pane.agent_layers();
+        assert_eq!(rows[0].0, group_id, "the refusal left the tree alone");
+        assert_eq!(rows[1].5, 1);
+
+        // The base dropped above the group's row leaves the group and
+        // takes a root slot ahead of it - a move out of a nested slot,
+        // which is exactly the take the engine once could not do.
+        pane.agent_layer_drop(2, 0, false);
+        let rows = pane.agent_layers();
+        assert_eq!(rows[0].5, 0, "the base is out at the root's depth");
+        assert_eq!(rows[1].0, group_id, "the group follows it");
+        assert_eq!(rows[2].5, 1, "the added row stayed inside");
+        assert_eq!(rows[2].5, 1, "the added row stayed inside");
+
+        // A drop on the moving row itself is a wiggle, not a shuffle.
+        pane.agent_layer_drop(0, 0, true);
+        let rows = pane.agent_layers();
+        assert_eq!(rows[0].5, 0, "nothing moved");
+    }
+
+    #[test]
+    fn a_mask_hides_where_the_brush_paints_it_black() {
+        let (mut pane, pixels) = painting_pane();
+        // Something on the layer for the mask to hide.
+        pane.set_tool(3);
+        pane.brush.color = [10, 20, 30];
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        let document = pane.document.clone().expect("open");
+        let showed = concat_canvas::compose(&document, &pane.store)
+            .pixel(150, 100)
+            .expect("the painted pixel")
+            [3];
+        assert_eq!(showed, 255, "the stroke showed before any mask");
+
+        // A white mask over the base layer, the painting tools pointed
+        // at it.
+        pane.agent_layer_mask_add(0);
+        assert!(pane.agent_paint_mask(), "the tools point at the fresh mask");
+        let rows = pane.agent_layers();
+        assert!(rows[0].8, "the row carries a mask");
+        assert!(rows[0].9, "that mask is the one being painted");
+
+        let mask_id = pane
+            .document
+            .as_ref()
+            .expect("open")
+            .find(pane.active.expect("active"))
+            .and_then(|node| node.mask())
+            .map(|mask| mask.pixels)
+            .expect("the mask exists");
+        let mask = pane.store.get(mask_id).expect("mask pixels");
+        assert!(
+            mask.pixels().chunks_exact(4).all(|pixel| pixel == [255, 255, 255, 255]),
+            "a fresh mask shows everything"
+        );
+
+        // Painting black on the mask hides the stroke beneath it, and
+        // only where the dab landed.
+        pane.brush.color = [0, 0, 0];
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        let document = pane.document.clone().expect("open");
+        let frame = concat_canvas::compose(&document, &pane.store);
+        assert_eq!(
+            frame.pixel(150, 100).expect("the centre pixel")[3],
+            0,
+            "black on the mask hides what is under it"
+        );
+
+        // The mask's undo entry puts the white back, and the stroke
+        // shows again.
+        pane.undo();
+        let document = pane.document.clone().expect("open");
+        let frame = concat_canvas::compose(&document, &pane.store);
+        assert_eq!(
+            frame.pixel(150, 100).expect("the centre pixel")[3],
+            255,
+            "undo restores the mask, and the stroke with it"
+        );
+
+        // The layer's own pixels were never touched by any of it.
+        let layer = pane.store.get(pixels).expect("layer pixels");
+        let alpha: Vec<u8> = layer.pixels()[3..].iter().step_by(4).copied().collect();
+        assert!(alpha.contains(&255), "the stroke is still there");
+        assert_eq!(
+            pane.paint_target(),
+            Some(mask_id),
+            "the tools are still on the mask"
+        );
+
+        // Dropping the mask drops the mode with it.
+        pane.agent_layer_mask_remove(0);
+        assert!(!pane.agent_paint_mask(), "no mask, no mask painting");
+        assert!(pane.store.get(mask_id).is_none(), "the pixels went too");
+    }
+
+    #[test]
+    fn the_gradient_maps_colours_follow_the_palette() {
+        let (mut pane, _) = painting_pane();
+        pane.agent_adjustment_add(5); // Gradient map
+        let (kind, parameters) = pane.agent_adjustment_state();
+        assert_eq!(kind, 5);
+        assert!(parameters.is_empty(), "colours are not knobs");
+        let (low, high) = pane.gradient_colors().expect("a gradient map");
+        assert_eq!(low, [0.0, 0.0, 0.0], "a fresh map starts black");
+        assert_eq!(high, [1.0, 1.0, 1.0], "and ends white");
+
+        // The palette speaks 0..255 bytes; the map speaks 0..1 floats.
+        pane.agent_gradient_color(0, 2);
+        let (low, high) = pane.gradient_colors().expect("still a gradient map");
+        assert_eq!(low, [212.0 / 255.0, 59.0 / 255.0, 55.0 / 255.0]);
+        assert_eq!(high, [1.0, 1.0, 1.0], "the other end stood still");
+        pane.agent_gradient_color(1, 0);
+        assert_eq!(
+            pane.gradient_colors().expect("still").1,
+            [30.0 / 255.0, 30.0 / 255.0, 34.0 / 255.0]
+        );
+
+        // And the map really maps: the near-black default brush takes the
+        // low colour where it lands, on the layer beneath the adjustment.
+        pane.agent_layer_pick(1);
+        pane.set_tool(3);
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        let document = pane.document.as_ref().expect("open");
+        let pixel = concat_canvas::compose(document, &pane.store)
+            .pixel(150, 100)
+            .expect("a painted pixel");
+        assert!(
+            pixel[0] > 120 && pixel[1] < 120,
+            "the stroke's dark end reads as the low colour"
+        );
+
+        // A non-gradient row publishes no colours at all.
+        pane.agent_layer_pick(1);
+        assert!(pane.gradient_colors().is_none());
     }
 }

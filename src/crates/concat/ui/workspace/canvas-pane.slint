@@ -35,8 +35,9 @@ export global Palette {
 }
 
 // One row of the layers panel, as Rust publishes it: the row's node, its
-// nesting depth for the indent, and whether it is a group whose children
-// are shown (`expanded`) or not.
+// nesting depth for the indent, whether it is a group whose children are
+// shown (`expanded`) or not, whether it is a group at all, whether it
+// carries a mask, and whether that mask is the one being painted.
 export struct CanvasLayerData {
     id: int,
     name: string,
@@ -46,6 +47,8 @@ export struct CanvasLayerData {
     depth: int,
     expanded: bool,
     group: bool,
+    masked: bool,
+    mask-paint: bool,
 }
 
 // One control point of a curves channel, normalized `0..1` on both axes:
@@ -304,9 +307,22 @@ export component CanvasPane inherits Rectangle {
     /// The marching ants' phase, stepped by a timer in Rust: `0..3`, a
     /// quarter of the dash period each step.
     in property <int> ants;
+    /// The active gradient map's two colours, as the swatches read them.
+    in property <color> gradient-low: black;
+    in property <color> gradient-high: white;
     /// The layers panel's adjustment popup, open or not. Local state: no
     /// round trip, the panel decides nothing else about it.
     property <bool> adjustment-open: false;
+    /// The gradient map's colour popup: open, and which swatch (0 low,
+    /// 1 high) is being recoloured.
+    property <bool> gradient-open: false;
+    property <int> gradient-slot: 0;
+    /// The layer drag's state: the row being carried, the row it hovers
+    /// over, and whether it hovers the target's lower half. Local to the
+    /// panel; only the drop itself crosses to Rust.
+    property <int> drag-row: -1;
+    property <int> drop-row: -1;
+    property <bool> drop-below: false;
     /// The curves editor's channel tab: `0` red, `1` green, `2` blue.
     property <int> curve-channel: 0;
     /// The channel tab's points and segments, picked by the tab.
@@ -375,6 +391,18 @@ export component CanvasPane inherits Rectangle {
     callback layer-folded(index: int);
     callback layer-deleted(index: int);
     callback layer-moved(index: int, direction: int);
+    /// A drag dropped the row `source` onto the row `target`: into the
+    /// target when `below` says so and the target is a group - the
+    /// drop-on-the-name read - beside it otherwise.
+    callback layer-dropped(source: int, target: int, below: bool);
+    /// A white mask over the active row, the painting tools pointed at.
+    callback layer-mask-added();
+    /// The mask chip on the row was clicked: pick it and paint its mask,
+    /// or stop painting when it already was the one.
+    callback layer-mask-paint-toggled(index: int);
+    /// The active gradient map's low (`0`) or high (`1`) swatch recoloured
+    /// from the tray palette's `index`.
+    callback gradient-color-changed(slot: int, index: int);
     /// The adjustment panel: a kind picked out of the popup, and one of
     /// the active adjustment's knobs turned.
     callback adjustment-added(kind: int);
@@ -716,6 +744,11 @@ export component CanvasPane inherits Rectangle {
                             clicked => { root.layer-group-added(); }
                         }
                         IconButton {
+                            glyph: Glyph.mask;
+                            label: I18n.t("Add mask");
+                            clicked => { root.layer-mask-added(); }
+                        }
+                        IconButton {
                             glyph: Glyph.plus;
                             label: I18n.t("Add layer");
                             clicked => { root.layer-added(); }
@@ -730,11 +763,55 @@ export component CanvasPane inherits Rectangle {
                                 height: 30px;
                                 border-radius: Theme.r;
                                 background: layer.active ? Theme.field-hover : row-touch.has-hover ? Theme.field-hover : transparent;
-                                // The pick: the row's floor, under the eye
-                                // and the knob, which declare after it.
+                                border-width: root.drop-row == i && root.drag-row >= 0 ? 1px : 0;
+                                border-color: Theme.accent;
+                                opacity: root.drag-row == i && row-touch.dragged ? 0.5 : 1;
+                                // The pick and the drag share one floor: a
+                                // press lifts the row, a move carries it
+                                // over the neighbours, a release either
+                                // drops it or picks it. Rows sit on a
+                                // 32px pitch - a 30px row plus the 2px
+                                // gap - so the drop row is the press row
+                                // plus the pitches travelled, rounded,
+                                // and the half the pointer sits in on
+                                // that row decides above from below.
                                 row-touch := TouchArea {
+                                    property <length> press-y;
+                                    property <bool> dragged;
                                     mouse-cursor: pointer;
-                                    clicked => { root.layer-picked(i); }
+                                    clicked => {
+                                        if (!self.dragged) { root.layer-picked(i); }
+                                    }
+                                    pointer-event(event) => {
+                                        if (event.kind == PointerEventKind.down) {
+                                            self.press-y = self.mouse-y;
+                                            self.dragged = false;
+                                            root.drag-row = i;
+                                            root.drop-row = i;
+                                        } else if (event.kind == PointerEventKind.up
+                                            || event.kind == PointerEventKind.cancel) {
+                                            if (root.drag-row == i && self.dragged
+                                                && root.drop-row != i) {
+                                                root.layer-dropped(i, root.drop-row, root.drop-below);
+                                            }
+                                            root.drag-row = -1;
+                                            root.drop-row = -1;
+                                            root.drop-below = false;
+                                        }
+                                    }
+                                    moved => {
+                                        if (root.drag-row == i) {
+                                            let offset = (self.mouse-y - self.press-y) / 1px;
+                                            let target = Math.clamp(
+                                                i + Math.round(offset / 32),
+                                                0, root.layers.length - 1);
+                                            root.drop-row = target;
+                                            root.drop-below = offset - (target - i) * 32 >= 0;
+                                            if (Math.abs(offset) > 6) {
+                                                self.dragged = true;
+                                            }
+                                        }
+                                    }
                                 }
                                 HorizontalLayout {
                                     // The indent: one step per nesting
@@ -758,6 +835,18 @@ export component CanvasPane inherits Rectangle {
                                             glyph: layer.hidden ? Glyph.eye-off : Glyph.eye;
                                             label: layer.hidden ? I18n.t("Show layer") : I18n.t("Hide layer");
                                             clicked => { root.layer-visibility-toggled(i); }
+                                        }
+                                    }
+                                    // The mask chip: only on rows that
+                                    // carry a mask, lit while this very
+                                    // mask is the one being painted.
+                                    if layer.masked: VerticalLayout {
+                                        alignment: center;
+                                        IconButton {
+                                            glyph: Glyph.mask;
+                                            checked: layer.mask-paint;
+                                            label: layer.mask-paint ? I18n.t("Stop painting mask") : I18n.t("Paint mask");
+                                            clicked => { root.layer-mask-paint-toggled(i); }
                                         }
                                     }
                                     Text {
@@ -805,6 +894,79 @@ export component CanvasPane inherits Rectangle {
                                 font-size: Theme.fs - 1px;
                                 horizontal-alignment: center;
                                 overflow: elide;
+                            }
+                        }
+                    }
+
+                    // The gradient map's two colours: the ramp they make,
+                    // flanked by the swatches that recolour it. A swatch
+                    // opens the tray palette under the ramp; the pick
+                    // recolours that end and Rust recomposites.
+                    if root.adjustment-kind == 5: VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: center;
+
+                            Rectangle {
+                                width: 26px;
+                                height: 18px;
+                                border-radius: Theme.r;
+                                background: root.gradient-low;
+                                border-width: 1px;
+                                border-color: root.gradient-open && root.gradient-slot == 0 ? Theme.fg : Theme.line;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.gradient-slot = 0;
+                                        root.gradient-open = !(root.gradient-open && root.gradient-slot == 0);
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                width: 48px;
+                                height: 10px;
+                                border-radius: Theme.r;
+                                background: @linear-gradient(90deg, root.gradient-low, root.gradient-high);
+                                border-width: 1px;
+                                border-color: Theme.line;
+                            }
+                            Rectangle {
+                                width: 26px;
+                                height: 18px;
+                                border-radius: Theme.r;
+                                background: root.gradient-high;
+                                border-width: 1px;
+                                border-color: root.gradient-open && root.gradient-slot == 1 ? Theme.fg : Theme.line;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.gradient-slot = 1;
+                                        root.gradient-open = !(root.gradient-open && root.gradient-slot == 1);
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.gradient-open: HorizontalLayout {
+                            spacing: 3px;
+                            alignment: center;
+                            for color[ci] in Palette.colors: Rectangle {
+                                width: 14px;
+                                height: 14px;
+                                border-radius: Theme.r;
+                                background: color;
+                                border-width: 1px;
+                                border-color: Theme.line;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.gradient-color-changed(root.gradient-slot, ci);
+                                        root.gradient-open = false;
+                                    }
+                                }
                             }
                         }
                     }

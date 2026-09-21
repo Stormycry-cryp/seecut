@@ -759,5 +759,8 @@
   "Unfold group": "Развернуть группу",
   "Curves": "Кривые",
   "Group {0}": "Группа {0}",
-  "Drag to bend, click to add, double-click to remove": "Потяните, чтобы изогнуть; щелчок — добавить; двойной щелчок — удалить"
+  "Drag to bend, click to add, double-click to remove": "Потяните, чтобы изогнуть; щелчок — добавить; двойной щелчок — удалить",
+  "Add mask": "Добавить маску",
+  "Paint mask": "Рисовать по маске",
+  "Stop painting mask": "Прекратить рисование по маске"
 }

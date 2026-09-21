@@ -1167,6 +1167,16 @@ impl CanvasGpu {
         self.masks.get(&mask.pixels).map(|r| r.texture.clone())
     }
 
+    /// Re-uploads a raster mask whole: painting on a mask, or undoing
+    /// one, rewrites its pixels, and the resident keyed by the mask's id
+    /// has to follow. Masks are small and the whole-frame upload is one
+    /// call - there is no dirty-rect plumbing for a texture the shader
+    /// samples in document coordinates.
+    pub fn refresh_mask(&mut self, id: PixelId, frame: &Frame) {
+        self.masks.remove(&id);
+        self.upload_mask(id, frame);
+    }
+
     fn upload_mask(&mut self, id: PixelId, frame: &Frame) {
         let texture = self.create_data_texture(frame.width(), frame.height(), "mask");
         let row_bytes = frame.width() as usize * 4;

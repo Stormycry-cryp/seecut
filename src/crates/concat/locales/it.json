@@ -759,5 +759,8 @@
   "Unfold group": "Espandi gruppo",
   "Curves": "Curve",
   "Group {0}": "Gruppo {0}",
-  "Drag to bend, click to add, double-click to remove": "Trascina per piegare, clicca per aggiungere, doppio clic per rimuovere"
+  "Drag to bend, click to add, double-click to remove": "Trascina per piegare, clicca per aggiungere, doppio clic per rimuovere",
+  "Add mask": "Aggiungi maschera",
+  "Paint mask": "Dipingi maschera",
+  "Stop painting mask": "Smetti di dipingere la maschera"
 }

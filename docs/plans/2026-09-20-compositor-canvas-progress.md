@@ -293,6 +293,79 @@ cargo check -p concat --no-default-features --features wgpu
   agent 共用同一私有路径，无旁路。
 
 ### 6. 剩余待办
-- 图层面板拖拽入组（引擎 move_node 已就绪，缺 UI 手势）
-- GradientMap 双色 / 蒙版绘制 UI、压感（Slint 上游）
+- ~~图层面板拖拽入组~~（P10 完成）
+- ~~GradientMap 双色 / 蒙版绘制 UI~~（P10 完成）
+- 压感（阻塞：Slint 1.17 PointerEvent 无 pressure 字段）
 - 真机全链路手测
+
+## 八、P10：拖拽入组手势、GradientMap 双色 UI、蒙版绘制（2026-09-21）
+
+### 1. 图层面板拖拽手势（入组 + 重排）
+- 行级手势：按下即"拿起"（drag-row），移动按 32px 行距（30px 行 +
+  2px 间距）换算目标行（`Math.round` 返回 int，直接整数域 clamp），
+  指针落在目标行上/下半决定 above/below；释放时 below && 目标是组 =
+  入组（Photoshop 拖到组名上），否则插到目标相邻兄弟槽。
+  抬起行 50% 透明、落点行描 accent 边框；拖动超过 6px 才算拖
+  （否则仍是单击选中）。
+- 引擎侧 `move_row_onto(source, target, below)`：入组走 move_node
+  （尾部追加 = 面板最前）；兄弟槽走"先摘出、再定位目标槽、按半
+  插入"——摘出后重定位，天然规避同容器索引位移。自落（source ==
+  target）与"组落进自身子树"均提前拒绝（后者在 take 前判断，
+  保证拒绝不留半棵树）。
+- 新增自由函数 `locate_node`（children_holding 的"带槽位"版）。
+- CanvasMsg::LayerDrop + agent_layer_drop，UI 与 agent 共用。
+
+### 2. GradientMap 双色 UI（第 5 类）
+- 面板在 kind==5 时显示：低色块 + linear-gradient 渐变条 + 高色块；
+  点任一色块展开 8 格托盘色板（复用 Palette），选中回填对应端并
+  重合成。Rust 侧 `set_gradient_color`（0..255 调色板 → 0..1 f32）、
+  `gradient_colors()` 发布（studio 用 from_rgb_u8 转 slint::Color）。
+- CanvasMsg::GradientColor(slot, index) + agent_gradient_color。
+
+### 3. 蒙版绘制 UI（全栈闭环）
+- 文档模型/合成器（CPU mask_coverage 读红通道、GPU mask 纹理 .r
+  采样）本就支持蒙版——本轮补的是"从面板到像素"的最后一公里：
+  - 面板头部"添加蒙版"：活动行（层/组/调整层皆可）挂一张文档
+    尺寸的全白蒙版（store.put + LayerMask::new），画笔自动切到
+    蒙版；行内 mask chip（contrast 图标）点击 = 选中该行并绘制
+    其蒙版，再点一次停止（paint_mask 模式位）。
+  - 绘制目标抽象 `paint_target()`：蒙版模式下返回活动行蒙版
+    PixelId，否则图层像素；brush_press/release/commit_tiles/
+    edit_selection 统一走它。蒙版以 RGB 直绘，合成读红通道 =
+    灰度语义（深色遮、浅色显）。
+  - **GPU 关键点**：蒙版纹理按 PixelId 键缓存于 masks 表，逐瓦
+    片 upload 只进 residents 表、蒙版不可见——新增
+    `CanvasGpu::refresh_mask`（摘除旧 resident + 整幅重传），
+    stroke 提交 / undo / redo / 选区填充按"目标是蒙版"分流
+    （is_mask_pixels 判定）。蒙版 stroke 期间 store 始终保持
+    最新（蒙版是 store 权威，反向于图层路径）。
+  - 蒙版移除走 agent（remove_mask + retain_document），模式位
+    随之归零，杜绝悬空目标。
+- LayerRow 扩为 10 元组（+masked/mask_paint）。
+
+### 4. 审查发现与修复（两处引擎级）
+- **take 不递归（P10 发现，影响此前所有轮次）**：
+  `LayerGroup::take` 只查直接子级，嵌套节点的 take_node 永远
+  失败——move_node / remove / 删除嵌套行全部静默无效（P8 分组
+  测试恰好只动根级节点，未暴露）。改为递归摘除。
+- **LayerRow 元组序错位（P9 引入）**：layers_data 实际顺序是
+  (…depth, group, expanded)，与类型文档及 studio 解构命名
+  (…depth, expanded, group) 相反，导致折叠组的 chevron 在
+  Slint 侧条件反转（折叠组彻底丢 chevron，无法再展开）。统一
+  为文档顺序，并补断言区分 expanded/group 两个槽位。
+- clippy manual_contains 1 处。
+
+### 5. 验证（全量回归）
+- concat-canvas（gpu）：**134 全绿**；
+- concat（wgpu）：**63 全绿**（+3：拖拽入组/拒绝/出组、蒙版
+  绘制与撤销往返、渐变色映射断言）；
+- clippy `-D warnings` 双 crate 干净；
+- i18n：3 个新词条 × 13 语言（Add mask / Paint mask /
+  Stop painting mask）。
+- agent 接口：+8（agent_layer_drop / agent_layer_mask_add /
+  remove / toggle / agent_paint_mask / agent_gradient_color 等）。
+
+### 6. 剩余待办
+- 压感（阻塞：Slint 1.17 PointerEvent 无 pressure 字段）
+- 蒙版启用/停用与删除的 UI 露出（引擎与 agent 已就绪）
+- 真机全链路手测、Windows 验证、打包上线硬化

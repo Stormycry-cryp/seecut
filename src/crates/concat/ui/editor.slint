@@ -283,6 +283,9 @@ export global Editor {
     in-out property <[CanvasAdjustmentParam]> canvas-adjustment-params;
     /// The marching ants' phase, stepped by a timer in Rust.
     in-out property <int> canvas-ants: 0;
+    /// The active gradient map's two colours, as the swatches read them.
+    in-out property <color> canvas-gradient-low: black;
+    in-out property <color> canvas-gradient-high: white;
 
     /// The wheel or trackpad scroll: pixel deltas, whether ctrl/cmd makes it
     /// a zoom, and where over the viewport it happened.
@@ -331,6 +334,16 @@ export global Editor {
     callback canvas-layer-folded(index: int);
     callback canvas-layer-deleted(index: int);
     callback canvas-layer-moved(index: int, direction: int);
+    /// A layers-panel drag dropped one row onto another.
+    callback canvas-layer-dropped(source: int, target: int, below: bool);
+    /// A white mask over the active row, the painting tools pointed at.
+    callback canvas-layer-mask-added();
+    /// The mask chip on a row was clicked: pick it and paint its mask,
+    /// or stop painting when it already was the one.
+    callback canvas-layer-mask-paint-toggled(index: int);
+    /// The active gradient map's low (`0`) or high (`1`) swatch
+    /// recoloured from the tray palette's `index`.
+    callback canvas-gradient-color-changed(slot: int, index: int);
     /// The adjustment panel.
     callback canvas-adjustment-added(kind: int);
     callback canvas-adjustment-param-changed(index: int, value: float);
