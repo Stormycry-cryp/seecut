@@ -116,6 +116,7 @@ export component TitleBar inherits Rectangle {
     /// act on an edit, and on this screen there is neither — a strip of
     /// controls that all refuse is worse than a strip without them.
     in property <bool> minimal;
+    in property <bool> document-controls: true;
 
     /// Draw the window buttons at the right: true wherever the platform's
     /// decorations were taken off, which is everywhere but macOS.
@@ -175,22 +176,13 @@ export component TitleBar inherits Rectangle {
         padding-right: root.own-buttons ? 0px : 8px;
         spacing: 2px;
 
-        // mark + wordmark
-        VerticalLayout {
-            alignment: center;
-            Image {
-                width: 16px;
-                height: 16px;
-                source: @image-url("assets/concat-logo.png");
-            }
-        }
-
+        // Product name, aligned with the workspace content.
         VerticalLayout {
             alignment: center;
             padding-left: 6px;
             padding-right: 6px;
             Text {
-                text: "Concat";
+                text: "SeeCut";
                 color: Theme.fg;
                 font-size: Theme.fs-lg;
                 font-weight: Theme.weight-display;
@@ -251,7 +243,7 @@ export component TitleBar inherits Rectangle {
             }
         }
 
-        if !root.minimal: VerticalLayout {
+        if !root.minimal && root.document-controls: VerticalLayout {
             alignment: center;
             padding-left: 4px;
 
@@ -313,7 +305,7 @@ export component TitleBar inherits Rectangle {
     // laid out, so it stays centred in the window and not in whatever space
     // the menus leave over.
     centre := HorizontalLayout {
-        visible: !root.minimal;
+        visible: !root.minimal && root.document-controls;
         x: (parent.width - self.preferred-width) / 2;
         y: 0;
         width: self.preferred-width;

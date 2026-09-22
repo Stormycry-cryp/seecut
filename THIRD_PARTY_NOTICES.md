@@ -157,3 +157,50 @@ under the Unsplash License. The source still lives at
 `assets/effect-preview-source.jpg`; the tiles are each effect's real FFmpeg
 chain (`concat-export`'s `chains.rs`) run over it, and are embedded from
 `src/crates/concat/ui/assets/effect-previews/`.
+
+## Compositor — the image canvas, ported
+
+The image-editing canvas (`src/crates/concat-canvas`, and the Slint panes
+that drive it) is a port of [Compositor](https://github.com/robbietilton/Compositor),
+an open-source Photoshop alternative for macOS by Robbie Tilton, licensed
+**MIT**: layers with folders, clipping and layer masks, non-destructive
+transforms, adjustment layers, selections, painting tools, and the thirteen
+layer blend modes.
+
+The port is a reimplementation, not a copy: Compositor is Swift, AppKit and
+Core Graphics, and Concat's canvas is Rust and WGSL, so no Swift source is
+compiled into a Concat build and no Apple framework is required. What came
+across is design and mathematics - the layered document model, the
+value-snapshot undo stack, the tiled brush-update scheme, and the blend-mode
+formulas (which here follow the PDF 32000 compositing model, including the
+source-alpha handling `Compositor` had to route through Core Image because
+Core Graphics gets it wrong for Color Dodge and Color Burn).
+
+The upstream project's licence, as required by its terms:
+
+> MIT License
+>
+> Copyright (c) 2026 Wonder Assembly LLC
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in
+> all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+MIT is compatible with Concat's AGPL-3.0-or-later: the ported work may be
+conveyed under the AGPL, and the notice above travels with it. The port's
+plan and its scope are recorded in
+`docs/plans/2026-09-20-compositor-canvas-port-plan.md`.

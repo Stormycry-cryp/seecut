@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Modal, Glyph } from "../primitives/primitives.slint";
+import { SeeCut } from "state.slint";
+import { AppButton, AssetPreview, CloudField, EmptyState, MenuAction } from "components.slint";
+
+export component TemplateEditor inherits Modal {
+    in property <bool> current-config;
+    title: root.current-config ? "保存当前生成配置" : "编辑模板";
+    glyph: Glyph.tag;
+    surface-width: Math.min(520px, root.width - 32px);
+    VerticalLayout {
+        padding: 20px; padding-top: 12px; spacing: 12px;
+        CloudField { auto-focus: true; value <=> SeeCut.template-name; placeholder: "模板名称"; edited(value) => { SeeCut.changed("template-name", value); } }
+        CloudField { value <=> SeeCut.template-prompt; multiline: true; placeholder: "提示词"; edited(value) => { SeeCut.changed("template-prompt", value); } }
+        Text { text: root.current-config ? "保存当前模型、参数和参考素材。" : "这里修改名称和提示词。修改模型、参数或参考素材时，先应用到生成页，再覆盖保存。"; color: Theme.fg-muted; wrap: word-wrap; }
+        if SeeCut.error != "": Text { text: SeeCut.error; color: Theme.danger; wrap: word-wrap; }
+        HorizontalLayout {
+            alignment: end; spacing: 8px;
+            AppButton { label: "取消"; clicked => { root.closed(); } }
+            AppButton { label: "保存"; primary: true; enabled: SeeCut.template-name != "" && !SeeCut.working; clicked => { SeeCut.action(root.current-config ? "template-save-current" : "template-save", SeeCut.template-id); if SeeCut.error == "" { root.closed(); } } }
+        }
+    }
+}
+
+export component TemplateSaveControl inherits Rectangle {
+    height: 34px;
+    HorizontalLayout {
+        spacing: 6px;
+        AppButton { label: "存为模板"; glyph: Glyph.tag; enabled: !SeeCut.working; clicked => { SeeCut.action("template-new", ""); SeeCut.template-editor-current = true; SeeCut.template-editor-open = true; } }
+        if SeeCut.template-id != "": AppButton { label: "覆盖模板"; enabled: !SeeCut.working; clicked => { SeeCut.template-prompt = SeeCut.prompt; SeeCut.changed("template-prompt", SeeCut.prompt); SeeCut.template-editor-current = true; SeeCut.template-editor-open = true; } }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}
+
+export component TemplatesPage inherits Rectangle {
+    property <string> delete-name;
+    property <length> menu-x: 24px;
+    property <length> menu-y: 96px;
+    VerticalLayout {
+        padding: 20px; padding-top: 12px; spacing: 12px;
+        Text { text: SeeCut.templates.length + " 个模板 · 保存提示词、模型参数和参考素材"; font-size: 13px; color: Theme.fg-muted; height: 24px; }
+        if SeeCut.templates.length == 0: EmptyState { glyph: Glyph.tag; title: "暂无生成模板"; detail: "在生成页配置模型和参考素材后，保存为模板。"; }
+        if SeeCut.templates.length > 0: ScrollView {
+            viewport-width: self.visible-width; viewport-height: grid.height;
+            horizontal-scrollbar-policy: always-off; vertical-stretch: 1;
+            grid := Rectangle {
+                x: 0px; y: 0px; width: parent.width;
+                property <int> columns: Math.max(1, Math.floor(self.width / 310px));
+                property <length> card-width: (self.width - (self.columns - 1) * 14px) / self.columns;
+                height: Math.ceil(SeeCut.templates.length / self.columns) * 338px - 14px;
+                for item[i] in SeeCut.templates: card := Rectangle {
+                    x: Math.mod(i, grid.columns) * (grid.card-width + 14px); y: Math.floor(i / grid.columns) * 338px;
+                    width: grid.card-width; height: 324px; background: Theme.panel; border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line;
+                    Text { x: 16px; y: 14px; width: parent.width - 32px; height: 24px; text: item.name; font-size: 16px; color: Theme.fg; font-weight: Theme.weight-title; overflow: elide; }
+                    Text { x: 16px; y: 44px; width: parent.width - 32px; height: 20px; text: item.mode-label + " · " + item.model-name; font-size: 13px; color: Theme.fg-muted; overflow: elide; }
+                    Rectangle { x: 16px; y: 72px; width: parent.width - 32px; height: 50px; clip: true;
+                        Text { x: 0px; y: 0px; width: parent.width; height: self.preferred-height; text: item.prompt-preview == "" ? "未设置提示词" : item.prompt-preview; font-size: 14px; color: Theme.fg; wrap: word-wrap; vertical-alignment: top; }
+                    }
+                    Text { x: 16px; y: 128px; width: parent.width - 32px; height: 20px; text: item.parameter-summary; font-size: 13px; color: Theme.fg-muted; overflow: elide; }
+                    Text { x: 16px; y: 150px; width: parent.width - 32px; height: 18px; text: item.references.length == 0 ? "无参考素材" : item.reference-summary; font-size: 13px; color: Theme.fg-muted; overflow: elide; }
+                    HorizontalLayout {
+                        x: 16px; y: 178px; width: parent.width - 32px; height: 72px; spacing: 6px; alignment: start;
+                        for ref[r] in item.references: Rectangle {
+                            visible: r < 3; width: r < 3 ? 72px : 0px; height: 72px; border-radius: Theme.r;
+                            AssetPreview {
+                                width: 100%; height: 100%;
+                                source: ref.preview;
+                                fallback-glyph: ref.kind == "video" ? Glyph.film : ref.kind == "audio" ? Glyph.music : Glyph.image;
+                                fallback-size: 24px;
+                                accessible-name: "参考素材";
+                            }
+                            if r == 2 && item.references.length > 3: Rectangle {
+                                width: 100%; height: 100%; border-radius: Theme.r; background: Theme.image-control-hover;
+                                Text { width: 100%; height: 100%; text: "+" + (item.references.length - 3); color: Theme.image-control-ink; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                    Rectangle { x: 0px; y: 260px; width: 100%; height: 1px; background: Theme.line; }
+                    HorizontalLayout {
+                        x: 14px; y: 274px; width: parent.width - 28px; height: 34px; spacing: 6px;
+                        AppButton { label: "应用模板"; enabled: !SeeCut.working; clicked => { SeeCut.action("template-apply", item.id); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        AppButton { label: "更多"; subtle: true; clicked => { SeeCut.template-menu-id = item.id; root.delete-name = item.name; root.menu-x = self.absolute-position.x - root.absolute-position.x; root.menu-y = self.absolute-position.y - root.absolute-position.y + self.height + 4px; } }
+                    }
+                }
+
+            }
+        }
+    }
+    if SeeCut.template-menu-id != "": TouchArea { clicked => { SeeCut.template-menu-id = ""; } }
+    if SeeCut.template-menu-id != "": Rectangle {
+        x: Math.clamp(root.menu-x, 12px, root.width - 240px); y: Math.clamp(root.menu-y, 12px, root.height - 98px);
+        width: 228px; height: 92px; background: Theme.raised; border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
+        VerticalLayout { padding: 8px; spacing: 0px;
+            MenuAction { auto-focus: true; label: "编辑名称和提示词"; glyph: Glyph.tag; clicked => { SeeCut.action("template-edit", SeeCut.template-menu-id); SeeCut.template-editor-current = false; SeeCut.template-editor-open = true; SeeCut.template-menu-id = ""; } }
+            MenuAction { label: "删除模板"; glyph: Glyph.trash; danger: true; clicked => { SeeCut.template-delete-id = SeeCut.template-menu-id; SeeCut.template-menu-id = ""; } }
+        }
+    }
+    Modal {
+        open: SeeCut.template-delete-id != ""; title: "删除模板"; glyph: Glyph.trash;
+        surface-width: Math.min(420px, root.width - 32px); closed => { SeeCut.template-delete-id = ""; }
+        VerticalLayout {
+            padding: 20px; spacing: 16px;
+            Text { text: "删除“" + root.delete-name + "”？参考素材会保留。"; color: Theme.fg; wrap: word-wrap; }
+            HorizontalLayout { alignment: end; spacing: 8px;
+                AppButton { label: "取消"; clicked => { SeeCut.template-delete-id = ""; } }
+                AppButton { label: "删除"; danger: true; clicked => { SeeCut.action("template-delete", SeeCut.template-delete-id); SeeCut.template-delete-id = ""; } }
+            }
+        }
+    }
+}

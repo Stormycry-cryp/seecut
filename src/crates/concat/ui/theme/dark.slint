@@ -28,7 +28,7 @@
 //     prominence, and here prominence happens to run towards white; that is
 //     the one thing about it a light palette cannot copy.
 //   - `on-accent` is the ink that sits *on* the accent, and it is dark because
-//     the accent is bright. Swap the accent for a dark one and this has to
+//     the accent is light. Swap the accent for a dark one and this has to
 //     become light in the same edit, or every activated control loses its
 //     label — which is exactly what the light palette does. The same pairing
 //     holds for `on-green` and `on-scrim`.
@@ -77,39 +77,31 @@ export global Dark {
     // separating a pane from the ground; without one the value step has to do
     // all of it, and a darker ladder leaves the panes reading as holes in the
     // window rather than as surfaces on it.
-    out property <color> panel: #212123;
-    out property <color> raised: #2b2b2e;
-    out property <color> well: #19191b;
-    out property <color> field: #323235;
-    out property <color> field-hover: #3b3b3e;
-    out property <color> field-active: #46464a;
+    out property <color> panel: #23232b;
+    out property <color> raised: #2d2d37;
+    out property <color> well: #191920;
+    out property <color> field: #34343f;
+    out property <color> field-hover: #40404c;
+    out property <color> field-active: #494958;
 
     // hairlines — white-alpha, so they hold on panel, well, and ground alike.
     out property <color> line: #ffffff1a;         // rgb(255 255 255 / 0.1)
     out property <color> line-strong: #ffffff33;  // rgb(255 255 255 / 0.2)
 
     // text
-    out property <color> fg: #f5f5f7;
-    out property <color> fg-muted: #a1a1a6;
-    out property <color> fg-dim: #6e6e73;
+    out property <color> fg: #f3f2fa;
+    out property <color> fg-muted: #b9b7c8;
+    out property <color> fg-dim: #9693aa;
 
-    // accents
-    //
-    // Lime, not blue. The two places that carry the look are the selection
-    // highlight and every activated tool, and both are lime; making it the
-    // one accent as well says the same thing with one token instead of three.
-    //
-    // It is legible against near-black and near-white alike, which is what a
-    // selection has to be: it lands on whatever happens to be underneath it.
-    // What sits *on* it therefore has to be dark ink, and fixed — see
-    // `on-accent` below.
-    out property <color> accent: #cbf53f;
-    out property <color> accent-hover: #d9ff63;
-    out property <color> accent-soft: #cbf53f33;   // rgb(203 245 63 / 0.2)
+    // Violet is shared by selection, active tools and primary actions.
+    // Its dark ink pairing keeps filled controls readable.
+    out property <color> accent: #b5a7ff;
+    out property <color> accent-hover: #c7bcff;
+    out property <color> accent-soft: #a99af52b;
     out property <color> green: #30d158;
     // Ink for text and glyphs sitting ON the accent. A bright accent needs a
     // dark one; a dark accent would want #ffffff here instead.
-    out property <color> on-accent: #15220a;
+    out property <color> on-accent: #221944;
     out property <color> on-green: #06210f;
 
     // The Rail's dragger — the raised chip you push along a hairline rail, as
@@ -173,14 +165,14 @@ export global Dark {
     // still reads as a well cut into the pane, and a clip's own dark ground
     // now sits *on* something rather than floating in a hole. Both stay well
     // under `panel`, or the empty stretches would read as content.
-    out property <color> lane: #1a1a1c;
-    out property <color> lane-alt: #1e1e20;
+    out property <color> lane: #1b1b1b;
+    out property <color> lane-alt: #202020;
     // The ruler is its own surface, not the first row of the stack: a step
     // under the darker lane, so the strip carrying the timestamps reads as
     // the floor of the pane and the banding starts below it. It followed
     // `raised` before, which put it above the panel and made it the brightest
     // thing in the pane — the opposite of what a ruler should be.
-    out property <color> ruler: #171719;
+    out property <color> ruler: #181818;
     /// The vertical rules. 6% white was set against a lane that was still a
     /// dark grey, and all but vanished when the lanes went black — a grid that
     /// costs elements and reads as nothing. 14% clears both of the tones the
@@ -228,7 +220,7 @@ export global Dark {
     // A sample of something meant for footage - a title look on a card -
     // sits on a dark ground so a white title reads, but a grey one rather
     // than the stage's black, so the card is a card and not a hole.
-    out property <color> sample-ground: #37373a;
+    out property <color> sample-ground: #383838;
 
     // The sheet that covers the window behind a dialog. Dark rather than
     // tinted: it has to work over the whole editor, and any hue in it would
@@ -253,6 +245,6 @@ export global Dark {
 
     // window ground the panes float on — a shade under the darkest panel so
     // the gutters read as gaps and not as seams
-    out property <color> page: #151517;
-    out property <color> page-fg-muted: #a1a1a6;
+    out property <color> page: #19191f;
+    out property <color> page-fg-muted: #b9b7c8;
 }

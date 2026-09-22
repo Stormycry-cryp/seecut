@@ -7,6 +7,7 @@ import { DockSide } from "../dock.slint";
 import { PaneKind } from "pane-switcher.slint";
 import { Editor } from "../editor.slint";
 import { ConfigPane } from "config-pane.slint";
+import { CanvasPane, CanvasLayerData } from "canvas-pane.slint";
 import { MediaPane } from "media-pane.slint";
 import { PreviewPane } from "preview-pane.slint";
 import { TimelinePane } from "timeline-pane.slint";
@@ -28,6 +29,7 @@ export component Seat inherits Rectangle {
     /// Which box this is, 0..3. Travels in the drag payload so a drop can say
     /// where the panel came from.
     in property <int> index;
+    in property <bool> standalone;
 
     /// Its corner button was used.
     callback picked(kind: PaneKind);
@@ -179,6 +181,108 @@ export component Seat inherits Rectangle {
             }
             stage-dragged(x, y, snap) => { Editor.stage-dragged(x, y, snap); }
             stage-released => { Editor.stage-released(); }
+        }
+
+    if root.kind == PaneKind.canvas: CanvasPane {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.height;
+
+            pane-picked(kind) => { root.picked(kind); }
+            pane-seat: root.index;
+            standalone: root.standalone;
+            pane-removable: Editor.seats.length > 1;
+            pane-removed => { root.removed(); }
+
+            frame: Editor.canvas-frame;
+            has-document: Editor.canvas-has-document;
+            can-undo: Editor.canvas-can-undo;
+            can-redo: Editor.canvas-can-redo;
+            sidebar-open: Editor.canvas-sidebar-open;
+            document-name: Editor.canvas-name;
+            zoom: Editor.canvas-zoom;
+            pan-x: Editor.canvas-pan-x;
+            pan-y: Editor.canvas-pan-y;
+            stage-w: Editor.canvas-stage-w;
+            stage-h: Editor.canvas-stage-h;
+            tool: Editor.canvas-tool;
+            brush-diameter <=> Editor.canvas-brush-diameter;
+            brush-opacity <=> Editor.canvas-brush-opacity;
+            brush-hardness <=> Editor.canvas-brush-hardness;
+            brush-color <=> Editor.canvas-brush-color;
+            has-selection: Editor.canvas-has-selection;
+            selection-x: Editor.canvas-selection-x;
+            selection-y: Editor.canvas-selection-y;
+            selection-w: Editor.canvas-selection-w;
+            selection-h: Editor.canvas-selection-h;
+            marquee-x: Editor.canvas-marquee-x;
+            marquee-y: Editor.canvas-marquee-y;
+            marquee-w: Editor.canvas-marquee-w;
+            marquee-h: Editor.canvas-marquee-h;
+            layers <=> Editor.canvas-layers;
+            active-layer: Editor.canvas-active-layer;
+            checker: Editor.canvas-checker;
+            adjustment-kind: Editor.canvas-adjustment-kind;
+            adjustment-params <=> Editor.canvas-adjustment-params;
+            curve-red <=> Editor.canvas-curve-red;
+            curve-green <=> Editor.canvas-curve-green;
+            curve-blue <=> Editor.canvas-curve-blue;
+            curve-segments-red <=> Editor.canvas-curve-segments-red;
+            curve-segments-green <=> Editor.canvas-curve-segments-green;
+            curve-segments-blue <=> Editor.canvas-curve-segments-blue;
+            ants: Editor.canvas-ants;
+
+            nav-scroll(dx, dy, zoom-modifier, x, y) => {
+                Editor.canvas-scroll(dx, dy, zoom-modifier, x, y);
+            }
+            nav-pan-press(x, y) => { Editor.canvas-pan-press(x, y); }
+            nav-pan-move(x, y) => { Editor.canvas-pan-move(x, y); }
+            nav-zoom-press(x, y, alt) => { Editor.canvas-zoom-press(x, y, alt); }
+            nav-zoom-move(x, y) => { Editor.canvas-zoom-move(x, y); }
+            nav-release(alt) => { Editor.canvas-release(alt); }
+            nav-fit => { Editor.canvas-fit(); }
+            canvas-resized(width, height) => { Editor.canvas-resized(width, height); }
+            canvas-open => { Editor.canvas-open(); }
+            tool-changed(index) => { Editor.canvas-tool-changed(index); }
+            brush-press(x, y) => { Editor.canvas-brush-press(x, y); }
+            brush-move(x, y) => { Editor.canvas-brush-move(x, y); }
+            brush-release => { Editor.canvas-brush-release(); }
+            brush-size-changed(value) => { Editor.canvas-brush-size-changed(value); }
+            brush-opacity-changed(value) => { Editor.canvas-brush-opacity-changed(value); }
+            brush-hardness-changed(value) => { Editor.canvas-brush-hardness-changed(value); }
+            brush-color-changed(index) => { Editor.canvas-brush-color-changed(index); }
+            canvas-undo => { Editor.canvas-undo(); }
+            canvas-redo => { Editor.canvas-redo(); }
+            marquee-press(x, y) => { Editor.canvas-marquee-press(x, y); }
+            marquee-move(x, y) => { Editor.canvas-marquee-move(x, y); }
+            marquee-release => { Editor.canvas-marquee-release(); }
+            wand-click(x, y) => { Editor.canvas-wand-click(x, y); }
+            select-all => { Editor.canvas-select-all(); }
+            deselect => { Editor.canvas-deselect(); }
+            fill-selection => { Editor.canvas-fill-selection(); }
+            delete-selection => { Editor.canvas-delete-selection(); }
+            layer-picked(index) => { Editor.canvas-layer-picked(index); }
+            layer-visibility-toggled(index) => { Editor.canvas-layer-visibility-toggled(index); }
+            layer-opacity-changed(index, opacity) => { Editor.canvas-layer-opacity-changed(index, opacity); }
+            layer-added => { Editor.canvas-layer-added(); }
+            layer-group-added => { Editor.canvas-layer-group-added(); }
+            layer-folded(index) => { Editor.canvas-layer-folded(index); }
+            layer-deleted(index) => { Editor.canvas-layer-deleted(index); }
+            layer-moved(index, direction) => { Editor.canvas-layer-moved(index, direction); }
+            layer-dropped(source, target, below) => { Editor.canvas-layer-dropped(source, target, below); }
+            layer-mask-added => { Editor.canvas-layer-mask-added(); }
+            layer-mask-removed => { Editor.canvas-layer-mask-removed(); }
+            layer-mask-enable-toggled => { Editor.canvas-layer-mask-enable-toggled(); }
+            layer-mask-paint-toggled(index) => { Editor.canvas-layer-mask-paint-toggled(index); }
+            gradient-color-changed(slot, index) => { Editor.canvas-gradient-color-changed(slot, index); }
+            adjustment-added(kind) => { Editor.canvas-adjustment-added(kind); }
+            adjustment-param-changed(index, value) => { Editor.canvas-adjustment-param-changed(index, value); }
+            curve-set(channel, index, x, y) => { Editor.canvas-curve-set(channel, index, x, y); }
+            curve-add(channel, x, y) => { Editor.canvas-curve-add(channel, x, y); }
+            curve-remove(channel, index) => { Editor.canvas-curve-remove(channel, index); }
+            export-png => { Editor.canvas-export-png(); }
+            save-comp => { Editor.canvas-save-comp(); }
         }
 
     if root.kind == PaneKind.inspector: ConfigPane {

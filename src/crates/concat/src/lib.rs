@@ -32,11 +32,15 @@ mod ui {
 }
 
 mod chips;
+mod cloud;
+mod cloud_files;
 mod dock;
 mod format;
+mod generation_templates;
 mod gpu;
 mod host;
 mod i18n;
+mod personal_library;
 mod platform;
 /// What a phone's own crate installs before the window runs: the way to
 /// the system's file picker. See `platform::pick_files_async`.
@@ -47,6 +51,7 @@ mod prefs;
 mod presets;
 mod studio;
 mod sysinfo;
+mod ui_preview;
 
 use dock::{Dock, SEAT_MIN_GRAB, SEAT_MIN_H, SEAT_MIN_W};
 use host::{Host, Shell, on_ui};
@@ -83,8 +88,40 @@ pub fn open_logging(extra: Option<Box<dyn log::Log>>) {
     }
 }
 
+/// Publishes the canvas-only state that cannot travel through Editor's
+/// existing layer row struct: editable colour controls and cached row
+/// thumbnails. The mutable canvas view phase prepares the cache; publication
+/// only reads the snapshot, including asynchronous and Agent updates.
+fn publish_canvas_aux(studio: &Studio, app: &App) {
+    let (color, hex, target, layer_images, mask_images) = {
+        let canvas = &studio.canvas;
+        let (layer_images, mask_images) = canvas.layer_thumbnails();
+        (
+            canvas.brush.color,
+            canvas.brush_hex(),
+            canvas.paint_target_label().to_owned(),
+            layer_images,
+            mask_images,
+        )
+    };
+    let controls = app.global::<CanvasControls>();
+    controls.set_red(f32::from(color[0]));
+    controls.set_green(f32::from(color[1]));
+    controls.set_blue(f32::from(color[2]));
+    controls.set_color(slint::Color::from_rgb_u8(color[0], color[1], color[2]));
+    controls.set_hex(hex.into());
+    controls.set_target(target.into());
+
+    let thumbs = app.global::<CanvasThumbs>();
+    thumbs.set_layer_images(ModelRc::new(VecModel::from(layer_images)));
+    thumbs.set_mask_images(ModelRc::new(VecModel::from(mask_images)));
+}
+
 /// Builds the window, binds it to the engine, and runs it until it closes.
 pub fn run() -> Result<(), slint::PlatformError> {
+    if let Some(directory) = std::env::var_os("SEECUT_UI_PREVIEW_DIR") {
+        return ui_preview::run(std::path::Path::new(&directory));
+    }
     // The shell doesn't exist yet - it needs the window the backend is about
     // to help create - but `Shell::with` is a no-op until `Shell::install`
     // runs, and by the time an OS drop can actually happen, it has. Import
@@ -93,6 +130,45 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // same "no project open yet" no-op that a picked one does.
     let gpu = platform::select_backend(|paths| {
         Shell::with(|shell, app| {
+            let cloud = app.global::<ui::SeeCut>();
+            if cloud.get_auth_open() {
+                return;
+            }
+            if cloud.get_asset_picker_open() {
+                if cloud.get_asset_picker_source() == 0 {
+                    for path in paths {
+                        cloud.invoke_action(
+                            "personal-drop".into(),
+                            path.to_string_lossy().into_owned().into(),
+                        );
+                    }
+                }
+                return;
+            }
+            let page = cloud.get_page();
+            if page == 6 {
+                if let Some(path) = paths.first() {
+                    app.invoke_open_canvas_path(path.to_string_lossy().into_owned().into());
+                }
+                return;
+            }
+            if page == 1 || page == 5 {
+                for path in paths {
+                    app.global::<ui::SeeCut>().invoke_action(
+                        if page == 5 {
+                            "personal-drop"
+                        } else {
+                            "reference-drop"
+                        }
+                        .into(),
+                        path.to_string_lossy().into_owned().into(),
+                    );
+                }
+                return;
+            }
+            if page != 0 {
+                return;
+            }
             {
                 let mut studio = shell.studio.borrow_mut();
                 studio.handle(Msg::Media(MediaMsg::Import(paths)));
@@ -117,10 +193,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
 
     let app = App::new()?;
+    cloud::bind(&app);
     app.set_macos(platform::MACOS);
 
     let studio = Studio::new(host);
-    let dark = studio.prefs.dark.unwrap_or(true);
+    let dark = studio.prefs.dark.unwrap_or(false);
     app.global::<Theme>().set_dark(dark);
 
     let shell = Rc::new(Shell {
@@ -248,8 +325,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     });
     // The strip's own window buttons, on the platforms whose decorations
-    // were taken off. Close goes the way the File menu's Close does - the
-    // project is shut first, so an autosave in flight is not orphaned.
+    // were taken off. Close goes through the same guarded route as File >
+    // Close Window, so pending saves stay in one flow.
     app.on_titlebar_minimize({
         let weak = app.as_weak();
         move || {
@@ -261,21 +338,35 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_titlebar_close(|| {
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
-            shell.studio.borrow_mut().close_project();
-            log::info!("close: project closed, hiding window");
-            app.window().hide().ok();
-            slint::quit_event_loop().ok();
-            log::info!("close: quit_event_loop called");
+            let should_close = shell.studio.borrow_mut().request_window_close();
+            shell.studio.borrow_mut().refresh_art();
+            shell.studio.borrow().publish(&app, &shell.models);
+            if should_close {
+                log::info!("close: project closed, hiding window");
+                app.window().hide().ok();
+                slint::quit_event_loop().ok();
+                log::info!("close: quit_event_loop called");
+            }
         });
     });
     // System-driven close (Alt+F4, taskbar close): the same road out.
     app.window().on_close_requested(|| {
         log::info!("close: system close request (Alt+F4 / taskbar)");
-        Shell::with(|shell, _app| {
-            shell.studio.borrow_mut().close_project();
+        let mut should_close = false;
+        Shell::with(|shell, app| {
+            should_close = shell.studio.borrow_mut().request_window_close();
+            shell.studio.borrow_mut().refresh_art();
+            shell.studio.borrow().publish(&app, &shell.models);
+            if should_close {
+                app.window().hide().ok();
+                slint::quit_event_loop().ok();
+            }
         });
-        slint::quit_event_loop().ok();
-        slint::CloseRequestResponse::HideWindow
+        if should_close {
+            slint::CloseRequestResponse::HideWindow
+        } else {
+            slint::CloseRequestResponse::KeepWindowShown
+        }
     });
     // Maximised or not is read back on every resize rather than tracked:
     // the platform can maximise the window without us - a drag to the top
@@ -322,6 +413,26 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
 
     let editor = app.global::<Editor>();
+    let controls = app.global::<CanvasControls>();
+
+    controls.on_rgb_changed(on_window!(|state, red: f32, green: f32, blue: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushRgb(
+            f64::from(red),
+            f64::from(green),
+            f64::from(blue),
+        )));
+    }));
+    controls.on_hex_edited(on_window!(|state, text: SharedString| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushHex(
+            text.to_string(),
+        )));
+    }));
+    controls.on_pick_color(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::PickColor(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
 
     // ── the launch screen ──
     app.on_start_name_edited(on_window!(|state, name: SharedString| {
@@ -846,6 +957,314 @@ pub fn run() -> Result<(), slint::PlatformError> {
         state.play_toggle();
     }));
 
+    // ── the canvas ──
+    app.on_open_canvas_path(on_window!(|state, path: SharedString| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Picked(vec![
+            std::path::PathBuf::from(path.as_str()),
+        ])));
+    }));
+    editor.on_canvas_project_open(on_window!(|state| {
+        if let Some(path) = platform::pick_folder("打开画布工程（选择 .comp 文件夹）", "")
+        {
+            state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Picked(vec![
+                path,
+            ])));
+        }
+    }));
+    editor.on_canvas_open_discard(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::OpenDiscard));
+    }));
+    editor.on_canvas_open_cancel(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::OpenCancel));
+    }));
+    editor.on_canvas_open_save(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::OpenSave));
+    }));
+    //
+    // Open is the picker's own flow, asynchronous like the import's; every
+    // other callback is a gesture report, and the pane re-renders in the
+    // handler - on this thread, the one the renderer submits from.
+    editor.on_canvas_open(on_window!(|_state| {
+        platform::pick_files_async(
+            &i18n::t("Open image"),
+            Some((
+                i18n::t("Images").as_str(),
+                &["png", "jpg", "jpeg", "webp", "bmp"],
+            )),
+            |paths| {
+                on_ui(move |studio, _app, _| {
+                    studio.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Picked(paths)));
+                })
+            },
+        );
+    }));
+    editor.on_canvas_resized(on_window!(|state, width: f32, height: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Resized(
+            f64::from(width),
+            f64::from(height),
+        )));
+    }));
+    editor.on_canvas_scroll(on_window!(|state,
+                                        dx: f32,
+                                        dy: f32,
+                                        zoom_modifier: bool,
+                                        x: f32,
+                                        y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Scroll {
+            dx: f64::from(dx),
+            dy: f64::from(dy),
+            zoom_modifier,
+            x: f64::from(x),
+            y: f64::from(y),
+        }));
+    }));
+    editor.on_canvas_pan_press(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::PanPress(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_pan_move(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::PanMove(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_zoom_press(on_window!(|state, x: f32, y: f32, alt: bool| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ZoomPress {
+            x: f64::from(x),
+            y: f64::from(y),
+            alt,
+        }));
+    }));
+    editor.on_canvas_zoom_move(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ZoomMove(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_release(on_window!(|state, alt: bool| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Release(alt)));
+    }));
+    editor.on_canvas_fit(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Fit));
+    }));
+    editor.on_canvas_tool_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Tool(index)));
+    }));
+    editor.on_canvas_brush_press(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushPress {
+            x: f64::from(x),
+            y: f64::from(y),
+        }));
+    }));
+    editor.on_canvas_brush_move(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushMove(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_brush_release(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushRelease));
+    }));
+    editor.on_canvas_brush_size_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushSize(
+            f64::from(value),
+        )));
+    }));
+    editor.on_canvas_brush_opacity_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushOpacity(
+            f64::from(value),
+        )));
+    }));
+    editor.on_canvas_brush_hardness_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushHardness(
+            f64::from(value),
+        )));
+    }));
+    editor.on_canvas_brush_color_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushColor(
+            index.max(0) as usize,
+        )));
+    }));
+    editor.on_canvas_undo(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Undo));
+    }));
+    editor.on_canvas_redo(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Redo));
+    }));
+    editor.on_canvas_marquee_press(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::MarqueePress {
+            x: f64::from(x),
+            y: f64::from(y),
+        }));
+    }));
+    editor.on_canvas_marquee_move(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::MarqueeMove(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_marquee_release(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::MarqueeRelease));
+    }));
+    editor.on_canvas_wand_click(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::WandClick {
+            x: f64::from(x),
+            y: f64::from(y),
+        }));
+    }));
+    editor.on_canvas_select_all(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::SelectAll));
+    }));
+    editor.on_canvas_deselect(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Deselect));
+    }));
+    editor.on_canvas_fill_selection(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::FillSelection));
+    }));
+    editor.on_canvas_delete_selection(on_window!(|state| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::DeleteSelection,
+        ));
+    }));
+    editor.on_canvas_layer_picked(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerPick(
+            index,
+        )));
+    }));
+    editor.on_canvas_layer_visibility_toggled(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::LayerToggleVisibility(index),
+        ));
+    }));
+    editor.on_canvas_layer_opacity_changed(on_window!(|state, index: i32, opacity: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerOpacity(
+            index, opacity,
+        )));
+    }));
+    editor.on_canvas_layer_added(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerAdd));
+    }));
+    editor.on_canvas_layer_deleted(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerDelete(
+            index,
+        )));
+    }));
+    editor.on_canvas_layer_moved(on_window!(|state, index: i32, direction: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerMove(
+            index, direction,
+        )));
+    }));
+    editor.on_canvas_layer_dropped(on_window!(
+        |state, source: i32, target: i32, below: bool| {
+            state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerDrop(
+                source, target, below,
+            )));
+        }
+    ));
+    editor.on_canvas_layer_mask_added(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerMaskAdd));
+    }));
+    editor.on_canvas_layer_mask_removed(on_window!(|state| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::LayerMaskRemove,
+        ));
+    }));
+    editor.on_canvas_layer_mask_enable_toggled(on_window!(|state| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::LayerMaskToggle,
+        ));
+    }));
+    editor.on_canvas_layer_mask_paint_toggled(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::LayerMaskPaint(index),
+        ));
+    }));
+    editor.on_canvas_gradient_color_changed(on_window!(|state, slot: i32, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::GradientColor(
+            slot, index,
+        )));
+    }));
+    editor.on_canvas_export_png(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ExportPng));
+    }));
+    editor.on_canvas_save_comp(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::SaveComp));
+    }));
+    editor.on_canvas_save_comp_as(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::SaveCompAs));
+    }));
+    editor.on_canvas_exit_cancel(on_window!(|state| {
+        state.cancel_window_close();
+    }));
+    editor.on_canvas_exit_save({
+        move || {
+            Shell::with(|shell, app| {
+                let should_close = shell.studio.borrow_mut().resolve_window_close_save();
+                shell.studio.borrow_mut().refresh_art();
+                shell.studio.borrow().publish(&app, &shell.models);
+                if should_close {
+                    app.window().hide().ok();
+                    slint::quit_event_loop().ok();
+                }
+            });
+        }
+    });
+    editor.on_canvas_exit_discard({
+        move || {
+            Shell::with(|shell, app| {
+                let should_close = shell.studio.borrow_mut().resolve_window_close_discard();
+                shell.studio.borrow_mut().refresh_art();
+                shell.studio.borrow().publish(&app, &shell.models);
+                if should_close {
+                    app.window().hide().ok();
+                    slint::quit_event_loop().ok();
+                }
+            });
+        }
+    });
+    editor.on_canvas_adjustment_added(on_window!(|state, kind: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::AdjustmentAdd(
+            kind,
+        )));
+    }));
+    editor.on_canvas_adjustment_param_changed(on_window!(|state, index: i32, value: f32| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::AdjustmentParam(index, f64::from(value)),
+        ));
+    }));
+    editor.on_canvas_layer_group_added(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerAddGroup));
+    }));
+    editor.on_canvas_layer_folded(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerFold(
+            index,
+        )));
+    }));
+    editor.on_canvas_curve_set(on_window!(
+        |state, channel: i32, index: i32, x: f32, y: f32| {
+            state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::CurveSet(
+                channel,
+                index,
+                f64::from(x),
+                f64::from(y),
+            )));
+        }
+    ));
+    editor.on_canvas_curve_add(on_window!(|state, channel: i32, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::CurveAdd(
+            channel,
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_curve_remove(on_window!(|state, channel: i32, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::CurveRemove(
+            channel, index,
+        )));
+    }));
+
     // ── the stage ──
     editor.on_stage_pressed(on_window!(|state, x: f32, y: f32, additive: bool| {
         state.stage_pressed(x, y, additive);
@@ -1156,7 +1575,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
                         "speech" => state.handle(Msg::Speech(SpeechMsg::Open)),
                         "clear-cache" => state.clear_project_cache(),
                         "settings" => state.handle(Msg::Settings(SettingsMsg::Open)),
-                        "close-project" => state.close_project(),
+                        "close-project" => {
+                            let _ = state.close_project();
+                        }
                         "undo" => state.undo(),
                         "redo" => state.redo(),
                         "snap" => state.snap = !state.snap,
@@ -1189,10 +1610,14 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 }
                 if action == "close-window" {
                     log::info!("close: File > Close Window");
-                    shell.studio.borrow_mut().close_project();
-                    app.window().hide().ok();
-                    slint::quit_event_loop().ok();
-                    log::info!("close: quit_event_loop called (menu)");
+                    let should_close = shell.studio.borrow_mut().request_window_close();
+                    shell.studio.borrow_mut().refresh_art();
+                    shell.studio.borrow().publish(&app, &shell.models);
+                    if should_close {
+                        app.window().hide().ok();
+                        slint::quit_event_loop().ok();
+                        log::info!("close: quit_event_loop called (menu)");
+                    }
                     return;
                 }
                 shell.studio.borrow_mut().refresh_art();
@@ -1334,6 +1759,24 @@ pub fn run() -> Result<(), slint::PlatformError> {
         shell.studio.borrow_mut().refresh_art();
         shell.studio.borrow().publish(&app, &shell.models);
     }
+
+    // The marching ants' clock: four steps to a seamless wrap, ticked only
+    // so long as the process lives. A step is a property write; when no
+    // selection shows, the write re-renders nothing.
+    let ants = slint::Timer::default();
+    let ants_window = app.as_weak();
+    ants.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(120),
+        move || {
+            if let Some(app) = ants_window.upgrade() {
+                let next = (app.global::<Editor>().get_canvas_ants() + 1) % 4;
+                app.global::<Editor>().set_canvas_ants(next);
+            }
+        },
+    );
+    // The timer is the animation's only owner; the event loop outlives it.
+    std::mem::forget(ants);
 
     let result = app.run();
     log::info!("close: event loop exited (ok={})", result.is_ok());

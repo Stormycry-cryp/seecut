@@ -10,6 +10,8 @@ import { TextAlignment } from "../timeline/model.slint";
 import { CatalogueEntryData, Library } from "../inspector/clip-inspector.slint";
 import { SearchField } from "../inspector/controls.slint";
 import { Select } from "../primitives/select.slint";
+import { IconButton } from "../primitives/primitives.slint";
+import { SeeCut } from "../seecut/state.slint";
 
 // The library pane: a strip of pages across the top, then a narrow category
 // sidebar and the browsing area beside it. Media is the bin; Text adds a
@@ -1869,7 +1871,7 @@ export component MediaPane inherits Rectangle {
                     glyph: Glyph.import;
                     text: root.count-all > 0
                         ? I18n.t("Nothing of that kind in this project.")
-                        : "Drop video and audio files anywhere in the window to import them.";
+                        : I18n.t("Drop video and audio files anywhere in the window to import them.");
                 }
 
                 if root.tab == 0 && root.items.length > 0: HorizontalLayout {

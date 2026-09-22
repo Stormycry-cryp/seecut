@@ -1,0 +1,239 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+//
+// Ported from Compositor (https://github.com/robbietilton/Compositor, MIT):
+// the layer-pixel indirection that made its undo history copy-free.
+
+//! Decoded bitmaps, held beside the document instead of inside it.
+//!
+//! A layer names its pixels with a [`PixelId`]; the [`PixelStore`] owns the
+//! bitmaps. The indirection is what makes undo cheap: a history snapshot
+//! clones the document tree - ids, transforms, masks - and shares the pixels,
+//! so no edit ever copies a bitmap, whatever the canvas size.
+//!
+//! Ids are document-lifetime, not process-lifetime: a store is created with
+//! the document and dies with it. `Frame::id()` underneath still gives the
+//! renderer its upload key, unchanged.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use concat_core::frame::Frame;
+
+/// A layer's pixels, by name. Never zero.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
+pub struct PixelId(pub(crate) u64);
+
+impl PixelId {
+    /// The id no id is: what a field holds before anything was painted into
+    /// it. Documents are only handed out with every id filled, but a
+    /// `Default` is convenient for `#[derive]` on the UI's view models.
+    pub const NONE: PixelId = PixelId(0);
+
+    /// The identity's number, for file names and UI keys. Meaningless on
+    /// its own; uniqueness within a document is the whole contract.
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// The bitmaps a document's layers and masks name.
+///
+/// One store per document. Not serialized: a saved project writes the
+/// bitmaps out as image files and re-mints ids on load.
+#[derive(Clone, Default)]
+pub struct PixelStore {
+    frames: HashMap<PixelId, Arc<Frame>>,
+    next: u64,
+}
+
+impl PixelStore {
+    /// An empty store, ready to mint ids alongside a new document.
+    pub fn new() -> Self {
+        Self {
+            frames: HashMap::new(),
+            next: 1,
+        }
+    }
+
+    /// Takes custody of a bitmap and names it.
+    pub fn put(&mut self, frame: Frame) -> PixelId {
+        let id = PixelId(self.next);
+        self.next += 1;
+        self.frames.insert(id, Arc::new(frame));
+        id
+    }
+
+    /// Puts a bitmap back under the name a saved project gave it, and keeps
+    /// the minting counter past it - what loading a project does, so a
+    /// re-opened document re-mints nothing its ids already name. Two
+    /// restores of one id leave the last frame there, and the counter
+    /// unchanged.
+    pub fn restore(&mut self, id: PixelId, frame: Frame) {
+        if id != PixelId::NONE {
+            self.frames.insert(id, Arc::new(frame));
+            self.next = self.next.max(id.0 + 1);
+        }
+    }
+
+    /// Swaps the bitmap a name refers to, keeping the name. The brush's
+    /// commit: the document tree never changes, so a history snapshot taken
+    /// before the stroke still shares the old `Arc` - undo is a `replace`
+    /// back, zero pixels copied.
+    pub fn replace(&mut self, id: PixelId, frame: Frame) {
+        if id != PixelId::NONE {
+            self.frames.insert(id, Arc::new(frame));
+        }
+    }
+
+    /// Swaps a bitmap without changing its frame identity. The live brush
+    /// shares its working frame with the store so the compositor sees the
+    /// same id that dirty uploads already carry and cannot replace them with
+    /// an older full-frame upload on the next compose.
+    pub fn replace_shared(&mut self, id: PixelId, frame: Arc<Frame>) {
+        if id != PixelId::NONE {
+            self.frames.insert(id, frame);
+        }
+    }
+
+    /// Whether both stores name the same immutable frame versions. This is
+    /// the cheap equality a history snapshot needs: frames are immutable
+    /// behind `Arc`, so pointer equality is content-version equality.
+    pub fn same_versions(&self, other: &Self) -> bool {
+        self.frames.len() == other.frames.len()
+            && self.frames.iter().all(|(id, frame)| {
+                other
+                    .frames
+                    .get(id)
+                    .is_some_and(|other| Arc::ptr_eq(frame, other))
+            })
+    }
+
+    /// Bytes retained by this store that `other` does not already share.
+    /// Used for the undo budget; shared current frames cost no extra history
+    /// memory, while an old painted version contributes its full byte size.
+    pub fn unshared_bytes(&self, other: &Self) -> usize {
+        self.frames
+            .iter()
+            .filter(|(id, frame)| {
+                !other
+                    .frames
+                    .get(id)
+                    .is_some_and(|other| Arc::ptr_eq(frame, other))
+            })
+            .map(|(_, frame)| Frame::byte_len(frame.width(), frame.height()))
+            .sum()
+    }
+
+    /// The bitmap a name refers to, for as long as something holds the arc.
+    pub fn get(&self, id: PixelId) -> Option<Arc<Frame>> {
+        if id == PixelId::NONE {
+            None
+        } else {
+            self.frames.get(&id).cloned()
+        }
+    }
+
+    /// Whether the pixels a layer names still exist. They always do while
+    /// the store lives; the check is for the UI's benefit when a store has
+    /// been rebuilt from a save.
+    pub fn contains(&self, id: PixelId) -> bool {
+        id != PixelId::NONE && self.frames.contains_key(&id)
+    }
+
+    /// How many bitmaps the store holds.
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Whether the store holds nothing.
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// Drops the bitmaps nothing in the document names anymore - the previous
+    /// versions a paint left behind. The document is read, never changed;
+    /// ids it still uses are kept, in any group depth, including masks and
+    /// adjustment sources.
+    ///
+    /// Returns the ids that were dropped, so a caller can also drop any GPU
+    /// textures keyed on them.
+    pub fn retain_document(&mut self, document: &super::document::ImageDocument) -> Vec<PixelId> {
+        let mut used = Vec::new();
+        document.collect_pixels(&mut used);
+        let mut dropped = Vec::new();
+        self.frames.retain(|id, _| {
+            if used.contains(id) {
+                true
+            } else {
+                dropped.push(*id);
+                false
+            }
+        });
+        dropped
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use concat_core::frame::Frame;
+
+    #[test]
+    fn ids_are_never_zero_and_never_reused() {
+        let mut store = PixelStore::new();
+        let a = store.put(Frame::black(2, 2));
+        let b = store.put(Frame::black(2, 2));
+        assert_ne!(a, b);
+        assert_ne!(a, PixelId::NONE);
+    }
+
+    #[test]
+    fn none_names_nothing() {
+        let mut store = PixelStore::new();
+        store.put(Frame::black(1, 1));
+        assert!(!store.contains(PixelId::NONE));
+        assert!(store.get(PixelId::NONE).is_none());
+    }
+
+    #[test]
+    fn replace_keeps_the_name_and_swaps_the_bitmap() {
+        let mut store = PixelStore::new();
+        let id = store.put(Frame::black(4, 4));
+        let before = store.get(id).expect("before");
+        store.replace(id, Frame::black(6, 6));
+        let after = store.get(id).expect("after");
+        assert_eq!(after.width(), 6);
+        assert!(!Arc::ptr_eq(&before, &after));
+        // NONE stays nothing, whatever arrives.
+        store.replace(PixelId::NONE, Frame::black(1, 1));
+        assert!(store.get(PixelId::NONE).is_none());
+    }
+
+    #[test]
+    fn get_hands_out_the_same_arc() {
+        let mut store = PixelStore::new();
+        let id = store.put(Frame::black(4, 4));
+        let a = store.get(id).expect("just put");
+        let b = store.get(id).expect("still there");
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(a.width(), 4);
+    }
+
+    #[test]
+    fn restore_rebuilds_a_save_and_minting_continues_past_it() {
+        let mut store = PixelStore::new();
+        // A save's ids can be any shape; restore takes them as they are.
+        store.restore(PixelId(7), Frame::black(3, 3));
+        assert_eq!(store.get(PixelId(7)).expect("restored").width(), 3);
+        assert!(store.contains(PixelId(7)));
+        // The next put cannot collide with a restored id.
+        let fresh = store.put(Frame::black(1, 1));
+        assert!(fresh.0 > 7);
+        // NONE stays nothing, and disturbs no counter.
+        store.restore(PixelId::NONE, Frame::black(1, 1));
+        assert!(store.get(PixelId::NONE).is_none());
+    }
+}

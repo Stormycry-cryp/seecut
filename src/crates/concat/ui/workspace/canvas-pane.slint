@@ -1,0 +1,1227 @@
+import { Rail } from "../inspector/controls.slint";
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+
+import { I18n } from "../i18n.slint";
+import { Theme } from "../theme/theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Glyph, Icon } from "../icons.slint";
+import { IconButton } from "../primitives/panel.slint";
+import { NumberField } from "../primitives/number-field.slint";
+import { Focus } from "../util.slint";
+import { AppButton, WorkspaceIcon, MenuAction } from "../seecut/components.slint";
+import { Pane, PaneHeader } from "pane.slint";
+import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
+
+// The canvas: the image editor's own viewport, in a seat of its own.
+// Where the monitor's view state lives in this file - fitted until a gesture
+// takes it, then free - the canvas's lives in Rust, in the Navigator. The
+// reasons are the original's: the gestures there span inputs (a zoom-tool
+// drag is a press, moves, and a release that must know whether it stayed
+// put), and a state machine that spans events belongs to the model, not to
+// whichever TouchArea saw the first one. This pane is then a thin layer:
+// every gesture it recognises is reported and forgotten, and the next frame
+// comes back with the view already moved.
+//
+// The stage sits on the same sunken well the monitor uses, and the ground
+// under the picture is the same stage colour. A transparency checkerboard is
+// the honest ground for an image editor and is not drawn yet - the frame the
+// compositor returns is straight-alpha over nothing, and a checker wants a
+// pattern behind the image, which is a slint layer away.
+
+// The tray's palette, matching the Rust pane's own: same swatches, same
+// order, so an index means one colour on both sides of the boundary.
+export global Palette {
+    in property <[color]> colors: [
+        #1e1e22, #ebebf0, #d43b37, #eb982f, #ebcd3e, #58a84e, #3a76cd, #8a4ecd,
+    ];
+}
+
+// Colour controls live at the canvas boundary rather than in Editor's long
+// property chain. Rust publishes the current colour and target here, while
+// edits and the explicit picker click travel back through these callbacks.
+export global CanvasControls {
+    in-out property <float> red: 30;
+    in-out property <float> green: 30;
+    in-out property <float> blue: 34;
+    in-out property <color> color: #1E1E22;
+    in-out property <string> hex: "#1E1E22";
+    in-out property <bool> picking: false;
+    in-out property <bool> rgb-expanded: false;
+    in-out property <string> target: "图层";
+    callback rgb-changed(red: float, green: float, blue: float);
+    callback hex-edited(text: string);
+    callback pick-color(x: float, y: float);
+}
+
+// Preview models keep image and mask thumbnails separate. The row index is
+// shared with CanvasLayerData, so a mask chip can be selected independently
+// while the row still selects its image layer.
+export global CanvasThumbs {
+    in-out property <[image]> layer-images;
+    in-out property <[image]> mask-images;
+}
+
+// One row of the layers panel, as Rust publishes it: the row's node, its
+// nesting depth for the indent, whether it is a group whose children are
+// shown (`expanded`) or not, whether it is a group at all, whether it
+// carries a mask, and whether that mask is the one being painted.
+export struct CanvasLayerData {
+    id: int,
+    name: string,
+    hidden: bool,
+    opacity: float,
+    active: bool,
+    depth: int,
+    expanded: bool,
+    group: bool,
+    masked: bool,
+    mask-paint: bool,
+    mask-enabled: bool,
+}
+
+// One control point of a curves channel, normalized `0..1` on both axes:
+// `x` the input, `y` the output.
+export struct CanvasCurvePoint {
+    x: float,
+    y: float,
+}
+
+// One drawn segment of a curves polyline, precomputed in Rust: both
+// endpoints in normalized editor coordinates (`y` already flipped to
+// the screen's downward axis).
+export struct CanvasCurveSegment {
+    x: float,
+    y: float,
+    x2: float,
+    y2: float,
+}
+
+// The curves editor: a square plot, the identity's diagonal for
+// reference, the curve as little rotated strokes, and every control
+// point a handle the pointer can drag. The math that places a segment
+// or clamps a drag lives in Rust; the editor only converts between its
+// own box and the normalized frame both sides speak.
+component CurveEditor inherits Rectangle {
+    in property <[CanvasCurvePoint]> points;
+    in property <[CanvasCurveSegment]> segments;
+    in property <color> tint;
+    callback point-set(index: int, x: float, y: float);
+    callback point-add(x: float, y: float);
+    callback point-remove(index: int);
+
+    background: Theme.field;
+    border-width: 1px;
+    border-color: Theme.line-strong;
+    clip: true;
+
+    // The quarter grid, under everything.
+    Rectangle {
+        x: parent.width / 2 - 0.5px;
+        y: 0;
+        width: 1px;
+        height: parent.height;
+        background: Theme.line;
+        opacity: 0.5;
+    }
+    Rectangle {
+        x: 0;
+        y: parent.height / 2 - 0.5px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.line;
+        opacity: 0.5;
+    }
+
+    // The identity, faint: the curve the adjustment does nothing with.
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        commands: "M 0 100 L 100 0";
+        stroke: Theme.line-strong;
+        stroke-width: 1px;
+    }
+
+    // Where a tap lands a fresh point - under the handles, so a tap on
+    // one of those stays a grab.
+    TouchArea {
+        mouse-cursor: crosshair;
+        clicked => {
+            root.point-add(self.mouse-x / parent.width,
+                1 - self.mouse-y / parent.height);
+        }
+    }
+
+    // The curve itself, one stroke per consecutive pair, drawn in the
+    // editor's own normalized frame.
+    for seg in root.segments: Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 1;
+        viewbox-height: 1;
+        commands: "M \{seg.x} \{seg.y} L \{seg.x2} \{seg.y2}";
+        stroke: root.tint;
+        stroke-width: 1.5px;
+    }
+
+    // The handles: eight points of grabbable curve. A drag reports the
+    // normalized position; a double click asks for the point back,
+    // which Rust refuses for the two corners.
+    for pt[i] in root.points: Rectangle {
+        x: pt.x * parent.width - self.width / 2;
+        y: (1 - pt.y) * parent.height - self.height / 2;
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: Theme.raised;
+        border-width: 1px;
+        border-color: root.tint;
+
+        property <float> drag-x0;
+        property <float> drag-y0;
+        property <length> drag-mx;
+        property <length> drag-my;
+        property <bool> dragging;
+
+        TouchArea {
+            mouse-cursor: MouseCursor.grab;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    parent.dragging = true;
+                    parent.drag-x0 = pt.x;
+                    parent.drag-y0 = pt.y;
+                    parent.drag-mx = self.mouse-x;
+                    parent.drag-my = self.mouse-y;
+                } else {
+                    parent.dragging = false;
+                }
+            }
+            moved => {
+                if (parent.dragging) {
+                    root.point-set(i,
+                        Math.clamp(parent.drag-x0
+                            + (self.mouse-x - parent.drag-mx) / root.width, 0, 1),
+                        Math.clamp(parent.drag-y0
+                            - (self.mouse-y - parent.drag-my) / root.height, 0, 1));
+                }
+            }
+            double-clicked => { root.point-remove(i); }
+        }
+    }
+}
+
+// One knob of the active adjustment, as Rust publishes it: the label, the
+// value, and the range it clamps into.
+export struct CanvasAdjustmentParam {
+    label: string,
+    value: float,
+    minimum: float,
+    maximum: float,
+}
+
+// The marching ants: white dashes crawling over the selection's accent
+// border, the two-tone read of "this box is live". Slint's Path has no
+// dash stroke, so the dashes are tiny rectangles - which is why the dash
+// period adapts to the box (eight screen pixels at first, stretching just
+// enough to keep the count bounded at eighty per edge) and why the phase
+// steps a quarter period per tick from Rust's timer: the crawl wraps
+// seamlessly whatever the period turned out to be.
+component Ants inherits Rectangle {
+    in property <length> box-x;
+    in property <length> box-y;
+    in property <length> box-w;
+    in property <length> box-h;
+    in property <int> phase;
+    x: root.box-x;
+    y: root.box-y;
+    width: root.box-w;
+    height: root.box-h;
+
+    property <length> span: Math.max(root.box-w, root.box-h);
+    property <float> steps: Math.min(Math.max(Math.ceil(span / 8px), 2), 80);
+    property <length> period: Math.max(span / root.steps, 8px);
+    property <length> dash: root.period * 0.45;
+    // A quarter period per tick, four ticks to the seamless wrap.
+    property <length> crawl: root.phase * root.period / 4;
+    property <int> h-count: Math.ceil(root.box-w / root.period) + 1;
+    property <int> v-count: Math.ceil(root.box-h / root.period) + 1;
+
+    for d[i] in root.h-count: Rectangle {
+        x: i * parent.period - parent.crawl;
+        y: 0;
+        width: parent.dash;
+        height: 1px;
+        background: white;
+    }
+    for d[i] in root.h-count: Rectangle {
+        x: i * parent.period - parent.crawl;
+        y: parent.height - 1px;
+        width: parent.dash;
+        height: 1px;
+        background: white;
+    }
+    for d[i] in root.v-count: Rectangle {
+        x: 0;
+        y: i * parent.period - parent.crawl;
+        width: 1px;
+        height: parent.dash;
+        background: white;
+    }
+    for d[i] in root.v-count: Rectangle {
+        x: parent.width - 1px;
+        y: i * parent.period - parent.crawl;
+        width: 1px;
+        height: parent.dash;
+        background: white;
+    }
+}
+
+// A focusable target for image, mask, and palette chips.
+component CanvasChipAction inherits FocusScope {
+    callback clicked();
+    key-pressed(event) => {
+        if (event.text == "\n" || event.text == " ") {
+            root.clicked();
+            return EventResult.accept;
+        }
+        return EventResult.reject;
+    }
+    Rectangle {
+        border-width: root.has-focus ? 2px : 0px;
+        border-color: Theme.accent;
+        border-radius: Theme.r-xs;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.focus(); root.clicked(); }
+    }
+}
+
+component PropertySlider inherits HorizontalLayout {
+    in property <string> label;
+    in-out property <float> value;
+    in property <float> minimum;
+    in property <float> maximum: 1;
+    in property <float> step: 0.01;
+    in property <int> precision: 2;
+    in property <string> readout;
+    callback changed(value: float);
+    height: 28px; spacing: 6px;
+    Text {
+        text: root.label; width: 68px; overflow: elide;
+        font-size: 12px; color: Theme.fg-muted; vertical-alignment: center;
+    }
+    Rail {
+        height: 28px; horizontal-stretch: 1;
+        minimum: root.minimum; maximum: root.maximum; step: root.step;
+        value: root.value;
+        changed(value) => { root.value = value; root.changed(value); }
+    }
+    NumberField {
+        width: 56px;
+        value <=> root.value;
+        minimum: root.minimum; maximum: root.maximum;
+        step: root.step; precision: root.precision;
+        changed(value) => { root.changed(value); }
+    }
+}
+
+export component CanvasPane inherits Rectangle {
+    /// The composed document, at the view's zoom, already placed by the
+    /// compositor. Empty until an image is open.
+    in property <image> frame;
+    /// Whether there is a document to show at all.
+    in property <bool> has-document;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    in property <bool> sidebar-open: true;
+    /// The open image's name, as the header readout.
+    in property <string> document-name;
+    /// The view's zoom, in percent. 100 is one image pixel to one screen
+    /// pixel at the current scale.
+    in property <float> zoom;
+    /// The view's offset from centre, in viewport pixels, as Rust holds it.
+    in property <float> pan-x;
+    in property <float> pan-y;
+    /// The document's box on screen, in viewport pixels, already zoomed.
+    in property <float> stage-w;
+    in property <float> stage-h;
+    /// 0 move, 1 hand, 2 zoom, 3 brush, 4 eraser.
+    in property <int> tool;
+    /// The brush the painting tools drive; the knobs read and write these.
+    in-out property <float> brush-diameter: 24;
+    in-out property <float> brush-opacity: 1;
+    in-out property <float> brush-hardness: 0.8;
+    /// The selected colour swatch, as its index into the tray's palette.
+    in-out property <int> brush-color: 0;
+    /// The selection's box, in viewport pixels, drawn over the stage.
+    in property <bool> has-selection;
+    in property <float> selection-x;
+    in property <float> selection-y;
+    in property <float> selection-w;
+    in property <float> selection-h;
+    /// The marquee drag's box, in viewport pixels, while it is in flight.
+    in property <float> marquee-x;
+    in property <float> marquee-y;
+    in property <float> marquee-w;
+    in property <float> marquee-h;
+    /// The transparency checkerboard, at the document's own pixel size;
+    /// the stage stretches it, so a square keeps its document-space place
+    /// at any zoom.
+    in property <image> checker;
+    /// The active row's adjustment: its kind (Rust's numbering, `0` when
+    /// the row is not an adjustment) and its knobs.
+    in property <int> adjustment-kind: 0;
+    in property <[CanvasAdjustmentParam]> adjustment-params;
+    /// The active row's curves, three channels of normalized points. The
+    /// editor reads one at a time, by the channel tab it has up.
+    in property <[CanvasCurvePoint]> curve-red;
+    in property <[CanvasCurvePoint]> curve-green;
+    in property <[CanvasCurvePoint]> curve-blue;
+    /// The same three channels as drawn strokes, precomputed in Rust:
+    /// start corner, length and angle, all normalized to the editor's
+    /// square.
+    in property <[CanvasCurveSegment]> curve-segments-red;
+    in property <[CanvasCurveSegment]> curve-segments-green;
+    in property <[CanvasCurveSegment]> curve-segments-blue;
+    /// The marching ants' phase, stepped by a timer in Rust: `0..3`, a
+    /// quarter of the dash period each step.
+    in property <int> ants;
+    /// The active gradient map's two colours, as the swatches read them.
+    in property <color> gradient-low: black;
+    in property <color> gradient-high: white;
+    /// The layers panel's adjustment popup, open or not. Local state: no
+    /// round trip, the panel decides nothing else about it.
+    property <bool> adjustment-open: false;
+    /// The gradient map's colour popup: open, and which swatch (0 low,
+    /// 1 high) is being recoloured.
+    property <bool> gradient-open: false;
+    property <int> gradient-slot: 0;
+    /// The layer drag's state: the row being carried, the row it hovers
+    /// over, and whether it hovers the target's lower half. Local to the
+    /// panel; only the drop itself crosses to Rust.
+    property <int> drag-row: -1;
+    property <int> drop-row: -1;
+    property <bool> drop-below: false;
+    /// The layer list grows with the visible row count and can be adjusted
+    /// when the window is short. A long list remains inside its ScrollView.
+    property <length> layer-list-min: 48px;
+    property <length> layer-list-max: Math.max(root.layer-list-min, root.height - 340px);
+    property <length> layer-list-requested: -1px;
+    property <length> layer-list-height: Math.clamp(
+        root.layer-list-requested >= 0px ? root.layer-list-requested
+            : Math.min(root.layers.length * 40px + 8px, root.height * 0.32),
+        root.layer-list-min, root.layer-list-max);
+    property <bool> resizing-layers: false;
+    property <length> resize-y0: 0px;
+    /// The curves editor's channel tab: `0` red, `1` green, `2` blue.
+    property <int> curve-channel: 0;
+    /// The channel tab's points and segments, picked by the tab.
+    property <[CanvasCurvePoint]> curve-points: root.curve-channel == 0 ? root.curve-red
+        : root.curve-channel == 1 ? root.curve-green : root.curve-blue;
+    property <[CanvasCurveSegment]> curve-segments: root.curve-channel == 0 ? root.curve-segments-red
+        : root.curve-channel == 1 ? root.curve-segments-green : root.curve-segments-blue;
+
+    // ── gestures, reported rather than handled ──────────────────────────
+    //
+    // Positions are in viewport pixels - `mouse-x / 1px` - because that is
+    // the frame Navigator works in. Scroll deltas arrive as lengths and go
+    // as their pixel counts; `zoom-modifier` is ctrl or cmd held, the
+    // wheel's substitute for a pinch.
+    callback nav-scroll(delta-x: float, delta-y: float, zoom-modifier: bool,
+        x: float, y: float);
+    callback nav-pan-press(x: float, y: float);
+    callback nav-pan-move(x: float, y: float);
+    callback nav-zoom-press(x: float, y: float, alt: bool);
+    callback nav-zoom-move(x: float, y: float);
+    /// The pointer went up, whichever drag was live. `alt` rides along for
+    /// the zoom tool, whose plain click steps out with it.
+    callback nav-release(alt: bool);
+    callback nav-fit();
+    /// The viewport's box, on the way up: fit and the anchors need it.
+    callback canvas-resized(width: float, height: float);
+    /// Open an image into the canvas.
+    callback canvas-open();
+    /// The tray's tool picker.
+    callback tool-changed(index: int);
+    /// A paint stroke went down, moved, ended - viewport pixels, like the
+    /// navigation gestures.
+    callback brush-press(x: float, y: float);
+    callback brush-move(x: float, y: float);
+    callback brush-release();
+    /// The brush options' knobs.
+    callback brush-size-changed(value: float);
+    callback brush-opacity-changed(value: float);
+    callback brush-hardness-changed(value: float);
+    callback brush-color-changed(index: int);
+    /// The pixel history of the open document.
+    callback canvas-undo();
+    callback canvas-redo();
+    /// The marquee drag and the wand's click, in viewport pixels.
+    callback marquee-press(x: float, y: float);
+    callback marquee-move(x: float, y: float);
+    callback marquee-release();
+    callback wand-click(x: float, y: float);
+    /// Selection-level edits.
+    callback select-all();
+    callback deselect();
+    callback fill-selection();
+    callback delete-selection();
+    /// The layers panel: rows published front-to-back, and the edits the
+    /// rows drive. `active-layer` is the picked row's index, and the
+    /// footer's delete and reorder buttons act on it.
+    in property <[CanvasLayerData]> layers;
+    in property <int> active-layer: -1;
+    callback layer-picked(index: int);
+    callback layer-visibility-toggled(index: int);
+    callback layer-opacity-changed(index: int, opacity: float);
+    callback layer-added();
+    /// A new group, above the active row.
+    callback layer-group-added();
+    /// The group at the row folded or unfolded.
+    callback layer-folded(index: int);
+    callback layer-deleted(index: int);
+    callback layer-moved(index: int, direction: int);
+    /// A drag dropped the row `source` onto the row `target`: into the
+    /// target when `below` says so and the target is a group - the
+    /// drop-on-the-name read - beside it otherwise.
+    callback layer-dropped(source: int, target: int, below: bool);
+    /// A white mask over the active row, the painting tools pointed at.
+    callback layer-mask-added();
+    /// The active mask, gone.
+    callback layer-mask-removed();
+    /// The active mask applied or set aside, whole.
+    callback layer-mask-enable-toggled();
+    /// The mask chip on the row was clicked: pick it and paint its mask,
+    /// or stop painting when it already was the one.
+    callback layer-mask-paint-toggled(index: int);
+    /// The active gradient map's low (`0`) or high (`1`) swatch recoloured
+    /// from the tray palette's `index`.
+    callback gradient-color-changed(slot: int, index: int);
+    /// The adjustment panel: a kind picked out of the popup, and one of
+    /// the active adjustment's knobs turned.
+    callback adjustment-added(kind: int);
+    callback adjustment-param-changed(index: int, value: float);
+    /// The curves editor, on the channel (`0` red, `1` green, `2` blue):
+    /// a control point moved by index, a fresh point dropped in, and a
+    /// point taken back out - coordinates normalized `0..1`.
+    callback curve-set(channel: int, index: int, x: float, y: float);
+    callback curve-add(channel: int, x: float, y: float);
+    callback curve-remove(channel: int, index: int);
+    /// Export the composed canvas as a PNG.
+    callback export-png();
+    /// Save the whole document as a `.comp` project package.
+    callback save-comp();
+
+    /// The corner button: show something else in this pane's seat.
+    callback pane-picked(kind: PaneKind);
+    in property <int> pane-seat;
+    in property <bool> pane-removable: true;
+    in property <bool> standalone;
+    callback pane-removed();
+
+    Pane {
+        if !root.standalone: PaneHeader {
+            title: I18n.t("Canvas");
+
+            // What is open, and how close. Both facts, not controls: the
+            // zoom is steered by the gestures and the wheel, the way the
+            // monitor's frame size is steered by the ratio picker.
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.document-name;
+                    color: Theme.fg-dim;
+                    font-family: Theme.font-technical;
+                    font-size: Theme.fs;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.has-document ? "\{Math.round(root.zoom)}%" : "";
+                    color: Theme.fg-dim;
+                    font-family: Theme.font-technical;
+                    font-size: Theme.fs;
+                    vertical-alignment: center;
+                }
+            }
+
+            if !root.standalone: VerticalLayout {
+                alignment: center;
+                PaneSwitcher {
+                    kind: PaneKind.canvas;
+                    seat: root.pane-seat;
+                    removable: root.pane-removable;
+                    picked(kind) => { root.pane-picked(kind); }
+                    removed => { root.pane-removed(); }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 1;
+            Rectangle {
+                width: 48px; background: Theme.panel;
+                VerticalLayout {
+                    padding: 6px; spacing: 6px; alignment: start;
+                    for t[i] in [
+                        { glyph: Glyph.pointer, label: "移动工具" }, { glyph: Glyph.hand, label: "平移画布" },
+                        { glyph: Glyph.search, label: "缩放工具" }, { glyph: Glyph.brush, label: "画笔工具" },
+                        { glyph: Glyph.eraser, label: "橡皮擦" }, { glyph: Glyph.box-select, label: "矩形选区" },
+                        { glyph: Glyph.wand, label: "魔棒选区" },
+                    ]: WorkspaceIcon { glyph: t.glyph; label: t.label; checked: root.tool == i; enabled: root.has-document; clicked => { root.tool-changed(i); } }
+                    Rectangle { vertical-stretch: 1; }
+                    WorkspaceIcon { glyph: Glyph.fit; label: "适合窗口"; enabled: root.has-document; clicked => { root.nav-fit(); } }
+                }
+                Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.line; }
+            }
+            well := Rectangle {
+            vertical-stretch: 1;
+            background: Theme.well;
+            clip: true;
+
+            // Reported on the way up: the pane may be squeezed at any time,
+            // and a fit computed for last year's box is a fit that crops.
+            changed width => { root.canvas-resized(self.width / 1px, self.height / 1px); }
+            changed height => { root.canvas-resized(self.width / 1px, self.height / 1px); }
+
+            // The stage: the document's box, placed by the view Rust holds.
+            // Centred when the pan is zero, then exactly where the pan says.
+            stage := Rectangle {
+                x: (parent.width - self.width) / 2 + root.pan-x * 1px;
+                y: (parent.height - self.height) / 2 + root.pan-y * 1px;
+                width: root.stage-w * 1px;
+                height: root.stage-h * 1px;
+                background: Theme.stage;
+                border-width: 1px;
+                border-color: Theme.line-strong;
+                clip: true;
+
+                // The checker under the picture: the honest ground for a
+                // transparency the frame carries straight-alpha. It lives
+                // at the document's own pixel size and stretches with the
+                // stage, so its squares scale with the zoom the way the
+                // picture's pixels do.
+                if root.has-document && root.checker.width > 0: Image {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.checker;
+                    image-fit: fill;
+                }
+
+                if root.has-document && root.frame.width > 0: Image {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.frame;
+                    image-fit: fill;
+                }
+            }
+
+            // The empty state, where the stage would be.
+            if !root.has-document: VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    alignment: center;
+                    Icon {
+                        glyph: Glyph.image;
+                        size: 22px;
+                        tint: Theme.fg-dim;
+                    }
+                }
+
+                Text {
+                    text: I18n.t("No image open");
+                    color: Theme.fg-dim;
+                    font-size: Theme.fs;
+                    horizontal-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        // The text's own width, plus the icon and the
+                        // paddings either side: a button as wide as what
+                        // it says, in whatever language it says it.
+                        width: open-text.preferred-width + 16px + 6px + 12px + 16px;
+                        height: 26px;
+                        border-radius: Theme.r;
+                        background: open-touch.has-hover ? Theme.field-hover : Theme.field;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Icon {
+                                glyph: Glyph.folder;
+                                size: 12px;
+                                tint: Theme.fg;
+                            }
+                            open-text := Text {
+                                text: I18n.t("Open image");
+                                color: Theme.fg;
+                                font-size: Theme.fs;
+                                vertical-alignment: center;
+                            }
+                        }
+                        open-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.canvas-open(); }
+                        }
+                    }
+                }
+            }
+
+            // The selection's outline, and the marquee's box while a drag
+            // is in flight - both in well coordinates, the frame the view
+            // conversions speak. The ants crawl over the accent border
+            // while the selection rests.
+            if root.has-selection: Rectangle {
+                x: root.selection-x * 1px;
+                y: root.selection-y * 1px;
+                width: root.selection-w * 1px;
+                height: root.selection-h * 1px;
+                border-width: 1px;
+                border-color: Theme.accent;
+            }
+            if root.has-selection: Ants {
+                box-x: root.selection-x * 1px;
+                box-y: root.selection-y * 1px;
+                box-w: root.selection-w * 1px;
+                box-h: root.selection-h * 1px;
+                phase: root.ants;
+            }
+            if root.marquee-w > 0 && root.marquee-h > 0: Rectangle {
+                x: root.marquee-x * 1px;
+                y: root.marquee-y * 1px;
+                width: root.marquee-w * 1px;
+                height: root.marquee-h * 1px;
+                border-width: 1px;
+                border-color: Theme.accent;
+                opacity: 0.7;
+            }
+
+            // The gesture floor, over the stage and the empty state alike:
+            // panning an empty well does nothing, and reporting it costs
+            // less than asking whether it was worth it.
+            floor := TouchArea {
+                enabled: root.has-document;
+                property <bool> panning;
+                property <bool> zooming;
+                property <bool> painting;
+                property <bool> marqueeing;
+                mouse-cursor: CanvasControls.picking ? MouseCursor.crosshair
+                    : self.panning ? MouseCursor.grabbing
+                    : root.tool == 1 ? MouseCursor.grab
+                    : root.tool >= 2 ? MouseCursor.crosshair
+                    : MouseCursor.default;
+
+                scroll-event(event) => {
+                    root.nav-scroll(event.delta-x / 1px, event.delta-y / 1px,
+                        event.modifiers.control || event.modifiers.meta,
+                        self.mouse-x / 1px, self.mouse-y / 1px);
+                    return EventResult.accept;
+                }
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        if (CanvasControls.picking
+                            && event.button == PointerEventButton.left) {
+                            CanvasControls.pick-color(self.mouse-x / 1px, self.mouse-y / 1px);
+                            CanvasControls.picking = false;
+                        } else if (event.button == PointerEventButton.middle
+                            || (event.button == PointerEventButton.left
+                                && root.tool == 1)) {
+                            self.panning = true;
+                            root.nav-pan-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else if (event.button == PointerEventButton.left
+                            && root.tool == 2) {
+                            self.zooming = true;
+                            root.nav-zoom-press(self.mouse-x / 1px, self.mouse-y / 1px,
+                                event.modifiers.alt);
+                        } else if (event.button == PointerEventButton.left
+                            && root.tool >= 3 && root.tool <= 4) {
+                            self.painting = true;
+                            root.brush-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else if (event.button == PointerEventButton.left
+                            && root.tool == 5) {
+                            self.marqueeing = true;
+                            root.marquee-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else if (event.button == PointerEventButton.left
+                            && root.tool == 6) {
+                            root.wand-click(self.mouse-x / 1px, self.mouse-y / 1px);
+                        }
+                    } else if (event.kind == PointerEventKind.up
+                        || event.kind == PointerEventKind.cancel) {
+                        if (self.panning || self.zooming) {
+                            self.panning = false;
+                            self.zooming = false;
+                            root.nav-release(event.modifiers.alt);
+                        }
+                        if (self.painting) {
+                            self.painting = false;
+                            root.brush-release();
+                        }
+                        if (self.marqueeing) {
+                            self.marqueeing = false;
+                            root.marquee-release();
+                        }
+                    }
+                }
+                moved => {
+                    if (self.panning) {
+                        root.nav-pan-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (self.zooming) {
+                        root.nav-zoom-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (self.painting) {
+                        root.brush-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (self.marqueeing) {
+                        root.marquee-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    }
+                }
+                // The monitor's own way back: a double-click fits.
+                double-clicked => { root.nav-fit(); }
+
+                // The brush's shadow on the canvas: the stroke's own
+                // diameter at the view's zoom, riding the pointer while a
+                // paint tool is up. A dark ring under the light one keeps
+                // the circle legible on any ground.
+                if root.tool >= 3 && root.tool <= 4 && root.has-document
+                    && floor.has-hover && !CanvasControls.picking: Rectangle {
+                    x: floor.mouse-x - self.width / 2;
+                    y: floor.mouse-y - self.height / 2;
+                    width: Math.max(root.brush-diameter * root.zoom / 100, 6) * 1px;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: transparent;
+                    border-width: 1px;
+                    border-color: #ffffffcc;
+
+                    Rectangle {
+                        x: -1px;
+                        y: -1px;
+                        width: parent.width + 2px;
+                        height: parent.height + 2px;
+                        border-radius: self.width / 2;
+                        background: transparent;
+                        border-width: 1px;
+                        border-color: #00000066;
+                    }
+                }
+            }
+        }
+
+            if root.has-document && root.sidebar-open: right-panel := Rectangle {
+                width: 250px; background: Theme.panel;
+                Rectangle { x: 0px; y: 0px; width: 1px; height: 100%; background: Theme.line; }
+                VerticalLayout {
+                    padding: 12px; spacing: 10px;
+                    HorizontalLayout {
+                        height: 34px;
+                        Text { text: "图层"; font-size: 14px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
+                        WorkspaceIcon { glyph: Glyph.folder-plus; label: "添加图层组"; clicked => { root.layer-group-added(); } }
+                        WorkspaceIcon { glyph: Glyph.plus; label: "添加图层"; clicked => { root.layer-added(); } }
+                    }
+                    ScrollView {
+                        height: root.layer-list-height;
+                        viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off;
+                        VerticalLayout {
+                            spacing: 2px; alignment: start;
+                            for layer[i] in root.layers: Rectangle {
+                                height: 38px; border-radius: Theme.r;
+                                background: layer.active ? Theme.field-active : row-touch.has-hover ? Theme.field-hover : transparent;
+                                border-width: root.drop-row == i && root.drag-row >= 0 ? 1px : 0;
+                                border-color: Theme.accent;
+                                opacity: root.drag-row == i && row-touch.dragged ? 0.5 : 1;
+                                row-touch := TouchArea {
+                                    property <length> press-y;
+                                    property <bool> dragged;
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        if (!self.dragged) { root.layer-picked(i); }
+                                    }
+                                    pointer-event(event) => {
+                                        if (event.kind == PointerEventKind.down) {
+                                            self.press-y = self.mouse-y;
+                                            self.dragged = false;
+                                            root.drag-row = i;
+                                            root.drop-row = i;
+                                        } else if (event.kind == PointerEventKind.up
+                                            || event.kind == PointerEventKind.cancel) {
+                                            if (root.drag-row == i && self.dragged
+                                                && root.drop-row != i) {
+                                                root.layer-dropped(i, root.drop-row, root.drop-below);
+                                            }
+                                            root.drag-row = -1;
+                                            root.drop-row = -1;
+                                            root.drop-below = false;
+                                        }
+                                    }
+                                    moved => {
+                                        if (root.drag-row == i) {
+                                            let offset = (self.mouse-y - self.press-y) / 1px;
+                                            let target = Math.clamp(
+                                                i + Math.round(offset / 40),
+                                                0, root.layers.length - 1);
+                                            root.drop-row = target;
+                                            root.drop-below = offset - (target - i) * 40 >= 0;
+                                            if (Math.abs(offset) > 6) {
+                                                self.dragged = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 4px + Math.min(layer.depth, 3) * 10px; spacing: 4px;
+                                    Rectangle {
+                                        width: 34px; height: 28px; border-radius: Theme.r-xs;
+                                        background: Theme.well;
+                                        border-width: layer.active && !layer.mask-paint ? 2px : 1px;
+                                        border-color: layer.active && !layer.mask-paint ? Theme.accent : Theme.line;
+                                        if CanvasThumbs.layer-images.length > i
+                                            && CanvasThumbs.layer-images[i].width > 0: Image {
+                                            width: parent.width; height: parent.height;
+                                            source: CanvasThumbs.layer-images[i]; image-fit: contain;
+                                        }
+                                        if layer.group: Icon {
+                                            glyph: Glyph.folder; size: 13px; tint: Theme.fg-muted;
+                                        }
+                                        CanvasChipAction {
+                                            clicked => { root.layer-picked(i); }
+                                        }
+                                    }
+                                    if layer.group: WorkspaceIcon { glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right; label: layer.expanded ? "折叠图层组" : "展开图层组"; clicked => { root.layer-folded(i); } }
+                                    WorkspaceIcon { glyph: layer.hidden ? Glyph.eye-off : Glyph.eye; label: layer.hidden ? "显示图层" : "隐藏图层"; clicked => { root.layer-visibility-toggled(i); } }
+                                    Text { text: layer.name; font-size: 13px; color: Theme.fg; overflow: elide; min-width: 0px; vertical-alignment: center; horizontal-stretch: 1; }
+                                    if layer.masked: Rectangle {
+                                        width: 28px; height: 28px; border-radius: Theme.r-xs;
+                                        background: Theme.well;
+                                        border-width: layer.mask-paint ? 2px : 1px;
+                                        border-color: layer.mask-paint ? Theme.accent : Theme.line;
+                                        opacity: layer.mask-enabled ? 1 : 0.45;
+                                        if CanvasThumbs.mask-images.length > i
+                                            && CanvasThumbs.mask-images[i].width > 0: Image {
+                                            width: parent.width; height: parent.height;
+                                            source: CanvasThumbs.mask-images[i]; image-fit: contain;
+                                        }
+                                        if CanvasThumbs.mask-images.length <= i
+                                            || CanvasThumbs.mask-images[i].width == 0: Icon {
+                                            glyph: Glyph.mask; size: 12px; tint: Theme.fg-muted;
+                                        }
+                                        CanvasChipAction {
+                                            clicked => { root.layer-mask-paint-toggled(i); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 6px;
+                        background: layer-resize-touch.has-hover || root.resizing-layers ? Theme.field-hover : Theme.line;
+                        layer-resize-touch := TouchArea {
+                            mouse-cursor: MouseCursor.ns-resize;
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down) {
+                                    root.resize-y0 = self.mouse-y;
+                                    root.resizing-layers = true;
+                                } else if (event.kind == PointerEventKind.up
+                                    || event.kind == PointerEventKind.cancel) {
+                                    root.resizing-layers = false;
+                                }
+                            }
+                            moved => {
+                                if (root.resizing-layers) {
+                                    root.layer-list-requested = Math.clamp(
+                                        root.layer-list-height + self.mouse-y - root.resize-y0,
+                                        root.layer-list-min, root.layer-list-max);
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 34px; spacing: 4px;
+                        WorkspaceIcon { glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
+                        WorkspaceIcon { glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
+                        WorkspaceIcon { glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        AppButton { label: "调整"; selected: root.adjustment-open; clicked => { root.adjustment-open = !root.adjustment-open; } }
+                    }
+                    Rectangle { height: 1px; background: Theme.line; }
+                    Text { text: root.tool == 3 ? "画笔 · " + CanvasControls.target : root.tool == 4 ? "橡皮擦 · " + CanvasControls.target : root.tool == 5 || root.tool == 6 ? "选区与图层" : "图层属性"; height: 24px; font-size: 14px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; }
+                    ScrollView {
+                        viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off; vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 12px; alignment: start;
+                            if root.tool == 3 || root.tool == 4: VerticalLayout {
+                                spacing: 4px;
+                                if root.tool == 3: HorizontalLayout {
+                                    height: 28px; spacing: 4px;
+                                    for swatch[i] in Palette.colors: Rectangle {
+                                        width: 24px; height: 28px; border-radius: Theme.r; background: swatch;
+                                        border-width: i == root.brush-color ? 2px : 1px; border-color: i == root.brush-color ? Theme.fg : Theme.line;
+                                        CanvasChipAction { clicked => { root.brush-color-changed(i); } }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 34px; spacing: 6px;
+                                    Rectangle {
+                                        horizontal-stretch: 1; border-radius: Theme.r;
+                                        background: Theme.field;
+                                        HorizontalLayout {
+                                            padding: 6px; spacing: 5px;
+                                            Rectangle {
+                                                width: 16px; height: 20px; border-radius: Theme.r-xs;
+                                                background: CanvasControls.color;
+                                                border-width: 1px; border-color: Theme.line;
+                                            }
+                                    hex-input := TextInput {
+                                        horizontal-stretch: 1; single-line: true;
+                                        property <string> canonical: CanvasControls.hex;
+                                        text: self.canonical;
+                                        color: Theme.fg; font-family: Theme.font-technical; font-size: 13px;
+                                        vertical-alignment: center;
+                                        changed canonical => {
+                                            if (!self.has-focus) { self.text = self.canonical; }
+                                        }
+                                        changed has-focus => {
+                                            if (self.has-focus) {
+                                                self.text = CanvasControls.hex;
+                                                self.select-all();
+                                            } else {
+                                                CanvasControls.hex-edited(self.text);
+                                                self.text = CanvasControls.hex;
+                                            }
+                                        }
+                                        accepted => { Focus.release(); }
+                                        key-pressed(event) => {
+                                            if (event.text == Key.Escape) {
+                                                self.text = CanvasControls.hex;
+                                                Focus.release();
+                                                return EventResult.accept;
+                                            }
+                                            return EventResult.reject;
+                                        }
+                                    }
+                                        }
+                                    }
+                                    AppButton {
+                                        label: CanvasControls.picking ? "点击画布" : "取色";
+                                        selected: CanvasControls.picking;
+                                        clicked => { CanvasControls.picking = !CanvasControls.picking; }
+                                    }
+                                }
+                                PropertySlider { label: "大小"; value: root.brush-diameter; minimum: 1; maximum: 400; step: 1; precision: 0; readout: Math.round(root.brush-diameter) + " px"; changed(value) => { root.brush-size-changed(value); } }
+                                PropertySlider { label: "不透明度"; value: root.brush-opacity; minimum: 0.01; maximum: 1; step: 0.01; precision: 2; readout: Math.round(root.brush-opacity * 100) + "%"; changed(value) => { root.brush-opacity-changed(value); } }
+                                PropertySlider { label: "硬度"; value: root.brush-hardness; minimum: 0; maximum: 1; step: 0.01; precision: 2; readout: Math.round(root.brush-hardness * 100) + "%"; changed(value) => { root.brush-hardness-changed(value); } }
+                                AppButton {
+                                    label: CanvasControls.rgb-expanded ? "收起 RGB" : "RGB 调色";
+                                    glyph: CanvasControls.rgb-expanded ? Glyph.chevron-up : Glyph.chevron-down;
+                                    clicked => { CanvasControls.rgb-expanded = !CanvasControls.rgb-expanded; }
+                                }
+                                if CanvasControls.rgb-expanded: VerticalLayout {
+                                    spacing: 4px;
+                                PropertySlider {
+                                    label: "R"; value <=> CanvasControls.red;
+                                    minimum: 0; maximum: 255; step: 1; precision: 0;
+                                    changed(value) => { CanvasControls.rgb-changed(value, CanvasControls.green, CanvasControls.blue); }
+                                }
+                                PropertySlider {
+                                    label: "G"; value <=> CanvasControls.green;
+                                    minimum: 0; maximum: 255; step: 1; precision: 0;
+                                    changed(value) => { CanvasControls.rgb-changed(CanvasControls.red, value, CanvasControls.blue); }
+                                }
+                                PropertySlider {
+                                    label: "B"; value <=> CanvasControls.blue;
+                                    minimum: 0; maximum: 255; step: 1; precision: 0;
+                                    changed(value) => { CanvasControls.rgb-changed(CanvasControls.red, CanvasControls.green, value); }
+                                }
+                                }
+                            }
+                            if root.has-selection: VerticalLayout {
+                                spacing: 6px;
+                                AppButton { label: "填充选区"; clicked => { root.fill-selection(); } }
+                                AppButton { label: "删除选区内容"; danger: true; clicked => { root.delete-selection(); } }
+                                AppButton { label: "取消选择"; clicked => { root.deselect(); } }
+                            }
+                            if root.active-layer >= 0: VerticalLayout {
+                                spacing: 8px;
+                                PropertySlider { label: "图层透明度"; value: root.layers[root.active-layer].opacity; minimum: 0; maximum: 1; step: 0.01; precision: 2; readout: Math.round(root.layers[root.active-layer].opacity * 100) + "%"; changed(value) => { root.layer-opacity-changed(root.active-layer, value); } }
+                                if !root.layers[root.active-layer].masked: AppButton { label: "添加图层蒙版"; glyph: Glyph.mask; clicked => { root.layer-mask-added(); } }
+                                if root.layers[root.active-layer].masked: VerticalLayout {
+                                    spacing: 6px;
+                                    AppButton { label: root.layers[root.active-layer].mask-enabled ? "停用蒙版" : "启用蒙版"; clicked => { root.layer-mask-enable-toggled(); } }
+                                    AppButton { label: "移除蒙版"; danger: true; clicked => { root.layer-mask-removed(); } }
+                                }
+                            }
+                            for param[i] in root.adjustment-params: PropertySlider {
+                                label: I18n.t(param.label); value: param.value; minimum: param.minimum; maximum: param.maximum; step: 0.01; precision: 2;
+                                readout: Math.round(param.value * 100) / 100; changed(value) => { root.adjustment-param-changed(i, value); }
+                            }
+                    if root.adjustment-kind == 5: VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: center;
+
+                            Rectangle {
+                                width: 26px;
+                                height: 18px;
+                                border-radius: Theme.r;
+                                background: root.gradient-low;
+                                border-width: 1px;
+                                border-color: root.gradient-open && root.gradient-slot == 0 ? Theme.fg : Theme.line;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.gradient-slot = 0;
+                                        root.gradient-open = !(root.gradient-open && root.gradient-slot == 0);
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                width: 48px;
+                                height: 10px;
+                                border-radius: Theme.r;
+                                background: @linear-gradient(90deg, root.gradient-low, root.gradient-high);
+                                border-width: 1px;
+                                border-color: Theme.line;
+                            }
+                            Rectangle {
+                                width: 26px;
+                                height: 18px;
+                                border-radius: Theme.r;
+                                background: root.gradient-high;
+                                border-width: 1px;
+                                border-color: root.gradient-open && root.gradient-slot == 1 ? Theme.fg : Theme.line;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.gradient-slot = 1;
+                                        root.gradient-open = !(root.gradient-open && root.gradient-slot == 1);
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.gradient-open: HorizontalLayout {
+                            spacing: 3px;
+                            alignment: center;
+                            for color[ci] in Palette.colors: Rectangle {
+                                width: 14px;
+                                height: 14px;
+                                border-radius: Theme.r;
+                                background: color;
+                                border-width: 1px;
+                                border-color: Theme.line;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.gradient-color-changed(root.gradient-slot, ci);
+                                        root.gradient-open = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // The curves editor: a channel tab per curve, then the
+                    // plot. Drag a handle to bend, tap the plot to add a
+                    // point, double-click a handle to take it back.
+                    if root.adjustment-kind == 7: VerticalLayout {
+                        spacing: 4px;
+                        HorizontalLayout {
+                            spacing: 2px;
+                            alignment: start;
+                            for tab[t] in [
+                                { name: "R", tint: #e05a55 },
+                                { name: "G", tint: #58a84e },
+                                { name: "B", tint: #4a83d4 },
+                            ]: Rectangle {
+                                width: 22px;
+                                height: 18px;
+                                border-radius: Theme.r;
+                                background: root.curve-channel == t ? Theme.field-hover : Theme.field;
+                                border-width: 1px;
+                                border-color: root.curve-channel == t ? tab.tint : Theme.line;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.curve-channel = t; }
+                                }
+                                Text {
+                                    text: tab.name;
+                                    color: root.curve-channel == t ? tab.tint : Theme.fg-muted;
+                                    font-family: Theme.font-technical;
+                                    font-size: 13px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        CurveEditor {
+                            width: right-panel.width - 24px;
+                            height: self.width;
+                            points: root.curve-points;
+                            segments: root.curve-segments;
+                            tint: root.curve-channel == 0 ? #e05a55
+                                : root.curve-channel == 1 ? #58a84e : #4a83d4;
+                            point-set(index, x, y) => {
+                                root.curve-set(root.curve-channel, index, x, y);
+                            }
+                            point-add(x, y) => {
+                                root.curve-add(root.curve-channel, x, y);
+                            }
+                            point-remove(index) => {
+                                root.curve-remove(root.curve-channel, index);
+                            }
+                        }
+                        Text {
+                            text: I18n.t("Drag to bend, click to add, double-click to remove");
+                            color: Theme.fg-muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                        }
+                    }
+                }
+                if root.adjustment-open: TouchArea { clicked => { root.adjustment-open = false; } }
+                if root.adjustment-open: Rectangle {
+                    x: 10px; y: 54px; width: parent.width - 20px; height: 304px;
+                    background: Theme.raised; border-width: 1px; border-color: Theme.line-strong; border-radius: Theme.r-lg;
+                    VerticalLayout {
+                        padding: 8px; spacing: 0px;
+                        Text { text: "添加调整图层"; height: 22px; color: Theme.fg-muted; font-size: 13px; }
+                        for kind in [
+                            { id: 1, name: "反相" }, { id: 2, name: "曝光" }, { id: 3, name: "色阶" },
+                            { id: 4, name: "色相与饱和度" }, { id: 5, name: "渐变映射" }, { id: 6, name: "颗粒" }, { id: 7, name: "曲线" },
+                        ]: MenuAction { label: kind.name; glyph: Glyph.sliders; clicked => { root.adjustment-added(kind.id); root.adjustment-open = false; } }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            height: 28px; background: Theme.panel;
+            HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
+                Text { text: root.has-document ? (root.tool == 3 ? "画笔" : root.tool == 4 ? "橡皮擦" : root.tool == 5 ? "矩形选区" : root.tool == 6 ? "魔棒选区" : root.tool == 1 ? "平移" : root.tool == 2 ? "缩放" : "移动") : "打开图片开始编辑"; font-size: 13px; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; }
+                if root.has-document: Text { text: Math.round(root.zoom) + "%"; font-size: 13px; color: Theme.fg-muted; vertical-alignment: center; }
+            }
+        }
+    }
+}

@@ -29,7 +29,7 @@ import { RelinkDialog, RelinkData, MissingMediaItem } from "dialogs/relink.slint
 import { CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
-import { Editor } from "editor.slint";
+import { Editor, CanvasControls, CanvasThumbs } from "editor.slint";
 import { PaneKind } from "workspace/pane-switcher.slint";
 import { RecentProjectData, StartData, StartScreen } from "start.slint";
 import { TitleBar } from "title-bar.slint";
@@ -39,7 +39,14 @@ import {
 import { ParamFormat } from "inspector/controls.slint";
 import { ToastData, ToastLayer } from "primitives/toast.slint";
 import { TooltipLayer } from "primitives/tooltip.slint";
+import { Seat } from "workspace/seat.slint";
+import { Modal, Glyph } from "primitives/primitives.slint";
+import { AppButton, WorkspaceIcon, MenuAction } from "seecut/components.slint";
 import { Workspace } from "workspace/workspace.slint";
+import { AppRail, CloudWorkbench, SeeCut, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup } from "seecut/workbench.slint";
+import { AuthDialog, EditorBridgeBar, WorkflowFeedback } from "seecut/shell.slint";
+import { AssetPicker } from "seecut/asset-picker.slint";
+import { MediaPreview } from "seecut/media-preview.slint";
 import {
     ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
     SelectedClipData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
@@ -48,7 +55,7 @@ import {
 
 // Re-exported so main.rs can reach the globals and the struct.
 export {
-    Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, I18n,
+    Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, CanvasControls, CanvasThumbs, I18n,
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData, ParamFormat,
     DockDivider, DockSide, PaneKind, SeatBox,
     EffectData, MediaFilter, MediaItemData, MediaKind, TextPresetData,
@@ -56,14 +63,14 @@ export {
     SelectedClipData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
-    CaptionsSheetData, SpeechSheetData,
+    CaptionsSheetData, SpeechSheetData, SeeCut, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup,
 }
 
 export component App inherits Window {
-    title: "Concat";
+    title: "SeeCut";
     background: Theme.page;
     default-font-family: Theme.font;
-    default-font-size: Theme.fs;
+    default-font-size: 14px;
     // One line rather than a weight on every Text: everything inherits the
     // compensated body weight, and only titles override it. See theme.slint.
     default-font-weight: Theme.weight-body;
@@ -87,12 +94,26 @@ export component App inherits Window {
     // until a press lands on a pane's floor. Each of those teardowns hands
     // the focus back here on the way out.
     changed on-start => {
+        SeeCut.project-open = !root.on-start;
         if (!root.on-start) {
+            SeeCut.action("project-ready", "");
             keys.focus();
         }
     }
     property <bool> sheet-open: root.export.open || root.settings.open
         || root.project-sheet.open || root.captions.open || root.speech.open;
+    in-out property <bool> canvas-open-menu;
+    property <int> workspace-page: SeeCut.page;
+    changed workspace-page => {
+        SeeCut.generation-parameters-open = false; SeeCut.result-preview-open = false; SeeCut.media-preview-open = false;
+        SeeCut.personal-menu = 0;
+        SeeCut.template-menu-id = "";
+        root.canvas-open-menu = false;
+        SeeCut.personal-dialog = 0;
+        SeeCut.template-delete-id = "";
+    }
+    property <bool> workflow-modal-open: SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || Editor.canvas-open-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
+    changed workflow-modal-open => { if !root.workflow-modal-open { keys.focus(); } }
     changed sheet-open => {
         if (!root.sheet-open) {
             keys.focus();
@@ -202,6 +223,7 @@ export component App inherits Window {
     callback model-cancel(id: string);
     callback model-remove(id: string);
 
+    callback open-canvas-path(path: string);
     callback open-settings();
     callback export-clicked();
 
@@ -286,6 +308,7 @@ export component App inherits Window {
     // `Control` in a binding is the platform's own command modifier: Slint
     // remaps it to ⌘ on macOS, which is also what the menu row beside it says.
     keys := FocusScope {
+        enabled: !SeeCut.auth-open && !SeeCut.asset-picker-open;
         width: 100%;
         height: 100%;
         focus-on-tab-navigation: false;
@@ -299,17 +322,17 @@ export component App inherits Window {
             keys: @keys(Control + S);
             // Nothing on the launch screen has a project to act on, which is
             // why the strip up there is missing the menus this belongs to.
-            enabled: !root.on-start;
+            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open;
             activated => { root.app-menu-selected("save"); }
         }
         KeyBinding {
             keys: @keys(Control + Z);
-            enabled: !root.on-start;
+            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open;
             activated => { root.app-menu-selected("undo"); }
         }
         KeyBinding {
             keys: @keys(Control + Shift + Z);
-            enabled: !root.on-start;
+            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open;
             activated => { root.app-menu-selected("redo"); }
         }
 
@@ -320,7 +343,31 @@ export component App inherits Window {
         // its own letters and spaces before a key can walk up to this
         // scope, which is what keeps typing a title from cutting a clip.
         key-pressed(event) => {
-            if (root.on-start) {
+            if event.text == Key.Escape && Editor.canvas-exit-confirm { Editor.canvas-exit-cancel(); return accept; }
+            if event.text == Key.Escape && SeeCut.generation-parameters-open { SeeCut.generation-parameters-open = false; return accept; }
+            if event.text == Key.Escape && SeeCut.media-preview-open { SeeCut.media-preview-open = false; return accept; }
+            if event.text == Key.Escape && SeeCut.result-preview-open { SeeCut.result-preview-open = false; return accept; }
+            if event.text == Key.Escape && SeeCut.personal-menu > 0 { SeeCut.personal-menu = 0; return accept; }
+            if event.text == Key.Escape && SeeCut.template-menu-id != "" { SeeCut.template-menu-id = ""; return accept; }
+            if event.text == Key.Escape && root.canvas-open-menu { root.canvas-open-menu = false; return accept; }
+            if event.text == Key.Escape && SeeCut.template-editor-open { SeeCut.template-editor-open = false; return accept; }
+            if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.template-delete-id = ""; return accept; }
+            if event.text == Key.Escape && SeeCut.personal-dialog > 0 { SeeCut.personal-dialog = 0; return accept; }
+            if event.text == Key.Escape && Editor.canvas-open-confirm { Editor.canvas-open-cancel(); return accept; }
+            if (SeeCut.page == 6 && !root.workflow-modal-open) {
+                if (event.modifiers.control || event.modifiers.meta) {
+                    if (event.text == "z") { if event.modifiers.shift { if Editor.canvas-can-redo { Editor.canvas-redo(); } } else { if Editor.canvas-can-undo { Editor.canvas-undo(); } } return accept; }
+                    if (event.text == "a" && Editor.canvas-has-document) { Editor.canvas-select-all(); return accept; }
+                    if (event.text == "d") { Editor.canvas-deselect(); return accept; }
+                    if (event.text == "o") { Editor.canvas-open(); return accept; }
+                    if (event.modifiers.shift && event.text == "s" && Editor.canvas-has-document) { Editor.canvas-save-comp-as(); return accept; }
+                    if (event.text == "s" && Editor.canvas-has-document) { Editor.canvas-save-comp(); return accept; }
+                }
+                if ((event.text == Key.Delete || event.text == Key.Backspace) && Editor.canvas-has-selection) { Editor.canvas-delete-selection(); return accept; }
+                if (event.text == Key.Escape) { Editor.canvas-deselect(); return accept; }
+                return reject;
+            }
+            if (root.on-start || SeeCut.page != 0 || root.workflow-modal-open) {
                 return reject;
             }
             // The command key arrives as meta on a Mac and as control
@@ -395,9 +442,10 @@ export component App inherits Window {
 
             TitleBar {
                 macos: root.macos;
-                minimal: root.on-start;
+                minimal: root.on-start || SeeCut.page != 0;
                 project-name: root.project-name;
                 status: root.project-status;
+                document-controls: false;
 
                 menu: root.open-menu;
                 menu-opened(index, at-x) => {
@@ -419,31 +467,65 @@ export component App inherits Window {
                 export-clicked => { root.export-clicked(); }
             }
 
-            if root.on-start: StartScreen {
+            workspace-area := Rectangle {
                 vertical-stretch: 1;
+                min-width: 0px;
+                min-height: 0px;
+                // Future Agent mounts beside the shared workspace and uses the same project/asset commands.
+                // Reserve the integration boundary without exposing an empty panel.
+                rail := AppRail { x: 0; y: 0; compact: root.width < 1120px; height: parent.height; }
+                if SeeCut.page != 0 && SeeCut.page != 6: CloudWorkbench { compact-height: root.height < 800px; x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%; }
+                if SeeCut.page == 6: Rectangle {
+                    x: rail.width;
+                    width: Math.max(0px, parent.width - rail.width);
+                    height: 100%;
+                    VerticalLayout {
+                        Rectangle {
+                            height: 54px; background: Theme.panel;
+                            HorizontalLayout {
+                                padding-top: 10px; padding-bottom: 10px; padding-left: 20px; padding-right: 20px; spacing: 8px;
+                                Text { text: Editor.canvas-has-document ? Editor.canvas-name + (Editor.canvas-modified ? " · 未保存" : "") : "未打开文档"; font-size: 14px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+                                AppButton { label: "打开"; clicked => { root.canvas-open-menu = !root.canvas-open-menu; } }
+                                WorkspaceIcon { glyph: Glyph.undo; label: "撤销"; enabled: Editor.canvas-can-undo; clicked => { Editor.canvas-undo(); } }
+                                WorkspaceIcon { glyph: Glyph.redo; label: "重做"; enabled: Editor.canvas-can-redo; clicked => { Editor.canvas-redo(); } }
+                                AppButton { label: "保存工程"; primary: true; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp(); } }
+                                AppButton { label: "另存为"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp-as(); } }
+                                AppButton { label: "导出图片"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-export-png(); } }
+                                WorkspaceIcon { glyph: Glyph.sliders; label: Editor.canvas-sidebar-open ? "收起图层与属性" : "展开图层与属性"; checked: Editor.canvas-sidebar-open; clicked => { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; } }
+                            }
+                        }
+                        WorkflowFeedback { }
+                        Seat { kind: PaneKind.canvas; standalone: true; vertical-stretch: 1; }
+                    }
+                }
+                if SeeCut.page == 0: Rectangle {
+                    x: rail.width;
+                    width: Math.max(0px, parent.width - rail.width);
+                    height: 100%;
+                    VerticalLayout {
+                    EditorBridgeBar { project-name: root.project-name; project-status: root.project-status; export-clicked => { root.export-clicked(); } }
+                    WorkflowFeedback { }
+                    if root.on-start: StartScreen {
+                        vertical-stretch: 1;
+                        data: root.start;
+                        resolutions: root.start-resolutions;
+                        rates: root.start-rates;
+                        recents: root.recents;
 
-                data: root.start;
-                resolutions: root.start-resolutions;
-                rates: root.start-rates;
-                recents: root.recents;
+                        name-edited(name) => { root.start-name-edited(name); }
+                        location-edited(path) => { root.start-location-edited(path); }
+                        browse => { root.start-browse(); }
+                        resolution-changed(index) => { root.start-resolution-changed(index); }
+                        rate-changed(index) => { root.start-rate-changed(index); }
+                        create => { root.start-create(); }
+                        open-recent(path) => { root.start-open-recent(path); }
+                        forget-recent(path) => { root.start-forget-recent(path); }
+                        dismiss-error => { root.start-dismiss-error(); }
+                    }
 
-                name-edited(name) => { root.start-name-edited(name); }
-                location-edited(path) => { root.start-location-edited(path); }
-                browse => { root.start-browse(); }
-                resolution-changed(index) => { root.start-resolution-changed(index); }
-                rate-changed(index) => { root.start-rate-changed(index); }
-                create => { root.start-create(); }
-                open-recent(path) => { root.start-open-recent(path); }
-                forget-recent(path) => { root.start-forget-recent(path); }
-                dismiss-error => { root.start-dismiss-error(); }
-            }
-
-            // Everything the workspace shows now reads the Editor global, so
-            // nothing is passed to it: it is a box with four seats in it, and
-            // the views inside those seats reach the state directly. See
-            // editor.slint.
-            if !root.on-start: Workspace {
-                vertical-stretch: 1;
+                    if !root.on-start: Workspace { vertical-stretch: 1; }
+                    }
+                }
             }
         }
     }
@@ -565,6 +647,10 @@ export component App inherits Window {
         cancel => { root.speech-cancel(); }
     }
 
+    if SeeCut.asset-picker-open: AssetPicker { width: root.width; height: root.height; }
+    MediaPreview { width: root.width; height: root.height; }
+    AuthDialog { width: root.width; height: root.height; }
+
     // Over the workspace and both sheets, under the menus. A tooltip has to
     // clear the pane it belongs to — panes clip — and it has no business over
     // an open menu, which is the one surface that would rather not be
@@ -603,4 +689,62 @@ export component App inherits Window {
         height: root.height;
         data: root.toast;
     }
+    Modal {
+        open: Editor.canvas-open-confirm; title: "保存画布修改？"; glyph: Glyph.save;
+        surface-width: Math.min(480px, root.width - 32px);
+        closed => { Editor.canvas-open-cancel(); }
+        VerticalLayout {
+            padding: 20px; spacing: 16px;
+            Text { text: "当前画布有未保存的修改。打开其他图片或项目之前，可先保存当前画布。"; color: Theme.fg; wrap: word-wrap; }
+            HorizontalLayout { spacing: 8px; alignment: end;
+                AppButton { label: "取消"; clicked => { Editor.canvas-open-cancel(); } }
+                AppButton { label: "放弃修改并打开"; danger: true; clicked => { Editor.canvas-open-discard(); } }
+                AppButton { label: "保存并打开"; primary: true; clicked => { Editor.canvas-open-save(); } }
+            }
+        }
+    }
+    if root.canvas-open-menu: TouchArea { clicked => { root.canvas-open-menu = false; } }
+    if root.canvas-open-menu: Rectangle {
+        x: Math.max(84px, root.width - 470px); y: 76px; width: 244px; height: 130px;
+        background: Theme.raised; border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
+        VerticalLayout { padding: 8px; spacing: 0px;
+            MenuAction { auto-focus: true; label: "从资产库选择图片"; glyph: Glyph.folder; clicked => { root.canvas-open-menu = false; SeeCut.action("canvas-assets", ""); } }
+            MenuAction { label: "打开本机图片"; glyph: Glyph.image; clicked => { root.canvas-open-menu = false; Editor.canvas-open(); } }
+            MenuAction { label: "打开画布工程"; glyph: Glyph.folder-plus; clicked => { root.canvas-open-menu = false; Editor.canvas-project-open(); } }
+        }
+    }
+    Modal {
+        open: Editor.canvas-exit-confirm;
+        title: Editor.canvas-exit-error != "" ? "无法退出" : "保存画布修改？";
+        glyph: Glyph.save;
+        surface-width: Math.min(480px, root.width - 32px);
+        closed => { Editor.canvas-exit-cancel(); }
+        changed open => {
+            if Editor.canvas-exit-confirm {
+                root.canvas-open-menu = false;
+                exit-keys.focus();
+            }
+        }
+        exit-keys := FocusScope {
+            enabled: Editor.canvas-exit-confirm;
+            focus-on-tab-navigation: false;
+            key-pressed(event) => {
+                if event.text == Key.Escape { Editor.canvas-exit-cancel(); return accept; }
+                return reject;
+            }
+            VerticalLayout {
+                padding: 20px; spacing: 16px;
+                Text {
+                    text: Editor.canvas-exit-error != "" ? Editor.canvas-exit-error : "当前画布有未保存的修改。退出前请选择如何处理。";
+                    color: Theme.fg; wrap: word-wrap;
+                }
+                HorizontalLayout { spacing: 8px; alignment: end;
+                    AppButton { label: "取消"; clicked => { Editor.canvas-exit-cancel(); } }
+                    AppButton { label: "放弃并退出"; danger: true; clicked => { Editor.canvas-exit-discard(); } }
+                    AppButton { label: "保存并退出"; primary: true; clicked => { Editor.canvas-exit-save(); } }
+                }
+            }
+        }
+    }
+
 }

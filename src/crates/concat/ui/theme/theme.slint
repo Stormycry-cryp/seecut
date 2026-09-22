@@ -40,7 +40,7 @@ export global Theme {
     /// picks it (main.rs, `on_settings_theme_changed`), and every binding in
     /// the tree is a property read away from it, so the window retones in a
     /// frame without anything being rebuilt.
-    in-out property <bool> dark: true;
+    in-out property <bool> dark: false;
 
     // ── type ─────────────────────────────────────────────────────────────
     //
@@ -98,7 +98,11 @@ export global Theme {
     out property <length> r-xl: 16px;
 
     // metrics
-    out property <length> h: 28px;        // standard control height
+    out property <length> h: 28px;        // standard editor control height
+    out property <length> workbench-h: 34px;
+    out property <length> workbench-gap: 8px;
+    out property <length> workbench-font: 14px;
+    out property <length> workbench-icon: 18px;
     out property <length> gap: 6px;
     out property <length> pad: 14px;      // panel horizontal padding
     out property <length> label-w: 62px;
@@ -177,6 +181,13 @@ export global Theme {
     out property <color> overlay: dark ? Dark.overlay : Light.overlay;
     out property <color> scrim: dark ? Dark.scrim : Light.scrim;
     out property <color> on-scrim: dark ? Dark.on-scrim : Light.on-scrim;
+
+    // Controls that sit on media use a stable black plate in both palettes;
+    // the picture supplies the contrast behind it, while the white ink keeps
+    // the control readable on light and dark imagery alike.
+    out property <color> image-control: #00000099;
+    out property <color> image-control-hover: #000000d9;
+    out property <color> image-control-ink: #ffffff;
 
     // destructive
     out property <color> danger: dark ? Dark.danger : Light.danger;

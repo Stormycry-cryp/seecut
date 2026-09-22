@@ -199,6 +199,8 @@ export component IconButton inherits Rectangle {
     /// button, and nothing else so far. Carries the accent at rest, not only
     /// on hover, which is what separates it from `checked`.
     in property <bool> accent;
+    /// Use a stable scrim plate when the control is drawn over media.
+    in property <bool> on-image;
     /// widen past the square default
     in property <bool> wide;
     in property <length> icon-size: 14px;
@@ -206,19 +208,14 @@ export component IconButton inherits Rectangle {
     callback clicked();
 
     property <bool> lit: touch.has-hover && root.enabled;
-    // Checked is a lime *glyph* on a darker chip, never dark ink on a lime
-    // slab and not a lime-tinted one either: an activated tool button is a
-    // lime glyph on a slightly darker surface, so the toolbar reads as "this
-    // mode is on" without shouting. With the accent itself lime, even a 20%
-    // tint behind eight of them turns a tray into a row of green slabs. The
-    // glyph carries the state; the chip only has to sit back far enough to be
-    // seen behind it.
-    property <brush> tint: root.checked ? Theme.accent
+    // Selected tools share the brand accent; disabled glyphs remain readable.
+    property <brush> tint: root.on-image ? (root.checked ? Theme.accent : Theme.image-control-ink)
+        : !root.enabled ? Theme.fg-dim : root.checked ? Theme.accent
         : (root.lit && root.danger) ? Theme.danger
         : root.accent ? (root.lit ? Theme.accent-hover : Theme.accent)
         : root.lit ? Theme.fg
         : Theme.fg-muted;
-    property <length> side: 26px;
+    in property <length> side: 26px;
     property <bool> ring;
 
     // Fixed across, free along. A Slint layout start-aligns a fixed-size child
@@ -256,8 +253,9 @@ export component IconButton inherits Rectangle {
         width: root.width;
         height: root.side;
         border-radius: Theme.r-sm;
-        opacity: root.enabled ? 1.0 : 0.4;
-        background: root.checked ? Theme.well
+        opacity: 1.0;
+        background: root.on-image ? (touch.has-hover ? Theme.image-control-hover : Theme.image-control)
+            : root.checked ? Theme.well
             : !root.enabled ? Colors.transparent
             : (touch.has-hover && root.danger) ? Theme.danger-soft
             : (touch.has-hover && root.accent) ? Theme.accent-soft

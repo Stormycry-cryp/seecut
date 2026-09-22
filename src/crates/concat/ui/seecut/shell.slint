@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { Theme, Modal, Glyph, IconButton, Button } from "../primitives/primitives.slint";
+import { SeeCut } from "state.slint";
+import { AccountPage } from "account.slint";
+import { AppButton } from "components.slint";
+
+export component AuthDialog inherits Modal {
+    open: SeeCut.auth-open;
+    title: "SeeCut 账户";
+    glyph: Glyph.lock;
+    surface-width: Math.min(460px, root.width - 32px);
+    surface-height: Math.min(640px, root.height - 40px);
+    dismissable: !SeeCut.auth-busy;
+    closed => { SeeCut.action("auth-close", ""); }
+    if SeeCut.auth-open: FocusScope {
+        vertical-stretch: 1;
+        key-pressed(event) => {
+            if event.text == Key.Escape && !SeeCut.auth-busy { SeeCut.action("auth-close", ""); return accept; }
+            return reject;
+        }
+        VerticalLayout {
+            AccountPage { authentication: true; vertical-stretch: 1; }
+            if !SeeCut.signed-in: HorizontalLayout {
+                padding-left: 24px; padding-right: 24px; padding-bottom: 16px;
+                alignment: center;
+                AppButton { label: "先使用本地剪辑和个人资产"; subtle: true; enabled: !SeeCut.auth-busy; clicked => { SeeCut.action("auth-close", ""); SeeCut.action("navigate", "0"); } }
+            }
+        }
+    }
+}
+
+export component WorkflowFeedback inherits VerticalLayout {
+    spacing: 0px;
+    if SeeCut.pending-import-count > 0 && SeeCut.page == 0: Rectangle {
+        min-height: 48px; background: Theme.field-active;
+        HorizontalLayout {
+            padding: 10px; spacing: 8px;
+            Text { text: "已选 " + SeeCut.pending-import-count + " 项素材。创建或打开项目后自动导入。"; color: Theme.fg; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+            AppButton { label: "取消导入"; subtle: true; clicked => { SeeCut.action("cancel-project-import", ""); } }
+        }
+    }
+    if !SeeCut.auth-open && !SeeCut.asset-picker-open && SeeCut.error != "": Rectangle {
+        min-height: 42px; background: Theme.danger-soft;
+        HorizontalLayout {
+            padding: 10px; spacing: 8px;
+            Text { text: SeeCut.error; color: Theme.danger; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+            if SeeCut.page == 1 && SeeCut.signed-in && SeeCut.model-names.length == 0: AppButton { label: "重新加载"; clicked => { SeeCut.action("navigate", "1"); } }
+            IconButton { glyph: Glyph.close; label: "关闭提示"; clicked => { SeeCut.error = ""; } }
+        }
+    }
+    if !SeeCut.auth-open && !SeeCut.asset-picker-open && SeeCut.notice != "" && SeeCut.pending-import-count == 0: Rectangle {
+        min-height: 38px; background: Theme.field;
+        HorizontalLayout {
+            padding: 8px; spacing: 8px;
+            Text { text: SeeCut.notice; color: Theme.fg-muted; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+            IconButton { glyph: Glyph.close; label: "关闭提示"; clicked => { SeeCut.notice = ""; } }
+        }
+    }
+}
+
+export component EditorBridgeBar inherits Rectangle {
+    in property <string> project-name;
+    in property <string> project-status;
+    height: 54px;
+    callback export-clicked();
+    background: Theme.panel;
+    HorizontalLayout {
+        padding-top: 10px; padding-bottom: 10px; padding-left: 20px; padding-right: 20px; spacing: 8px;
+        Text { font-size: 14px; text: SeeCut.project-open ? root.project-name + " · " + root.project-status : "未打开项目"; color: Theme.fg; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+        AppButton { label: "从资产库导入"; enabled: !SeeCut.working; clicked => { SeeCut.action("project-assets", ""); } }
+        if SeeCut.project-open: AppButton { label: "导出视频"; primary: true; clicked => { root.export-clicked(); } }
+    }
+    Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.line; }
+}
