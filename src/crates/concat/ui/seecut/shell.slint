@@ -45,6 +45,7 @@ export component WorkflowFeedback inherits VerticalLayout {
         HorizontalLayout {
             padding: 10px; spacing: 8px;
             Text { text: SeeCut.error; color: Theme.danger; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+            if SeeCut.page == 1 && SeeCut.signed-in && SeeCut.model-names.length == 0: AppButton { label: "重新加载"; clicked => { SeeCut.action("navigate", "1"); } }
             IconButton { glyph: Glyph.close; label: "关闭提示"; clicked => { SeeCut.error = ""; } }
         }
     }
@@ -60,12 +61,15 @@ export component WorkflowFeedback inherits VerticalLayout {
 
 export component EditorBridgeBar inherits Rectangle {
     in property <string> project-name;
-    height: 46px;
+    in property <string> project-status;
+    height: 54px;
+    callback export-clicked();
     background: Theme.panel;
     HorizontalLayout {
-        padding-left: 16px; padding-right: 12px; spacing: 8px;
-        Text { text: SeeCut.project-open ? root.project-name : "剪辑项目"; color: Theme.fg; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
-        Button { label: "从资产库导入"; glyph: Glyph.folder; ghost: true; enabled: !SeeCut.working; clicked => { SeeCut.action("project-assets", ""); } }
+        padding-top: 10px; padding-bottom: 10px; padding-left: 20px; padding-right: 20px; spacing: 8px;
+        Text { font-size: 14px; text: SeeCut.project-open ? root.project-name + " · " + root.project-status : "未打开项目"; color: Theme.fg; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+        AppButton { label: "从资产库导入"; enabled: !SeeCut.working; clicked => { SeeCut.action("project-assets", ""); } }
+        if SeeCut.project-open: AppButton { label: "导出视频"; primary: true; clicked => { root.export-clicked(); } }
     }
     Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.line; }
 }

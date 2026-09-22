@@ -57,6 +57,9 @@ pub struct Asset {
     pub created_at: u64,
     /// Whether the item is in the library recycle bin.
     pub trashed: bool,
+    /// Whether the user pinned this item for quick access.
+    #[serde(default)]
+    pub favorite: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -147,6 +150,7 @@ impl Library {
             original_path: Some(source.0),
             created_at,
             trashed: false,
+            favorite: false,
         };
         self.items.push(item);
         if let Err(error) = self.save() {
@@ -173,6 +177,7 @@ impl Library {
             original_path: None,
             created_at,
             trashed: false,
+            favorite: false,
         });
         if let Err(error) = self.save() {
             self.items.pop();
@@ -196,6 +201,36 @@ impl Library {
     /// Restores a recycled item without changing its file.
     pub fn restore(&mut self, id: &str) -> Result<(), String> {
         self.update(id, |item| item.trashed = false)
+    }
+
+    /// Changes an item's favorite state without moving its file.
+    pub fn set_favorite(&mut self, id: &str, favorite: bool) -> Result<(), String> {
+        self.update(id, |item| item.favorite = favorite)
+    }
+
+    /// Moves several indexed items into or out of the recycle bin atomically.
+    pub fn set_trashed_many(&mut self, ids: &[String], trashed: bool) -> Result<usize, String> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        for id in ids {
+            if self.get(id).is_none() {
+                return Err("批量操作包含已不存在的个人资产，请刷新后重试".into());
+            }
+        }
+        let previous = self.items.clone();
+        let mut changed = 0;
+        for item in &mut self.items {
+            if ids.iter().any(|id| id == &item.id) && item.trashed != trashed {
+                item.trashed = trashed;
+                changed += 1;
+            }
+        }
+        if let Err(error) = self.save() {
+            self.items = previous;
+            return Err(error);
+        }
+        Ok(changed)
     }
 
     fn update(&mut self, id: &str, change: impl FnOnce(&mut Asset)) -> Result<(), String> {
@@ -251,15 +286,7 @@ pub fn thumbnail(asset: &Asset, root: &Path) -> Option<PathBuf> {
     if !metadata.is_file() {
         return None;
     }
-
-    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    metadata.len().hash(&mut hasher);
-    modified.as_secs().hash(&mut hasher);
-    modified.subsec_nanos().hash(&mut hasher);
-    let cache_dir = root.join("thumbnails");
-    let destination = cache_dir.join(format!("{:016x}.jpg", hasher.finish()));
+    let (cache_dir, destination) = thumbnail_destination(&path, &metadata, root)?;
     if destination.is_file() {
         return Some(destination);
     }
@@ -269,9 +296,9 @@ pub fn thumbnail(asset: &Asset, root: &Path) -> Option<PathBuf> {
     if video.width == 0 || video.height == 0 {
         return None;
     }
-    let longest = u64::from(video.width.max(video.height).max(160));
-    let width = ((u64::from(video.width) * 160 + longest / 2) / longest).max(1) as u32;
-    let height = ((u64::from(video.height) * 160 + longest / 2) / longest).max(1) as u32;
+    let longest = u64::from(video.width.max(video.height)).max(512);
+    let width = ((u64::from(video.width) * 512 + longest / 2) / longest).max(1) as u32;
+    let height = ((u64::from(video.height) * 512 + longest / 2) / longest).max(1) as u32;
     let mut options = concat_media::DecodeOptions::default()
         .scaled_to(width, height)
         .limited_to(1);
@@ -295,6 +322,34 @@ pub fn thumbnail(asset: &Asset, root: &Path) -> Option<PathBuf> {
         let _ = fs::remove_file(temporary);
     }
     result
+}
+
+/// Returns an already-generated thumbnail without decoding media on the caller's thread.
+pub fn cached_thumbnail(asset: &Asset, root: &Path) -> Option<PathBuf> {
+    if asset.kind == AssetKind::Audio {
+        return None;
+    }
+    let path = asset.path.canonicalize().ok()?;
+    let metadata = fs::metadata(&path).ok()?;
+    let (_, destination) = thumbnail_destination(&path, &metadata, root)?;
+    destination.is_file().then_some(destination)
+}
+
+fn thumbnail_destination(
+    path: &Path,
+    metadata: &fs::Metadata,
+    root: &Path,
+) -> Option<(PathBuf, PathBuf)> {
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    let mut hasher = DefaultHasher::new();
+    "v2-512".hash(&mut hasher);
+    path.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    modified.as_secs().hash(&mut hasher);
+    modified.subsec_nanos().hash(&mut hasher);
+    let cache_dir = root.join("thumbnails");
+    let destination = cache_dir.join(format!("{:016x}.jpg", hasher.finish()));
+    Some((cache_dir, destination))
 }
 
 fn checked_media(path: &Path) -> Result<(PathBuf, AssetKind), String> {
@@ -417,6 +472,37 @@ mod tests {
     }
 
     #[test]
+    fn old_manifest_defaults_favorite_and_batch_recycle_is_atomic() {
+        let root = temp_root("compat-batch");
+        fs::create_dir_all(root.join("imported")).unwrap();
+        let media = root.join("imported/photo.png");
+        fs::write(&media, b"image").unwrap();
+        let canonical = media.canonicalize().unwrap();
+        fs::write(
+            root.join(MANIFEST_NAME),
+            serde_json::to_vec(&serde_json::json!({"items":[{
+                "id":"old","name":"photo","path":canonical,"kind":"image",
+                "source":"imported","created_at":1,"trashed":false
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut library = Library::load(&root).unwrap();
+        assert!(!library.get("old").unwrap().favorite);
+        library.set_favorite("old", true).unwrap();
+        assert!(library.get("old").unwrap().favorite);
+        assert!(
+            library
+                .set_trashed_many(&["old".into(), "missing".into()], true)
+                .is_err()
+        );
+        assert!(!library.get("old").unwrap().trashed);
+        assert_eq!(library.set_trashed_many(&["old".into()], true).unwrap(), 1);
+        assert!(library.get("old").unwrap().trashed);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_unknown_media_and_path_like_names() {
         let root = temp_root("invalid");
         let media_dir = temp_root("invalid-media");
@@ -451,13 +537,14 @@ mod tests {
             original_path: None,
             created_at: 0,
             trashed: false,
+            favorite: false,
         };
 
         let first = thumbnail(&asset, &root).unwrap();
         assert_eq!(thumbnail(&asset, &root).unwrap(), first);
         let info = concat_media::probe(&first).unwrap();
         let video = info.video.unwrap();
-        assert_eq!((video.width, video.height), (160, 50));
+        assert_eq!((video.width, video.height), (320, 100));
 
         let larger = concat_core::frame::Frame::black(321, 100);
         fs::write(&source, concat_media::jpeg(&larger, 5).unwrap()).unwrap();

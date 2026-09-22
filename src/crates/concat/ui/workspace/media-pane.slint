@@ -1793,7 +1793,6 @@ export component MediaPane inherits Rectangle {
                         busy: root.importing;
                         clicked => { root.import-media(); }
                     }
-                    IconButton { glyph: Glyph.folder; label: "从个人 / 团队资产库导入"; enabled: !SeeCut.working; clicked => { SeeCut.action("project-assets", ""); } }
                     Rectangle { horizontal-stretch: 1; }
                     // Sort, and sort only: narrowing the bin by kind is the
                     // sidebar's, where each kind carries its count and the
@@ -1872,7 +1871,7 @@ export component MediaPane inherits Rectangle {
                     glyph: Glyph.import;
                     text: root.count-all > 0
                         ? I18n.t("Nothing of that kind in this project.")
-                        : "Drop video and audio files anywhere in the window to import them.";
+                        : I18n.t("Drop video and audio files anywhere in the window to import them.");
                 }
 
                 if root.tab == 0 && root.items.length > 0: HorizontalLayout {

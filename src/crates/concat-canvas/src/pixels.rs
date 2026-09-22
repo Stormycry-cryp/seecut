@@ -22,16 +22,7 @@ use concat_core::frame::Frame;
 
 /// A layer's pixels, by name. Never zero.
 #[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Debug,
-    serde::Serialize,
-    serde::Deserialize,
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
 )]
 pub struct PixelId(pub(crate) u64);
 
@@ -52,7 +43,7 @@ impl PixelId {
 ///
 /// One store per document. Not serialized: a saved project writes the
 /// bitmaps out as image files and re-mints ids on load.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PixelStore {
     frames: HashMap<PixelId, Arc<Frame>>,
     next: u64,
@@ -95,6 +86,45 @@ impl PixelStore {
         if id != PixelId::NONE {
             self.frames.insert(id, Arc::new(frame));
         }
+    }
+
+    /// Swaps a bitmap without changing its frame identity. The live brush
+    /// shares its working frame with the store so the compositor sees the
+    /// same id that dirty uploads already carry and cannot replace them with
+    /// an older full-frame upload on the next compose.
+    pub fn replace_shared(&mut self, id: PixelId, frame: Arc<Frame>) {
+        if id != PixelId::NONE {
+            self.frames.insert(id, frame);
+        }
+    }
+
+    /// Whether both stores name the same immutable frame versions. This is
+    /// the cheap equality a history snapshot needs: frames are immutable
+    /// behind `Arc`, so pointer equality is content-version equality.
+    pub fn same_versions(&self, other: &Self) -> bool {
+        self.frames.len() == other.frames.len()
+            && self.frames.iter().all(|(id, frame)| {
+                other
+                    .frames
+                    .get(id)
+                    .is_some_and(|other| Arc::ptr_eq(frame, other))
+            })
+    }
+
+    /// Bytes retained by this store that `other` does not already share.
+    /// Used for the undo budget; shared current frames cost no extra history
+    /// memory, while an old painted version contributes its full byte size.
+    pub fn unshared_bytes(&self, other: &Self) -> usize {
+        self.frames
+            .iter()
+            .filter(|(id, frame)| {
+                !other
+                    .frames
+                    .get(id)
+                    .is_some_and(|other| Arc::ptr_eq(frame, other))
+            })
+            .map(|(_, frame)| Frame::byte_len(frame.width(), frame.height()))
+            .sum()
     }
 
     /// The bitmap a name refers to, for as long as something holds the arc.

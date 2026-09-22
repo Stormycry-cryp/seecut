@@ -13,6 +13,8 @@ import { ThinScrollbar } from "scrollbar.slint";
 // Slint's PopupWindow does on its own.
 export component Select inherits Rectangle {
     in property <[string]> options;
+    in property <length> text-size: Theme.fs;
+    in property <length> item-height: 26px;
     /// Optional second column, set against the trailing edge of each row —
     /// the "1:2" beside "Half". Shorter than `options` is fine; rows past its
     /// end simply have none. The trigger never shows it: it is what you open
@@ -42,7 +44,7 @@ export component Select inherits Rectangle {
     callback changed(index: int);
 
     property <bool> ring;
-    property <length> row-h: 26px;
+    property <length> row-h: root.item-height;
     /// What the rows need, and what the list is given: the rows, capped
     /// at nine or so. Past the cap the list scrolls - see `at`.
     property <length> content-h: root.options.length * root.row-h + 8px;
@@ -177,7 +179,7 @@ export component Select inherits Rectangle {
             horizontal-stretch: 1;
             text: root.label;
             color: root.current >= 0 ? (root.flat ? Theme.fg-muted : Theme.fg) : Theme.fg-dim;
-            font-size: Theme.fs;
+            font-size: root.text-size;
             vertical-alignment: center;
             overflow: elide;
         }
@@ -203,12 +205,12 @@ export component Select inherits Rectangle {
 
         for option in root.options: Text {
             text: option;
-            font-size: Theme.fs;
+            font-size: root.text-size;
         }
         // The current option alone, for a `snug` trigger.
         shown := Text {
             text: root.label;
-            font-size: Theme.fs;
+            font-size: root.text-size;
         }
     }
 
@@ -335,7 +337,7 @@ export component Select inherits Rectangle {
                             horizontal-stretch: 1;
                             text: option;
                             color: index == root.active ? Theme.on-accent : Theme.fg-muted;
-                            font-size: Theme.fs;
+                            font-size: root.text-size;
                             vertical-alignment: center;
                             overflow: elide;
                         }
@@ -344,7 +346,7 @@ export component Select inherits Rectangle {
                             text: root.details[index];
                             color: index == root.active ? Theme.on-accent : Theme.fg-dim;
                             font-family: Theme.font-technical;
-                            font-size: Theme.fs-sm;
+                            font-size: root.text-size;
                             vertical-alignment: center;
                         }
 

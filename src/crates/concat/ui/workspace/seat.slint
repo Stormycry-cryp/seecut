@@ -29,6 +29,7 @@ export component Seat inherits Rectangle {
     /// Which box this is, 0..3. Travels in the drag payload so a drop can say
     /// where the panel came from.
     in property <int> index;
+    in property <bool> standalone;
 
     /// Its corner button was used.
     callback picked(kind: PaneKind);
@@ -190,11 +191,15 @@ export component Seat inherits Rectangle {
 
             pane-picked(kind) => { root.picked(kind); }
             pane-seat: root.index;
+            standalone: root.standalone;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
 
             frame: Editor.canvas-frame;
             has-document: Editor.canvas-has-document;
+            can-undo: Editor.canvas-can-undo;
+            can-redo: Editor.canvas-can-redo;
+            sidebar-open: Editor.canvas-sidebar-open;
             document-name: Editor.canvas-name;
             zoom: Editor.canvas-zoom;
             pan-x: Editor.canvas-pan-x;

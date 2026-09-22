@@ -158,7 +158,7 @@ impl ImageDocument {
                 Some(LayerNode::Group(group)) => group.find(target).is_some(),
                 _ => false,
             };
-            if inside_moved_subtree || self.find(target).is_none() {
+            if inside_moved_subtree || !matches!(self.find(target), Some(LayerNode::Group(_))) {
                 return false;
             }
         }
@@ -821,6 +821,25 @@ mod tests {
             .id();
         let before = doc.to_json().expect("serializes");
         assert!(!doc.move_node(group, Some(group), 0));
+        assert_eq!(doc.to_json().expect("serializes"), before);
+    }
+
+    #[test]
+    fn a_node_cannot_move_into_a_non_group_without_being_lost() {
+        let (mut doc, _) = document_with_tree();
+        let nodes = doc.walk();
+        let background = nodes
+            .iter()
+            .find(|node| node.name() == "Background")
+            .expect("background")
+            .id();
+        let inner = nodes
+            .iter()
+            .find(|node| node.name() == "Inner")
+            .expect("inner")
+            .id();
+        let before = doc.to_json().expect("serializes");
+        assert!(!doc.move_node(inner, Some(background), 0));
         assert_eq!(doc.to_json().expect("serializes"), before);
     }
 

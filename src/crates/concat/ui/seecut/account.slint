@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { ScrollView, CheckBox } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Theme, SegmentedControl, Glyph, IconButton } from "../primitives/primitives.slint";
+import { Switch } from "../inspector/controls.slint";
 import { SeeCut } from "state.slint";
 import { AppButton, CloudField, Label, Heading, EmptyState } from "components.slint";
 
@@ -128,7 +129,12 @@ export component AccountPage inherits Rectangle {
                 Text { text: SeeCut.local-folder == "" ? "尚未选择" : SeeCut.local-folder; color: Theme.fg-muted; overflow: elide; min-width: 0px; vertical-alignment: center; horizontal-stretch: 1; }
                 AppButton { label: "选择文件夹"; glyph: Glyph.folder; clicked => { SeeCut.action("local-folder-browse", ""); } }
             }
-            CheckBox { text: "减少动态效果"; checked <=> SeeCut.reduced-motion; toggled => { SeeCut.changed("reduced-motion", self.checked ? "true" : "false"); } }
+            HorizontalLayout { height: 34px; spacing: 12px;
+                Text { text: "减少动态效果"; color: Theme.fg; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
+                VerticalLayout { alignment: center;
+                    Switch { reduced-motion: SeeCut.reduced-motion; accessible-label: "减少动态效果"; checked <=> SeeCut.reduced-motion; toggled(value) => { SeeCut.changed("reduced-motion", value ? "true" : "false"); } }
+                }
+            }
             }
         }
     }

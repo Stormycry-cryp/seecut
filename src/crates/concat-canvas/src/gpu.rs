@@ -498,6 +498,9 @@ pub struct DirtyRect {
 struct Resident {
     texture: wgpu::Texture,
     frame_id: u64,
+    /// Dirty brush uploads are newer than the store's pre-stroke frame.
+    /// Full uploads from that store must not replace them before release.
+    live: bool,
 }
 
 /// The GPU canvas compositor. See the module docs.
@@ -662,6 +665,15 @@ impl CanvasGpu {
     /// rectangle and nothing else. Without `dirty`, a new frame identity
     /// ([`Frame::id`]) uploads whole; a match is a no-op.
     pub fn upload(&mut self, id: PixelId, frame: &Frame, dirty: Option<DirtyRect>) {
+        if dirty.is_none()
+            && let Some(resident) = self.residents.get_mut(&id)
+            && resident.live
+        {
+            if resident.frame_id == frame.id() {
+                resident.live = false;
+            }
+            return;
+        }
         let resident_id = self.residents.get(&id).map(|r| r.frame_id);
         if resident_id == Some(frame.id()) && dirty.is_none() {
             return;
@@ -730,6 +742,7 @@ impl CanvasGpu {
             Resident {
                 texture,
                 frame_id: frame.id(),
+                live: dirty.is_some(),
             },
         );
     }
@@ -739,6 +752,17 @@ impl CanvasGpu {
     pub fn evict(&mut self, id: PixelId) {
         self.residents.remove(&id);
         self.masks.remove(&id);
+    }
+
+    /// Drops every document-owned cache while retaining the shared device
+    /// and pipelines. A newly opened document may reuse the same PixelIds;
+    /// none of the previous document's textures may follow those ids.
+    pub fn reset_document(&mut self) {
+        self.residents.clear();
+        self.masks.clear();
+        self.pool.clear();
+        self.coverage.clear();
+        self.canvas = None;
     }
 
     /// The device the compositor renders on. Callers that add their own
@@ -1159,6 +1183,9 @@ impl CanvasGpu {
         mask: &crate::document::LayerMask,
         store: &PixelStore,
     ) -> Option<wgpu::Texture> {
+        if !mask.enabled {
+            return None;
+        }
         if let Some(resident) = self.masks.get(&mask.pixels) {
             return Some(resident.texture.clone());
         }
@@ -1175,6 +1202,80 @@ impl CanvasGpu {
     pub fn refresh_mask(&mut self, id: PixelId, frame: &Frame) {
         self.masks.remove(&id);
         self.upload_mask(id, frame);
+    }
+
+    /// Updates one painted mask rectangle while reusing its texture. Mask
+    /// residents are cached independently from layers, so this mirrors the
+    /// brush's dirty upload without allocating a new full-frame texture for
+    /// every pointer sample.
+    pub fn refresh_mask_region(&mut self, id: PixelId, frame: &Frame, dirty: DirtyRect) {
+        let reusable = self.masks.get(&id).is_some_and(|resident| {
+            resident.texture.size().width == frame.width()
+                && resident.texture.size().height == frame.height()
+        });
+        if !reusable {
+            self.refresh_mask(id, frame);
+            if let Some(resident) = self.masks.get_mut(&id) {
+                resident.live = true;
+            }
+            return;
+        }
+        let texture = self.masks[&id].texture.clone();
+        self.write_region(&texture, frame, dirty);
+        if let Some(resident) = self.masks.get_mut(&id) {
+            resident.frame_id = frame.id();
+            resident.live = true;
+        }
+    }
+
+    /// Closes a live mask stroke after the exact working frame has entered
+    /// the store. A mismatched resident is repaired with one full upload.
+    pub fn finish_mask(&mut self, id: PixelId, frame: &Frame) {
+        if let Some(resident) = self.masks.get_mut(&id)
+            && resident.frame_id == frame.id()
+        {
+            resident.live = false;
+            return;
+        }
+        self.refresh_mask(id, frame);
+    }
+
+    fn write_region(&self, texture: &wgpu::Texture, frame: &Frame, dirty: DirtyRect) {
+        let width = frame.width();
+        let height = frame.height();
+        let x = dirty.x.min(width);
+        let y = dirty.y.min(height);
+        let region = wgpu::Extent3d {
+            width: dirty.width.min(width - x),
+            height: dirty.height.min(height - y),
+            depth_or_array_layers: 1,
+        };
+        if region.width == 0 || region.height == 0 {
+            return;
+        }
+        let row_bytes = region.width as usize * 4;
+        let stride = row_bytes.div_ceil(ROW_ALIGN) * ROW_ALIGN;
+        let mut data = Vec::with_capacity(stride * region.height as usize);
+        for row in 0..region.height as usize {
+            let start = ((y as usize + row) * width as usize + x as usize) * 4;
+            data.extend_from_slice(&frame.pixels()[start..start + row_bytes]);
+            data.resize(data.len() + (stride - row_bytes), 0);
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride as u32),
+                rows_per_image: None,
+            },
+            region,
+        );
     }
 
     fn upload_mask(&mut self, id: PixelId, frame: &Frame) {
@@ -1234,6 +1335,7 @@ impl CanvasGpu {
             Resident {
                 texture,
                 frame_id: frame.id(),
+                live: false,
             },
         );
     }
@@ -1445,12 +1547,8 @@ mod tests {
         }
     }
 
-    /// The two backends over the same document, within a byte.
-    fn assert_parity(world: &World) {
+    fn assert_parity_on(world: &World, gpu: &mut CanvasGpu) {
         let expected = cpu::compose(&world.document, &world.store);
-        let Some(mut gpu) = CanvasGpu::new() else {
-            return;
-        };
         let actual = gpu.compose_frame(&world.document, &world.store);
         assert_eq!(actual.width(), expected.width());
         assert_eq!(actual.height(), expected.height());
@@ -1464,6 +1562,21 @@ mod tests {
                 index % 4
             );
         }
+    }
+
+    /// The two backends over the same document, within a byte. The broad
+    /// parity suite remains portable to builders without an adapter.
+    fn assert_parity(world: &World) {
+        let Some(mut gpu) = CanvasGpu::new() else {
+            return;
+        };
+        assert_parity_on(world, &mut gpu);
+    }
+
+    /// Correctness tests for GPU-only state must prove an adapter ran them;
+    /// silently returning would turn a skipped hardware path into a pass.
+    fn required_gpu() -> CanvasGpu {
+        CanvasGpu::new().expect("this GPU regression requires a usable wgpu adapter")
     }
 
     #[test]
@@ -1754,5 +1867,52 @@ mod tests {
                 index % 4
             );
         }
+    }
+
+    #[test]
+    fn a_live_dirty_upload_refuses_the_stores_old_frame_until_release() {
+        let mut gpu = required_gpu();
+        let id = PixelId(7);
+        let base = Frame::transparent(16, 16);
+        gpu.upload(id, &base, None);
+
+        let mut working = base.clone();
+        working.set_pixel(4, 4, [255, 0, 0, 255]);
+        gpu.upload(
+            id,
+            &working,
+            Some(DirtyRect {
+                x: 4,
+                y: 4,
+                width: 1,
+                height: 1,
+            }),
+        );
+        let live_id = gpu.residents[&id].frame_id;
+        assert!(gpu.residents[&id].live);
+
+        // Composition sees the store's pre-stroke frame while the gesture
+        // is live. It must not replace the newer dirty resident.
+        gpu.upload(id, &base, None);
+        assert_eq!(gpu.residents[&id].frame_id, live_id);
+        assert!(gpu.residents[&id].live);
+
+        // Release moves this exact working frame into the store.
+        gpu.upload(id, &working, None);
+        assert_eq!(gpu.residents[&id].frame_id, working.id());
+        assert!(!gpu.residents[&id].live);
+    }
+
+    #[test]
+    fn a_disabled_mask_is_ignored_by_the_gpu_too() {
+        let mut world = World::new();
+        world.with_layer("Back", solid(16, 16, [20, 30, 40, 255]));
+        let mask_id = world.store.put(solid(16, 16, [0, 0, 0, 255]));
+        let top = world.with_layer("Top", solid(16, 16, [220, 80, 30, 255]));
+        let mut mask = LayerMask::new(mask_id);
+        mask.enabled = false;
+        world.document.layer_mut(top).expect("layer").mask = Some(mask);
+        let mut gpu = required_gpu();
+        assert_parity_on(&world, &mut gpu);
     }
 }

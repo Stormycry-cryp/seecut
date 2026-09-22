@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ScrollView } from "std-widgets.slint";
-import { Theme, Select, SegmentedControl, IconButton, Glyph, Icon, Modal } from "../primitives/primitives.slint";
+import { Theme, Glyph, Modal } from "../primitives/primitives.slint";
 import { CopyChip } from "../primitives/modal.slint";
 import { SeeCut } from "state.slint";
-import { AppButton, CloudField, Label, Heading, EmptyState } from "components.slint";
+import { AppButton, AssetPreview, CloudField, Label, Heading, EmptyState, MenuAction, WorkspaceIcon, WorkspaceSelect } from "components.slint";
 
 export component TeamPage inherits Rectangle {
     property <int> dialog;
@@ -12,6 +12,20 @@ export component TeamPage inherits Rectangle {
     property <string> remove-name;
     property <bool> narrow: root.width < 860px;
     property <int> selected-asset: -1;
+    property <int> menu <=> SeeCut.team-menu;
+    property <string> menu-id <=> SeeCut.team-menu-id;
+    property <string> menu-name <=> SeeCut.team-menu-name;
+    property <string> menu-kind <=> SeeCut.team-menu-kind;
+    property <bool> menu-ready <=> SeeCut.team-menu-ready;
+    property <length> menu-x;
+    property <length> menu-y;
+    property <int> active-page: SeeCut.page;
+    changed active-page => { root.menu = 0; root.dialog = 0; }
+    property <int> active-team: SeeCut.team-index;
+    changed active-team => { root.menu = 0; }
+    property <bool> in-trash: SeeCut.trash-open;
+    changed in-trash => { root.menu = 0; }
+
     VerticalLayout {
         padding: 20px;
         spacing: 14px;
@@ -35,89 +49,97 @@ export component TeamPage inherits Rectangle {
         if SeeCut.signed-in && SeeCut.team-names.length > 0: VerticalLayout {
             spacing: 12px;
             HorizontalLayout {
-                spacing: 8px;
-                Select { width: root.width < 560px ? 150px : 180px; options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; root.selected-asset = -1; SeeCut.changed("team", index); } }
-                IconButton { glyph: Glyph.plus; label: "创建团队"; clicked => { root.dialog = 1; } }
-                IconButton { glyph: Glyph.import; label: "通过邀请加入团队"; clicked => { root.dialog = 2; } }
+                spacing: Theme.workbench-gap;
+                WorkspaceSelect { width: root.width < 560px ? 150px : 180px; options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; root.selected-asset = -1; SeeCut.changed("team", index); } }
+                WorkspaceIcon { glyph: Glyph.plus; label: "创建团队"; clicked => { root.dialog = 1; } }
+                WorkspaceIcon { glyph: Glyph.import; label: "通过邀请加入团队"; clicked => { root.dialog = 2; } }
                 Rectangle { horizontal-stretch: 1; }
                 if root.width >= 560px: AppButton { label: "成员"; clicked => { root.dialog = 3; SeeCut.action("members-refresh", ""); } }
                 if root.width >= 560px: AppButton { label: "上传到团队"; glyph: Glyph.import; primary: true; enabled: SeeCut.team-index >= 0 && !SeeCut.working; clicked => { root.dialog = 4; } }
             }
             if root.width < 560px: HorizontalLayout {
-                spacing: 8px;
+                spacing: Theme.workbench-gap;
                 AppButton { label: "成员"; clicked => { root.dialog = 3; SeeCut.action("members-refresh", ""); } }
                 AppButton { label: "上传到团队"; glyph: Glyph.import; primary: true; enabled: SeeCut.team-index >= 0 && !SeeCut.working; clicked => { root.dialog = 4; } }
                 Rectangle { horizontal-stretch: 1; }
             }
             if root.width < 560px: CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队资产"; edited(value) => { SeeCut.changed("asset-search", value); } }
             HorizontalLayout {
-                spacing: 8px;
+                spacing: Theme.workbench-gap;
                 if root.width >= 560px: CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队资产"; edited(value) => { SeeCut.changed("asset-search", value); } }
-                Select { width: 110px; options: ["全部类型", "图片", "视频", "音频"]; current: SeeCut.asset-filter; changed(index) => { SeeCut.asset-filter = index; SeeCut.changed("asset-filter", index); } }
+                WorkspaceSelect { width: 116px; options: ["全部类型", "图片", "视频", "音频"]; current: SeeCut.asset-filter; changed(index) => { SeeCut.asset-filter = index; SeeCut.changed("asset-filter", index); } }
                 if root.width < 560px: Rectangle { horizontal-stretch: 1; }
-                IconButton { glyph: Glyph.trash; label: "回收站"; checked: SeeCut.trash-open; clicked => { SeeCut.trash-open = !SeeCut.trash-open; SeeCut.action("assets-refresh", ""); } }
-                IconButton { glyph: Glyph.reset; label: "刷新团队资产"; enabled: !SeeCut.working; clicked => { SeeCut.action("assets-refresh", ""); } }
+                WorkspaceIcon { glyph: Glyph.trash; label: "回收站"; checked: SeeCut.trash-open; clicked => { SeeCut.trash-open = !SeeCut.trash-open; SeeCut.action("assets-refresh", ""); } }
+                WorkspaceIcon { glyph: Glyph.reset; label: "刷新团队资产"; enabled: !SeeCut.working; clicked => { SeeCut.action("assets-refresh", ""); } }
             }
             if SeeCut.trash-open: Heading { text: "回收站"; }
             if SeeCut.assets.length == 0: EmptyState { glyph: Glyph.folder; title: SeeCut.asset-search != "" ? "没有找到相关资产" : SeeCut.trash-open ? "回收站为空" : "暂无团队资产"; }
             if SeeCut.assets.length > 0: ScrollView {
-                viewport-width: self.width;
-                horizontal-scrollbar-policy: always-off;
-                vertical-stretch: 1;
-                VerticalLayout {
-                    alignment: start;
-                    spacing: 6px;
+                viewport-width: self.visible-width; viewport-height: grid.height;
+                horizontal-scrollbar-policy: always-off; vertical-stretch: 1;
+                grid := Rectangle {
+                    x: 0px; y: 0px; width: parent.width;
+                    property <int> columns: Math.max(1, Math.floor(self.width / 230px));
+                    property <length> card-width: (self.width - (self.columns - 1) * 14px) / self.columns;
+                    property <length> card-height: self.card-width * 0.75 + 82px;
+                    height: Math.ceil(SeeCut.assets.length / self.columns) * (self.card-height + 14px) - 14px;
                     for asset[index] in SeeCut.assets: Rectangle {
-                        height: root.narrow ? 114px : 88px;
-                        background: root.selected-asset == index ? Theme.field-active : Theme.panel;
-                        border-radius: Theme.r;
-                        border-width: 1px;
-                        border-color: Theme.line;
-                        VerticalLayout {
-                            padding: 10px;
-                            spacing: 6px;
-                            HorizontalLayout {
-                                spacing: 12px;
-                                Rectangle {
-                                    width: 64px;
-                                    height: 52px;
-                                    background: Theme.well;
-                                    border-radius: Theme.r-sm;
-                                    clip: true;
-                                    Image { width: 100%; height: 100%; source: asset.preview; image-fit: contain; }
-                                    TouchArea { mouse-cursor: pointer; clicked => { root.selected-asset = index; SeeCut.action("asset-preview", asset.id); } }
-                                }
-                                VerticalLayout {
-                                    horizontal-stretch: 1;
-                                    alignment: center;
-                                    spacing: 5px;
-                                    Text { text: asset.name; color: Theme.fg; overflow: elide; }
-                                    Text { text: asset.detail; color: Theme.fg-dim; overflow: elide; font-size: Theme.fs-sm; }
-                                }
-                                if !root.narrow: HorizontalLayout {
-                                    spacing: 4px;
-                                    if !SeeCut.trash-open: IconButton { glyph: Glyph.export; label: "下载到本机"; clicked => { SeeCut.action("asset-download", asset.id); } }
-                                    if !SeeCut.trash-open: IconButton { glyph: Glyph.sparkle; label: "用于生成"; clicked => { SeeCut.action("asset-reference", asset.id); } }
-                                    if !SeeCut.trash-open: IconButton { glyph: Glyph.plus; label: SeeCut.project-open ? "导入当前项目" : "导入剪辑项目"; enabled: !SeeCut.working; clicked => { SeeCut.action("asset-import", asset.id); } }
-                                    if SeeCut.trash-open && SeeCut.team-owner: IconButton { glyph: Glyph.reset; label: "恢复资产"; clicked => { SeeCut.action("asset-restore", asset.id); } }
-                                    if !SeeCut.trash-open && SeeCut.team-owner: IconButton { glyph: Glyph.trash; label: "移入回收站"; danger: true; clicked => { root.remove-id = asset.id; root.remove-name = asset.name; root.dialog = 5; } }
-                                }
+                        x: Math.mod(index, grid.columns) * (grid.card-width + 14px);
+                        y: Math.floor(index / grid.columns) * (grid.card-height + 14px);
+                        width: grid.card-width; height: grid.card-height;
+                        background: Theme.panel; border-radius: Theme.r; border-width: 1px; border-color: Theme.line;
+                        Rectangle {
+                            x: 0px; y: 0px; width: parent.width; height: grid.card-width * 0.75; clip: true;
+                            preview := AssetPreview {
+                                width: 100%; height: 100%;
+                                source: asset.preview;
+                                fallback-glyph: asset.kind == "audio" ? Glyph.music : asset.kind == "video" ? Glyph.film : Glyph.image;
+                                fallback-size: 28px;
+                                interactive: asset.ready && !SeeCut.trash-open;
+                                accessible-name: "预览" + asset.name;
+                                activated => { root.selected-asset = index; SeeCut.action("asset-preview", asset.id); }
                             }
-                            if root.narrow: HorizontalLayout {
-                                spacing: 6px;
-                                Rectangle { horizontal-stretch: 1; }
-                                if !SeeCut.trash-open: IconButton { glyph: Glyph.export; label: "下载到本机"; clicked => { SeeCut.action("asset-download", asset.id); } }
-                                if !SeeCut.trash-open: IconButton { glyph: Glyph.sparkle; label: "用于生成"; clicked => { SeeCut.action("asset-reference", asset.id); } }
-                                if !SeeCut.trash-open: IconButton { glyph: Glyph.plus; label: SeeCut.project-open ? "导入当前项目" : "导入剪辑项目"; enabled: !SeeCut.working; clicked => { SeeCut.action("asset-import", asset.id); } }
-                                if SeeCut.trash-open && SeeCut.team-owner: IconButton { glyph: Glyph.reset; label: "恢复资产"; clicked => { SeeCut.action("asset-restore", asset.id); } }
-                                if !SeeCut.trash-open && SeeCut.team-owner: IconButton { glyph: Glyph.trash; label: "移入回收站"; danger: true; clicked => { root.remove-id = asset.id; root.remove-name = asset.name; root.dialog = 5; } }
-                            }
+                            if asset.kind == "video": WorkspaceIcon { x: 8px; y: 8px; on-image: true; enabled: false; glyph: Glyph.film; icon-size: 16px; label: "视频素材"; }
+                        }
+                        Text { x: 12px; y: grid.card-width * 0.75 + 8px; width: parent.width - 24px; height: 24px; text: asset.name; font-size: 14px; color: Theme.fg; overflow: elide; }
+                        HorizontalLayout {
+                            x: 12px; y: parent.height - 44px; width: parent.width - 24px; height: 34px; spacing: 8px;
+                            if !SeeCut.trash-open: AppButton { label: "使用素材"; enabled: asset.ready && !SeeCut.working; clicked => {
+                                root.menu-id = asset.id; root.menu-name = asset.name; root.menu-kind = asset.kind; root.menu-ready = asset.ready; root.menu = 1;
+                                root.menu-x = self.absolute-position.x - root.absolute-position.x; root.menu-y = self.absolute-position.y - root.absolute-position.y + self.height + 4px;
+                            } }
+                            if SeeCut.trash-open && SeeCut.team-owner: AppButton { label: "恢复资产"; enabled: !SeeCut.working; clicked => { SeeCut.action("asset-restore", asset.id); } }
+                            if SeeCut.trash-open && !SeeCut.team-owner: Text { text: "仅团队创建者可恢复"; color: Theme.fg-muted; font-size: 13px; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1; }
+                            if !SeeCut.trash-open: AppButton { label: "更多"; subtle: true; clicked => {
+                                root.menu-id = asset.id; root.menu-name = asset.name; root.menu-kind = asset.kind; root.menu-ready = asset.ready; root.menu = 2;
+                                root.menu-x = self.absolute-position.x - root.absolute-position.x; root.menu-y = self.absolute-position.y - root.absolute-position.y + self.height + 4px;
+                            } }
                         }
                     }
                 }
             }
         }
     }
+    if root.menu > 0: TouchArea { clicked => { root.menu = 0; } }
+    if root.menu > 0: Rectangle {
+        x: Math.clamp(root.menu-x, 12px, root.width - self.width - 12px);
+        y: Math.clamp(root.menu-y, 12px, root.height - self.height - 12px);
+        width: 228px;
+        height: 16px + (root.menu == 1 ? (root.menu-kind == "image" ? 3 : 2) : (SeeCut.team-owner ? 2 : 1)) * 38px;
+        background: Theme.raised; border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
+        FocusScope {
+            key-pressed(event) => { if event.text == Key.Escape { root.menu = 0; return accept; } return reject; }
+        VerticalLayout { padding: 8px; spacing: 0px;
+            if root.menu == 1: MenuAction { auto-focus: true; label: "用于生成"; glyph: Glyph.sparkle; enabled: root.menu-ready && !SeeCut.working; clicked => { root.menu = 0; SeeCut.action("asset-reference", root.menu-id); } }
+            if root.menu == 1: MenuAction { label: SeeCut.project-open ? "导入当前剪辑" : "导入剪辑项目"; glyph: Glyph.film; enabled: root.menu-ready && !SeeCut.working; clicked => { root.menu = 0; SeeCut.action("asset-import", root.menu-id); } }
+            if root.menu == 1 && root.menu-kind == "image": MenuAction { label: "打开画布"; glyph: Glyph.image; enabled: root.menu-ready && !SeeCut.working; clicked => { root.menu = 0; SeeCut.action("asset-canvas", root.menu-id); } }
+            if root.menu == 2: MenuAction { auto-focus: true; label: "下载到本机"; glyph: Glyph.export; enabled: root.menu-ready && !SeeCut.working; clicked => { root.menu = 0; SeeCut.action("asset-download", root.menu-id); } }
+            if root.menu == 2 && SeeCut.team-owner: MenuAction { label: "移入回收站"; glyph: Glyph.trash; danger: true; enabled: !SeeCut.working; clicked => { root.remove-id = root.menu-id; root.remove-name = root.menu-name; root.menu = 0; root.dialog = 5; } }
+        }
+        }
+    }
+
     Modal {
         open: root.dialog > 0;
         title: root.dialog == 1 ? "创建团队" : root.dialog == 2 ? "加入团队" : root.dialog == 3 ? "团队成员" : root.dialog == 4 ? "上传到团队资产库" : root.dialog == 5 ? "移入回收站" : "移除成员";
@@ -149,7 +171,7 @@ export component TeamPage inherits Rectangle {
                         spacing: 8px;
                         CopyChip { text: SeeCut.invite-url; }
                         Text { text: SeeCut.invite-detail; color: Theme.fg-dim; vertical-alignment: center; overflow: elide; }
-                        IconButton { glyph: Glyph.close; label: "撤销邀请链接"; enabled: !SeeCut.working; clicked => { SeeCut.action("invite-revoke", ""); } }
+                        WorkspaceIcon { glyph: Glyph.close; label: "撤销邀请链接"; enabled: !SeeCut.working; clicked => { SeeCut.action("invite-revoke", ""); } }
                     }
                 }
                 ScrollView {
@@ -164,7 +186,7 @@ export component TeamPage inherits Rectangle {
                             spacing: 8px;
                             Text { text: member.title; color: Theme.fg; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                             Text { text: member.value; color: Theme.fg-dim; vertical-alignment: center; }
-                            if SeeCut.team-owner && member.value != "创建者": IconButton { glyph: Glyph.close; label: "移除成员"; danger: true; clicked => { root.remove-id = member.id; root.remove-name = member.title; root.dialog = 6; } }
+                            if SeeCut.team-owner && member.value != "创建者": WorkspaceIcon { glyph: Glyph.close; label: "移除成员"; danger: true; clicked => { root.remove-id = member.id; root.remove-name = member.title; root.dialog = 6; } }
                         }
                     }
                 }

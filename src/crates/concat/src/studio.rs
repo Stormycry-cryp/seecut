@@ -564,6 +564,11 @@ pub struct Studio {
     pub monitor: crate::panes::monitor::MonitorPane,
     /// The image editor's canvas: its document, and the view over it.
     pub canvas: crate::panes::canvas::CanvasPane,
+    /// A window close waiting for the user to resolve the canvas and clip
+    /// project saves. Kept in Studio so the modal remains visible while the
+    /// user visits any workspace page.
+    pub exit_pending: bool,
+    pub exit_error: String,
 
     // ── the sheets and menus ──
     pub export: crate::panes::export::ExportPane,
@@ -1227,6 +1232,8 @@ impl Studio {
             clipboard: None,
             monitor: crate::panes::monitor::MonitorPane::default(),
             canvas: crate::panes::canvas::CanvasPane::default(),
+            exit_pending: false,
+            exit_error: String::new(),
             export: Default::default(),
             settings: crate::panes::settings::SettingsPane::default(),
             relink: crate::panes::relink::RelinkPane::default(),
@@ -4565,19 +4572,22 @@ impl Studio {
         self.request_preview();
     }
 
-    /// Saves, then closes the session and returns to the launch screen.
-    pub fn close_project(&mut self) {
+    /// Saves, then closes the clip session and returns to the launch screen.
+    /// The canvas is deliberately independent: closing the clip project must
+    /// not discard an open canvas document.
+    pub fn close_project(&mut self) -> Result<(), String> {
         self.pause();
-        self.host.cutouts.cancel();
-        self.cutout_jobs.clear();
-        self.region_job = None;
         if let Some(session) = self.session.as_mut() {
             let (path, document) = session.prepare_save(None);
             if let Err(error) = projects::save(&path, &document) {
-                self.notify(&tf("Could not save: {0}", &[&error]), true);
-                return;
+                let message = tf("Could not save: {0}", &[&error]);
+                self.notify(&message, true);
+                return Err(message);
             }
         }
+        self.host.cutouts.cancel();
+        self.cutout_jobs.clear();
+        self.region_job = None;
         self.autosave.stop();
         self.session = None;
         self.echo = None;
@@ -4596,6 +4606,81 @@ impl Studio {
             .set_clips(std::path::PathBuf::new(), Vec::new());
         self.on_start = true;
         self.recents = projects::list(&self.host.dirs.config);
+        Ok(())
+    }
+
+    /// Starts the one close flow shared by the title bar, the system close
+    /// request, and File > Close Window. A dirty canvas opens the global
+    /// confirmation sheet; a clean canvas proceeds to the clip save.
+    pub fn request_window_close(&mut self) -> bool {
+        if self.exit_pending {
+            return false;
+        }
+        self.exit_error.clear();
+        if self.canvas.is_modified() {
+            self.exit_pending = true;
+            return false;
+        }
+        self.finish_window_close()
+    }
+
+    /// Cancels the pending window close and leaves both the canvas and the
+    /// clip session where they were.
+    pub fn cancel_window_close(&mut self) {
+        self.exit_pending = false;
+        self.exit_error.clear();
+    }
+
+    /// Saves the canvas when needed, then closes the clip session. A cancelled
+    /// Save As or a failed save leaves the modal open and the window alive.
+    pub fn resolve_window_close_save(&mut self) -> bool {
+        if !self.exit_pending {
+            return false;
+        }
+        self.exit_error.clear();
+        if self.canvas.is_modified() {
+            match self.canvas.save_current() {
+                Ok(true) => {}
+                Ok(false) => return false,
+                Err(error) => {
+                    let message = tf("Canvas failed: {0}", &[&error]);
+                    self.exit_error = message.clone();
+                    self.notify(&message, true);
+                    return false;
+                }
+            }
+        }
+        self.finish_window_close()
+    }
+
+    /// Drops the canvas changes only after the clip session has saved and
+    /// closed successfully. A clip save failure therefore cannot be bypassed
+    /// by choosing to discard the canvas.
+    pub fn resolve_window_close_discard(&mut self) -> bool {
+        if !self.exit_pending {
+            return false;
+        }
+        self.exit_error.clear();
+        if !self.finish_window_close() {
+            return false;
+        }
+        self.canvas.discard_unsaved();
+        true
+    }
+
+    fn finish_window_close(&mut self) -> bool {
+        match self.close_project() {
+            Ok(()) => {
+                self.exit_pending = false;
+                self.exit_error.clear();
+                true
+            }
+            Err(error) => {
+                self.exit_pending = true;
+                self.exit_error = error;
+                false
+            }
+        }
     }
 
     /// Posters for the recents that have none yet, decoded on a worker.
@@ -5477,6 +5562,12 @@ impl Studio {
         let editor = app.global::<Editor>();
         editor.set_canvas_frame(self.canvas.image.clone());
         editor.set_canvas_has_document(self.canvas.document.is_some());
+        editor.set_canvas_can_undo(self.canvas.can_undo());
+        editor.set_canvas_can_redo(self.canvas.can_redo());
+        editor.set_canvas_modified(self.canvas.is_modified());
+        editor.set_canvas_open_confirm(self.canvas.open_confirm);
+        editor.set_canvas_exit_confirm(self.exit_pending);
+        editor.set_canvas_exit_error(self.exit_error.as_str().into());
         editor.set_canvas_name(self.canvas.name.as_str().into());
         editor.set_canvas_zoom(self.canvas.zoom as f32);
         editor.set_canvas_pan_x(self.canvas.pan.0 as f32);
@@ -5487,7 +5578,7 @@ impl Studio {
         editor.set_canvas_brush_diameter(self.canvas.brush.diameter as f32);
         editor.set_canvas_brush_opacity(self.canvas.brush.opacity as f32);
         editor.set_canvas_brush_hardness(self.canvas.brush.hardness as f32);
-        editor.set_canvas_brush_color(self.canvas.brush_color_index as i32);
+        editor.set_canvas_brush_color(self.canvas.brush_color_index);
         let publish_rect = |set_x: &dyn Fn(f32),
                             set_y: &dyn Fn(f32),
                             set_w: &dyn Fn(f32),
@@ -5520,7 +5611,19 @@ impl Studio {
             .layers_data()
             .into_iter()
             .map(
-                |(id, name, hidden, opacity, active, depth, expanded, group, masked, mask_paint, mask_enabled)| {
+                |(
+                    id,
+                    name,
+                    hidden,
+                    opacity,
+                    active,
+                    depth,
+                    expanded,
+                    group,
+                    masked,
+                    mask_paint,
+                    mask_enabled,
+                )| {
                     CanvasLayerData {
                         id: id as i32,
                         name: name.into(),
@@ -5544,6 +5647,7 @@ impl Studio {
                 .unwrap_or(-1),
         );
         editor.set_canvas_layers(slint::ModelRc::new(slint::VecModel::from(rows)));
+        crate::publish_canvas_aux(self, app);
         // The checker under the picture, the active row's adjustment and
         // its knobs - the same publish, one block over.
         editor.set_canvas_checker(self.canvas.checker.clone());
@@ -5604,15 +5708,10 @@ impl Studio {
         editor.set_canvas_curve_red(slint::ModelRc::new(slint::VecModel::from(curve_red)));
         editor.set_canvas_curve_green(slint::ModelRc::new(slint::VecModel::from(curve_green)));
         editor.set_canvas_curve_blue(slint::ModelRc::new(slint::VecModel::from(curve_blue)));
-        editor.set_canvas_curve_segments_red(slint::ModelRc::new(slint::VecModel::from(
-            seg_red,
-        )));
-        editor.set_canvas_curve_segments_green(slint::ModelRc::new(slint::VecModel::from(
-            seg_green,
-        )));
-        editor.set_canvas_curve_segments_blue(slint::ModelRc::new(slint::VecModel::from(
-            seg_blue,
-        )));
+        editor.set_canvas_curve_segments_red(slint::ModelRc::new(slint::VecModel::from(seg_red)));
+        editor
+            .set_canvas_curve_segments_green(slint::ModelRc::new(slint::VecModel::from(seg_green)));
+        editor.set_canvas_curve_segments_blue(slint::ModelRc::new(slint::VecModel::from(seg_blue)));
     }
 
     /// The menus, the dialogs, the bin and the engine lists.

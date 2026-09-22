@@ -20,8 +20,10 @@
 //! Editing tools arrive with the next phases of the port; the pane is the
 //! stage they will act on, and the view they will not have to think about.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 
 use concat_canvas::{
     Adjustment, BrushSettings, BrushStroke, CanvasGpu, CanvasViewport, ImageDocument, LayerMask,
@@ -29,7 +31,7 @@ use concat_canvas::{
     fill_region,
 };
 use concat_core::frame::Frame;
-use slint::SharedPixelBuffer;
+use slint::{ComponentHandle, SharedPixelBuffer};
 
 use crate::i18n::tf;
 use crate::studio::Studio;
@@ -44,6 +46,57 @@ enum EditKind {
 /// The brush tile edge, in pixels - [`BrushStroke`] paints in these tiles,
 /// and the dirty rectangles follow them.
 const TILE: usize = 256;
+
+/// The editor keeps at most this many reversible canvas edits, and trims
+/// older pixel versions once their retained storage reaches the byte cap.
+const HISTORY_ENTRY_LIMIT: usize = 100;
+const HISTORY_BYTE_LIMIT: usize = 256 * 1024 * 1024;
+const PROJECT_FILE_LIMIT: u64 = 64 * 1024 * 1024;
+const PROJECT_PIXEL_LIMIT: usize = 512 * 1024 * 1024;
+const PROJECT_BITMAP_LIMIT: usize = 1_000;
+/// CPU decoding has a finite product limit as well, but a very thin image can
+/// stay below it while exceeding every supported 2D texture dimension.
+const DEFAULT_IMAGE_DIMENSION_LIMIT: u32 = 32_768;
+
+#[derive(Clone)]
+struct CanvasSnapshot {
+    document: ImageDocument,
+    store: PixelStore,
+    active: Option<concat_canvas::LayerId>,
+    layer: Option<PixelId>,
+    paint_mask: bool,
+    revision: u64,
+}
+
+impl CanvasSnapshot {
+    fn same_state(&self, other: &Self) -> bool {
+        self.document == other.document
+            && self.store.same_versions(&other.store)
+            && self.active == other.active
+            && self.layer == other.layer
+            && self.paint_mask == other.paint_mask
+            && self.revision == other.revision
+    }
+}
+
+struct CanvasHistoryEntry {
+    before: CanvasSnapshot,
+    after: CanvasSnapshot,
+    retained_bytes: usize,
+    coalesce_kind: u8,
+}
+
+/// A thumbnail is tied to both the pixel revision and the immutable frame
+/// version. Pointer moves update the GPU scratch texture without changing
+/// either, so the layer panel can publish repeatedly without resampling every
+/// row on every event. A committed edit changes the revision or Arc source.
+#[derive(Clone)]
+struct ThumbnailCacheEntry {
+    revision: u64,
+    source: Weak<Frame>,
+    mask: bool,
+    image: slint::Image,
+}
 
 /// The tray's colour swatches, straight RGB. The eraser needs no colour;
 /// picking a swatch also leaves erase mode.
@@ -65,7 +118,17 @@ const PALETTE: &[[u8; 3]] = &[
 /// whether that mask is enabled at all. The tuple the panel publishes
 /// and the agent reads.
 pub type LayerRow = (
-    u64, String, bool, f32, bool, usize, bool, bool, bool, bool, bool,
+    u64,
+    String,
+    bool,
+    f32,
+    bool,
+    usize,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
 );
 
 /// Everything that can happen to the canvas.
@@ -115,6 +178,12 @@ pub enum CanvasMsg {
     BrushOpacity(f64),
     BrushHardness(f64),
     BrushColor(usize),
+    /// A custom RGB colour from the colour controls.
+    BrushRgb(f64, f64, f64),
+    /// A custom six-digit hexadecimal colour. Invalid text is ignored.
+    BrushHex(String),
+    /// Sample one composited pixel without starting a brush stroke.
+    PickColor(f64, f64),
     /// Step the pixel history back or forward.
     Undo,
     Redo,
@@ -189,6 +258,13 @@ pub enum CanvasMsg {
     /// Save the whole document - tree, ids and pixels - as a `.comp`
     /// project package, through a save dialog.
     SaveComp,
+    /// Save the whole document to a new `.comp` path, even when an existing
+    /// project path is already recorded.
+    SaveCompAs,
+    /// Resolve a pending open request while the current document is edited.
+    OpenDiscard,
+    OpenCancel,
+    OpenSave,
 }
 
 /// The canvas pane's state.
@@ -220,7 +296,7 @@ pub struct CanvasPane {
     pub brush: BrushSettings,
     /// The palette index behind the brush's colour, so the tray's swatch
     /// ring reads back.
-    pub brush_color_index: usize,
+    pub brush_color_index: i32,
     /// The stroke in flight, while a paint tool is dragging.
     stroke: Option<BrushStroke>,
     /// The layer's pixels as they stood before the stroke: the base the
@@ -229,10 +305,18 @@ pub struct CanvasPane {
     /// The stroke's working copy: pre-stroke pixels with the whole stroke
     /// composited so far. One copy per stroke, not per event.
     stroke_scratch: Option<Frame>,
-    /// Pixel snapshots, newest last: `(layer, pixels before that edit)`.
-    undo_stack: Vec<(PixelId, Arc<Frame>)>,
+    /// The pixel id and mask mode chosen at press time. They stay fixed for
+    /// the whole gesture even if a layer-selection message arrives before
+    /// the pointer release.
+    stroke_target: Option<PixelId>,
+    stroke_on_mask: bool,
+    /// Unified document and pixel edits, newest last. Immutable frames are
+    /// shared between snapshots; only changed versions consume the byte cap.
+    undo_stack: Vec<CanvasHistoryEntry>,
     /// Undone edits, newest last, for [`CanvasMsg::Redo`].
-    redo_stack: Vec<(PixelId, Arc<Frame>)>,
+    redo_stack: Vec<CanvasHistoryEntry>,
+    /// The state before the current gesture or immediate command.
+    pending_history: Option<(CanvasSnapshot, u8)>,
     /// The live selection over the document, if any.
     pub selection: Option<Mask>,
     /// The marquee drag's first corner, while it is in flight.
@@ -262,6 +346,22 @@ pub struct CanvasPane {
     /// to say: a mode without a mask under it paints the pixels, so the
     /// flag can never strand a stroke.
     pub paint_mask: bool,
+    /// Monotonic document revision and the revision last saved or opened.
+    revision: u64,
+    saved_revision: u64,
+    /// A requested image/project held while the discard dialog is visible.
+    pending_open: Option<PathBuf>,
+    pub open_confirm: bool,
+    /// The full path of the current `.comp` package, when this document has
+    /// one. Ordinary Save writes here; a newly opened image uses Save As
+    /// before it acquires a project path.
+    project_path: Option<PathBuf>,
+    /// Small layer and mask previews, keyed by their immutable pixel source.
+    thumbnail_cache: HashMap<PixelId, ThumbnailCacheEntry>,
+    thumbnail_rows: (Vec<slint::Image>, Vec<slint::Image>),
+    /// Per-pixel dirty revision. A live CPU stroke may replace its working
+    /// Arc on every pointer move; this only advances when the stroke lands.
+    pixel_revisions: HashMap<PixelId, u64>,
 }
 
 impl Default for CanvasPane {
@@ -289,8 +389,11 @@ impl Default for CanvasPane {
             stroke: None,
             stroke_base: None,
             stroke_scratch: None,
+            stroke_target: None,
+            stroke_on_mask: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            pending_history: None,
             selection: None,
             marquee_start: None,
             marquee: None,
@@ -301,20 +404,60 @@ impl Default for CanvasPane {
             checker: slint::Image::default(),
             collapsed: std::collections::HashSet::new(),
             paint_mask: false,
+            revision: 1,
+            saved_revision: 1,
+            pending_open: None,
+            open_confirm: false,
+            project_path: None,
+            thumbnail_cache: HashMap::new(),
+            thumbnail_rows: (Vec::new(), Vec::new()),
+            pixel_revisions: HashMap::new(),
         }
     }
 }
 
 impl CanvasPane {
+    /// Applies one message and records every document or pixel mutation in
+    /// the same ordered history. Pointer gestures own their transaction from
+    /// press through release; immediate commands are wrapped here.
+    pub fn update(&mut self, msg: CanvasMsg, studio: &mut Studio) {
+        let history = match &msg {
+            CanvasMsg::FillSelection => Some(0),
+            CanvasMsg::DeleteSelection => Some(0),
+            CanvasMsg::LayerToggleVisibility(_) => Some(0),
+            CanvasMsg::LayerOpacity(_, _) => Some(1),
+            CanvasMsg::LayerAdd => Some(0),
+            CanvasMsg::LayerAddGroup => Some(0),
+            CanvasMsg::LayerDelete(_) => Some(0),
+            CanvasMsg::LayerMove(_, _) | CanvasMsg::LayerDrop(_, _, _) => Some(0),
+            CanvasMsg::LayerMaskAdd => Some(0),
+            CanvasMsg::LayerMaskRemove => Some(0),
+            CanvasMsg::LayerMaskToggle => Some(0),
+            CanvasMsg::GradientColor(_, _) => Some(0),
+            CanvasMsg::AdjustmentAdd(_) => Some(0),
+            CanvasMsg::AdjustmentParam(_, _) => Some(2),
+            CanvasMsg::CurveSet(_, _, _, _) => Some(3),
+            CanvasMsg::CurveAdd(_, _, _) | CanvasMsg::CurveRemove(_, _) => Some(0),
+            _ => None,
+        };
+        if let Some(coalesce) = history {
+            self.begin_history_mode(coalesce);
+        }
+        self.update_inner(msg, studio);
+        if history.is_some() {
+            self.commit_history();
+        }
+    }
+
     /// Applies one message. The studio is the rest of the window; the host
     /// inside it is where the shared device lives. Everything runs on the
     /// event-loop thread, which is the one thread the window's renderer
     /// submits from - the same rule the monitor's drawing keeps.
-    pub fn update(&mut self, msg: CanvasMsg, studio: &mut Studio) {
+    fn update_inner(&mut self, msg: CanvasMsg, studio: &mut Studio) {
         match msg {
             CanvasMsg::Picked(paths) => {
                 if let Some(path) = paths.first() {
-                    self.open(path, studio);
+                    self.request_open(path, studio);
                 }
             }
             CanvasMsg::Resized(width, height) => {
@@ -340,7 +483,7 @@ impl CanvasPane {
                     zoom_modifier,
                     pointer: (x, y),
                 });
-                self.render(studio);
+                self.sync_view();
             }
             CanvasMsg::PanPress(x, y) => {
                 self.nav.apply(NavInput::PanPress((x, y)));
@@ -360,15 +503,15 @@ impl CanvasPane {
                     pointer: (x, y),
                     option: false,
                 });
-                self.render(studio);
+                self.sync_view();
             }
             CanvasMsg::Release(option) => {
                 self.nav.apply(NavInput::Release { option });
-                self.render(studio);
+                self.sync_view();
             }
             CanvasMsg::Fit => {
                 self.nav.apply(NavInput::Fit);
-                self.render(studio);
+                self.sync_view();
             }
             CanvasMsg::Tool(tool) => self.set_tool(tool),
             CanvasMsg::BrushPress { x, y } => {
@@ -392,15 +535,14 @@ impl CanvasPane {
                 self.render(studio);
             }
             CanvasMsg::BrushRelease => {
-                let changed = self.brush_release();
-                self.commit_tiles(&changed);
+                self.brush_release();
                 self.render(studio);
             }
             CanvasMsg::BrushSize(diameter) => {
                 self.brush.diameter = diameter.clamp(1.0, 2000.0);
             }
             CanvasMsg::BrushOpacity(opacity) => {
-                self.brush.opacity = opacity.clamp(0.0, 1.0);
+                self.brush.opacity = opacity.clamp(0.01, 1.0);
             }
             CanvasMsg::BrushHardness(hardness) => {
                 self.brush.hardness = hardness.clamp(0.0, 1.0);
@@ -409,11 +551,26 @@ impl CanvasPane {
                 if let Some(color) = PALETTE.get(index) {
                     self.brush.color = *color;
                     self.brush.erasing = false;
-                    self.brush_color_index = index;
+                    self.brush_color_index = index as i32;
                 }
             }
-            CanvasMsg::Undo => self.undo(),
-            CanvasMsg::Redo => self.redo(),
+            CanvasMsg::BrushRgb(red, green, blue) => {
+                self.set_brush_rgb(red, green, blue);
+            }
+            CanvasMsg::BrushHex(text) => {
+                self.set_brush_hex(&text);
+            }
+            CanvasMsg::PickColor(x, y) => {
+                self.pick_color(x, y);
+            }
+            CanvasMsg::Undo => {
+                self.undo();
+                self.render(studio);
+            }
+            CanvasMsg::Redo => {
+                self.redo();
+                self.render(studio);
+            }
             CanvasMsg::MarqueePress { x, y } => {
                 if self.document.is_some() {
                     self.marquee_start = Some(self.to_document(x, y));
@@ -568,12 +725,13 @@ impl CanvasPane {
                 self.render(studio);
             }
             CanvasMsg::LayerFold(index) => {
-                let fold = self.rows().get(index.max(0) as usize).and_then(|(node, _)| {
-                    match node {
-                        LayerNode::Group(group) => Some(group.id),
-                        _ => None,
-                    }
-                });
+                let fold =
+                    self.rows()
+                        .get(index.max(0) as usize)
+                        .and_then(|(node, _)| match node {
+                            LayerNode::Group(group) => Some(group.id),
+                            _ => None,
+                        });
                 let Some(id) = fold else {
                     return;
                 };
@@ -584,28 +742,7 @@ impl CanvasPane {
                 self.render(studio);
             }
             CanvasMsg::LayerDelete(index) => {
-                let target = self
-                    .rows()
-                    .get(index.max(0) as usize)
-                    .map(|(node, _)| node.id());
-                let Some(id) = target else {
-                    return;
-                };
-                let Some(document) = self.document.as_mut() else {
-                    return;
-                };
-                document.remove(id);
-                self.collapsed.remove(&id);
-                self.store.retain_document(document);
-                // The active layer follows: the topmost image layer left.
-                let topmost = document
-                    .root
-                    .children
-                    .iter()
-                    .rev()
-                    .find(|n| matches!(n, LayerNode::Layer(_)));
-                self.active = topmost.map(LayerNode::id);
-                self.layer = topmost.and_then(node_image_pixels);
+                self.delete_row(index);
                 self.sync_view();
                 self.render(studio);
             }
@@ -668,7 +805,30 @@ impl CanvasPane {
                 self.render(studio);
             }
             CanvasMsg::ExportPng => self.export_png(studio),
-            CanvasMsg::SaveComp => self.save_comp_dialog(studio),
+            CanvasMsg::SaveComp => {
+                self.save_comp_dialog(studio);
+            }
+            CanvasMsg::SaveCompAs => {
+                self.save_comp_as_dialog(studio);
+            }
+            CanvasMsg::OpenDiscard => {
+                self.open_confirm = false;
+                if let Some(path) = self.pending_open.take() {
+                    self.open_now(&path, studio);
+                }
+            }
+            CanvasMsg::OpenCancel => {
+                self.pending_open = None;
+                self.open_confirm = false;
+            }
+            CanvasMsg::OpenSave => {
+                if self.save_comp_dialog(studio) {
+                    self.open_confirm = false;
+                    if let Some(path) = self.pending_open.take() {
+                        self.open_now(&path, studio);
+                    }
+                }
+            }
         }
     }
 
@@ -680,16 +840,109 @@ impl CanvasPane {
         self.brush.erasing = self.tool == 4;
     }
 
+    /// Sets a custom brush colour from RGB controls. Values outside the
+    /// byte range are clamped after rounding; non-finite input is ignored so
+    /// a malformed field cannot replace the last valid colour.
+    fn set_brush_rgb(&mut self, red: f64, green: f64, blue: f64) {
+        if !red.is_finite() || !green.is_finite() || !blue.is_finite() {
+            return;
+        }
+        self.brush.color = [
+            red.round().clamp(0.0, 255.0) as u8,
+            green.round().clamp(0.0, 255.0) as u8,
+            blue.round().clamp(0.0, 255.0) as u8,
+        ];
+        if self.tool == 4 {
+            self.set_tool(3);
+        }
+        self.brush_color_index = PALETTE
+            .iter()
+            .position(|color| color == &self.brush.color)
+            .map(|index| index as i32)
+            .unwrap_or(-1);
+    }
+
+    /// The current brush colour as a canonical six-digit hexadecimal value.
+    pub fn brush_hex(&self) -> String {
+        format!(
+            "#{:02X}{:02X}{:02X}",
+            self.brush.color[0], self.brush.color[1], self.brush.color[2]
+        )
+    }
+
+    /// The target shown alongside the current tool and colour controls.
+    pub fn paint_target_label(&self) -> &'static str {
+        if self.paint_mask { "蒙版" } else { "图层" }
+    }
+
+    /// Accepts `#RRGGBB` or `RRGGBB`. Invalid text leaves the colour alone.
+    fn set_brush_hex(&mut self, text: &str) {
+        let text = text.trim();
+        let text = text.strip_prefix('#').unwrap_or(text);
+        if text.len() != 6 || !text.is_ascii() {
+            return;
+        }
+        let Ok(red) = u8::from_str_radix(&text[0..2], 16) else {
+            return;
+        };
+        let Ok(green) = u8::from_str_radix(&text[2..4], 16) else {
+            return;
+        };
+        let Ok(blue) = u8::from_str_radix(&text[4..6], 16) else {
+            return;
+        };
+        self.set_brush_rgb(f64::from(red), f64::from(green), f64::from(blue));
+    }
+
+    /// Samples one pixel from the composed document. This is deliberately
+    /// called only after the explicit colour-picker click, so a pointer move
+    /// never causes a full composite readback or a brush press.
+    fn pick_color(&mut self, x: f64, y: f64) {
+        let (dx, dy) = self.to_document(x, y);
+        self.pick_color_document(dx, dy);
+    }
+
+    fn pick_color_document(&mut self, dx: f64, dy: f64) {
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
+        if !dx.is_finite()
+            || !dy.is_finite()
+            || dx < 0.0
+            || dy < 0.0
+            || dx >= f64::from(document.width)
+            || dy >= f64::from(document.height)
+        {
+            return;
+        }
+        let point = (dx.floor() as u32, dy.floor() as u32);
+        let sampled = match &mut self.gpu {
+            Some(gpu) => gpu
+                .compose_frame(document, &self.store)
+                .pixel(point.0, point.1),
+            None => concat_canvas::compose(document, &self.store).pixel(point.0, point.1),
+        };
+        if let Some([red, green, blue, _]) = sampled {
+            self.set_brush_rgb(f64::from(red), f64::from(green), f64::from(blue));
+        }
+    }
+
     /// The wand's click: the selection becomes the colour run under the
     /// pointer, flood-filled from the layer's pixels.
     fn wand_click(&mut self, x: f64, y: f64) {
+        let (dx, dy) = self.to_document(x, y);
+        self.wand_document(dx, dy);
+    }
+
+    /// Runs the wand at a document pixel. Pointer input converts through
+    /// [`CanvasPane::wand_click`], while the automation API is already here.
+    fn wand_document(&mut self, dx: f64, dy: f64) {
         let Some(layer) = self.layer else {
             return;
         };
         let Some(frame) = self.store.get(layer) else {
             return;
         };
-        let (dx, dy) = self.to_document(x, y);
         let (w, h) = (frame.width(), frame.height());
         if dx < 0.0 || dy < 0.0 || dx >= f64::from(w) || dy >= f64::from(h) {
             return;
@@ -720,14 +973,17 @@ impl CanvasPane {
             return;
         };
         let mut frame = (*before).clone();
+        let on_mask = self.is_mask_pixels(layer);
         match kind {
             EditKind::Fill => fill_region(&mut frame, mask, self.brush.color),
             EditKind::Delete => erase_region(&mut frame, mask),
         }
-        let on_mask = self.is_mask_pixels(layer);
-        self.undo_stack.push((layer, before));
-        self.redo_stack.clear();
-        self.store.replace(layer, frame.clone());
+        if on_mask {
+            normalize_mask_pixels(&mut frame);
+        }
+        let frame = Arc::new(frame);
+        self.store.replace_shared(layer, frame.clone());
+        self.bump_thumbnail_revision(layer);
         if let Some(gpu) = &mut self.gpu {
             if on_mask {
                 gpu.refresh_mask(layer, &frame);
@@ -747,10 +1003,132 @@ impl CanvasPane {
         }
     }
 
+    fn snapshot(&self) -> Option<CanvasSnapshot> {
+        Some(CanvasSnapshot {
+            document: self.document.clone()?,
+            store: self.store.clone(),
+            active: self.active,
+            layer: self.layer,
+            paint_mask: self.paint_mask,
+            revision: self.revision,
+        })
+    }
+
+    fn begin_history(&mut self) {
+        self.begin_history_mode(0);
+    }
+
+    fn begin_history_mode(&mut self, coalesce_kind: u8) {
+        if self.pending_history.is_none() {
+            self.pending_history = self.snapshot().map(|snapshot| (snapshot, coalesce_kind));
+        }
+    }
+
+    fn history_edit(&mut self, edit: impl FnOnce(&mut Self)) {
+        self.begin_history();
+        edit(self);
+        self.commit_history();
+    }
+
+    fn commit_history(&mut self) {
+        let Some((before, coalesce_kind)) = self.pending_history.take() else {
+            return;
+        };
+        let Some(mut after) = self.snapshot() else {
+            return;
+        };
+        if before.same_state(&after) {
+            return;
+        }
+        self.revision = self.revision.wrapping_add(1).max(1);
+        after.revision = self.revision;
+        if coalesce_kind != 0
+            && let Some(last) = self.undo_stack.last_mut()
+            && last.coalesce_kind == coalesce_kind
+            && last.after.same_state(&before)
+            && last.before.store.same_versions(&before.store)
+        {
+            last.after = after;
+            last.retained_bytes = last
+                .before
+                .store
+                .unshared_bytes(&last.after.store)
+                .max(last.after.store.unshared_bytes(&last.before.store));
+            self.redo_stack.clear();
+            return;
+        }
+        let retained_bytes = before
+            .store
+            .unshared_bytes(&after.store)
+            .max(after.store.unshared_bytes(&before.store));
+        self.undo_stack.push(CanvasHistoryEntry {
+            before,
+            after,
+            retained_bytes,
+            coalesce_kind,
+        });
+        self.redo_stack.clear();
+        self.trim_history();
+    }
+
+    fn trim_history(&mut self) {
+        while self.undo_stack.len() > HISTORY_ENTRY_LIMIT
+            || self
+                .undo_stack
+                .iter()
+                .map(|entry| entry.retained_bytes)
+                .sum::<usize>()
+                > HISTORY_BYTE_LIMIT
+        {
+            self.undo_stack.remove(0);
+        }
+    }
+
+    fn restore_snapshot(&mut self, snapshot: CanvasSnapshot) {
+        self.document = Some(snapshot.document);
+        self.store = snapshot.store;
+        self.active = snapshot.active;
+        self.layer = snapshot.layer;
+        self.paint_mask = snapshot.paint_mask;
+        self.revision = snapshot.revision;
+        self.stroke = None;
+        self.stroke_base = None;
+        self.stroke_scratch = None;
+        self.stroke_target = None;
+        self.stroke_on_mask = false;
+        self.pending_history = None;
+        self.thumbnail_cache.clear();
+        self.pixel_revisions.clear();
+        if let Some(gpu) = &mut self.gpu {
+            gpu.reset_document();
+        }
+        self.sync_view();
+    }
+
+    /// Whether the canvas toolbar should enable its history actions.
+    pub fn can_undo(&self) -> bool {
+        self.stroke.is_none() && !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.stroke.is_none() && !self.redo_stack.is_empty()
+    }
+
+    pub fn is_modified(&self) -> bool {
+        self.document.is_some() && self.revision != self.saved_revision
+    }
+
     /// Starts a stroke: the paint target's pixels are snapshotted for the
     /// undo entry and for the tiles' base, a scratch frame is copied once,
     /// and the first dab goes down. Pixel work only; the caller renders.
     fn brush_press(&mut self, x: f64, y: f64) {
+        let (dx, dy) = self.to_document(x, y);
+        self.brush_press_document(dx, dy);
+    }
+
+    /// Starts a stroke at a document pixel. Pointer input converts through
+    /// [`CanvasPane::brush_press`]; automation already speaks this space.
+    fn brush_press_document(&mut self, dx: f64, dy: f64) {
         let Some((w, h)) = self.document_size().map(|(w, h)| (w as u32, h as u32)) else {
             return;
         };
@@ -759,9 +1137,7 @@ impl CanvasPane {
         };
         // A second press while one stroke is live finishes it first: two
         // pointers, or a lost release, must not nest strokes.
-        let finished = self.brush_release();
-        self.commit_tiles(&finished);
-        let (dx, dy) = self.to_document(x, y);
+        self.brush_release();
         // A press off the canvas starts nothing; a drag onto it does, via
         // the move's fringe rule.
         if dx < 0.0 || dy < 0.0 || dx >= f64::from(w) || dy >= f64::from(h) {
@@ -770,12 +1146,12 @@ impl CanvasPane {
         let Ok(stroke) = BrushStroke::new(w, h, self.brush) else {
             return;
         };
+        self.begin_history();
         let base = self.store.get(layer);
         self.stroke_base = base.clone();
-        self.stroke_scratch = base.map(|f| (*f).clone());
-        self.undo_stack
-            .push((layer, self.stroke_base.clone().expect("just set")));
-        self.redo_stack.clear();
+        self.stroke_scratch = base.map(|frame| (*frame).clone());
+        self.stroke_target = Some(layer);
+        self.stroke_on_mask = self.is_mask_pixels(layer);
         self.stroke = Some(stroke);
         let changed = self.paint_at(dx, dy);
         self.commit_tiles(&changed);
@@ -793,14 +1169,31 @@ impl CanvasPane {
     /// Ends the stroke: the tail settles and the working pixels land in
     /// the store. Returns the tiles the final settle changed.
     fn brush_release(&mut self) -> Vec<(usize, usize)> {
-        let Some(mut stroke) = self.stroke.take() else {
+        let Some(stroke) = self.stroke.as_mut() else {
             return Vec::new();
         };
         let changed = stroke.flush();
-        if let (Some(layer), Some(scratch)) = (self.layer, self.stroke_scratch.take()) {
-            self.store.replace(layer, scratch);
-        }
+        self.commit_tiles(&changed);
+        let target = self.stroke_target;
+        self.stroke = None;
         self.stroke_base = None;
+        if let (Some(target), Some(scratch)) = (target, self.stroke_scratch.take()) {
+            let on_mask = self.stroke_on_mask;
+            self.store.replace(target, scratch);
+            self.bump_thumbnail_revision(target);
+            if let (Some(gpu), Some(frame)) = (&mut self.gpu, self.store.get(target)) {
+                if on_mask {
+                    gpu.finish_mask(target, &frame);
+                } else {
+                    // Same frame id as the last dirty upload: this closes the
+                    // live resident without uploading the whole frame again.
+                    gpu.upload(target, &frame, None);
+                }
+            }
+        }
+        self.stroke_target = None;
+        self.stroke_on_mask = false;
+        self.commit_history();
         changed
     }
 
@@ -816,11 +1209,11 @@ impl CanvasPane {
         if changed.is_empty() {
             return;
         }
-        let Some(layer) = self.paint_target() else {
+        let Some(layer) = self.stroke_target else {
             return;
         };
         // Read before the scratch frame is borrowed out of the pane.
-        let on_mask = self.painting_mask();
+        let on_mask = self.stroke_on_mask;
         let (Some(base), Some(scratch)) = (self.stroke_base.clone(), self.stroke_scratch.as_mut())
         else {
             return;
@@ -833,12 +1226,30 @@ impl CanvasPane {
         if let Some(stroke) = &self.stroke {
             stroke.composite_tiles(scratch.pixels_mut(), changed);
         }
+        if let Some(selection) = &self.selection {
+            restrict_to_selection(scratch, &base, selection, changed);
+        }
+        if on_mask {
+            normalize_mask_tiles(scratch, changed);
+        }
         if on_mask {
             // The store stays the mask's truth, and the mask texture
             // re-uploads whole; a mask has no tile residents to poke.
-            self.store.replace(layer, scratch.clone());
             if let Some(gpu) = &mut self.gpu {
-                gpu.refresh_mask(layer, scratch);
+                for &(tx, ty) in changed {
+                    gpu.refresh_mask_region(
+                        layer,
+                        scratch,
+                        concat_canvas::DirtyRect {
+                            x: (tx * TILE) as u32,
+                            y: (ty * TILE) as u32,
+                            width: TILE as u32,
+                            height: TILE as u32,
+                        },
+                    );
+                }
+            } else {
+                self.store.replace(layer, scratch.clone());
             }
             return;
         }
@@ -857,8 +1268,6 @@ impl CanvasPane {
                     );
                 }
             }
-            // No compositor: the CPU picture reads the store, so the
-            // working pixels land there and the next render recomposites.
             None => self.store.replace(layer, scratch.clone()),
         }
     }
@@ -871,21 +1280,11 @@ impl CanvasPane {
         if self.stroke.is_some() {
             return;
         }
-        let Some((layer, before)) = self.undo_stack.pop() else {
+        let Some(entry) = self.undo_stack.pop() else {
             return;
         };
-        if let Some(current) = self.store.get(layer) {
-            self.redo_stack.push((layer, current));
-        }
-        let on_mask = self.is_mask_pixels(layer);
-        self.store.replace(layer, (*before).clone());
-        if let Some(gpu) = &mut self.gpu {
-            if on_mask {
-                gpu.refresh_mask(layer, &before);
-            } else {
-                gpu.upload(layer, &before, None);
-            }
-        }
+        self.restore_snapshot(entry.before.clone());
+        self.redo_stack.push(entry);
     }
 
     /// Steps the pixel history forward one undone edit. Masks upload as
@@ -894,21 +1293,11 @@ impl CanvasPane {
         if self.stroke.is_some() {
             return;
         }
-        let Some((layer, after)) = self.redo_stack.pop() else {
+        let Some(entry) = self.redo_stack.pop() else {
             return;
         };
-        if let Some(current) = self.store.get(layer) {
-            self.undo_stack.push((layer, current));
-        }
-        let on_mask = self.is_mask_pixels(layer);
-        self.store.replace(layer, (*after).clone());
-        if let Some(gpu) = &mut self.gpu {
-            if on_mask {
-                gpu.refresh_mask(layer, &after);
-            } else {
-                gpu.upload(layer, &after, None);
-            }
-        }
+        self.restore_snapshot(entry.after.clone());
+        self.undo_stack.push(entry);
     }
 
     /// The rows the panel shows, front-to-back: the tree walked depth-first
@@ -939,6 +1328,123 @@ impl CanvasPane {
         let mut out = Vec::new();
         walk_group(&document.root, 0, &self.collapsed, &mut out);
         out
+    }
+
+    /// Removes a visible row while keeping an existing selection whenever it
+    /// still names a node. If the selected node was removed with the row (or
+    /// there was no selection), the nearest image sibling in the same parent
+    /// wins before the visible tree is searched as a fallback.
+    fn delete_row(&mut self, index: i32) {
+        let Some(target) = self
+            .rows()
+            .get(index.max(0) as usize)
+            .map(|(node, _)| node.id())
+        else {
+            return;
+        };
+        let (parent_slot, active_removed) = {
+            let Some(document) = self.document.as_ref() else {
+                return;
+            };
+            let parent_slot = node_parent_slot(document, target);
+            let active_removed = self.active.is_some_and(|active| {
+                active == target
+                    || matches!(
+                        document.find(target),
+                        Some(LayerNode::Group(group)) if group.find(active).is_some()
+                    )
+            });
+            (parent_slot, active_removed)
+        };
+        {
+            let Some(document) = self.document.as_mut() else {
+                return;
+            };
+            document.remove(target);
+            self.collapsed.remove(&target);
+            self.store.retain_document(document);
+        }
+
+        if !active_removed && self.active.is_some() {
+            // Keep the selected adjustment or group, but rebuild the image
+            // target in its parent after the deleted image has been removed.
+            // `layer` may have named that image even though `active` did not.
+            self.refresh_active_layer();
+            self.sync_view();
+            return;
+        }
+        let picked = parent_slot
+            .and_then(|(parent, position)| self.sibling_image(parent, position))
+            .or_else(|| {
+                self.rows()
+                    .iter()
+                    .find_map(|(node, _)| node_image_pixels(node).map(|pixels| (node.id(), pixels)))
+            });
+        self.active = picked.map(|(id, _)| id);
+        self.layer = picked.map(|(_, pixels)| pixels);
+        // A deleted active row cannot leave the tools pointed at a mask that
+        // no longer exists. The next selected row starts on its pixels.
+        self.paint_mask = false;
+        self.sync_view();
+    }
+
+    /// Rebuilds the pixel target for a selected node that survived a sibling
+    /// deletion. Image rows keep their own pixels; adjustments and groups use
+    /// the nearest image in their direct parent, then the document root.
+    fn refresh_active_layer(&mut self) {
+        let Some(document) = self.document.as_ref() else {
+            self.layer = None;
+            self.paint_mask = false;
+            return;
+        };
+        let parent = self
+            .active
+            .and_then(|id| node_parent_slot(document, id))
+            .and_then(|(parent, _)| parent);
+        let active_pixels = self
+            .active
+            .and_then(|id| document.find(id))
+            .and_then(node_image_pixels);
+        self.layer = active_pixels
+            .or_else(|| topmost_image_in_parent(document, parent))
+            .or_else(|| topmost_image_in_parent(document, None));
+        if self
+            .active
+            .and_then(|id| document.find(id))
+            .and_then(|node| node.mask())
+            .is_none()
+        {
+            self.paint_mask = false;
+        }
+    }
+
+    /// Returns the nearest direct image sibling around a deleted row's old
+    /// position. `parent == None` is the document root.
+    fn sibling_image(
+        &self,
+        parent: Option<concat_canvas::LayerId>,
+        position: usize,
+    ) -> Option<(concat_canvas::LayerId, PixelId)> {
+        let document = self.document.as_ref()?;
+        let children = parent
+            .and_then(|id| document.find(id))
+            .and_then(|node| match node {
+                LayerNode::Group(group) => Some(&group.children),
+                _ => None,
+            })
+            .unwrap_or(&document.root.children);
+        let start = position.min(children.len());
+        for node in children.iter().skip(start) {
+            if let Some(pixels) = node_image_pixels(node) {
+                return Some((node.id(), pixels));
+            }
+        }
+        for node in children[..start].iter().rev() {
+            if let Some(pixels) = node_image_pixels(node) {
+                return Some((node.id(), pixels));
+            }
+        }
+        None
     }
 
     /// The node `id` moves within its own container - up when
@@ -1035,13 +1541,6 @@ impl CanvasPane {
         self.layer
     }
 
-    /// Whether a stroke right now would land on a mask rather than on a
-    /// layer's own pixels. [`CanvasPane::paint_target`] picks the pixels;
-    /// this picks the plumbing - masks re-upload whole.
-    fn painting_mask(&self) -> bool {
-        self.paint_mask && self.paint_target() != self.layer
-    }
-
     /// Whether the pixel id names a mask anywhere in the open document.
     fn is_mask_pixels(&self, id: PixelId) -> bool {
         let Some(document) = self.document.as_ref() else {
@@ -1083,6 +1582,8 @@ impl CanvasPane {
             }
         }
         self.paint_mask = true;
+        self.tool = 3;
+        self.brush.erasing = false;
         self.sync_view();
     }
 
@@ -1168,6 +1669,8 @@ impl CanvasPane {
         self.active = Some(id);
         self.layer = pixels;
         self.paint_mask = true;
+        self.tool = 3;
+        self.brush.erasing = false;
         self.sync_view();
     }
 
@@ -1251,6 +1754,70 @@ impl CanvasPane {
             .collect()
     }
 
+    /// Returns one image and one mask thumbnail for every visible layer row.
+    /// The two vectors intentionally keep the row index, so the UI can make
+    /// the image and mask chips independently selectable. Empty entries are
+    /// transparent placeholders for groups and unmasked rows.
+    pub fn layer_thumbnails(&self) -> (Vec<slint::Image>, Vec<slint::Image>) {
+        self.thumbnail_rows.clone()
+    }
+
+    fn refresh_thumbnails(&mut self) {
+        let ids: Vec<(Option<PixelId>, Option<PixelId>)> = self
+            .rows()
+            .into_iter()
+            .map(|(node, _)| (node_image_pixels(node), node.mask().map(|mask| mask.pixels)))
+            .collect();
+        // Keep cache allocations bounded when rows disappear or a group closes.
+        self.thumbnail_cache.retain(|id, _| {
+            ids.iter()
+                .any(|(layer, mask)| *layer == Some(*id) || *mask == Some(*id))
+        });
+        let mut layers = Vec::with_capacity(ids.len());
+        let mut masks = Vec::with_capacity(ids.len());
+        for (layer, mask) in ids {
+            layers.push(self.thumbnail(layer, false));
+            masks.push(self.thumbnail(mask, true));
+        }
+        self.thumbnail_rows = (layers, masks);
+    }
+
+    fn thumbnail(&mut self, id: Option<PixelId>, mask: bool) -> slint::Image {
+        let Some(id) = id else {
+            return slint::Image::default();
+        };
+        let Some(frame) = self.store.get(id) else {
+            return slint::Image::default();
+        };
+        // A Weak retains the allocation identity without retaining old pixel data.
+        let source = Arc::downgrade(&frame);
+        let revision = self.pixel_revisions.get(&id).copied().unwrap_or(0);
+        if let Some(cached) = self.thumbnail_cache.get(&id)
+            && cached.revision == revision
+            && cached.mask == mask
+            && (cached.source.ptr_eq(&source)
+                || (self.stroke.is_some() && self.stroke_target == Some(id)))
+        {
+            return cached.image.clone();
+        }
+        let image = frame_thumbnail(&frame, 42, 28, mask);
+        self.thumbnail_cache.insert(
+            id,
+            ThumbnailCacheEntry {
+                revision,
+                source,
+                mask,
+                image: image.clone(),
+            },
+        );
+        image
+    }
+
+    fn bump_thumbnail_revision(&mut self, id: PixelId) {
+        let revision = self.pixel_revisions.entry(id).or_default();
+        *revision = revision.wrapping_add(1).max(1);
+    }
+
     /// The active node's adjustment, as the panel publishes it: its kind
     /// ([`ADJUSTMENT_KINDS`]' numbering, `0` when the row is not an
     /// adjustment) and its editable parameters as `(label, value, minimum,
@@ -1277,46 +1844,41 @@ impl CanvasPane {
         let Some(document) = self.document.as_ref() else {
             return;
         };
-        // The insertion index: just above the active node in the children,
-        // which is above it in the panel too. A nested or absent active
-        // row lands the adjustment at the top of the root.
-        let index = self
+        // The insertion index is relative to the active node's direct
+        // parent. A nested selection therefore stays inside its group, while
+        // an absent selection appends to the root.
+        let (parent, index) = self
             .active
-            .and_then(|id| {
-                document
-                    .root
-                    .children
-                    .iter()
-                    .position(|child| child.id() == id)
-            })
-            .map(|position| position + 1);
+            .and_then(|id| node_parent_slot(document, id))
+            .map(|(parent, position)| (parent, position + 1))
+            .unwrap_or((None, document.root.children.len()));
         let name = adjustment_label(kind);
         let Some(adjustment) = default_adjustment(kind) else {
             return;
         };
         let document = self.document.as_mut().expect("checked above");
         let id = document.new_adjustment(name, adjustment);
-        // `new_adjustment` appended; move it into place now that we can.
-        if let Some(index) = index {
-            let from = document
-                .root
-                .children
+        // `new_adjustment` appends to the root; move the node into the
+        // captured parent after the append so the borrows stay disjoint.
+        let node = {
+            let children = &mut document.root.children;
+            let from = children
                 .iter()
                 .position(|child| child.id() == id)
                 .expect("just appended");
-            let node = document.root.children.remove(from);
-            let to = index.min(document.root.children.len());
-            document.root.children.insert(to, node);
+            children.remove(from)
+        };
+        if let Some(children) = children_for_parent_mut(document, parent) {
+            let to = index.min(children.len());
+            children.insert(to, node);
+        } else {
+            document.root.children.push(node);
         }
         self.active = Some(id);
         // Adjustments hold no pixels; the tools keep working on the
-        // topmost image layer beneath them.
-        self.layer = document
-            .root
-            .children
-            .iter()
-            .rev()
-            .find_map(node_image_pixels);
+        // topmost image layer in the same parent beneath them.
+        self.layer = topmost_image_in_parent(document, parent)
+            .or_else(|| topmost_image_in_parent(document, None));
         self.sync_view();
     }
 
@@ -1389,37 +1951,31 @@ impl CanvasPane {
             return;
         };
         let count = document.walk().len();
-        let index = self
+        let (parent, index) = self
             .active
-            .and_then(|id| {
-                document
-                    .root
-                    .children
-                    .iter()
-                    .position(|child| child.id() == id)
-            })
-            .map(|position| position + 1);
+            .and_then(|id| node_parent_slot(document, id))
+            .map(|(parent, position)| (parent, position + 1))
+            .unwrap_or((None, document.root.children.len()));
         let name = tf("Group {0}", &[&count.to_string()]).to_string();
         let document = self.document.as_mut().expect("checked above");
         let id = document.new_group(name);
-        if let Some(index) = index {
-            let from = document
-                .root
-                .children
+        let node = {
+            let children = &mut document.root.children;
+            let from = children
                 .iter()
                 .position(|child| child.id() == id)
                 .expect("just appended");
-            let node = document.root.children.remove(from);
-            let to = index.min(document.root.children.len());
-            document.root.children.insert(to, node);
+            children.remove(from)
+        };
+        if let Some(children) = children_for_parent_mut(document, parent) {
+            let to = index.min(children.len());
+            children.insert(to, node);
+        } else {
+            document.root.children.push(node);
         }
         self.active = Some(id);
-        self.layer = document
-            .root
-            .children
-            .iter()
-            .rev()
-            .find_map(node_image_pixels);
+        self.layer = topmost_image_in_parent(document, parent)
+            .or_else(|| topmost_image_in_parent(document, None));
         self.sync_view();
     }
 
@@ -1528,6 +2084,17 @@ impl CanvasPane {
         let Some(document) = self.document.clone() else {
             return;
         };
+        if let Err(error) = validate_canvas_dimensions(
+            document.width,
+            document.height,
+            self.gpu
+                .as_ref()
+                .map(|gpu| gpu.device().limits().max_texture_dimension_2d),
+        ) {
+            log::warn!("canvas: {error}");
+            studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
+            return;
+        }
         let frame = match &mut self.gpu {
             Some(gpu) => gpu.compose_frame(&document, &self.store),
             None => concat_canvas::compose(&document, &self.store),
@@ -1546,6 +2113,12 @@ impl CanvasPane {
                 if let Err(error) = std::fs::write(&path, bytes) {
                     log::warn!("canvas: {error}");
                     studio.notify(&tf("Canvas failed: {0}", &[&error.to_string()]), true);
+                } else {
+                    let path = path.to_string_lossy().into_owned();
+                    crate::host::Shell::with(|_, app| {
+                        app.global::<crate::ui::SeeCut>()
+                            .invoke_action("personal-register-canvas".into(), path.into());
+                    });
                 }
             }
             Err(error) => {
@@ -1563,11 +2136,50 @@ impl CanvasPane {
             .map(|d| (f64::from(d.width), f64::from(d.height)))
     }
 
-    /// Saves the open document as a `.comp` project package, through a
-    /// save dialog seeded with the open file's stem.
-    fn save_comp_dialog(&mut self, studio: &mut Studio) {
+    /// Saves the open document to its recorded path, opening Save As only
+    /// for a document that does not have one yet.
+    fn save_comp_dialog(&mut self, studio: &mut Studio) -> bool {
+        match self.save_current() {
+            Ok(saved) => saved,
+            Err(error) => {
+                log::warn!("canvas: {error}");
+                studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
+                false
+            }
+        }
+    }
+
+    /// Saves the open document to a newly selected `.comp` path.
+    fn save_comp_as_dialog(&mut self, studio: &mut Studio) -> bool {
+        match self.save_as() {
+            Ok(saved) => saved,
+            Err(error) => {
+                log::warn!("canvas: {error}");
+                studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
+                false
+            }
+        }
+    }
+
+    /// Performs an ordinary save without needing the surrounding `Studio`.
+    /// The boolean is false when there is no document or the Save As dialog
+    /// was cancelled.
+    pub fn save_current(&mut self) -> Result<bool, String> {
         if self.document.is_none() {
-            return;
+            return Ok(false);
+        }
+        if let Some(path) = self.project_path.clone() {
+            self.save_to_path(&path)?;
+            return Ok(true);
+        }
+        self.save_as()
+    }
+
+    /// Opens the Save As dialog and records the chosen path only after the
+    /// package has been written successfully.
+    fn save_as(&mut self) -> Result<bool, String> {
+        if self.document.is_none() {
+            return Ok(false);
         }
         let stem = match self.name.rsplit_once('.') {
             Some((stem, _)) => stem.to_owned(),
@@ -1578,12 +2190,27 @@ impl CanvasPane {
             &format!("{stem}.comp"),
             Some(("Concat project", &["comp"])),
         ) else {
-            return;
+            return Ok(false);
         };
-        if let Err(error) = self.save_comp(&path) {
-            log::warn!("canvas: {error}");
-            studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
-        }
+        self.save_to_path(&path)?;
+        Ok(true)
+    }
+
+    fn save_to_path(&mut self, path: &Path) -> Result<(), String> {
+        self.save_comp(path)?;
+        self.saved_revision = self.revision;
+        self.project_path = Some(path.to_owned());
+        self.name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.name.clone());
+        Ok(())
+    }
+
+    /// Marks the current in-memory canvas as intentionally discarded after
+    /// the surrounding clip project has closed successfully.
+    pub fn discard_unsaved(&mut self) {
+        self.saved_revision = self.revision;
     }
 
     /// Writes the document as a `.comp` package: `manifest.json` - the
@@ -1601,36 +2228,47 @@ impl CanvasPane {
         document.collect_pixels(&mut used);
         used.sort();
         used.dedup();
+        if used.len() > PROJECT_BITMAP_LIMIT
+            || checked_frame_bytes(document.width, document.height)
+                .unwrap_or(usize::MAX)
+                .checked_mul(used.len())
+                .is_none_or(|bytes| bytes > PROJECT_PIXEL_LIMIT)
+        {
+            return Err("save: project pixel data is too large".into());
+        }
 
         let staging = sibling_temp(path);
-        std::fs::create_dir_all(staging.join("images"))
-            .map_err(|e| format!("save: {e}"))?;
-        for id in &used {
-            let Some(frame) = self.store.get(*id) else {
-                std::fs::remove_dir_all(&staging).ok();
-                return Err(format!("save: pixels {id:?} are gone"));
-            };
-            let bytes = encode_png(&frame)?;
-            std::fs::write(
-                staging.join("images").join(format!("{}.png", id.as_u64())),
-                bytes,
-            )
-            .map_err(|e| format!("save: {e}"))?;
-        }
-        let manifest = serde_json::json!({
-            "concat-project": 1,
-            "width": document.width,
-            "height": document.height,
-            "document": document,
-        })
-        .to_string();
-        std::fs::write(staging.join("manifest.json"), manifest)
-            .map_err(|e| format!("save: {e}"))?;
+        let result = (|| {
+            std::fs::create_dir_all(staging.join("images")).map_err(|e| format!("save: {e}"))?;
+            for id in &used {
+                let Some(frame) = self.store.get(*id) else {
+                    return Err(format!("save: pixels {id:?} are gone"));
+                };
+                let bytes = encode_png(&frame)?;
+                std::fs::write(
+                    staging.join("images").join(format!("{}.png", id.as_u64())),
+                    bytes,
+                )
+                .map_err(|e| format!("save: {e}"))?;
+            }
+            let manifest = serde_json::json!({
+                "concat-project": 1,
+                "width": document.width,
+                "height": document.height,
+                "document": document,
+            })
+            .to_string();
+            std::fs::write(staging.join("manifest.json"), manifest)
+                .map_err(|e| format!("save: {e}"))?;
 
-        // The swap: the staging takes the target's place, and the previous
-        // save is only dropped once the new one is fully in place.
-        replace_package(&staging, path)?;
-        Ok(())
+            // The swap: staging takes the target's place only after every
+            // file is complete.
+            replace_package(&staging, path)
+        })();
+        if result.is_err() && staging.exists() {
+            std::fs::remove_dir_all(&staging).ok();
+        }
+        result
     }
 
     /// Reads a `.comp` package back: the manifest's document tree keeps
@@ -1638,37 +2276,74 @@ impl CanvasPane {
     /// same id, and the tree is validated before anything is shown. The
     /// returned pixels were never re-minted, so a save of the re-opened
     /// document is byte-for-byte the same tree again.
-    fn load_comp(&mut self, path: &Path) -> Result<(), String> {
-        let manifest_bytes = std::fs::read(path.join("manifest.json"))
-            .map_err(|e| format!("open: {e}"))?;
+    fn load_comp(&mut self, path: &Path, texture_limit: Option<u32>) -> Result<(), String> {
+        let manifest_path = path.join("manifest.json");
+        if std::fs::metadata(&manifest_path)
+            .map_err(|e| format!("open: {e}"))?
+            .len()
+            > PROJECT_FILE_LIMIT
+        {
+            return Err("open: manifest is too large".into());
+        }
+        let manifest_bytes = std::fs::read(manifest_path).map_err(|e| format!("open: {e}"))?;
         let manifest: serde_json::Value =
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("open: {e}"))?;
         if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(1) {
             return Err("open: not a concat project".into());
         }
-        let document: ImageDocument =
-            serde_json::from_value(manifest.get("document").cloned().ok_or("open: no document")?)
-                .map_err(|e| format!("open: {e}"))?;
+        let document: ImageDocument = serde_json::from_value(
+            manifest
+                .get("document")
+                .cloned()
+                .ok_or("open: no document")?,
+        )
+        .map_err(|e| format!("open: {e}"))?;
         if document.width == 0 || document.height == 0 {
             return Err("open: empty canvas".into());
         }
+        validate_canvas_dimensions(document.width, document.height, texture_limit)
+            .map_err(|error| format!("open: {error}"))?;
         document.validate().map_err(|e| format!("open: {e}"))?;
 
         let mut used = Vec::new();
         document.collect_pixels(&mut used);
         used.sort();
         used.dedup();
+        if used.len() > PROJECT_BITMAP_LIMIT {
+            return Err("open: too many project bitmaps".into());
+        }
+        let canvas_bytes =
+            checked_frame_bytes(document.width, document.height).unwrap_or(usize::MAX);
+        if canvas_bytes == 0
+            || canvas_bytes
+                .checked_mul(used.len())
+                .is_none_or(|bytes| bytes > PROJECT_PIXEL_LIMIT)
+        {
+            return Err("open: project pixel data is too large".into());
+        }
         let mut store = PixelStore::new();
         for id in &used {
             let file = path.join("images").join(format!("{}.png", id.as_u64()));
+            if std::fs::metadata(&file)
+                .map_err(|e| format!("open: {e}"))?
+                .len()
+                > PROJECT_FILE_LIMIT
+            {
+                return Err("open: project bitmap is too large".into());
+            }
             let bytes = std::fs::read(&file).map_err(|e| format!("open: {e}"))?;
-            let (width, height, rgba) = decode_png(&bytes)?;
+            let (width, height, rgba) = decode_png(&bytes, texture_limit)?;
+            if width != document.width || height != document.height {
+                return Err("open: project bitmap dimensions do not match canvas".into());
+            }
             let frame = Frame::from_rgba(width, height, rgba).ok_or("open: empty image")?;
             store.restore(*id, frame);
         }
 
         self.document = Some(document);
         self.store = store;
+        self.thumbnail_cache.clear();
+        self.pixel_revisions.clear();
         // The active row: the topmost image layer, as a fresh open starts.
         let topmost = self
             .document
@@ -1685,6 +2360,12 @@ impl CanvasPane {
         self.marquee = None;
         self.undo_stack.clear();
         self.redo_stack.clear();
+        self.pending_history = None;
+        self.revision = self.revision.wrapping_add(1).max(1);
+        self.saved_revision = self.revision;
+        self.pending_open = None;
+        self.open_confirm = false;
+        self.project_path = Some(path.to_owned());
         self.name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -1696,6 +2377,9 @@ impl CanvasPane {
             .map(|d| (d.width, d.height))
             .expect("just set");
         self.checker = checker_image(width, height);
+        if let Some(gpu) = &mut self.gpu {
+            gpu.reset_document();
+        }
         let size = (f64::from(width), f64::from(height));
         self.nav.set_document(Some(size));
         self.nav.viewport_mut().fit(size);
@@ -1708,6 +2392,7 @@ impl CanvasPane {
     /// carries no view state of its own. The selection and the in-flight
     /// marquee come along, converted to viewport pixels for the overlay.
     fn sync_view(&mut self) {
+        self.refresh_thumbnails();
         self.zoom = self.nav.viewport().zoom() * 100.0;
         self.pan = self.nav.viewport().pan();
         self.stage = self
@@ -1743,9 +2428,30 @@ impl CanvasPane {
     /// Opens a path: a `.comp` project package loads as the document it
     /// saved; anything else decodes as one image, one layer the size of
     /// the canvas, the view fitted to it.
-    fn open(&mut self, path: &Path, studio: &mut Studio) {
+    fn request_open(&mut self, path: &Path, studio: &mut Studio) {
+        self.brush_release();
+        if self.is_modified() {
+            self.pending_open = Some(path.to_owned());
+            self.open_confirm = true;
+            return;
+        }
+        self.open_now(path, studio);
+    }
+
+    fn open_now(&mut self, path: &Path, studio: &mut Studio) {
+        let texture_limit = self
+            .gpu
+            .as_ref()
+            .map(|gpu| gpu.device().limits().max_texture_dimension_2d)
+            .or_else(|| {
+                studio
+                    .host
+                    .gpu_device
+                    .as_ref()
+                    .map(|device| device.limits().max_texture_dimension_2d)
+            });
         if path.is_dir() {
-            match self.load_comp(path) {
+            match self.load_comp(path, texture_limit) {
                 Ok(()) => {
                     self.failed = false;
                     self.render(studio);
@@ -1760,10 +2466,16 @@ impl CanvasPane {
             }
             return;
         }
-        match decode(path) {
+        match decode(path, texture_limit) {
             Ok(frame) => {
                 let (width, height) = (frame.width(), frame.height());
                 let mut document = ImageDocument::new(width, height);
+                self.store = PixelStore::new();
+                self.thumbnail_cache.clear();
+                self.pixel_revisions.clear();
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.reset_document();
+                }
                 let pixels = self.store.put(frame);
                 let base = document.new_layer(
                     path.file_stem().unwrap_or_default().to_string_lossy(),
@@ -1776,6 +2488,12 @@ impl CanvasPane {
                 self.marquee = None;
                 self.undo_stack.clear();
                 self.redo_stack.clear();
+                self.pending_history = None;
+                self.revision = self.revision.wrapping_add(1).max(1);
+                self.saved_revision = self.revision;
+                self.pending_open = None;
+                self.open_confirm = false;
+                self.project_path = None;
                 self.name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -1807,6 +2525,27 @@ impl CanvasPane {
         let Some(document) = self.document.clone() else {
             return;
         };
+        let texture_limit = self
+            .gpu
+            .as_ref()
+            .map(|gpu| gpu.device().limits().max_texture_dimension_2d)
+            .or_else(|| {
+                studio
+                    .host
+                    .gpu_device
+                    .as_ref()
+                    .map(|device| device.limits().max_texture_dimension_2d)
+            });
+        if let Err(error) =
+            validate_canvas_dimensions(document.width, document.height, texture_limit)
+        {
+            log::warn!("canvas: {error}");
+            if !self.failed {
+                self.failed = true;
+                studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
+            }
+            return;
+        }
         if self.gpu.is_none() {
             // The device is taken, not cloned: once the pane owns the
             // compositor it owns the only handle it needs. The monitor
@@ -1869,13 +2608,29 @@ impl CanvasPane {
     /// exactly as the tray's swatches feed it.
     pub fn agent_set_brush(&mut self, diameter: f64, opacity: f64, hardness: f64, palette: usize) {
         self.brush.diameter = diameter.clamp(1.0, 2000.0);
-        self.brush.opacity = opacity.clamp(0.0, 1.0);
+        self.brush.opacity = opacity.clamp(0.01, 1.0);
         self.brush.hardness = hardness.clamp(0.0, 1.0);
         if let Some(color) = PALETTE.get(palette) {
             self.brush.color = *color;
             self.brush.erasing = false;
-            self.brush_color_index = palette;
+            self.brush_color_index = palette as i32;
         }
+    }
+
+    /// Sets a custom RGB colour through the same path as the colour controls.
+    pub fn agent_set_brush_rgb(&mut self, red: u8, green: u8, blue: u8) {
+        self.set_brush_rgb(f64::from(red), f64::from(green), f64::from(blue));
+    }
+
+    /// Sets a custom hexadecimal colour, preserving the previous value when
+    /// the input is malformed.
+    pub fn agent_set_brush_hex(&mut self, text: &str) {
+        self.set_brush_hex(text);
+    }
+
+    /// Samples a composited document pixel without creating history.
+    pub fn agent_pick_color(&mut self, x: f64, y: f64) {
+        self.pick_color_document(x, y);
     }
 
     /// Paints one stroke through the points, in document pixels: the same
@@ -1886,22 +2641,20 @@ impl CanvasPane {
         let Some(first) = points.next() else {
             return;
         };
-        self.brush_press(first.0, first.1);
+        self.brush_press_document(first.0, first.1);
         for (x, y) in points {
             let Some(document) = self.document.as_ref() else {
                 continue;
             };
-            let (dx, dy) = self.to_document(x, y);
             let radius = self.brush.diameter / 2.0;
             let (w, h) = (f64::from(document.width), f64::from(document.height));
-            if dx < -radius || dy < -radius || dx > w + radius || dy > h + radius {
+            if x < -radius || y < -radius || x > w + radius || y > h + radius {
                 continue;
             }
-            let changed = self.paint_at(dx, dy);
+            let changed = self.paint_at(x, y);
             self.commit_tiles(&changed);
         }
-        let changed = self.brush_release();
-        self.commit_tiles(&changed);
+        self.brush_release();
     }
 
     /// Selects a rectangle, in document pixels: one marquee drag's result.
@@ -1934,7 +2687,7 @@ impl CanvasPane {
     /// Selects the colour run under a point, in document pixels: one wand
     /// click.
     pub fn agent_wand(&mut self, x: f64, y: f64) {
-        self.wand_click(x, y);
+        self.wand_document(x, y);
     }
 
     /// Selects the whole frame, or drops whatever is selected.
@@ -1952,11 +2705,11 @@ impl CanvasPane {
 
     /// Fills the selection with the brush's colour, or clears it.
     pub fn agent_fill_selection(&mut self) {
-        self.edit_selection(EditKind::Fill);
+        self.history_edit(|pane| pane.edit_selection(EditKind::Fill));
     }
 
     pub fn agent_delete_selection(&mut self) {
-        self.edit_selection(EditKind::Delete);
+        self.history_edit(|pane| pane.edit_selection(EditKind::Delete));
     }
 
     /// Steps the pixel history back or forward one edit.
@@ -1985,101 +2738,81 @@ impl CanvasPane {
     }
 
     pub fn agent_layer_toggle_visibility(&mut self, row: i32) {
-        let target = self
-            .rows()
-            .get(row.max(0) as usize)
-            .map(|(node, _)| node.id());
-        let Some(id) = target else {
-            return;
-        };
-        let Some(document) = self.document.as_mut() else {
-            return;
-        };
-        match document.find_mut(id) {
-            Some(LayerNode::Layer(layer)) => layer.hidden = !layer.hidden,
-            Some(LayerNode::Group(group)) => group.hidden = !group.hidden,
-            Some(LayerNode::Adjustment(adjustment)) => {
-                adjustment.hidden = !adjustment.hidden;
+        self.history_edit(|pane| {
+            let target = pane
+                .rows()
+                .get(row.max(0) as usize)
+                .map(|(node, _)| node.id());
+            let Some(id) = target else { return };
+            let Some(document) = pane.document.as_mut() else {
+                return;
+            };
+            match document.find_mut(id) {
+                Some(LayerNode::Layer(layer)) => layer.hidden = !layer.hidden,
+                Some(LayerNode::Group(group)) => group.hidden = !group.hidden,
+                Some(LayerNode::Adjustment(adjustment)) => adjustment.hidden = !adjustment.hidden,
+                None => {}
             }
-            None => {}
-        }
-        self.sync_view();
+            pane.sync_view();
+        });
     }
 
     pub fn agent_layer_opacity(&mut self, row: i32, opacity: f32) {
-        let target = self
-            .rows()
-            .get(row.max(0) as usize)
-            .map(|(node, _)| node.id());
-        let Some(id) = target else {
-            return;
-        };
-        let Some(document) = self.document.as_mut() else {
-            return;
-        };
-        match document.find_mut(id) {
-            Some(LayerNode::Layer(layer)) => layer.opacity = opacity.clamp(0.0, 1.0),
-            Some(LayerNode::Group(group)) => group.opacity = opacity.clamp(0.0, 1.0),
-            Some(LayerNode::Adjustment(adjustment)) => {
-                adjustment.opacity = opacity.clamp(0.0, 1.0);
+        self.history_edit(|pane| {
+            let target = pane
+                .rows()
+                .get(row.max(0) as usize)
+                .map(|(node, _)| node.id());
+            let Some(id) = target else { return };
+            let Some(document) = pane.document.as_mut() else {
+                return;
+            };
+            match document.find_mut(id) {
+                Some(LayerNode::Layer(layer)) => layer.opacity = opacity.clamp(0.0, 1.0),
+                Some(LayerNode::Group(group)) => group.opacity = opacity.clamp(0.0, 1.0),
+                Some(LayerNode::Adjustment(adjustment)) => {
+                    adjustment.opacity = opacity.clamp(0.0, 1.0)
+                }
+                None => {}
             }
-            None => {}
-        }
+        });
     }
 
     pub fn agent_layer_add(&mut self) {
-        let Some(document) = self.document.as_ref() else {
-            return;
-        };
-        let (w, h) = (document.width, document.height);
-        let count = document.walk().len();
-        let pixels = self.store.put(Frame::transparent(w, h));
-        let name = tf("Layer {0}", &[&count.to_string()]).to_string();
-        let id = self
-            .document
-            .as_mut()
-            .expect("checked")
-            .new_layer(name, pixels);
-        self.active = Some(id);
-        self.layer = Some(pixels);
-        self.sync_view();
+        self.history_edit(|pane| {
+            let Some(document) = pane.document.as_ref() else {
+                return;
+            };
+            let (w, h) = (document.width, document.height);
+            let count = document.walk().len();
+            let pixels = pane.store.put(Frame::transparent(w, h));
+            let name = tf("Layer {0}", &[&count.to_string()]).to_string();
+            let id = pane
+                .document
+                .as_mut()
+                .expect("checked")
+                .new_layer(name, pixels);
+            pane.active = Some(id);
+            pane.layer = Some(pixels);
+            pane.sync_view();
+        });
     }
 
     pub fn agent_layer_delete(&mut self, row: i32) {
-        let target = self
-            .rows()
-            .get(row.max(0) as usize)
-            .map(|(node, _)| node.id());
-        let Some(id) = target else {
-            return;
-        };
-        let Some(document) = self.document.as_mut() else {
-            return;
-        };
-        document.remove(id);
-        self.collapsed.remove(&id);
-        self.store.retain_document(document);
-        let topmost = document
-            .root
-            .children
-            .iter()
-            .rev()
-            .find(|n| matches!(n, LayerNode::Layer(_)));
-        self.active = topmost.map(LayerNode::id);
-        self.layer = topmost.and_then(node_image_pixels);
+        self.history_edit(|pane| pane.delete_row(row));
         self.sync_view();
     }
 
     pub fn agent_layer_move(&mut self, row: i32, direction: i32) {
-        let target = self
-            .rows()
-            .get(row.max(0) as usize)
-            .map(|(node, _)| node.id());
-        let Some(id) = target else {
-            return;
-        };
-        self.move_within_container(id, direction);
-        self.sync_view();
+        self.history_edit(|pane| {
+            let target = pane
+                .rows()
+                .get(row.max(0) as usize)
+                .map(|(node, _)| node.id());
+            let Some(id) = target else { return };
+            pane.move_within_container(id, direction);
+            pane.sync_view();
+        });
     }
 
     /// Writes the composed canvas to `path` as PNG - the export without
@@ -2088,6 +2821,13 @@ impl CanvasPane {
         let Some(document) = self.document.clone() else {
             return Err(tf("No image open", &[]));
         };
+        validate_canvas_dimensions(
+            document.width,
+            document.height,
+            self.gpu
+                .as_ref()
+                .map(|gpu| gpu.device().limits().max_texture_dimension_2d),
+        )?;
         let frame = match &mut self.gpu {
             Some(gpu) => gpu.compose_frame(&document, &self.store),
             None => concat_canvas::compose(&document, &self.store),
@@ -2119,7 +2859,7 @@ impl CanvasPane {
     /// Adds a group above the active row - the panel's "new group"
     /// without the panel.
     pub fn agent_layer_group(&mut self) {
-        self.add_group();
+        self.history_edit(|pane| pane.add_group());
     }
 
     /// Moves the node at `row` into the group at `into`, appended at the
@@ -2127,6 +2867,7 @@ impl CanvasPane {
     /// `None` sends the node back to the root. The engine's own
     /// `move_node` does the walking; the row indexes are the panel's.
     pub fn agent_layer_move_into(&mut self, row: i32, into: Option<i32>) {
+        self.begin_history();
         // Both row lookups run off one borrowed listing, and both facts
         // come out as owned ids before the tree is touched.
         let rows = self.rows();
@@ -2137,11 +2878,17 @@ impl CanvasPane {
                 LayerNode::Group(group) => Some(group.id),
                 _ => None,
             });
+        if into.is_some() && target.is_none() {
+            self.pending_history = None;
+            return;
+        }
         drop(rows);
         let Some(moving) = moving else {
+            self.pending_history = None;
             return;
         };
         let Some(document) = self.document.as_mut() else {
+            self.pending_history = None;
             return;
         };
         // The append index: the back of the target's children, which is
@@ -2155,6 +2902,7 @@ impl CanvasPane {
         };
         document.move_node(moving, target, index);
         self.sync_view();
+        self.commit_history();
     }
 
     /// The panel drag, without the panel: the row `source` dropped onto
@@ -2162,12 +2910,13 @@ impl CanvasPane {
     /// target is a group, beside it otherwise. The same resolution the
     /// gesture's drop gets.
     pub fn agent_layer_drop(&mut self, source: i32, target: i32, below: bool) {
-        self.move_row_onto(source, target, below);
+        self.history_edit(|pane| pane.move_row_onto(source, target, below));
     }
 
     /// A white mask over the row's node - the panel's "add mask" without
     /// the panel - and the painting tools pointed at it.
     pub fn agent_layer_mask_add(&mut self, row: i32) {
+        self.begin_history();
         let picked = self
             .rows()
             .get(row.max(0) as usize)
@@ -2177,10 +2926,12 @@ impl CanvasPane {
             self.layer = pixels;
             self.add_mask();
         }
+        self.commit_history();
     }
 
     /// The row's node's mask, gone.
     pub fn agent_layer_mask_remove(&mut self, row: i32) {
+        self.begin_history();
         let target = self
             .rows()
             .get(row.max(0) as usize)
@@ -2189,10 +2940,12 @@ impl CanvasPane {
             self.active = Some(id);
             self.remove_mask();
         }
+        self.commit_history();
     }
 
     /// The row's node's mask applied or set aside, whole.
     pub fn agent_layer_mask_toggle(&mut self, row: i32) {
+        self.begin_history();
         let target = self
             .rows()
             .get(row.max(0) as usize)
@@ -2201,6 +2954,7 @@ impl CanvasPane {
             self.active = Some(id);
             self.toggle_mask();
         }
+        self.commit_history();
     }
 
     /// Whether the painting tools are on the active row's mask - the
@@ -2212,18 +2966,19 @@ impl CanvasPane {
     /// Sets the active gradient map's low (`0`) or high (`1`) colour
     /// from the tray palette's `index`.
     pub fn agent_gradient_color(&mut self, slot: i32, index: i32) {
-        self.set_gradient_color(slot, index);
+        self.history_edit(|pane| pane.set_gradient_color(slot, index));
     }
 
     /// Folds or unfolds the group at `row`, the way the panel's chevron
     /// does. A row that is not a group does nothing.
     pub fn agent_layer_fold(&mut self, row: i32) {
-        let fold = self.rows().get(row.max(0) as usize).and_then(|(node, _)| {
-            match node {
+        let fold = self
+            .rows()
+            .get(row.max(0) as usize)
+            .and_then(|(node, _)| match node {
                 LayerNode::Group(group) => Some(group.id),
                 _ => None,
-            }
-        });
+            });
         let Some(id) = fold else {
             return;
         };
@@ -2242,18 +2997,18 @@ impl CanvasPane {
 
     /// Moves the curves control point `index` on `channel` to `(x, y)`.
     pub fn agent_curve_set(&mut self, channel: i32, index: i32, x: f64, y: f64) {
-        self.set_curve_point(channel, index, x, y);
+        self.history_edit(|pane| pane.set_curve_point(channel, index, x, y));
     }
 
     /// Inserts a curves control point on `channel` at `(x, y)`.
     pub fn agent_curve_add(&mut self, channel: i32, x: f64, y: f64) {
-        self.add_curve_point(channel, x, y);
+        self.history_edit(|pane| pane.add_curve_point(channel, x, y));
     }
 
     /// Drops the curves control point `index` on `channel`; the corners
     /// refuse to leave.
     pub fn agent_curve_remove(&mut self, channel: i32, index: i32) {
-        self.remove_curve_point(channel, index);
+        self.history_edit(|pane| pane.remove_curve_point(channel, index));
     }
 
     /// The brush as it is set right now.
@@ -2265,13 +3020,13 @@ impl CanvasPane {
     /// [`ADJUSTMENT_KINDS`] numbers, `1` Invert through `7` Curves - and
     /// makes it the active row.
     pub fn agent_adjustment_add(&mut self, kind: i32) {
-        self.add_adjustment(kind);
+        self.history_edit(|pane| pane.add_adjustment(kind));
     }
 
     /// Sets the active adjustment's parameter `index` to `value`, the
     /// order [`Self::adjustment_state`] publishes them in.
     pub fn agent_adjustment_param(&mut self, index: i32, value: f32) {
-        self.set_adjustment_param(index, value);
+        self.history_edit(|pane| pane.set_adjustment_param(index, value));
     }
 
     /// The active row's adjustment: `(kind, parameters)` exactly as the
@@ -2289,19 +3044,41 @@ impl CanvasPane {
     /// Writes the open document to `path` as a `.comp` project package -
     /// the save without the dialog.
     pub fn agent_save_comp(&mut self, path: &Path) -> Result<(), String> {
-        self.save_comp(path)
+        self.save_to_path(path)
     }
 
     /// Opens a `.comp` project package, or an image, from `path` - the
     /// open without the dialog.
     pub fn agent_open(&mut self, path: &Path) -> Result<(), String> {
+        self.brush_release();
+        if self.is_modified() {
+            self.pending_open = Some(path.to_owned());
+            self.open_confirm = true;
+            return Err("open: current canvas has unsaved changes".into());
+        }
         if path.is_dir() {
-            self.load_comp(path)
+            self.load_comp(
+                path,
+                self.gpu
+                    .as_ref()
+                    .map(|gpu| gpu.device().limits().max_texture_dimension_2d),
+            )
         } else {
-            match decode(path) {
+            match decode(
+                path,
+                self.gpu
+                    .as_ref()
+                    .map(|gpu| gpu.device().limits().max_texture_dimension_2d),
+            ) {
                 Ok(frame) => {
                     let (width, height) = (frame.width(), frame.height());
                     let mut document = ImageDocument::new(width, height);
+                    self.store = PixelStore::new();
+                    self.thumbnail_cache.clear();
+                    self.pixel_revisions.clear();
+                    if let Some(gpu) = &mut self.gpu {
+                        gpu.reset_document();
+                    }
                     let pixels = self.store.put(frame);
                     let base = document.new_layer(
                         path.file_stem().unwrap_or_default().to_string_lossy(),
@@ -2312,8 +3089,19 @@ impl CanvasPane {
                     self.active = Some(base);
                     self.selection = None;
                     self.marquee = None;
+                    self.stroke = None;
+                    self.stroke_base = None;
+                    self.stroke_scratch = None;
+                    self.stroke_target = None;
+                    self.stroke_on_mask = false;
                     self.undo_stack.clear();
                     self.redo_stack.clear();
+                    self.pending_history = None;
+                    self.revision = self.revision.wrapping_add(1).max(1);
+                    self.saved_revision = self.revision;
+                    self.pending_open = None;
+                    self.open_confirm = false;
+                    self.project_path = None;
                     self.name = path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
@@ -2344,6 +3132,39 @@ fn cpu_picture(document: &ImageDocument, store: &PixelStore) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// Produces a small nearest-neighbour preview without touching the full
+/// canvas. Masks are displayed as opaque grayscale so a black mask is still
+/// legible against the panel's dark surface.
+fn frame_thumbnail(frame: &Frame, width: u32, height: u32, mask: bool) -> slint::Image {
+    let source_width = frame.width().max(1);
+    let source_height = frame.height().max(1);
+    let scale = (f64::from(width) / f64::from(source_width))
+        .min(f64::from(height) / f64::from(source_height));
+    let width = (f64::from(source_width) * scale).round().max(1.0) as u32;
+    let height = (f64::from(source_height) * scale).round().max(1.0) as u32;
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            let source_x = x * source_width / width.max(1);
+            let source_y = y * source_height / height.max(1);
+            let mut rgba = frame
+                .pixel(
+                    source_x.min(source_width - 1),
+                    source_y.min(source_height - 1),
+                )
+                .unwrap_or([0, 0, 0, 0]);
+            if mask {
+                let coverage = rgba[0];
+                rgba = [coverage, coverage, coverage, 255];
+            }
+            let offset = ((y * width + x) * 4) as usize;
+            pixels[offset..offset + 4].copy_from_slice(&rgba);
+        }
+    }
+    let buffer = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pixels, width, height);
+    slint::Image::from_rgba8(buffer)
+}
+
 /// Copies one brush tile's pixels from `src` to `dst`, clipped to the
 /// frame. Both frames stride `width`; the tile index is `(tx, ty)`.
 fn copy_tile(src: &[u8], dst: &mut [u8], width: u32, height: u32, tx: usize, ty: usize) {
@@ -2355,6 +3176,70 @@ fn copy_tile(src: &[u8], dst: &mut [u8], width: u32, height: u32, tx: usize, ty:
         let start = ((y0 + row) * width + x0) as usize * 4;
         let len = tw as usize * 4;
         dst[start..start + len].copy_from_slice(&src[start..start + len]);
+    }
+}
+
+/// Applies selection coverage to freshly composited brush tiles. Outside the
+/// selection the pre-stroke bytes are restored; a soft edge interpolates
+/// between the base and painted result.
+fn restrict_to_selection(
+    frame: &mut Frame,
+    base: &Frame,
+    selection: &Mask,
+    changed: &[(usize, usize)],
+) {
+    let (width, height) = (frame.width(), frame.height());
+    let pixels = frame.pixels_mut();
+    for &(tx, ty) in changed {
+        let x0 = (tx * TILE) as u32;
+        let y0 = (ty * TILE) as u32;
+        let x1 = (x0 + TILE as u32).min(width);
+        let y1 = (y0 + TILE as u32).min(height);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let coverage = u16::from(selection.at(x, y));
+                if coverage == 255 {
+                    continue;
+                }
+                let offset = ((y * width + x) * 4) as usize;
+                for channel in 0..4 {
+                    let old = u16::from(base.pixels()[offset + channel]);
+                    let painted = u16::from(pixels[offset + channel]);
+                    pixels[offset + channel] =
+                        ((old * (255 - coverage) + painted * coverage + 127) / 255) as u8;
+                }
+            }
+        }
+    }
+}
+
+/// Raster masks use one canonical coverage value in RGB and opaque alpha.
+/// Brush erasing and selection deletion lower alpha in the generic painter;
+/// folding alpha into red makes those public operations actually clear mask
+/// coverage for both CPU and GPU compositors.
+fn normalize_mask_pixels(frame: &mut Frame) {
+    for pixel in frame.pixels_mut().chunks_exact_mut(4) {
+        let coverage = ((u16::from(pixel[0]) * u16::from(pixel[3]) + 127) / 255) as u8;
+        pixel.copy_from_slice(&[coverage, coverage, coverage, 255]);
+    }
+}
+
+fn normalize_mask_tiles(frame: &mut Frame, changed: &[(usize, usize)]) {
+    let (width, height) = (frame.width(), frame.height());
+    let pixels = frame.pixels_mut();
+    for &(tx, ty) in changed {
+        let x0 = (tx * TILE) as u32;
+        let y0 = (ty * TILE) as u32;
+        let x1 = (x0 + TILE as u32).min(width);
+        let y1 = (y0 + TILE as u32).min(height);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let offset = ((y * width + x) * 4) as usize;
+                let coverage =
+                    ((u16::from(pixels[offset]) * u16::from(pixels[offset + 3]) + 127) / 255) as u8;
+                pixels[offset..offset + 4].copy_from_slice(&[coverage, coverage, coverage, 255]);
+            }
+        }
     }
 }
 
@@ -2428,6 +3313,58 @@ fn children_holding(
         LayerNode::Group(nested) => children_holding(nested, id),
         _ => None,
     }
+}
+
+/// Finds the direct parent container and child position of `id`. The root is
+/// represented by `None`; nested groups carry their own stable layer id.
+fn node_parent_slot(
+    document: &ImageDocument,
+    id: concat_canvas::LayerId,
+) -> Option<(Option<concat_canvas::LayerId>, usize)> {
+    fn walk(
+        group: &concat_canvas::LayerGroup,
+        id: concat_canvas::LayerId,
+        is_root: bool,
+    ) -> Option<(Option<concat_canvas::LayerId>, usize)> {
+        if let Some(position) = group.children.iter().position(|child| child.id() == id) {
+            return Some(((!is_root).then_some(group.id), position));
+        }
+        for child in &group.children {
+            if let LayerNode::Group(nested) = child
+                && let Some(found) = walk(nested, id, false)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+    walk(&document.root, id, true)
+}
+
+/// Returns the mutable child vector for a parent container. `None` means the
+/// document root, which is a group too but is not a `LayerNode`.
+fn children_for_parent_mut(
+    document: &mut ImageDocument,
+    parent: Option<concat_canvas::LayerId>,
+) -> Option<&mut Vec<LayerNode>> {
+    match parent {
+        None => Some(&mut document.root.children),
+        Some(id) => document.group_mut(id).map(|group| &mut group.children),
+    }
+}
+
+fn topmost_image_in_parent(
+    document: &ImageDocument,
+    parent: Option<concat_canvas::LayerId>,
+) -> Option<PixelId> {
+    let children = parent
+        .and_then(|id| document.find(id))
+        .and_then(|node| match node {
+            LayerNode::Group(group) => Some(&group.children),
+            _ => None,
+        })
+        .unwrap_or(&document.root.children);
+    children.iter().rev().find_map(node_image_pixels)
 }
 
 /// The children vector that holds `id`, with the id's slot in it - the
@@ -2565,15 +3502,31 @@ fn checker_image(width: u32, height: u32) -> slint::Image {
             pixels[at + 3] = 255;
         }
     }
-    let buffer =
-        SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pixels, width, height);
+    let buffer = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pixels, width, height);
     slint::Image::from_rgba8(buffer)
 }
 
 /// A temporary directory beside `path`, unique to this process: the
 /// staging ground of an atomic package save.
 fn sibling_temp(path: &Path) -> std::path::PathBuf {
-    path.with_extension(format!("tmp-{}", std::process::id()))
+    unique_sibling(path, "tmp")
+}
+
+fn checked_frame_bytes(width: u32, height: u32) -> Option<usize> {
+    (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)
+}
+
+fn unique_sibling(path: &Path, kind: &str) -> std::path::PathBuf {
+    static NEXT_SAVE: AtomicU64 = AtomicU64::new(1);
+    loop {
+        let suffix = NEXT_SAVE.fetch_add(1, Ordering::Relaxed);
+        let candidate = path.with_extension(format!("{kind}-{}-{suffix}", std::process::id()));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
 }
 
 /// Moves `staging` onto `target`: a previous package steps aside first,
@@ -2581,7 +3534,7 @@ fn sibling_temp(path: &Path) -> std::path::PathBuf {
 /// failure on the way puts the previous package back, so a save either
 /// lands whole or leaves what was there.
 fn replace_package(staging: &Path, target: &Path) -> Result<(), String> {
-    let aside = target.with_extension("old");
+    let aside = unique_sibling(target, "backup");
     let had_previous = target.exists();
     if had_previous {
         std::fs::rename(target, &aside).map_err(|e| format!("save: {e}"))?;
@@ -2622,18 +3575,28 @@ fn encode_png(frame: &Frame) -> Result<Vec<u8>, String> {
 /// crate, which the window already keeps; everything else through `image`,
 /// whose feature set here covers the JPEG the artwork cache wanted - a
 /// format outside that set is the error, not a panic.
-fn decode(path: &Path) -> Result<Frame, String> {
+fn decode(path: &Path, texture_limit: Option<u32>) -> Result<Frame, String> {
+    if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > PROJECT_FILE_LIMIT {
+        return Err("image file is too large".into());
+    }
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let name = path
         .extension()
         .map(|e| e.to_ascii_lowercase().to_string_lossy().into_owned())
         .unwrap_or_default();
     let (width, height, pixels) = match name.as_str() {
-        "png" => decode_png(&bytes)?,
+        "png" => decode_png(&bytes, texture_limit)?,
         _ => {
-            let image = image::load_from_memory(&bytes)
-                .map_err(|e| e.to_string())?
-                .to_rgba8();
+            let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+                .with_guessed_format()
+                .map_err(|e| e.to_string())?;
+            let mut limits = image::Limits::default();
+            let dimension_limit = texture_limit.unwrap_or(DEFAULT_IMAGE_DIMENSION_LIMIT);
+            limits.max_image_width = Some(dimension_limit);
+            limits.max_image_height = Some(dimension_limit);
+            limits.max_alloc = Some(PROJECT_PIXEL_LIMIT as u64);
+            reader.limits(limits);
+            let image = reader.decode().map_err(|e| e.to_string())?.to_rgba8();
             let (width, height) = image.dimensions();
             (width, height, image.into_raw())
         }
@@ -2643,9 +3606,18 @@ fn decode(path: &Path) -> Result<Frame, String> {
 
 /// PNG to RGBA, any of the colour types a still is likely to come in.
 /// Returns `(width, height, rgba)`.
-fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+fn decode_png(bytes: &[u8], texture_limit: Option<u32>) -> Result<(u32, u32, Vec<u8>), String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_limits(png::Limits {
+        bytes: PROJECT_PIXEL_LIMIT,
+    });
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let (width, height) = {
+        let info = reader.info();
+        (info.width, info.height)
+    };
+    validate_canvas_dimensions(width, height, texture_limit)?;
     let mut buffer = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buffer).map_err(|e| e.to_string())?;
     let plain = &buffer[..info.buffer_size()];
@@ -2657,6 +3629,23 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
         other => return Err(format!("png: unsupported colour type {other:?}")),
     };
     Ok((info.width, info.height, pixels))
+}
+
+fn validate_canvas_dimensions(
+    width: u32,
+    height: u32,
+    texture_limit: Option<u32>,
+) -> Result<(), String> {
+    let limit = texture_limit.unwrap_or(DEFAULT_IMAGE_DIMENSION_LIMIT);
+    if width == 0 || height == 0 {
+        return Err("empty canvas".into());
+    }
+    if width > limit || height > limit {
+        return Err(format!(
+            "canvas {width}x{height} exceeds this device's {limit}px texture limit"
+        ));
+    }
+    Ok(())
 }
 
 /// Greys and RGBs to RGBA, one output pixel per `channels` input bytes. The
@@ -2729,6 +3718,118 @@ mod tests {
     }
 
     #[test]
+    fn custom_colour_input_rejects_invalid_hex_and_picks_composite_without_painting() {
+        let (mut pane, pixels) = painting_pane();
+        pane.agent_set_brush_rgb(12, 34, 56);
+        assert_eq!(pane.brush.color, [12, 34, 56]);
+        pane.agent_set_brush_hex("#0A141E");
+        assert_eq!(pane.brush.color, [10, 20, 30]);
+        pane.agent_set_brush_hex("not-a-colour");
+        assert_eq!(
+            pane.brush.color,
+            [10, 20, 30],
+            "invalid text keeps the last colour"
+        );
+
+        let mut frame = Frame::transparent(300, 200);
+        frame.set_pixel(150, 100, [201, 102, 43, 255]);
+        pane.store.replace(pixels, frame);
+        let mut overlay = Frame::transparent(300, 200);
+        overlay.set_pixel(150, 100, [11, 22, 33, 255]);
+        let overlay_pixels = pane.store.put(overlay);
+        pane.document
+            .as_mut()
+            .expect("document")
+            .new_layer("Overlay", overlay_pixels);
+        // Agent coordinates stay in document space even when the viewport differs.
+        pane.nav
+            .viewport_mut()
+            .resize((900.0, 500.0), 1.0, Some((300.0, 200.0)));
+        pane.agent_pick_color(150.0, 100.0);
+        assert_eq!(
+            pane.brush.color,
+            [11, 22, 33],
+            "sample includes the layer above the active layer"
+        );
+        pane.agent_pick_color(f64::NAN, 0.0);
+        assert_eq!(pane.brush.color, [11, 22, 33]);
+        assert!(
+            pane.undo_stack.is_empty(),
+            "sampling does not create a stroke"
+        );
+    }
+
+    #[test]
+    fn thumbnails_wait_for_the_committed_pixel_revision_during_a_stroke() {
+        let (mut pane, pixels) = painting_pane();
+        pane.refresh_thumbnails();
+        let initial = pane.thumbnail_cache.get(&pixels).expect("layer thumbnail");
+        let initial_revision = initial.revision;
+        let initial_source = initial.source.clone();
+
+        pane.set_tool(3);
+        pane.brush_press(150.0, 100.0);
+        pane.refresh_thumbnails();
+        let during = pane
+            .thumbnail_cache
+            .get(&pixels)
+            .expect("cached layer thumbnail");
+        assert_eq!(during.revision, initial_revision);
+        assert!(
+            during.source.ptr_eq(&initial_source),
+            "pointer moves do not resample the row"
+        );
+
+        pane.brush_release();
+        pane.refresh_thumbnails();
+        let after = pane
+            .thumbnail_cache
+            .get(&pixels)
+            .expect("updated layer thumbnail");
+        assert!(
+            after.revision > initial_revision,
+            "release advances the pixel revision"
+        );
+    }
+
+    #[test]
+    fn thumbnail_sources_update_independently_and_preserve_aspect_ratio() {
+        let (mut pane, pixels) = painting_pane();
+        pane.agent_layer_add();
+        let other = pane.layer.expect("second layer");
+        pane.refresh_thumbnails();
+        let other_source = pane.thumbnail_cache[&other].source.clone();
+        let initial_source = pane.thumbnail_cache[&pixels].source.clone();
+        pane.store.replace(pixels, Frame::transparent(20, 40));
+        pane.refresh_thumbnails();
+        assert!(pane.thumbnail_cache[&other].source.ptr_eq(&other_source));
+        assert!(!pane.thumbnail_cache[&pixels].source.ptr_eq(&initial_source));
+        let size = pane.thumbnail_cache[&pixels].image.size();
+        assert_eq!((size.width, size.height), (14, 28));
+    }
+
+    /// Builds the smallest nested tree used by layer operation regressions:
+    /// one group with two direct image children and no unrelated root image.
+    fn grouped_painting_pane() -> CanvasPane {
+        let (mut pane, _) = painting_pane();
+        pane.agent_layer_add();
+        pane.agent_layer_group();
+
+        for _ in 0..2 {
+            let rows = pane.agent_layers();
+            let group = rows.iter().position(|row| row.7).expect("group row");
+            let source = rows
+                .iter()
+                .enumerate()
+                .find(|(_, row)| row.5 == 0 && !row.7)
+                .map(|(index, _)| index)
+                .expect("root image row");
+            pane.agent_layer_move_into(source as i32, Some(group as i32));
+        }
+        pane
+    }
+
+    #[test]
     fn a_click_with_the_view_at_one_paints_one_dab() {
         let (mut pane, pixels) = painting_pane();
         pane.set_tool(3);
@@ -2764,6 +3865,102 @@ mod tests {
         pane.redo();
         let redone = pane.store.get(pixels).expect("pixels");
         assert_eq!(redone.pixels(), painted.pixels(), "redo repeats the stroke");
+    }
+
+    #[test]
+    fn a_stroke_copies_its_base_once_and_keeps_that_snapshot_shared() {
+        let (mut pane, _) = painting_pane();
+        pane.set_tool(3);
+        pane.brush_press_document(40.0, 40.0);
+        let base = pane.stroke_base.as_ref().expect("base");
+        assert_eq!(
+            Arc::strong_count(base),
+            2,
+            "store and stroke share the base"
+        );
+        let base_id = base.id();
+        for point in [(60.0, 50.0), (90.0, 70.0), (120.0, 90.0)] {
+            let changed = pane.paint_at(point.0, point.1);
+            pane.commit_tiles(&changed);
+            let base = pane.stroke_base.as_ref().expect("base stays");
+            assert_eq!(base.id(), base_id);
+            assert_eq!(Arc::strong_count(base), 2, "moves did not clone the base");
+        }
+        pane.brush_release();
+    }
+
+    #[test]
+    fn release_commits_the_same_settled_curve_as_the_brush_engine() {
+        let points = [(40.0, 40.0), (80.0, 55.0), (130.0, 110.0), (180.0, 90.0)];
+        let (mut pane, pixels) = painting_pane();
+        pane.set_tool(3);
+        pane.brush.diameter = 36.0;
+        pane.agent_paint_stroke(&points);
+        let actual = pane.store.get(pixels).expect("painted");
+
+        let mut stroke = BrushStroke::new(300, 200, pane.brush).expect("stroke");
+        let mut changed = Vec::new();
+        for point in points {
+            changed.extend(stroke.append(point));
+        }
+        changed.extend(stroke.flush());
+        changed.sort_unstable();
+        changed.dedup();
+        let mut expected = Frame::transparent(300, 200);
+        stroke.composite_tiles(expected.pixels_mut(), &changed);
+        assert_eq!(actual.pixels(), expected.pixels());
+    }
+
+    #[test]
+    fn a_brush_stroke_is_clipped_to_the_selection() {
+        let (mut pane, pixels) = painting_pane();
+        pane.agent_select_rect(100.0, 80.0, 20.0, 40.0);
+        pane.set_tool(3);
+        pane.brush.diameter = 80.0;
+        pane.brush_press_document(110.0, 100.0);
+        pane.brush_release();
+        let frame = pane.store.get(pixels).expect("pixels");
+        assert_eq!(frame.pixel(110, 100).expect("inside")[3], 255);
+        assert_eq!(frame.pixel(80, 100).expect("outside")[3], 0);
+        assert_eq!(frame.pixel(140, 100).expect("outside")[3], 0);
+    }
+
+    #[test]
+    fn document_and_pixel_edits_share_one_ordered_history() {
+        let (mut pane, pixels) = painting_pane();
+        pane.set_tool(3);
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        pane.agent_layer_toggle_visibility(0);
+        assert!(pane.document.as_ref().unwrap().walk()[0].hidden());
+
+        pane.undo();
+        assert!(!pane.document.as_ref().unwrap().walk()[0].hidden());
+        assert!(pane.store.get(pixels).unwrap().pixel(150, 100).unwrap()[3] > 0);
+        pane.undo();
+        assert_eq!(
+            pane.store.get(pixels).unwrap().pixel(150, 100).unwrap()[3],
+            0
+        );
+    }
+
+    #[test]
+    fn history_enforces_entry_and_retained_byte_limits() {
+        let (mut pane, _) = painting_pane();
+        for _ in 0..(HISTORY_ENTRY_LIMIT + 20) {
+            pane.agent_layer_toggle_visibility(0);
+        }
+        assert_eq!(pane.undo_stack.len(), HISTORY_ENTRY_LIMIT);
+        pane.undo_stack[0].retained_bytes = HISTORY_BYTE_LIMIT + 1;
+        pane.trim_history();
+        assert!(pane.undo_stack.len() < HISTORY_ENTRY_LIMIT);
+        assert!(
+            pane.undo_stack
+                .iter()
+                .map(|entry| entry.retained_bytes)
+                .sum::<usize>()
+                <= HISTORY_BYTE_LIMIT
+        );
     }
 
     #[test]
@@ -2840,6 +4037,30 @@ mod tests {
     }
 
     #[test]
+    fn agent_wand_uses_document_pixels_under_an_offset_zoomed_view() {
+        let (mut pane, pixels) = painting_pane();
+        let mut frame = Frame::transparent(300, 200);
+        for y in 0..200 {
+            for x in 0..300 {
+                let color = if x < 100 {
+                    [240, 20, 20, 255]
+                } else {
+                    [20, 20, 240, 255]
+                };
+                frame.set_pixel(x, y, color);
+            }
+        }
+        pane.store.replace(pixels, frame);
+        pane.nav
+            .viewport_mut()
+            .set_zoom(2.0, (150.0, 100.0), (300.0, 200.0));
+        pane.nav.viewport_mut().translate((35.0, -20.0));
+
+        pane.agent_wand(20.0, 20.0);
+        assert_eq!(pane.agent_selection_bounds(), Some((0, 0, 100, 200)));
+    }
+
+    #[test]
     fn an_agent_export_writes_a_decodable_png() {
         let (mut pane, _) = painting_pane();
         let dir = std::env::temp_dir().join("concat-agent-export");
@@ -2848,7 +4069,7 @@ mod tests {
         pane.agent_export_png(&path).expect("the export wrote");
 
         let bytes = std::fs::read(&path).expect("the file");
-        let (width, height, rgba) = decode_png(&bytes).expect("a decodable png");
+        let (width, height, rgba) = decode_png(&bytes, None).expect("a decodable png");
         assert_eq!((width, height), (300, 200));
         assert_eq!(rgba.len(), 300 * 200 * 4);
         let _ = std::fs::remove_file(&path);
@@ -2858,6 +4079,62 @@ mod tests {
             empty.agent_export_png(&path).is_err(),
             "nothing open, no export"
         );
+    }
+
+    #[test]
+    fn png_decoder_expands_palette_and_strips_sixteen_bit_channels() {
+        let mut indexed = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut indexed, 2, 1);
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_palette(vec![10, 20, 30, 200, 210, 220]);
+            encoder.set_trns(vec![255, 128]);
+            let mut writer = encoder.write_header().expect("indexed header");
+            writer.write_image_data(&[0, 1]).expect("indexed pixels");
+        }
+        let (_, _, rgba) = decode_png(&indexed, None).expect("indexed png");
+        assert_eq!(rgba, vec![10, 20, 30, 255, 200, 210, 220, 128]);
+
+        let mut sixteen = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut sixteen, 1, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Sixteen);
+            let mut writer = encoder.write_header().expect("16-bit header");
+            writer
+                .write_image_data(&[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc])
+                .expect("16-bit pixels");
+        }
+        let (_, _, rgba) = decode_png(&sixteen, None).expect("16-bit png");
+        assert_eq!(rgba, vec![0x12, 0x56, 0x9a, 255]);
+    }
+
+    #[test]
+    fn device_texture_limit_rejects_a_thin_canvas_before_gpu_upload() {
+        assert!(validate_canvas_dimensions(16_384, 1, Some(16_384)).is_ok());
+        let error = validate_canvas_dimensions(16_385, 1, Some(16_384)).unwrap_err();
+        assert!(error.contains("16384px texture limit"));
+    }
+
+    #[test]
+    fn project_open_checks_the_device_limit_before_replacing_the_document() {
+        let dir = std::env::temp_dir().join(format!("concat-thin-comp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let document = ImageDocument::new(16_385, 1);
+        let manifest = serde_json::json!({
+            "concat-project": 1,
+            "width": document.width,
+            "height": document.height,
+            "document": document,
+        });
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).expect("manifest");
+
+        let (mut pane, _) = painting_pane();
+        let error = pane.load_comp(&dir, Some(16_384)).unwrap_err();
+        assert!(error.contains("16384px texture limit"));
+        assert_eq!(pane.document_size(), Some((300.0, 200.0)));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2889,9 +4166,10 @@ mod tests {
         pane.agent_layer_pick(1);
         pane.agent_adjustment_param(0, 1.0);
         assert!(matches!(
-            pane.document.as_ref().expect("open").find(
-                pane.active.expect("active")
-            ),
+            pane.document
+                .as_ref()
+                .expect("open")
+                .find(pane.active.expect("active")),
             Some(LayerNode::Layer(_))
         ));
     }
@@ -2905,21 +4183,49 @@ mod tests {
         pane.brush_press(150.0, 100.0);
         pane.brush_release();
         pane.agent_adjustment_add(6); // Grain
-        let tree = pane.document.as_ref().expect("open").to_json().expect("json");
+        let tree = pane
+            .document
+            .as_ref()
+            .expect("open")
+            .to_json()
+            .expect("json");
 
         let dir = std::env::temp_dir().join("concat-agent-comp");
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("round-trip.comp");
         pane.agent_save_comp(&path).expect("the save wrote");
+        assert_eq!(pane.project_path.as_deref(), Some(path.as_path()));
+        assert!(
+            !pane.is_modified(),
+            "a successful save clears the canvas dirty state"
+        );
+        pane.set_tool(3);
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        assert!(pane.is_modified(), "a post-save stroke is dirty");
+        pane.undo();
+        assert_eq!(pane.project_path.as_deref(), Some(path.as_path()));
+        assert!(!pane.is_modified(), "undo restores the saved revision");
         assert!(path.join("manifest.json").is_file());
-        assert!(path.join("images").read_dir().expect("images").next().is_some());
+        assert!(
+            path.join("images")
+                .read_dir()
+                .expect("images")
+                .next()
+                .is_some()
+        );
 
         // A fresh pane loads the package: the same tree, the same pixel
         // ids, the painted stroke back.
         let mut back = CanvasPane::default();
         back.agent_open(&path).expect("the package opened");
+        assert_eq!(back.project_path.as_deref(), Some(path.as_path()));
         assert_eq!(
-            back.document.as_ref().expect("open").to_json().expect("json"),
+            back.document
+                .as_ref()
+                .expect("open")
+                .to_json()
+                .expect("json"),
             tree,
             "the tree round-trips exactly"
         );
@@ -2943,6 +4249,193 @@ mod tests {
     }
 
     #[test]
+    fn save_current_writes_new_stroke_to_recorded_path_and_clears_dirty() {
+        let dir =
+            std::env::temp_dir().join(format!("concat-save-current-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("isolated temp directory");
+        let path = dir.join("original.comp");
+        let (mut pane, pixels) = painting_pane();
+        pane.save_to_path(&path).expect("initial save records path");
+        let bitmap_path = path.join("images").join(format!("{}.png", pixels.as_u64()));
+        let original_bitmap = std::fs::read(&bitmap_path).expect("initial bitmap");
+        pane.set_tool(3);
+        pane.brush.color = [12, 34, 56];
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        assert!(pane.is_modified(), "new stroke must be dirty");
+        let expected_pixels = pane
+            .store
+            .get(pixels)
+            .expect("painted frame")
+            .pixels()
+            .to_vec();
+
+        assert!(
+            pane.save_current()
+                .expect("ordinary save uses recorded path")
+        );
+        assert_eq!(pane.project_path.as_deref(), Some(path.as_path()));
+        assert!(!pane.is_modified(), "ordinary save clears dirty");
+        assert_ne!(
+            std::fs::read(&bitmap_path).expect("updated bitmap"),
+            original_bitmap,
+            "ordinary save actually rewrites the recorded package"
+        );
+        let mut reopened = CanvasPane::default();
+        reopened.agent_open(&path).expect("reopen ordinary save");
+        assert_eq!(
+            reopened.store.get(pixels).expect("reopened frame").pixels(),
+            expected_pixels.as_slice()
+        );
+        assert_eq!(reopened.project_path.as_deref(), Some(path.as_path()));
+        assert!(!reopened.is_modified());
+        std::fs::remove_dir_all(&dir).expect("remove isolated fixture");
+    }
+
+    #[test]
+    fn failed_save_to_path_preserves_original_path_dirty_state_and_saved_content() {
+        let dir =
+            std::env::temp_dir().join(format!("concat-save-failure-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("isolated temp directory");
+        let path = dir.join("original.comp");
+        let (mut pane, pixels) = painting_pane();
+        pane.set_tool(3);
+        pane.brush_press(80.0, 60.0);
+        pane.brush_release();
+        pane.save_to_path(&path).expect("initial saved package");
+        let manifest_path = path.join("manifest.json");
+        let bitmap_path = path.join("images").join(format!("{}.png", pixels.as_u64()));
+        let saved_manifest = std::fs::read(&manifest_path).expect("saved manifest");
+        let saved_bitmap = std::fs::read(&bitmap_path).expect("saved bitmap");
+        let saved_pixels = pane
+            .store
+            .get(pixels)
+            .expect("saved frame")
+            .pixels()
+            .to_vec();
+        let saved_revision = pane.saved_revision;
+        let saved_name = pane.name.clone();
+        pane.brush_press(220.0, 140.0);
+        pane.brush_release();
+        assert!(pane.is_modified());
+        let edited_pixels = pane
+            .store
+            .get(pixels)
+            .expect("edited frame")
+            .pixels()
+            .to_vec();
+        assert_ne!(edited_pixels, saved_pixels);
+
+        // A plain file cannot contain a package or its sibling staging directory.
+        // This fails through real filesystem I/O without permission assumptions.
+        let blocker = dir.join("ordinary-file");
+        std::fs::write(&blocker, b"fixture blocker").expect("ordinary file fixture");
+        assert!(pane.save_to_path(&blocker.join("unsavable.comp")).is_err());
+        assert_eq!(pane.project_path.as_deref(), Some(path.as_path()));
+        assert_eq!(pane.name, saved_name);
+        assert_eq!(pane.saved_revision, saved_revision);
+        assert!(pane.is_modified(), "failed save leaves edits dirty");
+        assert_eq!(
+            pane.store.get(pixels).expect("edits survive").pixels(),
+            edited_pixels.as_slice()
+        );
+        assert_eq!(
+            std::fs::read(&manifest_path).expect("original manifest remains"),
+            saved_manifest
+        );
+        assert_eq!(
+            std::fs::read(&bitmap_path).expect("original bitmap remains"),
+            saved_bitmap
+        );
+        assert_eq!(
+            std::fs::read(&blocker).expect("blocker remains"),
+            b"fixture blocker"
+        );
+        let mut reopened = CanvasPane::default();
+        reopened
+            .agent_open(&path)
+            .expect("original package still opens");
+        assert_eq!(
+            reopened
+                .store
+                .get(pixels)
+                .expect("original saved frame")
+                .pixels(),
+            saved_pixels.as_slice()
+        );
+        std::fs::remove_dir_all(&dir).expect("remove isolated fixture");
+    }
+
+    #[test]
+    fn opening_a_second_image_replaces_pixels_with_no_old_store_residue() {
+        let dir = std::env::temp_dir().join(format!("concat-open-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let first = dir.join("first.png");
+        let second = dir.join("second.png");
+        std::fs::write(&first, encode_png(&solid_frame([10, 20, 30, 255])).unwrap()).unwrap();
+        std::fs::write(
+            &second,
+            encode_png(&solid_frame([90, 80, 70, 255])).unwrap(),
+        )
+        .unwrap();
+
+        let mut pane = CanvasPane::default();
+        pane.agent_open(&first).expect("first opens");
+        let first_id = pane.layer.expect("first id");
+        pane.agent_open(&second).expect("second opens");
+        let second_id = pane.layer.expect("second id");
+        assert!(
+            pane.project_path.is_none(),
+            "an image starts a fresh Save As path"
+        );
+        assert_eq!(pane.store.len(), 1);
+        assert_eq!(second_id.as_u64(), 1, "a new document has a fresh store");
+        assert_eq!(
+            pane.store.get(second_id).unwrap().pixel(0, 0).unwrap(),
+            [90, 80, 70, 255]
+        );
+        assert_eq!(first_id, second_id, "ids may repeat across documents");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_open_holds_a_pending_path_until_modified_work_is_saved() {
+        let dir = std::env::temp_dir().join(format!("concat-unsaved-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let next = dir.join("next.png");
+        std::fs::write(&next, encode_png(&solid_frame([4, 5, 6, 255])).unwrap()).unwrap();
+        let save = dir.join("saved.comp");
+
+        let (mut pane, _) = painting_pane();
+        pane.set_tool(3);
+        pane.brush_press_document(20.0, 20.0);
+        pane.brush_release();
+        assert!(pane.is_modified());
+        assert!(pane.agent_open(&next).is_err());
+        assert!(pane.open_confirm);
+        assert_eq!(pane.pending_open.as_deref(), Some(next.as_path()));
+
+        pane.agent_save_comp(&save).expect("project saved");
+        assert!(!pane.is_modified());
+        pane.agent_open(&next).expect("open proceeds after save");
+        assert_eq!(
+            pane.store
+                .get(pane.layer.unwrap())
+                .unwrap()
+                .pixel(0, 0)
+                .unwrap(),
+            [4, 5, 6, 255]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn solid_frame(rgba: [u8; 4]) -> Frame {
+        let mut frame = Frame::transparent(2, 2);
+        frame.fill(rgba);
+        frame
+    }
+
+    #[test]
     fn a_group_folds_and_its_rows_keep_their_indexes() {
         let (mut pane, _) = painting_pane();
         // One more layer, then a group above both: the panel reads
@@ -2956,7 +4449,10 @@ mod tests {
         assert!(rows[0].7, "the group's row is a group at all");
         assert_eq!(rows[0].5, 0, "the group sits at the root's depth");
         assert_eq!(rows[1].5, 0, "the layers beside it sit at the root too");
-        assert!(!rows[1].6 && !rows[1].7, "a layer is neither group nor expanded");
+        assert!(
+            !rows[1].6 && !rows[1].7,
+            "a layer is neither group nor expanded"
+        );
         assert!(!rows.iter().any(|row| row.8), "nothing carries a mask yet");
 
         // A layer into the group: the panel shows the group's row, the
@@ -2981,11 +4477,17 @@ mod tests {
         pane.agent_layer_fold(0);
         let rows = pane.agent_layers();
         assert_eq!(rows.len(), 3, "the children came back");
-        assert!(rows[0].6 && rows[0].7, "unfolded: shown children, is a group");
+        assert!(
+            rows[0].6 && rows[0].7,
+            "unfolded: shown children, is a group"
+        );
         pane.agent_layer_fold(0);
         let rows = pane.agent_layers();
         assert_eq!(rows.len(), 2);
-        assert!(!rows[0].6 && rows[0].7, "folded: children hidden, still a group");
+        assert!(
+            !rows[0].6 && rows[0].7,
+            "folded: children hidden, still a group"
+        );
         pane.agent_layer_fold(0);
 
         // Moving the group moves with it everything it holds: up in the
@@ -3063,12 +4565,9 @@ mod tests {
             pane.set_tool(3);
             pane.brush_press(150.0, 100.0);
             pane.brush_release();
-            concat_canvas::compose(
-                pane.document.as_ref().expect("open"),
-                &pane.store,
-            )
-            .pixel(150, 100)
-            .expect("a painted pixel")
+            concat_canvas::compose(pane.document.as_ref().expect("open"), &pane.store)
+                .pixel(150, 100)
+                .expect("a painted pixel")
         };
         assert!(
             pixel[0] > plain[0],
@@ -3076,10 +4575,7 @@ mod tests {
         );
 
         // The other channels keep their identity while red bends.
-        assert_eq!(
-            pane.agent_curve_channels()[1],
-            vec![(0.0, 0.0), (1.0, 1.0)]
-        );
+        assert_eq!(pane.agent_curve_channels()[1], vec![(0.0, 0.0), (1.0, 1.0)]);
 
         // A non-curves row publishes no curves at all.
         pane.agent_layer_pick(1);
@@ -3136,6 +4632,117 @@ mod tests {
     }
 
     #[test]
+    fn nested_delete_keeps_sibling_and_refreshes_adjustment_target() {
+        let mut pane = grouped_painting_pane();
+        let rows = pane.agent_layers();
+        let children: Vec<(usize, u64)> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.5 == 1 && !row.7)
+            .map(|(index, row)| (index, row.0))
+            .collect();
+        assert_eq!(children.len(), 2, "the fixture has two group children");
+
+        // Removing the selected nested image picks its nearest image sibling
+        // in the same group instead of jumping to a root row.
+        pane.agent_layer_pick(children[0].0 as i32);
+        pane.agent_layer_delete(children[0].0 as i32);
+        assert_eq!(pane.active.map(|id| id.as_u64()), Some(children[1].1));
+        let active_pixels = pane.active.and_then(|id| {
+            let document = pane.document.as_ref()?;
+            document.find(id).and_then(node_image_pixels)
+        });
+        assert_eq!(
+            pane.layer, active_pixels,
+            "the selected sibling is paintable"
+        );
+
+        // An adjustment stays selected when one of its image siblings is
+        // removed, and its fallback target is rebuilt from the same parent.
+        let mut pane = grouped_painting_pane();
+        let rows = pane.agent_layers();
+        let child = rows
+            .iter()
+            .position(|row| row.5 == 1 && !row.7)
+            .expect("nested image");
+        pane.agent_layer_pick(child as i32);
+        pane.agent_adjustment_add(1);
+        let adjustment = pane.active;
+        let image_to_remove = pane
+            .rows()
+            .iter()
+            .enumerate()
+            .find(|(_, (node, depth))| *depth == 1 && node_image_pixels(node).is_some())
+            .map(|(index, _)| index)
+            .expect("remaining nested image");
+        pane.agent_layer_delete(image_to_remove as i32);
+        assert_eq!(pane.active, adjustment, "the adjustment survives");
+        let parent = pane.active.and_then(|id| {
+            let document = pane.document.as_ref()?;
+            node_parent_slot(document, id).map(|(parent, _)| parent)
+        });
+        let expected = parent.and_then(|parent| {
+            pane.document
+                .as_ref()
+                .and_then(|document| topmost_image_in_parent(document, parent))
+        });
+        assert_eq!(pane.layer, expected, "the sibling remains the paint target");
+        assert!(pane.layer.is_some_and(|id| pane.store.get(id).is_some()));
+    }
+
+    #[test]
+    fn nested_adjustment_and_group_stay_in_the_selected_parent() {
+        let mut pane = grouped_painting_pane();
+        let child_row = pane
+            .agent_layers()
+            .iter()
+            .position(|row| row.5 == 1 && !row.7)
+            .expect("nested image");
+        pane.agent_layer_pick(child_row as i32);
+        let parent = pane
+            .active
+            .and_then(|id| {
+                let document = pane.document.as_ref()?;
+                node_parent_slot(document, id).and_then(|(parent, _)| parent)
+            })
+            .expect("the image has a group parent");
+
+        pane.agent_adjustment_add(1);
+        let adjustment = pane.active.expect("new adjustment is active");
+        let adjustment_parent = pane
+            .document
+            .as_ref()
+            .and_then(|document| node_parent_slot(document, adjustment))
+            .and_then(|(parent, _)| parent);
+        assert_eq!(adjustment_parent, Some(parent));
+        assert_eq!(
+            pane.agent_layers()
+                .iter()
+                .find(|row| row.0 == adjustment.as_u64())
+                .map(|row| row.5),
+            Some(1),
+            "the adjustment remains nested"
+        );
+
+        pane.agent_layer_group();
+        let group = pane.active.expect("new group is active");
+        let group_parent = pane
+            .document
+            .as_ref()
+            .and_then(|document| node_parent_slot(document, group))
+            .and_then(|(parent, _)| parent);
+        assert_eq!(group_parent, Some(parent));
+        assert_eq!(
+            pane.agent_layers()
+                .iter()
+                .find(|row| row.0 == group.as_u64())
+                .map(|row| row.5),
+            Some(1),
+            "the new group remains nested"
+        );
+    }
+
+    #[test]
     fn a_mask_hides_where_the_brush_paints_it_black() {
         let (mut pane, pixels) = painting_pane();
         // Something on the layer for the mask to hide.
@@ -3143,17 +4750,29 @@ mod tests {
         pane.brush.color = [10, 20, 30];
         pane.brush_press(150.0, 100.0);
         pane.brush_release();
+        let original_layer = pane.store.get(pixels).expect("layer before mask");
         let document = pane.document.clone().expect("open");
         let showed = concat_canvas::compose(&document, &pane.store)
             .pixel(150, 100)
-            .expect("the painted pixel")
-            [3];
+            .expect("the painted pixel")[3];
         assert_eq!(showed, 255, "the stroke showed before any mask");
 
         // A white mask over the base layer, the painting tools pointed
         // at it.
+        pane.set_tool(4);
         pane.agent_layer_mask_add(0);
+        assert_eq!(pane.tool, 3, "adding a mask switches to the brush");
+        assert!(
+            !pane.brush.erasing,
+            "mask painting starts with a normal brush"
+        );
         assert!(pane.agent_paint_mask(), "the tools point at the fresh mask");
+        pane.paint_mask = false;
+        pane.set_tool(2);
+        pane.mask_chip_click(0);
+        assert_eq!(pane.tool, 3, "the mask chip leaves zoom mode for painting");
+        assert!(!pane.brush.erasing, "mask chip painting is not erasing");
+        assert!(pane.agent_paint_mask(), "the chip selects the mask target");
         let rows = pane.agent_layers();
         assert!(rows[0].8, "the row carries a mask");
         assert!(rows[0].9, "that mask is the one being painted");
@@ -3168,7 +4787,9 @@ mod tests {
             .expect("the mask exists");
         let mask = pane.store.get(mask_id).expect("mask pixels");
         assert!(
-            mask.pixels().chunks_exact(4).all(|pixel| pixel == [255, 255, 255, 255]),
+            mask.pixels()
+                .chunks_exact(4)
+                .all(|pixel| pixel == [255, 255, 255, 255]),
             "a fresh mask shows everything"
         );
 
@@ -3198,6 +4819,11 @@ mod tests {
 
         // The layer's own pixels were never touched by any of it.
         let layer = pane.store.get(pixels).expect("layer pixels");
+        assert_eq!(
+            layer.pixels(),
+            original_layer.pixels(),
+            "painting the mask preserves every source RGBA byte"
+        );
         let alpha: Vec<u8> = layer.pixels()[3..].iter().step_by(4).copied().collect();
         assert!(alpha.contains(&255), "the stroke is still there");
         assert_eq!(
@@ -3264,6 +4890,52 @@ mod tests {
                 .expect("the painted pixel")[3],
             0,
             "the hiding came back with the mask"
+        );
+    }
+
+    #[test]
+    fn mask_eraser_and_selection_delete_clear_red_coverage_for_cpu_and_gpu() {
+        let (mut pane, pixels) = painting_pane();
+        pane.set_tool(3);
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        let source = pane.store.get(pixels).expect("source");
+        pane.agent_layer_mask_add(0);
+        let mask_id = pane.paint_target().expect("mask target");
+
+        pane.set_tool(4);
+        pane.brush_press(150.0, 100.0);
+        pane.brush_release();
+        assert_eq!(
+            pane.store.get(mask_id).unwrap().pixel(150, 100).unwrap(),
+            [0, 0, 0, 255],
+            "eraser becomes zero mask coverage"
+        );
+        assert_eq!(
+            pane.store.get(pixels).unwrap().pixels(),
+            source.pixels(),
+            "mask erasing leaves source RGBA untouched"
+        );
+        let document = pane.document.as_ref().expect("document");
+        let cpu = concat_canvas::compose(document, &pane.store);
+        assert_eq!(cpu.pixel(150, 100).unwrap()[3], 0);
+        let mut gpu =
+            CanvasGpu::new().expect("mask CPU/GPU consistency requires a usable wgpu adapter");
+        let gpu = gpu.compose_frame(document, &pane.store);
+        assert!(
+            (i16::from(gpu.pixel(150, 100).unwrap()[3])
+                - i16::from(cpu.pixel(150, 100).unwrap()[3]))
+            .abs()
+                <= 1
+        );
+
+        pane.undo();
+        pane.agent_select_rect(140.0, 90.0, 20.0, 20.0);
+        pane.agent_delete_selection();
+        assert_eq!(
+            pane.store.get(mask_id).unwrap().pixel(150, 100).unwrap(),
+            [0, 0, 0, 255],
+            "selection delete also clears mask coverage"
         );
     }
 

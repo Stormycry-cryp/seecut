@@ -1,3 +1,4 @@
+import { Rail } from "../inspector/controls.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
@@ -6,7 +7,9 @@ import { Theme } from "../theme/theme.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Glyph, Icon } from "../icons.slint";
 import { IconButton } from "../primitives/panel.slint";
-import { Knob } from "../primitives/knob.slint";
+import { NumberField } from "../primitives/number-field.slint";
+import { Focus } from "../util.slint";
+import { AppButton, WorkspaceIcon, MenuAction } from "../seecut/components.slint";
 import { Pane, PaneHeader } from "pane.slint";
 import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
 
@@ -32,6 +35,31 @@ export global Palette {
     in property <[color]> colors: [
         #1e1e22, #ebebf0, #d43b37, #eb982f, #ebcd3e, #58a84e, #3a76cd, #8a4ecd,
     ];
+}
+
+// Colour controls live at the canvas boundary rather than in Editor's long
+// property chain. Rust publishes the current colour and target here, while
+// edits and the explicit picker click travel back through these callbacks.
+export global CanvasControls {
+    in-out property <float> red: 30;
+    in-out property <float> green: 30;
+    in-out property <float> blue: 34;
+    in-out property <color> color: #1E1E22;
+    in-out property <string> hex: "#1E1E22";
+    in-out property <bool> picking: false;
+    in-out property <bool> rgb-expanded: false;
+    in-out property <string> target: "图层";
+    callback rgb-changed(red: float, green: float, blue: float);
+    callback hex-edited(text: string);
+    callback pick-color(x: float, y: float);
+}
+
+// Preview models keep image and mask thumbnails separate. The row index is
+// shared with CanvasLayerData, so a mask chip can be selected independently
+// while the row still selects its image layer.
+export global CanvasThumbs {
+    in-out property <[image]> layer-images;
+    in-out property <[image]> mask-images;
 }
 
 // One row of the layers panel, as Rust publishes it: the row's node, its
@@ -250,12 +278,65 @@ component Ants inherits Rectangle {
     }
 }
 
+// A focusable target for image, mask, and palette chips.
+component CanvasChipAction inherits FocusScope {
+    callback clicked();
+    key-pressed(event) => {
+        if (event.text == "\n" || event.text == " ") {
+            root.clicked();
+            return EventResult.accept;
+        }
+        return EventResult.reject;
+    }
+    Rectangle {
+        border-width: root.has-focus ? 2px : 0px;
+        border-color: Theme.accent;
+        border-radius: Theme.r-xs;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.focus(); root.clicked(); }
+    }
+}
+
+component PropertySlider inherits HorizontalLayout {
+    in property <string> label;
+    in-out property <float> value;
+    in property <float> minimum;
+    in property <float> maximum: 1;
+    in property <float> step: 0.01;
+    in property <int> precision: 2;
+    in property <string> readout;
+    callback changed(value: float);
+    height: 28px; spacing: 6px;
+    Text {
+        text: root.label; width: 68px; overflow: elide;
+        font-size: 12px; color: Theme.fg-muted; vertical-alignment: center;
+    }
+    Rail {
+        height: 28px; horizontal-stretch: 1;
+        minimum: root.minimum; maximum: root.maximum; step: root.step;
+        value: root.value;
+        changed(value) => { root.value = value; root.changed(value); }
+    }
+    NumberField {
+        width: 56px;
+        value <=> root.value;
+        minimum: root.minimum; maximum: root.maximum;
+        step: root.step; precision: root.precision;
+        changed(value) => { root.changed(value); }
+    }
+}
+
 export component CanvasPane inherits Rectangle {
     /// The composed document, at the view's zoom, already placed by the
     /// compositor. Empty until an image is open.
     in property <image> frame;
     /// Whether there is a document to show at all.
     in property <bool> has-document;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    in property <bool> sidebar-open: true;
     /// The open image's name, as the header readout.
     in property <string> document-name;
     /// The view's zoom, in percent. 100 is one image pixel to one screen
@@ -324,6 +405,17 @@ export component CanvasPane inherits Rectangle {
     property <int> drag-row: -1;
     property <int> drop-row: -1;
     property <bool> drop-below: false;
+    /// The layer list grows with the visible row count and can be adjusted
+    /// when the window is short. A long list remains inside its ScrollView.
+    property <length> layer-list-min: 48px;
+    property <length> layer-list-max: Math.max(root.layer-list-min, root.height - 340px);
+    property <length> layer-list-requested: -1px;
+    property <length> layer-list-height: Math.clamp(
+        root.layer-list-requested >= 0px ? root.layer-list-requested
+            : Math.min(root.layers.length * 40px + 8px, root.height * 0.32),
+        root.layer-list-min, root.layer-list-max);
+    property <bool> resizing-layers: false;
+    property <length> resize-y0: 0px;
     /// The curves editor's channel tab: `0` red, `1` green, `2` blue.
     property <int> curve-channel: 0;
     /// The channel tab's points and segments, picked by the tab.
@@ -427,10 +519,11 @@ export component CanvasPane inherits Rectangle {
     callback pane-picked(kind: PaneKind);
     in property <int> pane-seat;
     in property <bool> pane-removable: true;
+    in property <bool> standalone;
     callback pane-removed();
 
     Pane {
-        PaneHeader {
+        if !root.standalone: PaneHeader {
             title: I18n.t("Canvas");
 
             // What is open, and how close. Both facts, not controls: the
@@ -459,7 +552,7 @@ export component CanvasPane inherits Rectangle {
                 }
             }
 
-            VerticalLayout {
+            if !root.standalone: VerticalLayout {
                 alignment: center;
                 PaneSwitcher {
                     kind: PaneKind.canvas;
@@ -471,8 +564,23 @@ export component CanvasPane inherits Rectangle {
             }
         }
 
-        // ── the well and the layers panel ────────────────────────────────
         HorizontalLayout {
+            vertical-stretch: 1;
+            Rectangle {
+                width: 48px; background: Theme.panel;
+                VerticalLayout {
+                    padding: 6px; spacing: 6px; alignment: start;
+                    for t[i] in [
+                        { glyph: Glyph.pointer, label: "移动工具" }, { glyph: Glyph.hand, label: "平移画布" },
+                        { glyph: Glyph.search, label: "缩放工具" }, { glyph: Glyph.brush, label: "画笔工具" },
+                        { glyph: Glyph.eraser, label: "橡皮擦" }, { glyph: Glyph.box-select, label: "矩形选区" },
+                        { glyph: Glyph.wand, label: "魔棒选区" },
+                    ]: WorkspaceIcon { glyph: t.glyph; label: t.label; checked: root.tool == i; enabled: root.has-document; clicked => { root.tool-changed(i); } }
+                    Rectangle { vertical-stretch: 1; }
+                    WorkspaceIcon { glyph: Glyph.fit; label: "适合窗口"; enabled: root.has-document; clicked => { root.nav-fit(); } }
+                }
+                Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.line; }
+            }
             well := Rectangle {
             vertical-stretch: 1;
             background: Theme.well;
@@ -609,11 +717,13 @@ export component CanvasPane inherits Rectangle {
             // panning an empty well does nothing, and reporting it costs
             // less than asking whether it was worth it.
             floor := TouchArea {
+                enabled: root.has-document;
                 property <bool> panning;
                 property <bool> zooming;
                 property <bool> painting;
                 property <bool> marqueeing;
-                mouse-cursor: self.panning ? MouseCursor.grabbing
+                mouse-cursor: CanvasControls.picking ? MouseCursor.crosshair
+                    : self.panning ? MouseCursor.grabbing
                     : root.tool == 1 ? MouseCursor.grab
                     : root.tool >= 2 ? MouseCursor.crosshair
                     : MouseCursor.default;
@@ -626,7 +736,11 @@ export component CanvasPane inherits Rectangle {
                 }
                 pointer-event(event) => {
                     if (event.kind == PointerEventKind.down) {
-                        if (event.button == PointerEventButton.middle
+                        if (CanvasControls.picking
+                            && event.button == PointerEventButton.left) {
+                            CanvasControls.pick-color(self.mouse-x / 1px, self.mouse-y / 1px);
+                            CanvasControls.picking = false;
+                        } else if (event.button == PointerEventButton.middle
                             || (event.button == PointerEventButton.left
                                 && root.tool == 1)) {
                             self.panning = true;
@@ -684,7 +798,7 @@ export component CanvasPane inherits Rectangle {
                 // paint tool is up. A dark ring under the light one keeps
                 // the circle legible on any ground.
                 if root.tool >= 3 && root.tool <= 4 && root.has-document
-                    && floor.has-hover: Rectangle {
+                    && floor.has-hover && !CanvasControls.picking: Rectangle {
                     x: floor.mouse-x - self.width / 2;
                     y: floor.mouse-y - self.height / 2;
                     width: Math.max(root.brush-diameter * root.zoom / 100, 6) * 1px;
@@ -708,78 +822,28 @@ export component CanvasPane inherits Rectangle {
             }
         }
 
-            // The layers panel: the document's stack, front-to-back, with
-            // visibility, opacity and reorder on each row - and the
-            // adjustments the stack can take, offered in a popup.
-            if root.has-document: Rectangle {
-                width: 172px;
-                background: Theme.panel;
-
-                Rectangle {
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    height: 1px;
-                    background: Theme.line;
-                }
-
+            if root.has-document && root.sidebar-open: right-panel := Rectangle {
+                width: 250px; background: Theme.panel;
+                Rectangle { x: 0px; y: 0px; width: 1px; height: 100%; background: Theme.line; }
                 VerticalLayout {
-                    padding: 8px;
-                    spacing: 6px;
-
+                    padding: 12px; spacing: 10px;
                     HorizontalLayout {
-                        spacing: 4px;
-                        Text {
-                            text: I18n.t("Layers");
-                            color: Theme.fg-dim;
-                            font-family: Theme.font-technical;
-                            font-size: Theme.fs;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                        IconButton {
-                            glyph: Glyph.sliders;
-                            label: I18n.t("Add adjustment");
-                            checked: adjustment-open;
-                            clicked => { adjustment-open = !adjustment-open; }
-                        }
-                        IconButton {
-                            glyph: Glyph.folder-plus;
-                            label: I18n.t("Add group");
-                            clicked => { root.layer-group-added(); }
-                        }
-                        IconButton {
-                            glyph: Glyph.mask;
-                            label: I18n.t("Add mask");
-                            clicked => { root.layer-mask-added(); }
-                        }
-                        IconButton {
-                            glyph: Glyph.plus;
-                            label: I18n.t("Add layer");
-                            clicked => { root.layer-added(); }
-                        }
+                        height: 34px;
+                        Text { text: "图层"; font-size: 14px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
+                        WorkspaceIcon { glyph: Glyph.folder-plus; label: "添加图层组"; clicked => { root.layer-group-added(); } }
+                        WorkspaceIcon { glyph: Glyph.plus; label: "添加图层"; clicked => { root.layer-added(); } }
                     }
-
                     ScrollView {
-                        vertical-stretch: 1;
+                        height: root.layer-list-height;
+                        viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
-                            spacing: 2px;
+                            spacing: 2px; alignment: start;
                             for layer[i] in root.layers: Rectangle {
-                                height: 30px;
-                                border-radius: Theme.r;
-                                background: layer.active ? Theme.field-hover : row-touch.has-hover ? Theme.field-hover : transparent;
+                                height: 38px; border-radius: Theme.r;
+                                background: layer.active ? Theme.field-active : row-touch.has-hover ? Theme.field-hover : transparent;
                                 border-width: root.drop-row == i && root.drag-row >= 0 ? 1px : 0;
                                 border-color: Theme.accent;
                                 opacity: root.drag-row == i && row-touch.dragged ? 0.5 : 1;
-                                // The pick and the drag share one floor: a
-                                // press lifts the row, a move carries it
-                                // over the neighbours, a release either
-                                // drops it or picks it. Rows sit on a
-                                // 32px pitch - a 30px row plus the 2px
-                                // gap - so the drop row is the press row
-                                // plus the pitches travelled, rounded,
-                                // and the half the pointer sits in on
-                                // that row decides above from below.
                                 row-touch := TouchArea {
                                     property <length> press-y;
                                     property <bool> dragged;
@@ -808,10 +872,10 @@ export component CanvasPane inherits Rectangle {
                                         if (root.drag-row == i) {
                                             let offset = (self.mouse-y - self.press-y) / 1px;
                                             let target = Math.clamp(
-                                                i + Math.round(offset / 32),
+                                                i + Math.round(offset / 40),
                                                 0, root.layers.length - 1);
                                             root.drop-row = target;
-                                            root.drop-below = offset - (target - i) * 32 >= 0;
+                                            root.drop-below = offset - (target - i) * 40 >= 0;
                                             if (Math.abs(offset) > 6) {
                                                 self.dragged = true;
                                             }
@@ -819,120 +883,192 @@ export component CanvasPane inherits Rectangle {
                                     }
                                 }
                                 HorizontalLayout {
-                                    // The indent: one step per nesting
-                                    // level, so the tree reads at a glance.
-                                    // A row whose mask is under the brush
-                                    // carries two more buttons, so it
-                                    // keeps clear of the opacity knob.
-                                    padding-left: 6px + layer.depth * 12px;
-                                    padding-right: layer.mask-paint ? 116px : 66px;
-                                    spacing: 6px;
-                                    // The group's fold: a chevron that
-                                    // opens and shuts the row's children.
-                                    if layer.group: VerticalLayout {
-                                        alignment: center;
-                                        IconButton {
-                                            glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right;
-                                            label: layer.expanded ? I18n.t("Fold group") : I18n.t("Unfold group");
-                                            clicked => { root.layer-folded(i); }
+                                    padding-left: 4px + Math.min(layer.depth, 3) * 10px; spacing: 4px;
+                                    Rectangle {
+                                        width: 34px; height: 28px; border-radius: Theme.r-xs;
+                                        background: Theme.well;
+                                        border-width: layer.active && !layer.mask-paint ? 2px : 1px;
+                                        border-color: layer.active && !layer.mask-paint ? Theme.accent : Theme.line;
+                                        if CanvasThumbs.layer-images.length > i
+                                            && CanvasThumbs.layer-images[i].width > 0: Image {
+                                            width: parent.width; height: parent.height;
+                                            source: CanvasThumbs.layer-images[i]; image-fit: contain;
+                                        }
+                                        if layer.group: Icon {
+                                            glyph: Glyph.folder; size: 13px; tint: Theme.fg-muted;
+                                        }
+                                        CanvasChipAction {
+                                            clicked => { root.layer-picked(i); }
                                         }
                                     }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        IconButton {
-                                            glyph: layer.hidden ? Glyph.eye-off : Glyph.eye;
-                                            label: layer.hidden ? I18n.t("Show layer") : I18n.t("Hide layer");
-                                            clicked => { root.layer-visibility-toggled(i); }
+                                    if layer.group: WorkspaceIcon { glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right; label: layer.expanded ? "折叠图层组" : "展开图层组"; clicked => { root.layer-folded(i); } }
+                                    WorkspaceIcon { glyph: layer.hidden ? Glyph.eye-off : Glyph.eye; label: layer.hidden ? "显示图层" : "隐藏图层"; clicked => { root.layer-visibility-toggled(i); } }
+                                    Text { text: layer.name; font-size: 13px; color: Theme.fg; overflow: elide; min-width: 0px; vertical-alignment: center; horizontal-stretch: 1; }
+                                    if layer.masked: Rectangle {
+                                        width: 28px; height: 28px; border-radius: Theme.r-xs;
+                                        background: Theme.well;
+                                        border-width: layer.mask-paint ? 2px : 1px;
+                                        border-color: layer.mask-paint ? Theme.accent : Theme.line;
+                                        opacity: layer.mask-enabled ? 1 : 0.45;
+                                        if CanvasThumbs.mask-images.length > i
+                                            && CanvasThumbs.mask-images[i].width > 0: Image {
+                                            width: parent.width; height: parent.height;
+                                            source: CanvasThumbs.mask-images[i]; image-fit: contain;
                                         }
-                                    }
-                                    // The mask chip: only on rows that
-                                    // carry a mask, lit while this very
-                                    // mask is the one being painted.
-                                    // A disabled mask dims its chip;
-                                    // while this row's mask is the one
-                                    // under the brush, two more buttons
-                                    // offer whole-mask on/off and take
-                                    // the mask away.
-                                    if layer.masked: VerticalLayout {
-                                        alignment: center;
-                                        IconButton {
-                                            glyph: Glyph.mask;
-                                            checked: layer.mask-paint;
-                                            opacity: layer.mask-enabled ? 1 : 0.45;
-                                            label: layer.mask-paint ? I18n.t("Stop painting mask") : I18n.t("Paint mask");
+                                        if CanvasThumbs.mask-images.length <= i
+                                            || CanvasThumbs.mask-images[i].width == 0: Icon {
+                                            glyph: Glyph.mask; size: 12px; tint: Theme.fg-muted;
+                                        }
+                                        CanvasChipAction {
                                             clicked => { root.layer-mask-paint-toggled(i); }
                                         }
                                     }
-                                    if layer.masked && layer.mask-paint: VerticalLayout {
-                                        alignment: center;
-                                        IconButton {
-                                            glyph: Glyph.mask;
-                                            checked: layer.mask-enabled;
-                                            label: layer.mask-enabled ? I18n.t("Mask off") : I18n.t("Mask on");
-                                            clicked => { root.layer-mask-enable-toggled(); }
-                                        }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 6px;
+                        background: layer-resize-touch.has-hover || root.resizing-layers ? Theme.field-hover : Theme.line;
+                        layer-resize-touch := TouchArea {
+                            mouse-cursor: MouseCursor.ns-resize;
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down) {
+                                    root.resize-y0 = self.mouse-y;
+                                    root.resizing-layers = true;
+                                } else if (event.kind == PointerEventKind.up
+                                    || event.kind == PointerEventKind.cancel) {
+                                    root.resizing-layers = false;
+                                }
+                            }
+                            moved => {
+                                if (root.resizing-layers) {
+                                    root.layer-list-requested = Math.clamp(
+                                        root.layer-list-height + self.mouse-y - root.resize-y0,
+                                        root.layer-list-min, root.layer-list-max);
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 34px; spacing: 4px;
+                        WorkspaceIcon { glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
+                        WorkspaceIcon { glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
+                        WorkspaceIcon { glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        AppButton { label: "调整"; selected: root.adjustment-open; clicked => { root.adjustment-open = !root.adjustment-open; } }
+                    }
+                    Rectangle { height: 1px; background: Theme.line; }
+                    Text { text: root.tool == 3 ? "画笔 · " + CanvasControls.target : root.tool == 4 ? "橡皮擦 · " + CanvasControls.target : root.tool == 5 || root.tool == 6 ? "选区与图层" : "图层属性"; height: 24px; font-size: 14px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; }
+                    ScrollView {
+                        viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off; vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 12px; alignment: start;
+                            if root.tool == 3 || root.tool == 4: VerticalLayout {
+                                spacing: 4px;
+                                if root.tool == 3: HorizontalLayout {
+                                    height: 28px; spacing: 4px;
+                                    for swatch[i] in Palette.colors: Rectangle {
+                                        width: 24px; height: 28px; border-radius: Theme.r; background: swatch;
+                                        border-width: i == root.brush-color ? 2px : 1px; border-color: i == root.brush-color ? Theme.fg : Theme.line;
+                                        CanvasChipAction { clicked => { root.brush-color-changed(i); } }
                                     }
-                                    if layer.masked && layer.mask-paint: VerticalLayout {
-                                        alignment: center;
-                                        IconButton {
-                                            glyph: Glyph.trash;
-                                            label: I18n.t("Remove mask");
-                                            clicked => { root.layer-mask-removed(); }
-                                        }
-                                    }
-                                    Text {
-                                        text: layer.name;
-                                        color: layer.active ? Theme.fg : Theme.fg-dim;
-                                        font-size: Theme.fs;
-                                        overflow: elide;
+                                }
+                                HorizontalLayout {
+                                    height: 34px; spacing: 6px;
+                                    Rectangle {
+                                        horizontal-stretch: 1; border-radius: Theme.r;
+                                        background: Theme.field;
+                                        HorizontalLayout {
+                                            padding: 6px; spacing: 5px;
+                                            Rectangle {
+                                                width: 16px; height: 20px; border-radius: Theme.r-xs;
+                                                background: CanvasControls.color;
+                                                border-width: 1px; border-color: Theme.line;
+                                            }
+                                    hex-input := TextInput {
+                                        horizontal-stretch: 1; single-line: true;
+                                        property <string> canonical: CanvasControls.hex;
+                                        text: self.canonical;
+                                        color: Theme.fg; font-family: Theme.font-technical; font-size: 13px;
                                         vertical-alignment: center;
+                                        changed canonical => {
+                                            if (!self.has-focus) { self.text = self.canonical; }
+                                        }
+                                        changed has-focus => {
+                                            if (self.has-focus) {
+                                                self.text = CanvasControls.hex;
+                                                self.select-all();
+                                            } else {
+                                                CanvasControls.hex-edited(self.text);
+                                                self.text = CanvasControls.hex;
+                                            }
+                                        }
+                                        accepted => { Focus.release(); }
+                                        key-pressed(event) => {
+                                            if (event.text == Key.Escape) {
+                                                self.text = CanvasControls.hex;
+                                                Focus.release();
+                                                return EventResult.accept;
+                                            }
+                                            return EventResult.reject;
+                                        }
+                                    }
+                                        }
+                                    }
+                                    AppButton {
+                                        label: CanvasControls.picking ? "点击画布" : "取色";
+                                        selected: CanvasControls.picking;
+                                        clicked => { CanvasControls.picking = !CanvasControls.picking; }
                                     }
                                 }
-                                Knob {
-                                    x: parent.width - self.width - 40px;
-                                    y: (parent.height - self.height) / 2;
-                                    diameter: 22px;
-                                    travel: 60px;
-                                    value: layer.opacity;
-                                    minimum: 0.05;
-                                    maximum: 1;
-                                    default-value: 1;
-                                    changed(value) => { root.layer-opacity-changed(i, value); }
+                                PropertySlider { label: "大小"; value: root.brush-diameter; minimum: 1; maximum: 400; step: 1; precision: 0; readout: Math.round(root.brush-diameter) + " px"; changed(value) => { root.brush-size-changed(value); } }
+                                PropertySlider { label: "不透明度"; value: root.brush-opacity; minimum: 0.01; maximum: 1; step: 0.01; precision: 2; readout: Math.round(root.brush-opacity * 100) + "%"; changed(value) => { root.brush-opacity-changed(value); } }
+                                PropertySlider { label: "硬度"; value: root.brush-hardness; minimum: 0; maximum: 1; step: 0.01; precision: 2; readout: Math.round(root.brush-hardness * 100) + "%"; changed(value) => { root.brush-hardness-changed(value); } }
+                                AppButton {
+                                    label: CanvasControls.rgb-expanded ? "收起 RGB" : "RGB 调色";
+                                    glyph: CanvasControls.rgb-expanded ? Glyph.chevron-up : Glyph.chevron-down;
+                                    clicked => { CanvasControls.rgb-expanded = !CanvasControls.rgb-expanded; }
+                                }
+                                if CanvasControls.rgb-expanded: VerticalLayout {
+                                    spacing: 4px;
+                                PropertySlider {
+                                    label: "R"; value <=> CanvasControls.red;
+                                    minimum: 0; maximum: 255; step: 1; precision: 0;
+                                    changed(value) => { CanvasControls.rgb-changed(value, CanvasControls.green, CanvasControls.blue); }
+                                }
+                                PropertySlider {
+                                    label: "G"; value <=> CanvasControls.green;
+                                    minimum: 0; maximum: 255; step: 1; precision: 0;
+                                    changed(value) => { CanvasControls.rgb-changed(CanvasControls.red, value, CanvasControls.blue); }
+                                }
+                                PropertySlider {
+                                    label: "B"; value <=> CanvasControls.blue;
+                                    minimum: 0; maximum: 255; step: 1; precision: 0;
+                                    changed(value) => { CanvasControls.rgb-changed(CanvasControls.red, CanvasControls.green, value); }
+                                }
                                 }
                             }
-                        }
-                    }
-
-                    // The active adjustment's knobs: published as rows of
-                    // (label, value, range) and turned back by index.
-                    if root.adjustment-kind > 0 && root.adjustment-params.length > 0: HorizontalLayout {
-                        spacing: 4px;
-                        for param[i] in root.adjustment-params: VerticalLayout {
-                            horizontal-stretch: 1;
-                            spacing: 1px;
-                            Knob {
-                                diameter: 26px;
-                                travel: 60px;
-                                value: param.value;
-                                minimum: param.minimum;
-                                maximum: param.maximum;
-                                default-value: param.value;
-                                changed(value) => { root.adjustment-param-changed(i, value); }
+                            if root.has-selection: VerticalLayout {
+                                spacing: 6px;
+                                AppButton { label: "填充选区"; clicked => { root.fill-selection(); } }
+                                AppButton { label: "删除选区内容"; danger: true; clicked => { root.delete-selection(); } }
+                                AppButton { label: "取消选择"; clicked => { root.deselect(); } }
                             }
-                            Text {
-                                text: param.label;
-                                color: Theme.fg-dim;
-                                font-size: Theme.fs - 1px;
-                                horizontal-alignment: center;
-                                overflow: elide;
+                            if root.active-layer >= 0: VerticalLayout {
+                                spacing: 8px;
+                                PropertySlider { label: "图层透明度"; value: root.layers[root.active-layer].opacity; minimum: 0; maximum: 1; step: 0.01; precision: 2; readout: Math.round(root.layers[root.active-layer].opacity * 100) + "%"; changed(value) => { root.layer-opacity-changed(root.active-layer, value); } }
+                                if !root.layers[root.active-layer].masked: AppButton { label: "添加图层蒙版"; glyph: Glyph.mask; clicked => { root.layer-mask-added(); } }
+                                if root.layers[root.active-layer].masked: VerticalLayout {
+                                    spacing: 6px;
+                                    AppButton { label: root.layers[root.active-layer].mask-enabled ? "停用蒙版" : "启用蒙版"; clicked => { root.layer-mask-enable-toggled(); } }
+                                    AppButton { label: "移除蒙版"; danger: true; clicked => { root.layer-mask-removed(); } }
+                                }
                             }
-                        }
-                    }
-
-                    // The gradient map's two colours: the ramp they make,
-                    // flanked by the swatches that recolour it. A swatch
-                    // opens the tray palette under the ramp; the pick
-                    // recolours that end and Rust recomposites.
+                            for param[i] in root.adjustment-params: PropertySlider {
+                                label: I18n.t(param.label); value: param.value; minimum: param.minimum; maximum: param.maximum; step: 0.01; precision: 2;
+                                readout: Math.round(param.value * 100) / 100; changed(value) => { root.adjustment-param-changed(i, value); }
+                            }
                     if root.adjustment-kind == 5: VerticalLayout {
                         spacing: 4px;
 
@@ -1027,17 +1163,17 @@ export component CanvasPane inherits Rectangle {
                                 }
                                 Text {
                                     text: tab.name;
-                                    color: root.curve-channel == t ? tab.tint : Theme.fg-dim;
+                                    color: root.curve-channel == t ? tab.tint : Theme.fg-muted;
                                     font-family: Theme.font-technical;
-                                    font-size: Theme.fs;
+                                    font-size: 13px;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
                                 }
                             }
                         }
                         CurveEditor {
-                            width: parent.width;
-                            height: parent.width;
+                            width: right-panel.width - 24px;
+                            height: self.width;
                             points: root.curve-points;
                             segments: root.curve-segments;
                             tint: root.curve-channel == 0 ? #e05a55
@@ -1054,319 +1190,37 @@ export component CanvasPane inherits Rectangle {
                         }
                         Text {
                             text: I18n.t("Drag to bend, click to add, double-click to remove");
-                            color: Theme.fg-dim;
-                            font-size: Theme.fs - 1px;
+                            color: Theme.fg-muted;
+                            font-size: 13px;
                             horizontal-alignment: center;
                             overflow: elide;
                             wrap: word-wrap;
                         }
                     }
 
-                    HorizontalLayout {
-                        spacing: 2px;
-                        alignment: start;
-                        IconButton {
-                            glyph: Glyph.chevron-up;
-                            label: I18n.t("Move layer up");
-                            clicked => { root.layer-moved(root.active-layer, 1); }
-                        }
-                        IconButton {
-                            glyph: Glyph.chevron-down;
-                            label: I18n.t("Move layer down");
-                            clicked => { root.layer-moved(root.active-layer, -1); }
-                        }
-                        IconButton {
-                            glyph: Glyph.trash;
-                            label: I18n.t("Delete layer");
-                            clicked => { root.layer-deleted(root.active-layer); }
-                        }
-                        IconButton {
-                            glyph: Glyph.export;
-                            label: I18n.t("Export as PNG");
-                            clicked => { root.export-png(); }
-                        }
-                        IconButton {
-                            glyph: Glyph.save;
-                            label: I18n.t("Save project");
-                            clicked => { root.save-comp(); }
                         }
                     }
                 }
-
-                // The adjustment popup: the kinds the engine knows, over
-                // the panel. Picking one adds it above the active layer
-                // and closes the popup. The closer is a sibling under it,
-                // so a tap anywhere else in the panel falls through to
-                // closing rather than to whatever was under the tap.
-                if adjustment-open: TouchArea {
-                    clicked => { adjustment-open = false; }
-                }
-                if adjustment-open: Rectangle {
-                    x: parent.width - self.width - 8px;
-                    y: 30px;
-                    width: 128px;
-                    background: Theme.raised;
-                    border-width: 1px;
-                    border-color: Theme.line-strong;
-                    border-radius: Theme.r;
-                    drop-shadow-blur: 8px;
-                    drop-shadow-color: #0003;
-
+                if root.adjustment-open: TouchArea { clicked => { root.adjustment-open = false; } }
+                if root.adjustment-open: Rectangle {
+                    x: 10px; y: 54px; width: parent.width - 20px; height: 304px;
+                    background: Theme.raised; border-width: 1px; border-color: Theme.line-strong; border-radius: Theme.r-lg;
                     VerticalLayout {
-                        padding: 4px;
-                        spacing: 1px;
-
-                        Text {
-                            text: I18n.t("Adjustments");
-                            color: Theme.fg-dim;
-                            font-family: Theme.font-technical;
-                            font-size: Theme.fs;
-                            height: 18px;
-                            vertical-alignment: center;
-                        }
-                        for kind[ki] in [
-                            { kind: 1, name: I18n.t("Invert") },
-                            { kind: 2, name: I18n.t("Exposure") },
-                            { kind: 3, name: I18n.t("Levels") },
-                            { kind: 4, name: I18n.t("Hue & Saturation") },
-                            { kind: 5, name: I18n.t("Gradient map") },
-                            { kind: 6, name: I18n.t("Grain") },
-                            { kind: 7, name: I18n.t("Curves") },
-                        ]: Rectangle {
-                            height: 22px;
-                            border-radius: Theme.r;
-                            background: kind-touch.has-hover ? Theme.field-hover : transparent;
-                            kind-touch := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.adjustment-added(kind.kind);
-                                    adjustment-open = false;
-                                }
-                            }
-                            Text {
-                                x: 6px;
-                                text: kind.name;
-                                color: Theme.fg;
-                                font-size: Theme.fs;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                width: parent.width - 12px;
-                            }
-                        }
+                        padding: 8px; spacing: 0px;
+                        Text { text: "添加调整图层"; height: 22px; color: Theme.fg-muted; font-size: 13px; }
+                        for kind in [
+                            { id: 1, name: "反相" }, { id: 2, name: "曝光" }, { id: 3, name: "色阶" },
+                            { id: 4, name: "色相与饱和度" }, { id: 5, name: "渐变映射" }, { id: 6, name: "颗粒" }, { id: 7, name: "曲线" },
+                        ]: MenuAction { label: kind.name; glyph: Glyph.sliders; clicked => { root.adjustment-added(kind.id); root.adjustment-open = false; } }
                     }
                 }
             }
         }
-
-        // ── the tray ─────────────────────────────────────────────────────
         Rectangle {
-            height: 46px;
-            background: Theme.panel;
-
-            Rectangle {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: 1px;
-                background: Theme.line;
-            }
-
-            HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                spacing: 8px;
-
-                // Leading: the tools. Move is the plain pointer, the one
-                // painting and selecting will hang off; hand pans; zoom is
-                // the original's drag-right-to-zoom-in tool; brush and
-                // eraser paint, sharing one settings block.
-                HorizontalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 2px;
-                    alignment: start;
-
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.pointer;
-                            label: I18n.t("Move tool");
-                            checked: root.tool == 0;
-                            clicked => { root.tool-changed(0); }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.hand;
-                            label: I18n.t("Hand tool");
-                            checked: root.tool == 1;
-                            clicked => { root.tool-changed(1); }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.search;
-                            label: I18n.t("Zoom tool");
-                            checked: root.tool == 2;
-                            clicked => { root.tool-changed(2); }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.brush;
-                            label: I18n.t("Brush tool");
-                            checked: root.tool == 3;
-                            clicked => { root.tool-changed(3); }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.eraser;
-                            label: I18n.t("Eraser tool");
-                            checked: root.tool == 4;
-                            clicked => { root.tool-changed(4); }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.box-select;
-                            label: I18n.t("Marquee tool");
-                            checked: root.tool == 5;
-                            clicked => { root.tool-changed(5); }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.wand;
-                            label: I18n.t("Magic wand tool");
-                            checked: root.tool == 6;
-                            clicked => { root.tool-changed(6); }
-                        }
-                    }
-                }
-
-                // Middle: the brush's own strip, only while a paint tool
-                // is up - size, opacity and hardness as knobs, the palette
-                // as swatches.
-                if root.tool >= 3: HorizontalLayout {
-                    horizontal-stretch: 2;
-                    alignment: center;
-                    spacing: 6px;
-
-                    Knob {
-                        diameter: 38px;
-                        travel: 100px;
-                        value: root.brush-diameter;
-                        minimum: 1;
-                        maximum: 400;
-                        precision: 0;
-                        default-value: 24;
-                        changed(value) => { root.brush-size-changed(value); }
-                    }
-                    Knob {
-                        diameter: 38px;
-                        travel: 100px;
-                        value: root.brush-opacity;
-                        minimum: 0.01;
-                        maximum: 1;
-                        default-value: 1;
-                        changed(value) => { root.brush-opacity-changed(value); }
-                    }
-                    Knob {
-                        diameter: 38px;
-                        travel: 100px;
-                        value: root.brush-hardness;
-                        minimum: 0;
-                        maximum: 1;
-                        default-value: 0.8;
-                        changed(value) => { root.brush-hardness-changed(value); }
-                    }
-                    for color[i] in Palette.colors: Rectangle {
-                        width: 16px;
-                        height: 16px;
-                        y: 0;
-                        border-radius: Theme.r;
-                        background: color;
-                        border-width: 1px;
-                        border-color: i == root.brush-color ? Theme.fg : Theme.line;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.brush-color-changed(i); }
-                        }
-                    }
-                }
-
-                // Trailing: the way back, twice over - the pixel history's
-                // undo and redo, then the view's fit and the way in.
-                HorizontalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 2px;
-                    alignment: end;
-
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.undo;
-                            label: I18n.t("Undo");
-                            clicked => { root.canvas-undo(); }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.redo;
-                            label: I18n.t("Redo");
-                            clicked => { root.canvas-redo(); }
-                        }
-                    }
-                    // The selection's own way back: fill it with the brush
-                    // colour, clear it, or drop the selection itself.
-                    if root.has-selection: VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.paint-bucket;
-                            label: I18n.t("Fill selection");
-                            clicked => { root.fill-selection(); }
-                        }
-                    }
-                    if root.has-selection: VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.trash;
-                            label: I18n.t("Delete selection");
-                            clicked => { root.delete-selection(); }
-                        }
-                    }
-                    if root.has-selection: VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.close;
-                            label: I18n.t("Deselect");
-                            clicked => { root.deselect(); }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.fit;
-                            label: I18n.t("Fit the canvas to the pane");
-                            clicked => { root.nav-fit(); }
-                        }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconButton {
-                            glyph: Glyph.folder;
-                            label: I18n.t("Open image");
-                            clicked => { root.canvas-open(); }
-                        }
-                    }
-                }
+            height: 28px; background: Theme.panel;
+            HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
+                Text { text: root.has-document ? (root.tool == 3 ? "画笔" : root.tool == 4 ? "橡皮擦" : root.tool == 5 ? "矩形选区" : root.tool == 6 ? "魔棒选区" : root.tool == 1 ? "平移" : root.tool == 2 ? "缩放" : "移动") : "打开图片开始编辑"; font-size: 13px; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; }
+                if root.has-document: Text { text: Math.round(root.zoom) + "%"; font-size: 13px; color: Theme.fg-muted; vertical-alignment: center; }
             }
         }
     }

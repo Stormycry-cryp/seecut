@@ -9,6 +9,19 @@ export struct CloudItem {
     preview: image,
     ready: bool,
     local: bool,
+    failed: bool,
+    missing: bool,
+    date-label: string,
+    favorite: bool,
+    selected: bool,
+    refillable: bool,
+}
+
+export struct PersonalAssetGroup { date-label: string, items: [CloudItem] }
+export struct GenerationTemplate {
+    id: string, name: string, mode-label: string, model-name: string,
+    parameter-summary: string, reference-summary: string, updated-label: string,
+    prompt-preview: string, references: [CloudItem],
 }
 
 export struct CreditPlan {
@@ -34,6 +47,9 @@ export global SeeCut {
     in-out property <int> pending-import-count;
     in-out property <string> error;
     in-out property <string> notice;
+    // Persistent recovery state is separate from transient notices so a
+    // refresh, upload completion, or navigation cannot hide a required action.
+    in-out property <string> recovery-warning;
     in-out property <bool> signed-in;
     in-out property <string> email;
     in-out property <string> balance: "--";
@@ -41,12 +57,21 @@ export global SeeCut {
     in-out property <bool> project-open;
 
     in-out property <int> mode;
+    in-out property <int> generation-step;
+    in-out property <bool> generation-parameters-open;
+    in-out property <bool> result-preview-open;
     in-out property <string> prompt;
     in-out property <int> prompt-cursor;
     in-out property <bool> mention-open;
     in-out property <bool> asset-picker-open;
     in-out property <string> asset-picker-purpose: "reference";
     in-out property <int> asset-picker-source;
+    in-out property <int> asset-picker-selected-count;
+    in-out property <bool> media-preview-open;
+    in-out property <CloudItem> media-preview-item;
+    in-out property <string> media-preview-source;
+    in-out property <bool> media-preview-loading;
+    in-out property <string> media-preview-error;
     in-out property <[CloudItem]> personal-assets;
     in-out property <[CloudItem]> personal-references;
     in-out property <string> personal-search;
@@ -55,6 +80,34 @@ export global SeeCut {
     in-out property <int> personal-source;
     in-out property <bool> personal-trash;
     in-out property <string> personal-rename;
+    in-out property <[PersonalAssetGroup]> personal-groups;
+    in-out property <bool> personal-favorites;
+    in-out property <int> personal-dialog;
+    in-out property <int> team-menu;
+    in-out property <string> team-menu-id;
+    in-out property <string> team-menu-name;
+    in-out property <string> team-menu-kind;
+    in-out property <bool> team-menu-ready;
+    in-out property <int> personal-menu;
+    in-out property <string> personal-menu-id;
+    in-out property <string> personal-menu-name;
+    in-out property <string> personal-menu-kind;
+    in-out property <bool> personal-menu-ready;
+    in-out property <int> personal-selected-count;
+    in-out property <bool> personal-selection-mode;
+    in-out property <[GenerationTemplate]> templates;
+    in-out property <string> template-delete-id;
+    in-out property <string> template-menu-id;
+    in-out property <bool> template-editor-open;
+    in-out property <bool> template-editor-current;
+    in-out property <string> template-id;
+    in-out property <string> template-name;
+    in-out property <string> template-prompt;
+    in-out property <int> template-mode;
+    in-out property <string> template-model-id;
+    in-out property <string> template-model-name;
+    in-out property <string> template-parameters-json;
+    in-out property <string> template-reference-paths;
     in-out property <string> reference-error;
     in-out property <[string]> model-names;
     in-out property <int> model-index;

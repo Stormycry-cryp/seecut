@@ -9,6 +9,7 @@ import { MediaFilter, MediaItemData, TextPresetData } from "workspace/media-pane
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { PaneKind } from "workspace/pane-switcher.slint";
 import { CanvasLayerData, CanvasAdjustmentParam, CanvasCurvePoint, CanvasCurveSegment } from "workspace/canvas-pane.slint";
+export { CanvasControls, CanvasThumbs } from "workspace/canvas-pane.slint";
 import { MenuItemData } from "primitives/context-menu.slint";
 import {
     ClipData, ClipField, ClipTextField, DropData, SelectedClipData,
@@ -234,6 +235,13 @@ export global Editor {
     /// an image is open.
     in-out property <image> canvas-frame;
     in-out property <bool> canvas-has-document;
+    in-out property <bool> canvas-can-undo;
+    in-out property <bool> canvas-can-redo;
+    in-out property <bool> canvas-modified;
+    in-out property <bool> canvas-open-confirm;
+    in-out property <bool> canvas-exit-confirm;
+    in-out property <string> canvas-exit-error;
+    in-out property <bool> canvas-sidebar-open: true;
     /// The open image's file name.
     in-out property <string> canvas-name;
     /// The view's zoom, in percent of one image pixel to one screen pixel.
@@ -302,6 +310,10 @@ export global Editor {
     /// The viewport's box, on the way up.
     callback canvas-resized(width: float, height: float);
     callback canvas-open();
+    callback canvas-project-open();
+    callback canvas-open-discard();
+    callback canvas-open-cancel();
+    callback canvas-open-save();
     callback canvas-tool-changed(index: int);
     /// A paint stroke, in viewport pixels.
     callback canvas-brush-press(x: float, y: float);
@@ -359,6 +371,14 @@ export global Editor {
     callback canvas-export-png();
     /// Save the whole document as a `.comp` project package.
     callback canvas-save-comp();
+    /// Save the canvas to a new `.comp` path, preserving the current path
+    /// when the picker is cancelled.
+    callback canvas-save-comp-as();
+    /// Resolve the global close confirmation, which lives at App level so it
+    /// stays visible while another workspace page is selected.
+    callback canvas-exit-save();
+    callback canvas-exit-discard();
+    callback canvas-exit-cancel();
 
     // ── the timeline ──
     in-out property <[TimelineTabData]> timeline-tabs;

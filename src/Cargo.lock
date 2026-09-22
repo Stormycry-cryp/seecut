@@ -1194,6 +1194,7 @@ dependencies = [
 name = "concat"
 version = "0.2.2"
 dependencies = [
+ "chrono",
  "concat-api",
  "concat-canvas",
  "concat-core",

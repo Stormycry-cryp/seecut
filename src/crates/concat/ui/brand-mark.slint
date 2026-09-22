@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme } from "theme/theme.slint";
+
+// A shared typographic mark keeps title bar and workspace navigation in sync.
+export component BrandMark inherits Rectangle {
+    width: 24px; height: 24px;
+    background: Theme.accent;
+    border-radius: self.width * 0.28;
+    Text {
+        width: 100%; height: 100%; text: "S";
+        font-family: Theme.font; font-size: parent.height * 0.68;
+        font-weight: Theme.weight-display; color: Theme.on-accent;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
