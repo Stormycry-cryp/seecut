@@ -5866,7 +5866,7 @@ mod reference_tests {
 
     #[test]
     fn model_catalog_reorder_uses_stable_id_and_keeps_raw_parameter_value() {
-        let models = vec![
+        let models = [
             json!({"id":"image-a","kind":"image","parameters":{"size":{"default":"1:1","values":["1:1","3:2"]}}}),
             json!({"id":"image-b","kind":"image","parameters":{"size":{"default":"1:1","values":["1:1","3:2"]}}}),
         ];
@@ -6024,9 +6024,11 @@ mod reference_tests {
             download_endpoint: "/api/teams/original/assets/asset_a/download".into(),
             download_path: PathBuf::from("/tmp/original/asset_a.png"),
         };
-        let mut cloud = Cloud::default();
-        cloud.picker_batch = Some(("reference".into(), vec![item]));
-        cloud.teams = vec![json!({"id":"other-team"})];
+        let mut cloud = Cloud {
+            picker_batch: Some(("reference".into(), vec![item])),
+            teams: vec![json!({"id":"other-team"})],
+            ..Cloud::default()
+        };
         cloud.assets.clear();
         cloud.folder = PathBuf::from("/tmp/other");
         let req = picker_download_request(&cloud.picker_batch.as_ref().unwrap().1[0]).unwrap();
@@ -6048,8 +6050,10 @@ mod reference_tests {
             download_endpoint: format!("/api/teams/t/assets/{id}/download"),
             download_path: PathBuf::from(format!("/tmp/{id}.png")),
         };
-        let mut cloud = Cloud::default();
-        cloud.picker_batch = Some(("reference".into(), vec![make("first"), make("second")]));
+        let mut cloud = Cloud {
+            picker_batch: Some(("reference".into(), vec![make("first"), make("second")])),
+            ..Cloud::default()
+        };
         assert!(set_picker_batch_path(
             &mut cloud,
             "first",

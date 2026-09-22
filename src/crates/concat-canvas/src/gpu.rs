@@ -538,7 +538,6 @@ impl CanvasGpu {
         .ok()?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("concat canvas"),
-            required_features: wgpu::Features::CLEAR_TEXTURE,
             ..Default::default()
         }))
         .ok()?;
@@ -860,7 +859,27 @@ impl CanvasGpu {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.clear_texture(texture, &wgpu::ImageSubresourceRange::default());
+        // Shared window devices need no optional features. A render-pass
+        // clear is supported by every canvas render attachment, unlike
+        // CommandEncoder::clear_texture, which requires CLEAR_TEXTURE.
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("concat canvas clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view(texture),
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
         self.queue.submit([encoder.finish()]);
     }
 
@@ -1577,6 +1596,67 @@ mod tests {
     /// silently returning would turn a skipped hardware path into a pass.
     fn required_gpu() -> CanvasGpu {
         CanvasGpu::new().expect("this GPU regression requires a usable wgpu adapter")
+    }
+
+    /// Match the editor's shared device: no optional features, real hardware.
+    #[test]
+    fn shared_device_without_optional_features_matches_cpu() {
+        let descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        #[cfg(target_os = "macos")]
+        let descriptor = wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..descriptor
+        };
+        let instance = wgpu::Instance::new(descriptor);
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .expect("shared-device regression requires a hardware adapter");
+        let info = adapter.get_info();
+        eprintln!("shared-device regression adapter: {info:?}");
+        #[cfg(target_os = "macos")]
+        assert_eq!(info.backend, wgpu::Backend::Metal);
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("feature-free shared canvas regression"),
+            required_limits: adapter.limits(),
+            ..Default::default()
+        }))
+        .expect("feature-free shared device");
+        assert!(device.features().is_empty());
+        let mut gpu = CanvasGpu::with_device(device, queue);
+        let mut world = World::new();
+        let photo = world.with_layer("First import", solid(16, 16, [200, 40, 90, 180]));
+        assert_parity_on(&world, &mut gpu);
+        let replacement = world.store.put(solid(16, 16, [30, 170, 210, 255]));
+        world.document.layer_mut(photo).unwrap().pixels = replacement;
+        assert_parity_on(&world, &mut gpu);
+        let group = world.document.new_group("Folder");
+        let child = world.document.mint_id();
+        let pixels = world.store.put(solid(16, 16, [220, 90, 30, 180]));
+        world
+            .document
+            .group_mut(group)
+            .unwrap()
+            .children
+            .push(LayerNode::Layer(ImageLayer::new(child, "Nested", pixels)));
+        world.document.group_mut(group).unwrap().opacity = 0.6;
+        assert_parity_on(&world, &mut gpu);
+        let mut mask = Frame::transparent(16, 16);
+        for y in 0..16 {
+            for x in 0..16 {
+                let value = (x * 17) as u8;
+                mask.set_pixel(x, y, [value, value, value, 255]);
+            }
+        }
+        let mask = world.store.put(mask);
+        world.document.layer_mut(child).unwrap().mask = Some(LayerMask::new(mask));
+        assert_parity_on(&world, &mut gpu);
+        world.document.new_adjustment("Invert", Adjustment::Invert);
+        assert_parity_on(&world, &mut gpu);
+        // Pooled group targets must discard pixels from the preceding compose.
+        world.document.group_mut(group).unwrap().children.clear();
+        assert_parity_on(&world, &mut gpu);
     }
 
     #[test]

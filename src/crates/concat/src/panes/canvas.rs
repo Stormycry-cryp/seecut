@@ -4175,6 +4175,80 @@ mod tests {
     }
 
     #[test]
+    fn imported_images_render_on_the_actual_shared_window_device() {
+        let shared = crate::gpu::Gpu::acquire().expect("shared window GPU is required");
+        println!(
+            "shared window adapter: {:?}; features: {:?}",
+            shared.adapter.get_info(),
+            shared.device.features()
+        );
+        assert!(
+            !shared
+                .device
+                .features()
+                .contains(wgpu::Features::CLEAR_TEXTURE)
+        );
+        let dir =
+            std::env::temp_dir().join(format!("concat-window-gpu-import-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("isolated image fixtures");
+        let mut pane = CanvasPane {
+            gpu: Some(CanvasGpu::with_device(shared.device, shared.queue)),
+            ..CanvasPane::default()
+        };
+        for (index, (extension, format)) in [
+            ("png", image::ImageFormat::Png),
+            ("jpg", image::ImageFormat::Jpeg),
+            ("webp", image::ImageFormat::WebP),
+            ("bmp", image::ImageFormat::Bmp),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let width = 13 + index as u32;
+            let height = 9 + index as u32;
+            let image = image::RgbImage::from_fn(width, height, |x, y| {
+                image::Rgb([(x * 11) as u8, (y * 17) as u8, 40 + index as u8 * 30])
+            });
+            let path = dir.join(format!("import.{extension}"));
+            if extension == "png" {
+                let mut frame = Frame::transparent(width, height);
+                for y in 0..height {
+                    for x in 0..width {
+                        let rgb = image.get_pixel(x, y).0;
+                        frame.set_pixel(x, y, [rgb[0], rgb[1], rgb[2], 255]);
+                    }
+                }
+                std::fs::write(&path, encode_png(&frame).expect("encode PNG fixture"))
+                    .expect("write PNG");
+            } else {
+                image::DynamicImage::ImageRgb8(image)
+                    .save_with_format(&path, format)
+                    .expect("encode image fixture");
+            }
+            pane.agent_open(&path).expect("decode and open image");
+            let document = pane.document.as_ref().expect("opened document");
+            let expected = concat_canvas::compose(document, &pane.store);
+            let actual = pane
+                .gpu
+                .as_mut()
+                .expect("shared compositor")
+                .compose_frame(document, &pane.store);
+            assert_eq!((actual.width(), actual.height()), (width, height));
+            assert!(
+                actual
+                    .pixels()
+                    .iter()
+                    .zip(expected.pixels())
+                    .all(|(a, b)| (i16::from(*a) - i16::from(*b)).abs() <= 1),
+                "{extension} GPU image differs from decoded CPU image"
+            );
+            assert_eq!(pane.name, format!("import.{extension}"));
+            println!("imported and GPU-rendered {extension}: {width}x{height}");
+        }
+        std::fs::remove_dir_all(dir).expect("remove isolated image fixtures");
+    }
+
+    #[test]
     fn a_project_package_round_trips_through_a_save_and_a_load() {
         let (mut pane, pixels) = painting_pane();
         // Paint something so the saved bitmap differs from a blank one,
