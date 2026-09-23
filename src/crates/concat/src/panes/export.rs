@@ -379,6 +379,16 @@ impl ExportPane {
             .iter()
             .filter(|clip| clip.kind == concat_project::model::ClipKind::Text)
             .count();
+        let clip_count = if clips == 1 {
+            tf("{0} clip", &[&clips])
+        } else {
+            tf("{0} clips", &[&clips])
+        };
+        let title_count = if titles == 1 {
+            tf("{0} title", &[&titles])
+        } else {
+            tf("{0} titles", &[&titles])
+        };
         ExportData {
             open: self.open,
             name: self.name.as_str().into(),
@@ -395,9 +405,9 @@ impl ExportPane {
                 format!("{}:{:02}", whole / 60, whole % 60).into()
             },
             contents: if titles > 0 {
-                format!("{clips} clips · {titles} titles")
+                format!("{clip_count} · {title_count}")
             } else {
-                format!("{clips} clips")
+                clip_count
             }
             .into(),
             resolution: self.resolution as i32,

@@ -712,6 +712,8 @@
   "Zoom out": "Zoom out",
   "Zoom to fit": "Zoom to fit",
   "{0} channels": "{0} channels",
+  "{0} clip": "{0} clip",
+  "{0} clips": "{0} clips",
   "{0} Hz": "{0} Hz",
   "{0} installed · {1} MB on disk": "{0} installed · {1} MB on disk",
   "{0} is not an address like 127.0.0.1:7420": "{0} is not an address like 127.0.0.1:7420",
@@ -719,6 +721,8 @@
   "{0} MB of {1} MB": "{0} MB of {1} MB",
   "{0} media file(s) not found": "{0} media file(s) not found",
   "{0} strokes": "{0} strokes",
+  "{0} title": "{0} title",
+  "{0} titles": "{0} titles",
   "{0}m {1}s left": "{0}m {1}s left",
   "{0}s left": "{0}s left"
 }

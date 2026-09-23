@@ -10,7 +10,8 @@ Figma 与软件预览为 1× 的 1440 × 960（专业模式另有 1024 × 960）
 - 视觉复核实屏：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v13/captures/`
 - 当前画布交接实屏：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v14/captures/`
 - v14 原包 Slint 软件渲染 fixture：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v14/fixture-render/`
-- 最终原生实屏：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v16/captures/`
+- v16 原生实屏：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v16/captures/`
+- v17 剪辑导出实屏：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v17/captures/`
 - 最终 Slint 软件渲染 fixture：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v16/fixture-render/`
 
 | 页面与 Figma 节点 | 对照截图 | 已核对的尺寸、状态、文案 | 仍有差异或未确认 |
@@ -21,6 +22,7 @@ Figma 与软件预览为 1× 的 1440 × 960（专业模式另有 1024 × 960）
 | 画布图库：[19:528](https://www.figma.com/design/SCaIOer6VgtRok8iqj9XI9/SeeCut?node-id=19-528) | `project-canvas-mac-controls.png` ↔ `canvas-project-gallery-dark-1440x960.png`；原生 `08-canvas-gallery-zh-light.png`、`15-canvas-gallery-zh-dark.png` | 同宽预览中首卡 x≈112、y≈113、宽≈302；有搜索、排序、新建项目卡。v13 的两个 `opaque-square` 项目在浅色和深色图库中均可见；v14 新建第三个项目后，项目清单与图层文件也已核对。 | 示例卡数量与缩略图不同；项目卡的按下与键盘焦点未逐项抽检。 |
 | 画布导出：[83:2329](https://www.figma.com/design/SCaIOer6VgtRok8iqj9XI9/SeeCut?node-id=83-2329) | `export-canvas-mac-controls.png` ↔ v16 原生 `canvas-export-zh-dark.jpg`、fixture `canvas-export-dark-1440x960.png` | 同为深色主题时，弹窗宽约 544px、高约 214px；标题左对齐、右上关闭。v16 次按钮仍无描边，文字使用正常前景色；关闭图形放大、提亮，点击热区保持 26 × 26px。旧包导出至资产库曾使资产数从 1 变为 2。 | 背景画布为隔离测试杯图，与 Figma 演示建筑图不同；其他文件夹分支在旧包曾导出 PNG，此轮只复核入口。 |
 | 剪辑编辑：[77:2001](https://www.figma.com/design/SCaIOer6VgtRok8iqj9XI9/SeeCut?node-id=77-2001) | `clip-mac-controls.png` ↔ 原生 `clip-media-bin-zh-light.jpg`、`clip-media-bin-zh-dark.jpg`、v16 `clip-timeline-five-seconds-zh-dark.jpg` | 简体中文设置下，浅色和深色实屏的内部媒体/预览/详情均为中文。隔离项目 `测试剪辑` 用一项本地图片素材在时间线建立 5 秒片段，随后完成两种目的地的视频导出；详见下方离线验收。 | `Timeline 1` 是测试项目中的数据名，未被此轮改名；测试源图与 Figma 演示素材不同。 |
+| 剪辑导出：[83:2396](https://www.figma.com/design/SCaIOer6VgtRok8iqj9XI9/SeeCut?node-id=83-2396) | `export-clip-mac-controls.png` ↔ v17 原生 `clip-export-destinations-zh-dark.png`、`clip-export-library-ready-zh-dark.png` | v17 目的地弹窗为 544 × 214px，标题左对齐、右上关闭；“导出至资产库”为描边按钮，“导出至其他文件夹”为无描边按钮。进入资产库导出设置后，“内容”显示“1 个片段”。关闭目的地弹窗或导出设置后没有新增 MP4；其他文件夹按钮打开系统文件夹选择器，取消后回到剪辑页。 | Figma 为浅色演示素材，原生截图为深色隔离杯图；此轮没有重复执行视频编码，复用 v16 的双目的地全段解码证据。 |
 
 ### 生成区视觉 fixture
 
@@ -51,4 +53,4 @@ Figma 与软件预览为 1× 的 1440 × 960（专业模式另有 1024 × 960）
 
 两个 MP4 的 `ffprobe` 结果均为 H.264、1920 × 1080、30 fps、150 帧、4.967 秒；`ffmpeg` 全段解码均无错误。界面中的“约 5 MB”是导出前估计，实际静态杯图高度可压缩，单个文件为 73,496 字节。此验证只覆盖本地图片素材构成的短视频，没有覆盖音频、多片段特效或真实服务端生成。
 
-原生测试还确认了窗口左上红、黄、绿三个按钮、源图与画布图层名称、剪辑媒体名称和画布保存。v16 用离线 Cargo 构建，macOS 包已装入 `SeeCut.icns`，`Info.plist` 指向该图标，`codesign --verify --deep --strict` 通过。登录后生成、真实报价与服务端结果不在这组原生证据内。当前 PR 保持 Draft。
+原生测试还确认了窗口左上红、黄、绿三个按钮、源图与画布图层名称、剪辑媒体名称和画布保存。v17 用离线 Cargo 构建，macOS 包已装入 `SeeCut.icns`，`Info.plist` 指向该图标，`codesign --verify --deep --strict` 通过。登录后生成、真实报价与服务端结果不在这组原生证据内。当前 PR 保持 Draft。

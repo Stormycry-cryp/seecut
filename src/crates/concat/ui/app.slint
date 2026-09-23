@@ -677,15 +677,19 @@ export component App inherits Window {
     AuthDialog { width: root.width; height: root.height; }
     Modal {
         open: SeeCut.clip-export-open;
-        title: "导出视频";
-        glyph: Glyph.film;
-        surface-width: 360px;
+        title: "导出";
+        title-at-start: true;
+        show-close-for-start-title: true;
+        prominent-close: true;
+        surface-width: Math.min(544px, root.width - 32px);
+        surface-height: 214px;
         closed => { SeeCut.clip-export-open = false; }
         VerticalLayout {
-            padding: 18px; spacing: 12px;
-            Text { text: "选择保存位置"; color: Theme.fg-muted; font-size: 13px; }
-            AppButton { label: "保存到个人资产"; primary: true; clicked => { SeeCut.clip-export-open = false; root.export-destination-selected(true); } }
-            AppButton { label: "保存到其他文件夹"; clicked => { SeeCut.clip-export-open = false; root.export-destination-selected(false); } }
+            padding-left: 24px; padding-right: 24px;
+            padding-top: 6px; padding-bottom: 34px;
+            spacing: 16px;
+            AppButton { height: 48px; label: "导出至资产库"; clicked => { SeeCut.clip-export-open = false; root.export-destination-selected(true); } }
+            AppButton { height: 48px; label: "导出至其他文件夹"; subtle: true; subtle-normal-ink: true; clicked => { SeeCut.clip-export-open = false; root.export-destination-selected(false); } }
         }
     }
     Modal {
