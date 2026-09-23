@@ -20,7 +20,7 @@ Figma 与软件预览为 1× 的 1440 × 960（专业模式另有 1024 × 960）
 | 素材送入画布：[83:2093](https://www.figma.com/design/SCaIOer6VgtRok8iqj9XI9/SeeCut?node-id=83-2093) | `modal-asset-mac-controls.png` ↔ 原生 `handoff-canvas-light.png`；双行软件预览 `handoff-canvas-1440x960.png`；最终实屏 `canvas-existing-target-selected-zh-light.jpg`、`canvas-new-auto-open-zh-light.jpg`、`canvas-existing-auto-open-zh-light.jpg`、`current-handoff-target-selected.jpg`、`current-handoff-cancel-source-retained.jpg`、`current-handoff-auto-open.jpg` | Figma 弹窗 x=360、y=235、720 × 490；原生 x≈340、y≈179、720 × 490。真实目标行含当前画布与历史项目。新项目、历史项目和当前画布交接后均直接进入画布；当前画布的图层从 3 层增至 4 层。取消交接返回资产库，仍显示所选 1 项。 | 当前画布行显示占位缩略图；来源素材和项目使用隔离测试数据。 |
 | 画布图库：[19:528](https://www.figma.com/design/SCaIOer6VgtRok8iqj9XI9/SeeCut?node-id=19-528) | `project-canvas-mac-controls.png` ↔ `canvas-project-gallery-dark-1440x960.png`；原生 `08-canvas-gallery-zh-light.png`、`15-canvas-gallery-zh-dark.png` | 同宽预览中首卡 x≈112、y≈113、宽≈302；有搜索、排序、新建项目卡。v13 的两个 `opaque-square` 项目在浅色和深色图库中均可见；v14 新建第三个项目后，项目清单与图层文件也已核对。 | 示例卡数量与缩略图不同；项目卡的按下与键盘焦点未逐项抽检。 |
 | 画布导出：[83:2329](https://www.figma.com/design/SCaIOer6VgtRok8iqj9XI9/SeeCut?node-id=83-2329) | `export-canvas-mac-controls.png` ↔ v16 原生 `canvas-export-zh-dark.jpg`、fixture `canvas-export-dark-1440x960.png` | 同为深色主题时，弹窗宽约 544px、高约 214px；标题左对齐、右上关闭。v16 次按钮仍无描边，文字使用正常前景色；关闭图形放大、提亮，点击热区保持 26 × 26px。旧包导出至资产库曾使资产数从 1 变为 2。 | 背景画布为隔离测试杯图，与 Figma 演示建筑图不同；其他文件夹分支在旧包曾导出 PNG，此轮只复核入口。 |
-| 剪辑编辑：[77:2001](https://www.figma.com/design/SCaIOer6VgtRok8iqj9XI9/SeeCut?node-id=77-2001) | `clip-mac-controls.png` ↔ 原生 `12-clip-media-bin-en-light.png`（设置前）、最终实屏 `clip-media-bin-zh-light.jpg`、`clip-media-bin-zh-dark.jpg` | v14 同一“简体中文”设置下，浅色和深色实屏的内部媒体/预览/详情与外层“已保存”均为中文。媒体区 1 项，名称 `opaque-square`，时间线 0 片段。名称沿用资产展示名，没有 UUID。 | `Timeline 1` 是测试项目中的数据名，未被此轮改名；没有在时间线上放置片段并导出视频。 |
+| 剪辑编辑：[77:2001](https://www.figma.com/design/SCaIOer6VgtRok8iqj9XI9/SeeCut?node-id=77-2001) | `clip-mac-controls.png` ↔ 原生 `clip-media-bin-zh-light.jpg`、`clip-media-bin-zh-dark.jpg`、v16 `clip-timeline-five-seconds-zh-dark.jpg` | 简体中文设置下，浅色和深色实屏的内部媒体/预览/详情均为中文。隔离项目 `测试剪辑` 用一项本地图片素材在时间线建立 5 秒片段，随后完成两种目的地的视频导出；详见下方离线验收。 | `Timeline 1` 是测试项目中的数据名，未被此轮改名；测试源图与 Figma 演示素材不同。 |
 
 ### 生成区视觉 fixture
 
@@ -39,4 +39,16 @@ Figma 与软件预览为 1× 的 1440 × 960（专业模式另有 1024 × 960）
 | 共用按钮 | v16 fixture `fixture-handoff-button-hover-1440x960.png` 与 `fixture-handoff-button-pressed-1440x960.png` 的内容不同，变化范围 x=953–1055、y=662–700，仅在按钮内部；v14 原生 `app-button-keyboard-focus-zh-dark.jpg`、`handoff-button-disabled-zh-dark.jpg` 覆盖键盘焦点和禁用态。 |
 | 图标按钮 | v16 fixture `fixture-icon-hover-1440x960.png` 与 `fixture-icon-pressed-1440x960.png` 有可见差异，变化范围 x=1320–1360、y=24–64；v14 原生 `icon-button-keyboard-focus-zh-dark.jpg` 覆盖键盘焦点。 |
 
-原生测试还确认了窗口左上红、黄、绿三个按钮、源图与画布图层名称、剪辑媒体名称和画布保存。v16 用离线 Cargo 构建，macOS 包已装入 `SeeCut.icns`，`Info.plist` 指向该图标，`codesign --verify --deep --strict` 通过。登录后生成、真实报价与服务端结果、剪辑时间线输出不在这组原生证据内。当前 PR 保持 Draft。
+### 剪辑导出离线验收
+
+在 v16 原生包的隔离 HOME 中，双击素材箱中的 `opaque-square` 图片，时间线与项目 `concat.json` 均显示 1 个片段、时长 5 秒。原生截图：`clip-timeline-five-seconds-zh-dark.jpg`。
+
+| 路径 | 实测结果 |
+| --- | --- |
+| 保存到个人资产 | `clip-export-library-ready-zh-dark.jpg` 显示 1920 × 1080、30 fps、H.264、0:05、1 个片段；完成后界面提示“视频已导出并加入资产库”。`clip-exports/fbd8c752-f63e-4d6f-b244-4994c79a39c6.mp4` 可整段解码。资产库 `library.json` 新增名为“测试剪辑”的视频；`clip-export-reimported-media-bin-zh-dark.jpg` 和项目文件确认再次导入剪辑素材箱后，媒体由 1 项变 2 项，时间线仍为 1 片段。 |
+| 保存到其他文件夹 | 选择 `native-validation-v16/exports-other/`，`clip-export-other-ready-zh-dark.jpg` 显示目标 `测试剪辑.mp4`。完成后 `clip-export-other-done-zh-dark.jpg` 显示导出成功，文件可整段解码。第 1 秒解码画面见 `clip-export-other-frame-1s.png`，内容与源杯图一致；资产库仍为 3 项，没有把这次本地文件夹导出重复入库。 |
+| 取消或关闭 | 目的地弹层关闭后，`clip-exports` 目录未创建、没有 MP4；其他文件夹的导出设置在点击“导出”前关闭后，目标目录仍为空。 |
+
+两个 MP4 的 `ffprobe` 结果均为 H.264、1920 × 1080、30 fps、150 帧、4.967 秒；`ffmpeg` 全段解码均无错误。界面中的“约 5 MB”是导出前估计，实际静态杯图高度可压缩，单个文件为 73,496 字节。此验证只覆盖本地图片素材构成的短视频，没有覆盖音频、多片段特效或真实服务端生成。
+
+原生测试还确认了窗口左上红、黄、绿三个按钮、源图与画布图层名称、剪辑媒体名称和画布保存。v16 用离线 Cargo 构建，macOS 包已装入 `SeeCut.icns`，`Info.plist` 指向该图标，`codesign --verify --deep --strict` 通过。登录后生成、真实报价与服务端结果不在这组原生证据内。当前 PR 保持 Draft。
