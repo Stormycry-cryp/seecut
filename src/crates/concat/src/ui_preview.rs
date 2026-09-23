@@ -151,6 +151,30 @@ fn click_fixture(
     settle(app)
 }
 
+fn pointer_fixture(
+    app: &App,
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    pressed: bool,
+) -> Result<(), slint::PlatformError> {
+    app.window()
+        .set_size(slint::PhysicalSize::new(width, height));
+    settle(app)?;
+    let position = slint::LogicalPosition::new(x, y);
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+    if pressed {
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                position,
+                button: slint::platform::PointerEventButton::Left,
+            });
+    }
+    settle(app)
+}
+
 fn capture(
     app: &App,
     directory: &Path,
@@ -496,6 +520,15 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     capture(&app, directory, "generation-pro-1440x960", 1440, 960)?;
     capture(&app, directory, "generation-pro-1024x960", 1024, 960)?;
     capture(&app, directory, "generation-pro-1440x800", 1440, 800)?;
+    pointer_fixture(&app, 1440, 960, 1341.0, 45.0, false)?;
+    capture(&app, directory, "fixture-icon-hover-1440x960", 1440, 960)?;
+    pointer_fixture(&app, 1440, 960, 1341.0, 45.0, true)?;
+    capture(&app, directory, "fixture-icon-pressed-1440x960", 1440, 960)?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(1341.0, 45.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
     let pro_prompt = state.get_prompt();
     state.set_prompt("极简建筑立于开阔的沙地，低角度日光，细腻的混凝土与木材质感。\n保留建筑轮廓、入口和地面阴影，用自然光呈现材料肌理。\n镜头从正面缓慢靠近，画面边缘保留天空和远山，色调安静克制。\n请检查末行内容在输入框内清晰可读，光标和操作按钮互不遮挡。".into());
     click_fixture(&app, 1024, 960, 180.0, 405.0)?;
@@ -595,13 +628,62 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_handoff_selected_id("".into());
     state.set_handoff_open(true);
     app.global::<Theme>().set_dark(true);
-    click_fixture(&app, 1440, 960, 700.0, 390.0)?;
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-disabled-1440x960",
+        1440,
+        960,
+    )?;
+    pointer_fixture(&app, 1440, 960, 700.0, 390.0, false)?;
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-target-hover-1440x960",
+        1440,
+        960,
+    )?;
+    pointer_fixture(&app, 1440, 960, 700.0, 390.0, true)?;
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-target-pressed-1440x960",
+        1440,
+        960,
+    )?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(700.0, 390.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+    settle(&app)?;
     if state.get_handoff_selected_id() != "fixture-canvas-0" {
         return Err(slint::PlatformError::Other(
             "Target selection did not update".into(),
         ));
     }
     capture(&app, directory, "handoff-canvas-1440x960", 1440, 960)?;
+    pointer_fixture(&app, 1440, 960, 985.0, 680.0, false)?;
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-button-hover-1440x960",
+        1440,
+        960,
+    )?;
+    pointer_fixture(&app, 1440, 960, 985.0, 680.0, true)?;
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-button-pressed-1440x960",
+        1440,
+        960,
+    )?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(985.0, 680.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
     app.global::<Theme>().set_dark(false);
     state.set_handoff_open(false);
     state.set_references(model(refs));
@@ -705,6 +787,11 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     capture(&app, directory, "team-manage-menu-narrow", 900, 640)?;
     state.set_team_menu(0);
     state.set_page(6);
+    app.global::<Theme>().set_dark(true);
+    state.set_canvas_export_open(true);
+    capture(&app, directory, "canvas-export-dark-1440x960", 1440, 960)?;
+    state.set_canvas_export_open(false);
+    app.global::<Theme>().set_dark(false);
     editor.set_canvas_sidebar_open(false);
     capture(&app, directory, "canvas-collapsed-narrow", 900, 640)?;
     editor.set_canvas_sidebar_open(true);

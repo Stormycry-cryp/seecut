@@ -23,6 +23,7 @@ export component Modal inherits Rectangle {
     // The project handoff sheet uses the workbench's left-aligned title.
     in property <bool> title-at-start: false;
     in property <bool> show-close-for-start-title: false;
+    in property <bool> prominent-close: false;
     /// False while a job is running: a dialog you can dismiss out from under an
     /// export is a dialog that loses the export.
     in property <bool> dismissable: true;
@@ -108,8 +109,8 @@ export component Modal inherits Rectangle {
                                 x: (parent.width - self.width) / 2;
                                 y: (parent.height - self.height) / 2;
                                 glyph: Glyph.close;
-                                size: 13px;
-                                tint: shut.has-hover ? Theme.fg : Theme.fg-muted;
+                                size: root.prominent-close ? 18px : 13px;
+                                tint: root.prominent-close || shut.has-hover ? Theme.fg : Theme.fg-muted;
                             }
 
                             shut := TouchArea {
