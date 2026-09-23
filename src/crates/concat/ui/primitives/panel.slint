@@ -207,7 +207,7 @@ export component IconButton inherits Rectangle {
 
     callback clicked();
 
-    property <bool> lit: touch.has-hover && root.enabled;
+    out property <bool> lit: touch.has-hover && root.enabled;
     // Selected tools share the brand accent; disabled glyphs remain readable.
     property <brush> tint: root.on-image ? (root.checked ? Theme.accent : Theme.image-control-ink)
         : !root.enabled ? Theme.fg-dim : root.checked ? Theme.accent

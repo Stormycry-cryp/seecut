@@ -1059,6 +1059,27 @@ fn insert_mention(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
     refresh_quote(app, state);
 }
 
+fn open_reference_mention(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let ui = app.global::<SeeCut>();
+    open_reference_mention_ui(&ui);
+    state.borrow_mut().quote_id.clear();
+    state.borrow_mut().quote_credits = None;
+}
+
+pub(crate) fn open_reference_mention_ui(ui: &SeeCut) {
+    let mut prompt = ui.get_prompt().to_string();
+    let mut cursor = (ui.get_prompt_cursor().max(0) as usize).min(prompt.len());
+    while !prompt.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    prompt.insert(cursor, '@');
+    ui.set_prompt(prompt.into());
+    ui.set_prompt_cursor((cursor + 1) as i32);
+    ui.set_mention_open(true);
+    ui.set_can_generate(false);
+    ui.set_quote("".into());
+}
+
 fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
     let video = ui.get_mode() != 0;
     let prompt = if video {
@@ -2152,6 +2173,7 @@ fn begin_handoff(app: &App, state: &Rc<RefCell<Cloud>>, kind: &str, paths: Vec<P
     ui.set_handoff_kind(kind.into());
     ui.set_handoff_count(paths.len() as i32);
     ui.set_handoff_targets(rows(targets));
+    ui.set_handoff_selected_id("".into());
     state.borrow_mut().pending_handoff = Some(PendingHandoff {
         kind: kind.to_owned(),
         paths,
@@ -2890,7 +2912,14 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
                 let created = first["created_at"]
                     .as_i64()
                     .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
-                    .map(|time| time.with_timezone(&Local).format("%m-%d %H:%M").to_string())
+                    .map(|time| {
+                        let local = time.with_timezone(&Local);
+                        if local.date_naive() == Local::now().date_naive() {
+                            format!("今天 {}", local.format("%H:%M"))
+                        } else {
+                            local.format("%m-%d %H:%M").to_string()
+                        }
+                    })
                     .unwrap_or_else(|| "最近".to_owned());
                 let success = indices
                     .iter()
@@ -2908,7 +2937,18 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
                 } else {
                     "张"
                 };
-                let summary = if success + failed == count {
+                let summary = if failed == 0 && success == count {
+                    let mut fields = vec![format!("{count} {unit}")];
+                    let ratio = text(&first["request"], "aspect_ratio");
+                    let size = text(&first["request"], "size");
+                    if !ratio.is_empty() {
+                        fields.push(ratio);
+                    }
+                    if !size.is_empty() {
+                        fields.push(size.replace('x', " × "));
+                    }
+                    fields.join(" · ")
+                } else if success + failed == count {
                     format!("完成 {success}/{count} · {failed} {unit}失败")
                 } else {
                     format!("{count} {unit} · 生成中")
@@ -3839,7 +3879,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                 json!({"name": ui.get_personal_new_folder().trim()}),
             );
         }
-        "personal-move-selected" => {
+        "personal-move" | "personal-move-selected" => {
             let index = ui.get_personal_folder_target();
             let folder_id = if index == 0 {
                 String::new()
@@ -3854,12 +3894,16 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                 ui.set_error("文件夹不存在，请刷新后重试".into());
                 return;
             }
-            let ids = state
-                .borrow()
-                .selected_personal
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>();
+            let ids = if action == "personal-move" {
+                vec![id.to_string()]
+            } else {
+                state
+                    .borrow()
+                    .selected_personal
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
             if !ids.is_empty() {
                 job(
                     app,
@@ -5170,6 +5214,25 @@ fn cancel_project_import(app: &App, state: &Rc<RefCell<Cloud>>) {
 }
 fn task_item(v: &Value) -> CloudItem {
     let status = text(v, "status");
+    let completed_spec = if text(v, "kind") == "video" {
+        let duration = v["request"]["duration"].as_u64();
+        let resolution = text(&v["request"], "resolution");
+        match (duration, resolution.is_empty()) {
+            (Some(seconds), false) => {
+                format!("{:02}:{:02} · {resolution}", seconds / 60, seconds % 60)
+            }
+            (Some(seconds), true) => format!("{:02}:{:02}", seconds / 60, seconds % 60),
+            (None, false) => resolution,
+            (None, true) => "已完成".to_owned(),
+        }
+    } else {
+        let size = text(&v["request"], "size");
+        if size.is_empty() {
+            "已完成".to_owned()
+        } else {
+            size.replace('x', " × ")
+        }
+    };
     CloudItem {
         id: text(v, "id").into(),
         name: text(v, "prompt").into(),
@@ -5188,7 +5251,7 @@ fn task_item(v: &Value) -> CloudItem {
             "queued" => "排队中",
             "submitting" | "provider_accepted" | "processing" => "生成中",
             "validating" => "保存结果",
-            "succeeded" => "已完成",
+            "succeeded" => &completed_spec,
             "failed" => "生成失败",
             _ => "待核实",
         }
@@ -5986,6 +6049,7 @@ pub fn bind(app: &App) {
             }
         },
         "reference-remove"=>remove_reference(&app,&shared,id.as_str()),
+        "reference-mention-open"=>open_reference_mention(&app,&shared),
         "reference-mention"=>insert_mention(&app,&shared,id.as_str()),
         "reference-preview"=>open_reference_media_preview(&app,&shared,id.as_str()),
         "asset-preview"=>open_team_media_preview(&app,&shared,id.as_str()),

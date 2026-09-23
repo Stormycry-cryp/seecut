@@ -244,6 +244,46 @@ pub(super) fn run(app: &App, directory: &Path) -> Result<(), String> {
     )?;
     passed.push("missing middle reference order and mention numbering");
 
+    state.borrow_mut().quote_id = "offline-quote".into();
+    ui.set_can_generate(true);
+    remove_reference(app, &state, "reference-2");
+    verify(
+        ui.get_references().row_count() == 2,
+        "reference removal count",
+    )?;
+    verify(
+        ui.get_prompt().as_str().contains("[已移除参考图片]")
+            && ui.get_prompt().as_str().contains("@[图片2]"),
+        "removed mention marker and following number",
+    )?;
+    verify(
+        state.borrow().quote_id.is_empty() && !ui.get_can_generate(),
+        "reference removal invalidates quote",
+    )?;
+    passed.push("failed or missing reference removal keeps mention and quote state consistent");
+
+    ui.set_prompt("前后".into());
+    ui.set_prompt_cursor("前".len() as i32);
+    state.borrow_mut().quote_id = "stale-quote".into();
+    ui.set_can_generate(true);
+    open_reference_mention(app, &state);
+    verify(
+        ui.get_prompt().as_str() == "前@后"
+            && ui.get_prompt_cursor() == "前@".len() as i32
+            && ui.get_mention_open(),
+        "@ button inserts at the cursor and opens references",
+    )?;
+    verify(
+        state.borrow().quote_id.is_empty() && !ui.get_can_generate(),
+        "@ button invalidates the previous quote",
+    )?;
+    insert_mention(app, &state, "reference-1");
+    verify(
+        ui.get_prompt().as_str() == "前@[图片1] 后" && !ui.get_mention_open(),
+        "keyboard reference selection replaces @ at the cursor",
+    )?;
+    passed.push("reference mention insertion and quote invalidation");
+
     state.borrow_mut().personal = vec![
         json!({"id":"offline-personal", "name":"Offline item", "kind":"image", "available":false, "trashed":false}),
     ];

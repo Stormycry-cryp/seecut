@@ -69,7 +69,7 @@ export component StartScreen inherits Rectangle {
     in-out property <bool> create-open;
     background: Theme.page;
     VerticalLayout {
-        padding: 24px; spacing: 24px;
+            padding-left: 32px; padding-right: 48px; padding-top: 44px; padding-bottom: 24px; spacing: 32px;
         HorizontalLayout {
             height: 36px;
             Text { text: "剪辑"; font-size: 24px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
@@ -83,39 +83,43 @@ export component StartScreen inherits Rectangle {
             }
         }
         ScrollView {
-            viewport-width: self.visible-width;
+            viewport-width: self.visible-width; viewport-height: grid.height;
             horizontal-scrollbar-policy: always-off;
-            vertical-stretch: 1;
+            vertical-stretch: 1; horizontal-stretch: 1;
             grid := Rectangle {
-                property <int> columns: Math.max(1, Math.floor((self.width + 16px) / 256px));
-                property <length> card-width: (self.width - (self.columns - 1) * 16px) / self.columns;
+                x: 0px; y: 0px; width: parent.width;
+                property <int> columns: Math.max(1, Math.floor((self.width + 24px) / 310px));
+                property <length> card-width: (self.width - (self.columns - 1) * 24px) / self.columns;
                 property <length> media-height: self.card-width * 0.60;
                 property <length> card-height: self.media-height + 64px;
-                height: Math.ceil((root.recents.length + 1) / self.columns) * (self.card-height + 16px) - 16px;
+                height: Math.ceil((root.recents.length + 1) / self.columns) * (self.card-height + 24px) - 24px;
                 Rectangle {
+                    x: 0px; y: 0px;
                     width: grid.card-width; height: grid.card-height;
                     Rectangle {
+                        x: 0px; y: 0px;
                         width: 100%; height: grid.media-height;
                         background: Theme.panel; border-radius: Theme.r-lg;
                         border-width: 1px; border-color: Theme.line-strong;
                         Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; glyph: Glyph.plus; size: 24px; tint: Theme.fg-muted; }
                         TouchArea { mouse-cursor: pointer; clicked => { root.create-open = true; } }
                     }
-                    Text { y: grid.media-height + 10px; text: "新建项目"; font-size: 14px; color: Theme.fg; }
+                    Text { x: 0px; y: grid.media-height + 10px; text: "新建项目"; font-size: 14px; color: Theme.fg; }
                 }
                 for project[i] in root.recents: Rectangle {
-                    x: Math.mod(i + 1, grid.columns) * (grid.card-width + 16px);
-                    y: Math.floor((i + 1) / grid.columns) * (grid.card-height + 16px);
+                    x: Math.mod(i + 1, grid.columns) * (grid.card-width + 24px);
+                    y: Math.floor((i + 1) / grid.columns) * (grid.card-height + 24px);
                     width: grid.card-width; height: grid.card-height;
                     Rectangle {
+                        x: 0px; y: 0px;
                         width: 100%; height: grid.media-height;
                         background: Theme.well; border-radius: Theme.r-lg; clip: true;
                         if project.poster.width > 0: Image { width: 100%; height: 100%; source: project.poster; image-fit: cover; }
                         if project.poster.width == 0: Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; glyph: Glyph.film; size: 24px; tint: Theme.fg-dim; }
                         TouchArea { mouse-cursor: pointer; clicked => { root.open-recent(project.path); } }
                     }
-                    Text { y: grid.media-height + 8px; width: parent.width; text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
-                    Text { y: grid.media-height + 32px; width: parent.width; text: project.when + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
+                    Text { x: 0px; y: grid.media-height + 8px; width: parent.width; text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
+                    Text { x: 0px; y: grid.media-height + 32px; width: parent.width; text: project.when + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
                 }
             }
         }

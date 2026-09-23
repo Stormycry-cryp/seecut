@@ -477,10 +477,11 @@ impl CanvasPane {
             slint::Timer::single_shot(std::time::Duration::from_millis(900), move || {
                 crate::host::Shell::with(|shell, _app| {
                     let mut studio = shell.studio.borrow_mut();
-                    if studio.canvas.revision == revision && studio.canvas.is_modified() {
-                        if let Err(error) = studio.canvas.start_auto_save() {
-                            studio.notify(&format!("画布自动保存失败：{error}"), true);
-                        }
+                    if studio.canvas.revision == revision
+                        && studio.canvas.is_modified()
+                        && let Err(error) = studio.canvas.start_auto_save()
+                    {
+                        studio.notify(&format!("画布自动保存失败：{error}"), true);
                     }
                 });
             });
@@ -2416,10 +2417,9 @@ impl CanvasPane {
                 if studio.canvas.document_generation == generation
                     && studio.canvas.revision == revision
                     && studio.canvas.is_modified()
+                    && let Err(error) = studio.canvas.start_auto_save()
                 {
-                    if let Err(error) = studio.canvas.start_auto_save() {
-                        studio.notify(&format!("画布自动保存失败：{error}"), true);
-                    }
+                    studio.notify(&format!("画布自动保存失败：{error}"), true);
                 }
             });
         });

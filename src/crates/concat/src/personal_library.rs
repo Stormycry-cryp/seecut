@@ -142,10 +142,10 @@ impl Library {
         ids: &[String],
         folder_id: Option<&str>,
     ) -> Result<usize, String> {
-        if let Some(folder_id) = folder_id {
-            if !self.folders.iter().any(|folder| folder.id == folder_id) {
-                return Err("文件夹不存在，请刷新后重试".into());
-            }
+        if let Some(folder_id) = folder_id
+            && !self.folders.iter().any(|folder| folder.id == folder_id)
+        {
+            return Err("文件夹不存在，请刷新后重试".into());
         }
         for id in ids {
             if self.get(id).is_none() {

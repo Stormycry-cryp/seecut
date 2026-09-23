@@ -15,21 +15,13 @@ component GenerationForm inherits Rectangle {
     property <int> reference-visible-count: SeeCut.creator-mode == 1 ? 6 : 4;
     property <int> reference-shown: SeeCut.references-expanded ? SeeCut.references.length : Math.min(SeeCut.references.length, root.reference-visible-count);
     property <length> reference-card-width: (root.width - (root.compact ? 16px : 32px) - (root.reference-columns - 1) * 8px) / root.reference-columns;
-    property <length> reference-card-height: SeeCut.creator-mode == 1 ? 104px : 120px;
-    property <bool> dense-controls: root.width > 600px;
+    property <length> reference-card-height: root.width < 380px ? 72px : SeeCut.creator-mode == 1 ? 88px : 120px;
     property <bool> model-valid: SeeCut.model-index >= 0 && SeeCut.model-index < SeeCut.model-names.length;
-    property <string> model-label: root.model-valid ? SeeCut.model-names[SeeCut.model-index] : "请选择模型";
-    property <string> ratio-label: SeeCut.ratios.length == 0 ? "自动比例" : SeeCut.ratio-index >= 0 && SeeCut.ratio-index < SeeCut.ratios.length ? SeeCut.ratios[SeeCut.ratio-index] : "请选择比例";
-    property <string> resolution-label: SeeCut.resolutions.length == 0 ? "自动尺寸" : SeeCut.resolution-index >= 0 && SeeCut.resolution-index < SeeCut.resolutions.length ? SeeCut.resolutions[SeeCut.resolution-index] : "请选择尺寸";
     property <string> duration-label: SeeCut.durations.length == 0 ? "默认时长" : SeeCut.duration-index >= 0 && SeeCut.duration-index < SeeCut.durations.length ? SeeCut.durations[SeeCut.duration-index] : "请选择时长";
-    property <string> quantity-label: SeeCut.quantities.length == 0 ? "默认数量" : SeeCut.quantity-index >= 0 && SeeCut.quantity-index < SeeCut.quantities.length ? SeeCut.quantities[SeeCut.quantity-index] : "请选择数量";
-    property <string> parameter-summary: root.model-label + " · " + root.ratio-label + " · " + root.resolution-label
-        + (SeeCut.mode == 1 ? " · 时长 " + root.duration-label : "")
-        + (SeeCut.mode == 1 && SeeCut.supports-generation-audio ? " · 声音 " + (SeeCut.generate-audio ? "开启" : "关闭") : "")
-        + " · 数量 " + root.quantity-label;
     VerticalLayout {
         padding: root.compact ? 8px : 16px;
         spacing: root.compact ? 4px : 10px;
+        alignment: start;
         HorizontalLayout {
             height: 44px;
             spacing: 8px;
@@ -72,9 +64,9 @@ component GenerationForm inherits Rectangle {
                     spacing: 8px;
                     HorizontalLayout {
                         Label { text: "参考素材"; horizontal-stretch: 1; }
-                        if SeeCut.reference-max > 0: Text { text: SeeCut.references.length + "/" + SeeCut.reference-max; color: Theme.fg-muted; vertical-alignment: center; }
-                        AppButton { glyph: Glyph.folder; label: "资产库"; subtle: true; enabled: !SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
-                        AppButton { glyph: Glyph.import; label: "本机"; subtle: true; enabled: !SeeCut.working && (!SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max); clicked => { SeeCut.action("reference-browse", ""); } }
+                        if SeeCut.reference-max > 0: Text { text: "" + SeeCut.references.length; color: Theme.fg-muted; vertical-alignment: center; }
+                        WorkspaceIcon { glyph: Glyph.folder; label: "从资产库添加参考素材"; enabled: !SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max; clicked => { SeeCut.action("reference-team", ""); } }
+                        WorkspaceIcon { glyph: Glyph.plus; label: "从本机添加参考素材"; enabled: !SeeCut.working && (!SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max); clicked => { SeeCut.action("reference-browse", ""); } }
                     }
                     if SeeCut.references.length == 0: Rectangle {
                         height: SeeCut.creator-mode == 1 ? 112px : 156px;
@@ -103,34 +95,34 @@ component GenerationForm inherits Rectangle {
                             clip: true;
                             border-width: 1px;
                             border-color: item.missing ? Theme.danger : Theme.line;
-                            AssetPreview {
-                                width: parent.width;
-                                height: parent.height - 30px;
+                            preview := AssetPreview {
+                                x: 0px; y: 0px; width: 100%; height: 100%;
                                 source: item.preview;
+                                fill-frame: item.kind != "audio";
                                 fallback-glyph: item.kind == "video" ? Glyph.film : item.kind == "audio" ? Glyph.music : Glyph.image;
                                 fallback-size: 24px;
                                 interactive: item.ready;
                                 accessible-name: "预览" + item.name;
                                 activated => { SeeCut.action("reference-preview", item.id); }
                             }
-                            Rectangle {
-                                y: parent.height - 30px; height: 30px; width: 100%;
-                                background: Theme.panel;
-                                Text {
-                                    x: 8px; width: parent.width - 42px; height: 100%;
-                                    text: (i + 1) + " " + (item.status != "" ? item.status : item.name);
-                                    color: item.missing || item.status == "上传失败" ? Theme.danger : Theme.fg;
-                                    overflow: elide; vertical-alignment: center; font-size: 12px;
-                                }
-                                WorkspaceIcon {
-                                    x: parent.width - 30px; y: 0px;
-                                    width: 30px; height: 30px; side: 30px;
-                                    glyph: item.missing || item.status == "上传失败" ? Glyph.reset : Glyph.close;
-                                    label: item.missing ? "替换缺失素材" : item.status == "上传失败" ? "重新上传" : "移除参考素材";
-                                    clicked => {
-                                        SeeCut.action(item.missing ? "reference-replace" : item.status == "上传失败" ? "reference-retry" : "reference-remove", item.id);
-                                    }
-                                }
+                            Rectangle { x: 6px; y: 6px; width: 22px; height: 22px; border-radius: Theme.r-sm; background: Theme.scrim;
+                                Text { width: 100%; height: 100%; text: "" + (i + 1); color: Theme.on-scrim; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                            if item.missing || item.status == "上传失败" || !item.ready: Rectangle {
+                                x: 0px; y: parent.height - 26px; width: 100%; height: 26px;
+                                background: Theme.scrim;
+                                Text { x: 6px; width: parent.width - 12px; height: 100%; text: item.missing ? "文件缺失" : item.status == "上传失败" ? "上传失败" : item.status; color: Theme.on-scrim; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                            }
+                            if item.missing || item.status == "上传失败": WorkspaceIcon {
+                                x: parent.width - 60px; y: 2px; width: 28px; height: 28px; side: 28px; on-image: true;
+                                glyph: Glyph.reset;
+                                label: item.missing ? "替换缺失素材" : "重新上传";
+                                clicked => { SeeCut.action(item.missing ? "reference-replace" : "reference-retry", item.id); }
+                            }
+                            if preview.hovered || item.missing || item.status == "上传失败": WorkspaceIcon {
+                                x: parent.width - 30px; y: 2px; width: 28px; height: 28px; side: 28px; on-image: true;
+                                glyph: Glyph.close; label: "移除参考素材";
+                                clicked => { SeeCut.action("reference-remove", item.id); }
                             }
                         }
                     }
@@ -138,14 +130,6 @@ component GenerationForm inherits Rectangle {
                         label: SeeCut.references-expanded ? "收起" : "展开全部（+" + (SeeCut.references.length - root.reference-visible-count) + "）";
                         subtle: true;
                         clicked => { SeeCut.references-expanded = !SeeCut.references-expanded; }
-                    }
-                    if SeeCut.reference-limit != "" && !root.compact: Text {
-                        min-height: root.compact ? 18px : 20px;
-                        max-height: root.compact ? 18px : 20px;
-                        text: SeeCut.reference-limit;
-                        color: Theme.fg-muted;
-                        font-size: 12px;
-                        overflow: elide;
                     }
                 }
                 if SeeCut.reference-error != "": Text {
@@ -158,12 +142,14 @@ component GenerationForm inherits Rectangle {
                 }
                 Label { text: "提示词"; color: Theme.fg; }
 
+                Rectangle {
+                height: 148px;
                 prompt := CloudField {
+                    width: 100%; height: 100%;
                     background: Theme.panel;
-                    min-height: root.compact ? 112px : 120px;
-                    max-height: root.compact ? 112px : 120px;
                     value <=> SeeCut.prompt;
                     multiline: true;
+                    multiline-footer-space: 40px;
                     placeholder: SeeCut.mode == 0 ? "描述画面、主体和风格" : "描述画面内容、动作和镜头";
                     edited(value) => { SeeCut.changed("prompt", value); }
                     cursor-moved(offset) => { SeeCut.prompt-cursor = offset; SeeCut.changed("prompt-cursor", offset); }
@@ -180,6 +166,17 @@ component GenerationForm inherits Rectangle {
                         return false;
                     }
                 }
+                AppButton {
+                    x: 8px; y: parent.height - 40px; width: 40px; height: 32px;
+                    label: "@"; accessible-name: "插入参考素材"; subtle: true;
+                    clicked => { SeeCut.action("reference-mention-open", ""); prompt.focus-at(SeeCut.prompt-cursor); }
+                }
+                WorkspaceIcon {
+                    x: parent.width - self.width - 8px; y: parent.height - self.height - 8px;
+                    glyph: Glyph.reset; label: "清空提示词";
+                    clicked => { SeeCut.prompt = ""; SeeCut.changed("prompt", ""); }
+                }
+                }
             }
         Rectangle { height: 1px; background: Theme.line; }
         if SeeCut.signed-in: VerticalLayout {
@@ -194,80 +191,42 @@ component GenerationForm inherits Rectangle {
                 }
                 WorkspaceIcon { glyph: Glyph.sliders; label: SeeCut.generation-parameters-open ? "收起参数" : "展开参数"; clicked => { SeeCut.generation-parameters-open = !SeeCut.generation-parameters-open; } }
             }
-            if SeeCut.creator-mode == 1 && root.dense-controls: HorizontalLayout {
-                height: Theme.workbench-h;
-                spacing: 6px;
+            if SeeCut.creator-mode == 1: VerticalLayout {
+                spacing: 8px;
+                Label { text: "模型"; }
                 if SeeCut.model-names.length > 0: WorkspaceSelect {
-                    options: SeeCut.model-names;
-                    current: SeeCut.model-index;
+                    options: SeeCut.model-names; current: SeeCut.model-index;
                     placeholder: "请选择模型";
-                    horizontal-stretch: 3;
-                    min-width: 0px;
                     changed(index) => { SeeCut.model-index = index; SeeCut.changed("model", index); }
                 }
-                if SeeCut.resolutions.length > 0: WorkspaceSelect {
-                    options: SeeCut.resolutions;
-                    current: SeeCut.resolution-index;
-                    placeholder: SeeCut.mode == 0 ? "尺寸" : "清晰度";
-                    horizontal-stretch: 2;
-                    min-width: 0px;
-                    changed(index) => { SeeCut.resolution-index = index; SeeCut.changed("resolution", index); }
-                }
-                if SeeCut.ratios.length > 0: WorkspaceSelect {
-                    options: SeeCut.ratios;
-                    current: SeeCut.ratio-index;
-                    placeholder: "比例";
-                    horizontal-stretch: 1;
-                    min-width: 0px;
-                    changed(index) => { SeeCut.ratio-index = index; SeeCut.changed("ratio", index); }
-                }
-                AppButton {
-                    min-width: 34px;
-                    max-width: 34px;
-                    label: "高级参数";
-                    glyph: Glyph.sliders;
-                    subtle: true;
-                    elide-label: true;
-                    clicked => { SeeCut.generation-parameters-open = true; }
-                }
-            }
-            if SeeCut.creator-mode == 1 && !root.dense-controls: VerticalLayout {
-                spacing: 4px;
                 HorizontalLayout {
-                    height: Theme.workbench-h;
-                    spacing: 6px;
-                    if SeeCut.model-names.length > 0: WorkspaceSelect {
-                        options: SeeCut.model-names;
-                        current: SeeCut.model-index;
-                        placeholder: "请选择模型";
-                        horizontal-stretch: 2;
-                        min-width: 0px;
-                        changed(index) => { SeeCut.model-index = index; SeeCut.changed("model", index); }
-                    }
+                    spacing: 8px;
+                    if SeeCut.ratios.length > 0: Label { text: "画面比例"; horizontal-stretch: 1; }
+                    if SeeCut.resolutions.length > 0: Label { text: SeeCut.mode == 0 ? "分辨率" : "清晰度"; horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    height: Theme.workbench-h; spacing: 8px;
                     if SeeCut.ratios.length > 0: WorkspaceSelect {
-                        options: SeeCut.ratios;
-                        current: SeeCut.ratio-index;
-                        placeholder: "比例";
-                        horizontal-stretch: 1;
-                        min-width: 0px;
+                        options: SeeCut.ratios; current: SeeCut.ratio-index;
+                        placeholder: "比例"; horizontal-stretch: 1;
                         changed(index) => { SeeCut.ratio-index = index; SeeCut.changed("ratio", index); }
                     }
-                }
-                HorizontalLayout {
-                    height: Theme.workbench-h;
-                    spacing: 6px;
                     if SeeCut.resolutions.length > 0: WorkspaceSelect {
-                        options: SeeCut.resolutions;
-                        current: SeeCut.resolution-index;
-                        placeholder: SeeCut.mode == 0 ? "尺寸" : "清晰度";
-                        horizontal-stretch: 1;
-                        min-width: 0px;
+                        options: SeeCut.resolutions; current: SeeCut.resolution-index;
+                        placeholder: SeeCut.mode == 0 ? "尺寸" : "清晰度"; horizontal-stretch: 1;
                         changed(index) => { SeeCut.resolution-index = index; SeeCut.changed("resolution", index); }
                     }
-                    AppButton { label: "高级参数"; glyph: Glyph.sliders; subtle: true; clicked => { SeeCut.generation-parameters-open = true; } }
+                }
+                Rectangle {
+                    height: 40px;
+                    HorizontalLayout {
+                        Text { text: SeeCut.generation-parameters-open ? "收起更多参数" : "更多参数"; color: Theme.fg; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
+                        Icon { glyph: SeeCut.generation-parameters-open ? Glyph.chevron-up : Glyph.chevron-down; size: 16px; tint: Theme.fg-muted; }
+                    }
+                    TouchArea { mouse-cursor: pointer; clicked => { SeeCut.generation-parameters-open = !SeeCut.generation-parameters-open; } }
                 }
             }
-            if SeeCut.mode == 1 && (SeeCut.creator-mode == 1 || SeeCut.generation-parameters-open) && (SeeCut.durations.length > 0 || SeeCut.supports-generation-audio): HorizontalLayout {
+            if SeeCut.mode == 1 && SeeCut.generation-parameters-open && (SeeCut.durations.length > 0 || SeeCut.supports-generation-audio): HorizontalLayout {
                 height: Theme.workbench-h;
                 spacing: 6px;
                 if SeeCut.durations.length > 0: Text { text: "时长"; color: Theme.fg-muted; vertical-alignment: center; }
@@ -288,50 +247,17 @@ component GenerationForm inherits Rectangle {
                 if SeeCut.resolutions.length > 0: WorkspaceSelect { options: SeeCut.resolutions; current: SeeCut.resolution-index; placeholder: "尺寸"; horizontal-stretch: 1; changed(index) => { SeeCut.resolution-index = index; SeeCut.changed("resolution", index); } }
                 if SeeCut.ratios.length > 0: WorkspaceSelect { options: SeeCut.ratios; current: SeeCut.ratio-index; placeholder: "比例"; horizontal-stretch: 1; changed(index) => { SeeCut.ratio-index = index; SeeCut.changed("ratio", index); } }
             }
-            if SeeCut.signed-in && (SeeCut.creator-mode == 1 || SeeCut.generation-parameters-open) && SeeCut.qualities.length > 0: VerticalLayout {
+            if SeeCut.signed-in && SeeCut.generation-parameters-open && SeeCut.qualities.length > 0: VerticalLayout {
                 spacing: 4px;
                 Label { text: "画质"; }
                 WorkspaceSelect { options: SeeCut.qualities; current: SeeCut.quality-index; changed(index) => { SeeCut.quality-index = index; SeeCut.changed("quality", index); } }
             }
-            if !root.compact: Text { text: root.parameter-summary; color: Theme.fg-muted; font-size: 12px; min-height: 18px; max-height: 18px; overflow: elide; horizontal-stretch: 1; }
         }
         if !SeeCut.signed-in: AppButton {
             label: "登录后选择模型与参数";
             glyph: Glyph.sliders;
             subtle: true;
             clicked => { SeeCut.action("auth-open", ""); }
-        }
-        VerticalLayout {
-            spacing: 6px;
-            Label { text: "数量"; }
-            HorizontalLayout {
-                height: Theme.workbench-h; spacing: 8px;
-                if SeeCut.quantities.length > 0: WorkspaceSelect {
-                    width: 108px; options: SeeCut.quantities;
-                    current: SeeCut.quantity-index;
-                    placeholder: "数量";
-                    changed(index) => { SeeCut.quantity-index = index; SeeCut.changed("quantity", index); }
-                }
-                if SeeCut.quantities.length == 0: Text { text: "当前模型未提供数量选项"; color: Theme.fg-muted; vertical-alignment: center; }
-                Rectangle { horizontal-stretch: 1; }
-                if SeeCut.quote != "": Text { text: SeeCut.quote; color: Theme.fg-muted; overflow: elide; vertical-alignment: center; }
-            }
-        }
-        HorizontalLayout {
-            height: Theme.workbench-h;
-            spacing: 8px;
-            AppButton {
-                horizontal-stretch: 1;
-                label: !SeeCut.signed-in ? "登录后生成" : SeeCut.insufficient-credits ? (SeeCut.payment-enabled ? "充值积分" : "查看积分") : SeeCut.working ? "请稍候" : !root.model-valid ? "请选择模型" : SeeCut.mode == 0 ? "生成图片" : "生成视频";
-                glyph: Glyph.sparkle;
-                primary: true;
-                enabled: !SeeCut.working && (!SeeCut.signed-in || SeeCut.insufficient-credits || (SeeCut.can-generate && root.model-valid));
-                clicked => {
-                    if !SeeCut.signed-in { SeeCut.action("auth-open", ""); }
-                    else if SeeCut.insufficient-credits { SeeCut.action("navigate", "3"); }
-                    else { SeeCut.action("generate", ""); }
-                }
-            }
         }
     }
     if SeeCut.mention-open: Rectangle {
@@ -376,10 +302,55 @@ component GenerationForm inherits Rectangle {
     }
 }
 
+component GenerationSubmitBar inherits Rectangle {
+    in property <bool> compact;
+    property <bool> model-valid: SeeCut.model-index >= 0 && SeeCut.model-index < SeeCut.model-names.length;
+    height: 142px;
+    background: Theme.panel;
+    border-width: 1px; border-color: Theme.line;
+    VerticalLayout {
+        padding-left: root.compact ? 8px : 16px;
+        padding-right: root.compact ? 8px : 16px;
+        padding-top: 8px; padding-bottom: 12px; spacing: 8px;
+        VerticalLayout {
+            spacing: 6px;
+            Label { text: "数量"; }
+            HorizontalLayout {
+                height: Theme.workbench-h; spacing: 8px;
+                if SeeCut.quantities.length > 0: WorkspaceSelect {
+                    width: 108px; options: SeeCut.quantities;
+                    current: SeeCut.quantity-index;
+                    placeholder: "数量";
+                    changed(index) => { SeeCut.quantity-index = index; SeeCut.changed("quantity", index); }
+                }
+                if SeeCut.quantities.length == 0: Text { text: "当前模型未提供数量选项"; color: Theme.fg-muted; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                if SeeCut.quote != "": Text { text: SeeCut.quote; color: Theme.fg-muted; overflow: elide; vertical-alignment: center; }
+            }
+        }
+        HorizontalLayout {
+            height: Theme.workbench-h;
+            spacing: 8px;
+            AppButton {
+                horizontal-stretch: 1;
+                label: !SeeCut.signed-in ? "登录后生成" : SeeCut.insufficient-credits ? (SeeCut.payment-enabled ? "充值积分" : "查看积分") : SeeCut.working ? "请稍候" : !root.model-valid ? "请选择模型" : "生成";
+                glyph: Glyph.sparkle;
+                primary: true;
+                enabled: !SeeCut.working && (!SeeCut.signed-in || SeeCut.insufficient-credits || (SeeCut.can-generate && root.model-valid));
+                clicked => {
+                    if !SeeCut.signed-in { SeeCut.action("auth-open", ""); }
+                    else if SeeCut.insufficient-credits { SeeCut.action("navigate", "3"); }
+                    else { SeeCut.action("generate", ""); }
+                }
+            }
+        }
+    }
+}
+
 component GenerationResults inherits Rectangle {
     min-width: 0px; min-height: 0px;
     VerticalLayout {
-        padding: 24px; spacing: 16px;
+        padding: 32px; padding-top: 24px; padding-bottom: 24px; spacing: 28px;
         HorizontalLayout {
             height: Theme.workbench-h; spacing: Theme.workbench-gap;
             if !SeeCut.task-selection-mode: Text { text: "最近生成"; font-size: 14px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
@@ -405,31 +376,33 @@ component GenerationResults inherits Rectangle {
                 spacing: 28px;
                 alignment: start;
                 for batch in SeeCut.batches: VerticalLayout {
-                    spacing: 16px;
+                    spacing: 23px;
                     HorizontalLayout {
                         height: 26px; spacing: 12px;
                         Text { text: batch.label; color: Theme.fg; font-size: 13px; vertical-alignment: center; }
                         Text { text: batch.summary; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
                     }
                     grid := Rectangle {
-                        property <int> columns: Math.max(1, Math.floor((self.width + 16px) / 256px));
-                        property <length> card-width: (self.width - (self.columns - 1) * 16px) / self.columns;
+                        property <int> columns: Math.max(1, Math.floor((self.width + 20px) / 256px));
+                        property <length> card-width: (self.width - (self.columns - 1) * 20px) / self.columns;
                         property <length> media-height: self.card-width * 0.61;
                         property <length> card-height: self.media-height + 54px;
-                        height: Math.ceil(batch.items.length / self.columns) * (self.card-height + 16px) - 16px;
+                        height: Math.ceil(batch.items.length / self.columns) * (self.card-height + 20px) - 20px;
                         for item[i] in batch.items: Rectangle {
-                            x: Math.mod(i, grid.columns) * (grid.card-width + 16px);
-                            y: Math.floor(i / grid.columns) * (grid.card-height + 16px);
+                            x: Math.mod(i, grid.columns) * (grid.card-width + 20px);
+                            y: Math.floor(i / grid.columns) * (grid.card-height + 20px);
                             width: grid.card-width; height: grid.card-height;
                             background: Colors.transparent;
                             Rectangle {
+                                x: 0px; y: 0px;
                                 width: 100%; height: grid.media-height;
                                 background: Theme.well;
                                 border-radius: Theme.r-lg;
                                 clip: true;
                                 preview := AssetPreview {
-                                    width: 100%; height: 100%; source: item.preview;
-                                    fallback-glyph: item.kind == "video" ? Glyph.film : Glyph.image;
+                                    x: 0px; y: 0px; width: 100%; height: 100%; source: item.preview;
+                                    fill-frame: true;
+                                    fallback-glyph: item.ready ? (item.kind == "video" ? Glyph.film : Glyph.image) : Glyph.none;
                                     interactive: item.ready || item.failed;
                                     accessible-name: item.failed ? item.name + "，生成失败" : "预览" + item.name;
                                     activated => {
@@ -470,7 +443,7 @@ component GenerationResults inherits Rectangle {
                                 }
                             }
                             HorizontalLayout {
-                                y: grid.media-height + 8px; width: 100%; height: 22px;
+                                x: 0px; y: grid.media-height + 8px; width: 100%; height: 22px;
                                 Text { text: item.name; color: Theme.fg; font-size: 13px; min-width: 0px; overflow: elide; horizontal-stretch: 1; }
                                 Text { text: item.status; color: item.failed ? Theme.danger : Theme.fg-muted; font-size: 12px; }
                             }
@@ -489,7 +462,7 @@ export component GenerationPage inherits Rectangle {
     // The workbench rail leaves about 828px of content in a 900px window;
     // keep the create/results switch available before the two-column layout
     // starts squeezing its prompt and reference controls.
-    property <bool> narrow: root.width < 820px;
+    property <bool> narrow: root.width < 900px;
     property <int> step <=> SeeCut.generation-step;
     VerticalLayout {
         if root.narrow: HorizontalLayout {
@@ -498,19 +471,22 @@ export component GenerationPage inherits Rectangle {
         }
         HorizontalLayout {
             vertical-stretch: 1;
-            if !root.narrow || root.step == 0: form-scroll := ScrollView {
-                viewport-width: self.visible-width;
-                horizontal-scrollbar-policy: always-off;
-                viewport-height: Math.max(self.visible-height, form.height);
-                min-width: root.narrow ? 0px : (root.width < 1100px ? 336px : root.width < 1300px ? 384px : 432px);
-                max-width: root.narrow ? 100000px : (root.width < 1100px ? 336px : root.width < 1300px ? 384px : 432px);
+            if !root.narrow || root.step == 0: VerticalLayout {
+                min-width: root.narrow ? 0px : (root.width < 1100px ? 320px : root.width < 1300px ? 368px : 416px);
+                max-width: root.narrow ? 100000px : (root.width < 1100px ? 320px : root.width < 1300px ? 368px : 416px);
                 horizontal-stretch: root.narrow ? 1 : 0;
-                form := GenerationForm {
-                    width: form-scroll.visible-width;
-                    compact: root.compact-height;
-                    // Preserve the prompt's editing area at short window heights.
-                    height: Math.max(form-scroll.visible-height, self.min-height);
+                form-scroll := ScrollView {
+                    vertical-stretch: 1;
+                    viewport-width: self.visible-width;
+                    horizontal-scrollbar-policy: always-off;
+                    viewport-height: Math.max(self.visible-height, form.height);
+                    form := GenerationForm {
+                        width: form-scroll.visible-width;
+                        compact: root.compact-height;
+                        height: Math.max(form-scroll.visible-height, self.min-height);
+                    }
                 }
+                GenerationSubmitBar { compact: root.compact-height; }
             }
             if !root.narrow: Rectangle { width: 1px; background: Theme.line; }
             if !root.narrow || root.step == 1: GenerationResults { horizontal-stretch: 1; }
@@ -563,32 +539,6 @@ export component GenerationPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                     AppButton { label: "关闭"; clicked => { SeeCut.result-preview-open = false; } }
                 }
-            }
-        }
-    }
-    Modal {
-        open: SeeCut.generation-parameters-open && SeeCut.creator-mode == 1; title: "生成参数"; glyph: Glyph.sliders;
-        surface-width: Math.min(440px, root.width - 32px); surface-height: Math.min(260px, root.height - 32px);
-        closed => { SeeCut.generation-parameters-open = false; }
-        parameters-focus := FocusScope {
-            enabled: SeeCut.generation-parameters-open;
-            changed enabled => { if self.enabled { self.focus(); } }
-            key-pressed(event) => {
-                if event.text == Key.Escape { SeeCut.generation-parameters-open = false; return EventResult.accept; }
-                return EventResult.reject;
-            }
-            VerticalLayout { padding: 20px; spacing: 14px;
-                ScrollView { viewport-width: self.visible-width; horizontal-scrollbar-policy: always-off; vertical-stretch: 1;
-                    VerticalLayout { spacing: 12px; alignment: start;
-                if SeeCut.signed-in && SeeCut.model-names.length > 0 && SeeCut.qualities.length > 0: VerticalLayout {
-                    spacing: 6px;
-                    Label { text: "画质"; }
-                    WorkspaceSelect { options: SeeCut.qualities; current: SeeCut.quality-index; changed(index) => { SeeCut.quality-index = index; SeeCut.changed("quality", index); } }
-                }
-                if SeeCut.qualities.length == 0: Text { text: "当前模型暂无高级参数"; color: Theme.fg-muted; }
-                }
-                }
-                AppButton { label: "完成"; primary: true; clicked => { SeeCut.generation-parameters-open = false; } }
             }
         }
     }

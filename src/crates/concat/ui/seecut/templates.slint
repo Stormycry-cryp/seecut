@@ -66,6 +66,7 @@ export component TemplatesPage inherits Rectangle {
                             AssetPreview {
                                 width: 100%; height: 100%;
                                 source: ref.preview;
+                                fill-frame: ref.kind != "audio";
                                 fallback-glyph: ref.kind == "video" ? Glyph.film : ref.kind == "audio" ? Glyph.music : Glyph.image;
                                 fallback-size: 24px;
                                 accessible-name: "参考素材";
