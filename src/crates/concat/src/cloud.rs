@@ -2278,6 +2278,8 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
             return;
         };
         ui.set_handoff_open(false);
+        ui.set_canvas_gallery_open(false);
+        ui.set_page(6);
         if id == "new" {
             app.invoke_canvas_new_with_paths(payload.into());
         } else if id == "current" {
