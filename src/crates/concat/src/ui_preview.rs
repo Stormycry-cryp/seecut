@@ -243,10 +243,10 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         action_log_for_ui
             .borrow_mut()
             .push((name.to_string(), id.to_string()));
-        if name == "reference-mention-open" {
-            if let Some(app) = action_app.upgrade() {
-                crate::cloud::open_reference_mention_ui(&app.global::<SeeCut>());
-            }
+        if name == "reference-mention-open"
+            && let Some(app) = action_app.upgrade()
+        {
+            crate::cloud::open_reference_mention_ui(&app.global::<SeeCut>());
         }
     });
     state.set_auth_open(false);
