@@ -3,6 +3,7 @@
 
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { Glyph, Icon } from "../icons.slint";
 import { Button, DialogRow, DialogSection, Field, Modal, Progress } from "../primitives/modal.slint";
 import { IconButton } from "../primitives/panel.slint";
@@ -625,6 +626,14 @@ export component SettingsDialog inherits Modal {
                     options: [I18n.t("Dark"), I18n.t("Light")];
                     current: Theme.dark ? 0 : 1;
                     changed(index) => { root.theme-changed(index == 0); }
+                }
+            }
+            if root.data.tab == 1: DialogSection {
+                title: "生成模式";
+                SegmentedControl {
+                    options: ["快速模式", "专业模式"];
+                    current: SeeCut.creator-mode == 1 ? 1 : 0;
+                    changed(index) => { SeeCut.action("creator-mode", index == 1 ? "1" : "0"); }
                 }
             }
 

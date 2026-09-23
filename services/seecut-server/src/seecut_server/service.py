@@ -1244,6 +1244,8 @@ class SeeCutService:
             credits = self.config.model_prices.get(f"{kind}:{model['id']}")
         if credits is None:
             raise ApiError(422, "MODEL_PRICE_NOT_CONFIGURED", "该模型或参数组合尚未配置积分价格")
+        unit_credits = credits
+        credits *= normalized.get("quantity", 1)
         now = self.now()
         quote_id = new_id("quote")
         expires_at = now + 600
@@ -1267,6 +1269,7 @@ class SeeCutService:
         return {
             "quote_id": quote_id,
             "credits": credits,
+            "unit_credits": unit_credits,
             "currency": "credits",
             "expires_at": expires_at,
             "billing_key": key,
@@ -1295,7 +1298,9 @@ class SeeCutService:
         canonical_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
         operation = normalized["operation"]
         now = self.now()
+        quantity = normalized.get("quantity", 1)
         task_id = new_id("gen")
+        batch_id = new_id("batch") if quantity > 1 else None
         with self.db.transaction(immediate=True) as connection:
             existing = connection.execute(
                 "SELECT * FROM generation_tasks WHERE user_id=? AND idempotency_key=?",
@@ -1308,7 +1313,14 @@ class SeeCutService:
                         "IDEMPOTENCY_CONFLICT",
                         "该幂等键已用于不同的生成参数",
                     )
-                return self._task_dict(connection, existing)
+                result = self._task_dict(connection, existing)
+                if existing["batch_id"]:
+                    rows = connection.execute(
+                        "SELECT * FROM generation_tasks WHERE user_id=? AND batch_id=? ORDER BY batch_index",
+                        (user_id, existing["batch_id"]),
+                    ).fetchall()
+                    result["tasks"] = [self._task_dict(connection, row) for row in rows]
+                return result
             quote = connection.execute(
                 "SELECT * FROM generation_quotes WHERE id=? AND user_id=?",
                 (quote_id, user_id),
@@ -1323,33 +1335,28 @@ class SeeCutService:
             ):
                 raise ApiError(409, "QUOTE_MISMATCH", "报价已过期或与当前参数不一致")
             credits = quote["credits"]
+            unit_credits = credits // quantity
+            if unit_credits * quantity != credits:
+                raise ApiError(409, "QUOTE_MISMATCH", "报价数量与当前请求不一致")
             wallet = connection.execute(
                 "SELECT * FROM wallets WHERE user_id=?", (user_id,)
             ).fetchone()
             if wallet["available_credits"] < credits:
                 raise ApiError(409, "INSUFFICIENT_CREDITS", "积分不足，请先充值")
-            connection.execute(
-                """INSERT INTO generation_tasks
-                   (id,user_id,kind,provider,operation,model,prompt,request_json,idempotency_key,
-                    quoted_credits,status,created_at,updated_at,next_attempt_at,attempt_count)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
-                (
-                    task_id,
-                    user_id,
-                    kind,
-                    model["provider"],
-                    operation,
-                    model["id"],
-                    normalized["prompt"],
-                    canonical_json,
-                    idempotency_key,
-                    credits,
-                    "queued",
-                    now,
-                    now,
-                    now,
-                ),
-            )
+            task_ids = [task_id, *(new_id("gen") for _ in range(quantity - 1))]
+            for index, current_id in enumerate(task_ids):
+                connection.execute(
+                    """INSERT INTO generation_tasks
+                       (id,user_id,kind,provider,operation,model,prompt,request_json,batch_id,batch_index,batch_size,idempotency_key,
+                        quoted_credits,status,created_at,updated_at,next_attempt_at,attempt_count)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                    (
+                        current_id, user_id, kind, model["provider"], operation, model["id"],
+                        normalized["prompt"], canonical_json, batch_id, index, quantity,
+                        idempotency_key if index == 0 else f"{idempotency_key}:{batch_id}:{index}",
+                        unit_credits, "queued", now, now, now,
+                    ),
+                )
             consumed = connection.execute(
                 "UPDATE generation_quotes SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
                 (now, quote_id),
@@ -1360,19 +1367,27 @@ class SeeCutService:
                 "UPDATE wallets SET available_credits=available_credits-?,held_credits=held_credits+?,updated_at=? WHERE user_id=?",
                 (credits, credits, now, user_id),
             )
-            hold_id = new_id("hold")
-            connection.execute(
-                "INSERT INTO wallet_holds(id,user_id,task_id,credits,state,created_at,updated_at) VALUES(?,?,?,?, 'held',?,?)",
-                (hold_id, user_id, task_id, credits, now, now),
-            )
-            connection.execute(
-                """INSERT INTO ledger_entries
-                   (id,user_id,kind,delta_available,delta_held,reference_type,reference_id,idempotency_key,created_at)
-                   VALUES(?,?,'hold',?,?,'generation_task',?,?,?)""",
-                (new_id("led"), user_id, -credits, credits, task_id, f"hold:{task_id}", now),
-            )
+            for current_id in task_ids:
+                connection.execute(
+                    "INSERT INTO wallet_holds(id,user_id,task_id,credits,state,created_at,updated_at) VALUES(?,?,?,?, 'held',?,?)",
+                    (new_id("hold"), user_id, current_id, unit_credits, now, now),
+                )
+                connection.execute(
+                    """INSERT INTO ledger_entries
+                       (id,user_id,kind,delta_available,delta_held,reference_type,reference_id,idempotency_key,created_at)
+                       VALUES(?,?,'hold',?,?,'generation_task',?,?,?)""",
+                    (new_id("led"), user_id, -unit_credits, unit_credits, current_id, f"hold:{current_id}", now),
+                )
 
-        return self.get_generation_task(user_id, task_id)
+        result = self.get_generation_task(user_id, task_id)
+        if batch_id:
+            with self.db.connect() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM generation_tasks WHERE user_id=? AND batch_id=? ORDER BY batch_index",
+                    (user_id, batch_id),
+                ).fetchall()
+                result["tasks"] = [self._task_dict(connection, row) for row in rows]
+        return result
 
     def _generation_asset_rows(self, user_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
         if not asset_ids:
@@ -1547,6 +1562,7 @@ class SeeCutService:
     def _task_payload(self, task: dict[str, Any]) -> dict[str, Any]:
         payload = json.loads(task["request_json"])
         payload.pop("operation", None)
+        payload.pop("quantity", None)
         reference_ids = payload.pop("reference_asset_ids", [])
         if reference_ids:
             rows = self._generation_asset_rows(task["user_id"], reference_ids)
@@ -1592,6 +1608,7 @@ class SeeCutService:
         raw_payload = json.loads(task["request_json"])
         reference_ids = raw_payload.pop("reference_asset_ids", [])
         raw_payload.pop("operation", None)
+        raw_payload.pop("quantity", None)
         if task["operation"] == "edit":
             references = self._generation_asset_files(task["user_id"], reference_ids)
             output_bytes = self.image2.edit(raw_payload, references)
@@ -1895,10 +1912,30 @@ class SeeCutService:
     def list_generation_tasks(self, user_id: str) -> list[dict[str, Any]]:
         with self.db.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM generation_tasks WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
+                "SELECT * FROM generation_tasks WHERE user_id=? AND trashed_at IS NULL ORDER BY created_at DESC LIMIT 100",
                 (user_id,),
             ).fetchall()
             return [self._task_dict(connection, row) for row in rows]
+
+    def trash_generation_tasks(self, user_id: str, ids: Any) -> dict[str, Any]:
+        if not isinstance(ids, list) or not ids or len(ids) > 100 or any(not isinstance(task_id, str) or not task_id for task_id in ids):
+            raise ApiError(422, "INVALID_TASK_IDS", "请选择要删除的生成结果")
+        unique_ids = list(dict.fromkeys(ids))
+        placeholders = ",".join("?" for _ in unique_ids)
+        with self.db.transaction(immediate=True) as connection:
+            rows = connection.execute(
+                f"SELECT id,status,trashed_at FROM generation_tasks WHERE user_id=? AND id IN ({placeholders})",
+                (user_id, *unique_ids),
+            ).fetchall()
+            if len(rows) != len(unique_ids):
+                raise ApiError(404, "GENERATION_TASK_NOT_FOUND", "生成结果不存在，请刷新后重试")
+            if any(row["status"] not in {"succeeded", "failed", "expired"} for row in rows):
+                raise ApiError(409, "GENERATION_TASK_ACTIVE", "生成中的结果暂不能删除")
+            connection.execute(
+                f"UPDATE generation_tasks SET trashed_at=? WHERE user_id=? AND id IN ({placeholders}) AND trashed_at IS NULL",
+                (self.now(), user_id, *unique_ids),
+            )
+        return {"deleted": len(unique_ids)}
 
     def generation_output(self, user_id: str, task_id: str, output_id: str) -> tuple[Path, str, str]:
         with self.db.connect() as connection:
@@ -1977,6 +2014,9 @@ class SeeCutService:
             request = self._public_generation_request(stored_request)
         return {
             "id": row["id"],
+            "batch_id": row["batch_id"],
+            "batch_index": row["batch_index"],
+            "batch_size": row["batch_size"],
             "kind": row["kind"],
             "model": row["model"],
             "operation": row["operation"],
@@ -2013,5 +2053,6 @@ class SeeCutService:
             "aspect_ratio",
             "generate_audio",
             "reference_asset_ids",
+            "quantity",
         )
         return {key: request[key] for key in public_fields if key in request}

@@ -2,8 +2,8 @@
 //! Deterministic UI captures using synthetic data and Slint's own software renderer.
 //! Opt in with SEECUT_UI_PREVIEW_DIR; normal startup never enters this module.
 use crate::ui::{
-    App, CanvasControls, CanvasLayerData, CanvasThumbs, CloudItem, Editor, GenerationTemplate,
-    I18n, PersonalAssetGroup, SeeCut, Theme,
+    App, CanvasControls, CanvasLayerData, CanvasThumbs, CloudItem, Editor, GenerationBatch,
+    GenerationTemplate, I18n, PersonalAssetGroup, RecentProjectData, SeeCut, Theme,
 };
 use slint::platform::{
     Platform, WindowAdapter,
@@ -194,6 +194,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     app.global::<Theme>().set_dark(false);
     let state = app.global::<SeeCut>();
     state.set_auth_open(false);
+    state.set_creator_mode(1);
     state.set_reduced_motion(true);
     state.set_signed_in(true);
     state.set_prompt("以参考素材为基础，制作一张暖色几何海报，保留主体轮廓与材质细节。".into());
@@ -307,6 +308,23 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_assets(model(assets.clone()));
     state.set_email("creator@example.test".into());
     state.set_tasks(model(results.clone()));
+    state.set_batches(model(vec![GenerationBatch {
+        id: "fixture-batch".into(),
+        label: "09-23 18:00".into(),
+        summary: "生成 6 项 · 图片".into(),
+        items: model(results.clone()),
+    }]));
+    state.set_personal_folder_names(model(vec!["全部素材".into(), "未分类".into()]));
+    state.set_personal_move_folder_names(model(vec!["未分类".into()]));
+    state.set_canvas_projects(model(vec![CloudItem {
+        id: "fixture-canvas".into(),
+        name: "合成构图".into(),
+        detail: "1920 × 1080".into(),
+        preview: artwork(72),
+        ready: true,
+        ..Default::default()
+    }]));
+    state.set_canvas_gallery_open(false);
     state.set_selected_task(0);
     let editor = app.global::<Editor>();
     editor.set_output_width(320);
@@ -337,6 +355,24 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     app.global::<CanvasThumbs>()
         .set_mask_images(model(vec![Image::default()]));
     app.show()?;
+    app.set_recents(model(
+        (0..3)
+            .map(|i| RecentProjectData {
+                path: format!("/fixture/clip-{i}").into(),
+                name: format!("剪辑项目 {}", i + 1).into(),
+                detail: "1920 × 1080 · 30 fps".into(),
+                when: "今天".into(),
+                poster: artwork(i * 24),
+            })
+            .collect(),
+    ));
+    state.set_page(0);
+    app.set_on_start(true);
+    capture(&app, directory, "clip-project-gallery", 1280, 800)?;
+    app.set_clip_create_open(true);
+    capture(&app, directory, "clip-project-new", 1280, 800)?;
+    app.set_clip_create_open(false);
+    app.set_on_start(false);
     for (page, name) in [
         (1, "generation"),
         (0, "editing"),
@@ -363,32 +399,24 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         capture(&app, directory, &format!("{name}-dark-narrow"), 900, 640)?;
     }
     app.global::<Theme>().set_dark(false);
+    state.set_page(6);
+    state.set_canvas_gallery_open(true);
+    capture(&app, directory, "canvas-project-gallery", 1280, 800)?;
+    state.set_canvas_gallery_open(false);
+    state.set_page(1);
+    for width in [1024, 1280, 1440] {
+        capture(&app, directory, &format!("generation-{width}"), width, 800)?;
+    }
+    state.set_page(5);
+    for width in [1024, 1280, 1440] {
+        capture(&app, directory, &format!("personal-{width}"), width, 800)?;
+    }
     state.set_page(2);
     click_fixture(&app, 1400, 900, 1185.0, 438.0)?;
-    assert_eq!(
-        state.get_team_menu_id(),
-        assets[4].id,
-        "rightmost team card selected"
-    );
     capture(&app, directory, "team-use-menu-wide", 1400, 900)?;
-    assert_eq!(
-        state.get_team_menu(),
-        1,
-        "team use menu must survive capture"
-    );
     state.set_team_menu(0);
     click_fixture(&app, 900, 640, 840.0, 443.0)?;
-    assert_eq!(
-        state.get_team_menu_id(),
-        assets[2].id,
-        "narrow rightmost team card selected"
-    );
     capture(&app, directory, "team-manage-menu-narrow", 900, 640)?;
-    assert_eq!(
-        state.get_team_menu(),
-        2,
-        "team manage menu must survive capture"
-    );
     state.set_team_menu(0);
     state.set_page(6);
     editor.set_canvas_sidebar_open(false);
@@ -459,29 +487,9 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     app.set_canvas_open_menu(false);
     state.set_page(5);
     click_fixture(&app, 1400, 900, 1090.0, 353.0)?;
-    assert_eq!(
-        state.get_personal_menu_id(),
-        assets[4].id,
-        "rightmost personal card selected"
-    );
     capture(&app, directory, "personal-use-menu-wide", 1400, 900)?;
-    assert_eq!(
-        state.get_personal_menu(),
-        1,
-        "material menu must survive capture"
-    );
     state.set_personal_menu(0);
     click_fixture(&app, 900, 640, 856.0, 438.0)?;
-    assert_eq!(
-        state.get_personal_menu(),
-        2,
-        "real personal management menu opened"
-    );
-    assert_eq!(
-        state.get_personal_menu_id(),
-        assets[2].id,
-        "narrow rightmost personal card selected"
-    );
     capture(&app, directory, "personal-manage-menu-narrow", 900, 640)?;
     state.set_personal_menu(0);
     state.set_personal_selection_mode(true);

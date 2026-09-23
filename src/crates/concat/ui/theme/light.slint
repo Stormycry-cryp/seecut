@@ -53,12 +53,12 @@ export global Light {
     // panes are the lit thing, the ground is not, and the step between them is
     // the gutter. `raised` is the only pure white in the window and is spent
     // where something genuinely floats — a menu, a tooltip, a dialog sheet.
-    out property <color> panel: #ffffff;
+    out property <color> panel: #f8f9fb;
     out property <color> raised: #ffffff;
-    out property <color> well: #f5f5fa;
-    out property <color> field: #f7f7fb;
-    out property <color> field-hover: #eeeef6;
-    out property <color> field-active: #e5e3f5;
+    out property <color> well: #eceef2;
+    out property <color> field: #ffffff;
+    out property <color> field-hover: #eef0f3;
+    out property <color> field-active: #e2e5eb;
 
     // hairlines — black-alpha, the mirror of the dark palette's white-alpha,
     // so they hold on panel, well, and ground alike. A shade heavier than a
@@ -69,15 +69,15 @@ export global Light {
 
     // text — the three steps of the dark palette's ramp, matched on contrast
     // against `panel` rather than by inverting the channels.
-    out property <color> fg: #24232d;
-    out property <color> fg-muted: #646371;
-    out property <color> fg-dim: #72717f;
+    out property <color> fg: #20242c;
+    out property <color> fg-muted: #616774;
+    out property <color> fg-dim: #9da3ae;
 
     // A deeper blue keeps both accent text and white button labels legible.
     // Hover darkens the fill on these warm, light surfaces.
-    out property <color> accent: #6554d9;
-    out property <color> accent-hover: #5543c4;
-    out property <color> accent-soft: #eeebff;
+    out property <color> accent: #173e78;
+    out property <color> accent-hover: #204d8f;
+    out property <color> accent-soft: #e8eef8;
     out property <color> green: #248a3d;
     // Light ink, because the accent is now dark — the pairing the dark
     // palette's `on-accent` comment insists on, honoured from the other side.
@@ -188,8 +188,8 @@ export global Light {
     out property <color> on-scrim: #ffffff;
 
     // destructive
-    out property <color> danger: #d70015;
-    out property <color> danger-soft: #d7001524;   // rgb(215 0 21 / 0.14)
+    out property <color> danger: #b4233d;
+    out property <color> danger-soft: #fff0f2;
     /// A progress bar that has failed: the track it runs in, and the hairline
     /// round it. Desaturated rather than `danger-soft` over the usual well,
     /// because a bar is a large area and the alpha version of a saturated red
@@ -201,6 +201,6 @@ export global Light {
     // panel for the gutters to read as gaps rather than as seams, and still a
     // step under the darkest surface inside a pane, so a pane's floor never
     // mistakes itself for the space between panes.
-    out property <color> page: #f7f7fc;
+    out property <color> page: #ffffff;
     out property <color> page-fg-muted: #646371;
 }

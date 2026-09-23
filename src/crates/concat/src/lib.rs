@@ -963,6 +963,54 @@ pub fn run() -> Result<(), slint::PlatformError> {
             std::path::PathBuf::from(path.as_str()),
         ])));
     }));
+    app.on_add_canvas_paths(on_window!(|state, payload: SharedString| {
+        match serde_json::from_str::<Vec<std::path::PathBuf>>(payload.as_str()) {
+            Ok(paths) if !paths.is_empty() => state.handle(Msg::Canvas(
+                crate::panes::canvas::CanvasMsg::ImportLayers(paths),
+            )),
+            _ => state.notify("所选画布素材无效", true),
+        }
+    }));
+    app.on_canvas_new(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::New));
+    }));
+    app.on_canvas_new_with_paths(on_window!(|state, payload: SharedString| {
+        match serde_json::from_str::<Vec<std::path::PathBuf>>(payload.as_str()) {
+            Ok(paths) if !paths.is_empty() => state.handle(Msg::Canvas(
+                crate::panes::canvas::CanvasMsg::NewAndImport(paths),
+            )),
+            _ => state.notify("所选画布素材无效", true),
+        }
+    }));
+    app.on_canvas_handoff_current(on_window!(|state, payload: SharedString| {
+        match serde_json::from_str::<Vec<std::path::PathBuf>>(payload.as_str()) {
+            Ok(paths) if !paths.is_empty() => state.handle(Msg::Canvas(
+                crate::panes::canvas::CanvasMsg::HandoffImport(paths),
+            )),
+            _ => state.notify("所选画布素材无效", true),
+        }
+    }));
+    app.on_canvas_open_with_paths(on_window!(
+        |state, path: SharedString, payload: SharedString| {
+            match serde_json::from_str::<Vec<std::path::PathBuf>>(payload.as_str()) {
+                Ok(paths) if !paths.is_empty() => {
+                    state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::OpenAndImport(
+                        std::path::PathBuf::from(path.as_str()),
+                        paths,
+                    )))
+                }
+                _ => state.notify("所选画布素材无效", true),
+            }
+        }
+    ));
+    app.on_close_clip_project(on_window!(|state| {
+        if let Err(error) = state.close_project() {
+            state.notify(&error, true);
+        }
+    }));
+    app.on_canvas_export_library(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ExportLibrary));
+    }));
     editor.on_canvas_project_open(on_window!(|state| {
         if let Some(path) = platform::pick_folder("打开画布工程（选择 .comp 文件夹）", "")
         {
@@ -1372,8 +1420,15 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
 
     // ── the dialogs ──
-    app.on_export_clicked(on_window!(|state| {
-        state.handle(Msg::Export(ExportMsg::Open));
+    app.on_export_clicked(|| {
+        Shell::with(|shell, app| {
+            if shell.studio.borrow().session.is_some() {
+                app.global::<SeeCut>().set_clip_export_open(true);
+            }
+        });
+    });
+    app.on_export_destination_selected(on_window!(|state, to_library: bool| {
+        state.handle(Msg::Export(ExportMsg::ChooseDestination(to_library)));
     }));
     app.on_open_settings(on_window!(|state| {
         state.handle(Msg::Settings(SettingsMsg::Open));
@@ -1570,7 +1625,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
                                 })
                             });
                         }
-                        "export" => state.handle(Msg::Export(ExportMsg::Open)),
+                        "export" => {
+                            if state.session.is_some() {
+                                app.global::<SeeCut>().set_clip_export_open(true);
+                            }
+                        }
                         "template" => state.save_template(),
                         "speech" => state.handle(Msg::Speech(SpeechMsg::Open)),
                         "clear-cache" => state.clear_project_cache(),

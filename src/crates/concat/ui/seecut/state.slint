@@ -18,6 +18,7 @@ export struct CloudItem {
 }
 
 export struct PersonalAssetGroup { date-label: string, items: [CloudItem] }
+export struct GenerationBatch { id: string, label: string, summary: string, items: [CloudItem] }
 export struct GenerationTemplate {
     id: string, name: string, mode-label: string, model-name: string,
     parameter-summary: string, reference-summary: string, updated-label: string,
@@ -52,11 +53,24 @@ export global SeeCut {
     in-out property <string> recovery-warning;
     in-out property <bool> signed-in;
     in-out property <string> email;
+    in-out property <string> account-label: "?";
     in-out property <string> balance: "--";
     in-out property <string> frozen: "--";
     in-out property <bool> project-open;
+    in-out property <bool> canvas-gallery-open: true;
+    in-out property <bool> canvas-export-open;
+    in-out property <bool> clip-export-open;
+    in-out property <[CloudItem]> canvas-projects;
+    in-out property <bool> handoff-open;
+    in-out property <string> handoff-kind;
+    in-out property <int> handoff-count;
+    in-out property <int> handoff-source-page;
+    in-out property <[CloudItem]> handoff-targets;
 
     in-out property <int> mode;
+    // -1 until the first work-mode choice is saved; 0 quick, 1 professional.
+    in-out property <int> creator-mode: -1;
+    in-out property <bool> references-expanded;
     in-out property <int> generation-step;
     in-out property <bool> generation-parameters-open;
     in-out property <bool> result-preview-open;
@@ -77,6 +91,12 @@ export global SeeCut {
     in-out property <string> personal-search;
     in-out property <string> personal-reference-search;
     in-out property <int> personal-filter;
+    in-out property <[string]> personal-folder-names;
+    in-out property <[string]> personal-move-folder-names;
+    in-out property <int> personal-folder-filter;
+    in-out property <int> personal-folder-target;
+    in-out property <string> personal-new-folder;
+    in-out property <int> personal-delete-count;
     in-out property <int> personal-source;
     in-out property <bool> personal-trash;
     in-out property <string> personal-rename;
@@ -132,6 +152,11 @@ export global SeeCut {
     in-out property <bool> insufficient-credits;
     in-out property <bool> payment-enabled;
     in-out property <[CloudItem]> tasks;
+    in-out property <[GenerationBatch]> batches;
+    in-out property <bool> task-selection-mode;
+    in-out property <int> task-selected-count;
+    in-out property <bool> task-delete-open;
+    in-out property <int> task-delete-count;
     in-out property <int> selected-task: -1;
     in-out property <string> save-team-task;
 

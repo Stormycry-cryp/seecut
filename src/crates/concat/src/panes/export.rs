@@ -14,6 +14,7 @@
 //! fields.
 
 use concat_host::export::{self, ExportSpec};
+use slint::ComponentHandle;
 
 use crate::format::{bytes, eta};
 use crate::host::{on_ui, spawn};
@@ -28,8 +29,7 @@ use crate::ui::{ExportData, ExportPhase};
 /// Everything that can happen to the export sheet.
 #[derive(Clone, Debug)]
 pub enum ExportMsg {
-    /// The sheet is asked for: the menu, the tray button or ⌘E.
-    Open,
+    ChooseDestination(bool),
     /// The sheet is dismissed.
     Close,
     NameEdited(String),
@@ -74,6 +74,8 @@ pub struct ExportPane {
     pub message: String,
     /// Where the finished file is, for Reveal.
     pub written: String,
+    to_library: bool,
+    library_output: Option<String>,
     /// When the render started, for a real ETA.
     started_at: Option<std::time::Instant>,
 }
@@ -94,6 +96,8 @@ impl Default for ExportPane {
             stage: String::new(),
             message: String::new(),
             written: String::new(),
+            to_library: false,
+            library_output: None,
             started_at: None,
         }
     }
@@ -106,7 +110,34 @@ impl ExportPane {
     /// pane must not read.
     pub fn update(&mut self, msg: ExportMsg, studio: &mut Studio) {
         match msg {
-            ExportMsg::Open => {
+            ExportMsg::ChooseDestination(to_library) => {
+                let folder = if to_library {
+                    match concat_host::AppDirs::locate() {
+                        Ok(dirs) => dirs.data.join("clip-exports"),
+                        Err(error) => {
+                            studio.notify(&format!("无法打开资产库：{error}"), true);
+                            return;
+                        }
+                    }
+                } else {
+                    let Some(folder) = platform::pick_folder(&i18n::t("Export to"), &self.folder)
+                    else {
+                        return;
+                    };
+                    folder
+                };
+                if let Err(error) = std::fs::create_dir_all(&folder) {
+                    studio.notify(&format!("无法创建导出目录：{error}"), true);
+                    return;
+                }
+                self.folder = folder.to_string_lossy().into_owned();
+                self.to_library = to_library;
+                self.library_output = to_library.then(|| {
+                    folder
+                        .join(format!("{}.mp4", uuid::Uuid::new_v4()))
+                        .to_string_lossy()
+                        .into_owned()
+                });
                 self.open = true;
                 self.phase = ExportPhase::Idle;
                 self.message.clear();
@@ -123,10 +154,19 @@ impl ExportPane {
             ExportMsg::Again => {
                 self.phase = ExportPhase::Idle;
                 self.progress = 0.0;
+                if self.to_library {
+                    self.library_output = Some(format!(
+                        "{}/{}.mp4",
+                        self.folder.trim_end_matches('/'),
+                        uuid::Uuid::new_v4()
+                    ));
+                }
             }
             ExportMsg::Browse => {
                 if let Some(folder) = platform::pick_folder(&i18n::t("Export to"), &self.folder) {
                     self.folder = folder.to_string_lossy().into_owned();
+                    self.to_library = false;
+                    self.library_output = None;
                 }
             }
             ExportMsg::Reveal => {
@@ -141,6 +181,13 @@ impl ExportPane {
                 studio.host.exporter.cancel();
                 self.phase = ExportPhase::Idle;
                 self.progress = 0.0;
+                if self.to_library {
+                    self.library_output = Some(format!(
+                        "{}/{}.mp4",
+                        self.folder.trim_end_matches('/'),
+                        uuid::Uuid::new_v4()
+                    ));
+                }
             }
             ExportMsg::Progress { fraction, stage } => {
                 if self.phase == ExportPhase::Running {
@@ -152,7 +199,36 @@ impl ExportPane {
                 self.phase = ExportPhase::Done;
                 self.progress = 1.0;
                 self.written = written;
-                studio.notify(&t("Export finished"), false);
+                if self.to_library {
+                    let registration = concat_host::AppDirs::locate()
+                        .and_then(|dirs| {
+                            crate::personal_library::Library::load(
+                                dirs.data.join("personal-library"),
+                            )
+                        })
+                        .and_then(|mut library| {
+                            let id = library.register_generated(&self.written)?.id.clone();
+                            Ok(library.rename(&id, self.name.trim().to_owned()).err())
+                        });
+                    match registration {
+                        Ok(rename_error) => {
+                            if let Some(error) = rename_error {
+                                studio.notify(&format!("视频已入库，名称更新失败：{error}"), true);
+                            } else {
+                                studio.notify("视频已导出并加入资产库", false);
+                            }
+                            crate::host::Shell::with(|_, app| {
+                                app.global::<crate::ui::SeeCut>()
+                                    .invoke_action("personal-refresh".into(), "".into())
+                            });
+                        }
+                        Err(error) => {
+                            studio.notify(&format!("视频已导出，入库失败：{error}"), true)
+                        }
+                    }
+                } else {
+                    studio.notify(&t("Export finished"), false);
+                }
             }
             ExportMsg::Finished(Err(error)) => {
                 if self.phase == ExportPhase::Idle {
@@ -206,6 +282,16 @@ impl ExportPane {
         let Some(session) = studio.session.as_ref() else {
             return;
         };
+        if self.name.trim().is_empty()
+            || self.name.trim() != self.name
+            || self.name.contains('/')
+            || self.name.contains('\\')
+            || self.name.chars().any(char::is_control)
+        {
+            self.phase = ExportPhase::Failed;
+            self.message = "文件名不能包含路径或首尾空格".into();
+            return;
+        }
         if studio.timeline().clips.is_empty() {
             self.phase = ExportPhase::Failed;
             self.message = t("There is nothing on the timeline to export");
@@ -219,11 +305,13 @@ impl ExportPane {
                 return;
             }
         };
-        let output = format!(
-            "{}/{}.mp4",
-            self.folder.trim_end_matches('/'),
-            self.name.trim()
-        );
+        let output = self.library_output.clone().unwrap_or_else(|| {
+            format!(
+                "{}/{}.mp4",
+                self.folder.trim_end_matches('/'),
+                self.name.trim()
+            )
+        });
         let spec = ExportSpec {
             output: output.clone(),
             crf: EXPORT_CRF[self.quality.min(2)],
@@ -294,7 +382,13 @@ impl ExportPane {
         ExportData {
             open: self.open,
             name: self.name.as_str().into(),
-            path: format!("{}/{}.mp4", self.folder.trim_end_matches('/'), self.name).into(),
+            path: self
+                .library_output
+                .clone()
+                .unwrap_or_else(|| {
+                    format!("{}/{}.mp4", self.folder.trim_end_matches('/'), self.name)
+                })
+                .into(),
             format: format!("{width} × {height} · {rate:.2} fps").into(),
             duration: {
                 let whole = studio.duration().max(0.0) as i32;

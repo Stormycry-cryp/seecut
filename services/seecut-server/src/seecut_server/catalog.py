@@ -6,7 +6,7 @@ from typing import Any
 from .errors import ApiError
 
 
-CATALOG_VERSION = "2026-09-19.3"
+CATALOG_VERSION = "2026-09-23.1"
 
 MODELS: list[dict[str, Any]] = [
     {
@@ -16,6 +16,7 @@ MODELS: list[dict[str, Any]] = [
         "display_name": "Flare",
         "operations": ["generate", "edit"],
         "parameters": {
+            "quantity": {"type": "enum", "value_type": "integer", "required": True, "default": 1, "values": [1, 2, 3, 4]},
             "prompt": {"type": "string", "required": True, "max_length": 12000},
             "size": {
                 "type": "enum",
@@ -47,6 +48,7 @@ MODELS: list[dict[str, Any]] = [
         "display_name": "Seedance 2.0 Mini 特价版",
         "operations": ["generate"],
         "parameters": {
+            "quantity": {"type": "enum", "value_type": "integer", "required": True, "default": 1, "values": [1, 2, 3, 4]},
             "prompt": {"type": "string", "required": True, "max_length": 12000},
             "resolution": {
                 "type": "enum",

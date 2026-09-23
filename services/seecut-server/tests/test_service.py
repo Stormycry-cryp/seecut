@@ -171,6 +171,45 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(duplicate["id"], task["id"])
         self.assertEqual(self.service.wallet(user_id)["available_credits"], 13)
 
+    def test_batch_quote_is_atomic_and_retry_keeps_the_same_tasks(self):
+        user_id, _ = self.create_user("batch@example.com")
+        with self.service.db.transaction() as connection:
+            connection.execute("UPDATE wallets SET available_credits=30 WHERE user_id=?", (user_id,))
+        request = {"model": "gpt-image-2.5-flare", "prompt": "four stills", "quantity": 4}
+        quote = self.service.quote_generation(user_id, "image", request)
+        self.assertEqual(quote["unit_credits"], 7)
+        self.assertEqual(quote["credits"], 28)
+        submitted = self.service.create_generation_task(
+            user_id, "image", request | {"quote_id": quote["quote_id"]}, "batch-key"
+        )
+        self.assertEqual(len(submitted["tasks"]), 4)
+        self.assertEqual([task["batch_index"] for task in submitted["tasks"]], list(range(4)))
+        self.assertEqual(self.service.wallet(user_id)["available_credits"], 2)
+        recovered = self.service.create_generation_task(
+            user_id, "image", request | {"quote_id": quote["quote_id"]}, "batch-key"
+        )
+        self.assertEqual([task["id"] for task in recovered["tasks"]], [task["id"] for task in submitted["tasks"]])
+        self.assertEqual(self.service.wallet(user_id)["available_credits"], 2)
+
+    def test_result_trash_requires_finished_own_tasks_and_hides_them_from_listing(self):
+        user_id, _ = self.create_user("trash-results@example.com")
+        other_id, _ = self.create_user("other-results@example.com")
+        with self.service.db.transaction() as connection:
+            connection.execute("UPDATE wallets SET available_credits=30 WHERE user_id=?", (user_id,))
+        request = {"model": "gpt-image-2.5-flare", "prompt": "two stills", "quantity": 2}
+        quote = self.service.quote_generation(user_id, "image", request)
+        submitted = self.service.create_generation_task(user_id, "image", request | {"quote_id": quote["quote_id"]}, "trash-key")
+        ids = [task["id"] for task in submitted["tasks"]]
+        with self.assertRaises(ApiError):
+            self.service.trash_generation_tasks(user_id, ids)
+        with self.service.db.transaction() as connection:
+            connection.execute("UPDATE generation_tasks SET status='succeeded' WHERE user_id=?", (user_id,))
+        with self.assertRaises(ApiError):
+            self.service.trash_generation_tasks(other_id, ids)
+        self.assertEqual(self.service.trash_generation_tasks(user_id, ids)["deleted"], 2)
+        self.assertEqual(self.service.list_generation_tasks(user_id), [])
+        self.assertEqual(self.service.get_generation_task(user_id, ids[0])["id"], ids[0])
+
     def test_generation_task_request_exposes_only_public_generation_fields(self):
         user_id, _ = self.create_user("request-snapshot@example.com")
         with self.service.db.transaction() as connection:

@@ -241,6 +241,8 @@ class SeeCutHandler(BaseHTTPRequestHandler):
             return 202, self.service.create_generation_task(user_id, kind, self._json_body(), key)
         if method == "GET" and path == "/api/generation/tasks":
             return 200, {"items": self.service.list_generation_tasks(user_id)}
+        if method == "POST" and path == "/api/generation/tasks/trash":
+            return 200, self.service.trash_generation_tasks(user_id, self._json_body().get("ids"))
         task_match = re.fullmatch(r"/api/generation/tasks/([^/]+)", path)
         if method == "GET" and task_match:
             refresh = query.get("refresh", ["false"])[0].lower() == "true"

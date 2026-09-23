@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Glyph, Icon } from "../primitives/primitives.slint";
+import { SeeCut } from "state.slint";
+import { AssetPreview } from "components.slint";
+
+export component CanvasProjectsPage inherits Rectangle {
+    background: Theme.page;
+    VerticalLayout {
+        padding: 24px; spacing: 24px;
+        Text { text: "画布"; height: 36px; font-size: 24px; color: Theme.fg; vertical-alignment: center; }
+        ScrollView {
+            viewport-width: self.visible-width;
+            horizontal-scrollbar-policy: always-off;
+            vertical-stretch: 1;
+            grid := Rectangle {
+                property <int> columns: Math.max(1, Math.floor((self.width + 16px) / 256px));
+                property <length> card-width: (self.width - (self.columns - 1) * 16px) / self.columns;
+                property <length> media-height: self.card-width * 0.60;
+                property <length> card-height: self.media-height + 64px;
+                height: Math.ceil((SeeCut.canvas-projects.length + 1) / self.columns) * (self.card-height + 16px) - 16px;
+                Rectangle {
+                    width: grid.card-width; height: grid.card-height;
+                    Rectangle {
+                        width: 100%; height: grid.media-height; background: Theme.panel;
+                        border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
+                        Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; size: 24px; glyph: Glyph.plus; tint: Theme.fg-muted; }
+                        TouchArea { mouse-cursor: pointer; clicked => { SeeCut.action("canvas-new", ""); } }
+                    }
+                    Text { y: grid.media-height + 10px; text: "新建项目"; color: Theme.fg; font-size: 14px; }
+                }
+                for project[i] in SeeCut.canvas-projects: Rectangle {
+                    x: Math.mod(i + 1, grid.columns) * (grid.card-width + 16px);
+                    y: Math.floor((i + 1) / grid.columns) * (grid.card-height + 16px);
+                    width: grid.card-width; height: grid.card-height;
+                    AssetPreview {
+                        width: 100%; height: grid.media-height;
+                        source: project.preview;
+                        fallback-glyph: Glyph.image;
+                        interactive: project.ready;
+                        accessible-name: "打开画布项目" + project.name;
+                        activated => { SeeCut.action("canvas-open", project.id); }
+                    }
+                    Text { y: grid.media-height + 8px; width: 100%; text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
+                    Text { y: grid.media-height + 32px; width: 100%; text: project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
+                }
+            }
+        }
+    }
+}

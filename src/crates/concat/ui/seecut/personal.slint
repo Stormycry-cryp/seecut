@@ -26,20 +26,38 @@ export component PersonalPage inherits Rectangle {
     VerticalLayout {
         padding: 20px; padding-top: 12px; spacing: 12px;
         HorizontalLayout {
+            height: Theme.workbench-h; spacing: 8px;
+            Text { text: "资产库"; font-size: 24px; color: Theme.fg; horizontal-stretch: 1; vertical-alignment: center; }
+            AppButton { label: "导入"; primary: true; clicked => { SeeCut.action("personal-browse", ""); } }
+        }
+        HorizontalLayout {
+            height: Theme.workbench-h; spacing: 8px;
+            WorkspaceSelect {
+                options: SeeCut.personal-folder-names;
+                current: SeeCut.personal-folder-filter;
+                horizontal-stretch: 1;
+                changed(index) => { SeeCut.personal-folder-filter = index; SeeCut.changed("personal-folder-filter", index); }
+            }
+            WorkspaceIcon { glyph: Glyph.folder; label: "新建文件夹"; clicked => { SeeCut.personal-new-folder = ""; SeeCut.personal-dialog = 3; } }
+        }
+        HorizontalLayout {
             spacing: Theme.workbench-gap; height: Theme.workbench-h;
             if root.width >= 1100px: AssetFilters { }
             CloudField { value <=> SeeCut.personal-search; placeholder: "搜索素材名称"; horizontal-stretch: 1; edited(value) => { SeeCut.changed("personal-search", value); } }
             AppButton { label: SeeCut.personal-selection-mode ? "完成管理" : "批量管理"; selected: SeeCut.personal-selection-mode; clicked => { SeeCut.personal-selection-mode = !SeeCut.personal-selection-mode; SeeCut.changed("personal-selection-mode", ""); } }
-            AppButton { label: SeeCut.personal-trash ? "返回资产" : "回收站"; subtle: true; clicked => { SeeCut.personal-trash = !SeeCut.personal-trash; SeeCut.changed("personal-trash", ""); } }
+            WorkspaceIcon { glyph: SeeCut.personal-trash ? Glyph.reset : Glyph.trash; label: SeeCut.personal-trash ? "返回资产" : "回收站"; clicked => { SeeCut.personal-trash = !SeeCut.personal-trash; SeeCut.changed("personal-trash", ""); } }
             WorkspaceIcon { glyph: Glyph.folder; label: "打开本机资产文件夹"; clicked => { SeeCut.action("personal-folder", ""); } }
         }
         if root.width < 1100px: HorizontalLayout { height: Theme.workbench-h; AssetFilters {} Rectangle { horizontal-stretch: 1; } }
         if SeeCut.personal-selection-mode: HorizontalLayout {
             spacing: Theme.workbench-gap; height: Theme.workbench-h;
             Text { text: "已选 " + SeeCut.personal-selected-count + " 项"; color: Theme.fg; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
-            AppButton { label: "全选可见"; clicked => { SeeCut.action("personal-select-visible", "true"); } }
-            AppButton { label: "取消选择"; clicked => { SeeCut.action("personal-select-visible", "false"); } }
-            AppButton { label: SeeCut.personal-trash ? "恢复所选" : "回收所选"; danger: !SeeCut.personal-trash; enabled: SeeCut.personal-selected-count > 0 && !SeeCut.working; clicked => { SeeCut.action(SeeCut.personal-trash ? "personal-restore-selected" : "personal-trash-selected", ""); } }
+            WorkspaceIcon { glyph: Glyph.sparkle; label: "作为参考"; enabled: SeeCut.personal-selected-count > 0 && !SeeCut.personal-trash; clicked => { SeeCut.action("personal-reference-selected", ""); } }
+            WorkspaceIcon { glyph: Glyph.brush; label: "加入画布"; enabled: SeeCut.personal-selected-count > 0 && !SeeCut.personal-trash; clicked => { SeeCut.action("personal-canvas-selected", ""); } }
+            WorkspaceIcon { glyph: Glyph.film; label: "加入剪辑"; enabled: SeeCut.personal-selected-count > 0 && !SeeCut.personal-trash; clicked => { SeeCut.action("personal-project-selected", ""); } }
+            WorkspaceIcon { glyph: SeeCut.personal-trash ? Glyph.reset : Glyph.trash; label: SeeCut.personal-trash ? "恢复所选" : "移入回收站"; enabled: SeeCut.personal-selected-count > 0 && !SeeCut.working; clicked => { if SeeCut.personal-trash { SeeCut.action("personal-restore-selected", ""); } else { SeeCut.action("personal-freeze-delete", ""); } } }
+            WorkspaceIcon { glyph: Glyph.export; label: "导出所选"; enabled: SeeCut.personal-selected-count > 0 && !SeeCut.personal-trash; clicked => { SeeCut.action("personal-export-selected", ""); } }
+            WorkspaceIcon { glyph: Glyph.folder; label: "移到文件夹"; enabled: SeeCut.personal-selected-count > 0 && !SeeCut.personal-trash; clicked => { SeeCut.personal-folder-target = 0; SeeCut.personal-dialog = 4; } }
         }
         if SeeCut.personal-assets.length == 0: EmptyState { glyph: Glyph.image; title: SeeCut.working ? "正在读取资产" : SeeCut.personal-search != "" ? "没有找到相关资产" : SeeCut.personal-trash ? "回收站为空" : "暂无个人资产"; detail: "导入图片、视频和音频，或保存生成结果到这里。"; }
         if SeeCut.personal-assets.length > 0: ScrollView {
@@ -109,18 +127,21 @@ export component PersonalPage inherits Rectangle {
             if SeeCut.personal-menu == 2: MenuAction { auto-focus: true; label: "预览素材"; glyph: Glyph.eye; enabled: SeeCut.personal-menu-ready; clicked => { root.use-asset("personal-preview"); } }
             if SeeCut.personal-menu == 2 && !SeeCut.personal-trash: MenuAction { label: "重命名"; glyph: Glyph.tag; clicked => { root.selected-id = SeeCut.personal-menu-id; SeeCut.personal-rename = SeeCut.personal-menu-name; SeeCut.personal-menu = 0; SeeCut.personal-dialog = 1; } }
             if SeeCut.personal-menu == 2 && !SeeCut.personal-trash: MenuAction { label: "上传到团队"; glyph: Glyph.export; enabled: SeeCut.personal-menu-ready; clicked => { root.selected-id = SeeCut.personal-menu-id; root.selected-name = SeeCut.personal-menu-name; SeeCut.personal-menu = 0; SeeCut.personal-dialog = 2; SeeCut.action("personal-teams", ""); } }
-            if SeeCut.personal-menu == 2: MenuAction { label: SeeCut.personal-trash ? "恢复素材" : "移入回收站"; glyph: SeeCut.personal-trash ? Glyph.reset : Glyph.trash; danger: !SeeCut.personal-trash; clicked => { root.use-asset(SeeCut.personal-trash ? "personal-restore" : "personal-trash"); } }
+            if SeeCut.personal-menu == 2: MenuAction { label: SeeCut.personal-trash ? "恢复素材" : "移入回收站"; glyph: SeeCut.personal-trash ? Glyph.reset : Glyph.trash; danger: !SeeCut.personal-trash; clicked => { root.use-asset(SeeCut.personal-trash ? "personal-restore" : "personal-freeze-delete"); } }
         }
     }
     Modal {
         open: SeeCut.personal-dialog > 0;
-        title: SeeCut.personal-dialog == 1 ? "重命名资产" : "上传到团队资产库";
+        title: SeeCut.personal-dialog == 1 ? "重命名素材" : SeeCut.personal-dialog == 2 ? "上传到团队资产库" : SeeCut.personal-dialog == 3 ? "新建文件夹" : SeeCut.personal-dialog == 4 ? "移到文件夹" : "移入回收站";
         glyph: Glyph.folder;
         surface-width: Math.min(440px, root.width - 32px);
         closed => { SeeCut.personal-dialog = 0; }
         VerticalLayout {
             padding: 20px; spacing: 16px;
-            if SeeCut.personal-dialog == 1: CloudField { value <=> SeeCut.personal-rename; placeholder: "资产名称"; }
+            if SeeCut.personal-dialog == 1: CloudField { value <=> SeeCut.personal-rename; placeholder: "素材名称"; }
+            if SeeCut.personal-dialog == 3: CloudField { value <=> SeeCut.personal-new-folder; placeholder: "文件夹名称"; }
+            if SeeCut.personal-dialog == 4: WorkspaceSelect { options: SeeCut.personal-move-folder-names; current: SeeCut.personal-folder-target; changed(index) => { SeeCut.personal-folder-target = index; } }
+            if SeeCut.personal-dialog == 5: Text { text: "将 " + SeeCut.personal-delete-count + " 项素材移入回收站？文件会保留，可恢复。"; color: Theme.fg; wrap: word-wrap; }
             if SeeCut.personal-dialog == 2: VerticalLayout {
                 spacing: 12px;
                 Text { text: "“" + root.selected-name + "”将长期保存到云端，所选团队成员均可查看和下载。"; color: Theme.fg-muted; wrap: word-wrap; }
@@ -131,7 +152,16 @@ export component PersonalPage inherits Rectangle {
             HorizontalLayout {
                 alignment: end; spacing: 8px;
                 AppButton { label: "取消"; clicked => { SeeCut.personal-dialog = 0; } }
-                AppButton { label: SeeCut.personal-dialog == 1 ? "保存" : "确认上传"; primary: true; enabled: !SeeCut.working && (SeeCut.personal-dialog == 1 ? SeeCut.personal-rename != "" : SeeCut.signed-in && SeeCut.team-index >= 0); clicked => { SeeCut.action(SeeCut.personal-dialog == 1 ? "personal-rename" : "personal-upload", root.selected-id); SeeCut.personal-dialog = 0; } }
+                AppButton {
+                    label: SeeCut.personal-dialog == 1 ? "保存" : SeeCut.personal-dialog == 2 ? "确认上传" : SeeCut.personal-dialog == 3 ? "创建" : SeeCut.personal-dialog == 4 ? "移动" : "移入回收站";
+                    primary: SeeCut.personal-dialog != 5;
+                    danger: SeeCut.personal-dialog == 5;
+                    enabled: !SeeCut.working && (SeeCut.personal-dialog == 1 ? SeeCut.personal-rename != "" : SeeCut.personal-dialog == 2 ? SeeCut.signed-in && SeeCut.team-index >= 0 : SeeCut.personal-dialog == 3 ? SeeCut.personal-new-folder != "" : true);
+                    clicked => {
+                        SeeCut.action(SeeCut.personal-dialog == 1 ? "personal-rename" : SeeCut.personal-dialog == 2 ? "personal-upload" : SeeCut.personal-dialog == 3 ? "personal-create-folder" : SeeCut.personal-dialog == 4 ? "personal-move-selected" : "personal-confirm-delete", root.selected-id);
+                        SeeCut.personal-dialog = 0;
+                    }
+                }
             }
         }
     }

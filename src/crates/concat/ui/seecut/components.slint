@@ -150,14 +150,13 @@ export component NavItem inherits Rectangle {
     in property <string> label;
     in property <Glyph> glyph;
     in property <int> page;
-    in property <bool> compact;
+    in property <bool> avatar;
     property <bool> selected: SeeCut.page == root.page || (root.page == 5 && (SeeCut.page == 2 || SeeCut.page == 7)) || (root.page == 4 && SeeCut.page == 3);
-    min-height: 62px;
-    max-height: 62px;
+    width: 44px;
+    height: 44px;
     border-radius: Theme.r;
-    background: root.selected ? Theme.accent-soft : touch.has-hover ? Theme.field-hover : Colors.transparent;
-    border-width: root.selected ? 1px : 0px;
-    border-color: Theme.accent-soft;
+    background: root.selected ? Theme.accent-soft : Colors.transparent;
+    border-width: 0px;
     animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
     property <bool> ring;
     accessible-role: button;
@@ -171,32 +170,47 @@ export component NavItem inherits Rectangle {
             return EventResult.reject;
         }
     }
-    VerticalLayout {
-        padding: 8px; spacing: 5px; alignment: center;
-        HorizontalLayout { alignment: center; Icon { glyph: root.glyph; size: 20px; tint: root.selected ? Theme.accent : Theme.fg-muted; } }
-        Text { text: root.label; color: root.selected ? Theme.fg : Theme.fg-muted; font-size: 13px; horizontal-alignment: center; }
+    if !root.avatar: Icon { x: 10px; y: 10px; glyph: root.glyph; size: 24px; tint: root.selected ? Theme.accent : touch.has-hover ? Theme.fg : Theme.fg-muted; }
+    if root.avatar: Rectangle {
+        x: 4px; y: 4px; width: 36px; height: 36px;
+        border-radius: 18px; background: Theme.field-active;
+        Text { text: SeeCut.account-label; width: 100%; height: 100%; color: Theme.fg; horizontal-alignment: center; vertical-alignment: center; font-size: 12px; }
     }
     touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.open(); } }
     FocusRing { active: root.ring; radius: Theme.r; }
-    Tip { text: root.label; active: root.compact && touch.has-hover; }
+    Tip { text: root.label; active: touch.has-hover; }
 }
 
 export component AppRail inherits Rectangle {
-    in property <bool> compact;
-    width: 72px;
-    background: Theme.panel;
+    callback begin-drag();
+    callback toggle-maximize();
+    callback open-settings();
+    width: 80px;
+    background: Theme.nav;
     VerticalLayout {
-        padding: 8px;
-        spacing: 4px;
-        Rectangle { height: 6px; }
-        NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; compact: root.compact; }
-        NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; compact: root.compact; }
-        NavItem { label: "画布"; glyph: Glyph.brush; page: 6; compact: root.compact; }
-        NavItem { label: "资产"; glyph: Glyph.folder; page: 5; compact: root.compact; }
+        padding-left: 18px;
+        padding-right: 18px;
+        padding-bottom: 14px;
+        spacing: 14px;
+        Rectangle {
+            height: 44px;
+            drag := TouchArea {
+                pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.begin-drag(); } }
+                double-clicked => { root.toggle-maximize(); }
+            }
+        }
+        HorizontalLayout { height: 36px; alignment: center;
+            Image { width: 36px; height: 36px; source: @image-url("../assets/seecut-astronaut.png"); image-fit: contain; }
+        }
+        Rectangle { height: 18px; }
+        NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; }
+        NavItem { label: "画布"; glyph: Glyph.brush; page: 6; }
+        NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; }
+        NavItem { label: "资产库"; glyph: Glyph.folder; page: 5; }
         Rectangle { vertical-stretch: 1; }
-        NavItem { label: "账号"; glyph: Glyph.lock; page: 4; compact: root.compact; }
+        IconButton { width: 44px; height: 44px; side: 44px; icon-size: 24px; glyph: Glyph.sliders; label: "设置"; clicked => { root.open-settings(); } }
+        NavItem { label: "账号"; glyph: Glyph.none; page: 4; avatar: true; }
     }
-    Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.line; }
 }
 
 export component WorkspaceIcon inherits IconButton {

@@ -60,18 +60,30 @@ pub struct Asset {
     /// Whether the user pinned this item for quick access.
     #[serde(default)]
     pub favorite: bool,
+    /// Optional user folder. Assets keep their stable id and media path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
 struct Manifest {
     #[serde(default)]
     items: Vec<Asset>,
+    #[serde(default)]
+    folders: Vec<Folder>,
 }
 
 /// A local personal media library backed by an atomic JSON index.
 pub struct Library {
     root: PathBuf,
     items: Vec<Asset>,
+    folders: Vec<Folder>,
 }
 
 impl Library {
@@ -82,25 +94,77 @@ impl Library {
             return Err("个人资产库路径不是文件夹".into());
         }
         let manifest_path = root.join(MANIFEST_NAME);
-        let items = if manifest_path.exists() {
+        let manifest = if manifest_path.exists() {
             let bytes = fs::read(&manifest_path)
                 .map_err(|error| format!("无法读取个人资产库索引：{error}"))?;
-            serde_json::from_slice::<Manifest>(&bytes)
-                .map_err(|error| {
-                    format!("个人资产库索引已损坏，请先备份或修复 library.json：{error}")
-                })?
-                .items
+            serde_json::from_slice::<Manifest>(&bytes).map_err(|error| {
+                format!("个人资产库索引已损坏，请先备份或修复 library.json：{error}")
+            })?
         } else {
-            Vec::new()
+            Manifest::default()
         };
         fs::create_dir_all(root.join("imported"))
             .map_err(|error| format!("无法创建个人资产库目录：{error}"))?;
-        Ok(Self { root, items })
+        Ok(Self {
+            root,
+            items: manifest.items,
+            folders: manifest.folders,
+        })
     }
 
     /// Returns all indexed items, including recycled items.
     pub fn items(&self) -> &[Asset] {
         &self.items
+    }
+
+    pub fn folders(&self) -> &[Folder] {
+        &self.folders
+    }
+
+    pub fn create_folder(&mut self, name: &str) -> Result<&Folder, String> {
+        validate_name(name)?;
+        if self.folders.iter().any(|folder| folder.name == name) {
+            return Err("文件夹已存在".into());
+        }
+        self.folders.push(Folder {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_owned(),
+        });
+        if let Err(error) = self.save() {
+            self.folders.pop();
+            return Err(error);
+        }
+        Ok(self.folders.last().expect("刚创建的文件夹必须存在"))
+    }
+
+    pub fn move_to_folder(
+        &mut self,
+        ids: &[String],
+        folder_id: Option<&str>,
+    ) -> Result<usize, String> {
+        if let Some(folder_id) = folder_id {
+            if !self.folders.iter().any(|folder| folder.id == folder_id) {
+                return Err("文件夹不存在，请刷新后重试".into());
+            }
+        }
+        for id in ids {
+            if self.get(id).is_none() {
+                return Err("素材不存在，请刷新后重试".into());
+            }
+        }
+        let previous = self.items.clone();
+        let mut changed = 0;
+        for item in &mut self.items {
+            if ids.contains(&item.id) && item.folder_id.as_deref() != folder_id {
+                item.folder_id = folder_id.map(str::to_owned);
+                changed += 1;
+            }
+        }
+        if let Err(error) = self.save() {
+            self.items = previous;
+            return Err(error);
+        }
+        Ok(changed)
     }
 
     /// Returns an item by stable identifier.
@@ -151,6 +215,7 @@ impl Library {
             created_at,
             trashed: false,
             favorite: false,
+            folder_id: None,
         };
         self.items.push(item);
         if let Err(error) = self.save() {
@@ -178,6 +243,7 @@ impl Library {
             created_at,
             trashed: false,
             favorite: false,
+            folder_id: None,
         });
         if let Err(error) = self.save() {
             self.items.pop();
@@ -251,6 +317,7 @@ impl Library {
     fn save(&self) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(&Manifest {
             items: self.items.clone(),
+            folders: self.folders.clone(),
         })
         .map_err(|error| format!("无法生成个人资产库索引：{error}"))?;
         let temporary = self
@@ -538,6 +605,7 @@ mod tests {
             created_at: 0,
             trashed: false,
             favorite: false,
+            folder_id: None,
         };
 
         let first = thumbnail(&asset, &root).unwrap();

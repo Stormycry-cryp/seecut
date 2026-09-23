@@ -77,31 +77,31 @@ export global Dark {
     // separating a pane from the ground; without one the value step has to do
     // all of it, and a darker ladder leaves the panes reading as holes in the
     // window rather than as surfaces on it.
-    out property <color> panel: #23232b;
-    out property <color> raised: #2d2d37;
-    out property <color> well: #191920;
-    out property <color> field: #34343f;
-    out property <color> field-hover: #40404c;
-    out property <color> field-active: #494958;
+    out property <color> panel: #232326;
+    out property <color> raised: #2b2b2e;
+    out property <color> well: #151517;
+    out property <color> field: #29292c;
+    out property <color> field-hover: #343438;
+    out property <color> field-active: #3e3e43;
 
     // hairlines — white-alpha, so they hold on panel, well, and ground alike.
     out property <color> line: #ffffff1a;         // rgb(255 255 255 / 0.1)
     out property <color> line-strong: #ffffff33;  // rgb(255 255 255 / 0.2)
 
     // text
-    out property <color> fg: #f3f2fa;
-    out property <color> fg-muted: #b9b7c8;
-    out property <color> fg-dim: #9693aa;
+    out property <color> fg: #f2f2f2;
+    out property <color> fg-muted: #adadaf;
+    out property <color> fg-dim: #69696f;
 
     // Violet is shared by selection, active tools and primary actions.
     // Its dark ink pairing keeps filled controls readable.
-    out property <color> accent: #b5a7ff;
-    out property <color> accent-hover: #c7bcff;
-    out property <color> accent-soft: #a99af52b;
+    out property <color> accent: #ff684a;
+    out property <color> accent-hover: #ff8065;
+    out property <color> accent-soft: #33221f;
     out property <color> green: #30d158;
     // Ink for text and glyphs sitting ON the accent. A bright accent needs a
     // dark one; a dark accent would want #ffffff here instead.
-    out property <color> on-accent: #221944;
+    out property <color> on-accent: #171719;
     out property <color> on-green: #06210f;
 
     // The Rail's dragger — the raised chip you push along a hairline rail, as
@@ -234,8 +234,8 @@ export global Dark {
     out property <color> on-scrim: #ffffff;
 
     // destructive
-    out property <color> danger: #ff453a;
-    out property <color> danger-soft: #ff453a24;   // rgb(255 69 58 / 0.14)
+    out property <color> danger: #ff939e;
+    out property <color> danger-soft: #3a242b;
     /// A progress bar that has failed: the track it runs in, and the hairline
     /// round it. Desaturated rather than `danger-soft` over the usual well,
     /// because a bar is a large area and the alpha version of a saturated red
@@ -245,6 +245,6 @@ export global Dark {
 
     // window ground the panes float on — a shade under the darkest panel so
     // the gutters read as gaps and not as seams
-    out property <color> page: #19191f;
+    out property <color> page: #1c1c1e;
     out property <color> page-fg-muted: #b9b7c8;
 }
