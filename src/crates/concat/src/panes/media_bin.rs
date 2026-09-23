@@ -23,7 +23,7 @@ use crate::format::wave_path;
 use crate::host::{probe_error, spawn};
 use crate::i18n::{t, tf};
 use crate::panes::Msg;
-use crate::studio::Studio;
+use crate::studio::{MediaImportSession, Studio};
 use crate::ui::{MediaFilter, MediaItemData, MediaKind};
 
 /// Everything that can happen to the bin.
@@ -50,10 +50,37 @@ pub enum MediaMsg {
     RemoveSelected,
     /// Files picked, dropped or handed over by the platform.
     Import(Vec<PathBuf>),
+    /// Files handed over from the personal library. The display name is
+    /// carried separately because managed library paths are opaque ids.
+    ImportNamed {
+        imports: Vec<MediaImport>,
+        session: MediaImportSession,
+    },
     /// The import's worker is done probing.
     Imported(Vec<Result<MediaSummary, String>>),
+    /// The named import's worker is done probing.
+    ImportedNamed {
+        session: MediaImportSession,
+        results: Vec<Result<NamedMediaSummary, String>>,
+    },
     /// Everything selected goes on the timeline at the playhead.
     AddSelectedAtPlayhead,
+}
+
+/// A media path plus its optional user-visible name.
+#[derive(Clone, Debug)]
+pub struct MediaImport {
+    /// Absolute path used for probing and project storage.
+    pub path: PathBuf,
+    /// Name shown in the media bin after probing succeeds.
+    pub display_name: Option<String>,
+}
+
+/// A probed media file with its optional library display name.
+#[derive(Clone, Debug)]
+pub struct NamedMediaSummary {
+    summary: MediaSummary,
+    display_name: Option<String>,
 }
 
 /// The bin's state.
@@ -82,6 +109,21 @@ impl Default for MediaBin {
             thumbs: HashMap::new(),
         }
     }
+}
+
+fn named_import_session_is_current(
+    current: Option<&MediaImportSession>,
+    expected: &MediaImportSession,
+) -> bool {
+    current == Some(expected)
+}
+
+fn named_media_item(named: NamedMediaSummary) -> concat_project::commands::NewMedia {
+    let mut item = named.summary.to_new_media();
+    if let Some(display_name) = named.display_name {
+        item.name = display_name;
+    }
+    item
 }
 
 impl MediaBin {
@@ -151,33 +193,55 @@ impl MediaBin {
                     |studio, _, _, results| studio.handle(Msg::Media(MediaMsg::Imported(results))),
                 );
             }
+            MediaMsg::ImportNamed { imports, session } => {
+                if imports.is_empty()
+                    || !named_import_session_is_current(
+                        studio.media_import_session().as_ref(),
+                        &session,
+                    )
+                {
+                    return;
+                }
+                spawn(
+                    move || {
+                        imports
+                            .into_iter()
+                            .map(|import| {
+                                media::probe(&import.path.to_string_lossy()).map(|summary| {
+                                    NamedMediaSummary {
+                                        summary,
+                                        display_name: import.display_name,
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                    move |studio, _, _, results| {
+                        studio.handle(Msg::Media(MediaMsg::ImportedNamed { session, results }))
+                    },
+                );
+            }
             MediaMsg::Imported(results) => {
-                let mut commands = Vec::new();
-                let mut failures = Vec::new();
-                for result in results {
-                    match result {
-                        Ok(summary) => commands.push(Command::AddMedia {
-                            item: summary.to_new_media(),
-                        }),
-                        Err(error) => failures.push(error),
-                    }
+                self.apply_import_results(
+                    results
+                        .into_iter()
+                        .map(|result| result.map(|summary| summary.to_new_media())),
+                    studio,
+                );
+            }
+            MediaMsg::ImportedNamed { session, results } => {
+                if !named_import_session_is_current(
+                    studio.media_import_session().as_ref(),
+                    &session,
+                ) {
+                    return;
                 }
-                let added = commands.len();
-                if !commands.is_empty() {
-                    studio.apply(Command::Batch { commands });
-                }
-                if let Some(error) = failures.first() {
-                    studio.notify(&probe_error(error), true);
-                } else if added > 0 {
-                    studio.notify(
-                        &if added == 1 {
-                            t("Imported 1 file")
-                        } else {
-                            tf("Imported {0} files", &[&added])
-                        },
-                        false,
-                    );
-                }
+                self.apply_import_results(
+                    results
+                        .into_iter()
+                        .map(|result| result.map(named_media_item)),
+                    studio,
+                );
             }
             MediaMsg::AddSelectedAtPlayhead => {
                 let ids: Vec<String> = studio
@@ -192,6 +256,37 @@ impl MediaBin {
                     studio.apply(Command::AddClipAtFirstFree { media_id, start });
                 }
             }
+        }
+    }
+
+    fn apply_import_results(
+        &mut self,
+        results: impl IntoIterator<Item = Result<concat_project::commands::NewMedia, String>>,
+        studio: &mut Studio,
+    ) {
+        let mut commands = Vec::new();
+        let mut failures = Vec::new();
+        for result in results {
+            match result {
+                Ok(item) => commands.push(Command::AddMedia { item }),
+                Err(error) => failures.push(error),
+            }
+        }
+        let added = commands.len();
+        if !commands.is_empty() {
+            studio.apply(Command::Batch { commands });
+        }
+        if let Some(error) = failures.first() {
+            studio.notify(&probe_error(error), true);
+        } else if added > 0 {
+            studio.notify(
+                &if added == 1 {
+                    t("Imported 1 file")
+                } else {
+                    tf("Imported {0} files", &[&added])
+                },
+                false,
+            );
         }
     }
 
@@ -433,5 +528,39 @@ mod tests {
         let caught = bin.band(&project, 1, (0, 0), (0, 0), true);
         assert_eq!(caught.len(), 2);
         assert!(caught.contains("i1") && caught.contains("x"));
+    }
+
+    #[test]
+    fn named_import_results_drop_after_session_switch_or_reopen() {
+        let original = MediaImportSession {
+            generation: 7,
+            path: "/tmp/project-a".into(),
+        };
+        assert!(named_import_session_is_current(Some(&original), &original));
+        let imported = named_media_item(NamedMediaSummary {
+            summary: MediaSummary {
+                path: "/tmp/opaque-id.png".into(),
+                duration: None,
+                kind: Kind::Image,
+                video: None,
+                audio: None,
+                audio_tracks: Vec::new(),
+            },
+            display_name: Some("opaque-square".into()),
+        });
+        assert_eq!(imported.name, "opaque-square");
+        assert!(!named_import_session_is_current(None, &original));
+
+        let switched = MediaImportSession {
+            generation: 8,
+            path: "/tmp/project-b".into(),
+        };
+        assert!(!named_import_session_is_current(Some(&switched), &original));
+
+        let reopened = MediaImportSession {
+            generation: 9,
+            path: original.path.clone(),
+        };
+        assert!(!named_import_session_is_current(Some(&reopened), &original));
     }
 }

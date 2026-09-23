@@ -780,7 +780,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     }
     capture(&app, directory, "personal-use-menu-wide", 1400, 900)?;
     state.set_personal_menu(0);
-    click_fixture(&app, 900, 640, 840.0, 366.0)?;
+    click_fixture(&app, 900, 640, 840.0, 316.0)?;
     if state.get_personal_menu() == 0 {
         return Err(slint::PlatformError::Other(
             "Narrow asset menu did not open".into(),

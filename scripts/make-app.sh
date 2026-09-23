@@ -20,7 +20,7 @@ fi
 
 [[ "$INSTALL_ENABLED" == 0 || "$INSTALL_ENABLED" == 1 ]] || { print -u2 "SEECUT_INSTALL 仅支持 0 或 1"; exit 1; }
 
-for command in otool install_name_tool codesign ditto plutil; do
+for command in otool install_name_tool codesign ditto plutil sips iconutil; do
   command -v "$command" >/dev/null || { print -u2 "缺少打包工具：$command"; exit 1; }
 done
 [[ -x "$BIN" ]] || { print -u2 "未找到可执行文件：$BIN"; exit 1; }
@@ -30,8 +30,20 @@ mkdir -p "$OUT"
 STAGING_ROOT="$(mktemp -d "$OUT/.seecut-preview-stage.XXXXXX")"
 STAGED_APP="$STAGING_ROOT/SeeCut Preview.app"
 STAGED_ZIP="$STAGING_ROOT/SeeCut-Preview-macos.zip"
-mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Frameworks"
+mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Frameworks" "$STAGED_APP/Contents/Resources"
 cp "$BIN" "$STAGED_APP/Contents/MacOS/$EXECUTABLE"
+
+ICON_SOURCE="$ROOT/src/crates/concat/ui/assets/seecut-astronaut.png"
+[[ -f "$ICON_SOURCE" ]] || { print -u2 "缺少 SeeCut Logo：$ICON_SOURCE"; exit 1; }
+ICONSET="$STAGING_ROOT/SeeCut.iconset"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -s format png -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  double_size=$((size * 2))
+  sips -s format png -z "$double_size" "$double_size" "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$STAGED_APP/Contents/Resources/SeeCut.icns"
+rm -r "$ICONSET"
 
 cat > "$STAGED_APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,6 +56,7 @@ cat > "$STAGED_APP/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>$VERSION</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleExecutable</key><string>$EXECUTABLE</string>
+    <key>CFBundleIconFile</key><string>SeeCut.icns</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>NSHighResolutionCapable</key><true/>

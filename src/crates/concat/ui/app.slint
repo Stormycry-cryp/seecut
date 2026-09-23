@@ -708,64 +708,74 @@ export component App inherits Window {
         open: SeeCut.handoff-open;
         title: "发送 " + SeeCut.handoff-count + " 项到" + (SeeCut.handoff-kind == "canvas" ? "画布" : "剪辑");
         glyph: SeeCut.handoff-kind == "canvas" ? Glyph.brush : Glyph.film;
+        title-at-start: true;
         surface-width: Math.min(720px, root.width - 32px);
         surface-height: Math.min(490px, root.height - 32px);
         closed => { SeeCut.handoff-open = false; SeeCut.action("handoff-cancel", ""); }
         VerticalLayout {
-            padding: 24px; spacing: 16px; vertical-stretch: 1;
+            padding: 24px; padding-top: 4px; spacing: 16px; vertical-stretch: 1;
             Text { text: "所选素材会一起加入同一个项目"; color: Theme.fg-muted; font-size: 13px; }
             ScrollView {
                 height: 216px;
                 viewport-width: self.visible-width;
                 horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
+                    width: parent.width;
                     spacing: 16px;
                     for target in SeeCut.handoff-targets: Rectangle {
                         visible: target.id != "new";
+                        width: parent.width;
                         height: target.id == "new" ? 0px : 88px; border-radius: Theme.r; background: touch.has-hover ? Theme.field-hover : Theme.field;
                         border-width: 1px; border-color: SeeCut.handoff-selected-id == target.id ? Theme.accent : Theme.line-strong;
                         HorizontalLayout {
+                            width: parent.width; height: parent.height;
                             padding-left: 12px; padding-right: 16px; spacing: 16px;
-                            Rectangle {
-                                width: 96px; height: 64px; background: Theme.well; border-radius: Theme.r-sm; clip: true;
-                                if target.preview.width > 0: Image { width: 100%; height: 100%; source: target.preview; image-fit: cover; }
-                                if target.preview.width == 0: Icon { x: 36px; y: 20px; size: 24px; glyph: SeeCut.handoff-kind == "canvas" ? Glyph.image : Glyph.film; tint: Theme.fg-muted; }
+                            VerticalLayout {
+                                width: 96px; height: parent.height; alignment: center;
+                                Rectangle {
+                                    width: 96px; height: 64px; background: Theme.well; border-radius: Theme.r-sm; clip: true;
+                                    if target.preview.width > 0: Image { width: 100%; height: 100%; source: target.preview; image-fit: cover; }
+                                    if target.preview.width == 0: Icon { x: 36px; y: 20px; size: 24px; glyph: SeeCut.handoff-kind == "canvas" ? Glyph.image : Glyph.film; tint: Theme.fg-muted; }
+                                }
                             }
                             VerticalLayout {
                                 alignment: center; spacing: 2px; horizontal-stretch: 1;
                                 Text { text: target.name; color: Theme.fg; font-size: 14px; overflow: elide; }
                                 Text { text: target.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
                             }
-                            Icon { glyph: Glyph.chevron-right; size: 16px; tint: Theme.fg-muted; }
+                            VerticalLayout { width: 16px; height: parent.height; alignment: center; Icon { glyph: Glyph.chevron-right; size: 16px; tint: Theme.fg-muted; } }
                         }
                         touch := TouchArea { mouse-cursor: pointer; clicked => { SeeCut.handoff-selected-id = target.id; } }
                     }
                 }
             }
             AppButton {
+                width: 180px;
                 label: SeeCut.handoff-kind == "canvas" ? "新建画布项目" : "新建剪辑项目";
                 clicked => { SeeCut.handoff-selected-id = "new"; }
             }
             Rectangle { vertical-stretch: 1; }
             HorizontalLayout {
                 alignment: end; spacing: 8px;
-                AppButton { label: "取消"; clicked => { SeeCut.handoff-open = false; SeeCut.action("handoff-cancel", ""); } }
-                AppButton { label: "加入并打开"; primary: true; enabled: SeeCut.handoff-selected-id != ""; clicked => { SeeCut.action("handoff-select", SeeCut.handoff-selected-id); } }
+                AppButton { width: 96px; label: "取消"; clicked => { SeeCut.handoff-open = false; SeeCut.action("handoff-cancel", ""); } }
+                AppButton { width: 104px; label: "加入并打开"; primary: true; enabled: SeeCut.handoff-selected-id != ""; clicked => { SeeCut.action("handoff-select", SeeCut.handoff-selected-id); } }
             }
         }
     }
     Modal {
         open: SeeCut.canvas-export-open;
-        title: "导出图片";
-        glyph: Glyph.image;
-        surface-width: 360px;
+        title: "导出";
+        title-at-start: true;
+        show-close-for-start-title: true;
+        surface-width: Math.min(544px, root.width - 32px);
+        surface-height: 214px;
         closed => { SeeCut.canvas-export-open = false; }
         VerticalLayout {
-            padding: 18px;
-            spacing: 12px;
-            Text { text: "选择保存位置"; color: Theme.fg-muted; font-size: 13px; }
-            AppButton { label: "保存到个人资产"; primary: true; clicked => { SeeCut.canvas-export-open = false; root.canvas-export-library(); } }
-            AppButton { label: "保存到其他文件夹"; clicked => { SeeCut.canvas-export-open = false; Editor.canvas-export-png(); } }
+            padding-left: 24px; padding-right: 24px;
+            padding-top: 6px; padding-bottom: 34px;
+            spacing: 16px;
+            AppButton { height: 48px; label: "导出至资产库"; clicked => { SeeCut.canvas-export-open = false; root.canvas-export-library(); } }
+            AppButton { height: 48px; label: "导出至其他文件夹"; subtle: true; clicked => { SeeCut.canvas-export-open = false; Editor.canvas-export-png(); } }
         }
     }
 

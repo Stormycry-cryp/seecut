@@ -31,6 +31,7 @@ use concat_canvas::{
     fill_region,
 };
 use concat_core::frame::Frame;
+use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, SharedPixelBuffer};
 
 use crate::i18n::tf;
@@ -138,16 +139,56 @@ pub type LayerRow = (
     bool,
 );
 
+/// Handoff imports carry a display name separately from their path. Managed
+/// personal-library files intentionally use opaque paths, while the canvas
+/// project and layer should retain the name the user sees in the library.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct CanvasImport {
+    pub(crate) path: PathBuf,
+    #[serde(default)]
+    pub(crate) display_name: Option<String>,
+}
+
+impl CanvasImport {
+    pub(crate) fn from_path(path: PathBuf) -> Self {
+        Self {
+            path,
+            display_name: None,
+        }
+    }
+
+    pub(crate) fn named(path: PathBuf, display_name: impl Into<String>) -> Self {
+        let display_name = display_name.into();
+        Self {
+            path,
+            display_name: (!display_name.is_empty()).then_some(display_name),
+        }
+    }
+
+    fn layer_name(&self) -> String {
+        self.display_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                self.path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "未命名素材".to_owned())
+    }
+}
+
 /// Everything that can happen to the canvas.
 #[derive(Debug)]
 pub enum CanvasMsg {
     /// The picker came back with files; the first image is the one opened.
     Picked(Vec<std::path::PathBuf>),
     /// Adds images to the current document as separate editable layers.
-    ImportLayers(Vec<std::path::PathBuf>),
-    HandoffImport(Vec<std::path::PathBuf>),
-    NewAndImport(Vec<std::path::PathBuf>),
-    OpenAndImport(PathBuf, Vec<std::path::PathBuf>),
+    ImportLayers(Vec<CanvasImport>),
+    HandoffImport(Vec<CanvasImport>),
+    NewAndImport(Vec<CanvasImport>),
+    OpenAndImport(PathBuf, Vec<CanvasImport>),
     /// Creates an editable blank canvas in managed project storage.
     New,
     /// The viewport's box changed, in viewport pixels.
@@ -369,7 +410,7 @@ pub struct CanvasPane {
     autosave_inflight: Option<u64>,
     /// A requested image/project held while the discard dialog is visible.
     pending_open: Option<PathBuf>,
-    pending_handoff_paths: Option<Vec<PathBuf>>,
+    pending_handoff_paths: Option<Vec<CanvasImport>>,
     pub open_confirm: bool,
     /// The full path of the current `.comp` package, when this document has
     /// one. Ordinary Save writes here; a newly opened image uses Save As
@@ -521,6 +562,12 @@ impl CanvasPane {
                 }
                 let generation = self.document_generation;
                 self.new_blank(studio);
+                if let Some(name) = paths
+                    .first()
+                    .and_then(|item| item.display_name.as_deref().filter(|name| !name.is_empty()))
+                {
+                    self.name = name.to_owned();
+                }
                 if self.document_generation != generation {
                     self.begin_history_mode(0);
                     let success = self.import_layers(&paths, studio);
@@ -2188,10 +2235,8 @@ impl CanvasPane {
             Some(gpu) => gpu.compose_frame(&document, &self.store),
             None => concat_canvas::compose(&document, &self.store),
         };
-        let name = match self.name.rsplit_once('.') {
-            Some((stem, _)) => format!("{stem}.png"),
-            None => format!("{}.png", self.name),
-        };
+        let export_stem = safe_export_stem(&self.name);
+        let name = format!("{export_stem}.png");
         let path = if to_library {
             let folder = match concat_host::AppDirs::locate() {
                 Ok(dirs) => dirs.data.join("canvas-exports"),
@@ -2233,9 +2278,14 @@ impl CanvasPane {
                     studio.notify(&tf("Canvas failed: {0}", &[&error.to_string()]), true);
                 } else if to_library {
                     let path = path.to_string_lossy().into_owned();
+                    let payload = serde_json::json!({
+                        "path": path,
+                        "name": export_stem,
+                    })
+                    .to_string();
                     crate::host::Shell::with(|_, app| {
                         app.global::<crate::ui::SeeCut>()
-                            .invoke_action("personal-register-canvas".into(), path.into());
+                            .invoke_action("personal-register-canvas".into(), payload.into());
                     });
                 } else {
                     studio.notify("图片已导出", false);
@@ -2741,7 +2791,7 @@ impl CanvasPane {
         self.render(studio);
     }
 
-    fn validate_import_paths(&self, paths: &[PathBuf], studio: &mut Studio) -> bool {
+    fn validate_import_paths(&self, paths: &[CanvasImport], studio: &mut Studio) -> bool {
         if paths.is_empty() {
             return false;
         }
@@ -2756,16 +2806,16 @@ impl CanvasPane {
                     .as_ref()
                     .map(|device| device.limits().max_texture_dimension_2d)
             });
-        for path in paths {
-            if let Err(error) = decode(path, texture_limit) {
-                studio.notify(&format!("无法导入 {}：{error}", path.display()), true);
+        for item in paths {
+            if let Err(error) = decode(&item.path, texture_limit) {
+                studio.notify(&format!("无法导入 {}：{error}", item.path.display()), true);
                 return false;
             }
         }
         true
     }
 
-    fn import_layers(&mut self, paths: &[PathBuf], studio: &mut Studio) -> bool {
+    fn import_layers(&mut self, paths: &[CanvasImport], studio: &mut Studio) -> bool {
         if paths.is_empty() {
             return false;
         }
@@ -2781,19 +2831,27 @@ impl CanvasPane {
                     .map(|device| device.limits().max_texture_dimension_2d)
             });
         let mut decoded = Vec::with_capacity(paths.len());
-        for path in paths {
-            match decode(path, texture_limit) {
-                Ok(frame) => decoded.push((path, frame)),
+        for item in paths {
+            match decode(&item.path, texture_limit) {
+                Ok(frame) => decoded.push((item, frame)),
                 Err(error) => {
-                    studio.notify(&format!("无法导入 {}：{error}", path.display()), true);
+                    studio.notify(&format!("无法导入 {}：{error}", item.path.display()), true);
                     return false;
                 }
             }
         }
         if self.document.is_none() {
-            self.open_now(paths[0].as_path(), studio);
+            self.open_now(&paths[0].path, studio);
             if self.document.is_none() {
                 return false;
+            }
+            let name = paths[0].layer_name();
+            self.name = name.clone();
+            if let Some(active) = self.active
+                && let Some(document) = self.document.as_mut()
+                && let Some(layer) = document.layer_mut(active)
+            {
+                layer.name = name;
             }
             decoded.remove(0);
         }
@@ -2802,7 +2860,7 @@ impl CanvasPane {
             .as_ref()
             .map(|document| (document.width, document.height))
             .expect("checked");
-        for (path, frame) in decoded {
+        for (item, frame) in decoded {
             let fit = (width as f64 / frame.width() as f64)
                 .min(height as f64 / frame.height() as f64)
                 .min(1.0);
@@ -2831,11 +2889,7 @@ impl CanvasPane {
                     .copy_from_slice(&fitted.as_raw()[source..source + layer_width as usize * 4]);
             }
             let pixels = self.store.put(canvas);
-            let name = path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
+            let name = item.layer_name();
             let id = self
                 .document
                 .as_mut()
@@ -3021,6 +3075,25 @@ impl CanvasPane {
                 }
             }
         }
+    }
+}
+
+fn safe_export_stem(name: &str) -> String {
+    let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
+    let safe = stem
+        .chars()
+        .map(|ch| {
+            if ch == '/' || ch == '\\' || ch.is_control() {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>();
+    if safe.trim().is_empty() {
+        "画布".to_owned()
+    } else {
+        safe
     }
 }
 

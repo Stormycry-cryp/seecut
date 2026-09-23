@@ -5,21 +5,29 @@ import { SeeCut } from "state.slint";
 import { AppButton, AssetPreview, CloudField, EmptyState, WorkspaceSelect, WorkspaceIcon, MenuAction } from "components.slint";
 
 component AssetFilters inherits HorizontalLayout {
-    width: 510px; horizontal-stretch: 0; spacing: Theme.workbench-gap;
+    horizontal-stretch: 1; spacing: Theme.workbench-gap;
     for label[index] in ["全部", "图片", "视频", "音频"]: AppButton {
-        label: label; selected: SeeCut.personal-filter == index; subtle: SeeCut.personal-filter != index;
+        label: label; selected: SeeCut.personal-filter == index; subtle: true;
         clicked => { SeeCut.personal-filter = index; SeeCut.changed("personal-filter", index); }
     }
-    WorkspaceSelect { width: 116px; options: ["全部来源", "本地导入", "生成结果"]; current: SeeCut.personal-source; changed(index) => { SeeCut.personal-source = index; SeeCut.changed("personal-source", index); } }
-    WorkspaceIcon { glyph: Glyph.star; label: "只看收藏"; checked: SeeCut.personal-favorites; clicked => { SeeCut.personal-favorites = !SeeCut.personal-favorites; SeeCut.changed("personal-favorites", ""); } }
-    WorkspaceIcon { glyph: Glyph.reset; label: "重置所有筛选"; clicked => { SeeCut.personal-search = ""; SeeCut.personal-filter = 0; SeeCut.personal-source = 0; SeeCut.personal-favorites = false; SeeCut.changed("personal-search", ""); SeeCut.changed("personal-filter", "0"); SeeCut.changed("personal-source", "0"); SeeCut.changed("personal-favorites", ""); } }
+    Rectangle { horizontal-stretch: 1; }
+    WorkspaceSelect {
+        width: 108px; flat: true;
+        options: ["最近添加", "名称", "类型"];
+        current: SeeCut.personal-sort;
+        changed(index) => { SeeCut.personal-sort = index; SeeCut.changed("personal-sort", index); }
+    }
 }
 export component PersonalPage inherits Rectangle {
     property <string> selected-id;
     property <string> selected-name;
     property <length> menu-x: 24px;
     property <length> menu-y: 96px;
+    property <bool> filter-menu-open;
+    property <length> filter-menu-x: 24px;
+    property <length> filter-menu-y: 96px;
     function open-menu(kind: int, id: string, name: string, media: string, ready: bool, x: length, y: length) {
+        root.filter-menu-open = false;
         SeeCut.personal-menu = kind; SeeCut.personal-menu-id = id; SeeCut.personal-menu-name = name;
         SeeCut.personal-menu-kind = media; SeeCut.personal-menu-ready = ready;
         root.menu-x = x; root.menu-y = y;
@@ -35,14 +43,14 @@ export component PersonalPage inherits Rectangle {
             HorizontalLayout {
                 height: 40px; spacing: 8px;
                 Text { text: "文件夹"; font-size: 14px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
-                WorkspaceIcon { glyph: Glyph.folder; label: "新建文件夹"; clicked => { SeeCut.personal-new-folder = ""; SeeCut.personal-dialog = 3; } }
+                WorkspaceIcon { glyph: Glyph.folder-plus; label: "新建文件夹"; clicked => { SeeCut.personal-new-folder = ""; SeeCut.personal-dialog = 3; } }
             }
             for folder[index] in SeeCut.personal-folder-names: Rectangle {
                 height: 40px; width: 100%; border-radius: Theme.r;
                 background: SeeCut.personal-folder-filter == index ? Theme.accent-soft : Colors.transparent;
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 8px;
-                    WorkspaceIcon { glyph: Glyph.folder; label: folder; checked: SeeCut.personal-folder-filter == index; clicked => { SeeCut.personal-folder-filter = index; SeeCut.changed("personal-folder-filter", index); } }
+                    WorkspaceIcon { glyph: Glyph.folder; label: folder; accent: SeeCut.personal-folder-filter == index; clicked => { SeeCut.personal-folder-filter = index; SeeCut.changed("personal-folder-filter", index); } }
                     Text { text: folder; color: Theme.fg; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
                 TouchArea { mouse-cursor: pointer; clicked => { SeeCut.personal-folder-filter = index; SeeCut.changed("personal-folder-filter", index); } }
@@ -54,10 +62,22 @@ export component PersonalPage inherits Rectangle {
         HorizontalLayout {
             height: Theme.workbench-h; spacing: 8px;
             Text { text: root.width >= 1100px && SeeCut.personal-folder-names.length > SeeCut.personal-folder-filter ? SeeCut.personal-folder-names[SeeCut.personal-folder-filter] : "资产库"; font-size: 24px; color: Theme.fg; vertical-alignment: center; }
-            if root.width >= 1100px: Text { text: SeeCut.personal-assets.length + " 项"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
+            Text { text: SeeCut.personal-assets.length + " 项"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
-            if root.width >= 1100px: CloudField { width: 232px; value <=> SeeCut.personal-search; placeholder: "搜索素材"; edited(value) => { SeeCut.changed("personal-search", value); } }
+            CloudField {
+                width: root.width >= 760px ? 232px : 1px;
+                horizontal-stretch: root.width < 760px ? 1 : 0;
+                value <=> SeeCut.personal-search;
+                placeholder: "搜索素材";
+                edited(value) => { SeeCut.changed("personal-search", value); }
+            }
             WorkspaceIcon { glyph: Glyph.import; label: "导入素材"; clicked => { SeeCut.action("personal-browse", ""); } }
+            WorkspaceIcon {
+                glyph: Glyph.box-select;
+                checked: SeeCut.personal-selection-mode;
+                label: SeeCut.personal-selection-mode ? "完成批量管理" : "批量管理";
+                clicked => { SeeCut.personal-selection-mode = !SeeCut.personal-selection-mode; SeeCut.changed("personal-selection-mode", ""); }
+            }
         }
         if root.width < 1100px: HorizontalLayout {
             height: Theme.workbench-h; spacing: 8px;
@@ -67,18 +87,22 @@ export component PersonalPage inherits Rectangle {
                 horizontal-stretch: 1;
                 changed(index) => { SeeCut.personal-folder-filter = index; SeeCut.changed("personal-folder-filter", index); }
             }
-            WorkspaceIcon { glyph: Glyph.folder; label: "新建文件夹"; clicked => { SeeCut.personal-new-folder = ""; SeeCut.personal-dialog = 3; } }
+            WorkspaceIcon { glyph: Glyph.folder-plus; label: "新建文件夹"; clicked => { SeeCut.personal-new-folder = ""; SeeCut.personal-dialog = 3; } }
         }
         HorizontalLayout {
             spacing: Theme.workbench-gap; height: Theme.workbench-h;
-            if root.width >= 1100px: AssetFilters { }
-            if root.width < 1100px: CloudField { value <=> SeeCut.personal-search; placeholder: "搜索素材"; horizontal-stretch: 1; edited(value) => { SeeCut.changed("personal-search", value); } }
-            if root.width >= 1100px: Rectangle { horizontal-stretch: 1; }
-            AppButton { label: SeeCut.personal-selection-mode ? "完成管理" : "批量管理"; selected: SeeCut.personal-selection-mode; clicked => { SeeCut.personal-selection-mode = !SeeCut.personal-selection-mode; SeeCut.changed("personal-selection-mode", ""); } }
-            WorkspaceIcon { glyph: SeeCut.personal-trash ? Glyph.reset : Glyph.trash; label: SeeCut.personal-trash ? "返回资产" : "回收站"; clicked => { SeeCut.personal-trash = !SeeCut.personal-trash; SeeCut.changed("personal-trash", ""); } }
-            WorkspaceIcon { glyph: Glyph.folder; label: "打开本机资产文件夹"; clicked => { SeeCut.action("personal-folder", ""); } }
+            AssetFilters { }
+            WorkspaceIcon {
+                glyph: Glyph.filter;
+                checked: root.filter-menu-open;
+                label: "筛选与位置";
+                clicked => {
+                    root.filter-menu-open = !root.filter-menu-open;
+                    root.filter-menu-x = self.absolute-position.x - root.absolute-position.x;
+                    root.filter-menu-y = self.absolute-position.y - root.absolute-position.y + self.height + 4px;
+                }
+            }
         }
-        if root.width < 1100px: HorizontalLayout { height: Theme.workbench-h; AssetFilters {} Rectangle { horizontal-stretch: 1; } }
         if SeeCut.personal-selection-mode: HorizontalLayout {
             spacing: Theme.workbench-gap; height: Theme.workbench-h;
             Text { text: "已选 " + SeeCut.personal-selected-count + " 项"; color: Theme.fg; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
@@ -124,7 +148,7 @@ export component PersonalPage inherits Rectangle {
                                     }
                                     if preview.hovered || !asset.ready: Rectangle {
                                         y: parent.height - 48px; height: 48px; width: 100%; background: Theme.scrim;
-                                        Text { x: 10px; width: parent.width - 20px; height: 100%; text: asset.ready ? asset.detail : "文件已移动或丢失"; color: Theme.on-scrim; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
+                                        Text { x: 10px; width: parent.width - 20px; height: 100%; text: asset.ready ? asset.status : "文件已移动或丢失"; color: Theme.on-scrim; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
                                     }
                                     if SeeCut.personal-selection-mode: WorkspaceIcon { x: 8px; y: 8px; on-image: true; glyph: asset.selected ? Glyph.check : Glyph.box-select; checked: asset.selected; label: asset.selected ? "取消选择" : "选择素材"; clicked => { SeeCut.action("personal-select", asset.id); } }
                                     WorkspaceIcon { x: 8px; y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.star; checked: asset.favorite; label: asset.favorite ? "取消收藏" : "收藏素材"; clicked => { SeeCut.action("personal-favorite", asset.id); } }
@@ -133,7 +157,7 @@ export component PersonalPage inherits Rectangle {
                                 HorizontalLayout {
                                     padding-left: 0px; padding-right: 0px; padding-top: 6px; padding-bottom: 8px; spacing: 6px;
                                     Text { text: asset.name; color: Theme.fg; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
-                                    Text { text: asset.detail; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; overflow: elide; max-width: 110px; }
+                                    Text { width: 200px; text: asset.detail; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: right; overflow: elide; }
                                 }
                             }
                         }
@@ -142,6 +166,47 @@ export component PersonalPage inherits Rectangle {
             }
         }
     }
+    }
+    if root.filter-menu-open: TouchArea { clicked => { root.filter-menu-open = false; } }
+    if root.filter-menu-open: Rectangle {
+        x: Math.clamp(root.filter-menu-x, 12px, root.width - self.width - 12px);
+        y: Math.clamp(root.filter-menu-y, 12px, root.height - self.height - 12px);
+        width: 244px; height: 282px;
+        background: Theme.raised; border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
+        drop-shadow-blur: 16px; drop-shadow-color: #0005;
+        FocusScope {
+            key-pressed(event) => { if event.text == Key.Escape { root.filter-menu-open = false; return accept; } return reject; }
+        }
+        VerticalLayout {
+            padding: 8px; spacing: 0px; alignment: start;
+            Text { text: "筛选与位置"; font-size: 13px; color: Theme.fg-muted; height: 30px; vertical-alignment: center; }
+            WorkspaceSelect {
+                width: 100%;
+                options: ["全部来源", "本地导入", "生成结果"];
+                current: SeeCut.personal-source;
+                changed(index) => { SeeCut.personal-source = index; SeeCut.changed("personal-source", index); }
+            }
+            MenuAction {
+                label: SeeCut.personal-favorites ? "取消只看收藏" : "只看收藏";
+                glyph: Glyph.star;
+                clicked => { SeeCut.personal-favorites = !SeeCut.personal-favorites; SeeCut.changed("personal-favorites", ""); }
+            }
+            MenuAction {
+                label: SeeCut.personal-trash ? "返回资产" : "查看回收站";
+                glyph: SeeCut.personal-trash ? Glyph.reset : Glyph.trash;
+                clicked => { SeeCut.personal-trash = !SeeCut.personal-trash; SeeCut.changed("personal-trash", ""); root.filter-menu-open = false; }
+            }
+            MenuAction { label: "打开本机资产文件夹"; glyph: Glyph.folder; clicked => { root.filter-menu-open = false; SeeCut.action("personal-folder", ""); } }
+            MenuAction { label: "刷新素材"; glyph: Glyph.reset; enabled: !SeeCut.working; clicked => { root.filter-menu-open = false; SeeCut.action("personal-refresh", ""); } }
+            MenuAction {
+                label: "重置筛选"; glyph: Glyph.reset;
+                clicked => {
+                    SeeCut.personal-search = ""; SeeCut.personal-filter = 0; SeeCut.personal-source = 0; SeeCut.personal-favorites = false;
+                    SeeCut.changed("personal-search", ""); SeeCut.changed("personal-filter", "0"); SeeCut.changed("personal-source", "0"); SeeCut.changed("personal-favorites", "");
+                    root.filter-menu-open = false;
+                }
+            }
+        }
     }
     if SeeCut.personal-menu > 0: TouchArea { clicked => { SeeCut.personal-menu = 0; } }
     if SeeCut.personal-menu > 0: Rectangle {

@@ -2,43 +2,72 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Icon } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
-import { AssetPreview } from "components.slint";
+import { AssetPreview, CloudField, WorkspaceIcon } from "components.slint";
 
 export component CanvasProjectsPage inherits Rectangle {
+    property <bool> list-view: SeeCut.canvas-project-view == 1;
     background: Theme.page;
     VerticalLayout {
-        padding-left: 32px; padding-right: 48px; padding-top: 44px; padding-bottom: 24px; spacing: 32px;
-        Text { text: "画布"; height: 36px; font-size: 24px; color: Theme.fg; vertical-alignment: center; }
+        padding-left: 32px; padding-right: 48px; padding-top: 40px; padding-bottom: 24px; spacing: 32px;
+        HorizontalLayout {
+            height: 40px;
+            Text { text: "画布"; font-size: 24px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
+            CloudField {
+                width: 248px;
+                value <=> SeeCut.canvas-project-search;
+                placeholder: "搜索项目";
+                edited(value) => { SeeCut.action("canvas-project-search", value); }
+            }
+            WorkspaceIcon {
+                glyph: Glyph.filter;
+                label: SeeCut.canvas-project-sort == 0 ? "按最近更新排序" : "按名称排序";
+                checked: SeeCut.canvas-project-sort == 1;
+                clicked => {
+                    SeeCut.canvas-project-sort = Math.mod(SeeCut.canvas-project-sort + 1, 2);
+                    SeeCut.action("canvas-project-sort", "");
+                }
+            }
+            WorkspaceIcon {
+                glyph: Glyph.rows;
+                label: SeeCut.canvas-project-view == 1 ? "网格视图" : "列表视图";
+                checked: root.list-view;
+                clicked => {
+                    SeeCut.canvas-project-view = root.list-view ? 0 : 1;
+                    SeeCut.action("canvas-project-view", "");
+                }
+            }
+        }
         ScrollView {
             viewport-width: self.visible-width; viewport-height: grid.height;
             horizontal-scrollbar-policy: always-off;
             vertical-stretch: 1; horizontal-stretch: 1;
             grid := Rectangle {
                 x: 0px; y: 0px; width: parent.width;
-                property <int> columns: Math.max(1, Math.floor((self.width + 24px) / 310px));
-                property <length> card-width: (self.width - (self.columns - 1) * 24px) / self.columns;
-                property <length> media-height: self.card-width * 0.60;
-                property <length> card-height: self.media-height + 64px;
-                height: Math.ceil((SeeCut.canvas-projects.length + 1) / self.columns) * (self.card-height + 24px) - 24px;
+                property <int> columns: root.list-view ? 1 : Math.max(1, Math.floor((self.width + 24px) / 310px));
+                property <length> gap: root.list-view ? 16px : 24px;
+                property <length> card-width: root.list-view ? self.width : (self.width - (self.columns - 1) * self.gap) / self.columns;
+                property <length> media-height: root.list-view ? 96px : self.card-width * 0.60;
+                property <length> card-height: root.list-view ? 96px : self.media-height + 64px;
+                height: Math.ceil((SeeCut.canvas-projects.length + 1) / self.columns) * (self.card-height + self.gap) - self.gap;
                 Rectangle {
                     x: 0px; y: 0px;
                     width: grid.card-width; height: grid.card-height;
                     Rectangle {
                         x: 0px; y: 0px;
-                        width: 100%; height: grid.media-height; background: Theme.panel;
+                        width: root.list-view ? 160px : parent.width; height: grid.media-height; background: Theme.panel;
                         border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
                         Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; size: 24px; glyph: Glyph.plus; tint: Theme.fg-muted; }
                         TouchArea { mouse-cursor: pointer; clicked => { SeeCut.action("canvas-new", ""); } }
                     }
-                    Text { x: 0px; y: grid.media-height + 10px; text: "新建项目"; color: Theme.fg; font-size: 14px; }
+                    Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 18px : grid.media-height + 10px; text: "新建项目"; color: Theme.fg; font-size: 14px; }
                 }
                 for project[i] in SeeCut.canvas-projects: Rectangle {
-                    x: Math.mod(i + 1, grid.columns) * (grid.card-width + 24px);
-                    y: Math.floor((i + 1) / grid.columns) * (grid.card-height + 24px);
+                    x: Math.mod(i + 1, grid.columns) * (grid.card-width + grid.gap);
+                    y: Math.floor((i + 1) / grid.columns) * (grid.card-height + grid.gap);
                     width: grid.card-width; height: grid.card-height;
                     AssetPreview {
                         x: 0px; y: 0px;
-                        width: 100%; height: grid.media-height;
+                        width: root.list-view ? 160px : parent.width; height: grid.media-height;
                         source: project.preview;
                         fill-frame: true;
                         fallback-glyph: Glyph.image;
@@ -46,8 +75,8 @@ export component CanvasProjectsPage inherits Rectangle {
                         accessible-name: "打开画布项目" + project.name;
                         activated => { SeeCut.action("canvas-open", project.id); }
                     }
-                    Text { x: 0px; y: grid.media-height + 8px; width: 100%; text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
-                    Text { x: 0px; y: grid.media-height + 32px; width: 100%; text: project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
+                    Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 18px : grid.media-height + 8px; width: root.list-view ? parent.width - 176px : parent.width; text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
+                    Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 44px : grid.media-height + 32px; width: root.list-view ? parent.width - 176px : parent.width; text: project.date-label == "" ? project.detail : project.date-label + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
                 }
             }
         }

@@ -20,6 +20,9 @@ export component Modal inherits Rectangle {
     /// A fact about what the sheet is acting on, set against the trailing edge
     /// of its header.
     in property <string> note;
+    // The project handoff sheet uses the workbench's left-aligned title.
+    in property <bool> title-at-start: false;
+    in property <bool> show-close-for-start-title: false;
     /// False while a job is running: a dialog you can dismiss out from under an
     /// export is a dialog that loses the export.
     in property <bool> dismissable: true;
@@ -62,9 +65,9 @@ export component Modal inherits Rectangle {
 
         body := VerticalLayout {
             Rectangle {
-                height: 42px;
+                height: root.title-at-start ? 62px : 42px;
 
-                Rectangle {
+                if !root.title-at-start: Rectangle {
                     x: 0;
                     y: parent.height - 1px;
                     width: parent.width;
@@ -93,7 +96,7 @@ export component Modal inherits Rectangle {
                     // Gone, not disabled, while a job is running: there is no
                     // safe answer to pressing it, so it should not be there to
                     // press.
-                    if root.dismissable: VerticalLayout {
+                    if root.dismissable && (!root.title-at-start || root.show-close-for-start-title): VerticalLayout {
                         alignment: center;
                         Rectangle {
                             width: 26px;
@@ -122,13 +125,13 @@ export component Modal inherits Rectangle {
                 // note and the close button leave over — the same trick the
                 // window's own title bar uses for the project name.
                 centre := HorizontalLayout {
-                    x: (parent.width - self.preferred-width) / 2;
+                    x: root.title-at-start ? 24px : (parent.width - self.preferred-width) / 2;
                     y: 0;
                     width: self.preferred-width;
                     height: parent.height;
                     spacing: 8px;
 
-                    VerticalLayout {
+                    if !root.title-at-start: VerticalLayout {
                         alignment: center;
                         Icon {
                             glyph: root.glyph;
@@ -140,7 +143,7 @@ export component Modal inherits Rectangle {
                     Text {
                         text: root.title;
                         color: Theme.fg;
-                        font-size: Theme.fs-lg;
+                        font-size: root.title-at-start ? 18px : Theme.fs-lg;
                         font-weight: Theme.weight-title;
                         vertical-alignment: center;
                     }

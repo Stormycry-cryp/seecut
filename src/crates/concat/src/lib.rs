@@ -68,6 +68,19 @@ use panes::start::StartMsg;
 use studio::{Models, OUTPUTS, RESOLUTIONS, START_RATES, Studio};
 use ui::*;
 
+fn decode_canvas_imports(
+    payload: &str,
+) -> Result<Vec<crate::panes::canvas::CanvasImport>, serde_json::Error> {
+    serde_json::from_str::<Vec<crate::panes::canvas::CanvasImport>>(payload).or_else(|_| {
+        serde_json::from_str::<Vec<std::path::PathBuf>>(payload).map(|paths| {
+            paths
+                .into_iter()
+                .map(crate::panes::canvas::CanvasImport::from_path)
+                .collect()
+        })
+    })
+}
+
 /// Opens this run's log file and makes it where the app writes things down.
 ///
 /// Each entry point calls this before [`run`], because each knows where its
@@ -964,7 +977,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         ])));
     }));
     app.on_add_canvas_paths(on_window!(|state, payload: SharedString| {
-        match serde_json::from_str::<Vec<std::path::PathBuf>>(payload.as_str()) {
+        match decode_canvas_imports(payload.as_str()) {
             Ok(paths) if !paths.is_empty() => state.handle(Msg::Canvas(
                 crate::panes::canvas::CanvasMsg::ImportLayers(paths),
             )),
@@ -975,7 +988,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::New));
     }));
     app.on_canvas_new_with_paths(on_window!(|state, payload: SharedString| {
-        match serde_json::from_str::<Vec<std::path::PathBuf>>(payload.as_str()) {
+        match decode_canvas_imports(payload.as_str()) {
             Ok(paths) if !paths.is_empty() => state.handle(Msg::Canvas(
                 crate::panes::canvas::CanvasMsg::NewAndImport(paths),
             )),
@@ -983,7 +996,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     }));
     app.on_canvas_handoff_current(on_window!(|state, payload: SharedString| {
-        match serde_json::from_str::<Vec<std::path::PathBuf>>(payload.as_str()) {
+        match decode_canvas_imports(payload.as_str()) {
             Ok(paths) if !paths.is_empty() => state.handle(Msg::Canvas(
                 crate::panes::canvas::CanvasMsg::HandoffImport(paths),
             )),
@@ -992,7 +1005,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     app.on_canvas_open_with_paths(on_window!(
         |state, path: SharedString, payload: SharedString| {
-            match serde_json::from_str::<Vec<std::path::PathBuf>>(payload.as_str()) {
+            match decode_canvas_imports(payload.as_str()) {
                 Ok(paths) if !paths.is_empty() => {
                     state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::OpenAndImport(
                         std::path::PathBuf::from(path.as_str()),

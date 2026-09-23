@@ -67,6 +67,7 @@ export component CloudField inherits Rectangle {
     in property <bool> password;
     property <bool> revealed;
     in property <bool> multiline;
+    in property <length> text-size: Theme.workbench-font;
     in property <length> multiline-footer-space: 0px;
     in property <bool> enabled: true;
     callback edited(value: string);
@@ -98,7 +99,7 @@ export component CloudField inherits Rectangle {
             text <=> root.value;
             enabled: root.enabled;
             color: Theme.fg;
-            font-size: Theme.workbench-font;
+            font-size: root.text-size;
             single-line: !root.multiline;
             wrap: root.multiline ? word-wrap : no-wrap;
             input-type: root.password && !root.revealed ? InputType.password : InputType.text;

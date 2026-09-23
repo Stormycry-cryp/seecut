@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! SeeCut's non-blocking desktop bridge. Provider credentials never enter this process.
 
+use crate::format::project_timestamp;
 use crate::ui::{
     AccountEntry, App, CloudItem, CreditPlan, GenerationBatch, GenerationTemplate as TemplateRow,
     PersonalAssetGroup, SeeCut,
@@ -112,6 +113,7 @@ struct Cloud {
     pending_team_picker: bool,
     auth_return_page: Option<i32>,
     pending_imports: Vec<PathBuf>,
+    pending_import_display_names: HashMap<PathBuf, String>,
     references: Vec<Value>,
     local: HashMap<String, String>,
     folder: PathBuf,
@@ -129,9 +131,21 @@ struct Cloud {
 }
 
 #[derive(Clone)]
+struct CanvasProjectRow {
+    item: CloudItem,
+    updated: u64,
+}
+
+// Slint images are UI-thread values and cannot enter the Cloud snapshot sent
+// to workers. Keep decoded gallery previews beside the UI for search/sort.
+thread_local! {
+    static CANVAS_PROJECT_CACHE: RefCell<Vec<CanvasProjectRow>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone)]
 struct PendingHandoff {
     kind: String,
-    paths: Vec<PathBuf>,
+    imports: Vec<crate::panes::canvas::CanvasImport>,
     awaiting_new_project: bool,
 }
 
@@ -2022,7 +2036,7 @@ fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
     let ui = app.global::<SeeCut>();
     if target == 6 {
         ui.set_canvas_gallery_open(true);
-        render_canvas_projects(app);
+        refresh_canvas_projects(app, state);
     }
     if should_clear_identity_error_for_target(target, ui.get_error().as_str()) {
         ui.set_error("".into());
@@ -2033,7 +2047,7 @@ fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
     }
 }
 
-fn render_canvas_projects(app: &App) {
+fn refresh_canvas_projects(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     let paths = match crate::panes::canvas::canvas_recent_paths() {
         Ok(paths) => paths,
@@ -2059,30 +2073,80 @@ fn render_canvas_projects(app: &App) {
                 .unwrap_or_else(|| "画布项目".to_owned());
             let width = manifest["width"].as_u64().unwrap_or(0);
             let height = manifest["height"].as_u64().unwrap_or(0);
-            Some(CloudItem {
-                id: path.to_string_lossy().into_owned().into(),
-                name: name.into(),
-                detail: format!("{width} × {height}").into(),
-                ready: true,
-                preview: slint::Image::load_from_path(&path.join("preview.png"))
-                    .unwrap_or_default(),
-                ..Default::default()
+            let updated = manifest_path
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            Some(CanvasProjectRow {
+                item: CloudItem {
+                    id: path.to_string_lossy().into_owned().into(),
+                    name: name.into(),
+                    detail: format!("{width} × {height}").into(),
+                    date_label: project_timestamp(updated).into(),
+                    ready: true,
+                    preview: slint::Image::load_from_path(&path.join("preview.png"))
+                        .unwrap_or_default(),
+                    ..Default::default()
+                },
+                updated,
             })
         })
         .collect();
-    ui.set_canvas_projects(rows(projects));
+    CANVAS_PROJECT_CACHE.with(|cache| *cache.borrow_mut() = projects);
+    render_canvas_projects(app, state);
+}
+
+fn render_canvas_projects(app: &App, _state: &Rc<RefCell<Cloud>>) {
+    let ui = app.global::<SeeCut>();
+    let query = ui.get_canvas_project_search().trim().to_lowercase();
+    let sort = ui.get_canvas_project_sort();
+    let mut projects = CANVAS_PROJECT_CACHE.with(|cache| cache.borrow().clone());
+    projects.retain(|project| {
+        query.is_empty()
+            || project
+                .item
+                .name
+                .to_string()
+                .to_lowercase()
+                .contains(&query)
+    });
+    if sort == 1 {
+        projects.sort_by_cached_key(|project| project.item.name.to_string().to_lowercase());
+    } else {
+        projects.sort_by_key(|project| std::cmp::Reverse(project.updated));
+    }
+    ui.set_canvas_projects(rows(
+        projects.into_iter().map(|project| project.item).collect(),
+    ));
 }
 
 fn begin_handoff(app: &App, state: &Rc<RefCell<Cloud>>, kind: &str, paths: Vec<PathBuf>) {
+    let imports = paths
+        .into_iter()
+        .map(crate::panes::canvas::CanvasImport::from_path)
+        .collect();
+    begin_handoff_with_imports(app, state, kind, imports);
+}
+
+fn begin_handoff_with_imports(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    kind: &str,
+    imports: Vec<crate::panes::canvas::CanvasImport>,
+) {
     let ui = app.global::<SeeCut>();
-    if paths.is_empty() || paths.iter().any(|path| !path.is_file()) {
+    if imports.is_empty() || imports.iter().any(|item| !item.path.is_file()) {
         ui.set_error("所选素材文件不可用，请刷新后重试".into());
         return;
     }
     if kind == "canvas"
-        && paths.iter().any(|path| {
+        && imports.iter().any(|item| {
             !matches!(
-                path.extension()
+                item.path
+                    .extension()
                     .and_then(|ext| ext.to_str())
                     .map(str::to_ascii_lowercase)
                     .as_deref(),
@@ -2171,15 +2235,27 @@ fn begin_handoff(app: &App, state: &Rc<RefCell<Cloud>>, kind: &str, paths: Vec<P
     }
     ui.set_handoff_source_page(ui.get_page());
     ui.set_handoff_kind(kind.into());
-    ui.set_handoff_count(paths.len() as i32);
+    ui.set_handoff_count(imports.len() as i32);
     ui.set_handoff_targets(rows(targets));
     ui.set_handoff_selected_id("".into());
     state.borrow_mut().pending_handoff = Some(PendingHandoff {
         kind: kind.to_owned(),
-        paths,
+        imports,
         awaiting_new_project: false,
     });
     ui.set_handoff_open(true);
+}
+
+fn clip_imports(
+    imports: &[crate::panes::canvas::CanvasImport],
+) -> Vec<crate::panes::media_bin::MediaImport> {
+    imports
+        .iter()
+        .map(|item| crate::panes::media_bin::MediaImport {
+            path: item.path.clone(),
+            display_name: item.display_name.clone(),
+        })
+        .collect()
 }
 
 fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
@@ -2197,7 +2273,7 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
         return;
     }
     if pending.kind == "canvas" {
-        let Ok(payload) = serde_json::to_string(&pending.paths) else {
+        let Ok(payload) = serde_json::to_string(&pending.imports) else {
             ui.set_error("无法准备画布素材".into());
             return;
         };
@@ -2223,14 +2299,14 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
                 handoff.awaiting_new_project = true;
             }
             ui.set_pending_import_count(
-                (state.borrow().pending_imports.len() + pending.paths.len()) as i32,
+                (state.borrow().pending_imports.len() + pending.imports.len()) as i32,
             );
             ui.set_page(0);
             app.set_clip_create_open(true);
             ui.set_handoff_open(false);
             return;
         } else if id == "current" {
-            import_paths(app, pending.paths);
+            import_named_paths(app, clip_imports(&pending.imports));
         } else if let Some(path) = id.strip_prefix("recent:") {
             app.invoke_start_open_recent(path.into());
             if app.get_on_start() {
@@ -2238,7 +2314,7 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
                 ui.set_page(ui.get_handoff_source_page());
                 return;
             }
-            import_paths(app, pending.paths);
+            import_named_paths(app, clip_imports(&pending.imports));
         }
     }
     state.borrow_mut().pending_handoff = None;
@@ -3122,7 +3198,8 @@ fn library_call_at(c: &Cloud, req: &Request, root: &std::path::Path) -> Result<V
             "已导入个人资产库"
         }
         "local:library-register" => {
-            library.register_generated(text(&req.body, "path"))?;
+            library
+                .register_generated_with_name(text(&req.body, "path"), req.body["name"].as_str())?;
             ""
         }
         "local:library-rename" => {
@@ -3226,8 +3303,23 @@ fn library_result(
         .map(|asset| {
             let mut value = serde_json::to_value(asset).unwrap_or_default();
             let metadata = asset.path.metadata().ok().filter(|m| m.is_file());
-            value["available"] = json!(metadata.is_some());
+            let available = metadata.is_some();
+            value["available"] = json!(available);
             value["bytes"] = json!(metadata.map(|m| m.len()).unwrap_or(0));
+            // This list is prepared by the local-library worker. Keep media
+            // probing out of Slint render callbacks and search keystrokes.
+            if available && let Ok(info) = concat_media::probe(&asset.path) {
+                if let Some(video) = info.video {
+                    value["media_width"] = json!(video.width);
+                    value["media_height"] = json!(video.height);
+                }
+                if let Some(duration) = info.duration.map(|time| time.as_f64())
+                    && duration.is_finite()
+                    && duration > 0.0
+                {
+                    value["media_duration_ms"] = json!((duration * 1000.0).round() as u64);
+                }
+            }
             if !asset.trashed && asset.kind != AssetKind::Audio {
                 value["thumbnail"] = json!(crate::personal_library::thumbnail(asset, root));
             }
@@ -3244,6 +3336,50 @@ fn personal_job(app: &App, state: &Rc<RefCell<Cloud>>, operation: &str, body: Va
         "personal".into(),
         request("POST", format!("local:library-{operation}"), body),
     );
+}
+
+fn personal_asset_detail(asset: &Value) -> String {
+    let kind = text(asset, "kind");
+    let width = asset["media_width"].as_u64().unwrap_or(0);
+    let height = asset["media_height"].as_u64().unwrap_or(0);
+    let duration_ms = asset["media_duration_ms"].as_u64().unwrap_or(0);
+    if kind == "image" && width > 0 && height > 0 {
+        return format!("{width} × {height}");
+    }
+    if kind != "image" && duration_ms > 0 {
+        let seconds = duration_ms.div_ceil(1000);
+        return if seconds >= 3600 {
+            format!(
+                "{:02}:{:02}:{:02}",
+                seconds / 3600,
+                (seconds / 60) % 60,
+                seconds % 60
+            )
+        } else {
+            format!("{:02}:{:02}", seconds / 60, seconds % 60)
+        };
+    }
+    if width > 0 && height > 0 {
+        return format!("{width} × {height}");
+    }
+    format!(
+        "{:.1} MB",
+        asset["bytes"].as_u64().unwrap_or(0) as f64 / 1_048_576.
+    )
+}
+
+fn personal_asset_status(asset: &Value) -> String {
+    let kind = match text(asset, "kind").as_str() {
+        "image" => "图片",
+        "video" => "视频",
+        _ => "音频",
+    };
+    let source = if text(asset, "source") == "generated" {
+        "生成结果"
+    } else {
+        "本地导入"
+    };
+    format!("{kind} · {source} · {}", personal_asset_detail(asset))
 }
 
 fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
@@ -3282,21 +3418,8 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
     let row = |v: &Value| CloudItem {
         id: text(v, "id").into(),
         name: text(v, "name").into(),
-        detail: format!(
-            "{} · {} · {:.1} MB",
-            match text(v, "kind").as_str() {
-                "image" => "图片",
-                "video" => "视频",
-                _ => "音频",
-            },
-            if text(v, "source") == "generated" {
-                "生成结果"
-            } else {
-                "本地导入"
-            },
-            v["bytes"].as_u64().unwrap_or(0) as f64 / 1_048_576.
-        )
-        .into(),
+        detail: personal_asset_detail(v).into(),
+        status: personal_asset_status(v).into(),
         kind: text(v, "kind").into(),
         ready: v["available"].as_bool().unwrap_or(false),
         local: true,
@@ -3316,16 +3439,21 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
     ui.set_personal_assets(rows(visible_rows.clone()));
     let mut groups: Vec<PersonalAssetGroup> = Vec::new();
     for item in visible_rows {
+        let group_label = if ui.get_personal_sort() == 0 {
+            item.date_label.clone()
+        } else {
+            "全部素材".into()
+        };
         if let Some(group) = groups
             .last_mut()
-            .filter(|group| group.date_label == item.date_label)
+            .filter(|group| group.date_label == group_label)
         {
             let mut items = group.items.iter().collect::<Vec<_>>();
             items.push(item);
             group.items = rows(items);
         } else {
             groups.push(PersonalAssetGroup {
-                date_label: item.date_label.clone(),
+                date_label: group_label,
                 items: rows(vec![item]),
             });
         }
@@ -3375,7 +3503,7 @@ fn visible_personal<'a>(ui: &SeeCut, cloud: &'a Cloud) -> Vec<&'a Value> {
         .ok()
         .and_then(|index| cloud.personal_folders.get(index))
         .map(|folder| text(folder, "id"));
-    cloud
+    let mut visible = cloud
         .personal
         .iter()
         .filter(|v| v["trashed"].as_bool().unwrap_or(false) == ui.get_personal_trash())
@@ -3390,7 +3518,35 @@ fn visible_personal<'a>(ui: &SeeCut, cloud: &'a Cloud) -> Vec<&'a Value> {
                     .is_some_and(|id| text(v, "folder_id") == *id)
         })
         .filter(|v| !ui.get_personal_favorites() || v["favorite"].as_bool().unwrap_or(false))
-        .collect()
+        .collect::<Vec<_>>();
+    match ui.get_personal_sort() {
+        1 => visible.sort_by_cached_key(|v| {
+            (
+                text(v, "name").to_lowercase(),
+                std::cmp::Reverse(v["created_at"].as_u64().unwrap_or(0)),
+                text(v, "id"),
+            )
+        }),
+        2 => visible.sort_by_cached_key(|v| {
+            (
+                match text(v, "kind").as_str() {
+                    "image" => 0,
+                    "video" => 1,
+                    _ => 2,
+                },
+                text(v, "name").to_lowercase(),
+                std::cmp::Reverse(v["created_at"].as_u64().unwrap_or(0)),
+                text(v, "id"),
+            )
+        }),
+        _ => visible.sort_by_cached_key(|v| {
+            (
+                std::cmp::Reverse(v["created_at"].as_u64().unwrap_or(0)),
+                text(v, "id"),
+            )
+        }),
+    }
+    visible
 }
 
 fn local_date_label(timestamp: Option<u64>) -> String {
@@ -3400,7 +3556,17 @@ fn local_date_label(timestamp: Option<u64>) -> String {
                 .checked_add(Duration::from_millis(millis))
                 .map(DateTime::<Local>::from)
         })
-        .map(|date| date.format("%Y-%m-%d").to_string())
+        .map(|date| {
+            let days_ago = Local::now()
+                .date_naive()
+                .signed_duration_since(date.date_naive())
+                .num_days();
+            match days_ago {
+                0 => "今天".to_owned(),
+                1 => "昨天".to_owned(),
+                _ => date.format("%Y-%m-%d").to_string(),
+            }
+        })
         .unwrap_or_else(|| "未知日期".into())
 }
 
@@ -3759,7 +3925,7 @@ fn continue_picker_batch(app: &App, state: &Rc<RefCell<Cloud>>) {
     state.borrow_mut().picker_batch = None;
     if purpose == "import" {
         for item in selected {
-            import_or_queue(app, state, item.local_path);
+            import_or_queue_named(app, state, item.local_path, Some(item.name));
         }
     } else {
         ui.set_page(1);
@@ -3776,7 +3942,17 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
         "personal-preview" => open_personal_media_preview(app, state, id),
         "personal-refresh" => personal_job(app, state, "list", Value::Null),
         "personal-register-canvas" => {
-            personal_job(app, state, "register", json!({"path":id}));
+            let payload = serde_json::from_str::<Value>(id).ok();
+            let path = payload
+                .as_ref()
+                .map(|value| text(value, "path"))
+                .filter(|path| !path.is_empty())
+                .unwrap_or_else(|| id.to_owned());
+            let name = payload
+                .as_ref()
+                .map(|value| text(value, "name"))
+                .unwrap_or_default();
+            personal_job(app, state, "register", json!({"path":path,"name":name}));
         }
         "personal-select" => {
             let visible = visible_personal(&ui, &state.borrow())
@@ -3983,22 +4159,32 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                     }
                 }
                 "personal-project-selected" => {
-                    let paths = selected
+                    let imports = selected
                         .iter()
-                        .map(|asset| PathBuf::from(text(asset, "path")))
-                        .collect::<Vec<_>>();
-                    begin_handoff(app, state, "clip", paths);
+                        .map(|asset| {
+                            crate::panes::canvas::CanvasImport::named(
+                                PathBuf::from(text(asset, "path")),
+                                text(asset, "name"),
+                            )
+                        })
+                        .collect();
+                    begin_handoff_with_imports(app, state, "clip", imports);
                 }
                 "personal-canvas-selected" => {
                     if selected.iter().any(|asset| text(asset, "kind") != "image") {
                         ui.set_error("画布只支持图片素材".into());
                         return;
                     }
-                    let paths = selected
+                    let imports = selected
                         .iter()
-                        .map(|asset| PathBuf::from(text(asset, "path")))
+                        .map(|asset| {
+                            crate::panes::canvas::CanvasImport::named(
+                                PathBuf::from(text(asset, "path")),
+                                text(asset, "name"),
+                            )
+                        })
                         .collect();
-                    begin_handoff(app, state, "canvas", paths);
+                    begin_handoff_with_imports(app, state, "canvas", imports);
                 }
                 "personal-export-selected" => {
                     if let Some(folder) = crate::platform::pick_folder("导出素材", "") {
@@ -4098,7 +4284,15 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                 "personal-preview" => open_personal_media_preview(app, state, id),
                 "personal-project" => {
                     ui.set_asset_picker_open(false);
-                    begin_handoff(app, state, "clip", vec![PathBuf::from(path)]);
+                    begin_handoff_with_imports(
+                        app,
+                        state,
+                        "clip",
+                        vec![crate::panes::canvas::CanvasImport::named(
+                            PathBuf::from(path),
+                            text(&asset, "name"),
+                        )],
+                    );
                 }
                 "personal-canvas" => {
                     if text(&asset, "kind") != "image" {
@@ -4106,7 +4300,15 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                         return;
                     }
                     ui.set_asset_picker_open(false);
-                    begin_handoff(app, state, "canvas", vec![PathBuf::from(path)]);
+                    begin_handoff_with_imports(
+                        app,
+                        state,
+                        "canvas",
+                        vec![crate::panes::canvas::CanvasImport::named(
+                            PathBuf::from(path),
+                            text(&asset, "name"),
+                        )],
+                    );
                 }
                 "personal-reference" => {
                     if !ui.get_signed_in() {
@@ -4413,21 +4615,8 @@ fn personal_preview_item(asset: &Value) -> CloudItem {
     CloudItem {
         id: text(asset, "id").into(),
         name: text(asset, "name").into(),
-        detail: format!(
-            "{} · {} · {:.1} MB",
-            match kind.as_str() {
-                "image" => "图片",
-                "video" => "视频",
-                _ => "音频",
-            },
-            if text(asset, "source") == "generated" {
-                "生成结果"
-            } else {
-                "本地导入"
-            },
-            asset["bytes"].as_u64().unwrap_or(0) as f64 / 1_048_576.
-        )
-        .into(),
+        detail: personal_asset_detail(asset).into(),
+        status: personal_asset_status(asset).into(),
         kind: kind.clone().into(),
         preview: media_preview_image(&path, &kind),
         ready,
@@ -4743,13 +4932,20 @@ fn media_preview_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str) {
             ui.set_media_preview_open(false);
         }
         "import" => {
-            import_or_queue(app, state, path);
+            import_or_queue_named(app, state, path, Some(item.name.to_string()));
             ui.set_media_preview_open(false);
         }
         "canvas" if item.kind == "image" => {
-            ui.set_page(6);
-            app.invoke_open_canvas_path(path.into());
             ui.set_media_preview_open(false);
+            begin_handoff_with_imports(
+                app,
+                state,
+                "canvas",
+                vec![crate::panes::canvas::CanvasImport::named(
+                    PathBuf::from(path),
+                    item.name.to_string(),
+                )],
+            );
         }
         "team" if source == "task" => {
             ui.set_page(1);
@@ -5169,15 +5365,52 @@ fn import_paths(app: &App, paths: Vec<PathBuf>) {
     });
 }
 
-fn import_or_queue(app: &App, state: &Rc<RefCell<Cloud>>, path: String) {
+fn import_named_paths(app: &App, imports: Vec<crate::panes::media_bin::MediaImport>) {
+    if imports.is_empty() {
+        return;
+    }
+    app.global::<SeeCut>().set_page(0);
+    app.global::<SeeCut>().set_notice("".into());
+    crate::host::on_ui(move |studio, _, _| {
+        let Some(session) = studio.media_import_session() else {
+            return;
+        };
+        studio.handle(crate::panes::Msg::Media(
+            crate::panes::media_bin::MediaMsg::ImportNamed { imports, session },
+        ))
+    });
+}
+
+fn import_or_queue_named(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    path: String,
+    display_name: Option<String>,
+) {
     let ui = app.global::<SeeCut>();
+    let path = PathBuf::from(path);
     if ui.get_project_open() {
-        import_paths(app, vec![PathBuf::from(path)]);
+        if let Some(display_name) = display_name.filter(|name| !name.trim().is_empty()) {
+            import_named_paths(
+                app,
+                vec![crate::panes::media_bin::MediaImport {
+                    path,
+                    display_name: Some(display_name),
+                }],
+            );
+        } else {
+            import_paths(app, vec![path]);
+        }
         return;
     }
     let count = {
         let mut cloud = state.borrow_mut();
-        enqueue_pending_import(&mut cloud.pending_imports, PathBuf::from(path));
+        enqueue_pending_import(&mut cloud.pending_imports, path.clone());
+        if let Some(display_name) = display_name.filter(|name| !name.trim().is_empty()) {
+            cloud
+                .pending_import_display_names
+                .insert(path, display_name);
+        }
         cloud.pending_imports.len()
     };
     ui.set_pending_import_count(count as i32);
@@ -5186,26 +5419,47 @@ fn import_or_queue(app: &App, state: &Rc<RefCell<Cloud>>, path: String) {
 }
 
 fn project_ready(app: &App, state: &Rc<RefCell<Cloud>>) {
-    let paths = {
+    let imports = {
         let mut cloud = state.borrow_mut();
-        let mut paths = resume_pending_imports(&mut cloud.pending_imports);
+        let display_names = std::mem::take(&mut cloud.pending_import_display_names);
+        let mut imports = resume_pending_imports(&mut cloud.pending_imports)
+            .into_iter()
+            .map(|path| crate::panes::media_bin::MediaImport {
+                display_name: display_names.get(&path).cloned(),
+                path,
+            })
+            .collect::<Vec<_>>();
         if cloud
             .pending_handoff
             .as_ref()
             .is_some_and(|handoff| handoff.kind == "clip" && handoff.awaiting_new_project)
         {
-            paths.extend(cloud.pending_handoff.take().expect("checked").paths);
+            imports.extend(
+                cloud
+                    .pending_handoff
+                    .take()
+                    .expect("checked")
+                    .imports
+                    .into_iter()
+                    .map(|item| crate::panes::media_bin::MediaImport {
+                        path: item.path,
+                        display_name: item.display_name,
+                    }),
+            );
         }
-        paths
+        imports
     };
     let ui = app.global::<SeeCut>();
     ui.set_project_open(true);
     ui.set_pending_import_count(0);
-    import_paths(app, paths);
+    import_named_paths(app, imports);
 }
 
 fn cancel_project_import(app: &App, state: &Rc<RefCell<Cloud>>) {
-    let count = cancel_pending_imports(&mut state.borrow_mut().pending_imports);
+    let mut cloud = state.borrow_mut();
+    let count = cancel_pending_imports(&mut cloud.pending_imports);
+    cloud.pending_import_display_names.clear();
+    drop(cloud);
     let ui = app.global::<SeeCut>();
     ui.set_pending_import_count(0);
     if count > 0 {
@@ -5899,6 +6153,22 @@ pub fn bind(app: &App) {
                 ui.set_handoff_open(true);
             }
         },
+        "clip-project-search" => {
+            ui.set_clip_project_search(id);
+            crate::host::Shell::with(|shell, app| {
+                shell.studio.borrow().publish(&app, &shell.models);
+            });
+        },
+        "clip-project-sort" | "clip-project-view" => {
+            crate::host::Shell::with(|shell, app| {
+                shell.studio.borrow().publish(&app, &shell.models);
+            });
+        },
+        "canvas-project-search" => {
+            ui.set_canvas_project_search(id);
+            render_canvas_projects(&app, &shared);
+        },
+        "canvas-project-sort" | "canvas-project-view" => render_canvas_projects(&app, &shared),
         "task-selection-mode" => {
             let enabled = !ui.get_task_selection_mode();
             ui.set_task_selection_mode(enabled);
@@ -5939,7 +6209,7 @@ pub fn bind(app: &App) {
                 job(&app, &shared, "tasks-trash".into(), request("POST", "/api/generation/tasks/trash", json!({"ids": ids})));
             }
         },
-        "canvas-projects-refresh" => render_canvas_projects(&app),
+        "canvas-projects-refresh" => refresh_canvas_projects(&app, &shared),
         "canvas-new" => {
             ui.set_canvas_gallery_open(false);
             ui.set_page(6);
@@ -5954,7 +6224,7 @@ pub fn bind(app: &App) {
                 app.invoke_open_canvas_path(id);
             } else {
                 ui.set_error("画布项目不存在，请刷新后重试".into());
-                render_canvas_projects(&app);
+                refresh_canvas_projects(&app, &shared);
             }
         },
         name if name.starts_with("personal-") => personal_action(&app,&shared,name,id.as_str()),
@@ -6235,7 +6505,7 @@ pub fn bind(app: &App) {
             render_personal(&app, &shared);
         }
     });
-    render_canvas_projects(app);
+    refresh_canvas_projects(app, &state);
     auth_countdown(app.as_weak());
     heartbeat(app.as_weak(), state);
 }

@@ -60,6 +60,16 @@ export global SeeCut {
     in-out property <bool> canvas-gallery-open: true;
     in-out property <bool> canvas-export-open;
     in-out property <bool> clip-export-open;
+    // Project galleries share the same small amount of chrome: search text,
+    // sort order (0 = recently updated, 1 = name), and the compact list view.
+    // Keeping this state here lets the launch screen and canvas gallery use
+    // the same interaction without widening App's public callback surface.
+    in-out property <string> clip-project-search;
+    in-out property <int> clip-project-sort;
+    in-out property <int> clip-project-view;
+    in-out property <string> canvas-project-search;
+    in-out property <int> canvas-project-sort;
+    in-out property <int> canvas-project-view;
     in-out property <[CloudItem]> canvas-projects;
     in-out property <bool> handoff-open;
     in-out property <string> handoff-kind;
@@ -92,6 +102,7 @@ export global SeeCut {
     in-out property <string> personal-search;
     in-out property <string> personal-reference-search;
     in-out property <int> personal-filter;
+    in-out property <int> personal-sort;
     in-out property <[string]> personal-folder-names;
     in-out property <[string]> personal-move-folder-names;
     in-out property <int> personal-folder-filter;

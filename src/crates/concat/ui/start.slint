@@ -7,6 +7,7 @@ import { Glyph, Icon } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Modal } from "primitives/modal.slint";
 import { AppButton, CloudField, WorkspaceSelect, WorkspaceIcon } from "seecut/components.slint";
+import { SeeCut } from "seecut/state.slint";
 
 // Clip project gallery and creation sheet.
 
@@ -19,9 +20,9 @@ export struct RecentProjectData {
     /// The folder, and the row's identity — what reopening and forgetting name.
     path: string,
     name: string,
-    /// "1080 x 1920 · 30.00 fps"
+    /// "00:32" for a clip project's timeline duration.
     detail: string,
-    /// "yesterday", "4 days ago"
+    /// "今天 14:32" or an exact calendar date and time.
     when: string,
     /// A frame from the earliest clip on its timeline, once something has
     /// produced one. Empty falls back to a quiet film mark rather than an
@@ -67,12 +68,37 @@ export component StartScreen inherits Rectangle {
     callback dismiss-error();
 
     in-out property <bool> create-open;
+    property <bool> list-view: SeeCut.clip-project-view == 1;
     background: Theme.page;
     VerticalLayout {
-            padding-left: 32px; padding-right: 48px; padding-top: 44px; padding-bottom: 24px; spacing: 32px;
+        padding-left: 32px; padding-right: 48px; padding-top: 40px; padding-bottom: 24px; spacing: 32px;
         HorizontalLayout {
-            height: 36px;
+            height: 40px;
             Text { text: "剪辑"; font-size: 24px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
+            CloudField {
+                width: 248px;
+                value <=> SeeCut.clip-project-search;
+                placeholder: "搜索项目";
+                edited(value) => { SeeCut.action("clip-project-search", value); }
+            }
+            WorkspaceIcon {
+                glyph: Glyph.filter;
+                label: SeeCut.clip-project-sort == 0 ? "按最近更新排序" : "按名称排序";
+                checked: SeeCut.clip-project-sort == 1;
+                clicked => {
+                    SeeCut.clip-project-sort = Math.mod(SeeCut.clip-project-sort + 1, 2);
+                    SeeCut.action("clip-project-sort", "");
+                }
+            }
+            WorkspaceIcon {
+                glyph: Glyph.rows;
+                label: SeeCut.clip-project-view == 1 ? "网格视图" : "列表视图";
+                checked: root.list-view;
+                clicked => {
+                    SeeCut.clip-project-view = root.list-view ? 0 : 1;
+                    SeeCut.action("clip-project-view", "");
+                }
+            }
         }
         if root.data.error != "": Rectangle {
             height: 44px; background: Theme.danger-soft; border-radius: Theme.r;
@@ -88,38 +114,39 @@ export component StartScreen inherits Rectangle {
             vertical-stretch: 1; horizontal-stretch: 1;
             grid := Rectangle {
                 x: 0px; y: 0px; width: parent.width;
-                property <int> columns: Math.max(1, Math.floor((self.width + 24px) / 310px));
-                property <length> card-width: (self.width - (self.columns - 1) * 24px) / self.columns;
-                property <length> media-height: self.card-width * 0.60;
-                property <length> card-height: self.media-height + 64px;
-                height: Math.ceil((root.recents.length + 1) / self.columns) * (self.card-height + 24px) - 24px;
+                property <int> columns: root.list-view ? 1 : Math.max(1, Math.floor((self.width + 24px) / 310px));
+                property <length> gap: root.list-view ? 16px : 24px;
+                property <length> card-width: root.list-view ? self.width : (self.width - (self.columns - 1) * self.gap) / self.columns;
+                property <length> media-height: root.list-view ? 96px : self.card-width * 0.60;
+                property <length> card-height: root.list-view ? 96px : self.media-height + 64px;
+                height: Math.ceil((root.recents.length + 1) / self.columns) * (self.card-height + self.gap) - self.gap;
                 Rectangle {
                     x: 0px; y: 0px;
                     width: grid.card-width; height: grid.card-height;
                     Rectangle {
                         x: 0px; y: 0px;
-                        width: 100%; height: grid.media-height;
+                        width: root.list-view ? 160px : parent.width; height: grid.media-height;
                         background: Theme.panel; border-radius: Theme.r-lg;
                         border-width: 1px; border-color: Theme.line-strong;
                         Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; glyph: Glyph.plus; size: 24px; tint: Theme.fg-muted; }
                         TouchArea { mouse-cursor: pointer; clicked => { root.create-open = true; } }
                     }
-                    Text { x: 0px; y: grid.media-height + 10px; text: "新建项目"; font-size: 14px; color: Theme.fg; }
+                    Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 18px : grid.media-height + 10px; text: "新建项目"; font-size: 14px; color: Theme.fg; }
                 }
                 for project[i] in root.recents: Rectangle {
-                    x: Math.mod(i + 1, grid.columns) * (grid.card-width + 24px);
-                    y: Math.floor((i + 1) / grid.columns) * (grid.card-height + 24px);
+                    x: Math.mod(i + 1, grid.columns) * (grid.card-width + grid.gap);
+                    y: Math.floor((i + 1) / grid.columns) * (grid.card-height + grid.gap);
                     width: grid.card-width; height: grid.card-height;
                     Rectangle {
                         x: 0px; y: 0px;
-                        width: 100%; height: grid.media-height;
+                        width: root.list-view ? 160px : parent.width; height: grid.media-height;
                         background: Theme.well; border-radius: Theme.r-lg; clip: true;
                         if project.poster.width > 0: Image { width: 100%; height: 100%; source: project.poster; image-fit: cover; }
                         if project.poster.width == 0: Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; glyph: Glyph.film; size: 24px; tint: Theme.fg-dim; }
                         TouchArea { mouse-cursor: pointer; clicked => { root.open-recent(project.path); } }
                     }
-                    Text { x: 0px; y: grid.media-height + 8px; width: parent.width; text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
-                    Text { x: 0px; y: grid.media-height + 32px; width: parent.width; text: project.when + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
+                    Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 18px : grid.media-height + 8px; width: root.list-view ? parent.width - 176px : parent.width; text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
+                    Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 44px : grid.media-height + 32px; width: root.list-view ? parent.width - 176px : parent.width; text: project.when + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
                 }
             }
         }

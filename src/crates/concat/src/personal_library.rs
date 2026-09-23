@@ -228,14 +228,29 @@ impl Library {
 
     /// Indexes an existing generated or downloaded media file without copying it.
     pub fn register_generated(&mut self, path: impl AsRef<Path>) -> Result<&Asset, String> {
+        self.register_generated_with_name(path, None)
+    }
+
+    /// Indexes an existing generated or downloaded media file with an
+    /// optional user-visible name. The path remains the stable storage
+    /// identity; callers may provide a readable project name separately.
+    pub fn register_generated_with_name(
+        &mut self,
+        path: impl AsRef<Path>,
+        name: Option<&str>,
+    ) -> Result<&Asset, String> {
         let checked = checked_media(path.as_ref())?;
         if let Some(index) = self.items.iter().position(|item| item.path == checked.0) {
             return Ok(&self.items[index]);
         }
         let created_at = now_millis()?;
+        let name = name
+            .filter(|name| !name.is_empty() && validate_name(name).is_ok())
+            .map(str::to_owned)
+            .unwrap_or_else(|| display_name(&checked.0));
         self.items.push(Asset {
             id: Uuid::new_v4().to_string(),
-            name: display_name(&checked.0),
+            name,
             path: checked.0,
             kind: checked.1,
             source: AssetSource::Generated,
@@ -534,6 +549,25 @@ mod tests {
         assert!(media.exists());
         library.restore(&id).unwrap();
         assert!(!library.get(&id).unwrap().trashed);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(media_dir).unwrap();
+    }
+
+    #[test]
+    fn generated_registration_can_keep_a_readable_display_name() {
+        let root = temp_root("generated-name");
+        let media_dir = temp_root("generated-name-media");
+        fs::create_dir_all(&media_dir).unwrap();
+        let media = media_dir.join("opaque-square.png");
+        fs::write(&media, b"image").unwrap();
+        let mut library = Library::load(&root).unwrap();
+
+        let asset = library
+            .register_generated_with_name(&media, Some("opaque-square"))
+            .unwrap();
+        assert_eq!(asset.name, "opaque-square");
+        assert_eq!(asset.path, media.canonicalize().unwrap());
+
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(media_dir).unwrap();
     }
