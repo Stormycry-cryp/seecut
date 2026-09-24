@@ -390,7 +390,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
                     .clamp(0, 3600) as i32,
             })
         }
-        Err(_) => Err("暂时无法连接 SeeCut，请检查网络后重试".into()),
+        Err(_) => Err("暂时无法连接 Seecut，请检查网络后重试".into()),
     }
 }
 

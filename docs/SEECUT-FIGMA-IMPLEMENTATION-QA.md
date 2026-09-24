@@ -12,6 +12,7 @@ Figma 与软件预览为 1× 的 1440 × 960（专业模式另有 1024 × 960）
 - v14 原包 Slint 软件渲染 fixture：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v14/fixture-render/`
 - v16 原生实屏：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v16/captures/`
 - v17 剪辑导出实屏：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v17/captures/`
+- v18 品牌与安装实屏：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v18/captures/`
 - 最终 Slint 软件渲染 fixture：`/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/native-validation-v16/fixture-render/`
 
 | 页面与 Figma 节点 | 对照截图 | 已核对的尺寸、状态、文案 | 仍有差异或未确认 |
@@ -53,4 +54,8 @@ Figma 与软件预览为 1× 的 1440 × 960（专业模式另有 1024 × 960）
 
 两个 MP4 的 `ffprobe` 结果均为 H.264、1920 × 1080、30 fps、150 帧、4.967 秒；`ffmpeg` 全段解码均无错误。界面中的“约 5 MB”是导出前估计，实际静态杯图高度可压缩，单个文件为 73,496 字节。此验证只覆盖本地图片素材构成的短视频，没有覆盖音频、多片段特效或真实服务端生成。
 
-原生测试还确认了窗口左上红、黄、绿三个按钮、源图与画布图层名称、剪辑媒体名称和画布保存。v17 用离线 Cargo 构建，macOS 包已装入 `SeeCut.icns`，`Info.plist` 指向该图标，`codesign --verify --deep --strict` 通过。登录后生成、真实报价与服务端结果不在这组原生证据内。当前 PR 保持 Draft。
+### 品牌与安装（v18）
+
+`seecut-astronaut.png` 原画的颜色和人物比例保留，应用内派生图采用 19% 圆角，在导航栏保持 36 × 36px。系统图标从同一派生图生成，在 1024px 画布四周留 7% 透明边距，并加入轻微下投影；256px 图标主体的可见范围为 220 × 220px，与本机 Finder/Safari 图标的测量宽度一致。16、32、128、256、512 及 2× 尺寸均由这一画布生成。`seecut-in-app-logo.png` 与 `seecut-finder-applications.png` 分别记录了安装后的应用内 Logo 和 Finder 中的图标、`Seecut.app` 名称及周围应用的尺寸对照。
+
+`/Applications/Seecut.app` 已安装；`CFBundleName`、`CFBundleDisplayName` 和窗口/菜单栏显示为 `Seecut`，可执行文件名为 `seecut`，`CFBundleIconFile` 为 `Seecut.icns`。旧 `/Applications/SeeCut Preview.app` 已移到精确备份路径，应用程序目录只有一个可见入口。Bundle identifier 仍为 `cloud.stormycry.seecut.preview`，项目和账号数据目录未迁移。v18 用离线 Cargo 构建，并复用了本机同版本、同架构的 Sherpa ONNX 静态库；应用签名通过 `codesign --verify --deep --strict`。原生测试还确认了窗口左上红、黄、绿三个按钮、源图与画布图层名称、剪辑媒体名称和画布保存。登录后生成、真实报价与服务端结果不在这组原生证据内。当前 PR 保持 Draft。
