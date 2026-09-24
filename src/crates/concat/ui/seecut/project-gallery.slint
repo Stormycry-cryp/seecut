@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Icon } from "../primitives/primitives.slint";
+import { Modal } from "../primitives/modal.slint";
+import { NumberField } from "../primitives/number-field.slint";
 import { SeeCut } from "state.slint";
-import { AssetPreview, CloudField, WorkspaceIcon } from "components.slint";
+import { AppButton, AssetPreview, CloudField, WorkspaceIcon } from "components.slint";
 
 export component CanvasProjectsPage inherits Rectangle {
     property <bool> list-view: SeeCut.canvas-project-view == 1;
+    property <bool> new-open: false;
+    property <int> new-width: 1920;
+    property <int> new-height: 1080;
     background: Theme.page;
     VerticalLayout {
         padding-left: 32px; padding-right: 48px; padding-top: 40px; padding-bottom: 24px; spacing: 32px;
@@ -57,7 +62,7 @@ export component CanvasProjectsPage inherits Rectangle {
                         width: root.list-view ? 160px : parent.width; height: grid.media-height; background: Theme.panel;
                         border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
                         Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; size: 24px; glyph: Glyph.plus; tint: Theme.fg-muted; }
-                        TouchArea { mouse-cursor: pointer; clicked => { SeeCut.action("canvas-new", ""); } }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.new-open = true; } }
                     }
                     Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 18px : grid.media-height + 10px; text: "新建项目"; color: Theme.fg; font-size: 14px; }
                 }
@@ -77,6 +82,39 @@ export component CanvasProjectsPage inherits Rectangle {
                     }
                     Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 18px : grid.media-height + 8px; width: root.list-view ? parent.width - 176px : parent.width; text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
                     Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 44px : grid.media-height + 32px; width: root.list-view ? parent.width - 176px : parent.width; text: project.date-label == "" ? project.detail : project.date-label + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
+                }
+            }
+        }
+    }
+    Modal {
+        open: root.new-open;
+        title: "新建画布"; glyph: Glyph.plus;
+        surface-width: 360px;
+        closed => { root.new-open = false; }
+        VerticalLayout {
+            padding: 20px; spacing: 14px;
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    spacing: 5px;
+                    Text { text: "宽度"; color: Theme.fg-muted; font-size: 13px; }
+                    NumberField { value: root.new-width; minimum: 64; maximum: 4096; unit: "px"; changed(value) => { root.new-width = Math.round(value); } }
+                }
+                VerticalLayout {
+                    spacing: 5px;
+                    Text { text: "高度"; color: Theme.fg-muted; font-size: 13px; }
+                    NumberField { value: root.new-height; minimum: 64; maximum: 4096; unit: "px"; changed(value) => { root.new-height = Math.round(value); } }
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px; alignment: end;
+                AppButton { label: "取消"; clicked => { root.new-open = false; } }
+                AppButton {
+                    label: "创建"; primary: true;
+                    clicked => {
+                        root.new-open = false;
+                        SeeCut.action("canvas-new", "\{root.new-width},\{root.new-height}");
+                    }
                 }
             }
         }

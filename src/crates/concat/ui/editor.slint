@@ -252,6 +252,20 @@ export global Editor {
     /// The document's box on screen, in viewport pixels, already zoomed.
     in-out property <float> canvas-stage-w;
     in-out property <float> canvas-stage-h;
+    in-out property <bool> canvas-has-object;
+    in-out property <float> canvas-object-cx;
+    in-out property <float> canvas-object-cy;
+    in-out property <float> canvas-object-w;
+    in-out property <float> canvas-object-h;
+    in-out property <float> canvas-object-angle;
+    in-out property <bool> canvas-transforming;
+    in-out property <float> canvas-object-doc-x;
+    in-out property <float> canvas-object-doc-y;
+    in-out property <float> canvas-object-doc-w;
+    in-out property <float> canvas-object-doc-h;
+    in-out property <float> canvas-object-doc-angle;
+    in-out property <bool> canvas-object-flip-h;
+    in-out property <bool> canvas-object-flip-v;
     /// 0 move, 1 hand, 2 zoom, 3 brush, 4 eraser.
     in-out property <int> canvas-tool;
     /// The brush the painting tools drive; Rust holds the truth, the knobs
@@ -267,6 +281,9 @@ export global Editor {
     in-out property <float> canvas-selection-y;
     in-out property <float> canvas-selection-w;
     in-out property <float> canvas-selection-h;
+    in-out property <int> canvas-selection-mode;
+    in-out property <float> canvas-wand-tolerance;
+    in-out property <bool> canvas-wand-contiguous;
     /// The marquee drag's box, in viewport pixels, while it is in flight.
     in-out property <float> canvas-marquee-x;
     in-out property <float> canvas-marquee-y;
@@ -275,6 +292,7 @@ export global Editor {
     /// The layers panel's rows, front-to-back, and the picked row.
     in-out property <[CanvasLayerData]> canvas-layers;
     in-out property <int> canvas-active-layer: -1;
+    in-out property <int> canvas-active-blend: 0;
     /// The active row's curves: three channels of normalized points, and
     /// the same three as precomputed strokes for the editor to draw.
     in-out property <[CanvasCurvePoint]> canvas-curve-red;
@@ -315,6 +333,14 @@ export global Editor {
     callback canvas-open-cancel();
     callback canvas-open-save();
     callback canvas-tool-changed(index: int);
+    callback canvas-object-press(x: float, y: float);
+    callback canvas-object-move(x: float, y: float, shift: bool, alt: bool);
+    callback canvas-object-release(commit: bool);
+    callback canvas-transform-start();
+    callback canvas-transform-finish(commit: bool);
+    callback canvas-nudge(dx: int, dy: int);
+    callback canvas-flip(horizontal: bool);
+    callback canvas-transform-set(index: int, value: float);
     /// A paint stroke, in viewport pixels.
     callback canvas-brush-press(x: float, y: float);
     callback canvas-brush-move(x: float, y: float);
@@ -331,7 +357,11 @@ export global Editor {
     callback canvas-marquee-press(x: float, y: float);
     callback canvas-marquee-move(x: float, y: float);
     callback canvas-marquee-release();
+    callback canvas-marquee-cancel();
     callback canvas-wand-click(x: float, y: float);
+    callback canvas-selection-mode-changed(mode: int);
+    callback canvas-wand-tolerance-changed(value: float);
+    callback canvas-wand-contiguous-changed(value: bool);
     /// Selection-level edits.
     callback canvas-select-all();
     callback canvas-deselect();
@@ -341,6 +371,11 @@ export global Editor {
     callback canvas-layer-picked(index: int);
     callback canvas-layer-visibility-toggled(index: int);
     callback canvas-layer-opacity-changed(index: int, opacity: float);
+    callback canvas-layer-blend-changed(index: int);
+    callback canvas-layer-renamed(id: int, name: string);
+    callback canvas-layer-duplicated(index: int);
+    callback canvas-layer-opacity-begin(index: int);
+    callback canvas-parameter-end(commit: bool);
     callback canvas-layer-added();
     callback canvas-layer-group-added();
     callback canvas-layer-folded(index: int);
@@ -363,6 +398,7 @@ export global Editor {
     /// The adjustment panel.
     callback canvas-adjustment-added(kind: int);
     callback canvas-adjustment-param-changed(index: int, value: float);
+    callback canvas-adjustment-param-begin(index: int);
     /// The curves editor, on a channel: a point moved, added, removed.
     callback canvas-curve-set(channel: int, index: int, x: float, y: float);
     callback canvas-curve-add(channel: int, x: float, y: float);

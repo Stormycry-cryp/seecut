@@ -629,6 +629,70 @@ impl Default for LayerTransform {
     }
 }
 
+impl LayerTransform {
+    /// Give legacy signed scales an equivalent positive-scale editing form.
+    pub fn canonical_for_edit(mut self) -> Self {
+        if self.scale_x < 0.0 { self.scale_x = -self.scale_x; self.flip_h = !self.flip_h; }
+        if self.scale_y < 0.0 { self.scale_y = -self.scale_y; self.flip_v = !self.flip_v; }
+        self
+    }
+
+    /// A continuous document point to source-bitmap coordinates. The same
+    /// inverse is used by rendering, hit testing and painting.
+    pub fn to_bitmap(
+        self,
+        point: (f32, f32),
+        bitmap: (f32, f32),
+        canvas: (f32, f32),
+    ) -> Option<(f32, f32)> {
+        if !self.is_invertible() || bitmap.0 <= 0.0 || bitmap.1 <= 0.0 {
+            return None;
+        }
+        let dx = point.0 - (canvas.0 / 2.0 + self.x);
+        let dy = point.1 - (canvas.1 / 2.0 + self.y);
+        let (sin, cos) = (-self.rotation).sin_cos();
+        let rx = dx * cos - dy * sin;
+        let ry = dx * sin + dy * cos;
+        let x = (if self.flip_h { -rx } else { rx }) / self.scale_x + bitmap.0 / 2.0;
+        let y = (if self.flip_v { -ry } else { ry }) / self.scale_y + bitmap.1 / 2.0;
+        Some((x, y))
+    }
+
+    /// A source-bitmap point to continuous document coordinates.
+    pub fn from_bitmap(
+        self,
+        point: (f32, f32),
+        bitmap: (f32, f32),
+        canvas: (f32, f32),
+    ) -> Option<(f32, f32)> {
+        if !self.is_invertible() || bitmap.0 <= 0.0 || bitmap.1 <= 0.0 {
+            return None;
+        }
+        let x = (point.0 - bitmap.0 / 2.0) * self.scale_x * if self.flip_h { -1.0 } else { 1.0 };
+        let y = (point.1 - bitmap.1 / 2.0) * self.scale_y * if self.flip_v { -1.0 } else { 1.0 };
+        let (sin, cos) = self.rotation.sin_cos();
+        Some((
+            canvas.0 / 2.0 + self.x + x * cos - y * sin,
+            canvas.1 / 2.0 + self.y + x * sin + y * cos,
+        ))
+    }
+
+    /// Legacy documents may contain negative or very small scales. Rendering
+    /// keeps their existing meaning; editing constrains newly written values.
+    pub fn is_invertible(self) -> bool {
+        self.x.is_finite() && self.y.is_finite() && self.rotation.is_finite()
+            && self.scale_x.is_finite() && self.scale_y.is_finite()
+            && self.scale_x.abs() >= f32::EPSILON && self.scale_y.abs() >= f32::EPSILON
+    }
+
+    /// The finite, positive range a new interactive edit may write.
+    pub fn is_valid_edit(self) -> bool {
+        self.is_invertible()
+            && (0.001..=1000.0).contains(&self.scale_x)
+            && (0.001..=1000.0).contains(&self.scale_y)
+    }
+}
+
 /// A mask over a layer or group: grayscale pixels by name, white showing and
 /// black hiding.
 ///
@@ -640,6 +704,11 @@ pub struct LayerMask {
     pub enabled: bool,
     /// Whether the mask follows the layer's transform or holds its own.
     pub linked: bool,
+    /// The layer placement when this document-space mask began following it.
+    /// Old projects omit this field and keep their original document-space
+    /// appearance until the next explicit image transform.
+    #[serde(default)]
+    pub anchor: Option<LayerTransform>,
     /// The mask's grayscale pixels, by name.
     pub pixels: PixelId,
 }
@@ -650,6 +719,7 @@ impl LayerMask {
         Self {
             enabled: true,
             linked: true,
+            anchor: None,
             pixels,
         }
     }

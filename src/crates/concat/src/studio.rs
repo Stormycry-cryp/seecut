@@ -432,6 +432,8 @@ pub struct Models {
     pub audio_params: Rc<VecModel<AppliedParamData>>,
     /// The colour panel's knobs.
     pub adjust_params: Rc<VecModel<AppliedParamData>>,
+    pub canvas_layers: Rc<VecModel<CanvasLayerData>>,
+    pub canvas_adjustment_params: Rc<VecModel<CanvasAdjustmentParam>>,
     /// The keyframe cluster's rows and the libraries' views: synced like
     /// the rest, since a model handed over fresh is unequal to the last by
     /// identity and re-evaluates every binding on it.
@@ -475,6 +477,8 @@ impl Models {
             visual_params: Rc::new(VecModel::default()),
             audio_params: Rc::new(VecModel::default()),
             adjust_params: Rc::new(VecModel::default()),
+            canvas_layers: Rc::new(VecModel::default()),
+            canvas_adjustment_params: Rc::new(VecModel::default()),
             key_rows: Rc::new(VecModel::default()),
             library_views: Rc::new(VecModel::default()),
             menu: Rc::new(VecModel::default()),
@@ -5083,7 +5087,7 @@ impl Studio {
         self.publish_lanes(app, models);
         self.publish_chrome(app, models);
         self.publish_dock(app, models);
-        self.publish_canvas(app);
+        self.publish_canvas(app, models);
     }
 
     pub fn publish_dock(&self, _app: &App, models: &Models) {
@@ -5785,7 +5789,7 @@ impl Studio {
 
     /// The canvas pane's readouts: the picture and the view Rust holds.
     /// Values, not models, so it rides in whichever publish is running.
-    fn publish_canvas(&self, app: &App) {
+    fn publish_canvas(&self, app: &App, models: &Models) {
         let editor = app.global::<Editor>();
         editor.set_canvas_frame(self.canvas.image.clone());
         editor.set_canvas_has_document(self.canvas.document.is_some());
@@ -5801,7 +5805,26 @@ impl Studio {
         editor.set_canvas_pan_y(self.canvas.pan.1 as f32);
         editor.set_canvas_stage_w(self.canvas.stage.0 as f32);
         editor.set_canvas_stage_h(self.canvas.stage.1 as f32);
+        editor.set_canvas_has_object(self.canvas.object_view.is_some());
+        let (cx, cy, width, height, angle) = self.canvas.object_view.unwrap_or_default();
+        editor.set_canvas_object_cx(cx as f32);
+        editor.set_canvas_object_cy(cy as f32);
+        editor.set_canvas_object_w(width as f32);
+        editor.set_canvas_object_h(height as f32);
+        editor.set_canvas_object_angle(angle as f32);
+        editor.set_canvas_transforming(self.canvas.transform_session_active());
+        let (x, y, width, height, angle, flip_h, flip_v) = self.canvas.object_doc.unwrap_or_default();
+        editor.set_canvas_object_doc_x(x);
+        editor.set_canvas_object_doc_y(y);
+        editor.set_canvas_object_doc_w(width);
+        editor.set_canvas_object_doc_h(height);
+        editor.set_canvas_object_doc_angle(angle);
+        editor.set_canvas_object_flip_h(flip_h);
+        editor.set_canvas_object_flip_v(flip_v);
         editor.set_canvas_tool(self.canvas.tool as i32);
+        editor.set_canvas_selection_mode(self.canvas.selection_mode);
+        editor.set_canvas_wand_tolerance(self.canvas.wand_tolerance);
+        editor.set_canvas_wand_contiguous(self.canvas.wand_contiguous);
         editor.set_canvas_brush_diameter(self.canvas.brush.diameter as f32);
         editor.set_canvas_brush_opacity(self.canvas.brush.opacity as f32);
         editor.set_canvas_brush_hardness(self.canvas.brush.hardness as f32);
@@ -5833,12 +5856,14 @@ impl Studio {
             self.canvas.marquee_view,
         );
         // The layers panel: rows front-to-back, and the picked row's index.
+        let details = self.canvas.layer_ui_details();
         let rows: Vec<CanvasLayerData> = self
             .canvas
             .layers_data()
             .into_iter()
+            .zip(details)
             .map(
-                |(
+                |((
                     id,
                     name,
                     hidden,
@@ -5850,7 +5875,7 @@ impl Studio {
                     masked,
                     mask_paint,
                     mask_enabled,
-                )| {
+                ), (kind, blend))| {
                     CanvasLayerData {
                         id: id as i32,
                         name: name.into(),
@@ -5863,6 +5888,8 @@ impl Studio {
                         masked,
                         mask_paint,
                         mask_enabled,
+                        kind,
+                        blend,
                     }
                 },
             )
@@ -5873,7 +5900,8 @@ impl Studio {
                 .map(|index| index as i32)
                 .unwrap_or(-1),
         );
-        editor.set_canvas_layers(slint::ModelRc::new(slint::VecModel::from(rows)));
+        editor.set_canvas_active_blend(self.canvas.active_blend_index());
+        sync(&models.canvas_layers, rows);
         crate::publish_canvas_aux(self, app);
         // The checker under the picture, the active row's adjustment and
         // its knobs - the same publish, one block over.
@@ -5889,7 +5917,7 @@ impl Studio {
                 maximum,
             })
             .collect();
-        editor.set_canvas_adjustment_params(slint::ModelRc::new(slint::VecModel::from(params)));
+        sync(&models.canvas_adjustment_params, params);
         // The active gradient map's two colours, as the swatches read
         // them; the defaults stand in when the row is not one.
         let (low, high) = self

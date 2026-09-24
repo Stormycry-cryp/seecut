@@ -106,6 +106,8 @@ export component App inherits Window {
     property <bool> sheet-open: root.export.open || root.settings.open
         || root.project-sheet.open || root.captions.open || root.speech.open;
     in-out property <bool> canvas-open-menu;
+    property <bool> canvas-space-hand: false;
+    property <int> canvas-tool-before-space: 0;
     in-out property <bool> clip-create-open;
     callback canvas-export-library();
     callback export-destination-selected(to-library: bool);
@@ -282,7 +284,7 @@ export component App inherits Window {
 
     callback open-canvas-path(path: string);
     callback add-canvas-paths(payload: string);
-    callback canvas-new();
+    callback canvas-new(width: int, height: int);
     callback open-settings();
     callback export-clicked();
 
@@ -426,6 +428,32 @@ export component App inherits Window {
                     if (event.text == "o") { Editor.canvas-open(); return accept; }
                     if (event.modifiers.shift && event.text == "s" && Editor.canvas-has-document) { Editor.canvas-save-comp-as(); return accept; }
                     if (event.text == "s" && Editor.canvas-has-document) { Editor.canvas-save-comp(); return accept; }
+                    if (event.text == "t" && Editor.canvas-has-object) {
+                        Editor.canvas-tool-changed(0);
+                        Editor.canvas-transform-start();
+                        return accept;
+                    }
+                }
+                if (event.text == Key.Space && Editor.canvas-has-document) {
+                    if (!root.canvas-space-hand) {
+                        root.canvas-tool-before-space = Editor.canvas-tool;
+                        root.canvas-space-hand = true;
+                        Editor.canvas-tool-changed(1);
+                    }
+                    return accept;
+                }
+                if (event.text == "v" || event.text == "V") { Editor.canvas-tool-changed(0); return accept; }
+                if (event.text == "h" || event.text == "H") { Editor.canvas-tool-changed(1); return accept; }
+                if (event.text == "z" || event.text == "Z") { Editor.canvas-tool-changed(2); return accept; }
+                if (Editor.canvas-transforming && event.text == "\n") { Editor.canvas-transform-finish(true); return accept; }
+                if (event.text == Key.Escape && Editor.canvas-transforming) { Editor.canvas-transform-finish(false); return accept; }
+                if (event.text == Key.Escape && Editor.canvas-has-object) { Editor.canvas-object-release(false); return accept; }
+                if (Editor.canvas-tool == 0 && Editor.canvas-has-object) {
+                    let step = event.modifiers.shift ? 10 : 1;
+                    if (event.text == Key.LeftArrow) { Editor.canvas-nudge(-step, 0); return accept; }
+                    if (event.text == Key.RightArrow) { Editor.canvas-nudge(step, 0); return accept; }
+                    if (event.text == Key.UpArrow) { Editor.canvas-nudge(0, -step); return accept; }
+                    if (event.text == Key.DownArrow) { Editor.canvas-nudge(0, step); return accept; }
                 }
                 if ((event.text == Key.Delete || event.text == Key.Backspace) && Editor.canvas-has-selection) { Editor.canvas-delete-selection(); return accept; }
                 if (event.text == Key.Escape) { Editor.canvas-deselect(); return accept; }
@@ -488,6 +516,14 @@ export component App inherits Window {
             if (event.text == "h") { Editor.shortcut("flip-h"); return accept; }
             if (event.text == "j") { Editor.shortcut("flip-v"); return accept; }
             if (event.text == "r") { Editor.shortcut("reverse"); return accept; }
+            return reject;
+        }
+        key-released(event) => {
+            if (event.text == Key.Space && root.canvas-space-hand) {
+                root.canvas-space-hand = false;
+                if (SeeCut.page == 6) { Editor.canvas-tool-changed(root.canvas-tool-before-space); }
+                return accept;
+            }
             return reject;
         }
 
