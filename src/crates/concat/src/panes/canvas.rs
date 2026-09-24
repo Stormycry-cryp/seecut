@@ -1161,7 +1161,10 @@ impl CanvasPane {
     /// tray has, but the number arrives over a boundary. The eraser is the
     /// brush with its erasing bit on, so the settings stay shared.
     pub fn set_tool(&mut self, tool: i32) {
-        self.tool = (tool.max(0) as usize).min(6);
+        let next = (tool.max(0) as usize).min(6);
+        if next != self.tool && self.object_drag.is_some() { self.object_release(false); }
+        if self.transform_session.is_some() && next != 0 && next != 1 { self.transform_finish(true); }
+        self.tool = next;
         self.brush.erasing = self.tool == 4;
     }
 
@@ -1722,6 +1725,8 @@ impl CanvasPane {
         self.stroke_mapping = None;
         self.pending_history = None;
         self.parameter_gesture = None;
+        self.object_drag = None;
+        self.transform_session = None;
         self.thumbnail_cache.clear();
         self.content_bounds.clear();
         self.pixel_revisions.clear();
@@ -1914,6 +1919,9 @@ impl CanvasPane {
         if self.stroke.is_some() {
             return;
         }
+        if self.transform_session.is_some() { self.transform_finish(false); return; }
+        if self.object_drag.is_some() { self.object_release(false); return; }
+        if self.parameter_gesture.is_some() { self.finish_parameter_gesture(false); return; }
         let Some(entry) = self.undo_stack.pop() else {
             return;
         };
@@ -1927,6 +1935,7 @@ impl CanvasPane {
         if self.stroke.is_some() {
             return;
         }
+        if self.transform_session.is_some() || self.object_drag.is_some() || self.parameter_gesture.is_some() { return; }
         let Some(entry) = self.redo_stack.pop() else {
             return;
         };
@@ -3283,6 +3292,9 @@ impl CanvasPane {
         self.revision = self.revision.wrapping_add(1).max(1);
         self.saved_revision = self.revision;
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
+        self.object_drag = None;
+        self.transform_session = None;
+        self.parameter_gesture = None;
         self.autosave_inflight = None;
         self.pending_open = None;
         self.open_confirm = false;
@@ -3375,6 +3387,7 @@ impl CanvasPane {
     /// saved; anything else decodes as one image, one layer the size of
     /// the canvas, the view fitted to it.
     fn new_blank(&mut self, studio: &mut Studio, width: u32, height: u32) {
+        self.brush_release();
         if self.is_modified()
             && let Err(error) = self.save_auto()
         {
@@ -3398,6 +3411,9 @@ impl CanvasPane {
         self.name = "未命名画布".to_owned();
         self.revision = self.revision.wrapping_add(1).max(1);
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
+        self.object_drag = None;
+        self.transform_session = None;
+        self.parameter_gesture = None;
         self.autosave_inflight = None;
         self.failed = false;
         self.checker = checker_image(width, height);
@@ -3587,6 +3603,9 @@ impl CanvasPane {
                 self.revision = self.revision.wrapping_add(1).max(1);
                 self.saved_revision = 0;
                 self.document_generation = self.document_generation.wrapping_add(1).max(1);
+                self.object_drag = None;
+                self.transform_session = None;
+                self.parameter_gesture = None;
                 self.autosave_inflight = None;
                 self.pending_open = None;
                 self.open_confirm = false;
@@ -4217,6 +4236,9 @@ impl CanvasPane {
                     self.revision = self.revision.wrapping_add(1).max(1);
                     self.saved_revision = self.revision;
                     self.document_generation = self.document_generation.wrapping_add(1).max(1);
+                    self.object_drag = None;
+                    self.transform_session = None;
+                    self.parameter_gesture = None;
                     self.autosave_inflight = None;
                     self.pending_open = None;
                     self.open_confirm = false;
