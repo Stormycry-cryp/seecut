@@ -1,75 +1,369 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ScrollView } from "std-widgets.slint";
-import { Theme, SegmentedControl, Glyph, Icon, Modal } from "../primitives/primitives.slint";
+import { Theme, SegmentedControl, Glyph, Icon, Modal, FocusRing } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
-import { AppButton, CloudField, WorkspaceSelect } from "components.slint";
+import { AppButton, AssetPreview, CloudField, WorkspaceSelect } from "components.slint";
 
 export component AssetPicker inherits Modal {
     open: SeeCut.asset-picker-open;
-    title: SeeCut.asset-picker-purpose == "canvas" ? "选择画布图片" : SeeCut.asset-picker-purpose == "import" ? "从资产库导入项目" : "选择参考素材";
+    title: SeeCut.asset-picker-purpose == "canvas" ? "选择画布图片" : SeeCut.asset-picker-purpose == "import" ? "从资产库导入项目" : "从资产库选择";
+    title-at-start: true;
     glyph: Glyph.folder;
-    surface-width: Math.min(640px, root.width - 32px);
-    surface-height: Math.min(640px, root.height - 32px);
+    // Three 256px cards with 8px gaps fit the reference sheet at its normal
+    // width. The grid below keeps two columns when the sheet becomes narrow.
+    surface-width: Math.min(832px, root.width - 32px);
+    surface-height: Math.min(656px, root.height - 32px);
+
+    // ScrollView keeps its viewport position while the picker stays mounted.
+    // Keep the position in the picker so a deliberate wheel/trackpad scroll is
+    // preserved, while the state changes that replace the result set can put
+    // the next view back at its first complete row.
+    property <length> personal-scroll-y;
+    property <length> team-scroll-y;
+    property <string> focused-card-id;
+    property <int> focused-card-source: -1;
+    property <bool> auth-visible: SeeCut.auth-open;
+    changed auth-visible => {
+        if !self.auth-visible && root.open && !SeeCut.handoff-open && !SeeCut.media-preview-open { picker-keys.focus(); }
+    }
+    property <int> picker-source: SeeCut.asset-picker-source;
+    property <string> picker-purpose: SeeCut.asset-picker-purpose;
+    property <string> personal-search: SeeCut.personal-reference-search;
+    property <int> personal-filter: SeeCut.asset-picker-personal-filter;
+    property <int> team-index: SeeCut.team-index;
+    property <string> team-search: SeeCut.asset-picker-team-search;
+    property <int> team-filter: SeeCut.asset-picker-team-filter;
+
+    function reset-scroll() {
+        root.personal-scroll-y = 0px;
+        root.team-scroll-y = 0px;
+    }
+
+    changed open => { if root.open { root.reset-scroll(); root.focused-card-id = ""; } }
+    changed picker-source => { root.reset-scroll(); root.focused-card-id = ""; }
+    changed picker-purpose => { root.reset-scroll(); root.focused-card-id = ""; }
+    changed personal-search => { root.personal-scroll-y = 0px; root.focused-card-id = ""; }
+    changed personal-filter => { root.personal-scroll-y = 0px; root.focused-card-id = ""; }
+    changed team-index => { root.team-scroll-y = 0px; root.focused-card-id = ""; }
+    changed team-search => { root.team-scroll-y = 0px; root.focused-card-id = ""; }
+    changed team-filter => { root.team-scroll-y = 0px; root.focused-card-id = ""; }
+
     closed => { SeeCut.action("asset-picker-cancel", ""); }
-    FocusScope {
+    picker-keys := FocusScope {
         enabled: !SeeCut.auth-open;
         vertical-stretch: 1;
-        key-pressed(event) => { if event.text == Key.Escape { SeeCut.action("asset-picker-cancel", ""); return accept; } return reject; }
+        key-pressed(event) => { if event.text == Key.Escape { SeeCut.action("asset-picker-cancel", ""); return EventResult.accept; } return EventResult.reject; }
         VerticalLayout {
-            padding: 16px; spacing: 10px;
-            SegmentedControl { options: ["个人资产", "团队资产"]; current: SeeCut.asset-picker-source; changed(index) => { SeeCut.asset-picker-source = index; SeeCut.action("reference-source", ""); } }
-            Text { text: SeeCut.asset-picker-purpose == "canvas" ? "选择一张图片，在独立画布中编辑。" : SeeCut.asset-picker-purpose == "import" ? (SeeCut.project-open ? "素材将加入当前项目素材箱，可继续拖入时间线。" : "选好素材后，创建或打开项目即可继续导入。") : "选择多项素材后，统一添加为参考。"; color: Theme.fg-dim; wrap: word-wrap; }
-            if SeeCut.asset-picker-source == 0: CloudField { auto-focus: true; value <=> SeeCut.personal-reference-search; placeholder: "搜索个人素材"; edited(value) => { SeeCut.changed("personal-reference-search", value); } }
-            if SeeCut.asset-picker-source == 1 && SeeCut.signed-in: WorkspaceSelect { options: SeeCut.team-names; current: SeeCut.team-index; placeholder: "选择团队"; changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); } }
-            if SeeCut.asset-picker-source == 1 && SeeCut.signed-in: CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队素材"; edited(value) => { SeeCut.changed("asset-search", value); } }
-            if SeeCut.asset-picker-source == 1 && !SeeCut.signed-in: AppButton { label: "登录查看团队资产"; clicked => { SeeCut.action("auth-open", ""); } }
-            if SeeCut.asset-picker-source == 1 && SeeCut.signed-in && SeeCut.team-names.length == 0: AppButton { label: "创建或加入团队"; clicked => { SeeCut.action("asset-picker-cancel", ""); SeeCut.action("navigate", "2"); } }
-            if (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references.length == 0 : SeeCut.assets.length == 0): Text { text: SeeCut.working ? "正在加载素材" : "暂无可用素材"; color: Theme.fg-muted; }
-            ScrollView {
-                min-height: 80px; vertical-stretch: 1;
-                viewport-width: self.width; horizontal-scrollbar-policy: always-off;
-                VerticalLayout {
-                    alignment: start; spacing: 6px;
-                    for asset in (SeeCut.asset-picker-source == 0 ? SeeCut.personal-references : SeeCut.assets): Rectangle {
-                        height: 58px; background: asset.selected && SeeCut.asset-picker-purpose != "canvas" ? Theme.accent-soft : Theme.well; border-radius: Theme.r-sm; border-width: 1px; border-color: asset.selected && SeeCut.asset-picker-purpose != "canvas" ? Theme.accent : Colors.transparent;
-                        HorizontalLayout {
-                            padding: 6px; spacing: 10px;
-                            Rectangle {
-                                width: 46px; height: 46px; background: Theme.stage;
-                                Icon { x: 14px; y: 14px; size: 18px; glyph: asset.kind == "video" ? Glyph.film : asset.kind == "audio" ? Glyph.music : Glyph.image; tint: Theme.fg-dim; }
-                                Image { width: 100%; height: 100%; source: asset.preview; image-fit: contain; }
-                            }
-                            Text { text: asset.name; color: Theme.fg; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                            if SeeCut.asset-picker-purpose == "canvas": AppButton {
-                                glyph: Glyph.plus; label: "打开画布";
-                                enabled: asset.ready && asset.kind == "image" && !SeeCut.working;
-                                clicked => { SeeCut.action(SeeCut.asset-picker-source == 0 ? "personal-canvas" : "asset-canvas", asset.id); }
-                            }
-                            if SeeCut.asset-picker-purpose != "canvas": AppButton {
-                                glyph: asset.selected ? Glyph.check : Glyph.plus;
-                                label: asset.selected ? "已选择" : "选择"; selected: asset.selected;
-                                enabled: asset.ready && !SeeCut.working;
-                                clicked => { SeeCut.action("asset-picker-toggle", asset.id); }
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 18px;
+            padding-bottom: 20px;
+            spacing: 12px;
+
+            // Keep the source switch because it is part of the existing flow;
+            // the gallery itself remains the dominant part of the sheet.
+            SegmentedControl {
+                options: ["个人资产", "团队资产"];
+                current <=> SeeCut.asset-picker-source;
+                height: 36px;
+                text-size: 13px;
+                workbench: true;
+                reduced-motion: SeeCut.reduced-motion;
+                changed(index) => { SeeCut.asset-picker-source = index; SeeCut.action("reference-source", ""); }
+            }
+
+            if SeeCut.asset-picker-source == 0: CloudField {
+                auto-focus: true;
+                value <=> SeeCut.personal-reference-search;
+                placeholder: "搜索素材";
+                edited(value) => { SeeCut.changed("personal-reference-search", value); }
+            }
+            if SeeCut.asset-picker-source == 1 && SeeCut.signed-in: HorizontalLayout {
+                height: Theme.workbench-h;
+                spacing: 8px;
+                WorkspaceSelect {
+                    width: 176px;
+                    options: SeeCut.team-names;
+                    current: SeeCut.team-index;
+                    placeholder: "选择团队";
+                    changed(index) => { SeeCut.team-index = index; SeeCut.changed("team", index); }
+                }
+                CloudField {
+                    horizontal-stretch: 1;
+                    value <=> SeeCut.asset-picker-team-search;
+                    placeholder: "搜索团队素材";
+                    edited(value) => { SeeCut.changed("asset-picker-team-search", value); }
+                }
+            }
+            if SeeCut.asset-picker-source == 1 && !SeeCut.signed-in: AppButton {
+                label: "登录查看团队资产";
+                primary: true;
+                clicked => { SeeCut.action("auth-open", ""); }
+            }
+
+            if SeeCut.asset-picker-source == 0: SegmentedControl {
+                options: ["全部", "图片", "视频", "音频"];
+                current <=> SeeCut.asset-picker-personal-filter;
+                height: 36px;
+                text-size: 13px;
+                workbench: true;
+                reduced-motion: SeeCut.reduced-motion;
+                changed(index) => { SeeCut.asset-picker-personal-filter = index; SeeCut.changed("asset-picker-personal-filter", index); }
+            }
+            if SeeCut.asset-picker-source == 1 && SeeCut.signed-in: SegmentedControl {
+                options: ["全部", "图片", "视频", "音频"];
+                current <=> SeeCut.asset-picker-team-filter;
+                height: 36px;
+                text-size: 13px;
+                workbench: true;
+                reduced-motion: SeeCut.reduced-motion;
+                changed(index) => { SeeCut.asset-picker-team-filter = index; SeeCut.changed("asset-picker-team-filter", index); }
+            }
+
+            HorizontalLayout {
+                height: 20px;
+                Text {
+                    text: SeeCut.asset-picker-source == 0 ? "全部素材 " + SeeCut.personal-references.length : "团队素材 " + SeeCut.assets.length;
+                    color: Theme.fg;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: "已选 " + SeeCut.asset-picker-selected-count + " 项";
+                    color: Theme.fg-muted;
+                    font-size: 12px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    visible: SeeCut.asset-picker-purpose != "canvas";
+                }
+            }
+
+            if SeeCut.asset-picker-source == 1 && SeeCut.signed-in && SeeCut.team-names.length == 0: AppButton {
+                label: "创建或加入团队";
+                clicked => { SeeCut.action("asset-picker-cancel", ""); SeeCut.action("navigate", "2"); }
+            }
+
+            if SeeCut.asset-picker-source == 0 && SeeCut.personal-references.length > 0: ScrollView {
+                min-height: 120px;
+                vertical-stretch: 1;
+                viewport-width: self.visible-width;
+                viewport-height: grid.height;
+                viewport-y <=> root.personal-scroll-y;
+                horizontal-scrollbar-policy: always-off;
+                grid := Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    property <int> columns: self.width < 600px ? 2 : 3;
+                    property <length> gap: 8px;
+                    property <length> card-width: (self.width - (self.columns - 1) * self.gap) / self.columns;
+                    property <length> media-height: Math.max(104px, self.card-width * 0.5);
+                    property <length> card-height: self.media-height + 28px;
+                    height: Math.ceil(SeeCut.personal-references.length / self.columns) * (self.card-height + self.gap) - self.gap;
+                    for asset[index] in SeeCut.personal-references: card := Rectangle {
+                        property <bool> purpose-visible: SeeCut.asset-picker-purpose == "import" || (SeeCut.asset-picker-purpose == "canvas" && asset.kind == "image") || (SeeCut.asset-picker-purpose == "reference" && (SeeCut.mode != 0 || asset.kind == "image"));
+                        property <bool> card-enabled: asset.ready && !SeeCut.working && self.purpose-visible;
+                        property <bool> ring;
+                        x: Math.mod(index, grid.columns) * (grid.card-width + grid.gap);
+                        y: Math.floor(index / grid.columns) * (grid.card-height + grid.gap);
+                        width: grid.card-width;
+                        height: grid.card-height;
+                        background: asset.selected && SeeCut.asset-picker-purpose != "canvas" ? Theme.accent-soft : Colors.transparent;
+                        border-radius: Theme.r-lg;
+                        border-width: asset.selected && SeeCut.asset-picker-purpose != "canvas" ? 1px : 0px;
+                        border-color: Theme.accent;
+                        clip: true;
+                        accessible-role: button;
+                        accessible-label: asset.name + (asset.selected ? "，已选择" : "");
+                        accessible-enabled: self.card-enabled;
+                        init => {
+                            if root.open && root.focused-card-source == 0 && root.focused-card-id == asset.id && self.card-enabled {
+                                picker-focus.focus();
                             }
                         }
+                        changed card-enabled => {
+                            if self.card-enabled && root.open && root.focused-card-source == 0 && root.focused-card-id == asset.id && !SeeCut.auth-open {
+                                picker-focus.focus();
+                            }
+                        }
+                        accessible-action-default => {
+                            if self.card-enabled {
+                                root.focused-card-source = 0; root.focused-card-id = asset.id; picker-focus.focus();
+                                if SeeCut.asset-picker-purpose == "canvas" {
+                                    SeeCut.action("personal-canvas", asset.id);
+                                } else {
+                                    SeeCut.action("asset-picker-toggle", asset.id);
+                                }
+                            }
+                        }
+                        AssetPreview {
+                            x: 0px; y: 0px; width: 100%; height: grid.media-height;
+                            source: asset.preview;
+                            fill-frame: true;
+                            fallback-glyph: asset.kind == "video" ? Glyph.film : asset.kind == "audio" ? Glyph.music : Glyph.image;
+                            interactive: false;
+                        }
+                        if asset.selected && SeeCut.asset-picker-purpose != "canvas": Rectangle {
+                            x: parent.width - 32px; y: 8px; width: 24px; height: 24px;
+                            background: Theme.accent;
+                            border-radius: Theme.r-sm;
+                            Icon { x: 4px; y: 4px; size: 16px; glyph: Glyph.check; tint: Theme.on-accent; }
+                        }
+                        if asset.kind == "video" && asset.detail != "": Rectangle {
+                            x: parent.width - 76px; y: grid.media-height - 28px;
+                            width: 68px; height: 20px;
+                            background: Theme.scrim; border-radius: Theme.r-xs;
+                            Text { x: 4px; width: parent.width - 8px; height: 20px; text: asset.detail; color: Theme.fg; font-size: 11px; vertical-alignment: center; overflow: elide; }
+                        }
+                        Text {
+                            x: 0px; y: grid.media-height + 4px; width: parent.width; height: 20px;
+                            text: asset.name; color: Theme.fg; font-size: 12px;
+                            overflow: elide; vertical-alignment: center;
+                        }
+                        picker-focus := FocusScope {
+                            enabled: card.card-enabled;
+                            focus-gained(reason) => { card.ring = reason == FocusReason.tab-navigation; }
+                            focus-lost(reason) => { card.ring = false; }
+                            key-pressed(event) => {
+                                if event.text == " " || event.text == "\n" {
+                                    root.focused-card-source = 0; root.focused-card-id = asset.id;
+                                    if SeeCut.asset-picker-purpose == "canvas" { SeeCut.action("personal-canvas", asset.id); } else { SeeCut.action("asset-picker-toggle", asset.id); }
+                                    return EventResult.accept;
+                                }
+                                return EventResult.reject;
+                            }
+                        }
+                        picker-touch := TouchArea {
+                            enabled: card.card-enabled;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.focused-card-source = 0; root.focused-card-id = asset.id;
+                                picker-focus.focus();
+                                if SeeCut.asset-picker-purpose == "canvas" { SeeCut.action("personal-canvas", asset.id); } else { SeeCut.action("asset-picker-toggle", asset.id); }
+                            }
+                        }
+                        FocusRing { active: card.ring; radius: Theme.r-lg; }
                     }
                 }
             }
-            if SeeCut.error != "": Text { text: SeeCut.error; color: Theme.danger; wrap: word-wrap; }
-            if SeeCut.asset-picker-source == 0: AppButton { label: "导入本地素材到个人资产"; glyph: Glyph.import; enabled: !SeeCut.working; clicked => { SeeCut.action("personal-browse", ""); } }
-            if SeeCut.working: Text { text: "正在读取素材"; color: Theme.fg-dim; }
+            if SeeCut.asset-picker-source == 1 && SeeCut.assets.length > 0: ScrollView {
+                min-height: 120px;
+                vertical-stretch: 1;
+                viewport-width: self.visible-width;
+                viewport-height: team-grid.height;
+                viewport-y <=> root.team-scroll-y;
+                horizontal-scrollbar-policy: always-off;
+                team-grid := Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    property <int> columns: self.width < 600px ? 2 : 3;
+                    property <length> gap: 8px;
+                    property <length> card-width: (self.width - (self.columns - 1) * self.gap) / self.columns;
+                    property <length> media-height: Math.max(104px, self.card-width * 0.5);
+                    property <length> card-height: self.media-height + 28px;
+                    height: Math.ceil(SeeCut.assets.length / self.columns) * (self.card-height + self.gap) - self.gap;
+                    for asset[index] in SeeCut.assets: team-card := Rectangle {
+                        property <bool> card-enabled: asset.ready && !SeeCut.working && (SeeCut.asset-picker-purpose != "canvas" || asset.kind == "image");
+                        property <bool> ring;
+                        x: Math.mod(index, team-grid.columns) * (team-grid.card-width + team-grid.gap);
+                        y: Math.floor(index / team-grid.columns) * (team-grid.card-height + team-grid.gap);
+                        width: team-grid.card-width; height: team-grid.card-height;
+                        background: asset.selected && SeeCut.asset-picker-purpose != "canvas" ? Theme.accent-soft : Colors.transparent;
+                        border-radius: Theme.r-lg;
+                        border-width: asset.selected && SeeCut.asset-picker-purpose != "canvas" ? 1px : 0px;
+                        border-color: Theme.accent;
+                        clip: true;
+                        accessible-role: button;
+                        accessible-label: asset.name + (asset.selected ? "，已选择" : "");
+                        accessible-enabled: self.card-enabled;
+                        init => {
+                            if root.open && root.focused-card-source == 1 && root.focused-card-id == asset.id && self.card-enabled {
+                                team-picker-focus.focus();
+                            }
+                        }
+                        changed card-enabled => {
+                            if self.card-enabled && root.open && root.focused-card-source == 1 && root.focused-card-id == asset.id && !SeeCut.auth-open {
+                                team-picker-focus.focus();
+                            }
+                        }
+                        accessible-action-default => {
+                            if self.card-enabled {
+                                root.focused-card-source = 1; root.focused-card-id = asset.id; team-picker-focus.focus();
+                                if SeeCut.asset-picker-purpose == "canvas" { SeeCut.action("asset-canvas", asset.id); } else { SeeCut.action("asset-picker-toggle", asset.id); }
+                            }
+                        }
+                        AssetPreview {
+                            x: 0px; y: 0px; width: 100%; height: team-grid.media-height;
+                            source: asset.preview; fill-frame: true;
+                            fallback-glyph: asset.kind == "video" ? Glyph.film : asset.kind == "audio" ? Glyph.music : Glyph.image;
+                            interactive: false;
+                        }
+                        if asset.selected && SeeCut.asset-picker-purpose != "canvas": Rectangle {
+                            x: parent.width - 32px; y: 8px; width: 24px; height: 24px;
+                            background: Theme.accent; border-radius: Theme.r-sm;
+                            Icon { x: 4px; y: 4px; size: 16px; glyph: Glyph.check; tint: Theme.on-accent; }
+                        }
+                        Text {
+                            x: 0px; y: team-grid.media-height + 4px; width: parent.width; height: 20px;
+                            text: asset.name; color: Theme.fg; font-size: 12px;
+                            overflow: elide; vertical-alignment: center;
+                        }
+                        team-picker-focus := FocusScope {
+                            enabled: team-card.card-enabled;
+                            focus-gained(reason) => { team-card.ring = reason == FocusReason.tab-navigation; }
+                            focus-lost(reason) => { team-card.ring = false; }
+                            key-pressed(event) => {
+                                if event.text == " " || event.text == "\n" {
+                                    root.focused-card-source = 1; root.focused-card-id = asset.id;
+                                    if SeeCut.asset-picker-purpose == "canvas" { SeeCut.action("asset-canvas", asset.id); } else { SeeCut.action("asset-picker-toggle", asset.id); }
+                                    return EventResult.accept;
+                                }
+                                return EventResult.reject;
+                            }
+                        }
+                        team-picker-touch := TouchArea {
+                            enabled: team-card.card-enabled;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.focused-card-source = 1; root.focused-card-id = asset.id;
+                                team-picker-focus.focus();
+                                if SeeCut.asset-picker-purpose == "canvas" { SeeCut.action("asset-canvas", asset.id); } else { SeeCut.action("asset-picker-toggle", asset.id); }
+                            }
+                        }
+                        FocusRing { active: team-card.ring; radius: Theme.r-lg; }
+                    }
+                }
+            }
+            if (SeeCut.asset-picker-source == 0 && SeeCut.personal-references.length == 0) || (SeeCut.asset-picker-source == 1 && SeeCut.assets.length == 0): Text {
+                vertical-stretch: 1;
+                text: SeeCut.working ? "正在加载素材" : (SeeCut.asset-picker-source == 0 ? (SeeCut.personal-reference-search != "" ? "没有找到相关素材" : "暂无个人素材") : (!SeeCut.signed-in ? "登录后查看团队素材" : (SeeCut.asset-picker-team-search != "" ? "没有找到相关素材" : "暂无团队素材")));
+                color: Theme.fg-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            if SeeCut.asset-picker-source == 0: AppButton {
+                label: "导入本地素材到个人资产";
+                glyph: Glyph.import;
+                subtle: true;
+                enabled: !SeeCut.working;
+                clicked => { SeeCut.action("personal-browse", ""); }
+            }
+            if SeeCut.error != "": Text {
+                text: SeeCut.error; color: Theme.danger; wrap: word-wrap;
+                min-height: 20px; max-height: 36px; overflow: elide;
+            }
             HorizontalLayout {
                 spacing: 8px; height: 34px;
-                if SeeCut.asset-picker-purpose != "canvas": Text {
-                    text: "已选 " + SeeCut.asset-picker-selected-count + " 项";
-                    color: Theme.fg-muted; vertical-alignment: center;
-                }
                 Rectangle { horizontal-stretch: 1; }
                 AppButton { label: "取消"; clicked => { SeeCut.action("asset-picker-cancel", ""); } }
                 if SeeCut.asset-picker-purpose != "canvas": AppButton {
-                    label: SeeCut.asset-picker-purpose == "import" ? "导入所选" : "添加参考";
-                    primary: true; enabled: SeeCut.asset-picker-selected-count > 0 && !SeeCut.working;
+                    label: SeeCut.asset-picker-purpose == "import" ? "导入所选" : "添加 " + SeeCut.asset-picker-selected-count + " 项";
+                    primary: true;
+                    enabled: SeeCut.asset-picker-selected-count > 0 && !SeeCut.working;
                     clicked => { SeeCut.action("asset-picker-confirm", ""); }
                 }
             }

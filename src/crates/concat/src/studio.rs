@@ -526,6 +526,40 @@ pub(crate) struct MediaImportSession {
     pub(crate) path: String,
 }
 
+/// The UI may receive save completions after another edit or project opens.
+struct SaveStamp {
+    generation: u64,
+    path: String,
+    revision: u64,
+    ticket: u64,
+}
+
+impl SaveStamp {
+    fn is_current(&self, generation: u64, path: Option<&str>, latest: bool) -> bool {
+        self.generation == generation && path == Some(self.path.as_str()) && latest
+    }
+
+    fn settle(
+        &self,
+        generation: u64,
+        path: Option<&str>,
+        latest: bool,
+        revision: u64,
+        dirty: &mut bool,
+        result: &Result<bool, String>,
+    ) -> bool {
+        if !self.is_current(generation, path, latest) {
+            return false;
+        }
+        match result {
+            Ok(true) if revision == self.revision => *dirty = false,
+            Err(_) => *dirty = true,
+            _ => {}
+        }
+        true
+    }
+}
+
 pub struct Studio {
     pub host: Host,
     pub prefs: Preferences,
@@ -548,6 +582,7 @@ pub struct Studio {
     /// Unsaved changes, and the timer that writes them.
     dirty: bool,
     autosave: slint::Timer,
+    save_lane: Option<Arc<projects::SaveLane>>,
 
     // ── the bin ──
     pub media: crate::panes::media_bin::MediaBin,
@@ -1304,6 +1339,7 @@ impl Studio {
             empty: Project::new(),
             dirty: false,
             autosave: slint::Timer::default(),
+            save_lane: None,
             media: crate::panes::media_bin::MediaBin::default(),
             peaks: HashMap::new(),
             strips: HashMap::new(),
@@ -1649,15 +1685,44 @@ impl Studio {
         };
         self.autosave.stop();
         let (path, document) = session.prepare_save(None);
-        self.dirty = false;
+        let lane = self
+            .save_lane
+            .get_or_insert_with(|| Arc::new(projects::SaveLane::default()))
+            .clone();
+        let stamp = SaveStamp {
+            generation: self.session_generation,
+            path: path.clone(),
+            revision: self.revision,
+            ticket: lane.next(),
+        };
+        let worker_lane = Arc::clone(&lane);
         spawn(
-            move || projects::save(&path, &document),
-            move |studio, _, _, result| match result {
-                Ok(()) if announce => studio.notify(&t("Project saved"), false),
-                Ok(()) => {}
-                Err(error) => {
-                    studio.dirty = true;
-                    studio.notify(&tf("Could not save: {0}", &[&error]), true);
+            move || worker_lane.write(stamp.ticket, &path, &document),
+            move |studio, _, _, result| {
+                let current_path = studio
+                    .session
+                    .as_ref()
+                    .map(|session| session.path().to_owned());
+                if !stamp.settle(
+                    studio.session_generation,
+                    current_path.as_deref(),
+                    lane.is_latest(stamp.ticket),
+                    studio.revision,
+                    &mut studio.dirty,
+                    &result,
+                ) {
+                    return;
+                }
+                match result {
+                    Ok(true) => {
+                        if announce && studio.revision == stamp.revision {
+                            studio.notify(&t("Project saved"), false);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        studio.notify(&tf("Could not save: {0}", &[&error]), true);
+                    }
                 }
             },
         );
@@ -4603,6 +4668,11 @@ impl Studio {
     /// Opens a project as the session and leaves the launch screen, or
     /// says why it could not.
     pub fn open_project(&mut self, info: ProjectInfo) -> Result<(), String> {
+        if self.session.is_some() {
+            // Keep the current edit open if the requested project is invalid.
+            Session::open_info(&info)?;
+            self.close_project()?;
+        }
         match Session::open_info(&info) {
             Ok(session) => {
                 if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
@@ -4611,6 +4681,7 @@ impl Studio {
                 self.pause();
                 self.session = Some(session);
                 self.session_generation = self.session_generation.wrapping_add(1).max(1);
+                self.save_lane = Some(Arc::new(projects::SaveLane::default()));
                 self.echo = None;
                 self.dirty = false;
                 self.project_name = info.name.clone();
@@ -4686,7 +4757,19 @@ impl Studio {
         self.pause();
         if let Some(session) = self.session.as_mut() {
             let (path, document) = session.prepare_save(None);
-            if let Err(error) = projects::save(&path, &document) {
+            let lane = self
+                .save_lane
+                .get_or_insert_with(|| Arc::new(projects::SaveLane::default()));
+            let ticket = lane.next();
+            let saved = lane.write(ticket, &path, &document).and_then(|written| {
+                if written {
+                    Ok(())
+                } else {
+                    Err("a newer project save superseded the close".to_owned())
+                }
+            });
+            if let Err(error) = saved {
+                self.dirty = true;
                 let message = tf("Could not save: {0}", &[&error]);
                 self.notify(&message, true);
                 return Err(message);
@@ -4697,6 +4780,7 @@ impl Studio {
         self.region_job = None;
         self.autosave.stop();
         self.session = None;
+        self.save_lane = None;
         self.session_generation = self.session_generation.wrapping_add(1).max(1);
         self.echo = None;
         self.dirty = false;
@@ -6664,9 +6748,33 @@ impl Studio {
 
 #[cfg(test)]
 mod tests {
-    use super::{Footprint, Studio};
+    use super::{Footprint, SaveStamp, Studio};
 
     const FRAME: (u32, u32) = (1920, 1080);
+
+    #[test]
+    fn old_save_completion_does_not_apply_to_a_new_session() {
+        let old = SaveStamp {
+            generation: 1,
+            path: "project-a".to_owned(),
+            revision: 3,
+            ticket: 2,
+        };
+        assert!(old.is_current(1, Some("project-a"), true));
+        assert!(!old.is_current(2, Some("project-b"), true));
+        assert!(!old.is_current(2, Some("project-a"), true));
+        assert!(!old.is_current(1, Some("project-a"), false));
+        let mut new_project_dirty = false;
+        assert!(!old.settle(
+            2,
+            Some("project-b"),
+            true,
+            4,
+            &mut new_project_dirty,
+            &Err("old save failed".to_owned()),
+        ));
+        assert!(!new_project_dirty);
+    }
 
     /// A quarter turn swaps the bounds' pixel extents, which in fractions
     /// of a 16:9 frame is not a swap of the numbers.

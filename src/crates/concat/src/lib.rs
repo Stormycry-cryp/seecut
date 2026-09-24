@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use slint::{ModelRc, SharedString, VecModel};
+use slint::{Model, ModelRc, SharedString, VecModel};
 
 // `DataTransfer` is what a drag carries. Slint keeps the platform's drag
 // object opaque and leaves building and reading one to the host language.
@@ -144,7 +144,21 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let gpu = platform::select_backend(|paths| {
         Shell::with(|shell, app| {
             let cloud = app.global::<ui::SeeCut>();
-            if cloud.get_auth_open() {
+            let editor = app.global::<ui::Editor>();
+            if cloud.get_auth_open()
+                || cloud.get_handoff_open()
+                || cloud.get_canvas_export_open()
+                || cloud.get_clip_export_open()
+                || cloud.get_result_preview_open()
+                || cloud.get_media_preview_open()
+                || cloud.get_personal_dialog() > 0
+                || cloud.get_personal_menu() > 0
+                || !cloud.get_template_menu_id().is_empty()
+                || !cloud.get_template_delete_id().is_empty()
+                || cloud.get_template_editor_open()
+                || editor.get_canvas_open_confirm()
+                || editor.get_canvas_exit_confirm()
+            {
                 return;
             }
             if cloud.get_asset_picker_open() {
@@ -160,8 +174,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
             }
             let page = cloud.get_page();
             if page == 6 {
-                if let Some(path) = paths.first() {
-                    app.invoke_open_canvas_path(path.to_string_lossy().into_owned().into());
+                if paths.len() == 1 {
+                    app.invoke_open_canvas_path(paths[0].to_string_lossy().into_owned().into());
+                } else if !paths.is_empty() {
+                    let payload = serde_json::to_string(&paths).unwrap_or_default();
+                    cloud.invoke_action("canvas-drop-batch".into(), payload.into());
                 }
                 return;
             }
@@ -1725,6 +1742,13 @@ pub fn run() -> Result<(), slint::PlatformError> {
             .and_then(|index| index.parse().ok())
             .unwrap_or(-1)
     });
+    app.global::<Payload>().on_personal_id(|text| {
+        text.strip_prefix("personal:")
+            .and_then(|rest| rest.split(':').next())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_default()
+            .into()
+    });
 
     // The picture the cursor carries, resolved through the same `incoming`
     // the drop uses, memoised by theme and payload.
@@ -1767,6 +1791,73 @@ pub fn run() -> Result<(), slint::PlatformError> {
                         chips::drag_chip_svg(
                             chips::pane_glyph("timeline"),
                             name,
+                            "",
+                            theme.get_accent(),
+                            theme.get_field(),
+                            theme.get_raised(),
+                            theme.get_fg(),
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap_or_default();
+                    chips.borrow_mut().insert(key, chip.clone());
+                    result = chip;
+                    return;
+                }
+                if let Some(rest) = payload.strip_prefix("personal:") {
+                    let mut fields = rest.splitn(3, ':');
+                    let id = fields.next().unwrap_or_default();
+                    if id.is_empty() {
+                        return;
+                    }
+                    let count = fields.next().unwrap_or("1").parse::<usize>().unwrap_or(1);
+                    let name = fields.next().unwrap_or("素材");
+                    // Carry the same thumbnail as the card, at a compact drag size.
+                    // The old generic SVG chip reduced every asset to a solid tile.
+                    if let Some(preview) = app
+                        .global::<SeeCut>()
+                        .get_personal_assets()
+                        .iter()
+                        .find(|asset| asset.id.as_str() == id)
+                        .map(|asset| asset.preview)
+                        && let Some(pixels) = preview.to_rgba8()
+                        && let Some(source) = image::RgbaImage::from_raw(
+                            pixels.width(),
+                            pixels.height(),
+                            pixels.as_bytes().to_vec(),
+                        )
+                    {
+                        let thumbnail = image::DynamicImage::ImageRgba8(source)
+                            .resize_to_fill(160, 100, image::imageops::FilterType::Lanczos3)
+                            .into_rgba8();
+                        let (width, height, offset) = if count > 1 {
+                            (168, 108, 8)
+                        } else {
+                            (160, 100, 0)
+                        };
+                        let mut canvas = image::RgbaImage::new(width, height);
+                        if count > 1 {
+                            image::imageops::overlay(&mut canvas, &thumbnail, 0, 0);
+                        }
+                        image::imageops::overlay(&mut canvas, &thumbnail, offset, offset);
+                        let bytes = canvas.into_raw();
+                        let mut pixels =
+                            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width, height);
+                        pixels.make_mut_bytes().copy_from_slice(&bytes);
+                        let chip = slint::Image::from_rgba8(pixels);
+                        chips.borrow_mut().insert(key, chip.clone());
+                        result = chip;
+                        return;
+                    }
+                    let label = if count > 1 {
+                        format!("{count} 项素材")
+                    } else {
+                        name.to_owned()
+                    };
+                    let chip = slint::Image::load_from_svg_data(
+                        chips::drag_chip_svg(
+                            chips::chip_glyph(ClipKind::Image),
+                            &label,
                             "",
                             theme.get_accent(),
                             theme.get_field(),

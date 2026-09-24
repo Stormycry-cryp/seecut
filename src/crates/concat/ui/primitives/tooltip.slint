@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
 import { Theme } from "../theme/theme.slint";
+import { SeeCut } from "../seecut/state.slint";
 
 // Tooltips.
 //
@@ -37,10 +38,10 @@ export global Tips {
     in-out property <bool> warm;
 
     /// The wait before the first tip of a run.
-    out property <duration> delay: 450ms;
+    out property <duration> delay: SeeCut.reduced-motion ? 0ms : 450ms;
     /// And once warm — long enough to not fire while the pointer is merely
     /// crossing a button on its way somewhere else.
-    out property <duration> warm-delay: 60ms;
+    out property <duration> warm-delay: SeeCut.reduced-motion ? 0ms : 60ms;
     /// How long warmth outlives the tip that earned it.
     out property <duration> cooldown: 600ms;
 

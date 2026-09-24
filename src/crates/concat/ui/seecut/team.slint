@@ -84,6 +84,24 @@ export component TeamPage inherits Rectangle {
                     property <length> card-height: self.card-width * 0.75 + 82px;
                     height: Math.ceil(SeeCut.assets.length / self.columns) * (self.card-height + 14px) - 14px;
                     for asset[index] in SeeCut.assets: Rectangle {
+                        property <bool> preview-open: SeeCut.media-preview-open;
+                        property <bool> handoff-open: SeeCut.handoff-open;
+                        changed preview-open => {
+                            if !self.preview-open && SeeCut.focus-return-kind == "team-asset" && SeeCut.focus-return-id == asset.id
+                                && SeeCut.page == 2 && !SeeCut.trash-open && asset.ready && !SeeCut.handoff-open && !SeeCut.auth-open
+                                && !SeeCut.export-copy-open && root.menu == 0 && root.dialog == 0 {
+                                SeeCut.focus-return-claimed = true;
+                                preview.take-focus();
+                            }
+                        }
+                        changed handoff-open => {
+                            if !self.handoff-open && SeeCut.focus-return-kind == "team-asset" && SeeCut.focus-return-id == asset.id
+                                && SeeCut.page == 2 && !SeeCut.trash-open && asset.ready && !SeeCut.media-preview-open && !SeeCut.auth-open
+                                && !SeeCut.export-copy-open && root.menu == 0 && root.dialog == 0 {
+                                SeeCut.focus-return-claimed = true;
+                                preview.take-focus();
+                            }
+                        }
                         x: Math.mod(index, grid.columns) * (grid.card-width + 14px);
                         y: Math.floor(index / grid.columns) * (grid.card-height + 14px);
                         width: grid.card-width; height: grid.card-height;
@@ -98,7 +116,11 @@ export component TeamPage inherits Rectangle {
                                 fallback-size: 28px;
                                 interactive: asset.ready && !SeeCut.trash-open;
                                 accessible-name: "预览" + asset.name;
-                                activated => { root.selected-asset = index; SeeCut.action("asset-preview", asset.id); }
+                                activated => {
+                                    root.selected-asset = index;
+                                    SeeCut.focus-return-kind = "team-asset"; SeeCut.focus-return-id = asset.id; SeeCut.focus-return-claimed = false;
+                                    SeeCut.action("asset-preview", asset.id);
+                                }
                             }
                             if asset.kind == "video": WorkspaceIcon { x: 8px; y: 8px; on-image: true; enabled: false; glyph: Glyph.film; icon-size: 16px; label: "视频素材"; }
                         }
@@ -133,8 +155,14 @@ export component TeamPage inherits Rectangle {
             key-pressed(event) => { if event.text == Key.Escape { root.menu = 0; return accept; } return reject; }
         VerticalLayout { padding: 8px; spacing: 0px;
             if root.menu == 1: MenuAction { auto-focus: true; label: "用于生成"; glyph: Glyph.sparkle; enabled: root.menu-ready && !SeeCut.working; clicked => { root.menu = 0; SeeCut.action("asset-reference", root.menu-id); } }
-            if root.menu == 1: MenuAction { label: SeeCut.project-open ? "导入当前剪辑" : "导入剪辑项目"; glyph: Glyph.film; enabled: root.menu-ready && !SeeCut.working; clicked => { root.menu = 0; SeeCut.action("asset-import", root.menu-id); } }
-            if root.menu == 1 && root.menu-kind == "image": MenuAction { label: "打开画布"; glyph: Glyph.image; enabled: root.menu-ready && !SeeCut.working; clicked => { root.menu = 0; SeeCut.action("asset-canvas", root.menu-id); } }
+            if root.menu == 1: MenuAction { label: SeeCut.project-open ? "导入当前剪辑" : "导入剪辑项目"; glyph: Glyph.film; enabled: root.menu-ready && !SeeCut.working; clicked => {
+                SeeCut.focus-return-kind = "team-asset"; SeeCut.focus-return-id = root.menu-id; SeeCut.focus-return-claimed = false;
+                root.menu = 0; SeeCut.action("asset-import", root.menu-id);
+            } }
+            if root.menu == 1 && root.menu-kind == "image": MenuAction { label: "打开画布"; glyph: Glyph.image; enabled: root.menu-ready && !SeeCut.working; clicked => {
+                SeeCut.focus-return-kind = "team-asset"; SeeCut.focus-return-id = root.menu-id; SeeCut.focus-return-claimed = false;
+                root.menu = 0; SeeCut.action("asset-canvas", root.menu-id);
+            } }
             if root.menu == 2: MenuAction { auto-focus: true; label: "下载到本机"; glyph: Glyph.export; enabled: root.menu-ready && !SeeCut.working; clicked => { root.menu = 0; SeeCut.action("asset-download", root.menu-id); } }
             if root.menu == 2 && SeeCut.team-owner: MenuAction { label: "移入回收站"; glyph: Glyph.trash; danger: true; enabled: !SeeCut.working; clicked => { root.remove-id = root.menu-id; root.remove-name = root.menu-name; root.menu = 0; root.dialog = 5; } }
         }

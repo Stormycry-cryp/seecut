@@ -273,6 +273,13 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             crate::cloud::open_reference_mention_ui(&app.global::<SeeCut>());
         }
     });
+    let result_focus_log = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
+    let focus_log_for_ui = result_focus_log.clone();
+    state.on_result_focus(move |id, control| {
+        focus_log_for_ui
+            .borrow_mut()
+            .push((id.to_string(), control.to_string()));
+    });
     state.set_auth_open(false);
     state.set_creator_mode(1);
     state.set_reduced_motion(true);
@@ -505,6 +512,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         result.failed = false;
         result.status = "1536 × 864".into();
     }
+    let first_result_id = pro_results[0].id.to_string();
     state.set_batches(model(vec![GenerationBatch {
         id: "fixture-pro-batch".into(),
         label: "今天 14:32".into(),
@@ -520,6 +528,81 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     capture(&app, directory, "generation-pro-1440x960", 1440, 960)?;
     capture(&app, directory, "generation-pro-1024x960", 1024, 960)?;
     capture(&app, directory, "generation-pro-1440x800", 1440, 800)?;
+    // Reach the first result's hidden keyboard entry through real Tab events,
+    // then move the pointer to its neighbour while the first action is focused.
+    app.window().set_size(slint::PhysicalSize::new(1440, 960));
+    settle(&app)?;
+    result_focus_log.borrow_mut().clear();
+    let mut entry_tabs = None;
+    for tab in 1..=120 {
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Tab.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Tab.into(),
+            });
+        settle(&app)?;
+        if result_focus_log
+            .borrow()
+            .iter()
+            .any(|(id, control)| id == &first_result_id && control == "entry")
+        {
+            entry_tabs = Some(tab);
+            break;
+        }
+    }
+    let entry_tabs = entry_tabs.ok_or_else(|| {
+        slint::PlatformError::Other("Tab never reached the first result action entry".into())
+    })?;
+    result_focus_log.borrow_mut().clear();
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Return.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Return.into(),
+        });
+    settle(&app)?;
+    if !result_focus_log
+        .borrow()
+        .iter()
+        .any(|(id, control)| id == &first_result_id && control == "reference")
+    {
+        return Err(slint::PlatformError::Other(
+            "Enter on the result entry did not focus its reference action".into(),
+        ));
+    }
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(950.0, 220.0),
+        });
+    settle(&app)?;
+    capture(&app, directory, "generation-focus-a-hover-b", 1440, 960)?;
+    action_log.borrow_mut().clear();
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Return.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Return.into(),
+        });
+    settle(&app)?;
+    if !action_log
+        .borrow()
+        .iter()
+        .any(|(name, id)| name == "task-reference" && id == &first_result_id)
+    {
+        return Err(slint::PlatformError::Other(
+            "Enter after hovering another card did not act on the focused card".into(),
+        ));
+    }
+    std::fs::write(directory.join("result-keyboard-validation.json"), format!(
+        "{{\"status\":\"passed\",\"backend\":\"Slint software fixture\",\"entry_tabs\":{entry_tabs},\"focused_result_id\":\"{first_result_id}\",\"checks\":[\"Tab reaches first result entry\",\"Enter focuses its reference action\",\"Hovering second card keeps first action active\",\"Enter dispatches task-reference for first card\"]}}"
+    )).map_err(|error| slint::PlatformError::Other(error.to_string()))?;
     pointer_fixture(&app, 1440, 960, 1341.0, 45.0, false)?;
     capture(&app, directory, "fixture-icon-hover-1440x960", 1440, 960)?;
     pointer_fixture(&app, 1440, 960, 1341.0, 45.0, true)?;
@@ -1155,10 +1238,119 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             "Escape must cancel exit before the underlying picker".into(),
         ));
     }
-    std::fs::write(directory.join("keyboard-validation.json"),
-        r#"{"status":"passed","backend":"Slint software fixture","checks":["Exit confirmation dismisses canvas menu","Escape cancels exit and preserves underlying picker"]}"#
-    ).map_err(|error| slint::PlatformError::Other(error.to_string()))?;
     state.set_asset_picker_open(false);
+    state.set_page(6);
+    state.set_canvas_gallery_open(false);
+    editor.set_canvas_has_selection(true);
+    editor.set_canvas_can_undo(true);
+    let blocked = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+    let delete_log = blocked.clone();
+    editor.on_canvas_delete_selection(move || delete_log.borrow_mut().push("delete"));
+    let undo_log = blocked.clone();
+    editor.on_canvas_undo(move || undo_log.borrow_mut().push("undo"));
+    let select_log = blocked.clone();
+    editor.on_canvas_select_all(move || select_log.borrow_mut().push("select-all"));
+    let menu_log = blocked.clone();
+    app.on_app_menu_selected(move |id| {
+        if id.as_str() == "undo" || id.as_str() == "select-all" {
+            menu_log.borrow_mut().push("app-menu");
+        }
+    });
+    for modal in ["canvas-export", "clip-export", "handoff"] {
+        match modal {
+            "canvas-export" => state.set_canvas_export_open(true),
+            "clip-export" => state.set_clip_export_open(true),
+            _ => state.set_handoff_open(true),
+        }
+        settle(&app)?;
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Delete.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Delete.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Control.into(),
+            });
+        for key in ["z", "a"] {
+            app.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: key.into() });
+            app.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: key.into() });
+        }
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Control.into(),
+            });
+        if !blocked.borrow().is_empty() || !editor.get_canvas_has_selection() {
+            return Err(slint::PlatformError::Other(format!(
+                "Canvas action escaped {modal} modal: {:?}",
+                blocked.borrow()
+            )));
+        }
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Escape.into(),
+            });
+        let still_open = match modal {
+            "canvas-export" => state.get_canvas_export_open(),
+            "clip-export" => state.get_clip_export_open(),
+            _ => state.get_handoff_open(),
+        };
+        if still_open || !editor.get_canvas_has_selection() {
+            return Err(slint::PlatformError::Other(format!(
+                "Escape did not close {modal} while preserving canvas selection"
+            )));
+        }
+    }
+    // When one sheet opens over another, each opening must claim keyboard
+    // focus in its own right; an OR of their open flags never changes here.
+    state.set_clip_export_open(true);
+    settle(&app)?;
+    state.set_handoff_open(true);
+    settle(&app)?;
+    for (expected_handoff, expected_clip) in [(false, true), (false, false)] {
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Escape.into(),
+            });
+        if state.get_handoff_open() != expected_handoff
+            || state.get_clip_export_open() != expected_clip
+            || !editor.get_canvas_has_selection()
+        {
+            return Err(slint::PlatformError::Other(
+                "Escape did not close only the top workflow sheet".into(),
+            ));
+        }
+    }
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Delete.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Delete.into(),
+        });
+    if blocked.borrow().as_slice() != ["delete"] {
+        return Err(slint::PlatformError::Other(
+            "Canvas keyboard focus did not resume after closing workflow sheets".into(),
+        ));
+    }
+    std::fs::write(directory.join("keyboard-validation.json"),
+        r#"{"status":"passed","backend":"Slint software fixture","checks":["Exit confirmation dismisses canvas menu","Escape cancels exit and preserves underlying picker","Canvas export, clip export and handoff isolate Delete, undo and select-all","Escape closes each modal and preserves canvas selection","Nested workflow sheets close from the top and canvas keyboard actions resume afterward"]}"#
+    ).map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    state.set_page(5);
     state.set_personal_folder_filter(0);
     crate::cloud::validate_preview_state(&app, directory).map_err(slint::PlatformError::Other)?;
     app.hide()?;

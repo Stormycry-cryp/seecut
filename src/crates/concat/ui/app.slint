@@ -39,13 +39,13 @@ import {
 } from "inspector/clip-inspector.slint";
 import { ParamFormat } from "inspector/controls.slint";
 import { ToastData, ToastLayer } from "primitives/toast.slint";
-import { TooltipLayer } from "primitives/tooltip.slint";
+import { Tips, TooltipLayer } from "primitives/tooltip.slint";
 import { Seat } from "workspace/seat.slint";
 import { Modal, Glyph, Icon, FocusRing } from "primitives/primitives.slint";
 import { AppButton, WorkspaceIcon, MenuAction } from "seecut/components.slint";
 import { Workspace } from "workspace/workspace.slint";
 import { AppRail, CloudWorkbench, SeeCut, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup, GenerationBatch } from "seecut/workbench.slint";
-import { AuthDialog, EditorBridgeBar, WorkflowFeedback } from "seecut/shell.slint";
+import { AuthDialog, EditorBridgeBar, WorkflowFeedback, WorkflowToast } from "seecut/shell.slint";
 import { CanvasProjectsPage } from "seecut/project-gallery.slint";
 import { AssetPicker } from "seecut/asset-picker.slint";
 import { MediaPreview } from "seecut/media-preview.slint";
@@ -122,10 +122,57 @@ export component App inherits Window {
         SeeCut.personal-dialog = 0;
         SeeCut.template-delete-id = "";
     }
-    property <bool> workflow-modal-open: SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || Editor.canvas-open-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
-    changed workflow-modal-open => { if !root.workflow-modal-open { keys.focus(); } }
+    property <bool> workflow-modal-open: SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || Editor.canvas-open-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
+    // A small set of stable opening controls can receive focus again after
+    // their sheet closes. Other workflows use the window keyboard scope.
+    // 1 canvas open, 2 canvas export, 3 clip assets, 4 clip export, 5 settings.
+    property <int> focus-return;
+    property <int> focus-request-target;
+    property <int> focus-request-token;
+    function restore-focus() {
+        if !root.workflow-modal-open && !root.sheet-open {
+            if SeeCut.focus-return-claimed {
+                SeeCut.focus-return-claimed = false;
+            } else if root.focus-return == 1 && SeeCut.page == 6 && !SeeCut.canvas-gallery-open {
+                root.focus-request-target = 1;
+                root.focus-request-token += 1;
+            } else if root.focus-return == 2 && SeeCut.page == 6 && !SeeCut.canvas-gallery-open && Editor.canvas-has-document {
+                root.focus-request-target = 2;
+                root.focus-request-token += 1;
+            } else if root.focus-return == 3 && SeeCut.page == 0 && !root.on-start && !SeeCut.working {
+                root.focus-request-target = 3;
+                root.focus-request-token += 1;
+            } else if root.focus-return == 4 && SeeCut.page == 0 && !root.on-start && SeeCut.project-open {
+                root.focus-request-target = 4;
+                root.focus-request-token += 1;
+            } else if root.focus-return == 5 {
+                rail.focus-settings();
+            } else {
+                keys.focus();
+            }
+            root.focus-return = 0;
+        }
+    }
+    property <bool> canvas-export-keyboard-open: SeeCut.canvas-export-open;
+    changed canvas-export-keyboard-open => { if root.canvas-export-keyboard-open { keys.focus(); Tips.close(); } }
+    property <bool> clip-export-keyboard-open: SeeCut.clip-export-open;
+    changed clip-export-keyboard-open => { if root.clip-export-keyboard-open { keys.focus(); Tips.close(); } }
+    property <bool> handoff-keyboard-open: SeeCut.handoff-open;
+    changed handoff-keyboard-open => { if root.handoff-keyboard-open { keys.focus(); Tips.close(); } }
+    changed workflow-modal-open => {
+        if root.workflow-modal-open { Tips.close(); SeeCut.focus-return-claimed = false; }
+        else { root.restore-focus(); }
+    }
     changed sheet-open => {
-        if (!root.sheet-open) {
+        if root.sheet-open { SeeCut.focus-return-claimed = false; }
+        else { root.restore-focus(); }
+    }
+    // The parameter section remains mounted under a viewer. If its card was
+    // removed while the viewer was open, retain a working keyboard target.
+    property <bool> viewer-open: SeeCut.media-preview-open || SeeCut.result-preview-open || SeeCut.asset-picker-open || SeeCut.handoff-open;
+    changed viewer-open => {
+        if !root.viewer-open && SeeCut.page == 1 && SeeCut.generation-parameters-open && !SeeCut.focus-return-claimed
+            && !SeeCut.task-delete-open && !SeeCut.export-copy-open && !root.sheet-open {
             keys.focus();
         }
     }
@@ -356,16 +403,21 @@ export component App inherits Window {
         // scope, which is what keeps typing a title from cutting a clip.
         key-pressed(event) => {
             if event.text == Key.Escape && Editor.canvas-exit-confirm { Editor.canvas-exit-cancel(); return accept; }
-            if event.text == Key.Escape && SeeCut.generation-parameters-open { SeeCut.generation-parameters-open = false; return accept; }
+            if event.text == Key.Escape && root.canvas-open-menu { root.canvas-open-menu = false; return accept; }
+            if event.text == Key.Escape && Editor.canvas-open-confirm { Editor.canvas-open-cancel(); return accept; }
+            if event.text == Key.Escape && SeeCut.export-copy-open { if !SeeCut.export-copy-running { SeeCut.action("export-copy-close", ""); } return accept; }
+            if event.text == Key.Escape && SeeCut.canvas-export-open { SeeCut.canvas-export-open = false; return accept; }
+            if event.text == Key.Escape && SeeCut.handoff-open { SeeCut.handoff-open = false; SeeCut.action("handoff-cancel", ""); return accept; }
+            if event.text == Key.Escape && SeeCut.task-delete-open { SeeCut.task-delete-open = false; SeeCut.action("task-batch-cancel-delete", ""); return accept; }
+            if event.text == Key.Escape && SeeCut.clip-export-open { SeeCut.clip-export-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.media-preview-open { SeeCut.media-preview-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.result-preview-open { SeeCut.result-preview-open = false; return accept; }
+            if event.text == Key.Escape && SeeCut.generation-parameters-open { SeeCut.generation-parameters-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.personal-menu > 0 { SeeCut.personal-menu = 0; return accept; }
             if event.text == Key.Escape && SeeCut.template-menu-id != "" { SeeCut.template-menu-id = ""; return accept; }
-            if event.text == Key.Escape && root.canvas-open-menu { root.canvas-open-menu = false; return accept; }
             if event.text == Key.Escape && SeeCut.template-editor-open { SeeCut.template-editor-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.template-delete-id = ""; return accept; }
-            if event.text == Key.Escape && SeeCut.personal-dialog > 0 { SeeCut.personal-dialog = 0; return accept; }
-            if event.text == Key.Escape && Editor.canvas-open-confirm { Editor.canvas-open-cancel(); return accept; }
+            if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } return accept; }
             if (SeeCut.page == 6 && !root.workflow-modal-open) {
                 if (event.modifiers.control || event.modifiers.meta) {
                     if (event.text == "z") { if event.modifiers.shift { if Editor.canvas-can-redo { Editor.canvas-redo(); } } else { if Editor.canvas-can-undo { Editor.canvas-undo(); } } return accept; }
@@ -476,9 +528,9 @@ export component App inherits Window {
                 toggle-maximize => { root.titlebar-toggle-maximize(); }
                 minimize => { root.titlebar-minimize(); }
                 close => { root.titlebar-close(); }
-                open-settings => { root.open-settings(); }
+                open-settings => { root.focus-return = 0; root.open-settings(); }
                 add-pane(kind) => { Editor.dock-add(kind); }
-                export-clicked => { root.export-clicked(); }
+                export-clicked => { root.focus-return = 0; root.export-clicked(); }
             }
 
             workspace-area := Rectangle {
@@ -491,7 +543,7 @@ export component App inherits Window {
                     x: 0; y: 0; height: parent.height;
                     begin-drag => { root.titlebar-begin-drag(); }
                     toggle-maximize => { root.titlebar-toggle-maximize(); }
-                    open-settings => { root.open-settings(); }
+                    open-settings => { root.focus-return = 5; root.open-settings(); }
                 }
                 if SeeCut.page != 0 && SeeCut.page != 6: CloudWorkbench { compact-height: root.height < 800px; x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%; }
                 if SeeCut.page == 6 && SeeCut.canvas-gallery-open: CanvasProjectsPage {
@@ -508,12 +560,21 @@ export component App inherits Window {
                                 padding-top: 10px; padding-bottom: 10px; padding-left: 20px; padding-right: 20px; spacing: 8px;
                                 WorkspaceIcon { glyph: Glyph.chevron-left; label: "返回画布项目"; clicked => { SeeCut.canvas-gallery-open = true; SeeCut.action("canvas-projects-refresh", ""); } }
                                 Text { text: Editor.canvas-has-document ? Editor.canvas-name + (Editor.canvas-modified ? " · 未保存" : "") : "未打开文档"; font-size: 14px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
-                                AppButton { label: "打开"; clicked => { root.canvas-open-menu = !root.canvas-open-menu; } }
+                                canvas-open-button := AppButton {
+                                    property <int> restore-token: root.focus-request-token;
+                                    changed restore-token => { if root.focus-request-target == 1 { self.take-focus(); } }
+                                    label: "打开"; clicked => { root.focus-return = 1; root.canvas-open-menu = !root.canvas-open-menu; }
+                                }
                                 WorkspaceIcon { glyph: Glyph.undo; label: "撤销"; enabled: Editor.canvas-can-undo; clicked => { Editor.canvas-undo(); } }
                                 WorkspaceIcon { glyph: Glyph.redo; label: "重做"; enabled: Editor.canvas-can-redo; clicked => { Editor.canvas-redo(); } }
                                 AppButton { label: "保存工程"; primary: true; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp(); } }
                                 AppButton { label: "另存为"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp-as(); } }
-                                AppButton { label: "导出图片"; enabled: Editor.canvas-has-document; clicked => { SeeCut.canvas-export-open = true; } }
+                                canvas-export-button := AppButton {
+                                    property <int> restore-token: root.focus-request-token;
+                                    changed restore-token => { if root.focus-request-target == 2 { self.take-focus(); } }
+                                    label: "导出图片"; enabled: Editor.canvas-has-document;
+                                    clicked => { root.focus-return = 2; SeeCut.canvas-export-open = true; }
+                                }
                                 WorkspaceIcon { glyph: Glyph.sliders; label: Editor.canvas-sidebar-open ? "收起图层与属性" : "展开图层与属性"; checked: Editor.canvas-sidebar-open; clicked => { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; } }
                             }
                         }
@@ -526,7 +587,14 @@ export component App inherits Window {
                     width: Math.max(0px, parent.width - rail.width);
                     height: 100%;
                     VerticalLayout {
-                    if !root.on-start: EditorBridgeBar { project-name: root.project-name; project-status: root.project-status; export-clicked => { root.export-clicked(); } }
+                    if !root.on-start: bridge-bar := EditorBridgeBar {
+                        project-name: root.project-name;
+                        project-status: root.project-status;
+                        focus-request-target: root.focus-request-target;
+                        focus-request-token: root.focus-request-token;
+                        assets-clicked => { root.focus-return = 3; SeeCut.action("project-assets", ""); }
+                        export-clicked => { root.focus-return = 4; root.export-clicked(); }
+                    }
                     WorkflowFeedback { }
                     if root.on-start: StartScreen {
                         vertical-stretch: 1;
@@ -799,6 +867,32 @@ export component App inherits Window {
             AppButton { height: 48px; label: "导出至其他文件夹"; subtle: true; subtle-normal-ink: true; clicked => { SeeCut.canvas-export-open = false; Editor.canvas-export-png(); } }
         }
     }
+    Modal {
+        open: SeeCut.export-copy-open;
+        title: "导出文件";
+        glyph: Glyph.export;
+        surface-width: Math.min(440px, root.width - 32px);
+        dismissable: !SeeCut.export-copy-running;
+        closed => { SeeCut.action("export-copy-close", ""); }
+        VerticalLayout {
+            padding: 20px; spacing: 16px;
+            Text {
+                text: "已完成 " + SeeCut.export-copy-done + "/" + SeeCut.export-copy-total + " 项 · " + SeeCut.export-copy-progress + "%";
+                color: Theme.fg; font-size: 14px;
+            }
+            Rectangle {
+                height: 6px; background: Theme.well; border-radius: 3px;
+                Rectangle { width: parent.width * Math.clamp(SeeCut.export-copy-progress, 0, 100) / 100; height: 100%; background: Theme.accent; border-radius: 3px; }
+            }
+            if SeeCut.export-copy-error != "": Text { text: SeeCut.export-copy-error; color: SeeCut.export-copy-done == SeeCut.export-copy-total ? Theme.fg-muted : Theme.danger; wrap: word-wrap; }
+            HorizontalLayout {
+                alignment: end; spacing: 8px;
+                if SeeCut.export-copy-running: AppButton { label: "取消导出"; clicked => { SeeCut.action("export-copy-cancel", ""); } }
+                if !SeeCut.export-copy-running && SeeCut.export-copy-done < SeeCut.export-copy-total: AppButton { label: "重试未完成"; primary: true; clicked => { SeeCut.action("export-copy-retry", ""); } }
+                if !SeeCut.export-copy-running: AppButton { label: "关闭"; clicked => { SeeCut.action("export-copy-close", ""); } }
+            }
+        }
+    }
 
     // Over the workspace and both sheets, under the menus. A tooltip has to
     // clear the pane it belongs to — panes clip — and it has no business over
@@ -838,6 +932,7 @@ export component App inherits Window {
         height: root.height;
         data: root.toast;
     }
+    WorkflowToast { width: root.width; height: root.height; }
     Modal {
         open: Editor.canvas-open-confirm; title: "保存画布修改？"; glyph: Glyph.save;
         surface-width: Math.min(480px, root.width - 32px);
@@ -857,9 +952,9 @@ export component App inherits Window {
         x: Math.max(84px, root.width - 470px); y: 76px; width: 244px; height: 130px;
         background: Theme.raised; border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
         VerticalLayout { padding: 8px; spacing: 0px;
-            MenuAction { auto-focus: true; label: "从资产库选择图片"; glyph: Glyph.folder; clicked => { root.canvas-open-menu = false; SeeCut.action("canvas-assets", ""); } }
-            MenuAction { label: "打开本机图片"; glyph: Glyph.image; clicked => { root.canvas-open-menu = false; Editor.canvas-open(); } }
-            MenuAction { label: "打开画布工程"; glyph: Glyph.folder-plus; clicked => { root.canvas-open-menu = false; Editor.canvas-project-open(); } }
+            MenuAction { auto-focus: true; close-on-escape: true; label: "从资产库选择图片"; glyph: Glyph.folder; cancelled => { root.canvas-open-menu = false; } clicked => { root.canvas-open-menu = false; root.focus-return = 1; SeeCut.action("canvas-assets", ""); } }
+            MenuAction { close-on-escape: true; label: "打开本机图片"; glyph: Glyph.image; cancelled => { root.canvas-open-menu = false; } clicked => { root.canvas-open-menu = false; Editor.canvas-open(); } }
+            MenuAction { close-on-escape: true; label: "打开画布工程"; glyph: Glyph.folder-plus; cancelled => { root.canvas-open-menu = false; } clicked => { root.canvas-open-menu = false; Editor.canvas-project-open(); } }
         }
     }
     Modal {

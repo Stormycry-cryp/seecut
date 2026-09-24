@@ -123,6 +123,8 @@ export global Payload {
 
     /// The tab index in a `tab:N:...` payload, or -1 for anything else.
     pure callback tab-index(text: string) -> int;
+    /// Stable library asset ID from a personal-library drag, empty otherwise.
+    pure callback personal-id(text: string) -> string;
 }
 
 export global Geom {

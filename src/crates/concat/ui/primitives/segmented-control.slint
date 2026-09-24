@@ -13,6 +13,8 @@ export component SegmentedControl inherits Rectangle {
     in property <[string]> options;
     in-out property <int> current;
     in property <bool> enabled: true;
+    in property <bool> workbench;
+    in property <bool> reduced-motion;
 
     callback changed(index: int);
 
@@ -21,16 +23,16 @@ export component SegmentedControl inherits Rectangle {
     // 1px border + 2px padding, so the track insets by 3px on every side. A
     // Slint border is drawn inside the bounds but children still measure from
     // the outer edge, so the border has to be added in by hand.
-    property <length> inset: 3px;
+    property <length> inset: root.workbench ? 0px : 3px;
     property <length> seg-w: (root.width - 2 * root.inset) / Math.max(root.options.length, 1);
 
-    height: Theme.h;
+    height: root.workbench ? 36px : Theme.h;
     min-width: 120px;
     horizontal-stretch: 1;
-    background: Theme.well;
-    border-width: 1px;
+    background: root.workbench ? Colors.transparent : Theme.well;
+    border-width: root.workbench ? 0px : 1px;
     border-color: Theme.line;
-    border-radius: Theme.r;
+    border-radius: root.workbench ? 8px : Theme.r;
     opacity: root.enabled ? 1.0 : 0.45;
 
     function select(index: int) {
@@ -67,10 +69,10 @@ export component SegmentedControl inherits Rectangle {
         y: root.inset;
         width: root.seg-w;
         height: root.height - 2 * root.inset;
-        border-radius: Theme.r-sm;
+        border-radius: root.workbench ? 8px : Theme.r-sm;
         background: Theme.accent-soft;
 
-        animate x, width { duration: 180ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        animate x, width { duration: root.reduced-motion ? 0ms : 180ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
     }
 
     for option[index] in root.options: Rectangle {
@@ -94,7 +96,7 @@ export component SegmentedControl inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
 
-            animate color { duration: 140ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+            animate color { duration: root.reduced-motion ? 0ms : 140ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
         }
 
         segment := TouchArea {
@@ -109,6 +111,6 @@ export component SegmentedControl inherits Rectangle {
 
     FocusRing {
         active: root.ring;
-        radius: Theme.r;
+        radius: root.workbench ? 8px : Theme.r;
     }
 }

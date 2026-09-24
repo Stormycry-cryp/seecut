@@ -268,8 +268,8 @@ mod tests {
         select("de", &dirs);
         assert_eq!(current(), "de");
         assert_eq!(t("a key nobody translated"), "a key nobody translated");
-        assert_ne!(t("Settings"), "Settings");
+        assert_ne!(t("Settings…"), "Settings…");
         select(ENGLISH, &dirs);
-        assert_eq!(t("Settings"), "Settings");
+        assert_eq!(t("Settings…"), "Settings…");
     }
 }

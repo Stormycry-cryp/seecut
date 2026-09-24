@@ -5,18 +5,15 @@ import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
 import { SeeCut } from "../seecut/state.slint";
 import { Glyph, Icon } from "../icons.slint";
-import { Button, DialogRow, DialogSection, Field, Modal, Progress } from "../primitives/modal.slint";
+import { Button, DialogRow, DialogSection, Field, Progress } from "../primitives/modal.slint";
 import { IconButton } from "../primitives/panel.slint";
 import { SegmentedControl } from "../primitives/segmented-control.slint";
 import { Select } from "../primitives/select.slint";
 import { Switch } from "../inspector/controls.slint";
 import { PaneScroll } from "../workspace/pane.slint";
 
-// Settings: a fixed-height sheet with a column of pages down the side. The
-// model rows keep two things apart — a downloaded model is a *choice* and so
-// behaves as a radio, while an absent one is an *acquisition* and is handled
-// by the button on the right. That distinction is the whole reason the row
-// reads at a glance.
+// Preferences lead with the three choices people use in the workbench.
+// Advanced pages retain the editor, model and remote-control settings.
 
 export struct ModelData {
     id: string,
@@ -46,7 +43,7 @@ export struct SystemFactData {
 
 export struct SettingsData {
     open: bool,
-    /// 0 General, 1 Appearance, 2 Transcriber, 3 Speech, 4 Remote, 5 About
+    /// 0 Preferences, 1 General, 2 Transcriber, 3 Speech, 4 Remote, 5 About
     tab: int,
     language: int,
     /// the playhead stops at the end of the content
@@ -111,7 +108,7 @@ component ModelRow inherits Rectangle {
     // stops being readable — it is a thing you can have, not a thing denied.
     opacity: (root.model.installed || root.model.downloading) ? 1.0 : 0.86;
 
-    animate background, border-color { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background, border-color { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     touch := TouchArea {
         // Only an installed model is a choice. An absent one is acquired with
@@ -145,7 +142,7 @@ component ModelRow inherits Rectangle {
                         : Theme.field-active;
 
                     animate border-width, border-color {
-                        duration: 120ms;
+                        duration: SeeCut.reduced-motion ? 0ms : 120ms;
                         easing: cubic-bezier(0.4, 0, 0.2, 1);
                     }
                 }
@@ -276,7 +273,7 @@ component PageTab inherits Rectangle {
         : touch.has-hover ? Theme.field
         : Colors.transparent;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     HorizontalLayout {
         padding-left: 10px;
@@ -346,7 +343,7 @@ component FactRow inherits HorizontalLayout {
     }
 }
 
-export component SettingsDialog inherits Modal {
+export component SettingsDialog inherits Rectangle {
     in property <SettingsData> data;
     in property <[ModelData]> transcribers;
     in property <[ModelData]> voices;
@@ -380,30 +377,51 @@ export component SettingsDialog inherits Modal {
     callback model-download(id: string);
     callback model-cancel(id: string);
     callback model-remove(id: string);
+    callback closed();
 
-    open: root.data.open;
-    title: I18n.t("Settings");
-    glyph: Glyph.settings;
-    surface-width: 640px;
-    // Fixed rather than fitted: the pages are different lengths and a sheet
-    // that resized as you moved between them would be its own distraction.
-    surface-height: 460px;
+    visible: root.data.open;
+    background: Colors.transparent;
+
+    // The app's navigation rail remains visible at the left. A press there
+    // leaves settings; the page itself keeps the workbench's right-hand area.
+    TouchArea { clicked => { root.closed(); } }
+
+    page := Rectangle {
+        x: 80px;
+        y: 0px;
+        width: Math.max(0px, parent.width - 80px);
+        height: parent.height;
+        background: Theme.panel;
+        clip: true;
+
+        TouchArea { }
+
+        VerticalLayout {
+            Rectangle {
+                height: 128px;
+
+                Text {
+                    x: 64px;
+                    y: 68px;
+                    text: "设置";
+                    color: Theme.fg;
+                    font-size: 24px;
+                    font-weight: Theme.weight-title;
+                }
+
+                IconButton {
+                    x: parent.width - 64px;
+                    y: 68px;
+                    glyph: Glyph.close;
+                    label: "关闭设置";
+                    clicked => { root.closed(); }
+                }
+            }
 
     HorizontalLayout {
-        // The clipboard takes text, so there has to be a TextInput holding
-        // the report: Slint copies from a text element's own selection and
-        // has no other way in. It is never read — it is zero wide and clipped
-        // — but it cannot live beside the button that uses it, and that is
-        // worth writing down, because it looks like it should.
-        //
-        // A layout gives every child at least its minimum, and a TextInput's
-        // minimum height is its text: seven lines, about 120px, which a
-        // wrapper cannot cap — an explicit `height: 0px` on the box around it
-        // sets that box's preferred size and loses to the child's minimum
-        // anyway. In the section body that bought a 120px band with the copy
-        // button floating in the middle of it. Here it is one more column of
-        // this row, and the row is the sheet's fixed 418px, so the whole of
-        // what it asks for disappears into height that was already there.
+        vertical-stretch: 1;
+        // Slint copies from a TextInput's selection. Keep the report in a
+        // clipped column so the About page's copy action can use it.
         Rectangle {
             width: 0px;
             clip: true;
@@ -416,8 +434,9 @@ export component SettingsDialog inherits Modal {
             }
         }
 
-        // ── the pages ────────────────────────────────────────────────────
-        Rectangle {
+        // Advanced pages keep the established navigation; the first page
+        // uses the full width for the three workbench preferences.
+        if root.data.tab != 0: Rectangle {
             width: 164px;
 
             Rectangle {
@@ -434,14 +453,14 @@ export component SettingsDialog inherits Modal {
                 alignment: start;
 
                 PageTab {
-                    label: I18n.t("General");
+                    label: "偏好设置";
                     glyph: Glyph.settings;
                     current: root.data.tab == 0;
                     clicked => { root.page-changed(0); }
                 }
                 PageTab {
-                    label: I18n.t("Appearance");
-                    glyph: Glyph.sun;
+                    label: I18n.t("General");
+                    glyph: Glyph.settings;
                     current: root.data.tab == 1;
                     clicked => { root.page-changed(1); }
                 }
@@ -476,7 +495,7 @@ export component SettingsDialog inherits Modal {
         PaneScroll {
             horizontal-stretch: 1;
 
-            if root.data.tab == 0: VerticalLayout {
+            if root.data.tab == 1: VerticalLayout {
                 DialogSection {
                     first: true;
                     title: I18n.t("Language");
@@ -612,29 +631,95 @@ export component SettingsDialog inherits Modal {
                 }
             }
 
-            // Read straight off the Theme global rather than through
-            // SettingsData: the theme is not editor state — it is one bool
-            // that every colour in the tree already binds to — and routing it
-            // through the struct would be a second copy to keep in step with
-            // the first. The change still goes out as a callback, so Rust
-            // stays the one place a remembered preference will be written.
-            if root.data.tab == 1: DialogSection {
-                first: true;
-                title: I18n.t("Theme");
+            // This is the page the settings entry opens, including when the
+            // local workbench is used without an account. Mode and appearance
+            // are independent; both choices act in place on the current work.
+            if root.data.tab == 0: HorizontalLayout {
+                Rectangle { width: 64px; }
+                VerticalLayout {
+                    width: Math.max(0px, Math.min(640px, parent.width - 96px));
+                    spacing: 0px;
 
-                SegmentedControl {
-                    options: [I18n.t("Dark"), I18n.t("Light")];
-                    current: Theme.dark ? 0 : 1;
-                    changed(index) => { root.theme-changed(index == 0); }
+                HorizontalLayout {
+                    height: 74px;
+                    Text {
+                        text: "工作模式";
+                        color: Theme.fg;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Rectangle {
+                        width: 344px;
+                        height: 36px;
+                        SegmentedControl {
+                            width: parent.width;
+                            options: ["快速", "专业"];
+                            current: SeeCut.creator-mode == 1 ? 1 : 0;
+                            workbench: true;
+                            reduced-motion: SeeCut.reduced-motion;
+                            changed(index) => { SeeCut.action("creator-mode", index == 1 ? "1" : "0"); }
+                        }
+                    }
                 }
-            }
-            if root.data.tab == 1: DialogSection {
-                title: "生成模式";
-                SegmentedControl {
-                    options: ["快速模式", "专业模式"];
-                    current: SeeCut.creator-mode == 1 ? 1 : 0;
-                    changed(index) => { SeeCut.action("creator-mode", index == 1 ? "1" : "0"); }
+                Rectangle { height: 1px; background: Theme.line; }
+
+                HorizontalLayout {
+                    height: 74px;
+                    Text {
+                        text: "外观";
+                        color: Theme.fg;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Rectangle {
+                        width: 344px;
+                        height: 36px;
+                        SegmentedControl {
+                            width: parent.width;
+                            options: ["浅色", "深色"];
+                            current: Theme.dark ? 1 : 0;
+                            workbench: true;
+                            reduced-motion: SeeCut.reduced-motion;
+                            changed(index) => { root.theme-changed(index == 1); }
+                        }
+                    }
                 }
+                Rectangle { height: 1px; background: Theme.line; }
+
+                HorizontalLayout {
+                    height: 74px;
+                    Text {
+                        text: "减少动态效果";
+                        color: Theme.fg;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout {
+                        alignment: center;
+                        Switch {
+                            accessible-label: "减少动态效果";
+                            reduced-motion: SeeCut.reduced-motion;
+                            checked <=> SeeCut.reduced-motion;
+                            toggled(value) => { SeeCut.changed("reduced-motion", value ? "true" : "false"); }
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.line; }
+
+                HorizontalLayout {
+                    padding-top: 18px;
+                    Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        label: "高级设置";
+                        ghost: true;
+                        clicked => { root.page-changed(1); }
+                    }
+                }
+                }
+                Rectangle { horizontal-stretch: 1; }
             }
 
             if root.data.tab == 2: VerticalLayout {
@@ -846,6 +931,8 @@ export component SettingsDialog inherits Modal {
                     }
                 }
             }
+        }
+    }
         }
     }
 }

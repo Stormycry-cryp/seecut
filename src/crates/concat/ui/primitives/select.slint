@@ -3,6 +3,7 @@
 
 import { Theme } from "../theme/theme.slint";
 import { Glyph, Icon } from "../icons.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { FocusRing } from "focus-ring.slint";
 import { Tip } from "tooltip.slint";
 import { ThinScrollbar } from "scrollbar.slint";
@@ -105,7 +106,7 @@ export component Select inherits Rectangle {
         : (root.open || (trigger.has-hover && root.enabled)) ? Theme.field-hover
         : Theme.field;
 
-    animate background { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     function commit(index: int) {
         if (index >= 0 && index < root.options.length) {
@@ -232,7 +233,7 @@ export component Select inherits Rectangle {
     // already saying what a tip would say, and the open list says it too.
     Tip {
         text: root.marked ? root.label : "";
-        active: trigger.has-hover && root.enabled && !root.open;
+        active: (trigger.has-hover || root.ring) && root.enabled && !root.open;
     }
 
     /// The width the list needs to spell every option out: the widest
@@ -317,7 +318,15 @@ export component Select inherits Rectangle {
                 for option[index] in root.options: Rectangle {
                     height: root.row-h;
                     border-radius: Theme.r-sm;
-                    background: index == root.active ? Theme.accent : Colors.transparent;
+                    // The current option is the selected state. Keyboard and
+                    // pointer movement use the quieter field surface, so
+                    // hovering an item never reads as committing it.
+                    background: index == root.current ? Theme.accent-soft
+                        : row-touch.pressed ? Theme.field-active
+                        : index == root.active ? Theme.field-hover
+                        : Colors.transparent;
+
+                    animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
                     HorizontalLayout {
                         padding-left: 6px;
@@ -329,14 +338,18 @@ export component Select inherits Rectangle {
                             Icon {
                                 glyph: root.icons[index];
                                 size: 13px;
-                                tint: index == root.active ? Theme.on-accent : Theme.fg-dim;
+                                tint: index == root.current ? Theme.accent
+                                    : index == root.active ? Theme.fg
+                                    : Theme.fg-dim;
                             }
                         }
 
                         Text {
                             horizontal-stretch: 1;
                             text: option;
-                            color: index == root.active ? Theme.on-accent : Theme.fg-muted;
+                            color: index == root.current ? Theme.accent
+                                : index == root.active ? Theme.fg
+                                : Theme.fg-muted;
                             font-size: root.text-size;
                             vertical-alignment: center;
                             overflow: elide;
@@ -344,7 +357,9 @@ export component Select inherits Rectangle {
 
                         if index < root.details.length: Text {
                             text: root.details[index];
-                            color: index == root.active ? Theme.on-accent : Theme.fg-dim;
+                            color: index == root.current ? Theme.accent
+                                : index == root.active ? Theme.fg
+                                : Theme.fg-dim;
                             font-family: Theme.font-technical;
                             font-size: root.text-size;
                             vertical-alignment: center;
@@ -355,12 +370,12 @@ export component Select inherits Rectangle {
                             Icon {
                                 glyph: Glyph.check;
                                 size: 12px;
-                                tint: index == root.active ? Theme.on-accent : Theme.accent;
+                                tint: Theme.accent;
                             }
                         }
                     }
 
-                    TouchArea {
+                    row-touch := TouchArea {
                         mouse-cursor: pointer;
                         // pointer-enter has no dedicated callback; has-hover
                         // drives the highlight instead.

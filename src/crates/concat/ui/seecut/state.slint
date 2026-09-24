@@ -72,6 +72,11 @@ export global SeeCut {
     in-out property <int> canvas-project-view;
     in-out property <[CloudItem]> canvas-projects;
     in-out property <bool> handoff-open;
+    // The live card listens for its own overlay closing and restores focus by
+    // stable item id. The root scope uses claimed to avoid overriding it.
+    in-out property <string> focus-return-kind;
+    in-out property <string> focus-return-id;
+    in-out property <bool> focus-return-claimed;
     in-out property <string> handoff-kind;
     in-out property <int> handoff-count;
     in-out property <int> handoff-source-page;
@@ -92,6 +97,9 @@ export global SeeCut {
     in-out property <string> asset-picker-purpose: "reference";
     in-out property <int> asset-picker-source;
     in-out property <int> asset-picker-selected-count;
+    in-out property <int> asset-picker-personal-filter;
+    in-out property <string> asset-picker-team-search;
+    in-out property <int> asset-picker-team-filter;
     in-out property <bool> media-preview-open;
     in-out property <CloudItem> media-preview-item;
     in-out property <string> media-preview-source;
@@ -115,6 +123,14 @@ export global SeeCut {
     in-out property <[PersonalAssetGroup]> personal-groups;
     in-out property <bool> personal-favorites;
     in-out property <int> personal-dialog;
+    in-out property <bool> personal-dialog-busy;
+    in-out property <string> personal-dialog-error;
+    in-out property <bool> export-copy-open;
+    in-out property <bool> export-copy-running;
+    in-out property <int> export-copy-total;
+    in-out property <int> export-copy-done;
+    in-out property <int> export-copy-progress;
+    in-out property <string> export-copy-error;
     in-out property <int> team-menu;
     in-out property <string> team-menu-id;
     in-out property <string> team-menu-name;
@@ -127,6 +143,7 @@ export global SeeCut {
     in-out property <bool> personal-menu-ready;
     in-out property <int> personal-selected-count;
     in-out property <bool> personal-selection-mode;
+    pure callback personal-can-drop(asset-id: string, folder-index: int) -> bool;
     in-out property <[GenerationTemplate]> templates;
     in-out property <string> template-delete-id;
     in-out property <string> template-menu-id;
@@ -198,5 +215,7 @@ export global SeeCut {
     in-out property <bool> reduced-motion;
 
     callback action(name: string, id: string);
+    // Exposes result-card keyboard focus to the deterministic UI fixture.
+    callback result-focus(id: string, control: string);
     callback changed(field: string, value: string);
 }

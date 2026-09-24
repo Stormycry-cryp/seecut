@@ -28,7 +28,7 @@ use resolve::{BuiltTimeline, RidingChain, Treatment, animation_of, build_timelin
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use concat_core::SpeedCurve;
 use concat_core::animate::{Animation, Ease as AnimEase, Key as AnimKey, Track as AnimTrack};
@@ -662,6 +662,8 @@ pub fn render(request: &ExportRequest, mut reporter: Reporter<'_>) -> Result<Str
 
     let rate = FrameRate::new(Rational::new(request.rate_num, request.rate_den));
     let output = PathBuf::from(&request.output);
+    reject_existing_output(&output, &request.clips)?;
+    reporter.cancelled()?;
 
     // Transitions become overlaps, ramps and fade filters before anything
     // else reads the clip list, so the picture and sound paths below never
@@ -713,14 +715,13 @@ pub fn render(request: &ExportRequest, mut reporter: Reporter<'_>) -> Result<Str
         return Err("the timeline is empty".to_owned());
     }
 
-    // Render into siblings of the output so the move at the end stays on one
-    // filesystem, then clean up whatever we made.
-    let stem = output
-        .file_stem()
-        .map_or_else(|| "concat".into(), |s| s.to_string_lossy());
+    // An exclusive sibling directory keeps concurrent exports' intermediates
+    // apart and puts the finished file on the destination filesystem.
     let directory = output.parent().unwrap_or(Path::new("."));
-    let silent = directory.join(format!(".{stem}.concat-video.mp4"));
-    let mixed = directory.join(format!(".{stem}.concat-audio.m4a"));
+    let temporary = ExportTemporary::create(directory)?;
+    let silent = temporary.path.join("video.mp4");
+    let mixed = temporary.path.join("audio.m4a");
+    let finished = temporary.path.join("finished.mp4");
 
     let result = (|| -> Result<(), String> {
         render_picture(
@@ -733,9 +734,8 @@ pub fn render(request: &ExportRequest, mut reporter: Reporter<'_>) -> Result<Str
         )?;
 
         if sound.is_empty() {
-            std::fs::rename(&silent, &output)
-                .map_err(|error| format!("could not write {}: {error}", output.display()))?;
-            return Ok(());
+            reporter.cancelled()?;
+            return publish_new(&silent, &output);
         }
 
         reporter.cancelled()?;
@@ -745,13 +745,128 @@ pub fn render(request: &ExportRequest, mut reporter: Reporter<'_>) -> Result<Str
 
         reporter.cancelled()?;
         reporter.emit(total_frames, total_frames, "muxing");
-        audio::mux(&silent, &mixed, &output).map_err(|error| error.to_string())
+        audio::mux(&silent, &mixed, &finished).map_err(|error| error.to_string())?;
+        reporter.cancelled()?;
+        publish_new(&finished, &output)
     })();
 
-    let _ = std::fs::remove_file(&silent);
-    let _ = std::fs::remove_file(&mixed);
-
     result.map(|()| output.to_string_lossy().into_owned())
+}
+
+/// Even callers outside the desktop sheet may never replace an export or an
+/// input clip. Final placement is exclusive, including when another process
+/// creates the destination after this early check.
+fn reject_existing_output(output: &Path, clips: &[ExportClip]) -> Result<(), String> {
+    if let Ok(output_meta) = std::fs::metadata(output) {
+        if clips.iter().any(|clip| {
+            std::fs::metadata(&clip.path)
+                .is_ok_and(|source_meta| same_file(&output_meta, &source_meta))
+        }) {
+            return Err(format!(
+                "export destination is an input clip: {}",
+                output.display()
+            ));
+        }
+    }
+    if std::fs::symlink_metadata(output).is_ok() {
+        return Err(format!(
+            "export destination already exists: {}",
+            output.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    // On non-Unix platforms the exclusive destination check still protects
+    // both files; this comparison is only for the more specific error.
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn publish_new(finished: &Path, output: &Path) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int};
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn renameatx_np(
+            from_fd: c_int,
+            from: *const c_char,
+            to_fd: c_int,
+            to: *const c_char,
+            flags: u32,
+        ) -> c_int;
+    }
+
+    // macOS's exclusive rename is atomic on the destination filesystem. It
+    // also works where hard links are unavailable, such as removable media.
+    const AT_FDCWD: c_int = -2;
+    const RENAME_EXCL: u32 = 0x0000_0004;
+    let from = CString::new(finished.as_os_str().as_bytes()).map_err(|error| error.to_string())?;
+    let to = CString::new(output.as_os_str().as_bytes()).map_err(|error| error.to_string())?;
+    let status =
+        unsafe { renameatx_np(AT_FDCWD, from.as_ptr(), AT_FDCWD, to.as_ptr(), RENAME_EXCL) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "could not create {} without replacing a file: {}",
+            output.display(),
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn publish_new(finished: &Path, output: &Path) -> Result<(), String> {
+    std::fs::hard_link(finished, output).map_err(|error| {
+        format!(
+            "could not create {} without replacing a file: {error}",
+            output.display()
+        )
+    })
+}
+
+static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+
+struct ExportTemporary {
+    path: PathBuf,
+}
+
+impl ExportTemporary {
+    fn create(directory: &Path) -> Result<Self, String> {
+        for _ in 0..100 {
+            let number = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos();
+            let path = directory.join(format!(
+                ".concat-export-{}-{now}-{number}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!("could not prepare export: {error}")),
+            }
+        }
+        Err("could not create a unique export work directory".to_owned())
+    }
+}
+
+impl Drop for ExportTemporary {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 /// The clip's gain track, or an empty one when its gain is the single number
@@ -1653,6 +1768,52 @@ pub fn preview_prefetch_of(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn publish_keeps_existing_output_and_its_source() {
+        let temporary = ExportTemporary::create(&std::env::temp_dir()).unwrap();
+        let source = temporary.path.join("source.mp4");
+        let output = temporary.path.join("result.mp4");
+        let finished = temporary.path.join("finished.mp4");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&output, b"previous result").unwrap();
+        std::fs::write(&finished, b"new result").unwrap();
+
+        let mut source_clip = clip("video", 0, 0.0, 1.0, 0.0);
+        source_clip.path = source.to_string_lossy().into_owned();
+        assert!(reject_existing_output(&output, &[source_clip.clone()]).is_err());
+        assert!(
+            reject_existing_output(&source, &[source_clip])
+                .unwrap_err()
+                .contains("input clip")
+        );
+        #[cfg(unix)]
+        {
+            let alias = temporary.path.join("source-alias.mp4");
+            std::fs::hard_link(&source, &alias).unwrap();
+            let mut source_clip = clip("video", 0, 0.0, 1.0, 0.0);
+            source_clip.path = source.to_string_lossy().into_owned();
+            assert!(
+                reject_existing_output(&alias, &[source_clip])
+                    .unwrap_err()
+                    .contains("input clip")
+            );
+        }
+        assert!(publish_new(&finished, &output).is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous result");
+        assert_eq!(std::fs::read(&source).unwrap(), b"source");
+    }
+
+    #[test]
+    fn publish_places_complete_file_exclusively() {
+        let temporary = ExportTemporary::create(&std::env::temp_dir()).unwrap();
+        let finished = temporary.path.join("finished.mp4");
+        let output = temporary.path.join("result.mp4");
+        std::fs::write(&finished, b"complete file").unwrap();
+        publish_new(&finished, &output).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"complete file");
+        assert!(publish_new(&finished, &output).is_err());
+    }
+
     /// A treatment on track 1 runs over what track 0 drew and not over what
     /// track 2 draws on top of it, and its strength blends the result back.
     #[test]
