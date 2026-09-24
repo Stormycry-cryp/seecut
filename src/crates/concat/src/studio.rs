@@ -41,12 +41,15 @@ use concat_project::model::{
     self, AppliedFilter, Clip, Project, TextAlign, TextStyle, Timeline, Track, Transition,
 };
 use concat_project::{Command, why_not_merge};
+use serde_json::Value;
 use slint::{Model, SharedString, VecModel};
 
 use crate::dock::{
     Dock, DockLayout, SEAT_GAP, default_dock, lay_out, nearest_row, row_at, row_top,
 };
-use crate::format::{colour_of, frames_timecode, hex_of, hex_with_alpha, wave_path, when_phrase};
+use crate::format::{
+    colour_of, frames_timecode, hex_of, hex_with_alpha, project_timestamp, wave_path,
+};
 use crate::host::{
     CachedStrip, Host, MediaArt, WindowArt, cached_media_art, cached_window_art, image_at,
     image_of, media_art, on_ui, spawn, spawn_art, strip_window, window_art, window_span,
@@ -510,6 +513,53 @@ pub fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, next: Vec<T>) {
 }
 
 /// The window's state. See the module docs for what is whose.
+#[derive(Clone)]
+struct RecentProjectMeta {
+    updated: u64,
+    duration: String,
+}
+
+/// Identity captured by media workers before they leave the UI thread.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MediaImportSession {
+    pub(crate) generation: u64,
+    pub(crate) path: String,
+}
+
+/// The UI may receive save completions after another edit or project opens.
+struct SaveStamp {
+    generation: u64,
+    path: String,
+    revision: u64,
+    ticket: u64,
+}
+
+impl SaveStamp {
+    fn is_current(&self, generation: u64, path: Option<&str>, latest: bool) -> bool {
+        self.generation == generation && path == Some(self.path.as_str()) && latest
+    }
+
+    fn settle(
+        &self,
+        generation: u64,
+        path: Option<&str>,
+        latest: bool,
+        revision: u64,
+        dirty: &mut bool,
+        result: &Result<bool, String>,
+    ) -> bool {
+        if !self.is_current(generation, path, latest) {
+            return false;
+        }
+        match result {
+            Ok(true) if revision == self.revision => *dirty = false,
+            Err(_) => *dirty = true,
+            _ => {}
+        }
+        true
+    }
+}
+
 pub struct Studio {
     pub host: Host,
     pub prefs: Preferences,
@@ -519,6 +569,10 @@ pub struct Studio {
 
     // ── the edit ──
     pub session: Option<Session>,
+    /// Monotonic identity for the currently open clip project. It changes
+    /// when a session opens or closes, so delayed workers cannot write into a
+    /// later session at the same path.
+    pub(crate) session_generation: u64,
     /// A clone of the project a gesture is mutating. `project()` reads it
     /// while it exists; a command replaces it.
     pub echo: Option<Project>,
@@ -528,6 +582,7 @@ pub struct Studio {
     /// Unsaved changes, and the timer that writes them.
     dirty: bool,
     autosave: slint::Timer,
+    save_lane: Option<Arc<projects::SaveLane>>,
 
     // ── the bin ──
     pub media: crate::panes::media_bin::MediaBin,
@@ -584,6 +639,11 @@ pub struct Studio {
     pub on_start: bool,
     pub start: crate::panes::start::StartPane,
     pub recents: Vec<ProjectInfo>,
+    /// Gallery metadata is read when the recents list changes, never while
+    /// Slint is repainting or while a search key is being compared.
+    recent_gallery: HashMap<String, RecentProjectMeta>,
+    recent_gallery_pending: bool,
+    recent_gallery_generation: u64,
     pub posters: HashMap<String, slint::Image>,
     posters_pending: HashSet<String>,
     pub project_name: String,
@@ -1192,6 +1252,73 @@ fn label_of(id: &str) -> String {
         .join(" ")
 }
 
+fn project_updated_at(project: &ProjectInfo) -> u64 {
+    let manifest = projects::manifest_path(std::path::Path::new(&project.path));
+    manifest
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(project.opened_at)
+}
+
+fn project_duration(path: &str) -> Option<String> {
+    let Ok(document) = projects::read_document(path) else {
+        return None;
+    };
+    let active_timeline = document
+        .get("activeTimelineId")
+        .and_then(Value::as_str)
+        .and_then(|id| {
+            document
+                .get("timelines")
+                .and_then(Value::as_array)
+                .and_then(|timelines| {
+                    timelines
+                        .iter()
+                        .find(|timeline| timeline.get("id").and_then(Value::as_str) == Some(id))
+                })
+        });
+    let clips = active_timeline
+        .and_then(|timeline| timeline.get("clips"))
+        .and_then(Value::as_array)
+        .or_else(|| document.get("clips").and_then(Value::as_array));
+    let seconds = clips
+        .into_iter()
+        .flatten()
+        .filter_map(|clip| {
+            Some(clip.get("start")?.as_f64()?.max(0.0) + clip.get("duration")?.as_f64()?.max(0.0))
+        })
+        .fold(0.0_f64, f64::max);
+    let total = seconds.round() as u64;
+    Some(if total >= 3600 {
+        format!(
+            "{:02}:{:02}:{:02}",
+            total / 3600,
+            (total / 60) % 60,
+            total % 60
+        )
+    } else {
+        format!("{:02}:{:02}", total / 60, total % 60)
+    })
+}
+
+fn recent_project_metadata(projects: &[ProjectInfo]) -> HashMap<String, RecentProjectMeta> {
+    projects
+        .iter()
+        .map(|project| {
+            (
+                project.path.clone(),
+                RecentProjectMeta {
+                    updated: project_updated_at(project),
+                    duration: project_duration(&project.path).unwrap_or_else(|| "未知".to_owned()),
+                },
+            )
+        })
+        .collect()
+}
+
 impl Studio {
     /// A window with nothing open: the launch screen, with the recents list
     /// read off disk.
@@ -1207,10 +1334,12 @@ impl Studio {
             prefs,
             library: Default::default(),
             session: None,
+            session_generation: 0,
             echo: None,
             empty: Project::new(),
             dirty: false,
             autosave: slint::Timer::default(),
+            save_lane: None,
             media: crate::panes::media_bin::MediaBin::default(),
             peaks: HashMap::new(),
             strips: HashMap::new(),
@@ -1245,6 +1374,9 @@ impl Studio {
             on_start: true,
             start: crate::panes::start::StartPane::default(),
             recents,
+            recent_gallery: HashMap::new(),
+            recent_gallery_pending: false,
+            recent_gallery_generation: 0,
             posters: HashMap::new(),
             posters_pending: HashSet::new(),
             project_name: "Untitled project".into(),
@@ -1294,6 +1426,15 @@ impl Studio {
             .as_ref()
             .or_else(|| self.session.as_ref().map(|session| session.project()))
             .unwrap_or(&self.empty)
+    }
+
+    /// Returns the identity that a media import must still match when it
+    /// reports back from a worker.
+    pub(crate) fn media_import_session(&self) -> Option<MediaImportSession> {
+        self.session.as_ref().map(|session| MediaImportSession {
+            generation: self.session_generation,
+            path: session.path().to_owned(),
+        })
     }
 
     pub fn timeline(&self) -> &Timeline {
@@ -1544,15 +1685,44 @@ impl Studio {
         };
         self.autosave.stop();
         let (path, document) = session.prepare_save(None);
-        self.dirty = false;
+        let lane = self
+            .save_lane
+            .get_or_insert_with(|| Arc::new(projects::SaveLane::default()))
+            .clone();
+        let stamp = SaveStamp {
+            generation: self.session_generation,
+            path: path.clone(),
+            revision: self.revision,
+            ticket: lane.next(),
+        };
+        let worker_lane = Arc::clone(&lane);
         spawn(
-            move || projects::save(&path, &document),
-            move |studio, _, _, result| match result {
-                Ok(()) if announce => studio.notify(&t("Project saved"), false),
-                Ok(()) => {}
-                Err(error) => {
-                    studio.dirty = true;
-                    studio.notify(&tf("Could not save: {0}", &[&error]), true);
+            move || worker_lane.write(stamp.ticket, &path, &document),
+            move |studio, _, _, result| {
+                let current_path = studio
+                    .session
+                    .as_ref()
+                    .map(|session| session.path().to_owned());
+                if !stamp.settle(
+                    studio.session_generation,
+                    current_path.as_deref(),
+                    lane.is_latest(stamp.ticket),
+                    studio.revision,
+                    &mut studio.dirty,
+                    &result,
+                ) {
+                    return;
+                }
+                match result {
+                    Ok(true) => {
+                        if announce && studio.revision == stamp.revision {
+                            studio.notify(&t("Project saved"), false);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        studio.notify(&tf("Could not save: {0}", &[&error]), true);
+                    }
                 }
             },
         );
@@ -4498,6 +4668,11 @@ impl Studio {
     /// Opens a project as the session and leaves the launch screen, or
     /// says why it could not.
     pub fn open_project(&mut self, info: ProjectInfo) -> Result<(), String> {
+        if self.session.is_some() {
+            // Keep the current edit open if the requested project is invalid.
+            Session::open_info(&info)?;
+            self.close_project()?;
+        }
         match Session::open_info(&info) {
             Ok(session) => {
                 if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
@@ -4505,6 +4680,8 @@ impl Studio {
                 }
                 self.pause();
                 self.session = Some(session);
+                self.session_generation = self.session_generation.wrapping_add(1).max(1);
+                self.save_lane = Some(Arc::new(projects::SaveLane::default()));
                 self.echo = None;
                 self.dirty = false;
                 self.project_name = info.name.clone();
@@ -4519,6 +4696,7 @@ impl Studio {
                     crate::panes::monitor::MonitorMsg::Opened,
                 ));
                 self.recents = projects::list(&self.host.dirs.config);
+                self.invalidate_recent_gallery();
                 self.host.monitor.clear();
                 self.audition = None;
                 self.revision += 1;
@@ -4579,7 +4757,19 @@ impl Studio {
         self.pause();
         if let Some(session) = self.session.as_mut() {
             let (path, document) = session.prepare_save(None);
-            if let Err(error) = projects::save(&path, &document) {
+            let lane = self
+                .save_lane
+                .get_or_insert_with(|| Arc::new(projects::SaveLane::default()));
+            let ticket = lane.next();
+            let saved = lane.write(ticket, &path, &document).and_then(|written| {
+                if written {
+                    Ok(())
+                } else {
+                    Err("a newer project save superseded the close".to_owned())
+                }
+            });
+            if let Err(error) = saved {
+                self.dirty = true;
                 let message = tf("Could not save: {0}", &[&error]);
                 self.notify(&message, true);
                 return Err(message);
@@ -4590,6 +4780,8 @@ impl Studio {
         self.region_job = None;
         self.autosave.stop();
         self.session = None;
+        self.save_lane = None;
+        self.session_generation = self.session_generation.wrapping_add(1).max(1);
         self.echo = None;
         self.dirty = false;
         self.selection.clear();
@@ -4606,6 +4798,7 @@ impl Studio {
             .set_clips(std::path::PathBuf::new(), Vec::new());
         self.on_start = true;
         self.recents = projects::list(&self.host.dirs.config);
+        self.invalidate_recent_gallery();
         Ok(())
     }
 
@@ -4681,6 +4874,40 @@ impl Studio {
                 false
             }
         }
+    }
+
+    /// Invalidates gallery metadata after the recents list or a project file
+    /// changes. The next launch-screen refresh repopulates it off-thread.
+    pub fn invalidate_recent_gallery(&mut self) {
+        self.recent_gallery.clear();
+        self.recent_gallery_generation = self.recent_gallery_generation.wrapping_add(1);
+    }
+
+    fn request_recent_gallery_metadata(&mut self) {
+        if self.recent_gallery_pending {
+            return;
+        }
+        let missing = self
+            .recents
+            .iter()
+            .filter(|project| !self.recent_gallery.contains_key(&project.path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return;
+        }
+        self.recent_gallery_pending = true;
+        let generation = self.recent_gallery_generation;
+        spawn(
+            move || (generation, recent_project_metadata(&missing)),
+            move |studio, _, _, (generation, metadata)| {
+                if studio.recent_gallery_generation == generation {
+                    studio.recent_gallery.extend(metadata);
+                }
+                studio.recent_gallery_pending = false;
+                studio.request_recent_gallery_metadata();
+            },
+        );
     }
 
     /// Posters for the recents that have none yet, decoded on a worker.
@@ -5773,9 +6000,9 @@ impl Studio {
         app.set_project_name(self.project_name.as_str().into());
         app.set_project_status(
             if self.dirty {
-                "unsaved changes"
+                t("unsaved changes")
             } else {
-                "saved"
+                t("saved")
             }
             .into(),
         );
@@ -5785,22 +6012,41 @@ impl Studio {
             failed: self.toast.failed,
         });
         app.set_start(self.start.data());
+        let gallery = app.global::<SeeCut>();
+        let query = gallery.get_clip_project_search().trim().to_lowercase();
+        let sort = gallery.get_clip_project_sort();
+        let mut recent_projects = self.recents.iter().collect::<Vec<_>>();
+        if sort == 1 {
+            recent_projects.sort_by_cached_key(|project| project.name.to_lowercase());
+        } else {
+            recent_projects.sort_by_cached_key(|project| {
+                std::cmp::Reverse(
+                    self.recent_gallery
+                        .get(&project.path)
+                        .map_or(project.opened_at, |metadata| metadata.updated),
+                )
+            });
+        }
         sync(
             &models.recents,
-            self.recents
+            recent_projects
                 .iter()
-                .map(|project| RecentProjectData {
-                    path: project.path.as_str().into(),
-                    name: project.name.as_str().into(),
-                    detail: format!(
-                        "{} x {} · {:.2} fps",
-                        project.width,
-                        project.height,
-                        project.rate_num as f32 / project.rate_den.max(1) as f32
-                    )
-                    .into(),
-                    when: when_phrase(project.opened_at).into(),
-                    poster: self.posters.get(&project.path).cloned().unwrap_or_default(),
+                .filter(|project| query.is_empty() || project.name.to_lowercase().contains(&query))
+                .map(|project| {
+                    let metadata = self.recent_gallery.get(&project.path);
+                    let updated = metadata.map_or(project.opened_at, |metadata| metadata.updated);
+                    RecentProjectData {
+                        path: project.path.as_str().into(),
+                        name: project.name.as_str().into(),
+                        // The gallery's second value is the timeline length;
+                        // dimensions and frame rate belong to the project
+                        // sheet once it is open.
+                        detail: metadata
+                            .map_or("未知", |metadata| metadata.duration.as_str())
+                            .into(),
+                        when: project_timestamp(updated).into(),
+                        poster: self.posters.get(&project.path).cloned().unwrap_or_default(),
+                    }
                 })
                 .collect(),
         );
@@ -5931,6 +6177,7 @@ impl Studio {
     /// missing. Separate from `publish` because it mutates.
     pub fn refresh_art(&mut self) {
         if self.on_start {
+            self.request_recent_gallery_metadata();
             self.request_posters();
         } else {
             self.assign_media_rows();
@@ -6501,9 +6748,33 @@ impl Studio {
 
 #[cfg(test)]
 mod tests {
-    use super::{Footprint, Studio};
+    use super::{Footprint, SaveStamp, Studio};
 
     const FRAME: (u32, u32) = (1920, 1080);
+
+    #[test]
+    fn old_save_completion_does_not_apply_to_a_new_session() {
+        let old = SaveStamp {
+            generation: 1,
+            path: "project-a".to_owned(),
+            revision: 3,
+            ticket: 2,
+        };
+        assert!(old.is_current(1, Some("project-a"), true));
+        assert!(!old.is_current(2, Some("project-b"), true));
+        assert!(!old.is_current(2, Some("project-a"), true));
+        assert!(!old.is_current(1, Some("project-a"), false));
+        let mut new_project_dirty = false;
+        assert!(!old.settle(
+            2,
+            Some("project-b"),
+            true,
+            4,
+            &mut new_project_dirty,
+            &Err("old save failed".to_owned()),
+        ));
+        assert!(!new_project_dirty);
+    }
 
     /// A quarter turn swaps the bounds' pixel extents, which in fractions
     /// of a 16:9 frame is not a swap of the numbers.

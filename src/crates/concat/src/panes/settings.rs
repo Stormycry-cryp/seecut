@@ -172,6 +172,7 @@ impl SettingsPane {
             }
             SettingsMsg::Open => {
                 self.refresh(studio);
+                self.tab = 0;
                 self.open = true;
             }
             SettingsMsg::Close => self.open = false,

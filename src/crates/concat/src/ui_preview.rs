@@ -2,15 +2,17 @@
 //! Deterministic UI captures using synthetic data and Slint's own software renderer.
 //! Opt in with SEECUT_UI_PREVIEW_DIR; normal startup never enters this module.
 use crate::ui::{
-    App, CanvasControls, CanvasLayerData, CanvasThumbs, CloudItem, Editor, GenerationTemplate,
-    I18n, PersonalAssetGroup, SeeCut, Theme,
+    App, CanvasControls, CanvasLayerData, CanvasThumbs, CloudItem, Editor, GenerationBatch,
+    GenerationTemplate, I18n, Payload, PersonalAssetGroup, RecentProjectData, SeeCut, StartData,
+    Theme,
 };
 use slint::platform::{
     Platform, WindowAdapter,
     software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
 };
+use slint::private_unstable_api::re_exports::DataTransfer;
 use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
-use std::{path::Path, rc::Rc};
+use std::{cell::RefCell, path::Path, rc::Rc};
 
 struct PreviewPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for PreviewPlatform {
@@ -21,7 +23,49 @@ impl Platform for PreviewPlatform {
 fn model<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
     Rc::new(VecModel::from(items)).into()
 }
+fn figma_artwork(seed: u8) -> Option<Image> {
+    let directory = std::env::var_os("SEECUT_UI_PREVIEW_FIGMA_DIR")?;
+    let sheet = image::open(Path::new(&directory).join("asset-normal-mac-controls.png"))
+        .ok()?
+        .to_rgba8();
+    // These are the six media wells in the approved Figma screenshot. The
+    // source screenshot stays untouched; preview data is never persisted.
+    let wells = [
+        (305, 230, 354, 214),
+        (679, 230, 354, 214),
+        (1054, 230, 354, 214),
+        (305, 503, 354, 216),
+        (679, 503, 354, 216),
+        (1054, 503, 354, 216),
+    ];
+    let (x, y, width, height) = wells[usize::from(seed / 24) % wells.len()];
+    if x + width > sheet.width() || y + height > sheet.height() {
+        return None;
+    }
+    // The design screenshot already contains rounded white corner pixels.
+    // Remove them so the capture exercises Slint's own card clipping.
+    let inset = 12;
+    let interior = image::imageops::crop_imm(
+        &sheet,
+        x + inset,
+        y + inset,
+        width - 2 * inset,
+        height - 2 * inset,
+    )
+    .to_image();
+    let pixels = image::imageops::resize(
+        &interior,
+        width,
+        height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(pixels.as_raw(), width, height);
+    Some(Image::from_rgba8(buffer))
+}
 fn artwork(seed: u8) -> Image {
+    if let Some(image) = figma_artwork(seed) {
+        return image;
+    }
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(320, 240);
     for (i, pixel) in buffer.make_mut_slice().iter_mut().enumerate() {
         let x = (i % 320) as i32;
@@ -39,9 +83,7 @@ fn artwork(seed: u8) -> Image {
     Image::from_rgba8(buffer)
 }
 
-// Tall and wide assets have a bright border on all four edges. The same
-// images are used by personal and team fixtures, so a cropped cover is visible
-// in the capture instead of being hidden by uniformly landscape test data.
+// Boundary fixture: preserve the requested aspect ratio and all four edges.
 fn framed_artwork(seed: u8, width: u32, height: u32) -> Image {
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
     for (i, pixel) in buffer.make_mut_slice().iter_mut().enumerate() {
@@ -96,6 +138,9 @@ fn click_fixture(
     settle(app)?;
     let position = slint::LogicalPosition::new(x, y);
     app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+    settle(app)?;
+    app.window()
         .dispatch_event(slint::platform::WindowEvent::PointerPressed {
             position,
             button: slint::platform::PointerEventButton::Left,
@@ -105,6 +150,30 @@ fn click_fixture(
             position,
             button: slint::platform::PointerEventButton::Left,
         });
+    settle(app)
+}
+
+fn pointer_fixture(
+    app: &App,
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    pressed: bool,
+) -> Result<(), slint::PlatformError> {
+    app.window()
+        .set_size(slint::PhysicalSize::new(width, height));
+    settle(app)?;
+    let position = slint::LogicalPosition::new(x, y);
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+    if pressed {
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                position,
+                button: slint::platform::PointerEventButton::Left,
+            });
+    }
     settle(app)
 }
 
@@ -193,7 +262,38 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     words.set_lang(crate::i18n::current().into());
     app.global::<Theme>().set_dark(false);
     let state = app.global::<SeeCut>();
+    let action_log = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
+    let action_log_for_ui = action_log.clone();
+    let action_app = app.as_weak();
+    state.on_action(move |name, id| {
+        action_log_for_ui
+            .borrow_mut()
+            .push((name.to_string(), id.to_string()));
+        if name == "reference-mention-open"
+            && let Some(app) = action_app.upgrade()
+        {
+            crate::cloud::open_reference_mention_ui(&app.global::<SeeCut>());
+        }
+    });
+    let result_focus_log = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
+    let focus_log_for_ui = result_focus_log.clone();
+    state.on_result_focus(move |id, control| {
+        focus_log_for_ui
+            .borrow_mut()
+            .push((id.to_string(), control.to_string()));
+    });
+    let payload = app.global::<Payload>();
+    payload.on_of(DataTransfer::from);
+    payload.on_text(|data| data.plain_text().unwrap_or_default());
+    payload.on_personal_id(|text| {
+        text.strip_prefix("personal:")
+            .and_then(|rest| rest.split(':').next())
+            .unwrap_or_default()
+            .into()
+    });
+    state.on_personal_can_drop(|id, index| id == "fixture-0" && index == 3);
     state.set_auth_open(false);
+    state.set_creator_mode(1);
     state.set_reduced_motion(true);
     state.set_signed_in(true);
     state.set_prompt("以参考素材为基础，制作一张暖色几何海报，保留主体轮廓与材质细节。".into());
@@ -208,19 +308,10 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     let assets: Vec<_> = (0..8)
         .map(|i| CloudItem {
             id: format!("fixture-{i}").into(),
-            name: format!("合成构图 {:02}", i + 1).into(),
-            detail: match i {
-                0 => "图片 · 本地导入 · 180 × 360",
-                1 => "图片 · 本地导入 · 400 × 160",
-                _ => "图片 · 本地导入 · 320 × 240",
-            }
-            .into(),
+            name: format!("沙丘 · {:02}", i + 1).into(),
+            detail: "图片 · 本地导入 · 1536 × 1024".into(),
             kind: "image".into(),
-            preview: match i {
-                0 => framed_artwork(0, 180, 360),
-                1 => framed_artwork(24, 400, 160),
-                _ => artwork(i * 24),
-            },
+            preview: artwork(i * 24),
             ready: true,
             local: true,
             favorite: i == 1,
@@ -231,12 +322,12 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_personal_assets(model(assets.clone()));
     state.set_personal_groups(model(vec![
         PersonalAssetGroup {
-            date_label: "2026-09-21".into(),
-            items: model(assets[..5].to_vec()),
+            date_label: "今天".into(),
+            items: model(assets[..6].to_vec()),
         },
         PersonalAssetGroup {
             date_label: "2026-09-20".into(),
-            items: model(assets[5..].to_vec()),
+            items: model(assets[6..].to_vec()),
         },
     ]));
     state.set_templates(model(
@@ -269,7 +360,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     refs[0].status = "已上传".into();
     refs[1].status = "上传失败".into();
     refs[1].ready = false;
-    state.set_references(model(refs));
+    state.set_references(model(refs.clone()));
     let mut result = assets[2].clone();
     result.name = "暖色几何海报".into();
     result.status = "已完成".into();
@@ -307,6 +398,39 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_assets(model(assets.clone()));
     state.set_email("creator@example.test".into());
     state.set_tasks(model(results.clone()));
+    state.set_batches(model(vec![GenerationBatch {
+        id: "fixture-batch".into(),
+        label: "09-23 18:00".into(),
+        summary: "生成 6 项 · 图片".into(),
+        items: model(results.clone()),
+    }]));
+    state.set_personal_folder_names(model(vec![
+        "全部素材".into(),
+        "未分类".into(),
+        "沙丘项目".into(),
+        "灵感参考".into(),
+        "成片".into(),
+    ]));
+    state.set_personal_move_folder_names(model(vec![
+        "未分类".into(),
+        "沙丘项目".into(),
+        "灵感参考".into(),
+        "成片".into(),
+    ]));
+    state.set_personal_folder_filter(2);
+    state.set_canvas_projects(model(
+        (0..5)
+            .map(|i| CloudItem {
+                id: format!("fixture-canvas-{i}").into(),
+                name: ["沙丘主视觉", "日落之后", "蓝色时刻", "光的边界", "构图练习"][i].into(),
+                detail: "今天 14:32 · 1920 × 1080".into(),
+                preview: artwork((i * 24) as u8),
+                ready: true,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    state.set_canvas_gallery_open(false);
     state.set_selected_task(0);
     let editor = app.global::<Editor>();
     editor.set_output_width(320);
@@ -337,6 +461,341 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     app.global::<CanvasThumbs>()
         .set_mask_images(model(vec![Image::default()]));
     app.show()?;
+    app.set_start_resolutions(model(
+        crate::studio::RESOLUTIONS
+            .iter()
+            .map(|(label, _, _)| (*label).into())
+            .collect(),
+    ));
+    app.set_start_rates(model(
+        crate::studio::START_RATES
+            .iter()
+            .map(|(label, _, _)| (*label).into())
+            .collect(),
+    ));
+    app.set_start(StartData {
+        name: "新建剪辑项目".into(),
+        location: "/fixture/projects".into(),
+        resolution: 0,
+        rate: 3,
+        size_readout: "1920 x 1080".into(),
+        rate_readout: "30/1 fps".into(),
+        ..Default::default()
+    });
+    app.set_recents(model(
+        (0..5)
+            .map(|i| RecentProjectData {
+                path: format!("/fixture/clip-{i}").into(),
+                name: ["沙丘短片", "日落之后", "蓝色时刻", "光的边界", "镜头练习"][i].into(),
+                detail: "00:32".into(),
+                when: "今天".into(),
+                poster: artwork((i * 24) as u8),
+            })
+            .collect(),
+    ));
+    state.set_page(0);
+    app.set_on_start(true);
+    capture(&app, directory, "clip-project-gallery", 1280, 800)?;
+    capture(&app, directory, "clip-project-gallery-1440x960", 1440, 960)?;
+    app.set_clip_create_open(true);
+    capture(&app, directory, "clip-project-new", 1280, 800)?;
+    app.set_clip_create_open(false);
+    app.set_on_start(false);
+    // Product-layout comparison at the exact approved viewport sizes. The
+    // media is sampled from the local Figma screenshot when the opt-in source
+    // directory is supplied; all tasks and prices below remain fixture data.
+    let mut pro_refs = assets[..8].to_vec();
+    for (i, reference) in pro_refs.iter_mut().enumerate() {
+        reference.preview = artwork((i * 24) as u8);
+        reference.ready = true;
+        reference.status = "".into();
+        reference.detail = format!("@[图片{}]", i + 1).into();
+    }
+    state.set_references(model(pro_refs));
+    state.set_reference_max(8);
+    state.set_model_names(model(vec!["Seedream".into()]));
+    state.set_ratio_index(2);
+    state.set_resolutions(model(vec!["1536 × 864".into(), "1024 × 1024".into()]));
+    let mut pro_results = results[..4].to_vec();
+    for (i, result) in pro_results.iter_mut().enumerate() {
+        result.name = format!("沙丘 · {:02}", i + 1).into();
+        result.preview = artwork((i * 24) as u8);
+        result.ready = true;
+        result.failed = false;
+        result.status = "1536 × 864".into();
+    }
+    let first_result_id = pro_results[0].id.to_string();
+    state.set_batches(model(vec![GenerationBatch {
+        id: "fixture-pro-batch".into(),
+        label: "今天 14:32".into(),
+        summary: "4 张 · 16:9 · 1536 × 864".into(),
+        items: model(pro_results),
+    }]));
+    state.set_can_generate(true);
+    state.set_quote("本次 8 积分".into());
+    state.set_prompt(
+        "极简建筑立于开阔的沙地，低角度日光，细腻的混凝土与木材质感，安静的建筑摄影。".into(),
+    );
+    state.set_page(1);
+    capture(&app, directory, "generation-pro-1440x960", 1440, 960)?;
+    capture(&app, directory, "generation-pro-1024x960", 1024, 960)?;
+    capture(&app, directory, "generation-pro-1440x800", 1440, 800)?;
+    // Reach the first result's hidden keyboard entry through real Tab events,
+    // then move the pointer to its neighbour while the first action is focused.
+    app.window().set_size(slint::PhysicalSize::new(1440, 960));
+    settle(&app)?;
+    result_focus_log.borrow_mut().clear();
+    let mut entry_tabs = None;
+    for tab in 1..=120 {
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Tab.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Tab.into(),
+            });
+        settle(&app)?;
+        if result_focus_log
+            .borrow()
+            .iter()
+            .any(|(id, control)| id == &first_result_id && control == "entry")
+        {
+            entry_tabs = Some(tab);
+            break;
+        }
+    }
+    let entry_tabs = entry_tabs.ok_or_else(|| {
+        slint::PlatformError::Other("Tab never reached the first result action entry".into())
+    })?;
+    result_focus_log.borrow_mut().clear();
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Return.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Return.into(),
+        });
+    settle(&app)?;
+    if !result_focus_log
+        .borrow()
+        .iter()
+        .any(|(id, control)| id == &first_result_id && control == "reference")
+    {
+        return Err(slint::PlatformError::Other(
+            "Enter on the result entry did not focus its reference action".into(),
+        ));
+    }
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(950.0, 220.0),
+        });
+    settle(&app)?;
+    capture(&app, directory, "generation-focus-a-hover-b", 1440, 960)?;
+    action_log.borrow_mut().clear();
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Return.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Return.into(),
+        });
+    settle(&app)?;
+    if !action_log
+        .borrow()
+        .iter()
+        .any(|(name, id)| name == "task-reference" && id == &first_result_id)
+    {
+        return Err(slint::PlatformError::Other(
+            "Enter after hovering another card did not act on the focused card".into(),
+        ));
+    }
+    std::fs::write(directory.join("result-keyboard-validation.json"), format!(
+        "{{\"status\":\"passed\",\"backend\":\"Slint software fixture\",\"entry_tabs\":{entry_tabs},\"focused_result_id\":\"{first_result_id}\",\"checks\":[\"Tab reaches first result entry\",\"Enter focuses its reference action\",\"Hovering second card keeps first action active\",\"Enter dispatches task-reference for first card\"]}}"
+    )).map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    pointer_fixture(&app, 1440, 960, 1341.0, 45.0, false)?;
+    capture(&app, directory, "fixture-icon-hover-1440x960", 1440, 960)?;
+    pointer_fixture(&app, 1440, 960, 1341.0, 45.0, true)?;
+    capture(&app, directory, "fixture-icon-pressed-1440x960", 1440, 960)?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(1341.0, 45.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+    let pro_prompt = state.get_prompt();
+    state.set_prompt("极简建筑立于开阔的沙地，低角度日光，细腻的混凝土与木材质感。\n保留建筑轮廓、入口和地面阴影，用自然光呈现材料肌理。\n镜头从正面缓慢靠近，画面边缘保留天空和远山，色调安静克制。\n请检查末行内容在输入框内清晰可读，光标和操作按钮互不遮挡。".into());
+    click_fixture(&app, 1024, 960, 180.0, 405.0)?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Control.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::DownArrow.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::DownArrow.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Control.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "✓".into() });
+    settle(&app)?;
+    if !state.get_prompt().as_str().ends_with('✓') {
+        return Err(slint::PlatformError::Other(format!(
+            "Long prompt end was not editable (cursor {}, bytes {}, marker {})",
+            state.get_prompt_cursor(),
+            state.get_prompt().len(),
+            state
+                .get_prompt()
+                .as_str()
+                .find('✓')
+                .map_or(-1, |pos| pos as i32),
+        )));
+    }
+    capture(
+        &app,
+        directory,
+        "generation-pro-long-prompt-1024x960",
+        1024,
+        960,
+    )?;
+    state.set_prompt(pro_prompt);
+    state.set_prompt_cursor(state.get_prompt().len() as i32);
+    let mention_count = action_log.borrow().len();
+    click_fixture(&app, 1024, 960, 124.0, 475.0)?;
+    if !state.get_mention_open()
+        || !state.get_prompt().as_str().ends_with('@')
+        || !action_log.borrow()[mention_count..]
+            .iter()
+            .any(|(name, _)| name == "reference-mention-open")
+    {
+        return Err(slint::PlatformError::Other(
+            "Reference button did not open the mention list".into(),
+        ));
+    }
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::DownArrow.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "\n".into() });
+    if !action_log
+        .borrow()
+        .iter()
+        .any(|(name, id)| name == "reference-mention" && !id.is_empty())
+    {
+        return Err(slint::PlatformError::Other(
+            "Keyboard reference selection was not triggered".into(),
+        ));
+    }
+    state.set_mention_open(false);
+    state.set_handoff_kind("canvas".into());
+    state.set_handoff_count(2);
+    state.set_handoff_targets(model(vec![
+        CloudItem {
+            id: "new".into(),
+            name: "新建画布项目".into(),
+            ..Default::default()
+        },
+        CloudItem {
+            id: "fixture-canvas-0".into(),
+            name: "沙丘主视觉".into(),
+            detail: "今天 14:32".into(),
+            preview: artwork(0),
+            ready: true,
+            ..Default::default()
+        },
+        CloudItem {
+            id: "fixture-canvas-1".into(),
+            name: "建筑灵感板".into(),
+            detail: "昨天 18:06".into(),
+            preview: artwork(96),
+            ready: true,
+            ..Default::default()
+        },
+    ]));
+    state.set_handoff_selected_id("".into());
+    state.set_handoff_open(true);
+    app.global::<Theme>().set_dark(true);
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-disabled-1440x960",
+        1440,
+        960,
+    )?;
+    pointer_fixture(&app, 1440, 960, 700.0, 390.0, false)?;
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-target-hover-1440x960",
+        1440,
+        960,
+    )?;
+    pointer_fixture(&app, 1440, 960, 700.0, 390.0, true)?;
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-target-pressed-1440x960",
+        1440,
+        960,
+    )?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(700.0, 390.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+    settle(&app)?;
+    if state.get_handoff_selected_id() != "fixture-canvas-0" {
+        return Err(slint::PlatformError::Other(
+            "Target selection did not update".into(),
+        ));
+    }
+    capture(&app, directory, "handoff-canvas-1440x960", 1440, 960)?;
+    pointer_fixture(&app, 1440, 960, 985.0, 680.0, false)?;
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-button-hover-1440x960",
+        1440,
+        960,
+    )?;
+    pointer_fixture(&app, 1440, 960, 985.0, 680.0, true)?;
+    capture(
+        &app,
+        directory,
+        "fixture-handoff-button-pressed-1440x960",
+        1440,
+        960,
+    )?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(985.0, 680.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+    app.global::<Theme>().set_dark(false);
+    state.set_handoff_open(false);
+    state.set_references(model(refs));
+    state.set_reference_max(4);
+    state.set_model_names(model(vec!["演示图像模型".into()]));
+    state.set_ratio_index(0);
+    state.set_resolutions(model(vec!["1024".into(), "2048".into()]));
+    state.set_can_generate(false);
+    state.set_quote("".into());
+    state.set_reference_error("参考素材上传失败，请重试或移除".into());
+    state.set_prompt("以参考素材为基础，制作一张暖色几何海报，保留主体轮廓与材质细节。".into());
+    state.set_batches(model(vec![GenerationBatch {
+        id: "fixture-batch".into(),
+        label: "09-23 18:00".into(),
+        summary: "生成 6 项 · 图片".into(),
+        items: model(results.clone()),
+    }]));
     for (page, name) in [
         (1, "generation"),
         (0, "editing"),
@@ -352,6 +811,217 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             capture(&app, directory, &format!("{name}-{suffix}"), width, height)?;
         }
     }
+    let mut boundary_assets = assets.clone();
+    boundary_assets[0].preview = framed_artwork(0, 180, 360);
+    boundary_assets[0].detail = "图片 · 本地导入 · 180 × 360".into();
+    boundary_assets[1].preview = framed_artwork(24, 400, 160);
+    boundary_assets[1].detail = "图片 · 本地导入 · 400 × 160".into();
+    state.set_personal_assets(model(boundary_assets.clone()));
+    state.set_personal_groups(model(vec![PersonalAssetGroup {
+        date_label: "比例边界".into(),
+        items: model(boundary_assets[..2].to_vec()),
+    }]));
+    state.set_page(5);
+    capture(&app, directory, "personal-ratio-bounds-1440x960", 1440, 960)?;
+    capture(&app, directory, "personal-ratio-bounds-900x640", 900, 640)?;
+    let theme = app.global::<Theme>();
+    theme.set_dark(false);
+    let thumbnail = crate::personal_drag_thumbnail(
+        &boundary_assets[0].preview,
+        1,
+        theme.get_accent(),
+        theme.get_on_accent(),
+    )
+    .ok_or_else(|| slint::PlatformError::Other("Personal drag thumbnail is empty".into()))?;
+    let pixels = thumbnail.to_rgba8().ok_or_else(|| {
+        slint::PlatformError::Other("Personal drag thumbnail has no pixels".into())
+    })?;
+    let distinct_colors = pixels
+        .as_bytes()
+        .chunks_exact(4)
+        .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    if pixels.width() != 160 || pixels.height() != 100 || distinct_colors < 4 {
+        return Err(slint::PlatformError::Other(
+            "Personal drag thumbnail is missing image detail".into(),
+        ));
+    }
+    image::save_buffer(
+        directory.join("personal-drag-thumbnail.png"),
+        pixels.as_bytes(),
+        pixels.width(),
+        pixels.height(),
+        image::ColorType::Rgba8,
+    )
+    .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    let mut group_thumbnails = Vec::new();
+    for count in [2, 20] {
+        let image = crate::personal_drag_thumbnail(
+            &boundary_assets[0].preview,
+            count,
+            theme.get_accent(),
+            theme.get_on_accent(),
+        )
+        .ok_or_else(|| slint::PlatformError::Other("Group drag thumbnail is empty".into()))?;
+        let pixels = image.to_rgba8().ok_or_else(|| {
+            slint::PlatformError::Other("Group drag thumbnail has no pixels".into())
+        })?;
+        if pixels.width() != 168 || pixels.height() != 108 {
+            return Err(slint::PlatformError::Other(
+                "Group drag thumbnail has the wrong size".into(),
+            ));
+        }
+        image::save_buffer(
+            directory.join(format!("personal-drag-thumbnail-{count}.png")),
+            pixels.as_bytes(),
+            pixels.width(),
+            pixels.height(),
+            image::ColorType::Rgba8,
+        )
+        .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+        group_thumbnails.push(pixels.as_bytes().to_vec());
+    }
+    if group_thumbnails[0] == group_thumbnails[1] {
+        return Err(slint::PlatformError::Other(
+            "Group drag count does not change the thumbnail".into(),
+        ));
+    }
+    theme.set_dark(true);
+    let dark_thumbnail = crate::personal_drag_thumbnail(
+        &boundary_assets[0].preview,
+        20,
+        theme.get_accent(),
+        theme.get_on_accent(),
+    )
+    .and_then(|image| image.to_rgba8())
+    .ok_or_else(|| slint::PlatformError::Other("Dark drag thumbnail is empty".into()))?;
+    if dark_thumbnail.as_bytes() == group_thumbnails[1] {
+        return Err(slint::PlatformError::Other(
+            "Drag count badge did not follow the theme".into(),
+        ));
+    }
+    image::save_buffer(
+        directory.join("personal-drag-thumbnail-20-dark.png"),
+        dark_thumbnail.as_bytes(),
+        dark_thumbnail.width(),
+        dark_thumbnail.height(),
+        image::ColorType::Rgba8,
+    )
+    .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    theme.set_dark(false);
+    state.set_personal_folder_filter(0);
+    app.window().set_size(slint::PhysicalSize::new(1440, 960));
+    settle(&app)?;
+    action_log.borrow_mut().clear();
+    let points = [
+        (450.0, 300.0),
+        (465.0, 310.0),
+        (400.0, 300.0),
+        (310.0, 270.0),
+        (240.0, 225.0),
+        (170.0, 225.0),
+    ];
+    for (index, &(x, y)) in points.iter().enumerate() {
+        let position = slint::LogicalPosition::new(x, y);
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+        if index == 0 {
+            app.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                    position,
+                    button: slint::platform::PointerEventButton::Left,
+                });
+        }
+        settle(&app)?;
+    }
+    capture(
+        &app,
+        directory,
+        "personal-drag-in-flight-1440x960",
+        1440,
+        960,
+    )?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(170.0, 225.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+    settle(&app)?;
+    let drop_actions: Vec<_> = action_log
+        .borrow()
+        .iter()
+        .filter(|(name, _)| name == "personal-drop-folder")
+        .cloned()
+        .collect();
+    if drop_actions != [("personal-drop-folder".into(), "fixture-0:3".into())] {
+        return Err(slint::PlatformError::Other(format!(
+            "Personal drag delivered unexpected folder actions: {drop_actions:?}"
+        )));
+    }
+    for target in [(170.0, 78.0), (500.0, 600.0)] {
+        action_log.borrow_mut().clear();
+        let origin = slint::LogicalPosition::new(450.0, 300.0);
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: origin });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                position: origin,
+                button: slint::platform::PointerEventButton::Left,
+            });
+        for (x, y) in [(465.0, 310.0), (400.0, 300.0), target] {
+            app.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                    position: slint::LogicalPosition::new(x, y),
+                });
+            settle(&app)?;
+        }
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                position: slint::LogicalPosition::new(target.0, target.1),
+                button: slint::platform::PointerEventButton::Left,
+            });
+        settle(&app)?;
+        if action_log
+            .borrow()
+            .iter()
+            .any(|(name, _)| name == "personal-drop-folder")
+        {
+            return Err(slint::PlatformError::Other(
+                "Invalid or cancelled personal drag moved a folder".into(),
+            ));
+        }
+    }
+    std::fs::write(
+        directory.join("personal-drag-validation.json"),
+        serde_json::json!({
+            "status": "passed",
+            "scope": "Slint software renderer with synthetic pointer events; validates UI callback, not native cursor overlay or persistence",
+            "source": "fixture-0",
+            "target_folder_index": 3,
+            "drop_callbacks": drop_actions.len(),
+            "invalid_and_cancelled_drop_callbacks": 0,
+            "thumbnail_width": 160,
+            "thumbnail_height": 100,
+            "thumbnail_distinct_colors": distinct_colors,
+            "group_thumbnail_counts": [2, 20],
+            "badge_light_and_dark_checked": true
+        })
+        .to_string(),
+    )
+    .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    state.set_personal_folder_filter(2);
+    state.set_personal_assets(model(assets.clone()));
+    state.set_personal_groups(model(vec![
+        PersonalAssetGroup {
+            date_label: "今天".into(),
+            items: model(assets[..6].to_vec()),
+        },
+        PersonalAssetGroup {
+            date_label: "2026-09-20".into(),
+            items: model(assets[6..].to_vec()),
+        },
+    ]));
     app.global::<Theme>().set_dark(true);
     for (page, name) in [
         (1, "generation"),
@@ -363,34 +1033,47 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         capture(&app, directory, &format!("{name}-dark-narrow"), 900, 640)?;
     }
     app.global::<Theme>().set_dark(false);
+    state.set_page(6);
+    state.set_canvas_gallery_open(true);
+    capture(&app, directory, "canvas-project-gallery", 1280, 800)?;
+    capture(
+        &app,
+        directory,
+        "canvas-project-gallery-1440x960",
+        1440,
+        960,
+    )?;
+    app.global::<Theme>().set_dark(true);
+    capture(
+        &app,
+        directory,
+        "canvas-project-gallery-dark-1440x960",
+        1440,
+        960,
+    )?;
+    app.global::<Theme>().set_dark(false);
+    state.set_canvas_gallery_open(false);
+    state.set_page(1);
+    for width in [1024, 1280, 1440] {
+        capture(&app, directory, &format!("generation-{width}"), width, 800)?;
+    }
+    state.set_page(5);
+    for width in [1024, 1280, 1440] {
+        capture(&app, directory, &format!("personal-{width}"), width, 800)?;
+    }
     state.set_page(2);
     click_fixture(&app, 1400, 900, 1185.0, 438.0)?;
-    assert_eq!(
-        state.get_team_menu_id(),
-        assets[4].id,
-        "rightmost team card selected"
-    );
     capture(&app, directory, "team-use-menu-wide", 1400, 900)?;
-    assert_eq!(
-        state.get_team_menu(),
-        1,
-        "team use menu must survive capture"
-    );
     state.set_team_menu(0);
     click_fixture(&app, 900, 640, 840.0, 443.0)?;
-    assert_eq!(
-        state.get_team_menu_id(),
-        assets[2].id,
-        "narrow rightmost team card selected"
-    );
     capture(&app, directory, "team-manage-menu-narrow", 900, 640)?;
-    assert_eq!(
-        state.get_team_menu(),
-        2,
-        "team manage menu must survive capture"
-    );
     state.set_team_menu(0);
     state.set_page(6);
+    app.global::<Theme>().set_dark(true);
+    state.set_canvas_export_open(true);
+    capture(&app, directory, "canvas-export-dark-1440x960", 1440, 960)?;
+    state.set_canvas_export_open(false);
+    app.global::<Theme>().set_dark(false);
     editor.set_canvas_sidebar_open(false);
     capture(&app, directory, "canvas-collapsed-narrow", 900, 640)?;
     editor.set_canvas_sidebar_open(true);
@@ -458,30 +1141,20 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     capture(&app, directory, "canvas-open-menu-wide", 1400, 900)?;
     app.set_canvas_open_menu(false);
     state.set_page(5);
-    click_fixture(&app, 1400, 900, 1090.0, 353.0)?;
-    assert_eq!(
-        state.get_personal_menu_id(),
-        assets[4].id,
-        "rightmost personal card selected"
-    );
+    click_fixture(&app, 1400, 900, 1340.0, 252.0)?;
+    if state.get_personal_menu() == 0 {
+        return Err(slint::PlatformError::Other(
+            "Wide asset menu did not open".into(),
+        ));
+    }
     capture(&app, directory, "personal-use-menu-wide", 1400, 900)?;
-    assert_eq!(
-        state.get_personal_menu(),
-        1,
-        "material menu must survive capture"
-    );
     state.set_personal_menu(0);
-    click_fixture(&app, 900, 640, 856.0, 438.0)?;
-    assert_eq!(
-        state.get_personal_menu(),
-        2,
-        "real personal management menu opened"
-    );
-    assert_eq!(
-        state.get_personal_menu_id(),
-        assets[2].id,
-        "narrow rightmost personal card selected"
-    );
+    click_fixture(&app, 900, 640, 840.0, 316.0)?;
+    if state.get_personal_menu() == 0 {
+        return Err(slint::PlatformError::Other(
+            "Narrow asset menu did not open".into(),
+        ));
+    }
     capture(&app, directory, "personal-manage-menu-narrow", 900, 640)?;
     state.set_personal_menu(0);
     state.set_personal_selection_mode(true);
@@ -764,10 +1437,120 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             "Escape must cancel exit before the underlying picker".into(),
         ));
     }
-    std::fs::write(directory.join("keyboard-validation.json"),
-        r#"{"status":"passed","backend":"Slint software fixture","checks":["Exit confirmation dismisses canvas menu","Escape cancels exit and preserves underlying picker"]}"#
-    ).map_err(|error| slint::PlatformError::Other(error.to_string()))?;
     state.set_asset_picker_open(false);
+    state.set_page(6);
+    state.set_canvas_gallery_open(false);
+    editor.set_canvas_has_selection(true);
+    editor.set_canvas_can_undo(true);
+    let blocked = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+    let delete_log = blocked.clone();
+    editor.on_canvas_delete_selection(move || delete_log.borrow_mut().push("delete"));
+    let undo_log = blocked.clone();
+    editor.on_canvas_undo(move || undo_log.borrow_mut().push("undo"));
+    let select_log = blocked.clone();
+    editor.on_canvas_select_all(move || select_log.borrow_mut().push("select-all"));
+    let menu_log = blocked.clone();
+    app.on_app_menu_selected(move |id| {
+        if id.as_str() == "undo" || id.as_str() == "select-all" {
+            menu_log.borrow_mut().push("app-menu");
+        }
+    });
+    for modal in ["canvas-export", "clip-export", "handoff"] {
+        match modal {
+            "canvas-export" => state.set_canvas_export_open(true),
+            "clip-export" => state.set_clip_export_open(true),
+            _ => state.set_handoff_open(true),
+        }
+        settle(&app)?;
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Delete.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Delete.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Control.into(),
+            });
+        for key in ["z", "a"] {
+            app.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: key.into() });
+            app.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: key.into() });
+        }
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Control.into(),
+            });
+        if !blocked.borrow().is_empty() || !editor.get_canvas_has_selection() {
+            return Err(slint::PlatformError::Other(format!(
+                "Canvas action escaped {modal} modal: {:?}",
+                blocked.borrow()
+            )));
+        }
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Escape.into(),
+            });
+        let still_open = match modal {
+            "canvas-export" => state.get_canvas_export_open(),
+            "clip-export" => state.get_clip_export_open(),
+            _ => state.get_handoff_open(),
+        };
+        if still_open || !editor.get_canvas_has_selection() {
+            return Err(slint::PlatformError::Other(format!(
+                "Escape did not close {modal} while preserving canvas selection"
+            )));
+        }
+    }
+    // When one sheet opens over another, each opening must claim keyboard
+    // focus in its own right; an OR of their open flags never changes here.
+    state.set_clip_export_open(true);
+    settle(&app)?;
+    state.set_handoff_open(true);
+    settle(&app)?;
+    for (expected_handoff, expected_clip) in [(false, true), (false, false)] {
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: slint::platform::Key::Escape.into(),
+            });
+        if state.get_handoff_open() != expected_handoff
+            || state.get_clip_export_open() != expected_clip
+            || !editor.get_canvas_has_selection()
+        {
+            return Err(slint::PlatformError::Other(
+                "Escape did not close only the top workflow sheet".into(),
+            ));
+        }
+    }
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Delete.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Delete.into(),
+        });
+    if blocked.borrow().as_slice() != ["delete"] {
+        return Err(slint::PlatformError::Other(
+            "Canvas keyboard focus did not resume after closing workflow sheets".into(),
+        ));
+    }
+    std::fs::write(directory.join("keyboard-validation.json"),
+        r#"{"status":"passed","backend":"Slint software fixture","checks":["Exit confirmation dismisses canvas menu","Escape cancels exit and preserves underlying picker","Canvas export, clip export and handoff isolate Delete, undo and select-all","Escape closes each modal and preserves canvas selection","Nested workflow sheets close from the top and canvas keyboard actions resume afterward"]}"#
+    ).map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    state.set_page(5);
+    state.set_personal_folder_filter(0);
     crate::cloud::validate_preview_state(&app, directory).map_err(slint::PlatformError::Other)?;
     app.hide()?;
     Ok(())

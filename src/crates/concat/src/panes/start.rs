@@ -86,6 +86,7 @@ impl StartPane {
                     self.error = error;
                 }
                 studio.recents = projects::list(&studio.host.dirs.config);
+                studio.invalidate_recent_gallery();
             }
         }
     }

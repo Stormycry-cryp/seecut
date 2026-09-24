@@ -12,11 +12,63 @@
 //! another machine should not drag one person's recent files along with it.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 const MANIFEST: &str = "concat.json";
+static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Orders saves issued by one open project session. A newer request makes an
+/// older snapshot obsolete, even if a worker starts or finishes out of order.
+#[derive(Default)]
+pub struct SaveLane {
+    latest: AtomicU64,
+    writer: Mutex<()>,
+}
+
+impl SaveLane {
+    /// Reserves the order of a save before its worker is dispatched.
+    pub fn next(&self) -> u64 {
+        self.latest.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Whether a completion still belongs to the most recently requested save.
+    pub fn is_latest(&self, ticket: u64) -> bool {
+        self.latest.load(Ordering::Acquire) == ticket
+    }
+
+    /// Writes only the latest snapshot. A synchronous close uses this same
+    /// lane and waits for an in-flight write before it returns.
+    pub fn write(
+        &self,
+        ticket: u64,
+        path: &str,
+        document: &serde_json::Value,
+    ) -> Result<bool, String> {
+        self.write_with(ticket, path, document, || {})
+    }
+
+    fn write_with(
+        &self,
+        ticket: u64,
+        path: &str,
+        document: &serde_json::Value,
+        entered: impl FnOnce(),
+    ) -> Result<bool, String> {
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        entered();
+        if !self.is_latest(ticket) {
+            return Ok(false);
+        }
+        save_guarded(path, document, || self.is_latest(ticket))
+    }
+}
 /// The manifest's earlier names, newest first. Projects created before a
 /// rename keep theirs forever: the manifest is read and written under the
 /// name it has, and only brand-new projects get the current one. A rename
@@ -169,9 +221,25 @@ pub fn create(
 /// interrupted halfway is worse than no save at all - a truncated manifest
 /// loses the project, while a failed rename leaves the previous one intact.
 pub fn save(path: &str, document: &serde_json::Value) -> Result<(), String> {
+    save_guarded(path, document, || true).map(|_| ())
+}
+
+fn save_guarded(
+    path: &str,
+    document: &serde_json::Value,
+    is_current: impl Fn() -> bool,
+) -> Result<bool, String> {
     let root = PathBuf::from(path);
     let manifest = manifest_path(&root);
-    let temporary = root.join(format!("{MANIFEST}.saving"));
+    let temporary = root.join(format!(
+        "{}.saving-{}-{}",
+        manifest
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(MANIFEST),
+        std::process::id(),
+        TEMPORARY_ID.fetch_add(1, Ordering::Relaxed),
+    ));
 
     std::fs::create_dir_all(&root)
         .map_err(|error| format!("could not create {}: {error}", root.display()))?;
@@ -182,16 +250,30 @@ pub fn save(path: &str, document: &serde_json::Value) -> Result<(), String> {
     // Written, then flushed to the disk, then renamed: a rename is only
     // atomic over bytes that have reached the platter. Without the sync a
     // power cut after the rename can leave a zero-length manifest.
-    let mut file = std::fs::File::create(&temporary)
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
         .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
-    std::io::Write::write_all(&mut file, &encoded)
-        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
-    file.sync_all()
-        .map_err(|error| format!("could not flush {}: {error}", temporary.display()))?;
+    let written = (|| {
+        std::io::Write::write_all(&mut file, &encoded)
+            .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("could not flush {}: {error}", temporary.display()))
+    })();
     drop(file);
-
-    std::fs::rename(&temporary, &manifest)
-        .map_err(|error| format!("could not replace {}: {error}", manifest.display()))
+    let result = written.and_then(|_| {
+        if !is_current() {
+            return Ok(false);
+        }
+        std::fs::rename(&temporary, &manifest)
+            .map_err(|error| format!("could not replace {}: {error}", manifest.display()))?;
+        Ok(true)
+    });
+    if !matches!(&result, Ok(true)) {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 /// True when a document carries no edit state at all - the settings-only
@@ -347,6 +429,95 @@ fn count_files(dir: &Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn save_scratch() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "concat-save-lane-{}-{}",
+            std::process::id(),
+            TEMPORARY_ID.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&root).expect("unique scratch directory");
+        root
+    }
+
+    #[test]
+    fn delayed_old_save_cannot_replace_newer_document() {
+        let root = save_scratch();
+        let path = root.to_string_lossy().into_owned();
+        let lane = std::sync::Arc::new(SaveLane::default());
+        let old_ticket = lane.next();
+        let (release, wait) = std::sync::mpsc::channel();
+        let old_lane = lane.clone();
+        let old_path = path.clone();
+        let old = std::thread::spawn(move || {
+            wait.recv().expect("release old save");
+            old_lane.write(
+                old_ticket,
+                &old_path,
+                &serde_json::json!({"version": "old"}),
+            )
+        });
+
+        let new_ticket = lane.next();
+        assert!(
+            lane.write(new_ticket, &path, &serde_json::json!({"version": "new"}))
+                .unwrap()
+        );
+        release.send(()).unwrap();
+        assert!(!old.join().unwrap().unwrap());
+        assert_eq!(read_document(&path).unwrap()["version"], "new");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn close_style_save_waits_for_in_flight_writer() {
+        let root = save_scratch();
+        let path = root.to_string_lossy().into_owned();
+        let lane = std::sync::Arc::new(SaveLane::default());
+        let old_ticket = lane.next();
+        let (entered, inside) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let old_lane = lane.clone();
+        let old_path = path.clone();
+        let old = std::thread::spawn(move || {
+            old_lane.write_with(
+                old_ticket,
+                &old_path,
+                &serde_json::json!({"version": "old"}),
+                || {
+                    entered.send(()).unwrap();
+                    wait.recv().unwrap();
+                },
+            )
+        });
+        inside.recv().unwrap();
+
+        let close_ticket = lane.next();
+        let close_lane = lane.clone();
+        let close_path = path.clone();
+        let (started, starting) = std::sync::mpsc::channel();
+        let (finished, result) = std::sync::mpsc::channel();
+        let close = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            let saved = close_lane.write(
+                close_ticket,
+                &close_path,
+                &serde_json::json!({"version": "closed"}),
+            );
+            finished.send(saved).unwrap();
+        });
+        starting.recv().unwrap();
+        assert!(
+            result.try_recv().is_err(),
+            "close must wait for the older writer"
+        );
+        release.send(()).unwrap();
+        assert!(!old.join().unwrap().unwrap());
+        close.join().unwrap();
+        assert!(result.recv().unwrap().unwrap());
+        assert_eq!(read_document(&path).unwrap()["version"], "closed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn sanitises_names_windows_would_reject() {

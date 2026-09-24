@@ -23,6 +23,10 @@ class Database:
                 "attempt_count": "ALTER TABLE generation_tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
                 "lease_owner": "ALTER TABLE generation_tasks ADD COLUMN lease_owner TEXT",
                 "lease_expires_at": "ALTER TABLE generation_tasks ADD COLUMN lease_expires_at INTEGER",
+                "batch_id": "ALTER TABLE generation_tasks ADD COLUMN batch_id TEXT",
+                "batch_index": "ALTER TABLE generation_tasks ADD COLUMN batch_index INTEGER NOT NULL DEFAULT 0",
+                "batch_size": "ALTER TABLE generation_tasks ADD COLUMN batch_size INTEGER NOT NULL DEFAULT 1",
+                "trashed_at": "ALTER TABLE generation_tasks ADD COLUMN trashed_at INTEGER",
             }
             for name, statement in migrations.items():
                 if name not in columns:

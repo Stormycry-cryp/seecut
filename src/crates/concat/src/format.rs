@@ -6,6 +6,7 @@
 
 use crate::i18n::{t, tf};
 use crate::ui::Bezier;
+use chrono::{DateTime, Local};
 
 /// Solve a CSS cubic-bezier for y at a given x. This is the computation
 /// Slint's expression language cannot express — it has no loops — so the
@@ -209,6 +210,7 @@ pub fn wave_path(
 
 /// A moment in the past, in the words a recents row wants: "just now",
 /// "yesterday", "5 days ago".
+#[cfg(test)]
 pub fn when_phrase(opened_at_millis: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -231,6 +233,29 @@ pub fn when_phrase(opened_at_millis: u64) -> String {
     } else {
         tf("{0} months ago", &[&(days / 30)])
     }
+}
+
+/// A project gallery timestamp with enough precision to distinguish two
+/// projects updated on the same day. The date words follow the gallery copy;
+/// older dates retain a stable numeric representation for scanning.
+pub fn project_timestamp(millis: u64) -> String {
+    if millis == 0 {
+        return "最近".to_owned();
+    }
+    let Some(time) = DateTime::from_timestamp_millis(millis as i64) else {
+        return "最近".to_owned();
+    };
+    let local = time.with_timezone(&Local);
+    let today = Local::now().date_naive();
+    let date = local.date_naive();
+    let day_label = if date == today {
+        "今天".to_owned()
+    } else if date == today.pred_opt().unwrap_or(today) {
+        "昨天".to_owned()
+    } else {
+        local.format("%Y-%m-%d").to_string()
+    };
+    format!("{day_label} {}", local.format("%H:%M"))
 }
 
 /// A Slint colour from a "#rrggbb" or "#rrggbbaa" string, or transparent

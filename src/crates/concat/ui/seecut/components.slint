@@ -5,28 +5,31 @@ import { SeeCut } from "state.slint";
 
 export component AppButton inherits Rectangle {
     in property <string> label;
+    in property <string> accessible-name: root.label;
     in property <Glyph> glyph;
     in property <bool> primary;
     in property <bool> selected;
     in property <bool> danger;
     in property <bool> subtle;
+    in property <bool> subtle-normal-ink: false;
     in property <bool> elide-label;
     in property <bool> enabled: true;
     callback clicked();
+    public function take-focus() { focus.focus(); }
     height: Theme.workbench-h;
     horizontal-stretch: 0;
     min-width: root.elide-label ? 0px : caption.preferred-width + 24px + (root.glyph == Glyph.none ? 0px : 22px);
-    border-radius: Theme.r;
+    border-radius: 8px;
     opacity: 1;
-    background: !root.enabled ? Theme.well : root.selected ? Theme.accent-soft : root.subtle ? Colors.transparent : root.primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
-        : touch.has-hover ? Theme.field-hover : Theme.field;
+    background: !root.enabled ? Theme.well : root.danger ? (touch.pressed ? Theme.workbench-danger-pressed : touch.has-hover ? Theme.workbench-danger-hover : Theme.workbench-danger-solid) : root.selected ? Theme.accent-soft : root.subtle ? (touch.pressed ? Theme.field-hover : Colors.transparent) : root.primary ? (touch.pressed ? Theme.workbench-action-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : touch.pressed ? Theme.field-active : touch.has-hover ? Theme.field-hover : Theme.field;
     border-width: root.subtle ? 0px : 1px;
-    border-color: !root.enabled ? Theme.line : root.primary || root.selected ? Theme.accent : Theme.line;
+    border-color: !root.enabled ? Theme.line : root.danger ? Theme.workbench-danger-solid : root.primary || root.selected ? Theme.accent : Theme.workbench-control-border;
     animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
     property <bool> ring;
-    property <brush> ink: !root.enabled ? Theme.fg-dim : root.selected ? Theme.accent : root.primary ? Theme.on-accent : root.danger ? Theme.danger : root.subtle ? Theme.fg-muted : Theme.fg;
+    property <brush> ink: !root.enabled ? Theme.fg-dim : root.danger ? Theme.workbench-on-danger : root.selected ? Theme.workbench-selection-ink : root.primary ? Theme.on-accent : root.subtle && !root.subtle-normal-ink ? Theme.fg-muted : Theme.fg;
     accessible-role: button;
-    accessible-label: root.label;
+    accessible-label: root.accessible-name;
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     focus := FocusScope {
@@ -57,7 +60,7 @@ export component AppButton inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { focus.focus(); root.clicked(); }
     }
-    FocusRing { active: root.ring; radius: Theme.r; }
+    FocusRing { active: root.ring; radius: 8px; }
 }
 
 export component CloudField inherits Rectangle {
@@ -66,6 +69,8 @@ export component CloudField inherits Rectangle {
     in property <bool> password;
     property <bool> revealed;
     in property <bool> multiline;
+    in property <length> text-size: Theme.workbench-font;
+    in property <length> multiline-footer-space: 0px;
     in property <bool> enabled: true;
     callback edited(value: string);
     in property <bool> auto-focus;
@@ -76,29 +81,50 @@ export component CloudField inherits Rectangle {
     min-height: root.multiline ? 128px : Theme.workbench-h;
     max-height: root.multiline ? 180px : Theme.workbench-h;
     background: Theme.field;
-    border-radius: Theme.r;
+    border-radius: root.multiline ? 16px : 8px;
     border-width: 1px;
-    border-color: input.has-focus ? Theme.accent : Theme.line;
+    border-color: input.has-focus ? Theme.focus-control : Theme.workbench-control-border;
     clip: true;
     opacity: root.enabled ? 1 : 0.45;
     touch := TouchArea { enabled: root.enabled; mouse-cursor: text; clicked => { input.focus(); } }
-    input := TextInput {
-        x: 10px;
-        y: root.multiline ? 10px : (parent.height - self.height) / 2;
-        width: parent.width - (root.password ? 46px : 20px);
-        height: root.multiline ? parent.height - 20px : self.preferred-height;
-        text <=> root.value;
-        enabled: root.enabled;
-        color: Theme.fg;
-        font-size: Theme.workbench-font;
-        single-line: !root.multiline;
-        wrap: root.multiline ? word-wrap : no-wrap;
-        input-type: root.password && !root.revealed ? InputType.password : InputType.text;
-        selection-background-color: Theme.accent;
-        selection-foreground-color: Theme.on-accent;
-        edited => { root.edited(self.text); }
-        cursor-position-changed(position) => { root.cursor-moved(self.cursor-position-byte-offset); }
-        key-pressed(event) => { return root.key-event(event.text) ? EventResult.accept : EventResult.reject; }
+    editor-area := Flickable {
+        x: root.multiline ? 16px : 10px;
+        y: root.multiline ? 16px : (parent.height - input.preferred-height) / 2;
+        width: parent.width - (root.password ? 46px : root.multiline ? 32px : 20px);
+        height: root.multiline ? parent.height - 32px - root.multiline-footer-space : input.preferred-height;
+        viewport-width: root.multiline ? self.width : Math.max(self.width, input.preferred-width);
+        viewport-height: root.multiline ? Math.max(self.height, input.preferred-height) : self.height;
+        input := TextInput {
+            width: parent.width;
+            height: root.multiline ? Math.max(parent.height, self.preferred-height) : self.preferred-height;
+            page-height: editor-area.height;
+            text <=> root.value;
+            enabled: root.enabled;
+            color: Theme.fg;
+            font-size: root.text-size;
+            single-line: !root.multiline;
+            wrap: root.multiline ? word-wrap : no-wrap;
+            input-type: root.password && !root.revealed ? InputType.password : InputType.text;
+            selection-background-color: Theme.accent-soft;
+            selection-foreground-color: Theme.workbench-selection-ink;
+            edited => { root.edited(self.text); }
+            cursor-position-changed(position) => {
+                root.cursor-moved(self.cursor-position-byte-offset);
+                if position.x + editor-area.viewport-x < 0px {
+                    editor-area.viewport-x = Math.max(editor-area.width - self.width, -position.x);
+                } else if position.x + editor-area.viewport-x > editor-area.width {
+                    editor-area.viewport-x = Math.min(0px, Math.max(editor-area.width - self.width, editor-area.width - position.x));
+                }
+                if root.multiline {
+                    if position.y + editor-area.viewport-y < 0px {
+                        editor-area.viewport-y = Math.min(0px, Math.max(editor-area.height - self.height, -position.y));
+                    } else if position.y + editor-area.viewport-y > editor-area.height - 20px {
+                        editor-area.viewport-y = Math.min(0px, Math.max(editor-area.height - self.height, editor-area.height - position.y - 20px));
+                    }
+                }
+            }
+            key-pressed(event) => { return root.key-event(event.text) ? EventResult.accept : EventResult.reject; }
+        }
     }
     if root.password: IconButton {
         x: parent.width - self.width - 3px;
@@ -109,13 +135,13 @@ export component CloudField inherits Rectangle {
         clicked => { root.revealed = !root.revealed; input.focus(); }
     }
     if root.value == "": Text {
-        x: 10px;
-        y: root.multiline ? 10px : (parent.height - self.height) / 2;
-        width: parent.width - 20px;
+        x: root.multiline ? 16px : 10px;
+        y: root.multiline ? 16px : (parent.height - self.height) / 2;
+        width: parent.width - (root.multiline ? 32px : 20px);
         height: self.preferred-height;
         text: root.placeholder;
         color: Theme.fg-dim;
-        font-size: Theme.workbench-font;
+        font-size: root.text-size;
         wrap: word-wrap;
     }
 }
@@ -150,14 +176,13 @@ export component NavItem inherits Rectangle {
     in property <string> label;
     in property <Glyph> glyph;
     in property <int> page;
-    in property <bool> compact;
+    in property <bool> avatar;
     property <bool> selected: SeeCut.page == root.page || (root.page == 5 && (SeeCut.page == 2 || SeeCut.page == 7)) || (root.page == 4 && SeeCut.page == 3);
-    min-height: 62px;
-    max-height: 62px;
+    width: 44px;
+    height: 44px;
     border-radius: Theme.r;
-    background: root.selected ? Theme.accent-soft : touch.has-hover ? Theme.field-hover : Colors.transparent;
-    border-width: root.selected ? 1px : 0px;
-    border-color: Theme.accent-soft;
+    background: root.selected ? Theme.accent-soft : Colors.transparent;
+    border-width: 0px;
     animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
     property <bool> ring;
     accessible-role: button;
@@ -171,32 +196,53 @@ export component NavItem inherits Rectangle {
             return EventResult.reject;
         }
     }
-    VerticalLayout {
-        padding: 8px; spacing: 5px; alignment: center;
-        HorizontalLayout { alignment: center; Icon { glyph: root.glyph; size: 20px; tint: root.selected ? Theme.accent : Theme.fg-muted; } }
-        Text { text: root.label; color: root.selected ? Theme.fg : Theme.fg-muted; font-size: 13px; horizontal-alignment: center; }
+    if !root.avatar: Icon { x: 10px; y: 10px; glyph: root.glyph; size: 24px; tint: root.selected ? Theme.accent : touch.has-hover ? Theme.fg : Theme.fg-muted; }
+    if root.avatar: Rectangle {
+        x: 4px; y: 4px; width: 36px; height: 36px;
+        border-radius: 18px; background: Theme.field-active; clip: true;
+        if SeeCut.account-label == "?": Image { width: 100%; height: 100%; source: @image-url("../assets/seecut-logo.png"); image-fit: cover; }
+        if SeeCut.account-label != "?": Text { text: SeeCut.account-label; width: 100%; height: 100%; color: Theme.fg; horizontal-alignment: center; vertical-alignment: center; font-size: 12px; }
     }
     touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.open(); } }
     FocusRing { active: root.ring; radius: Theme.r; }
-    Tip { text: root.label; active: root.compact && touch.has-hover; }
+    Tip { text: root.label; active: touch.has-hover || root.ring; }
 }
 
 export component AppRail inherits Rectangle {
-    in property <bool> compact;
-    width: 72px;
-    background: Theme.panel;
+    callback begin-drag();
+    callback toggle-maximize();
+    callback open-settings();
+    public function focus-settings() { settings-focus.focus(); }
+    width: 80px;
+    background: Theme.nav;
     VerticalLayout {
-        padding: 8px;
-        spacing: 4px;
-        Rectangle { height: 6px; }
-        NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; compact: root.compact; }
-        NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; compact: root.compact; }
-        NavItem { label: "画布"; glyph: Glyph.brush; page: 6; compact: root.compact; }
-        NavItem { label: "资产"; glyph: Glyph.folder; page: 5; compact: root.compact; }
+        padding-left: 18px;
+        padding-right: 18px;
+        padding-bottom: 14px;
+        spacing: 14px;
+        Rectangle {
+            height: 44px;
+            drag := TouchArea {
+                pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.begin-drag(); } }
+                double-clicked => { root.toggle-maximize(); }
+            }
+        }
+        NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; }
+        NavItem { label: "画布"; glyph: Glyph.brush; page: 6; }
+        NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; }
+        NavItem { label: "资产库"; glyph: Glyph.folder; page: 5; }
         Rectangle { vertical-stretch: 1; }
-        NavItem { label: "账号"; glyph: Glyph.lock; page: 4; compact: root.compact; }
+        settings-focus := FocusScope {
+            width: 44px; height: 44px;
+            focus-on-tab-navigation: false;
+            key-pressed(event) => {
+                if event.text == " " || event.text == "\n" { root.open-settings(); return EventResult.accept; }
+                return EventResult.reject;
+            }
+            IconButton { width: 44px; height: 44px; side: 44px; icon-size: 24px; glyph: Glyph.sliders; label: "设置"; clicked => { root.open-settings(); } }
+        }
+        NavItem { label: "账号"; glyph: Glyph.none; page: 4; avatar: true; }
     }
-    Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.line; }
 }
 
 export component WorkspaceIcon inherits IconButton {
@@ -205,12 +251,14 @@ export component WorkspaceIcon inherits IconButton {
 
 export component MenuAction inherits Rectangle {
     in property <bool> auto-focus;
+    in property <bool> close-on-escape;
     init => { if root.auto-focus { key.focus(); } }
     in property <string> label;
     in property <Glyph> glyph;
     in property <bool> enabled: true;
     in property <bool> danger;
     callback clicked();
+    callback cancelled();
     height: 38px;
     border-radius: Theme.r;
     background: touch.has-hover && root.enabled ? Theme.field-hover : transparent;
@@ -221,7 +269,11 @@ export component MenuAction inherits Rectangle {
         enabled: root.enabled;
         focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
         focus-lost(reason) => { root.ring = false; }
-        key-pressed(event) => { if event.text == " " || event.text == "\n" { root.clicked(); return accept; } return reject; }
+        key-pressed(event) => {
+            if event.text == Key.Escape && root.close-on-escape { root.cancelled(); return accept; }
+            if event.text == " " || event.text == "\n" { root.clicked(); return accept; }
+            return reject;
+        }
     }
     Icon { x: 12px; y: 10px; size: 18px; glyph: root.glyph; tint: root.enabled ? (root.danger ? Theme.danger : Theme.fg-muted) : Theme.fg-dim; }
     Text { x: 40px; width: parent.width - 48px; height: 100%; text: root.label; font-size: Theme.workbench-font; vertical-alignment: center; color: root.enabled ? (root.danger ? Theme.danger : Theme.fg) : Theme.fg-dim; }
@@ -229,21 +281,26 @@ export component MenuAction inherits Rectangle {
     FocusRing { active: root.ring; radius: Theme.r; }
 }
 
-export component WorkspaceSelect inherits Select { text-size: Theme.workbench-font; item-height: Theme.workbench-h; height: Theme.workbench-h; }
+export component WorkspaceSelect inherits Select {
+    text-size: Theme.workbench-font; item-height: Theme.workbench-h; height: Theme.workbench-h;
+    border-width: self.flat ? 0px : 1px; border-color: Theme.line-strong;
+}
 
-/// Shared media well for asset, team, template, and result cards. The caller
-/// chooses the well height (the workbench cards use a 4:3 well); the image is
-/// always contained so the complete composition remains available to review.
+/// Shared media well for asset, team, template, and result cards. Card callers
+/// may fill the frame; reference previews keep the complete composition visible.
 export component AssetPreview inherits Rectangle {
     in property <image> source;
+    in property <bool> fill-frame: false;
     in property <Glyph> fallback-glyph: Glyph.image;
     in property <length> fallback-size: 28px;
     in property <bool> interactive;
     in property <string> accessible-name;
     callback activated();
+    public function take-focus() { focus.focus(); }
     out property <bool> hovered: touch.has-hover;
     property <bool> ring;
     background: Theme.well;
+    border-radius: Theme.r-lg;
     clip: true;
     if root.source.width == 0: Icon {
         x: (parent.width - root.fallback-size) / 2;
@@ -252,7 +309,7 @@ export component AssetPreview inherits Rectangle {
         glyph: root.fallback-glyph;
         tint: Theme.fg-muted;
     }
-    Image { width: 100%; height: 100%; source: root.source; image-fit: contain; }
+    Image { width: 100%; height: 100%; source: root.source; image-fit: root.fill-frame ? cover : contain; }
     Rectangle {
         width: 100%; height: 100%; visible: root.interactive;
         accessible-role: button;

@@ -18,6 +18,7 @@ export struct CloudItem {
 }
 
 export struct PersonalAssetGroup { date-label: string, items: [CloudItem] }
+export struct GenerationBatch { id: string, label: string, summary: string, items: [CloudItem] }
 export struct GenerationTemplate {
     id: string, name: string, mode-label: string, model-name: string,
     parameter-summary: string, reference-summary: string, updated-label: string,
@@ -52,11 +53,40 @@ export global SeeCut {
     in-out property <string> recovery-warning;
     in-out property <bool> signed-in;
     in-out property <string> email;
+    in-out property <string> account-label: "?";
     in-out property <string> balance: "--";
     in-out property <string> frozen: "--";
     in-out property <bool> project-open;
+    in-out property <bool> canvas-gallery-open: true;
+    in-out property <bool> canvas-export-open;
+    in-out property <bool> clip-export-open;
+    // Project galleries share the same small amount of chrome: search text,
+    // sort order (0 = recently updated, 1 = name), and the compact list view.
+    // Keeping this state here lets the launch screen and canvas gallery use
+    // the same interaction without widening App's public callback surface.
+    in-out property <string> clip-project-search;
+    in-out property <int> clip-project-sort;
+    in-out property <int> clip-project-view;
+    in-out property <string> canvas-project-search;
+    in-out property <int> canvas-project-sort;
+    in-out property <int> canvas-project-view;
+    in-out property <[CloudItem]> canvas-projects;
+    in-out property <bool> handoff-open;
+    // The live card listens for its own overlay closing and restores focus by
+    // stable item id. The root scope uses claimed to avoid overriding it.
+    in-out property <string> focus-return-kind;
+    in-out property <string> focus-return-id;
+    in-out property <bool> focus-return-claimed;
+    in-out property <string> handoff-kind;
+    in-out property <int> handoff-count;
+    in-out property <int> handoff-source-page;
+    in-out property <[CloudItem]> handoff-targets;
+    in-out property <string> handoff-selected-id;
 
     in-out property <int> mode;
+    // -1 until the first work-mode choice is saved; 0 quick, 1 professional.
+    in-out property <int> creator-mode: -1;
+    in-out property <bool> references-expanded;
     in-out property <int> generation-step;
     in-out property <bool> generation-parameters-open;
     in-out property <bool> result-preview-open;
@@ -67,6 +97,9 @@ export global SeeCut {
     in-out property <string> asset-picker-purpose: "reference";
     in-out property <int> asset-picker-source;
     in-out property <int> asset-picker-selected-count;
+    in-out property <int> asset-picker-personal-filter;
+    in-out property <string> asset-picker-team-search;
+    in-out property <int> asset-picker-team-filter;
     in-out property <bool> media-preview-open;
     in-out property <CloudItem> media-preview-item;
     in-out property <string> media-preview-source;
@@ -77,12 +110,27 @@ export global SeeCut {
     in-out property <string> personal-search;
     in-out property <string> personal-reference-search;
     in-out property <int> personal-filter;
+    in-out property <int> personal-sort;
+    in-out property <[string]> personal-folder-names;
+    in-out property <[string]> personal-move-folder-names;
+    in-out property <int> personal-folder-filter;
+    in-out property <int> personal-folder-target;
+    in-out property <string> personal-new-folder;
+    in-out property <int> personal-delete-count;
     in-out property <int> personal-source;
     in-out property <bool> personal-trash;
     in-out property <string> personal-rename;
     in-out property <[PersonalAssetGroup]> personal-groups;
     in-out property <bool> personal-favorites;
     in-out property <int> personal-dialog;
+    in-out property <bool> personal-dialog-busy;
+    in-out property <string> personal-dialog-error;
+    in-out property <bool> export-copy-open;
+    in-out property <bool> export-copy-running;
+    in-out property <int> export-copy-total;
+    in-out property <int> export-copy-done;
+    in-out property <int> export-copy-progress;
+    in-out property <string> export-copy-error;
     in-out property <int> team-menu;
     in-out property <string> team-menu-id;
     in-out property <string> team-menu-name;
@@ -95,6 +143,7 @@ export global SeeCut {
     in-out property <bool> personal-menu-ready;
     in-out property <int> personal-selected-count;
     in-out property <bool> personal-selection-mode;
+    pure callback personal-can-drop(asset-id: string, folder-index: int) -> bool;
     in-out property <[GenerationTemplate]> templates;
     in-out property <string> template-delete-id;
     in-out property <string> template-menu-id;
@@ -132,6 +181,11 @@ export global SeeCut {
     in-out property <bool> insufficient-credits;
     in-out property <bool> payment-enabled;
     in-out property <[CloudItem]> tasks;
+    in-out property <[GenerationBatch]> batches;
+    in-out property <bool> task-selection-mode;
+    in-out property <int> task-selected-count;
+    in-out property <bool> task-delete-open;
+    in-out property <int> task-delete-count;
     in-out property <int> selected-task: -1;
     in-out property <string> save-team-task;
 
@@ -161,5 +215,7 @@ export global SeeCut {
     in-out property <bool> reduced-motion;
 
     callback action(name: string, id: string);
+    // Exposes result-card keyboard focus to the deterministic UI fixture.
+    callback result-focus(id: string, control: string);
     callback changed(field: string, value: string);
 }

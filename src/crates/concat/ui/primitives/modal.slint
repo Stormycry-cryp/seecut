@@ -4,7 +4,9 @@
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
 import { Glyph, Icon } from "../icons.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { Tip } from "tooltip.slint";
+import { FocusRing } from "focus-ring.slint";
 
 // The dialog layer this tree did not have.
 //
@@ -20,6 +22,11 @@ export component Modal inherits Rectangle {
     /// A fact about what the sheet is acting on, set against the trailing edge
     /// of its header.
     in property <string> note;
+    // The taller workbench header omits the leading glyph. Both header styles
+    // keep the title on the leading edge.
+    in property <bool> title-at-start: false;
+    in property <bool> show-close-for-start-title: false;
+    in property <bool> prominent-close: false;
     /// False while a job is running: a dialog you can dismiss out from under an
     /// export is a dialog that loses the export.
     in property <bool> dismissable: true;
@@ -30,16 +37,29 @@ export component Modal inherits Rectangle {
 
     callback closed();
 
-    visible: root.open;
+    // Keep the layer mounted until the exit finishes. Its TouchArea still
+    // blocks the app underneath, and a quick reopen cancels the old exit.
+    property <bool> exiting;
+    changed open => {
+        root.exiting = !root.open && !SeeCut.reduced-motion;
+    }
+    visible: root.open || root.exiting;
+    Timer {
+        interval: 180ms;
+        running: root.exiting;
+        triggered => { root.exiting = false; }
+    }
+
     // Dark rather than blurred: Slint has no backdrop filter, and a scrim that
     // only dims is honest about that where a fake blur would not be.
-    background: Theme.overlay;
+    background: root.open ? Theme.overlay : Colors.transparent;
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 160ms; easing: ease-out; }
 
     // Declared first, so the surface and everything in it sits above and takes
     // its own presses. A click that lands here landed outside the dialog.
     TouchArea {
         clicked => {
-            if (root.dismissable) {
+            if (root.open && root.dismissable) {
                 root.closed();
             }
         }
@@ -47,13 +67,18 @@ export component Modal inherits Rectangle {
 
     surface := Rectangle {
         x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        y: (parent.height - self.height) / 2 + (root.open ? 0px : 6px);
         width: root.surface-width;
         height: root.surface-height > 0px ? root.surface-height : body.preferred-height;
+        opacity: root.open ? 1.0 : 0.0;
+        animate y, opacity {
+            duration: SeeCut.reduced-motion ? 0ms : (root.open ? 130ms : 160ms);
+            easing: ease-out;
+        }
         background: Theme.panel;
         border-width: 1px;
         border-color: Theme.line-strong;
-        border-radius: Theme.r-xl;
+        border-radius: Theme.r-lg;
         clip: true;
 
         // Swallows presses that land on the dialog, so they do not reach the
@@ -62,9 +87,9 @@ export component Modal inherits Rectangle {
 
         body := VerticalLayout {
             Rectangle {
-                height: 42px;
+                height: root.title-at-start ? 62px : 42px;
 
-                Rectangle {
+                if !root.title-at-start: Rectangle {
                     x: 0;
                     y: parent.height - 1px;
                     width: parent.width;
@@ -72,63 +97,14 @@ export component Modal inherits Rectangle {
                     background: Theme.line;
                 }
 
-                // The note on one edge and the close on the other, so the
-                // centred title has matching weight either side of it rather
-                // than being pushed off true by whichever one is longer.
+                // Keep the title on the leading edge and the note and close
+                // button at the trailing edge. The title yields to long notes.
                 HorizontalLayout {
-                    padding-left: 14px;
+                    padding-left: root.title-at-start ? 24px : 14px;
                     padding-right: 12px;
                     spacing: 8px;
 
-                    if root.note != "": Text {
-                        text: root.note;
-                        color: Theme.fg-dim;
-                        font-family: Theme.font-technical;
-                        font-size: Theme.fs-sm;
-                        vertical-alignment: center;
-                    }
-
-                    Rectangle { horizontal-stretch: 1; }
-
-                    // Gone, not disabled, while a job is running: there is no
-                    // safe answer to pressing it, so it should not be there to
-                    // press.
-                    if root.dismissable: VerticalLayout {
-                        alignment: center;
-                        Rectangle {
-                            width: 26px;
-                            height: 26px;
-                            border-radius: Theme.r-sm;
-                            background: shut.has-hover ? Theme.field : Colors.transparent;
-
-                            Icon {
-                                x: (parent.width - self.width) / 2;
-                                y: (parent.height - self.height) / 2;
-                                glyph: Glyph.close;
-                                size: 13px;
-                                tint: shut.has-hover ? Theme.fg : Theme.fg-muted;
-                            }
-
-                            shut := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { root.closed(); }
-                            }
-                        }
-                    }
-                }
-
-                // Placed against the whole strip rather than laid out, so it
-                // stays centred in the sheet and not in whatever space the
-                // note and the close button leave over — the same trick the
-                // window's own title bar uses for the project name.
-                centre := HorizontalLayout {
-                    x: (parent.width - self.preferred-width) / 2;
-                    y: 0;
-                    width: self.preferred-width;
-                    height: parent.height;
-                    spacing: 8px;
-
-                    VerticalLayout {
+                    if !root.title-at-start: VerticalLayout {
                         alignment: center;
                         Icon {
                             glyph: root.glyph;
@@ -140,15 +116,76 @@ export component Modal inherits Rectangle {
                     Text {
                         text: root.title;
                         color: Theme.fg;
-                        font-size: Theme.fs-lg;
+                        font-size: root.title-at-start ? 18px : Theme.fs-lg;
                         font-weight: Theme.weight-title;
                         vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        overflow: elide;
+                    }
+
+                    if root.note != "": Text {
+                        text: root.note;
+                        color: Theme.fg-dim;
+                        font-family: Theme.font-technical;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                        max-width: parent.width / 2;
+                        overflow: elide;
+                    }
+
+                    // Gone, not disabled, while a job is running: there is no
+                    // safe answer to pressing it, so it should not be there to
+                    // press.
+                    if root.dismissable && (!root.title-at-start || root.show-close-for-start-title): VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            property <bool> ring;
+                            width: 32px;
+                            height: 32px;
+                            border-radius: Theme.r-sm;
+                            background: shut.has-hover ? Theme.field : Colors.transparent;
+                            accessible-role: button;
+                            accessible-label: "关闭";
+                            accessible-action-default => { root.closed(); }
+
+                            close-focus := FocusScope {
+                                enabled: root.open;
+                                focus-gained(reason) => { parent.ring = reason == FocusReason.tab-navigation; }
+                                focus-lost(reason) => { parent.ring = false; }
+                                key-pressed(event) => {
+                                    if event.text == " " || event.text == "\n" {
+                                        root.closed();
+                                        return EventResult.accept;
+                                    }
+                                    return EventResult.reject;
+                                }
+                            }
+
+                            Icon {
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                glyph: Glyph.close;
+                                size: root.prominent-close ? 18px : 13px;
+                                tint: root.prominent-close || shut.has-hover ? Theme.fg : Theme.fg-muted;
+                            }
+
+                            shut := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { close-focus.focus(); root.closed(); }
+                            }
+                            FocusRing { active: parent.ring; radius: Theme.r-sm; }
+                        }
                     }
                 }
             }
 
             @children
         }
+
+        // The outgoing surface stays painted for its fade, but no action in
+        // its body should fire after the owner has closed the dialog.
+        if !root.open: TouchArea { }
     }
 }
 

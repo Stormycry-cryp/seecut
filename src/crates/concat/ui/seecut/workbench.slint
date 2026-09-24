@@ -5,12 +5,12 @@ import { SeeCut } from "state.slint";
 import { GenerationPage } from "generation.slint";
 import { AccountPage, CreditsPage } from "account.slint";
 import { TeamPage } from "team.slint";
-import { TemplatesPage, TemplateEditor, TemplateSaveControl } from "templates.slint";
+import { TemplatesPage, TemplateEditor } from "templates.slint";
 import { PersonalPage } from "personal.slint";
 import { Heading, AppButton } from "components.slint";
 import { WorkflowFeedback } from "shell.slint";
 
-export { SeeCut, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup } from "state.slint";
+export { SeeCut, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup, GenerationBatch } from "state.slint";
 export { AppRail } from "components.slint";
 
 export component CloudWorkbench inherits Rectangle {
@@ -19,21 +19,16 @@ export component CloudWorkbench inherits Rectangle {
     min-height: 0px;
     background: Theme.page;
     VerticalLayout {
-        if SeeCut.page != 3 && SeeCut.page != 4: Rectangle {
+        if SeeCut.page == 2: Rectangle {
             height: 54px; background: Theme.panel;
             HorizontalLayout {
                 padding-top: 10px; padding-bottom: 10px; padding-left: 20px; padding-right: 20px; spacing: 16px;
-                if SeeCut.page == 1: SegmentedControl { width: 180px; height: 34px; text-size: 14px; options: ["图片", "视频"]; current: SeeCut.mode; changed(index) => { SeeCut.mode = index; SeeCut.changed("mode", index); } }
-                if SeeCut.page == 2 || SeeCut.page == 5 || SeeCut.page == 7: HorizontalLayout {
+                if SeeCut.page == 2: HorizontalLayout {
                     spacing: 4px; alignment: start;
-                    AppButton { label: "个人资产"; selected: SeeCut.page == 5; subtle: SeeCut.page != 5; clicked => { SeeCut.action("navigate", "5"); } }
-                    AppButton { label: "团队资产"; selected: SeeCut.page == 2; subtle: SeeCut.page != 2; clicked => { SeeCut.action("navigate", "2"); } }
-                    AppButton { label: "生成模板"; selected: SeeCut.page == 7; subtle: SeeCut.page != 7; clicked => { SeeCut.action("navigate", "7"); } }
+                    AppButton { label: "资产库"; clicked => { SeeCut.action("navigate", "5"); } }
+                    AppButton { label: "团队资产"; selected: true; clicked => { SeeCut.action("navigate", "2"); } }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                if SeeCut.page == 1: TemplateSaveControl { width: SeeCut.template-id == "" ? 116px : 232px; }
-                if SeeCut.page == 5: AppButton { label: "导入素材"; primary: true; clicked => { SeeCut.action("personal-browse", ""); } }
-                if SeeCut.page == 7: AppButton { label: "保存当前配置"; primary: true; clicked => { SeeCut.action("template-new", ""); SeeCut.template-editor-current = true; SeeCut.template-editor-open = true; } }
             }
             Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.line; }
         }

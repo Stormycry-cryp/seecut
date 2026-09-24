@@ -3,6 +3,7 @@
 
 import { Theme } from "../theme/theme.slint";
 import { Glyph, Icon } from "../icons.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { FocusRing } from "focus-ring.slint";
 import { Tip } from "tooltip.slint";
 
@@ -90,9 +91,11 @@ export component SectionHeader inherits Rectangle {
     // labelled drawers rather than one long form - the same lift a dialog's
     // collapsible group has, and the same answer to the pointer when the
     // header is one that opens.
-    background: root.collapsible && head.has-hover ? Theme.field : Theme.raised;
+    background: root.collapsible && head.pressed ? Theme.field-active
+        : root.collapsible && head.has-hover ? Theme.field-hover
+        : Theme.raised;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     // Sits below the row so action buttons, added later in the tree, stay on
     // top of it; the title Text itself takes no pointer events.
@@ -206,8 +209,9 @@ export component IconButton inherits Rectangle {
     in property <length> icon-size: 14px;
 
     callback clicked();
+    public function take-focus() { fs.focus(); }
 
-    property <bool> lit: touch.has-hover && root.enabled;
+    out property <bool> lit: touch.has-hover && root.enabled;
     // Selected tools share the brand accent; disabled glyphs remain readable.
     property <brush> tint: root.on-image ? (root.checked ? Theme.accent : Theme.image-control-ink)
         : !root.enabled ? Theme.fg-dim : root.checked ? Theme.accent
@@ -217,6 +221,8 @@ export component IconButton inherits Rectangle {
         : Theme.fg-muted;
     in property <length> side: 26px;
     property <bool> ring;
+    property <bool> focused;
+    out property <bool> keyboard-focus: root.focused;
 
     // Fixed across, free along. A Slint layout start-aligns a fixed-size child
     // on the cross axis — there is no `align-items: center` — so the root takes
@@ -234,9 +240,11 @@ export component IconButton inherits Rectangle {
         // after a click and has no equivalent rule, so the reason is what
         // separates a Tab from a press.
         focus-gained(reason) => {
+            root.focused = true;
             root.ring = reason == FocusReason.tab-navigation;
         }
         focus-lost(reason) => {
+            root.focused = false;
             root.ring = false;
         }
         key-pressed(event) => {
@@ -260,11 +268,11 @@ export component IconButton inherits Rectangle {
             : (touch.has-hover && root.danger) ? Theme.danger-soft
             : (touch.has-hover && root.accent) ? Theme.accent-soft
             : touch.pressed ? Theme.field-active
-            : touch.has-hover ? Theme.field
+            : touch.has-hover ? Theme.field-hover
             : Colors.transparent;
 
         animate background {
-            duration: 100ms;
+            duration: SeeCut.reduced-motion ? 0ms : 100ms;
             easing: cubic-bezier(0.4, 0, 0.2, 1);
         }
 
@@ -309,7 +317,7 @@ export component IconButton inherits Rectangle {
         // is worth most.
         Tip {
             text: root.label;
-            active: touch.has-hover;
+            active: touch.has-hover || root.ring;
         }
 
         FocusRing {

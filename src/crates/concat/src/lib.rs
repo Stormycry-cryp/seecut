@@ -15,8 +15,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 
-use slint::{ModelRc, SharedString, VecModel};
+use slint::{Model, ModelRc, SharedString, VecModel};
 
 // `DataTransfer` is what a drag carries. Slint keeps the platform's drag
 // object opaque and leaves building and reading one to the host language.
@@ -67,6 +69,104 @@ use panes::speech::SpeechMsg;
 use panes::start::StartMsg;
 use studio::{Models, OUTPUTS, RESOLUTIONS, START_RATES, Studio};
 use ui::*;
+
+#[cfg(target_os = "macos")]
+static DRAG_IMAGE_TEMP_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+extern "C" fn remove_drag_images_at_exit() {
+    if let Some(path) = DRAG_IMAGE_TEMP_DIR.get() {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+fn personal_drag_thumbnail(
+    preview: &slint::Image,
+    count: usize,
+    accent: slint::Color,
+    on_accent: slint::Color,
+) -> Option<slint::Image> {
+    let pixels = preview.to_rgba8()?;
+    let source =
+        image::RgbaImage::from_raw(pixels.width(), pixels.height(), pixels.as_bytes().to_vec())?;
+    let thumbnail = image::DynamicImage::ImageRgba8(source)
+        .resize_to_fill(160, 100, image::imageops::FilterType::Lanczos3)
+        .into_rgba8();
+    let (width, height, offset) = if count > 1 {
+        (168, 108, 8)
+    } else {
+        (160, 100, 0)
+    };
+    let mut canvas = image::RgbaImage::new(width, height);
+    if count > 1 {
+        image::imageops::overlay(&mut canvas, &thumbnail, 0, 0);
+    }
+    image::imageops::overlay(&mut canvas, &thumbnail, offset, offset);
+    if count > 1 {
+        let label = count.to_string();
+        let badge_width = 16 + label.len() as u32 * 8;
+        let badge = slint::Image::load_from_svg_data(
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="{badge_width}" height="20" viewBox="0 0 {badge_width} 20"><rect x="0.5" y="0.5" width="{rect_width}" height="19" rx="7" fill="{accent}" stroke="{on_accent}"/><text x="{center}" y="14.5" text-anchor="middle" font-family="Helvetica Neue" font-size="13" font-weight="600" fill="{on_accent}">{label}</text></svg>"#,
+                rect_width = badge_width - 1,
+                center = badge_width / 2,
+                accent = crate::format::hex_of(accent),
+                on_accent = crate::format::hex_of(on_accent),
+            )
+            .as_bytes(),
+        )
+        .ok()?
+        .to_rgba8()?;
+        let badge =
+            image::RgbaImage::from_raw(badge.width(), badge.height(), badge.as_bytes().to_vec())?;
+        image::imageops::overlay(
+            &mut canvas,
+            &badge,
+            i64::from(width.saturating_sub(badge_width + 4)),
+            i64::from(height - 24),
+        );
+    }
+    let bytes = canvas.into_raw();
+    let mut pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width, height);
+    pixels.make_mut_bytes().copy_from_slice(&bytes);
+    Some(slint::Image::from_rgba8(pixels))
+}
+
+// FemtoVG's direct drag overlay drops an uncached in-memory image texture
+// before the frame is flushed. A path-backed image keeps a renderer cache key.
+fn cached_drag_bitmap(image: &slint::Image, directory: &std::path::Path) -> Option<slint::Image> {
+    let pixels = image.to_rgba8()?;
+    let path = directory.join(format!("{}.png", uuid::Uuid::new_v4()));
+    image::save_buffer_with_format(
+        &path,
+        pixels.as_bytes(),
+        pixels.width(),
+        pixels.height(),
+        image::ColorType::Rgba8,
+        image::ImageFormat::Png,
+    )
+    .ok()?;
+    slint::Image::load_from_path(&path).ok()
+}
+
+fn cached_drag_svg(document: &str, directory: &std::path::Path) -> Option<slint::Image> {
+    let path = directory.join(format!("{}.svg", uuid::Uuid::new_v4()));
+    std::fs::write(&path, document).ok()?;
+    slint::Image::load_from_path(&path).ok()
+}
+
+fn decode_canvas_imports(
+    payload: &str,
+) -> Result<Vec<crate::panes::canvas::CanvasImport>, serde_json::Error> {
+    serde_json::from_str::<Vec<crate::panes::canvas::CanvasImport>>(payload).or_else(|_| {
+        serde_json::from_str::<Vec<std::path::PathBuf>>(payload).map(|paths| {
+            paths
+                .into_iter()
+                .map(crate::panes::canvas::CanvasImport::from_path)
+                .collect()
+        })
+    })
+}
 
 /// Opens this run's log file and makes it where the app writes things down.
 ///
@@ -131,7 +231,21 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let gpu = platform::select_backend(|paths| {
         Shell::with(|shell, app| {
             let cloud = app.global::<ui::SeeCut>();
-            if cloud.get_auth_open() {
+            let editor = app.global::<ui::Editor>();
+            if cloud.get_auth_open()
+                || cloud.get_handoff_open()
+                || cloud.get_canvas_export_open()
+                || cloud.get_clip_export_open()
+                || cloud.get_result_preview_open()
+                || cloud.get_media_preview_open()
+                || cloud.get_personal_dialog() > 0
+                || cloud.get_personal_menu() > 0
+                || !cloud.get_template_menu_id().is_empty()
+                || !cloud.get_template_delete_id().is_empty()
+                || cloud.get_template_editor_open()
+                || editor.get_canvas_open_confirm()
+                || editor.get_canvas_exit_confirm()
+            {
                 return;
             }
             if cloud.get_asset_picker_open() {
@@ -147,8 +261,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
             }
             let page = cloud.get_page();
             if page == 6 {
-                if let Some(path) = paths.first() {
-                    app.invoke_open_canvas_path(path.to_string_lossy().into_owned().into());
+                if paths.len() == 1 {
+                    app.invoke_open_canvas_path(paths[0].to_string_lossy().into_owned().into());
+                } else if !paths.is_empty() {
+                    let payload = serde_json::to_string(&paths).unwrap_or_default();
+                    cloud.invoke_action("canvas-drop-batch".into(), payload.into());
                 }
                 return;
             }
@@ -963,6 +1080,54 @@ pub fn run() -> Result<(), slint::PlatformError> {
             std::path::PathBuf::from(path.as_str()),
         ])));
     }));
+    app.on_add_canvas_paths(on_window!(|state, payload: SharedString| {
+        match decode_canvas_imports(payload.as_str()) {
+            Ok(paths) if !paths.is_empty() => state.handle(Msg::Canvas(
+                crate::panes::canvas::CanvasMsg::ImportLayers(paths),
+            )),
+            _ => state.notify("所选画布素材无效", true),
+        }
+    }));
+    app.on_canvas_new(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::New));
+    }));
+    app.on_canvas_new_with_paths(on_window!(|state, payload: SharedString| {
+        match decode_canvas_imports(payload.as_str()) {
+            Ok(paths) if !paths.is_empty() => state.handle(Msg::Canvas(
+                crate::panes::canvas::CanvasMsg::NewAndImport(paths),
+            )),
+            _ => state.notify("所选画布素材无效", true),
+        }
+    }));
+    app.on_canvas_handoff_current(on_window!(|state, payload: SharedString| {
+        match decode_canvas_imports(payload.as_str()) {
+            Ok(paths) if !paths.is_empty() => state.handle(Msg::Canvas(
+                crate::panes::canvas::CanvasMsg::HandoffImport(paths),
+            )),
+            _ => state.notify("所选画布素材无效", true),
+        }
+    }));
+    app.on_canvas_open_with_paths(on_window!(
+        |state, path: SharedString, payload: SharedString| {
+            match decode_canvas_imports(payload.as_str()) {
+                Ok(paths) if !paths.is_empty() => {
+                    state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::OpenAndImport(
+                        std::path::PathBuf::from(path.as_str()),
+                        paths,
+                    )))
+                }
+                _ => state.notify("所选画布素材无效", true),
+            }
+        }
+    ));
+    app.on_close_clip_project(on_window!(|state| {
+        if let Err(error) = state.close_project() {
+            state.notify(&error, true);
+        }
+    }));
+    app.on_canvas_export_library(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ExportLibrary));
+    }));
     editor.on_canvas_project_open(on_window!(|state| {
         if let Some(path) = platform::pick_folder("打开画布工程（选择 .comp 文件夹）", "")
         {
@@ -1372,8 +1537,15 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
 
     // ── the dialogs ──
-    app.on_export_clicked(on_window!(|state| {
-        state.handle(Msg::Export(ExportMsg::Open));
+    app.on_export_clicked(|| {
+        Shell::with(|shell, app| {
+            if shell.studio.borrow().session.is_some() {
+                app.global::<SeeCut>().set_clip_export_open(true);
+            }
+        });
+    });
+    app.on_export_destination_selected(on_window!(|state, to_library: bool| {
+        state.handle(Msg::Export(ExportMsg::ChooseDestination(to_library)));
     }));
     app.on_open_settings(on_window!(|state| {
         state.handle(Msg::Settings(SettingsMsg::Open));
@@ -1570,7 +1742,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
                                 })
                             });
                         }
-                        "export" => state.handle(Msg::Export(ExportMsg::Open)),
+                        "export" => {
+                            if state.session.is_some() {
+                                app.global::<SeeCut>().set_clip_export_open(true);
+                            }
+                        }
                         "template" => state.save_template(),
                         "speech" => state.handle(Msg::Speech(SpeechMsg::Open)),
                         "clear-cache" => state.clear_project_cache(),
@@ -1653,9 +1829,27 @@ pub fn run() -> Result<(), slint::PlatformError> {
             .and_then(|index| index.parse().ok())
             .unwrap_or(-1)
     });
+    app.global::<Payload>().on_personal_id(|text| {
+        text.strip_prefix("personal:")
+            .and_then(|rest| rest.split(':').next())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_default()
+            .into()
+    });
 
     // The picture the cursor carries, resolved through the same `incoming`
     // the drop uses, memoised by theme and payload.
+    let drag_image_dir =
+        tempfile::tempdir().map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    let drag_image_path = drag_image_dir.path().to_path_buf();
+    #[cfg(target_os = "macos")]
+    if DRAG_IMAGE_TEMP_DIR.set(drag_image_path.clone()).is_ok() {
+        // Cmd+Q can terminate Cocoa before `app.run()` returns.
+        // The C exit hook also covers that path; `close()` handles normal returns.
+        if unsafe { libc::atexit(remove_drag_images_at_exit) } != 0 {
+            log::warn!("Could not register drag preview cleanup");
+        }
+    }
     app.global::<Payload>().on_preview({
         let chips: RefCell<HashMap<String, slint::Image>> = RefCell::new(HashMap::new());
         move |payload| {
@@ -1671,8 +1865,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
                     let mut fields = rest.splitn(3, ':').skip(1);
                     let label = fields.next().unwrap_or_default();
                     let slug = fields.next().unwrap_or_default();
-                    let chip = slint::Image::load_from_svg_data(
-                        chips::drag_chip_svg(
+                    let chip = cached_drag_svg(
+                        &chips::drag_chip_svg(
                             chips::pane_glyph(slug),
                             label,
                             "",
@@ -1680,8 +1874,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
                             theme.get_field(),
                             theme.get_raised(),
                             theme.get_fg(),
-                        )
-                        .as_bytes(),
+                        ),
+                        &drag_image_path,
                     )
                     .unwrap_or_default();
                     chips.borrow_mut().insert(key, chip.clone());
@@ -1691,8 +1885,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 // A timeline tab in flight wears the timeline pane's mark.
                 if let Some(rest) = payload.strip_prefix("tab:") {
                     let name = rest.split_once(':').map_or("", |(_, name)| name);
-                    let chip = slint::Image::load_from_svg_data(
-                        chips::drag_chip_svg(
+                    let chip = cached_drag_svg(
+                        &chips::drag_chip_svg(
                             chips::pane_glyph("timeline"),
                             name,
                             "",
@@ -1700,8 +1894,58 @@ pub fn run() -> Result<(), slint::PlatformError> {
                             theme.get_field(),
                             theme.get_raised(),
                             theme.get_fg(),
+                        ),
+                        &drag_image_path,
+                    )
+                    .unwrap_or_default();
+                    chips.borrow_mut().insert(key, chip.clone());
+                    result = chip;
+                    return;
+                }
+                if let Some(rest) = payload.strip_prefix("personal:") {
+                    let mut fields = rest.splitn(3, ':');
+                    let id = fields.next().unwrap_or_default();
+                    if id.is_empty() {
+                        return;
+                    }
+                    let count = fields.next().unwrap_or("1").parse::<usize>().unwrap_or(1);
+                    let name = fields.next().unwrap_or("素材");
+                    // Carry the same thumbnail as the card, at a compact drag size.
+                    // The old generic SVG chip reduced every asset to a solid tile.
+                    if let Some(preview) = app
+                        .global::<SeeCut>()
+                        .get_personal_assets()
+                        .iter()
+                        .find(|asset| asset.id.as_str() == id)
+                        .map(|asset| asset.preview)
+                        && let Some(chip) = personal_drag_thumbnail(
+                            &preview,
+                            count,
+                            theme.get_accent(),
+                            theme.get_on_accent(),
                         )
-                        .as_bytes(),
+                        .and_then(|image| cached_drag_bitmap(&image, &drag_image_path))
+                    {
+                        chips.borrow_mut().insert(key, chip.clone());
+                        result = chip;
+                        return;
+                    }
+                    let label = if count > 1 {
+                        format!("{count} 项素材")
+                    } else {
+                        name.to_owned()
+                    };
+                    let chip = cached_drag_svg(
+                        &chips::drag_chip_svg(
+                            chips::chip_glyph(ClipKind::Image),
+                            &label,
+                            "",
+                            theme.get_accent(),
+                            theme.get_field(),
+                            theme.get_raised(),
+                            theme.get_fg(),
+                        ),
+                        &drag_image_path,
                     )
                     .unwrap_or_default();
                     chips.borrow_mut().insert(key, chip.clone());
@@ -1734,8 +1978,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                     theme.get_raised(),
                     theme.get_fg(),
                 );
-                let chip =
-                    slint::Image::load_from_svg_data(document.as_bytes()).unwrap_or_default();
+                let chip = cached_drag_svg(&document, &drag_image_path).unwrap_or_default();
                 chips.borrow_mut().insert(key, chip.clone());
                 result = chip;
             });
@@ -1780,5 +2023,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     let result = app.run();
     log::info!("close: event loop exited (ok={})", result.is_ok());
+    if let Err(error) = drag_image_dir.close() {
+        log::warn!("Could not remove drag previews: {error}");
+    }
     std::process::exit(0);
 }

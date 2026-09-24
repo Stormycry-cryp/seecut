@@ -14,6 +14,7 @@
 //! fields.
 
 use concat_host::export::{self, ExportSpec};
+use slint::ComponentHandle;
 
 use crate::format::{bytes, eta};
 use crate::host::{on_ui, spawn};
@@ -28,8 +29,7 @@ use crate::ui::{ExportData, ExportPhase};
 /// Everything that can happen to the export sheet.
 #[derive(Clone, Debug)]
 pub enum ExportMsg {
-    /// The sheet is asked for: the menu, the tray button or ⌘E.
-    Open,
+    ChooseDestination(bool),
     /// The sheet is dismissed.
     Close,
     NameEdited(String),
@@ -48,13 +48,24 @@ pub enum ExportMsg {
     Cancel,
     /// The render's worker reporting where it is.
     Progress {
+        job_id: u64,
         /// Of the whole, `0..=1`.
         fraction: f32,
         /// What it is doing, in the person's language.
         stage: String,
     },
     /// The render's worker is done: the file written, or why not.
-    Finished(Result<String, String>),
+    Finished {
+        job_id: u64,
+        result: Result<String, String>,
+    },
+}
+
+struct ActiveExport {
+    id: u64,
+    to_library: bool,
+    name: String,
+    output: String,
 }
 
 /// The export sheet's state.
@@ -74,8 +85,13 @@ pub struct ExportPane {
     pub message: String,
     /// Where the finished file is, for Reveal.
     pub written: String,
+    to_library: bool,
+    library_output: Option<String>,
     /// When the render started, for a real ETA.
     started_at: Option<std::time::Instant>,
+    next_job_id: u64,
+    active_job: Option<ActiveExport>,
+    cancelled_jobs: std::collections::HashSet<u64>,
 }
 
 impl Default for ExportPane {
@@ -94,7 +110,12 @@ impl Default for ExportPane {
             stage: String::new(),
             message: String::new(),
             written: String::new(),
+            to_library: false,
+            library_output: None,
             started_at: None,
+            next_job_id: 0,
+            active_job: None,
+            cancelled_jobs: std::collections::HashSet::new(),
         }
     }
 }
@@ -106,7 +127,38 @@ impl ExportPane {
     /// pane must not read.
     pub fn update(&mut self, msg: ExportMsg, studio: &mut Studio) {
         match msg {
-            ExportMsg::Open => {
+            ExportMsg::ChooseDestination(to_library) => {
+                if self.active_job.is_some() {
+                    self.open = true;
+                    return;
+                }
+                let folder = if to_library {
+                    match concat_host::AppDirs::locate() {
+                        Ok(dirs) => dirs.data.join("clip-exports"),
+                        Err(error) => {
+                            studio.notify(&format!("无法打开资产库：{error}"), true);
+                            return;
+                        }
+                    }
+                } else {
+                    let Some(folder) = platform::pick_folder(&i18n::t("Export to"), &self.folder)
+                    else {
+                        return;
+                    };
+                    folder
+                };
+                if let Err(error) = std::fs::create_dir_all(&folder) {
+                    studio.notify(&format!("无法创建导出目录：{error}"), true);
+                    return;
+                }
+                self.folder = folder.to_string_lossy().into_owned();
+                self.to_library = to_library;
+                self.library_output = to_library.then(|| {
+                    folder
+                        .join(format!("{}.mp4", uuid::Uuid::new_v4()))
+                        .to_string_lossy()
+                        .into_owned()
+                });
                 self.open = true;
                 self.phase = ExportPhase::Idle;
                 self.message.clear();
@@ -121,12 +173,24 @@ impl ExportPane {
             ExportMsg::CodecChanged(index) => self.codec = (index.max(0) as usize).min(2),
             ExportMsg::TenBitChanged(on) => self.ten_bit = on,
             ExportMsg::Again => {
+                if self.active_job.is_some() {
+                    return;
+                }
                 self.phase = ExportPhase::Idle;
                 self.progress = 0.0;
+                if self.to_library {
+                    self.library_output = Some(format!(
+                        "{}/{}.mp4",
+                        self.folder.trim_end_matches('/'),
+                        uuid::Uuid::new_v4()
+                    ));
+                }
             }
             ExportMsg::Browse => {
                 if let Some(folder) = platform::pick_folder(&i18n::t("Export to"), &self.folder) {
                     self.folder = folder.to_string_lossy().into_owned();
+                    self.to_library = false;
+                    self.library_output = None;
                 }
             }
             ExportMsg::Reveal => {
@@ -138,31 +202,85 @@ impl ExportPane {
             }
             ExportMsg::Start => self.start(studio),
             ExportMsg::Cancel => {
-                studio.host.exporter.cancel();
+                if let Some(job) = self.active_job.take() {
+                    self.cancelled_jobs.insert(job.id);
+                    studio.host.exporter.cancel();
+                }
                 self.phase = ExportPhase::Idle;
                 self.progress = 0.0;
+                if self.to_library {
+                    self.library_output = Some(format!(
+                        "{}/{}.mp4",
+                        self.folder.trim_end_matches('/'),
+                        uuid::Uuid::new_v4()
+                    ));
+                }
             }
-            ExportMsg::Progress { fraction, stage } => {
-                if self.phase == ExportPhase::Running {
+            ExportMsg::Progress {
+                job_id,
+                fraction,
+                stage,
+            } => {
+                if self.phase == ExportPhase::Running
+                    && self.active_job.as_ref().is_some_and(|job| job.id == job_id)
+                {
                     self.progress = fraction.clamp(0.0, 1.0);
                     self.stage = stage;
                 }
             }
-            ExportMsg::Finished(Ok(written)) => {
-                self.phase = ExportPhase::Done;
-                self.progress = 1.0;
-                self.written = written;
-                studio.notify(&t("Export finished"), false);
-            }
-            ExportMsg::Finished(Err(error)) => {
-                if self.phase == ExportPhase::Idle {
-                    // Cancelled: the sheet already went back to idle.
+            ExportMsg::Finished { job_id, result } => {
+                let Some(job) = self.take_finished_job(job_id) else {
+                    if self.cancelled_jobs.remove(&job_id)
+                        && let Ok(written) = result
+                    {
+                        studio.notify(&format!("上一次导出已完成：{written}"), false);
+                    }
                     return;
+                };
+                match result {
+                    Ok(written) => self.finish_success(studio, written, job),
+                    Err(error) => {
+                        self.phase = ExportPhase::Failed;
+                        self.message = error.clone();
+                        studio.notify(&tf("Export failed: {0}", &[&error]), true);
+                    }
                 }
-                self.phase = ExportPhase::Failed;
-                self.message = error.clone();
-                studio.notify(&tf("Export failed: {0}", &[&error]), true);
             }
+        }
+    }
+
+    fn take_finished_job(&mut self, job_id: u64) -> Option<ActiveExport> {
+        if self.active_job.as_ref().is_some_and(|job| job.id == job_id) {
+            self.active_job.take()
+        } else {
+            None
+        }
+    }
+
+    fn finish_success(&mut self, studio: &mut Studio, written: String, job: ActiveExport) {
+        self.phase = ExportPhase::Done;
+        self.progress = 1.0;
+        self.written = written;
+        if job.to_library {
+            let registration = crate::personal_library::with_library_write_lock(|| {
+                let dirs = concat_host::AppDirs::locate()?;
+                let mut library =
+                    crate::personal_library::Library::load(dirs.data.join("personal-library"))?;
+                library.register_generated_with_name(&self.written, Some(&job.name))?;
+                Ok::<(), String>(())
+            });
+            match registration {
+                Ok(()) => {
+                    studio.notify("视频已导出并加入资产库", false);
+                    crate::host::Shell::with(|_, app| {
+                        app.global::<crate::ui::SeeCut>()
+                            .invoke_action("personal-refresh".into(), "".into())
+                    });
+                }
+                Err(error) => studio.notify(&format!("视频已导出，入库失败：{error}"), true),
+            }
+        } else {
+            studio.notify(&t("Export finished"), false);
         }
     }
 
@@ -203,14 +321,41 @@ impl ExportPane {
 
     /// Starts the render on a worker. Its reports come back as messages.
     fn start(&mut self, studio: &mut Studio) {
+        if self.active_job.is_some() {
+            return;
+        }
         let Some(session) = studio.session.as_ref() else {
             return;
         };
+        if self.name.trim().is_empty()
+            || self.name.trim() != self.name
+            || self.name.contains('/')
+            || self.name.contains('\\')
+            || self.name.chars().any(char::is_control)
+        {
+            self.phase = ExportPhase::Failed;
+            self.message = "文件名不能包含路径或首尾空格".into();
+            return;
+        }
         if studio.timeline().clips.is_empty() {
             self.phase = ExportPhase::Failed;
             self.message = t("There is nothing on the timeline to export");
             return;
         }
+        let requested = self.library_output.clone().unwrap_or_else(|| {
+            std::path::Path::new(&self.folder)
+                .join(format!("{}.mp4", self.name.trim()))
+                .to_string_lossy()
+                .into_owned()
+        });
+        let (output, renamed) = match unique_export_path(std::path::Path::new(&requested)) {
+            Ok(value) => value,
+            Err(error) => {
+                self.phase = ExportPhase::Failed;
+                self.message = error;
+                return;
+            }
+        };
         let job = match studio.host.exporter.begin() {
             Ok(job) => job,
             Err(error) => {
@@ -219,11 +364,7 @@ impl ExportPane {
                 return;
             }
         };
-        let output = format!(
-            "{}/{}.mp4",
-            self.folder.trim_end_matches('/'),
-            self.name.trim()
-        );
+        let output = output.to_string_lossy().into_owned();
         let spec = ExportSpec {
             output: output.clone(),
             crf: EXPORT_CRF[self.quality.min(2)],
@@ -240,6 +381,9 @@ impl ExportPane {
             .map(|title| title.clip)
             .collect();
         let mut request = export::request(session, &spec, titles);
+        if renamed {
+            studio.notify(&format!("同名文件已存在，改为导出到 {output}"), false);
+        }
         let (width, height) = self.size(studio);
         let (num, den) = EXPORT_RATES[self.rate.min(2)];
         request.width = width;
@@ -254,6 +398,14 @@ impl ExportPane {
         self.message.clear();
         self.written.clear();
         self.started_at = Some(std::time::Instant::now());
+        self.next_job_id = self.next_job_id.wrapping_add(1);
+        let job_id = self.next_job_id;
+        self.active_job = Some(ActiveExport {
+            id: job_id,
+            to_library: self.to_library,
+            name: self.name.clone(),
+            output: output.clone(),
+        });
 
         spawn(
             move || {
@@ -271,11 +423,17 @@ impl ExportPane {
                         other => other.to_owned(),
                     };
                     on_ui(move |studio, _, _| {
-                        studio.handle(Msg::Export(ExportMsg::Progress { fraction, stage }));
+                        studio.handle(Msg::Export(ExportMsg::Progress {
+                            job_id,
+                            fraction,
+                            stage,
+                        }));
                     });
                 })
             },
-            |studio, _, _, result| studio.handle(Msg::Export(ExportMsg::Finished(result))),
+            move |studio, _, _, result| {
+                studio.handle(Msg::Export(ExportMsg::Finished { job_id, result }))
+            },
         );
     }
 
@@ -291,19 +449,38 @@ impl ExportPane {
             .iter()
             .filter(|clip| clip.kind == concat_project::model::ClipKind::Text)
             .count();
+        let clip_count = if clips == 1 {
+            tf("{0} clip", &[&clips])
+        } else {
+            tf("{0} clips", &[&clips])
+        };
+        let title_count = if titles == 1 {
+            tf("{0} title", &[&titles])
+        } else {
+            tf("{0} titles", &[&titles])
+        };
         ExportData {
             open: self.open,
             name: self.name.as_str().into(),
-            path: format!("{}/{}.mp4", self.folder.trim_end_matches('/'), self.name).into(),
+            path: if let Some(job) = &self.active_job {
+                job.output.clone()
+            } else if self.phase == ExportPhase::Done && !self.written.is_empty() {
+                self.written.clone()
+            } else {
+                self.library_output.clone().unwrap_or_else(|| {
+                    format!("{}/{}.mp4", self.folder.trim_end_matches('/'), self.name)
+                })
+            }
+            .into(),
             format: format!("{width} × {height} · {rate:.2} fps").into(),
             duration: {
                 let whole = studio.duration().max(0.0) as i32;
                 format!("{}:{:02}", whole / 60, whole % 60).into()
             },
             contents: if titles > 0 {
-                format!("{clips} clips · {titles} titles")
+                format!("{clip_count} · {title_count}")
             } else {
-                format!("{clips} clips")
+                clip_count
             }
             .into(),
             resolution: self.resolution as i32,
@@ -350,5 +527,69 @@ impl ExportPane {
             done_size: bytes(self.size_bytes(studio, self.quality)).into(),
             empty: clips == 0,
         }
+    }
+}
+
+/// Preserve every existing file when the folder picker supplies no system
+/// overwrite confirmation. The engine checks again with an exclusive final
+/// placement, closing the race after this user-facing choice.
+fn unique_export_path(requested: &std::path::Path) -> Result<(std::path::PathBuf, bool), String> {
+    let stem = requested
+        .file_stem()
+        .ok_or_else(|| "导出文件名无效".to_owned())?
+        .to_string_lossy();
+    let parent = requested.parent().unwrap_or(std::path::Path::new("."));
+    for number in 1..=10_000 {
+        let candidate = if number == 1 {
+            requested.to_path_buf()
+        } else {
+            parent.join(format!("{stem} ({number}).mp4"))
+        };
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((candidate, number != 1));
+            }
+            Err(error) => return Err(format!("无法检查导出文件：{error}")),
+        }
+    }
+    Err("此目录中同名导出文件过多".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn late_completion_cannot_claim_a_new_job() {
+        let mut pane = ExportPane::default();
+        pane.active_job = Some(ActiveExport {
+            id: 2,
+            to_library: true,
+            name: "new".into(),
+            output: "new.mp4".into(),
+        });
+        assert!(pane.take_finished_job(1).is_none());
+        assert_eq!(pane.take_finished_job(2).unwrap().name, "new");
+        assert!(pane.take_finished_job(2).is_none());
+    }
+
+    #[test]
+    fn existing_export_names_are_preserved() {
+        let directory =
+            std::env::temp_dir().join(format!("concat-export-name-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let requested = directory.join("film.mp4");
+        std::fs::write(&requested, b"first").unwrap();
+        std::fs::write(directory.join("film (2).mp4"), b"second").unwrap();
+        let (chosen, renamed) = unique_export_path(&requested).unwrap();
+        assert!(renamed);
+        assert_eq!(chosen, directory.join("film (3).mp4"));
+        assert_eq!(std::fs::read(&requested).unwrap(), b"first");
+        assert_eq!(
+            std::fs::read(directory.join("film (2).mp4")).unwrap(),
+            b"second"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

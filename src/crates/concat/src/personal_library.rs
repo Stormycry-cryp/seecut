@@ -6,14 +6,28 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs::{self, File},
     hash::{Hash, Hasher},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
 /// The file stored below the library root.
 pub const MANIFEST_NAME: &str = "library.json";
+
+/// Serialize read-modify-write operations from the cloud worker and the clip
+/// export pane. The guard must cover the load as well as the save.
+pub(crate) fn with_library_write_lock<T>(operation: impl FnOnce() -> T) -> T {
+    static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let guard = WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let result = operation();
+    drop(guard);
+    result
+}
 
 /// A media category understood by the editor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -60,18 +74,30 @@ pub struct Asset {
     /// Whether the user pinned this item for quick access.
     #[serde(default)]
     pub favorite: bool,
+    /// Optional user folder. Assets keep their stable id and media path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
 struct Manifest {
     #[serde(default)]
     items: Vec<Asset>,
+    #[serde(default)]
+    folders: Vec<Folder>,
 }
 
 /// A local personal media library backed by an atomic JSON index.
 pub struct Library {
     root: PathBuf,
     items: Vec<Asset>,
+    folders: Vec<Folder>,
 }
 
 impl Library {
@@ -82,25 +108,86 @@ impl Library {
             return Err("个人资产库路径不是文件夹".into());
         }
         let manifest_path = root.join(MANIFEST_NAME);
-        let items = if manifest_path.exists() {
+        let manifest = if manifest_path.exists() {
             let bytes = fs::read(&manifest_path)
                 .map_err(|error| format!("无法读取个人资产库索引：{error}"))?;
-            serde_json::from_slice::<Manifest>(&bytes)
-                .map_err(|error| {
-                    format!("个人资产库索引已损坏，请先备份或修复 library.json：{error}")
-                })?
-                .items
+            serde_json::from_slice::<Manifest>(&bytes).map_err(|error| {
+                format!("个人资产库索引已损坏，请先备份或修复 library.json：{error}")
+            })?
         } else {
-            Vec::new()
+            Manifest::default()
         };
         fs::create_dir_all(root.join("imported"))
             .map_err(|error| format!("无法创建个人资产库目录：{error}"))?;
-        Ok(Self { root, items })
+        Ok(Self {
+            root,
+            items: manifest.items,
+            folders: manifest.folders,
+        })
     }
 
     /// Returns all indexed items, including recycled items.
     pub fn items(&self) -> &[Asset] {
         &self.items
+    }
+
+    pub fn folders(&self) -> &[Folder] {
+        &self.folders
+    }
+
+    pub fn create_folder(&mut self, name: &str) -> Result<&Folder, String> {
+        validate_name(name)?;
+        if self.folders.iter().any(|folder| folder.name == name) {
+            return Err("文件夹已存在".into());
+        }
+        self.folders.push(Folder {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_owned(),
+        });
+        if let Err(error) = self.save() {
+            self.folders.pop();
+            return Err(error);
+        }
+        Ok(self.folders.last().expect("刚创建的文件夹必须存在"))
+    }
+
+    pub fn move_to_folder(
+        &mut self,
+        ids: &[String],
+        folder_id: Option<&str>,
+    ) -> Result<usize, String> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        if let Some(folder_id) = folder_id
+            && !self.folders.iter().any(|folder| folder.id == folder_id)
+        {
+            return Err("文件夹不存在，请刷新后重试".into());
+        }
+        for id in ids {
+            let Some(asset) = self.get(id) else {
+                return Err("素材不存在，请刷新后重试".into());
+            };
+            if asset.trashed {
+                return Err("请先从回收站恢复素材".into());
+            }
+        }
+        let previous = self.items.clone();
+        let mut changed = 0;
+        for item in &mut self.items {
+            if ids.contains(&item.id) && item.folder_id.as_deref() != folder_id {
+                item.folder_id = folder_id.map(str::to_owned);
+                changed += 1;
+            }
+        }
+        if changed == 0 {
+            return Ok(0);
+        }
+        if let Err(error) = self.save() {
+            self.items = previous;
+            return Err(error);
+        }
+        Ok(changed)
     }
 
     /// Returns an item by stable identifier.
@@ -111,10 +198,16 @@ impl Library {
     /// Copies a media file into managed storage and indexes it.
     pub fn import(&mut self, path: impl AsRef<Path>) -> Result<&Asset, String> {
         let source = checked_media(path.as_ref())?;
-        if let Some(index) = self.items.iter().position(|item| {
-            item.source == AssetSource::Imported && item.original_path.as_ref() == Some(&source.0)
-        }) {
-            return Ok(&self.items[index]);
+        // A source path is not a content identity. Re-importing changed bytes
+        // creates a new version so projects referencing the older managed copy
+        // keep their original media. A missing copy is never treated as a hit.
+        for (index, item) in self.items.iter().enumerate().rev() {
+            if item.source == AssetSource::Imported
+                && item.original_path.as_ref() == Some(&source.0)
+                && same_file_bytes(&source.0, &item.path)?
+            {
+                return Ok(&self.items[index]);
+            }
         }
         let extension = source
             .0
@@ -129,6 +222,17 @@ impl Library {
         if let Err(error) = fs::copy(&source.0, &temporary) {
             let _ = fs::remove_file(&temporary);
             return Err(format!("复制素材失败：{error}"));
+        }
+        match same_file_bytes(&source.0, &temporary) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = fs::remove_file(&temporary);
+                return Err("源素材在导入过程中发生变化，请重试".into());
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
         }
         if let Err(error) = fs::rename(&temporary, &destination) {
             let _ = fs::remove_file(&temporary);
@@ -151,6 +255,7 @@ impl Library {
             created_at,
             trashed: false,
             favorite: false,
+            folder_id: None,
         };
         self.items.push(item);
         if let Err(error) = self.save() {
@@ -163,14 +268,29 @@ impl Library {
 
     /// Indexes an existing generated or downloaded media file without copying it.
     pub fn register_generated(&mut self, path: impl AsRef<Path>) -> Result<&Asset, String> {
+        self.register_generated_with_name(path, None)
+    }
+
+    /// Indexes an existing generated or downloaded media file with an
+    /// optional user-visible name. The path remains the stable storage
+    /// identity; callers may provide a readable project name separately.
+    pub fn register_generated_with_name(
+        &mut self,
+        path: impl AsRef<Path>,
+        name: Option<&str>,
+    ) -> Result<&Asset, String> {
         let checked = checked_media(path.as_ref())?;
         if let Some(index) = self.items.iter().position(|item| item.path == checked.0) {
             return Ok(&self.items[index]);
         }
         let created_at = now_millis()?;
+        let name = name
+            .filter(|name| !name.is_empty() && validate_name(name).is_ok())
+            .map(str::to_owned)
+            .unwrap_or_else(|| display_name(&checked.0));
         self.items.push(Asset {
             id: Uuid::new_v4().to_string(),
-            name: display_name(&checked.0),
+            name,
             path: checked.0,
             kind: checked.1,
             source: AssetSource::Generated,
@@ -178,6 +298,7 @@ impl Library {
             created_at,
             trashed: false,
             favorite: false,
+            folder_id: None,
         });
         if let Err(error) = self.save() {
             self.items.pop();
@@ -251,6 +372,7 @@ impl Library {
     fn save(&self) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(&Manifest {
             items: self.items.clone(),
+            folders: self.folders.clone(),
         })
         .map_err(|error| format!("无法生成个人资产库索引：{error}"))?;
         let temporary = self
@@ -389,6 +511,39 @@ fn display_name(path: &Path) -> String {
         .to_owned()
 }
 
+fn same_file_bytes(source: &Path, managed: &Path) -> Result<bool, String> {
+    let source_size = fs::metadata(source)
+        .map_err(|error| format!("无法读取源素材：{error}"))?
+        .len();
+    let managed_size = match fs::metadata(managed) {
+        Ok(metadata) if metadata.is_file() => metadata.len(),
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("无法读取已导入素材：{error}")),
+    };
+    if source_size != managed_size {
+        return Ok(false);
+    }
+    let mut left = File::open(source).map_err(|error| format!("无法读取源素材：{error}"))?;
+    let mut right = File::open(managed).map_err(|error| format!("无法读取已导入素材：{error}"))?;
+    let mut source_chunk = [0_u8; 64 * 1024];
+    let mut managed_chunk = [0_u8; 64 * 1024];
+    loop {
+        let count = left
+            .read(&mut source_chunk)
+            .map_err(|error| format!("无法读取源素材：{error}"))?;
+        if count == 0 {
+            return Ok(true);
+        }
+        right
+            .read_exact(&mut managed_chunk[..count])
+            .map_err(|error| format!("无法读取已导入素材：{error}"))?;
+        if source_chunk[..count] != managed_chunk[..count] {
+            return Ok(false);
+        }
+    }
+}
+
 fn validate_name(name: &str) -> Result<(), String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -442,6 +597,29 @@ mod tests {
     }
 
     #[test]
+    fn changed_source_import_creates_version_and_missing_copy_can_be_reimported() {
+        let root = temp_root("source-version");
+        let source_dir = temp_root("source-version-media");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("photo.png");
+        fs::write(&source, b"first version").unwrap();
+        let mut library = Library::load(&root).unwrap();
+        let first = library.import(&source).unwrap().clone();
+        fs::write(&source, b"second version").unwrap();
+        let second = library.import(&source).unwrap().clone();
+        assert_ne!(first.id, second.id);
+        assert_eq!(fs::read(&first.path).unwrap(), b"first version");
+        assert_eq!(fs::read(&second.path).unwrap(), b"second version");
+        assert_eq!(library.import(&source).unwrap().id, second.id);
+        fs::remove_file(&second.path).unwrap();
+        let recovered = library.import(&source).unwrap().clone();
+        assert_ne!(recovered.id, second.id);
+        assert_eq!(fs::read(&recovered.path).unwrap(), b"second version");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(source_dir).unwrap();
+    }
+
+    #[test]
     fn corrupt_index_is_preserved() {
         let root = temp_root("corrupt");
         fs::create_dir_all(&root).unwrap();
@@ -467,6 +645,25 @@ mod tests {
         assert!(media.exists());
         library.restore(&id).unwrap();
         assert!(!library.get(&id).unwrap().trashed);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(media_dir).unwrap();
+    }
+
+    #[test]
+    fn generated_registration_can_keep_a_readable_display_name() {
+        let root = temp_root("generated-name");
+        let media_dir = temp_root("generated-name-media");
+        fs::create_dir_all(&media_dir).unwrap();
+        let media = media_dir.join("opaque-square.png");
+        fs::write(&media, b"image").unwrap();
+        let mut library = Library::load(&root).unwrap();
+
+        let asset = library
+            .register_generated_with_name(&media, Some("opaque-square"))
+            .unwrap();
+        assert_eq!(asset.name, "opaque-square");
+        assert_eq!(asset.path, media.canonicalize().unwrap());
+
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(media_dir).unwrap();
     }
@@ -500,6 +697,57 @@ mod tests {
         assert_eq!(library.set_trashed_many(&["old".into()], true).unwrap(), 1);
         assert!(library.get("old").unwrap().trashed);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_move_persists_ids_skips_noop_and_rolls_back_failed_save() {
+        let root = temp_root("folder-move");
+        let media_dir = temp_root("folder-move-media");
+        fs::create_dir_all(&media_dir).unwrap();
+        let first_path = media_dir.join("first.png");
+        let second_path = media_dir.join("second.png");
+        fs::write(&first_path, b"first").unwrap();
+        fs::write(&second_path, b"second").unwrap();
+        let mut library = Library::load(&root).unwrap();
+        let first = library.register_generated(&first_path).unwrap().id.clone();
+        let second = library.register_generated(&second_path).unwrap().id.clone();
+        let folder = library.create_folder("作品").unwrap().id.clone();
+        let ids = vec![first.clone(), second.clone()];
+        assert_eq!(library.move_to_folder(&ids, Some(&folder)).unwrap(), 2);
+        let before_noop = fs::read(root.join(MANIFEST_NAME)).unwrap();
+        assert_eq!(library.move_to_folder(&ids, Some(&folder)).unwrap(), 0);
+        assert_eq!(fs::read(root.join(MANIFEST_NAME)).unwrap(), before_noop);
+        drop(library);
+
+        let mut library = Library::load(&root).unwrap();
+        assert_eq!(
+            library.get(&first).unwrap().folder_id.as_deref(),
+            Some(folder.as_str())
+        );
+        assert_eq!(
+            library.get(&second).unwrap().folder_id.as_deref(),
+            Some(folder.as_str())
+        );
+        assert_eq!(library.items().len(), 2);
+        assert_eq!(library.move_to_folder(&[first.clone()], None).unwrap(), 1);
+        assert!(library.get(&first).unwrap().folder_id.is_none());
+        library.trash(&first).unwrap();
+        assert!(
+            library
+                .move_to_folder(&[first.clone()], Some(&folder))
+                .is_err()
+        );
+        assert!(library.get(&first).unwrap().folder_id.is_none());
+
+        // With storage unavailable, the in-memory category must also stay put.
+        fs::remove_dir_all(&root).unwrap();
+        assert!(library.move_to_folder(&[second.clone()], None).is_err());
+        assert_eq!(
+            library.get(&second).unwrap().folder_id.as_deref(),
+            Some(folder.as_str())
+        );
+        assert!(first_path.is_file() && second_path.is_file());
+        fs::remove_dir_all(media_dir).unwrap();
     }
 
     #[test]
@@ -538,6 +786,7 @@ mod tests {
             created_at: 0,
             trashed: false,
             favorite: false,
+            folder_id: None,
         };
 
         let first = thumbnail(&asset, &root).unwrap();

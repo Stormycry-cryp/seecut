@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! SeeCut's non-blocking desktop bridge. Provider credentials never enter this process.
 
+use crate::format::project_timestamp;
 use crate::ui::{
-    AccountEntry, App, CloudItem, CreditPlan, GenerationTemplate as TemplateRow,
+    AccountEntry, App, CloudItem, CreditPlan, GenerationBatch, GenerationTemplate as TemplateRow,
     PersonalAssetGroup, SeeCut,
 };
 use chrono::{DateTime, Local};
@@ -13,7 +14,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
     net::IpAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     time::Duration,
 };
@@ -86,6 +87,9 @@ struct Cloud {
     unavailable_model_id: Option<String>,
     unavailable_model_kind: Option<String>,
     tasks: Vec<Value>,
+    selected_tasks: HashSet<String>,
+    pending_result_batch: Option<PendingResultBatch>,
+    pending_task_delete_ids: Vec<String>,
     quote_id: String,
     quote_credits: Option<i64>,
     quote_body: Value,
@@ -93,7 +97,10 @@ struct Cloud {
     assets: Vec<Value>,
     assets_context: String,
     personal: Vec<Value>,
+    personal_folders: Vec<Value>,
     selected_personal: HashSet<String>,
+    pending_handoff: Option<PendingHandoff>,
+    pending_delete_ids: Vec<String>,
     /// Ordered, temporary selection used only by the asset picker. It is
     /// scoped to the current source/purpose/team context and never overlaps
     /// the personal-library management selection above.
@@ -106,6 +113,7 @@ struct Cloud {
     pending_team_picker: bool,
     auth_return_page: Option<i32>,
     pending_imports: Vec<PathBuf>,
+    pending_import_display_names: HashMap<PathBuf, String>,
     references: Vec<Value>,
     local: HashMap<String, String>,
     folder: PathBuf,
@@ -120,6 +128,50 @@ struct Cloud {
     active_name: String,
     download_attempts: std::collections::HashSet<String>,
     media_preview_token: u64,
+    export_copy: Option<ExportCopyJob>,
+}
+
+#[derive(Clone)]
+struct ExportCopyItem {
+    id: String,
+    source: PathBuf,
+    name: String,
+}
+
+#[derive(Clone)]
+struct ExportCopyJob {
+    items: Vec<ExportCopyItem>,
+    folder: PathBuf,
+    completed: HashSet<String>,
+    running: bool,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    bytes_done: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    bytes_total: u64,
+}
+
+#[derive(Clone)]
+struct CanvasProjectRow {
+    item: CloudItem,
+    updated: u64,
+}
+
+// Slint images are UI-thread values and cannot enter the Cloud snapshot sent
+// to workers. Keep decoded gallery previews beside the UI for search/sort.
+thread_local! {
+    static CANVAS_PROJECT_CACHE: RefCell<Vec<CanvasProjectRow>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone)]
+struct PendingHandoff {
+    kind: String,
+    imports: Vec<crate::panes::canvas::CanvasImport>,
+    awaiting_new_project: bool,
+}
+
+#[derive(Clone)]
+struct PendingResultBatch {
+    intent: String,
+    ids: Vec<String>,
 }
 #[derive(Clone)]
 struct Request {
@@ -227,6 +279,9 @@ fn base_url(raw: &str) -> Result<String, String> {
 }
 
 fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
+    if req.path == "local:export-copy" {
+        return copy_export_call(c).map_err(Into::into);
+    }
     if req.path.starts_with("local:library-") {
         return library_call(c, req).map_err(Into::into);
     }
@@ -236,6 +291,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
         let purpose = text(&req.body, "purpose");
         let kind = reference_kind(&path);
         let mut preview = Value::Null;
+        let mut duration_ms = None;
         if purpose == "generation_input" {
             // Probe and thumbnail off the UI thread before uploading the media.
             let info = concat_media::probe(&path)
@@ -245,6 +301,11 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
             {
                 return Err("参考素材内容与文件格式不一致".into());
             }
+            duration_ms = info
+                .duration
+                .map(|time| time.as_f64())
+                .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+                .map(|seconds| (seconds * 1000.0).round() as u64);
             if let Ok(root) = library_root() {
                 use crate::personal_library::{Asset, AssetKind, AssetSource, thumbnail};
                 let asset = Asset {
@@ -261,6 +322,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
                     created_at: 0,
                     trashed: false,
                     favorite: false,
+                    folder_id: None,
                 };
                 preview = json!(thumbnail(&asset, &root));
             }
@@ -290,6 +352,9 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
         result["status"] = json!("ready");
         result["kind"] = json!(kind);
         result["preview_path"] = preview;
+        if let Some(duration_ms) = duration_ms {
+            result["media_duration_ms"] = json!(duration_ms);
+        }
         result["intent_team"] = json!(team);
         return Ok(result);
     }
@@ -356,7 +421,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
                     .clamp(0, 3600) as i32,
             })
         }
-        Err(_) => Err("暂时无法连接 SeeCut，请检查网络后重试".into()),
+        Err(_) => Err("暂时无法连接 Seecut，请检查网络后重试".into()),
     }
 }
 
@@ -405,6 +470,7 @@ fn session_expired(error: &ClientError) -> bool {
 
 fn request_requires_auth(req: &Request) -> bool {
     match req.path.as_str() {
+        "local:export-copy" => false,
         "/api/capabilities" => false,
         path if path.starts_with("/api/auth/") && path != "/api/auth/logout" => false,
         path if path.starts_with("local:library-") => false,
@@ -530,6 +596,23 @@ fn poll(
             Ok(value) => publish(&app, &state, &name, value),
             Err(error) => {
                 let ui = app.global::<SeeCut>();
+                if name == "export-copy" {
+                    if let Some(batch) = state.borrow_mut().export_copy.as_mut() {
+                        batch.running = false;
+                    }
+                    ui.set_export_copy_running(false);
+                    ui.set_export_copy_error(format!("导出中断：{}", error.message).into());
+                }
+                if name.starts_with("personal-dialog-") {
+                    ui.set_personal_dialog_busy(false);
+                    ui.set_personal_dialog_error(error.message.into());
+                    sync_operation_state(&app, &state);
+                    let next = state.borrow_mut().pending.pop_front();
+                    if let Some((name, req)) = next {
+                        job(&app, &state, name, req);
+                    }
+                    return;
+                }
                 if ui.get_signed_in()
                     && name != "logout"
                     && !is_auth_job(&name)
@@ -1039,6 +1122,27 @@ fn insert_mention(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
     refresh_quote(app, state);
 }
 
+fn open_reference_mention(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let ui = app.global::<SeeCut>();
+    open_reference_mention_ui(&ui);
+    state.borrow_mut().quote_id.clear();
+    state.borrow_mut().quote_credits = None;
+}
+
+pub(crate) fn open_reference_mention_ui(ui: &SeeCut) {
+    let mut prompt = ui.get_prompt().to_string();
+    let mut cursor = (ui.get_prompt_cursor().max(0) as usize).min(prompt.len());
+    while !prompt.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    prompt.insert(cursor, '@');
+    ui.set_prompt(prompt.into());
+    ui.set_prompt_cursor((cursor + 1) as i32);
+    ui.set_mention_open(true);
+    ui.set_can_generate(false);
+    ui.set_quote("".into());
+}
+
 fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
     let video = ui.get_mode() != 0;
     let prompt = if video {
@@ -1203,9 +1307,11 @@ fn begin_asset_picker(app: &App, state: &Rc<RefCell<Cloud>>, purpose: &str, sour
     ui.set_asset_picker_purpose(purpose.into());
     ui.set_asset_picker_source(source);
     ui.set_personal_reference_search("".into());
+    let image_only = purpose == "canvas" || (purpose == "reference" && ui.get_mode() == 0);
+    ui.set_asset_picker_personal_filter(if image_only { 1 } else { 0 });
+    ui.set_asset_picker_team_search("".into());
+    ui.set_asset_picker_team_filter(if image_only { 1 } else { 0 });
     ui.set_trash_open(false);
-    ui.set_asset_search("".into());
-    ui.set_asset_filter(if purpose == "canvas" { 1 } else { 0 });
     clear_picker_selection(&ui, state);
     let context = picker_context(&ui, &state.borrow());
     state.borrow_mut().picker_context = context;
@@ -1365,6 +1471,7 @@ fn render_templates(app: &App, state: &Rc<RefCell<Cloud>>) {
                             created_at: 0,
                             trashed: false,
                             favorite: false,
+                            folder_id: None,
                         };
                         CloudItem {
                             id: reference.path.to_string_lossy().into_owned().into(),
@@ -1978,6 +2085,10 @@ fn apply_generation_configuration(
 
 fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
     let ui = app.global::<SeeCut>();
+    if target == 6 {
+        ui.set_canvas_gallery_open(true);
+        refresh_canvas_projects(app, state);
+    }
     if should_clear_identity_error_for_target(target, ui.get_error().as_str()) {
         ui.set_error("".into());
     }
@@ -1987,15 +2098,354 @@ fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
     }
 }
 
+fn refresh_canvas_projects(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let ui = app.global::<SeeCut>();
+    let paths = match crate::panes::canvas::canvas_recent_paths() {
+        Ok(paths) => paths,
+        Err(error) => {
+            ui.set_error(error.into());
+            return;
+        }
+    };
+    let projects = paths
+        .into_iter()
+        .filter_map(|path| {
+            let manifest_path = path.join("manifest.json");
+            let bytes = std::fs::read(&manifest_path).ok()?;
+            let manifest: Value = serde_json::from_slice(&bytes).ok()?;
+            let name = manifest["name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    path.file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| "画布项目".to_owned());
+            let width = manifest["width"].as_u64().unwrap_or(0);
+            let height = manifest["height"].as_u64().unwrap_or(0);
+            let updated = manifest_path
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            Some(CanvasProjectRow {
+                item: CloudItem {
+                    id: path.to_string_lossy().into_owned().into(),
+                    name: name.into(),
+                    detail: format!("{width} × {height}").into(),
+                    date_label: project_timestamp(updated).into(),
+                    ready: true,
+                    preview: slint::Image::load_from_path(&path.join("preview.png"))
+                        .unwrap_or_default(),
+                    ..Default::default()
+                },
+                updated,
+            })
+        })
+        .collect();
+    CANVAS_PROJECT_CACHE.with(|cache| *cache.borrow_mut() = projects);
+    render_canvas_projects(app, state);
+}
+
+fn render_canvas_projects(app: &App, _state: &Rc<RefCell<Cloud>>) {
+    let ui = app.global::<SeeCut>();
+    let query = ui.get_canvas_project_search().trim().to_lowercase();
+    let sort = ui.get_canvas_project_sort();
+    let mut projects = CANVAS_PROJECT_CACHE.with(|cache| cache.borrow().clone());
+    projects.retain(|project| {
+        query.is_empty()
+            || project
+                .item
+                .name
+                .to_string()
+                .to_lowercase()
+                .contains(&query)
+    });
+    if sort == 1 {
+        projects.sort_by_cached_key(|project| project.item.name.to_string().to_lowercase());
+    } else {
+        projects.sort_by_key(|project| std::cmp::Reverse(project.updated));
+    }
+    ui.set_canvas_projects(rows(
+        projects.into_iter().map(|project| project.item).collect(),
+    ));
+}
+
+fn begin_handoff(app: &App, state: &Rc<RefCell<Cloud>>, kind: &str, paths: Vec<PathBuf>) {
+    let imports = paths
+        .into_iter()
+        .map(crate::panes::canvas::CanvasImport::from_path)
+        .collect();
+    begin_handoff_with_imports(app, state, kind, imports);
+}
+
+fn begin_handoff_with_imports(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    kind: &str,
+    imports: Vec<crate::panes::canvas::CanvasImport>,
+) {
+    let ui = app.global::<SeeCut>();
+    if imports.is_empty() || imports.iter().any(|item| !item.path.is_file()) {
+        ui.set_error("所选素材文件不可用，请刷新后重试".into());
+        return;
+    }
+    if kind == "canvas"
+        && imports.iter().any(|item| {
+            !matches!(
+                item.path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("png" | "jpg" | "jpeg" | "webp" | "bmp")
+            )
+        })
+    {
+        ui.set_error("画布只支持图片素材".into());
+        return;
+    }
+    let mut targets = vec![CloudItem {
+        id: "new".into(),
+        name: if kind == "canvas" {
+            "新建画布"
+        } else {
+            "新建剪辑项目"
+        }
+        .into(),
+        detail: "创建新工程并加入素材".into(),
+        ready: true,
+        ..Default::default()
+    }];
+    if kind == "canvas" {
+        if app.global::<crate::ui::Editor>().get_canvas_has_document() {
+            targets.push(CloudItem {
+                id: "current".into(),
+                name: "当前画布".into(),
+                detail: app.global::<crate::ui::Editor>().get_canvas_name(),
+                ready: true,
+                ..Default::default()
+            });
+        }
+        if let Ok(paths) = crate::panes::canvas::canvas_recent_paths() {
+            for path in paths.into_iter().take(8) {
+                let Ok(bytes) = std::fs::read(path.join("manifest.json")) else {
+                    continue;
+                };
+                let Ok(manifest) = serde_json::from_slice::<Value>(&bytes) else {
+                    continue;
+                };
+                let name = manifest["name"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        path.file_stem()
+                            .map(|stem| stem.to_string_lossy().into_owned())
+                    })
+                    .unwrap_or_else(|| "画布项目".to_owned());
+                targets.push(CloudItem {
+                    id: format!("recent:{}", path.display()).into(),
+                    name: name.into(),
+                    detail: format!(
+                        "{} × {}",
+                        manifest["width"].as_u64().unwrap_or(0),
+                        manifest["height"].as_u64().unwrap_or(0)
+                    )
+                    .into(),
+                    preview: slint::Image::load_from_path(&path.join("preview.png"))
+                        .unwrap_or_default(),
+                    ready: true,
+                    ..Default::default()
+                });
+            }
+        }
+    } else {
+        if ui.get_project_open() {
+            targets.push(CloudItem {
+                id: "current".into(),
+                name: "当前剪辑项目".into(),
+                detail: app.get_project_name(),
+                ready: true,
+                ..Default::default()
+            });
+        }
+        for project in app.get_recents().iter().take(8) {
+            targets.push(CloudItem {
+                id: format!("recent:{}", project.path).into(),
+                name: project.name,
+                detail: project.detail,
+                preview: project.poster,
+                ready: true,
+                ..Default::default()
+            });
+        }
+    }
+    ui.set_handoff_source_page(ui.get_page());
+    ui.set_handoff_kind(kind.into());
+    ui.set_handoff_count(imports.len() as i32);
+    ui.set_handoff_targets(rows(targets));
+    ui.set_handoff_selected_id("".into());
+    state.borrow_mut().pending_handoff = Some(PendingHandoff {
+        kind: kind.to_owned(),
+        imports,
+        awaiting_new_project: false,
+    });
+    ui.set_handoff_open(true);
+}
+
+fn clip_imports(
+    imports: &[crate::panes::canvas::CanvasImport],
+) -> Vec<crate::panes::media_bin::MediaImport> {
+    imports
+        .iter()
+        .map(|item| crate::panes::media_bin::MediaImport {
+            path: item.path.clone(),
+            display_name: item.display_name.clone(),
+        })
+        .collect()
+}
+
+fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
+    let ui = app.global::<SeeCut>();
+    let Some(pending) = state.borrow().pending_handoff.clone() else {
+        ui.set_handoff_open(false);
+        return;
+    };
+    if !ui
+        .get_handoff_targets()
+        .iter()
+        .any(|target| target.id.as_str() == id)
+    {
+        ui.set_error("目标工程不存在，请重新选择".into());
+        return;
+    }
+    if pending.kind == "canvas" {
+        let Ok(payload) = serde_json::to_string(&pending.imports) else {
+            ui.set_error("无法准备画布素材".into());
+            return;
+        };
+        ui.set_handoff_open(false);
+        ui.set_canvas_gallery_open(false);
+        ui.set_page(6);
+        if id == "new" {
+            app.invoke_canvas_new_with_paths(payload.into());
+        } else if id == "current" {
+            app.invoke_canvas_handoff_current(payload.into());
+        } else if let Some(path) = id.strip_prefix("recent:") {
+            app.invoke_canvas_open_with_paths(path.into(), payload.into());
+        }
+        return;
+    } else {
+        if id != "current" && !app.get_on_start() {
+            app.invoke_close_clip_project();
+            if !app.get_on_start() {
+                ui.set_error("当前剪辑项目未能保存，请重试".into());
+                return;
+            }
+        }
+        if id == "new" {
+            if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
+                handoff.awaiting_new_project = true;
+            }
+            ui.set_pending_import_count(
+                (state.borrow().pending_imports.len() + pending.imports.len()) as i32,
+            );
+            ui.set_page(0);
+            app.set_clip_create_open(true);
+            ui.set_handoff_open(false);
+            return;
+        } else if id == "current" {
+            import_named_paths(app, clip_imports(&pending.imports));
+        } else if let Some(path) = id.strip_prefix("recent:") {
+            app.invoke_start_open_recent(path.into());
+            if app.get_on_start() {
+                ui.set_error("剪辑项目未能打开，请重新选择".into());
+                ui.set_page(ui.get_handoff_source_page());
+                return;
+            }
+            import_named_paths(app, clip_imports(&pending.imports));
+        }
+    }
+    state.borrow_mut().pending_handoff = None;
+    ui.set_handoff_open(false);
+}
+
 fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
     let ui = app.global::<SeeCut>();
     match name {
-        "personal" | "personal-cache" | "personal-bulk" => {
+        "export-copy" => {
+            let mut cloud = state.borrow_mut();
+            let Some(batch) = cloud.export_copy.as_mut() else {
+                return;
+            };
+            for id in value["completed"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                batch.completed.insert(id.to_owned());
+            }
+            batch.running = false;
+            let done = batch.completed.len();
+            let total = batch.items.len();
+            let bytes_done: u64 = batch
+                .items
+                .iter()
+                .filter(|item| batch.completed.contains(&item.id))
+                .filter_map(|item| std::fs::metadata(&item.source).ok())
+                .map(|metadata| metadata.len())
+                .sum();
+            batch
+                .bytes_done
+                .store(bytes_done, std::sync::atomic::Ordering::Relaxed);
+            let message = if value["cancelled"] == true {
+                format!("已取消，完成 {done}/{total} 项")
+            } else if let Some(error) = value["error"].as_str() {
+                format!(
+                    "已导出 {done}/{total} 项；{} 失败：{error}",
+                    text(&value, "failed")
+                )
+            } else {
+                format!("已导出 {done} 项")
+            };
+            ui.set_export_copy_done(done as i32);
+            ui.set_export_copy_progress(if done == total {
+                100
+            } else if batch.bytes_total == 0 {
+                0
+            } else {
+                ((bytes_done.min(batch.bytes_total) * 100) / batch.bytes_total) as i32
+            });
+            ui.set_export_copy_error(message.into());
+            ui.set_export_copy_running(false);
+        }
+        "personal"
+        | "personal-cache"
+        | "personal-bulk"
+        | "personal-dialog-rename"
+        | "personal-dialog-create-folder"
+        | "personal-dialog-move"
+        | "personal-drag-move" => {
             state.borrow_mut().personal = items(&value);
-            if name == "personal-bulk" {
+            state.borrow_mut().personal_folders =
+                value["folders"].as_array().cloned().unwrap_or_default();
+            if matches!(
+                name,
+                "personal-bulk" | "personal-dialog-move" | "personal-drag-move"
+            ) {
                 state.borrow_mut().selected_personal.clear();
             }
             render_personal(app, state);
+            if name.starts_with("personal-dialog-") {
+                ui.set_personal_dialog_busy(false);
+                ui.set_personal_dialog_error("".into());
+                ui.set_personal_dialog(0);
+            }
             if name == "personal-cache" {
                 render_tasks(app, state);
             }
@@ -2013,6 +2463,15 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             state.borrow_mut().token = token;
             ui.set_signed_in(true);
             ui.set_email(ui.get_auth_email());
+            ui.set_account_label(
+                ui.get_auth_email()
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_uppercase()
+                    .to_string()
+                    .into(),
+            );
             ui.set_auth_password("".into());
             ui.set_auth_open(false);
             let uid = text(&value["user"], "id");
@@ -2179,7 +2638,27 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 continue_picker_batch(app, state);
             }
             if ui.get_signed_in() {
-                let pending = std::mem::take(&mut state.borrow_mut().pending_personal_references);
+                let pending = state.borrow().pending_personal_references.clone();
+                let candidates = pending
+                    .iter()
+                    .map(|(path, name)| PickerSelection {
+                        id: path.clone(),
+                        name: name.clone(),
+                        kind: reference_kind(Path::new(path)).to_owned(),
+                        local_path: path.clone(),
+                        download_endpoint: String::new(),
+                        download_path: PathBuf::new(),
+                    })
+                    .collect::<Vec<_>>();
+                if !candidates.is_empty() {
+                    if let Err(error) =
+                        validate_picker_reference_selection(&ui, &state.borrow(), &candidates)
+                    {
+                        ui.set_error(error.into());
+                        return;
+                    }
+                    state.borrow_mut().pending_personal_references.clear();
+                }
                 if !pending.is_empty() {
                     ui.set_asset_picker_open(false);
                     ui.set_page(1);
@@ -2216,12 +2695,22 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
         "generate" => {
             let submission = state.borrow_mut().submission.take();
             if let Some(submission) = submission {
-                let task_id = text(&value, "id");
-                if !task_id.is_empty() {
-                    state
-                        .borrow_mut()
-                        .task_snapshots
-                        .insert(task_id, submission.snapshot);
+                let task_ids = value["tasks"]
+                    .as_array()
+                    .map(|tasks| {
+                        tasks
+                            .iter()
+                            .map(|task| text(task, "id"))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_else(|| vec![text(&value, "id")]);
+                if task_ids.iter().any(|id| !id.is_empty()) {
+                    for task_id in task_ids.into_iter().filter(|id| !id.is_empty()) {
+                        state
+                            .borrow_mut()
+                            .task_snapshots
+                            .insert(task_id, submission.snapshot.clone());
+                    }
                     if let Err(error) = save_task_snapshots(&state.borrow()) {
                         ui.set_error(error.into());
                     }
@@ -2242,7 +2731,13 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             let tasks = items(&value);
             let changed = state.borrow().tasks != tasks;
             let selected_id = selected_task_id(&state.borrow().tasks, ui.get_selected_task());
-            state.borrow_mut().tasks = tasks.clone();
+            {
+                let mut cloud = state.borrow_mut();
+                cloud
+                    .selected_tasks
+                    .retain(|id| tasks.iter().any(|task| text(task, "id") == *id));
+                cloud.tasks = tasks.clone();
+            }
             render_tasks(app, state);
             match selected_id
                 .as_deref()
@@ -2275,6 +2770,18 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     download_task(app, state, &id, "cache", "");
                 }
             }
+        }
+        "tasks-trash" => {
+            state.borrow_mut().selected_tasks.clear();
+            ui.set_task_selection_mode(false);
+            ui.set_task_selected_count(0);
+            ui.set_notice("已从结果列表移除".into());
+            job(
+                app,
+                state,
+                "tasks".into(),
+                request("GET", "/api/generation/tasks", Value::Null),
+            );
         }
         "teams" => {
             let teams = items(&value);
@@ -2417,17 +2924,17 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 "media-preview" => {
                     finish_media_preview(app, state, &id, &path, value["preview_token"].as_u64())
                 }
+                "batch-output" | "cache" => continue_result_batch(app, state),
                 "picker-batch" => {
                     set_picker_batch_path(&mut state.borrow_mut(), &id, &path);
                     continue_picker_batch(app, state);
                 }
                 "preview" => open_file(&path),
-                "import" => import_or_queue(app, state, path.clone()),
+                "import" => begin_handoff(app, state, "clip", vec![PathBuf::from(&path)]),
                 "reference" => upload_file(app, state, path.clone(), "generation_input"),
                 "canvas" => {
                     ui.set_asset_picker_open(false);
-                    ui.set_page(6);
-                    app.invoke_open_canvas_path(path.clone().into());
+                    begin_handoff(app, state, "canvas", vec![PathBuf::from(&path)]);
                 }
                 "download" => ui.set_notice("结果已保存到本机".into()),
                 "save-team" => upload_file_for_team(
@@ -2533,65 +3040,545 @@ fn email_notice(app: &App, value: &Value) {
 }
 fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
     let c = state.borrow();
-    app.global::<SeeCut>().set_tasks(rows(
-        c.tasks
-            .iter()
-            .map(|v| {
-                let mut item = task_item(v);
-                let snapshot = c
-                    .task_snapshots
-                    .get(&text(v, "id"))
-                    .cloned()
-                    .or_else(|| server_task_snapshot(v).ok());
-                item.refillable = snapshot.is_some();
-                if item.kind.as_str() == "video"
-                    && let Some(snapshot) = snapshot.as_ref()
-                    && let Some(duration) = snapshot.parameters.get("duration")
+    let task_rows: Vec<CloudItem> = c
+        .tasks
+        .iter()
+        .map(|v| {
+            let mut item = task_item(v);
+            item.selected = c.selected_tasks.contains(&text(v, "id"));
+            let snapshot = c
+                .task_snapshots
+                .get(&text(v, "id"))
+                .cloned()
+                .or_else(|| server_task_snapshot(v).ok());
+            item.refillable = snapshot.is_some();
+            if item.kind.as_str() == "video"
+                && let Some(snapshot) = snapshot.as_ref()
+                && let Some(duration) = snapshot.parameters.get("duration")
+            {
+                item.detail = format!(
+                    "{} · {}",
+                    parameter_label("duration", duration),
+                    item.detail
+                )
+                .into();
+            }
+            if let Some(path) = c.local.get(&text(v, "id")) {
+                item.local = std::path::Path::new(path).is_file();
+                if item.local {
+                    item.ready = true;
+                    if text(v, "status") == "expired" {
+                        item.status = "已保存到本机".into();
+                    }
+                }
+                if text(v, "kind") == "image" {
+                    item.preview = slint::Image::load_from_path(std::path::Path::new(path))
+                        .unwrap_or_default();
+                } else if text(v, "kind") == "video"
+                    && let Ok(root) = library_root()
                 {
-                    item.detail = format!(
-                        "{} · {}",
-                        parameter_label("duration", duration),
-                        item.detail
-                    )
-                    .into();
+                    use crate::personal_library::{
+                        Asset, AssetKind, AssetSource, cached_thumbnail,
+                    };
+                    let asset = Asset {
+                        id: String::new(),
+                        name: item.name.to_string(),
+                        path: PathBuf::from(path),
+                        kind: AssetKind::Video,
+                        source: AssetSource::Generated,
+                        original_path: None,
+                        created_at: 0,
+                        trashed: false,
+                        favorite: false,
+                        folder_id: None,
+                    };
+                    item.preview = cached_thumbnail(&asset, &root)
+                        .and_then(|thumbnail| slint::Image::load_from_path(&thumbnail).ok())
+                        .unwrap_or_default();
                 }
-                if let Some(path) = c.local.get(&text(v, "id")) {
-                    item.local = std::path::Path::new(path).is_file();
-                    if item.local {
-                        item.ready = true;
-                        if text(v, "status") == "expired" {
-                            item.status = "已保存到本机".into();
+            }
+            item
+        })
+        .collect();
+    let ui = app.global::<SeeCut>();
+    ui.set_task_selected_count(c.selected_tasks.len() as i32);
+    ui.set_tasks(rows(task_rows.clone()));
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (index, task) in c.tasks.iter().enumerate() {
+        let id = text(task, "batch_id");
+        let id = if id.is_empty() { text(task, "id") } else { id };
+        if let Some((_, indices)) = groups.iter_mut().find(|(group_id, _)| *group_id == id) {
+            indices.push(index);
+        } else {
+            groups.push((id, vec![index]));
+        }
+    }
+    ui.set_batches(rows(
+        groups
+            .into_iter()
+            .map(|(id, mut indices)| {
+                indices.sort_by_key(|index| c.tasks[*index]["batch_index"].as_i64().unwrap_or(0));
+                let first = &c.tasks[indices[0]];
+                let created = first["created_at"]
+                    .as_i64()
+                    .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+                    .map(|time| {
+                        let local = time.with_timezone(&Local);
+                        if local.date_naive() == Local::now().date_naive() {
+                            format!("今天 {}", local.format("%H:%M"))
+                        } else {
+                            local.format("%m-%d %H:%M").to_string()
                         }
+                    })
+                    .unwrap_or_else(|| "最近".to_owned());
+                let success = indices
+                    .iter()
+                    .filter(|index| {
+                        text(&c.tasks[**index], "status") == "succeeded" || task_rows[**index].ready
+                    })
+                    .count();
+                let failed = indices
+                    .iter()
+                    .filter(|index| text(&c.tasks[**index], "status") == "failed")
+                    .count();
+                let count = indices.len();
+                let unit = if text(first, "kind") == "video" {
+                    "条"
+                } else {
+                    "张"
+                };
+                let summary = if failed == 0 && success == count {
+                    let mut fields = vec![format!("{count} {unit}")];
+                    let ratio = text(&first["request"], "aspect_ratio");
+                    let size = text(&first["request"], "size");
+                    if !ratio.is_empty() {
+                        fields.push(ratio);
                     }
-                    if text(v, "kind") == "image" {
-                        item.preview = slint::Image::load_from_path(std::path::Path::new(path))
-                            .unwrap_or_default();
-                    } else if text(v, "kind") == "video"
-                        && let Ok(root) = library_root()
-                    {
-                        use crate::personal_library::{
-                            Asset, AssetKind, AssetSource, cached_thumbnail,
-                        };
-                        let asset = Asset {
-                            id: String::new(),
-                            name: item.name.to_string(),
-                            path: PathBuf::from(path),
-                            kind: AssetKind::Video,
-                            source: AssetSource::Generated,
-                            original_path: None,
-                            created_at: 0,
-                            trashed: false,
-                            favorite: false,
-                        };
-                        item.preview = cached_thumbnail(&asset, &root)
-                            .and_then(|thumbnail| slint::Image::load_from_path(&thumbnail).ok())
-                            .unwrap_or_default();
+                    if !size.is_empty() {
+                        fields.push(size.replace('x', " × "));
                     }
+                    fields.join(" · ")
+                } else if success + failed == count {
+                    format!("完成 {success}/{count} · {failed} {unit}失败")
+                } else {
+                    format!("{count} {unit} · 生成中")
+                };
+                GenerationBatch {
+                    id: id.into(),
+                    label: created.into(),
+                    summary: summary.into(),
+                    items: rows(
+                        indices
+                            .into_iter()
+                            .map(|index| task_rows[index].clone())
+                            .collect(),
+                    ),
                 }
-                item
             })
             .collect(),
     ));
+}
+
+fn start_result_batch(app: &App, state: &Rc<RefCell<Cloud>>, intent: &str) {
+    let ui = app.global::<SeeCut>();
+    let (ids, tasks) = {
+        let cloud = state.borrow();
+        let tasks = cloud
+            .tasks
+            .iter()
+            .filter(|task| cloud.selected_tasks.contains(&text(task, "id")))
+            .cloned()
+            .collect::<Vec<_>>();
+        let ids = tasks
+            .iter()
+            .map(|task| text(task, "id"))
+            .collect::<Vec<_>>();
+        (ids, tasks)
+    };
+    if ids.is_empty() {
+        ui.set_error("请先选择生成结果".into());
+        return;
+    }
+    if intent == "canvas" && tasks.iter().any(|task| text(task, "kind") != "image") {
+        ui.set_error("画布只支持图片结果".into());
+        return;
+    }
+    if intent == "reference"
+        && ui.get_mode() == 0
+        && tasks.iter().any(|task| text(task, "kind") != "image")
+    {
+        ui.set_error("当前图片模型只支持图片参考".into());
+        return;
+    }
+    if intent == "reference" {
+        let cloud = state.borrow();
+        let selected = tasks
+            .iter()
+            .map(|task| PickerSelection {
+                id: text(task, "id"),
+                name: text(task, "name"),
+                kind: text(task, "kind"),
+                local_path: cloud
+                    .local
+                    .get(&text(task, "id"))
+                    .cloned()
+                    .unwrap_or_default(),
+                download_endpoint: String::new(),
+                download_path: PathBuf::new(),
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = validate_picker_reference_selection(&ui, &cloud, &selected) {
+            ui.set_error(error.into());
+            return;
+        }
+    }
+    if tasks.iter().any(|task| {
+        let id = text(task, "id");
+        let cached = state
+            .borrow()
+            .local
+            .get(&id)
+            .is_some_and(|path| Path::new(path).is_file());
+        !cached && (text(task, "status") != "succeeded" || !task_has_downloadable_output(task))
+    }) {
+        ui.set_error("所选结果包含尚未完成或文件不可用的项目".into());
+        return;
+    }
+    state.borrow_mut().pending_result_batch = Some(PendingResultBatch {
+        intent: intent.to_owned(),
+        ids,
+    });
+    continue_result_batch(app, state);
+}
+
+fn continue_result_batch(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let Some(batch) = state.borrow().pending_result_batch.clone() else {
+        return;
+    };
+    let missing = {
+        let cloud = state.borrow();
+        batch
+            .ids
+            .iter()
+            .find(|id| {
+                !cloud
+                    .local
+                    .get(*id)
+                    .is_some_and(|path| Path::new(path).is_file())
+            })
+            .cloned()
+    };
+    if let Some(id) = missing {
+        if state.borrow_mut().download_attempts.insert(id.clone()) {
+            download_task(app, state, &id, "batch-output", "");
+        }
+        return;
+    }
+    let paths = {
+        let cloud = state.borrow();
+        batch
+            .ids
+            .iter()
+            .filter_map(|id| cloud.local.get(id).map(PathBuf::from))
+            .collect::<Vec<_>>()
+    };
+    if paths.len() != batch.ids.len() {
+        return;
+    }
+    state.borrow_mut().pending_result_batch = None;
+    let ui = app.global::<SeeCut>();
+    match batch.intent.as_str() {
+        "reference" => {
+            let selected = {
+                let cloud = state.borrow();
+                batch
+                    .ids
+                    .iter()
+                    .zip(paths.iter())
+                    .map(|(id, path)| {
+                        let task = cloud.tasks.iter().find(|task| text(task, "id") == *id);
+                        PickerSelection {
+                            id: id.clone(),
+                            name: task
+                                .map(|task| text(task, "name"))
+                                .unwrap_or_else(|| id.clone()),
+                            kind: task.map(|task| text(task, "kind")).unwrap_or_default(),
+                            local_path: path.to_string_lossy().into_owned(),
+                            download_endpoint: String::new(),
+                            download_path: PathBuf::new(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            if let Err(error) = validate_picker_reference_selection(&ui, &state.borrow(), &selected)
+            {
+                ui.set_error(error.into());
+                return;
+            }
+            ui.set_page(1);
+            ui.set_generation_step(0);
+            for path in paths {
+                upload_file(
+                    app,
+                    state,
+                    path.to_string_lossy().into_owned(),
+                    "generation_input",
+                );
+            }
+        }
+        "canvas" | "clip" => begin_handoff(app, state, &batch.intent, paths),
+        "export" => {
+            begin_copy_export(
+                app,
+                state,
+                batch
+                    .ids
+                    .iter()
+                    .zip(paths)
+                    .map(|(id, source)| ExportCopyItem {
+                        id: id.clone(),
+                        name: source
+                            .file_stem()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("生成结果")
+                            .to_owned(),
+                        source,
+                    })
+                    .collect(),
+                "导出生成结果",
+            );
+        }
+        _ => {}
+    }
+}
+
+/// Create the final name exclusively. A prior exists-check is insufficient:
+/// another export (or the user) can create the name before the copy begins.
+#[cfg(test)]
+fn copy_unique_export(
+    source: &Path,
+    folder: &Path,
+    display_name: &str,
+    stable_id: &str,
+) -> Result<PathBuf, String> {
+    copy_unique_export_progress(source, folder, display_name, stable_id, None, None)?
+        .ok_or_else(|| "导出已取消".into())
+}
+
+fn copy_unique_export_progress(
+    source: &Path,
+    folder: &Path,
+    display_name: &str,
+    stable_id: &str,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    bytes_done: Option<&std::sync::atomic::AtomicU64>,
+) -> Result<Option<PathBuf>, String> {
+    use std::io::{self, Read, Write};
+    use std::sync::atomic::Ordering;
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let stem = export_stem(display_name, 160);
+    let id = export_stem(stable_id, 48);
+    for index in 0..10_000 {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+            return Ok(None);
+        }
+        let suffix = match index {
+            0 => String::new(),
+            1 => format!("-{id}"),
+            _ => format!("-{id}-{}", index - 1),
+        };
+        let filename = if extension.is_empty() {
+            format!("{stem}{suffix}")
+        } else {
+            format!("{stem}{suffix}.{extension}")
+        };
+        let destination = folder.join(filename);
+        let mut output = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+        {
+            Ok(output) => output,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        let copied: io::Result<bool> = (|| {
+            let mut input = std::fs::File::open(source)?;
+            let mut buffer = [0_u8; 256 * 1024];
+            loop {
+                if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+                    return Ok(false);
+                }
+                let count = input.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                output.write_all(&buffer[..count])?;
+                if let Some(bytes_done) = bytes_done {
+                    bytes_done.fetch_add(count as u64, Ordering::Relaxed);
+                }
+            }
+            output.flush()?;
+            output.sync_all()?;
+            Ok(true)
+        })();
+        match copied {
+            Ok(true) => return Ok(Some(destination)),
+            Ok(false) => {
+                drop(output);
+                let _ = std::fs::remove_file(&destination);
+                return Ok(None);
+            }
+            Err(error) => {
+                drop(output);
+                let _ = std::fs::remove_file(&destination);
+                return Err(error.to_string());
+            }
+        }
+    }
+    Err("同名文件过多，请选择其他文件夹".into())
+}
+
+fn copy_export_call(cloud: &Cloud) -> Result<Value, String> {
+    use std::sync::atomic::Ordering;
+    let Some(batch) = cloud.export_copy.as_ref() else {
+        return Err("导出任务已失效".into());
+    };
+    let mut completed = Vec::new();
+    for item in &batch.items {
+        if batch.completed.contains(&item.id) {
+            continue;
+        }
+        match copy_unique_export_progress(
+            &item.source,
+            &batch.folder,
+            &item.name,
+            &item.id,
+            Some(&batch.cancel),
+            Some(&batch.bytes_done),
+        ) {
+            Ok(Some(_)) => completed.push(item.id.clone()),
+            Ok(None) => return Ok(json!({"completed":completed,"cancelled":true})),
+            Err(error) => {
+                return Ok(json!({"completed":completed,"failed":item.name,"error":error}));
+            }
+        }
+        if batch.cancel.load(Ordering::Relaxed) {
+            return Ok(json!({"completed":completed,"cancelled":true}));
+        }
+    }
+    Ok(json!({"completed":completed}))
+}
+
+fn poll_copy_export_progress(
+    weak: slint::Weak<App>,
+    state: Rc<RefCell<Cloud>>,
+    progress: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    slint::Timer::single_shot(Duration::from_millis(100), move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let (active, total, done) = {
+            let cloud = state.borrow();
+            let Some(batch) = cloud.export_copy.as_ref() else {
+                return;
+            };
+            if !batch.running || !std::sync::Arc::ptr_eq(&batch.bytes_done, &progress) {
+                return;
+            }
+            (batch.running, batch.bytes_total, batch.completed.len())
+        };
+        if active {
+            let bytes = progress.load(std::sync::atomic::Ordering::Relaxed);
+            let ui = app.global::<SeeCut>();
+            ui.set_export_copy_progress(if total == 0 {
+                0
+            } else {
+                ((bytes.min(total) * 100) / total) as i32
+            });
+            ui.set_export_copy_done(done as i32);
+            poll_copy_export_progress(app.as_weak(), state, progress);
+        }
+    });
+}
+
+fn begin_copy_export(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    items: Vec<ExportCopyItem>,
+    title: &str,
+) {
+    let ui = app.global::<SeeCut>();
+    if items.is_empty() {
+        ui.set_error("请先选择素材".into());
+        return;
+    }
+    if state.borrow().export_copy.is_some() {
+        ui.set_error("请先完成当前导出".into());
+        return;
+    }
+    let Some(folder) = crate::platform::pick_folder(title, "") else {
+        return;
+    };
+    let bytes_total = items
+        .iter()
+        .filter_map(|item| std::fs::metadata(&item.source).ok())
+        .map(|metadata| metadata.len())
+        .sum();
+    let progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let batch = ExportCopyJob {
+        items,
+        folder,
+        completed: HashSet::new(),
+        running: true,
+        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        bytes_done: progress.clone(),
+        bytes_total,
+    };
+    ui.set_export_copy_total(batch.items.len() as i32);
+    ui.set_export_copy_done(0);
+    ui.set_export_copy_progress(0);
+    ui.set_export_copy_error("".into());
+    ui.set_export_copy_running(true);
+    ui.set_export_copy_open(true);
+    state.borrow_mut().export_copy = Some(batch);
+    job(
+        app,
+        state,
+        "export-copy".into(),
+        request("POST", "local:export-copy", Value::Null),
+    );
+    poll_copy_export_progress(app.as_weak(), state.clone(), progress);
+}
+
+fn export_stem(value: &str, max_bytes: usize) -> String {
+    let clean = value
+        .chars()
+        .map(|ch| {
+            if ch == '/' || ch == '\\' || ch.is_control() {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>();
+    let clean = clean.trim().trim_matches('.');
+    let mut limited = String::new();
+    for ch in clean.chars() {
+        if limited.len() + ch.len_utf8() > max_bytes {
+            break;
+        }
+        limited.push(ch);
+    }
+    if limited.is_empty() {
+        "素材".into()
+    } else {
+        limited
+    }
 }
 fn library_root() -> Result<PathBuf, String> {
     concat_host::AppDirs::locate()
@@ -2605,6 +3592,14 @@ fn library_call(c: &Cloud, req: &Request) -> Result<Value, String> {
 }
 
 fn library_call_at(c: &Cloud, req: &Request, root: &std::path::Path) -> Result<Value, String> {
+    crate::personal_library::with_library_write_lock(|| library_call_unlocked(c, req, root))
+}
+
+fn library_call_unlocked(
+    c: &Cloud,
+    req: &Request,
+    root: &std::path::Path,
+) -> Result<Value, String> {
     use crate::personal_library::Library;
     let mut library = Library::load(root)?;
     let id = text(&req.body, "id");
@@ -2619,7 +3614,8 @@ fn library_call_at(c: &Cloud, req: &Request, root: &std::path::Path) -> Result<V
             "已导入个人资产库"
         }
         "local:library-register" => {
-            library.register_generated(text(&req.body, "path"))?;
+            library
+                .register_generated_with_name(text(&req.body, "path"), req.body["name"].as_str())?;
             ""
         }
         "local:library-rename" => {
@@ -2641,6 +3637,30 @@ fn library_call_at(c: &Cloud, req: &Request, root: &std::path::Path) -> Result<V
             } else {
                 "已取消收藏"
             }
+        }
+        "local:library-create-folder" => {
+            library.create_folder(&text(&req.body, "name"))?;
+            ""
+        }
+        "local:library-move" => {
+            let ids = req.body["ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let folder_id = req.body["folder_id"].as_str().filter(|id| !id.is_empty());
+            let changed = library.move_to_folder(&ids, folder_id)?;
+            return library_result(
+                &library,
+                root,
+                if changed > 0 {
+                    format!("已整理 {changed} 项素材")
+                } else {
+                    String::new()
+                },
+            );
         }
         "local:library-trash-selected" | "local:library-restore-selected" => {
             let ids = req.body["ids"]
@@ -2707,15 +3727,30 @@ fn library_result(
         .map(|asset| {
             let mut value = serde_json::to_value(asset).unwrap_or_default();
             let metadata = asset.path.metadata().ok().filter(|m| m.is_file());
-            value["available"] = json!(metadata.is_some());
+            let available = metadata.is_some();
+            value["available"] = json!(available);
             value["bytes"] = json!(metadata.map(|m| m.len()).unwrap_or(0));
+            // This list is prepared by the local-library worker. Keep media
+            // probing out of Slint render callbacks and search keystrokes.
+            if available && let Ok(info) = concat_media::probe(&asset.path) {
+                if let Some(video) = info.video {
+                    value["media_width"] = json!(video.width);
+                    value["media_height"] = json!(video.height);
+                }
+                if let Some(duration) = info.duration.map(|time| time.as_f64())
+                    && duration.is_finite()
+                    && duration > 0.0
+                {
+                    value["media_duration_ms"] = json!((duration * 1000.0).round() as u64);
+                }
+            }
             if !asset.trashed && asset.kind != AssetKind::Audio {
                 value["thumbnail"] = json!(crate::personal_library::thumbnail(asset, root));
             }
             value
         })
         .collect();
-    Ok(json!({"items":items,"notice":notice}))
+    Ok(json!({"items":items,"folders":library.folders(),"notice":notice}))
 }
 
 fn personal_job(app: &App, state: &Rc<RefCell<Cloud>>, operation: &str, body: Value) {
@@ -2727,9 +3762,128 @@ fn personal_job(app: &App, state: &Rc<RefCell<Cloud>>, operation: &str, body: Va
     );
 }
 
+fn personal_drop_move(
+    ui: &SeeCut,
+    cloud: &Cloud,
+    asset_id: &str,
+    folder_index: i32,
+) -> Option<(Vec<String>, String)> {
+    if ui.get_personal_trash() || ui.get_working() || ui.get_personal_dialog() > 0 {
+        return None;
+    }
+    personal_drop_plan(cloud, asset_id, folder_index)
+}
+
+fn personal_drop_plan(
+    cloud: &Cloud,
+    asset_id: &str,
+    folder_index: i32,
+) -> Option<(Vec<String>, String)> {
+    let target_id = match folder_index {
+        1 => String::new(),
+        index if index >= 2 => cloud
+            .personal_folders
+            .get(usize::try_from(index - 2).ok()?)
+            .map(|folder| text(folder, "id"))?,
+        _ => return None, // All assets is an aggregate, never a destination.
+    };
+    let source = cloud
+        .personal
+        .iter()
+        .find(|item| text(item, "id") == asset_id)?;
+    if source["trashed"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    let mut ids = if cloud.selected_personal.contains(asset_id) {
+        cloud.selected_personal.iter().cloned().collect::<Vec<_>>()
+    } else {
+        vec![asset_id.to_owned()]
+    };
+    ids.sort();
+    let mut changes = false;
+    for id in &ids {
+        let item = cloud.personal.iter().find(|item| text(item, "id") == *id)?;
+        if item["trashed"].as_bool().unwrap_or(false) {
+            return None;
+        }
+        let current = item["folder_id"].as_str().unwrap_or_default();
+        changes |= current != target_id;
+    }
+    changes.then_some((ids, target_id))
+}
+
+fn personal_dialog_job(app: &App, state: &Rc<RefCell<Cloud>>, operation: &str, body: Value) {
+    let ui = app.global::<SeeCut>();
+    if ui.get_personal_dialog_busy() {
+        return;
+    }
+    ui.set_personal_dialog_error("".into());
+    ui.set_personal_dialog_busy(true);
+    job(
+        app,
+        state,
+        format!("personal-dialog-{operation}"),
+        request("POST", format!("local:library-{operation}"), body),
+    );
+}
+
+fn personal_asset_detail(asset: &Value) -> String {
+    let kind = text(asset, "kind");
+    let width = asset["media_width"].as_u64().unwrap_or(0);
+    let height = asset["media_height"].as_u64().unwrap_or(0);
+    let duration_ms = asset["media_duration_ms"].as_u64().unwrap_or(0);
+    if kind == "image" && width > 0 && height > 0 {
+        return format!("{width} × {height}");
+    }
+    if kind != "image" && duration_ms > 0 {
+        let seconds = duration_ms.div_ceil(1000);
+        return if seconds >= 3600 {
+            format!(
+                "{:02}:{:02}:{:02}",
+                seconds / 3600,
+                (seconds / 60) % 60,
+                seconds % 60
+            )
+        } else {
+            format!("{:02}:{:02}", seconds / 60, seconds % 60)
+        };
+    }
+    if width > 0 && height > 0 {
+        return format!("{width} × {height}");
+    }
+    format!(
+        "{:.1} MB",
+        asset["bytes"].as_u64().unwrap_or(0) as f64 / 1_048_576.
+    )
+}
+
+fn personal_asset_status(asset: &Value) -> String {
+    let kind = match text(asset, "kind").as_str() {
+        "image" => "图片",
+        "video" => "视频",
+        _ => "音频",
+    };
+    let source = if text(asset, "source") == "generated" {
+        "生成结果"
+    } else {
+        "本地导入"
+    };
+    format!("{kind} · {source} · {}", personal_asset_detail(asset))
+}
+
 fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     sync_picker_selection(&ui, state);
+    // A refresh may remove an item from the current view. Keep the batch
+    // scope equal to the rows the user can currently see.
+    let visible_ids = visible_personal(&ui, &state.borrow())
+        .into_iter()
+        .map(|item| text(item, "id"))
+        .collect::<HashSet<_>>();
+    state
+        .borrow_mut()
+        .selected_personal
+        .retain(|id| visible_ids.contains(id));
     let reference_search = ui.get_personal_reference_search().to_lowercase();
     let imports_into_project =
         ui.get_asset_picker_open() && ui.get_asset_picker_purpose().as_str() == "import";
@@ -2738,24 +3892,33 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
     let picker_selecting =
         ui.get_asset_picker_open() && ui.get_asset_picker_purpose().as_str() != "canvas";
     let cloud = state.borrow();
+    ui.set_personal_folder_names(strings(
+        [
+            vec!["全部素材".to_owned(), "未分类".to_owned()],
+            cloud
+                .personal_folders
+                .iter()
+                .map(|folder| text(folder, "name"))
+                .collect(),
+        ]
+        .concat(),
+    ));
+    ui.set_personal_move_folder_names(strings(
+        [
+            vec!["未分类".to_owned()],
+            cloud
+                .personal_folders
+                .iter()
+                .map(|folder| text(folder, "name"))
+                .collect(),
+        ]
+        .concat(),
+    ));
     let row = |v: &Value| CloudItem {
         id: text(v, "id").into(),
         name: text(v, "name").into(),
-        detail: format!(
-            "{} · {} · {:.1} MB",
-            match text(v, "kind").as_str() {
-                "image" => "图片",
-                "video" => "视频",
-                _ => "音频",
-            },
-            if text(v, "source") == "generated" {
-                "生成结果"
-            } else {
-                "本地导入"
-            },
-            v["bytes"].as_u64().unwrap_or(0) as f64 / 1_048_576.
-        )
-        .into(),
+        detail: personal_asset_detail(v).into(),
+        status: personal_asset_status(v).into(),
         kind: text(v, "kind").into(),
         ready: v["available"].as_bool().unwrap_or(false),
         local: true,
@@ -2770,21 +3933,26 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
         .into_iter()
         .map(row)
         .collect::<Vec<_>>();
-    let selected_count = visible_rows.iter().filter(|item| item.selected).count() as i32;
+    let selected_count = cloud.selected_personal.len() as i32;
     ui.set_personal_selected_count(selected_count);
     ui.set_personal_assets(rows(visible_rows.clone()));
     let mut groups: Vec<PersonalAssetGroup> = Vec::new();
     for item in visible_rows {
+        let group_label = if ui.get_personal_sort() == 0 {
+            item.date_label.clone()
+        } else {
+            "全部素材".into()
+        };
         if let Some(group) = groups
             .last_mut()
-            .filter(|group| group.date_label == item.date_label)
+            .filter(|group| group.date_label == group_label)
         {
             let mut items = group.items.iter().collect::<Vec<_>>();
             items.push(item);
             group.items = rows(items);
         } else {
             groups.push(PersonalAssetGroup {
-                date_label: item.date_label.clone(),
+                date_label: group_label,
                 items: rows(vec![item]),
             });
         }
@@ -2802,6 +3970,12 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
                         || text(v, "kind") == "image")
             })
             .filter(|v| text(v, "name").to_lowercase().contains(&reference_search))
+            .filter(|v| match ui.get_asset_picker_personal_filter() {
+                1 => text(v, "kind") == "image",
+                2 => text(v, "kind") == "video",
+                3 => text(v, "kind") == "audio",
+                _ => true,
+            })
             .filter(|v| {
                 imports_into_project
                     || reference_kind(&PathBuf::from(text(v, "path"))) != "unsupported"
@@ -2829,15 +4003,55 @@ fn visible_personal<'a>(ui: &SeeCut, cloud: &'a Cloud) -> Vec<&'a Value> {
         2 => "generated",
         _ => "",
     };
-    cloud
+    let folder_filter = ui.get_personal_folder_filter();
+    let selected_folder = usize::try_from(folder_filter - 2)
+        .ok()
+        .and_then(|index| cloud.personal_folders.get(index))
+        .map(|folder| text(folder, "id"));
+    let mut visible = cloud
         .personal
         .iter()
         .filter(|v| v["trashed"].as_bool().unwrap_or(false) == ui.get_personal_trash())
         .filter(|v| text(v, "name").to_lowercase().contains(&search))
         .filter(|v| kind.is_empty() || text(v, "kind") == kind)
         .filter(|v| source.is_empty() || text(v, "source") == source)
+        .filter(|v| {
+            folder_filter == 0
+                || (folder_filter == 1 && v["folder_id"].is_null())
+                || selected_folder
+                    .as_ref()
+                    .is_some_and(|id| text(v, "folder_id") == *id)
+        })
         .filter(|v| !ui.get_personal_favorites() || v["favorite"].as_bool().unwrap_or(false))
-        .collect()
+        .collect::<Vec<_>>();
+    match ui.get_personal_sort() {
+        1 => visible.sort_by_cached_key(|v| {
+            (
+                text(v, "name").to_lowercase(),
+                std::cmp::Reverse(v["created_at"].as_u64().unwrap_or(0)),
+                text(v, "id"),
+            )
+        }),
+        2 => visible.sort_by_cached_key(|v| {
+            (
+                match text(v, "kind").as_str() {
+                    "image" => 0,
+                    "video" => 1,
+                    _ => 2,
+                },
+                text(v, "name").to_lowercase(),
+                std::cmp::Reverse(v["created_at"].as_u64().unwrap_or(0)),
+                text(v, "id"),
+            )
+        }),
+        _ => visible.sort_by_cached_key(|v| {
+            (
+                std::cmp::Reverse(v["created_at"].as_u64().unwrap_or(0)),
+                text(v, "id"),
+            )
+        }),
+    }
+    visible
 }
 
 fn local_date_label(timestamp: Option<u64>) -> String {
@@ -2847,7 +4061,17 @@ fn local_date_label(timestamp: Option<u64>) -> String {
                 .checked_add(Duration::from_millis(millis))
                 .map(DateTime::<Local>::from)
         })
-        .map(|date| date.format("%Y-%m-%d").to_string())
+        .map(|date| {
+            let days_ago = Local::now()
+                .date_naive()
+                .signed_duration_since(date.date_naive())
+                .num_days();
+            match days_ago {
+                0 => "今天".to_owned(),
+                1 => "昨天".to_owned(),
+                _ => date.format("%Y-%m-%d").to_string(),
+            }
+        })
         .unwrap_or_else(|| "未知日期".into())
 }
 
@@ -2921,7 +4145,9 @@ fn picker_selection_items(ui: &SeeCut, state: &Cloud) -> Result<Vec<PickerSelect
                 return Err(format!("素材“{}”已不可用，请重新选择", text(asset, "name")));
             }
             let kind = text(asset, "kind");
-            if reference_kind(&PathBuf::from(&path)) == "unsupported" {
+            if ui.get_asset_picker_purpose() == "reference"
+                && reference_kind(&PathBuf::from(&path)) == "unsupported"
+            {
                 return Err(format!("素材“{}”格式不受支持", text(asset, "name")));
             }
             result.push(PickerSelection {
@@ -3150,9 +4376,6 @@ fn picker_confirm(app: &App, state: &Rc<RefCell<Cloud>>) {
         return;
     }
     state.borrow_mut().picker_batch = Some((purpose.clone(), selected));
-    clear_picker_selection(&ui, state);
-    state.borrow_mut().picker_context.clear();
-    ui.set_asset_picker_open(false);
     ui.set_error("".into());
     if needs_catalog {
         if !ui.get_signed_in() {
@@ -3204,9 +4427,13 @@ fn continue_picker_batch(app: &App, state: &Rc<RefCell<Cloud>>) {
         return;
     }
     state.borrow_mut().picker_batch = None;
+    clear_picker_selection(&ui, state);
+    state.borrow_mut().picker_context.clear();
+    ui.set_asset_picker_open(false);
+    render_assets(app, state);
     if purpose == "import" {
         for item in selected {
-            import_or_queue(app, state, item.local_path);
+            import_or_queue_named(app, state, item.local_path, Some(item.name));
         }
     } else {
         ui.set_page(1);
@@ -3223,7 +4450,17 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
         "personal-preview" => open_personal_media_preview(app, state, id),
         "personal-refresh" => personal_job(app, state, "list", Value::Null),
         "personal-register-canvas" => {
-            personal_job(app, state, "register", json!({"path":id}));
+            let payload = serde_json::from_str::<Value>(id).ok();
+            let path = payload
+                .as_ref()
+                .map(|value| text(value, "path"))
+                .filter(|path| !path.is_empty())
+                .unwrap_or_else(|| id.to_owned());
+            let name = payload
+                .as_ref()
+                .map(|value| text(value, "name"))
+                .unwrap_or_default();
+            personal_job(app, state, "register", json!({"path":path,"name":name}));
         }
         "personal-select" => {
             let visible = visible_personal(&ui, &state.borrow())
@@ -3255,18 +4492,14 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
             render_personal(app, state);
         }
         "personal-trash-selected" | "personal-restore-selected" => {
-            let visible = visible_personal(&ui, &state.borrow())
-                .into_iter()
-                .map(|item| text(item, "id"))
-                .collect::<HashSet<_>>();
             let ids = state
                 .borrow()
                 .selected_personal
-                .intersection(&visible)
+                .iter()
                 .cloned()
                 .collect::<Vec<_>>();
             if ids.is_empty() {
-                ui.set_error("当前筛选结果中没有已选择资产".into());
+                ui.set_error("请先选择素材".into());
                 return;
             }
             job(
@@ -3279,6 +4512,235 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                     json!({"ids":ids}),
                 ),
             );
+        }
+        "personal-freeze-delete" => {
+            let ids = if id.is_empty() {
+                state
+                    .borrow()
+                    .selected_personal
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                vec![id.to_owned()]
+            };
+            if ids.is_empty() {
+                ui.set_error("请先选择素材".into());
+                return;
+            }
+            let known = ids.iter().all(|id| {
+                state
+                    .borrow()
+                    .personal
+                    .iter()
+                    .any(|asset| text(asset, "id") == *id)
+            });
+            if !known {
+                ui.set_error("所选素材已变化，请刷新后重试".into());
+                return;
+            }
+            state.borrow_mut().pending_delete_ids = ids;
+            ui.set_personal_delete_count(state.borrow().pending_delete_ids.len() as i32);
+            ui.set_personal_dialog(5);
+        }
+        "personal-confirm-delete" => {
+            let ids = std::mem::take(&mut state.borrow_mut().pending_delete_ids);
+            if ids.is_empty() {
+                return;
+            }
+            job(
+                app,
+                state,
+                "personal-bulk".into(),
+                request("POST", "local:library-trash-selected", json!({"ids": ids})),
+            );
+        }
+        "personal-create-folder" => {
+            if ui.get_personal_new_folder().trim().is_empty() {
+                ui.set_personal_dialog_error("请输入文件夹名称".into());
+                return;
+            }
+            personal_dialog_job(
+                app,
+                state,
+                "create-folder",
+                json!({"name": ui.get_personal_new_folder().trim()}),
+            );
+        }
+        "personal-move" | "personal-move-selected" => {
+            let index = ui.get_personal_folder_target();
+            let folder_id = if index == 0 {
+                String::new()
+            } else {
+                usize::try_from(index - 1)
+                    .ok()
+                    .and_then(|index| state.borrow().personal_folders.get(index).cloned())
+                    .map(|folder| text(&folder, "id"))
+                    .unwrap_or_default()
+            };
+            if index != 0 && folder_id.is_empty() {
+                ui.set_personal_dialog_error("文件夹不存在，请刷新后重试".into());
+                return;
+            }
+            let ids = if action == "personal-move" {
+                vec![id.to_string()]
+            } else {
+                state
+                    .borrow()
+                    .selected_personal
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            if !ids.is_empty() {
+                personal_dialog_job(app, state, "move", json!({"ids":ids,"folder_id":folder_id}));
+            } else {
+                ui.set_personal_dialog_error("请先选择素材".into());
+            }
+        }
+        "personal-drop-folder" => {
+            let Some((asset_id, index)) = id.rsplit_once(':') else {
+                return;
+            };
+            let Ok(index) = index.parse::<i32>() else {
+                return;
+            };
+            let Some((ids, folder_id)) = personal_drop_move(&ui, &state.borrow(), asset_id, index)
+            else {
+                return;
+            };
+            job(
+                app,
+                state,
+                "personal-drag-move".into(),
+                request(
+                    "POST",
+                    "local:library-move",
+                    json!({"ids":ids,"folder_id":folder_id}),
+                ),
+            );
+        }
+        "personal-reference-selected"
+        | "personal-project-selected"
+        | "personal-canvas-selected"
+        | "personal-export-selected" => {
+            let selected = {
+                let cloud = state.borrow();
+                cloud
+                    .personal
+                    .iter()
+                    .filter(|asset| cloud.selected_personal.contains(&text(asset, "id")))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            if selected.is_empty() {
+                ui.set_error("请先选择素材".into());
+                return;
+            }
+            if selected
+                .iter()
+                .any(|asset| !PathBuf::from(text(asset, "path")).is_file())
+            {
+                ui.set_error("所选素材包含缺失文件，请重新关联后重试".into());
+                return;
+            }
+            match action {
+                "personal-reference-selected" => {
+                    if ui.get_mode() == 0
+                        && selected.iter().any(|asset| text(asset, "kind") != "image")
+                    {
+                        ui.set_error("当前图片模型只支持图片参考".into());
+                        return;
+                    }
+                    if ui.get_signed_in() && !state.borrow().models.is_empty() {
+                        let candidates = selected
+                            .iter()
+                            .map(|asset| PickerSelection {
+                                id: text(asset, "id"),
+                                name: text(asset, "name"),
+                                kind: text(asset, "kind"),
+                                local_path: text(asset, "path"),
+                                download_endpoint: String::new(),
+                                download_path: PathBuf::new(),
+                            })
+                            .collect::<Vec<_>>();
+                        if let Err(error) =
+                            validate_picker_reference_selection(&ui, &state.borrow(), &candidates)
+                        {
+                            ui.set_error(error.into());
+                            return;
+                        }
+                    }
+                    ui.set_page(1);
+                    if !ui.get_signed_in() || state.borrow().models.is_empty() {
+                        for asset in &selected {
+                            enqueue_personal_reference(
+                                &mut state.borrow_mut().pending_personal_references,
+                                text(asset, "path"),
+                                text(asset, "name"),
+                            );
+                        }
+                        if ui.get_signed_in() {
+                            refresh_models(app, state);
+                        } else {
+                            show_auth(app, state, Some(1));
+                        }
+                    } else {
+                        for asset in &selected {
+                            upload_personal_reference(
+                                app,
+                                state,
+                                text(asset, "path"),
+                                text(asset, "name"),
+                            );
+                        }
+                    }
+                }
+                "personal-project-selected" => {
+                    let imports = selected
+                        .iter()
+                        .map(|asset| {
+                            crate::panes::canvas::CanvasImport::named(
+                                PathBuf::from(text(asset, "path")),
+                                text(asset, "name"),
+                            )
+                        })
+                        .collect();
+                    begin_handoff_with_imports(app, state, "clip", imports);
+                }
+                "personal-canvas-selected" => {
+                    if selected.iter().any(|asset| text(asset, "kind") != "image") {
+                        ui.set_error("画布只支持图片素材".into());
+                        return;
+                    }
+                    let imports = selected
+                        .iter()
+                        .map(|asset| {
+                            crate::panes::canvas::CanvasImport::named(
+                                PathBuf::from(text(asset, "path")),
+                                text(asset, "name"),
+                            )
+                        })
+                        .collect();
+                    begin_handoff_with_imports(app, state, "canvas", imports);
+                }
+                "personal-export-selected" => {
+                    begin_copy_export(
+                        app,
+                        state,
+                        selected
+                            .iter()
+                            .map(|asset| ExportCopyItem {
+                                id: text(asset, "id"),
+                                source: PathBuf::from(text(asset, "path")),
+                                name: text(asset, "name"),
+                            })
+                            .collect(),
+                        "导出素材",
+                    );
+                }
+                _ => {}
+            }
         }
         "personal-favorite" => {
             let favorite = state
@@ -3320,11 +4782,23 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                 show_auth(app, state, None);
             }
         }
-        "personal-rename" | "personal-trash" | "personal-restore" => personal_job(
+        "personal-rename" => {
+            if ui.get_personal_rename().trim().is_empty() {
+                ui.set_personal_dialog_error("请输入素材名称".into());
+                return;
+            }
+            personal_dialog_job(
+                app,
+                state,
+                "rename",
+                json!({"id":id,"name":ui.get_personal_rename().trim()}),
+            );
+        }
+        "personal-trash" | "personal-restore" => personal_job(
             app,
             state,
             action.trim_start_matches("personal-"),
-            json!({"id":id,"name":ui.get_personal_rename().trim()}),
+            json!({"id":id}),
         ),
         _ => {
             let asset = state
@@ -3346,7 +4820,15 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                 "personal-preview" => open_personal_media_preview(app, state, id),
                 "personal-project" => {
                     ui.set_asset_picker_open(false);
-                    import_or_queue(app, state, path);
+                    begin_handoff_with_imports(
+                        app,
+                        state,
+                        "clip",
+                        vec![crate::panes::canvas::CanvasImport::named(
+                            PathBuf::from(path),
+                            text(&asset, "name"),
+                        )],
+                    );
                 }
                 "personal-canvas" => {
                     if text(&asset, "kind") != "image" {
@@ -3354,8 +4836,15 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                         return;
                     }
                     ui.set_asset_picker_open(false);
-                    ui.set_page(6);
-                    app.invoke_open_canvas_path(path.into());
+                    begin_handoff_with_imports(
+                        app,
+                        state,
+                        "canvas",
+                        vec![crate::panes::canvas::CanvasImport::named(
+                            PathBuf::from(path),
+                            text(&asset, "name"),
+                        )],
+                    );
                 }
                 "personal-reference" => {
                     if !ui.get_signed_in() {
@@ -3528,14 +5017,21 @@ fn replace_reference_from_path(
 fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     sync_picker_selection(&ui, state);
-    let search = ui.get_asset_search().to_lowercase();
-    let filter = ui.get_asset_filter();
+    let picker_team_view = ui.get_asset_picker_open() && ui.get_asset_picker_source() == 1;
+    let search = if picker_team_view {
+        ui.get_asset_picker_team_search().to_lowercase()
+    } else {
+        ui.get_asset_search().to_lowercase()
+    };
+    let filter = if picker_team_view {
+        ui.get_asset_picker_team_filter()
+    } else {
+        ui.get_asset_filter()
+    };
     let imports_into_project =
-        ui.get_asset_picker_open() && ui.get_asset_picker_purpose().as_str() == "import";
-    let opens_in_canvas =
-        ui.get_asset_picker_open() && ui.get_asset_picker_purpose().as_str() == "canvas";
-    let picker_selecting =
-        ui.get_asset_picker_open() && ui.get_asset_picker_purpose().as_str() != "canvas";
+        picker_team_view && ui.get_asset_picker_purpose().as_str() == "import";
+    let opens_in_canvas = picker_team_view && ui.get_asset_picker_purpose().as_str() == "canvas";
+    let picker_selecting = picker_team_view && ui.get_asset_picker_purpose().as_str() != "canvas";
     let cloud = state.borrow();
     ui.set_assets(rows(
         cloud
@@ -3543,7 +5039,7 @@ fn render_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
             .iter()
             .filter(|v| text(v, "filename").to_lowercase().contains(&search))
             .filter(|v| {
-                !ui.get_asset_picker_open()
+                !picker_team_view
                     || imports_into_project
                     || if opens_in_canvas {
                         text(v, "content_type").starts_with("image/")
@@ -3601,11 +5097,29 @@ fn render_references(app: &App, state: &Rc<RefCell<Cloud>>) {
                     )
                     .into(),
                     status: match text(v, "status").as_str() {
-                        "ready" => "已上传",
-                        "failed" => "上传失败",
-                        "expired" => "已过期",
-                        "missing" => "缺少文件，可替换",
-                        _ => "上传中",
+                        "ready" => {
+                            let kind = text(v, "kind");
+                            if kind == "image" {
+                                "图片".to_owned()
+                            } else {
+                                let duration_ms = v["media_duration_ms"].as_u64().unwrap_or(0);
+                                let duration = if duration_ms > 0 {
+                                    let seconds = duration_ms.div_ceil(1000);
+                                    format!(" · {:02}:{:02}", seconds / 60, seconds % 60)
+                                } else {
+                                    String::new()
+                                };
+                                format!(
+                                    "{}{}",
+                                    if kind == "video" { "视频" } else { "音频" },
+                                    duration
+                                )
+                            }
+                        }
+                        "failed" => "上传失败".to_owned(),
+                        "expired" => "已过期".to_owned(),
+                        "missing" => "缺少文件，可替换".to_owned(),
+                        _ => "上传中".to_owned(),
                     }
                     .into(),
                     local: true,
@@ -3647,6 +5161,7 @@ fn media_preview_image(path: &str, kind: &str) -> slint::Image {
                 created_at: 0,
                 trashed: false,
                 favorite: false,
+                folder_id: None,
             };
             crate::personal_library::cached_thumbnail(&asset, &root)
                 .and_then(|thumbnail| slint::Image::load_from_path(&thumbnail).ok())
@@ -3661,21 +5176,8 @@ fn personal_preview_item(asset: &Value) -> CloudItem {
     CloudItem {
         id: text(asset, "id").into(),
         name: text(asset, "name").into(),
-        detail: format!(
-            "{} · {} · {:.1} MB",
-            match kind.as_str() {
-                "image" => "图片",
-                "video" => "视频",
-                _ => "音频",
-            },
-            if text(asset, "source") == "generated" {
-                "生成结果"
-            } else {
-                "本地导入"
-            },
-            asset["bytes"].as_u64().unwrap_or(0) as f64 / 1_048_576.
-        )
-        .into(),
+        detail: personal_asset_detail(asset).into(),
+        status: personal_asset_status(asset).into(),
         kind: kind.clone().into(),
         preview: media_preview_image(&path, &kind),
         ready,
@@ -3991,13 +5493,20 @@ fn media_preview_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str) {
             ui.set_media_preview_open(false);
         }
         "import" => {
-            import_or_queue(app, state, path);
+            import_or_queue_named(app, state, path, Some(item.name.to_string()));
             ui.set_media_preview_open(false);
         }
         "canvas" if item.kind == "image" => {
-            ui.set_page(6);
-            app.invoke_open_canvas_path(path.into());
             ui.set_media_preview_open(false);
+            begin_handoff_with_imports(
+                app,
+                state,
+                "canvas",
+                vec![crate::panes::canvas::CanvasImport::named(
+                    PathBuf::from(path),
+                    item.name.to_string(),
+                )],
+            );
         }
         "team" if source == "task" => {
             ui.set_page(1);
@@ -4253,12 +5762,12 @@ fn download_task_with_token(
     {
         match intent {
             "media-preview" => finish_media_preview(app, state, id, path, preview_token),
+            "batch-output" => continue_result_batch(app, state),
             "preview" => open_file(path),
-            "import" => import_or_queue(app, state, path.clone()),
+            "import" => begin_handoff(app, state, "clip", vec![PathBuf::from(path)]),
             "reference" => upload_file(app, state, path.clone(), "generation_input"),
             "canvas" => {
-                app.global::<SeeCut>().set_page(6);
-                app.invoke_open_canvas_path(path.clone().into());
+                begin_handoff(app, state, "canvas", vec![PathBuf::from(path)]);
             }
             "download" => app.global::<SeeCut>().set_notice("结果已保存到本机".into()),
             "save-team" => upload_file_for_team(
@@ -4327,12 +5836,11 @@ fn download_asset_with_token(
             }
             "media-preview" => finish_media_preview(app, state, id, path, preview_token),
             "preview" => open_file(path),
-            "import" => import_or_queue(app, state, path.clone()),
+            "import" => begin_handoff(app, state, "clip", vec![PathBuf::from(path)]),
             "reference" => upload_file(app, state, path.clone(), "generation_input"),
             "canvas" => {
                 app.global::<SeeCut>().set_asset_picker_open(false);
-                app.global::<SeeCut>().set_page(6);
-                app.invoke_open_canvas_path(path.clone().into());
+                begin_handoff(app, state, "canvas", vec![PathBuf::from(path)]);
             }
             "download" => app.global::<SeeCut>().set_notice("素材已保存到本机".into()),
             _ => {}
@@ -4418,15 +5926,52 @@ fn import_paths(app: &App, paths: Vec<PathBuf>) {
     });
 }
 
-fn import_or_queue(app: &App, state: &Rc<RefCell<Cloud>>, path: String) {
+fn import_named_paths(app: &App, imports: Vec<crate::panes::media_bin::MediaImport>) {
+    if imports.is_empty() {
+        return;
+    }
+    app.global::<SeeCut>().set_page(0);
+    app.global::<SeeCut>().set_notice("".into());
+    crate::host::on_ui(move |studio, _, _| {
+        let Some(session) = studio.media_import_session() else {
+            return;
+        };
+        studio.handle(crate::panes::Msg::Media(
+            crate::panes::media_bin::MediaMsg::ImportNamed { imports, session },
+        ))
+    });
+}
+
+fn import_or_queue_named(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    path: String,
+    display_name: Option<String>,
+) {
     let ui = app.global::<SeeCut>();
+    let path = PathBuf::from(path);
     if ui.get_project_open() {
-        import_paths(app, vec![PathBuf::from(path)]);
+        if let Some(display_name) = display_name.filter(|name| !name.trim().is_empty()) {
+            import_named_paths(
+                app,
+                vec![crate::panes::media_bin::MediaImport {
+                    path,
+                    display_name: Some(display_name),
+                }],
+            );
+        } else {
+            import_paths(app, vec![path]);
+        }
         return;
     }
     let count = {
         let mut cloud = state.borrow_mut();
-        enqueue_pending_import(&mut cloud.pending_imports, PathBuf::from(path));
+        enqueue_pending_import(&mut cloud.pending_imports, path.clone());
+        if let Some(display_name) = display_name.filter(|name| !name.trim().is_empty()) {
+            cloud
+                .pending_import_display_names
+                .insert(path, display_name);
+        }
         cloud.pending_imports.len()
     };
     ui.set_pending_import_count(count as i32);
@@ -4435,15 +5980,57 @@ fn import_or_queue(app: &App, state: &Rc<RefCell<Cloud>>, path: String) {
 }
 
 fn project_ready(app: &App, state: &Rc<RefCell<Cloud>>) {
-    let paths = resume_pending_imports(&mut state.borrow_mut().pending_imports);
+    let imports = {
+        let mut cloud = state.borrow_mut();
+        let display_names = std::mem::take(&mut cloud.pending_import_display_names);
+        let mut imports = resume_pending_imports(&mut cloud.pending_imports)
+            .into_iter()
+            .map(|path| crate::panes::media_bin::MediaImport {
+                display_name: display_names.get(&path).cloned(),
+                path,
+            })
+            .collect::<Vec<_>>();
+        if cloud
+            .pending_handoff
+            .as_ref()
+            .is_some_and(|handoff| handoff.kind == "clip" && handoff.awaiting_new_project)
+        {
+            imports.extend(
+                cloud
+                    .pending_handoff
+                    .take()
+                    .expect("checked")
+                    .imports
+                    .into_iter()
+                    .map(|item| crate::panes::media_bin::MediaImport {
+                        path: item.path,
+                        display_name: item.display_name,
+                    }),
+            );
+        }
+        imports
+    };
     let ui = app.global::<SeeCut>();
     ui.set_project_open(true);
     ui.set_pending_import_count(0);
-    import_paths(app, paths);
+    import_named_paths(app, imports);
 }
 
 fn cancel_project_import(app: &App, state: &Rc<RefCell<Cloud>>) {
-    let count = cancel_pending_imports(&mut state.borrow_mut().pending_imports);
+    let mut cloud = state.borrow_mut();
+    let mut count = cancel_pending_imports(&mut cloud.pending_imports);
+    cloud.pending_import_display_names.clear();
+    if cloud
+        .pending_handoff
+        .as_ref()
+        .is_some_and(|handoff| handoff.kind == "clip" && handoff.awaiting_new_project)
+    {
+        count += cloud
+            .pending_handoff
+            .take()
+            .map_or(0, |handoff| handoff.imports.len());
+    }
+    drop(cloud);
     let ui = app.global::<SeeCut>();
     ui.set_pending_import_count(0);
     if count > 0 {
@@ -4452,6 +6039,25 @@ fn cancel_project_import(app: &App, state: &Rc<RefCell<Cloud>>) {
 }
 fn task_item(v: &Value) -> CloudItem {
     let status = text(v, "status");
+    let completed_spec = if text(v, "kind") == "video" {
+        let duration = v["request"]["duration"].as_u64();
+        let resolution = text(&v["request"], "resolution");
+        match (duration, resolution.is_empty()) {
+            (Some(seconds), false) => {
+                format!("{:02}:{:02} · {resolution}", seconds / 60, seconds % 60)
+            }
+            (Some(seconds), true) => format!("{:02}:{:02}", seconds / 60, seconds % 60),
+            (None, false) => resolution,
+            (None, true) => "已完成".to_owned(),
+        }
+    } else {
+        let size = text(&v["request"], "size");
+        if size.is_empty() {
+            "已完成".to_owned()
+        } else {
+            size.replace('x', " × ")
+        }
+    };
     CloudItem {
         id: text(v, "id").into(),
         name: text(v, "prompt").into(),
@@ -4470,7 +6076,7 @@ fn task_item(v: &Value) -> CloudItem {
             "queued" => "排队中",
             "submitting" | "provider_accepted" | "processing" => "生成中",
             "validating" => "保存结果",
-            "succeeded" => "已完成",
+            "succeeded" => &completed_spec,
             "failed" => "生成失败",
             _ => "待核实",
         }
@@ -4800,14 +6406,9 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.assets.clear();
     cloud.assets_context.clear();
     cloud.teams.clear();
-    cloud.picker_selected_ids.clear();
-    cloud.picker_context.clear();
-    if !preserve_auth_intent
-        || cloud
-            .picker_batch
-            .as_ref()
-            .is_some_and(|(_, items)| items.iter().any(|item| item.local_path.is_empty()))
-    {
+    if !preserve_auth_intent {
+        cloud.picker_selected_ids.clear();
+        cloud.picker_context.clear();
         cloud.picker_batch = None;
     }
     if preserve_auth_intent {
@@ -4840,6 +6441,7 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     let ui = app.global::<SeeCut>();
     ui.set_signed_in(false);
     ui.set_email("".into());
+    ui.set_account_label("?".into());
     ui.set_balance("--".into());
     ui.set_frozen("--".into());
     ui.set_tasks(rows(Vec::new()));
@@ -5043,8 +6645,11 @@ fn save_preferences(app: &App, state: &Rc<RefCell<Cloud>>) {
         return;
     };
     let c = state.borrow();
-    let data =
-        json!({"folder":c.folder,"reduced_motion":app.global::<SeeCut>().get_reduced_motion()});
+    let data = json!({
+        "folder": c.folder,
+        "reduced_motion": app.global::<SeeCut>().get_reduced_motion(),
+        "creator_mode": app.global::<SeeCut>().get_creator_mode(),
+    });
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -5067,19 +6672,142 @@ pub fn bind(app: &App) {
         });
     app.global::<SeeCut>()
         .set_reduced_motion(saved["reduced_motion"].as_bool().unwrap_or(false));
+    app.global::<SeeCut>().set_creator_mode(
+        saved["creator_mode"]
+            .as_i64()
+            .map(|v| v.clamp(0, 1) as i32)
+            .unwrap_or(-1),
+    );
     app.global::<SeeCut>()
         .set_local_folder(folder.to_string_lossy().into_owned().into());
     app.global::<SeeCut>().set_page(1);
-    app.global::<SeeCut>().set_auth_open(true);
+    app.global::<SeeCut>().set_auth_open(false);
     app.global::<SeeCut>().set_pending_import_count(0);
     let state = Rc::new(RefCell::new(Cloud {
         base,
         folder,
         ..Cloud::default()
     }));
+    let drop_state = state.clone();
+    let drop_app = app.as_weak();
+    app.global::<SeeCut>()
+        .on_personal_can_drop(move |asset_id, folder_index| {
+            let Some(app) = drop_app.upgrade() else {
+                return false;
+            };
+            personal_drop_move(
+                &app.global::<SeeCut>(),
+                &drop_state.borrow(),
+                asset_id.as_str(),
+                folder_index,
+            )
+            .is_some()
+        });
     let weak = app.as_weak();
     let shared = state.clone();
     app.global::<SeeCut>().on_action(move |name, id| { let Some(app)=weak.upgrade() else{return}; let ui=app.global::<SeeCut>(); let team=team_id(&ui,&shared.borrow()); match name.as_str() {
+        "handoff-select" => select_handoff(&app, &shared, id.as_str()),
+        "handoff-cancel" => { shared.borrow_mut().pending_handoff = None; ui.set_handoff_open(false); },
+        "handoff-complete" => {
+            shared.borrow_mut().pending_handoff = None;
+            ui.set_handoff_open(false);
+            ui.set_page(6);
+            ui.set_canvas_gallery_open(false);
+        },
+        "handoff-failed" => {
+            if shared.borrow().pending_handoff.is_some() {
+                ui.set_page(ui.get_handoff_source_page());
+                ui.set_handoff_open(true);
+                if !id.is_empty() { ui.set_error(id); }
+            }
+        },
+        "handoff-create-cancel" => {
+            let restore = {
+                let mut cloud = shared.borrow_mut();
+                if let Some(handoff) = cloud.pending_handoff.as_mut() {
+                    if handoff.awaiting_new_project { handoff.awaiting_new_project = false; true } else { false }
+                } else { false }
+            };
+            if restore {
+                ui.set_pending_import_count(shared.borrow().pending_imports.len() as i32);
+                ui.set_page(ui.get_handoff_source_page());
+                ui.set_handoff_open(true);
+            }
+        },
+        "clip-project-search" => {
+            ui.set_clip_project_search(id);
+            crate::host::Shell::with(|shell, app| {
+                shell.studio.borrow().publish(&app, &shell.models);
+            });
+        },
+        "clip-project-sort" | "clip-project-view" => {
+            crate::host::Shell::with(|shell, app| {
+                shell.studio.borrow().publish(&app, &shell.models);
+            });
+        },
+        "canvas-project-search" => {
+            ui.set_canvas_project_search(id);
+            render_canvas_projects(&app, &shared);
+        },
+        "canvas-project-sort" | "canvas-project-view" => render_canvas_projects(&app, &shared),
+        "task-selection-mode" => {
+            let enabled = !ui.get_task_selection_mode();
+            ui.set_task_selection_mode(enabled);
+            if !enabled { shared.borrow_mut().selected_tasks.clear(); }
+            render_tasks(&app, &shared);
+        },
+        "task-select-toggle" => {
+            if shared.borrow().tasks.iter().any(|task| text(task, "id") == id.as_str()) {
+                let mut cloud = shared.borrow_mut();
+                if !cloud.selected_tasks.remove(id.as_str()) { cloud.selected_tasks.insert(id.to_string()); }
+                drop(cloud);
+                render_tasks(&app, &shared);
+            }
+        },
+        "task-batch-reference" => start_result_batch(&app, &shared, "reference"),
+        "task-batch-canvas" => start_result_batch(&app, &shared, "canvas"),
+        "task-batch-clip" => start_result_batch(&app, &shared, "clip"),
+        "task-batch-export" => start_result_batch(&app, &shared, "export"),
+        "task-batch-freeze-delete" => {
+            let ids = {
+                let cloud = shared.borrow();
+                cloud.tasks.iter().filter(|task| cloud.selected_tasks.contains(&text(task, "id"))).map(|task| text(task, "id")).collect::<Vec<_>>()
+            };
+            if ids.is_empty() { ui.set_error("请先选择生成结果".into()); return; }
+            if shared.borrow().tasks.iter().filter(|task| ids.contains(&text(task, "id")))
+                .any(|task| !matches!(text(task, "status").as_str(), "succeeded" | "failed" | "expired")) {
+                ui.set_error("生成中的结果暂不能删除".into()); return;
+            }
+            ui.set_task_delete_count(ids.len() as i32);
+            shared.borrow_mut().pending_task_delete_ids = ids;
+            ui.set_task_delete_open(true);
+        },
+        "task-batch-cancel-delete" => { shared.borrow_mut().pending_task_delete_ids.clear(); ui.set_task_delete_open(false); },
+        "task-batch-confirm-delete" => {
+            let ids = std::mem::take(&mut shared.borrow_mut().pending_task_delete_ids);
+            if !ids.is_empty() {
+                ui.set_task_delete_open(false);
+                job(&app, &shared, "tasks-trash".into(), request("POST", "/api/generation/tasks/trash", json!({"ids": ids})));
+            }
+        },
+        "canvas-projects-refresh" => refresh_canvas_projects(&app, &shared),
+        "canvas-new" => {
+            ui.set_canvas_gallery_open(false);
+            ui.set_page(6);
+            app.invoke_canvas_new();
+        },
+        "canvas-open" => {
+            let path = PathBuf::from(id.as_str());
+            if crate::panes::canvas::canvas_recent_paths().ok().is_some_and(|paths| paths.contains(&path))
+                && path.join("manifest.json").is_file() {
+                ui.set_canvas_gallery_open(false);
+                ui.set_page(6);
+                app.invoke_open_canvas_path(id);
+            } else {
+                ui.set_error("画布项目不存在，请刷新后重试".into());
+                refresh_canvas_projects(&app, &shared);
+            }
+        },
         name if name.starts_with("personal-") => personal_action(&app,&shared,name,id.as_str()),
         name if name.starts_with("template-") => template_action(&app,&shared,name,id.as_str()),
         "auth-open" => show_auth(&app,&shared,id.parse::<i32>().ok()),
@@ -5117,15 +6845,58 @@ pub fn bind(app: &App) {
         "purchase"=>job(&app,&shared,"purchase".into(),request("POST","/api/orders",json!({"plan_id":id.to_string()}))),
         "order-refresh"=>job(&app,&shared,"order".into(),request("POST",format!("/api/orders/{id}/refresh"),Value::Null)),
         "navigate"=>navigate(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
+        "creator-mode"=>{
+            if let Ok(mode) = id.parse::<i32>() {
+                ui.set_creator_mode(mode.clamp(0, 1));
+                save_preferences(&app, &shared);
+            }
+        },
         "project-assets"=>begin_asset_picker(&app,&shared,"import",0),
         "canvas-assets"=>begin_asset_picker(&app,&shared,"canvas",0),
+        "export-copy-cancel"=>{
+            if let Some(batch) = shared.borrow().export_copy.as_ref() {
+                batch.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        },
+        "export-copy-close"=>{
+            if shared.borrow().export_copy.as_ref().is_some_and(|batch| !batch.running) {
+                shared.borrow_mut().export_copy = None;
+                ui.set_export_copy_open(false);
+            }
+        },
+        "export-copy-retry"=>{
+            let progress = {
+                let mut cloud = shared.borrow_mut();
+                let Some(batch) = cloud.export_copy.as_mut() else { return; };
+                if batch.running || batch.completed.len() == batch.items.len() { return; }
+                let bytes_done: u64 = batch.items.iter().filter(|item| batch.completed.contains(&item.id))
+                    .filter_map(|item| std::fs::metadata(&item.source).ok()).map(|metadata| metadata.len()).sum();
+                batch.cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                batch.bytes_done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(bytes_done));
+                batch.running = true;
+                batch.bytes_done.clone()
+            };
+            ui.set_export_copy_error("".into());
+            ui.set_export_copy_running(true);
+            job(&app,&shared,"export-copy".into(),request("POST","local:export-copy",Value::Null));
+            poll_copy_export_progress(app.as_weak(),shared.clone(),progress);
+        },
+        "canvas-drop-batch"=>{
+            match serde_json::from_str::<Vec<PathBuf>>(id.as_str()) {
+                Ok(paths) if !paths.is_empty() => begin_handoff(&app,&shared,"canvas",paths),
+                _ => ui.set_error("拖入的素材无效，请重新选择".into()),
+            }
+        },
         "asset-picker-toggle"=>picker_toggle(&app,&shared,id.as_str()),
         "asset-picker-confirm"=>picker_confirm(&app,&shared),
         "asset-picker-cancel"=>{
+            shared.borrow_mut().picker_batch = None;
             clear_picker_selection(&ui,&shared);
             shared.borrow_mut().picker_context.clear();
             ui.set_asset_picker_open(false);
             ui.set_error("".into());
+            render_personal(&app,&shared);
+            render_assets(&app,&shared);
         },
         "project-ready"=>project_ready(&app,&shared),
         "cancel-project-import"=>cancel_project_import(&app,&shared),
@@ -5166,6 +6937,7 @@ pub fn bind(app: &App) {
             }
         },
         "reference-remove"=>remove_reference(&app,&shared,id.as_str()),
+        "reference-mention-open"=>open_reference_mention(&app,&shared),
         "reference-mention"=>insert_mention(&app,&shared,id.as_str()),
         "reference-preview"=>open_reference_media_preview(&app,&shared,id.as_str()),
         "asset-preview"=>open_team_media_preview(&app,&shared,id.as_str()),
@@ -5208,6 +6980,7 @@ pub fn bind(app: &App) {
         },
         "task-select"=>{
             ui.set_error("".into());
+            ui.set_selected_task(selected_task_index(&shared.borrow().tasks, id.as_str()).unwrap_or(-1));
             let task=shared.borrow().tasks.iter().find(|task|text(task,"id")==id.as_str()).cloned();
             let Some(task)=task else {ui.set_error("未找到该生成结果，请刷新后重试".into());ui.set_result_preview_open(false);return;};
             let local=shared.borrow().local.get(id.as_str()).filter(|path|std::path::Path::new(path).is_file()).cloned();
@@ -5326,7 +7099,11 @@ pub fn bind(app: &App) {
         }
         if matches!(
             field.as_str(),
-            "asset-search" | "asset-filter" | "asset-picker-purpose"
+            "asset-search"
+                | "asset-filter"
+                | "asset-picker-team-search"
+                | "asset-picker-team-filter"
+                | "asset-picker-purpose"
         ) {
             render_assets(&app, &shared);
         }
@@ -5341,23 +7118,25 @@ pub fn bind(app: &App) {
             sync_picker_selection(&app.global::<SeeCut>(), &shared);
             render_assets(&app, &shared);
         }
-        if field.starts_with("personal-") {
+        if field.starts_with("personal-") || field == "asset-picker-personal-filter" {
             // Managing the library is an explicit mode, including with zero
             // selected rows. A new view or mode starts with a fresh selection.
             if matches!(
                 field.as_str(),
                 "personal-selection-mode"
+                    | "personal-trash"
+                    | "personal-folder-filter"
                     | "personal-search"
                     | "personal-filter"
                     | "personal-source"
                     | "personal-favorites"
-                    | "personal-trash"
             ) {
                 shared.borrow_mut().selected_personal.clear();
             }
             render_personal(&app, &shared);
         }
     });
+    refresh_canvas_projects(app, &state);
     auth_countdown(app.as_weak());
     heartbeat(app.as_weak(), state);
 }
@@ -5384,19 +7163,89 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
 mod reference_tests {
     use super::accept_asset_list;
     use super::{
-        Cloud, DEFAULT_API_URL, NavigationDecision, PickerSelection, TaskInputSnapshot,
-        auth_request, auth_return_target, can_start_request, cancel_pending_imports,
-        configured_api_url, enqueue_pending_import, enqueue_personal_reference, has_reference_path,
+        Cloud, DEFAULT_API_URL, ExportCopyItem, ExportCopyJob, NavigationDecision, PickerSelection,
+        TaskInputSnapshot, auth_request, auth_return_target, can_start_request,
+        cancel_pending_imports, configured_api_url, copy_export_call, copy_unique_export,
+        enqueue_pending_import, enqueue_personal_reference, has_reference_path,
         invalid_reference_prompt, is_background_job, is_cloud_identity_error, mention_start,
         navigation_decision, option_index, parameter_default_index, parameter_label,
-        parameter_value, picker_download_request, reference_number, request, request_requires_auth,
-        resume_pending_imports, rewrite_mentions, selected_task_id, selected_task_index,
-        server_task_snapshot, set_picker_batch_path, should_clear_identity_error_for_target,
-        should_surface_job_error, stable_model_index, task_item, task_reference_source,
-        validate_configuration_references,
+        parameter_value, personal_drop_plan, picker_download_request, reference_number, request,
+        request_requires_auth, resume_pending_imports, rewrite_mentions, selected_task_id,
+        selected_task_index, server_task_snapshot, set_picker_batch_path,
+        should_clear_identity_error_for_target, should_surface_job_error, stable_model_index,
+        task_item, task_reference_source, validate_configuration_references,
     };
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn repeat_export_keeps_every_existing_file_and_uses_display_name() {
+        let root = std::env::temp_dir().join(format!("seecut-export-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.png");
+        std::fs::write(&source, b"new bytes").unwrap();
+        for name in ["产品正面.png", "产品正面-id.png", "产品正面-id-1.png"] {
+            std::fs::write(root.join(name), b"existing bytes").unwrap();
+        }
+        let exported = copy_unique_export(&source, &root, "产品正面", "id").unwrap();
+        assert_eq!(exported.file_name().unwrap(), "产品正面-id-2.png");
+        for name in ["产品正面.png", "产品正面-id.png", "产品正面-id-1.png"] {
+            assert_eq!(std::fs::read(root.join(name)).unwrap(), b"existing bytes");
+        }
+        assert_eq!(std::fs::read(&exported).unwrap(), b"new bytes");
+        let another = copy_unique_export(&source, &root, "产品正面", "id").unwrap();
+        assert_eq!(another.file_name().unwrap(), "产品正面-id-3.png");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn batch_copy_reports_partial_result_for_retry_without_recopying_completed_item() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU64},
+        };
+        let root =
+            std::env::temp_dir().join(format!("seecut-export-batch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.png");
+        std::fs::write(&source, b"ready").unwrap();
+        let first = ExportCopyItem {
+            id: "first".into(),
+            source: source.clone(),
+            name: "first".into(),
+        };
+        let second = ExportCopyItem {
+            id: "second".into(),
+            source: root.join("missing.png"),
+            name: "second".into(),
+        };
+        let mut cloud = Cloud {
+            export_copy: Some(ExportCopyJob {
+                items: vec![first, second],
+                folder: root.clone(),
+                completed: Default::default(),
+                running: true,
+                cancel: Arc::new(AtomicBool::new(false)),
+                bytes_done: Arc::new(AtomicU64::new(0)),
+                bytes_total: 5,
+            }),
+            ..Default::default()
+        };
+        let partial = copy_export_call(&cloud).unwrap();
+        assert_eq!(partial["completed"], json!(["first"]));
+        assert!(partial["error"].as_str().is_some());
+        cloud
+            .export_copy
+            .as_mut()
+            .unwrap()
+            .completed
+            .insert("first".into());
+        std::fs::write(root.join("missing.png"), b"recovered").unwrap();
+        let retry = copy_export_call(&cloud).unwrap();
+        assert_eq!(retry["completed"], json!(["second"]));
+        assert_eq!(std::fs::read(root.join("first.png")).unwrap(), b"ready");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn task_snapshot_round_trip_preserves_ordered_local_references() {
@@ -5550,6 +7399,37 @@ mod reference_tests {
         let references = vec![json!({"local_path":"/tmp/result.png"})];
         assert!(has_reference_path(&references, "/tmp/result.png"));
         assert!(!has_reference_path(&references, "/tmp/other.png"));
+    }
+
+    #[test]
+    fn personal_folder_drop_uses_selected_group_only_when_source_is_selected() {
+        let mut cloud = Cloud {
+            personal: vec![
+                json!({"id":"a","folder_id":null,"trashed":false}),
+                json!({"id":"b","folder_id":"first","trashed":false}),
+                json!({"id":"c","folder_id":"second","trashed":false}),
+            ],
+            personal_folders: vec![json!({"id":"first"}), json!({"id":"second"})],
+            ..Default::default()
+        };
+        cloud.selected_personal.extend(["a".into(), "b".into()]);
+        assert_eq!(
+            personal_drop_plan(&cloud, "a", 2),
+            Some((vec!["a".into(), "b".into()], "first".into()))
+        );
+        assert_eq!(
+            personal_drop_plan(&cloud, "c", 2),
+            Some((vec!["c".into()], "first".into()))
+        );
+        assert_eq!(personal_drop_plan(&cloud, "c", 0), None);
+        assert_eq!(
+            personal_drop_plan(&cloud, "c", 1),
+            Some((vec!["c".into()], "".into()))
+        );
+        assert_eq!(personal_drop_plan(&cloud, "c", 3), None);
+        cloud.personal[2]["trashed"] = json!(true);
+        assert_eq!(personal_drop_plan(&cloud, "c", 2), None);
+        assert_eq!(personal_drop_plan(&cloud, "missing", 2), None);
     }
 
     #[test]

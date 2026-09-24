@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use concat_canvas::{
     Adjustment, BrushSettings, BrushStroke, CanvasGpu, CanvasViewport, ImageDocument, LayerMask,
@@ -31,6 +31,7 @@ use concat_canvas::{
     fill_region,
 };
 use concat_core::frame::Frame;
+use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, SharedPixelBuffer};
 
 use crate::i18n::tf;
@@ -66,6 +67,13 @@ struct CanvasSnapshot {
     layer: Option<PixelId>,
     paint_mask: bool,
     revision: u64,
+}
+
+#[derive(Clone)]
+struct CanvasSaveData {
+    document: ImageDocument,
+    store: PixelStore,
+    name: String,
 }
 
 impl CanvasSnapshot {
@@ -131,11 +139,58 @@ pub type LayerRow = (
     bool,
 );
 
+/// Handoff imports carry a display name separately from their path. Managed
+/// personal-library files intentionally use opaque paths, while the canvas
+/// project and layer should retain the name the user sees in the library.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct CanvasImport {
+    pub(crate) path: PathBuf,
+    #[serde(default)]
+    pub(crate) display_name: Option<String>,
+}
+
+impl CanvasImport {
+    pub(crate) fn from_path(path: PathBuf) -> Self {
+        Self {
+            path,
+            display_name: None,
+        }
+    }
+
+    pub(crate) fn named(path: PathBuf, display_name: impl Into<String>) -> Self {
+        let display_name = display_name.into();
+        Self {
+            path,
+            display_name: (!display_name.is_empty()).then_some(display_name),
+        }
+    }
+
+    fn layer_name(&self) -> String {
+        self.display_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                self.path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "未命名素材".to_owned())
+    }
+}
+
 /// Everything that can happen to the canvas.
 #[derive(Debug)]
 pub enum CanvasMsg {
     /// The picker came back with files; the first image is the one opened.
     Picked(Vec<std::path::PathBuf>),
+    /// Adds images to the current document as separate editable layers.
+    ImportLayers(Vec<CanvasImport>),
+    HandoffImport(Vec<CanvasImport>),
+    NewAndImport(Vec<CanvasImport>),
+    OpenAndImport(PathBuf, Vec<CanvasImport>),
+    /// Creates an editable blank canvas in managed project storage.
+    New,
     /// The viewport's box changed, in viewport pixels.
     Resized(f64, f64),
     /// A scroll: pixel deltas, whether the modifier makes it a zoom, and
@@ -255,6 +310,8 @@ pub enum CanvasMsg {
     CurveRemove(i32, i32),
     /// Export the composed canvas as a PNG, through a save dialog.
     ExportPng,
+    /// Export the composed canvas to the managed personal library.
+    ExportLibrary,
     /// Save the whole document - tree, ids and pixels - as a `.comp`
     /// project package, through a save dialog.
     SaveComp,
@@ -349,8 +406,11 @@ pub struct CanvasPane {
     /// Monotonic document revision and the revision last saved or opened.
     revision: u64,
     saved_revision: u64,
+    document_generation: u64,
+    autosave_inflight: Option<u64>,
     /// A requested image/project held while the discard dialog is visible.
     pending_open: Option<PathBuf>,
+    pending_handoff_paths: Option<Vec<CanvasImport>>,
     pub open_confirm: bool,
     /// The full path of the current `.comp` package, when this document has
     /// one. Ordinary Save writes here; a newly opened image uses Save As
@@ -406,7 +466,10 @@ impl Default for CanvasPane {
             paint_mask: false,
             revision: 1,
             saved_revision: 1,
+            document_generation: 1,
+            autosave_inflight: None,
             pending_open: None,
+            pending_handoff_paths: None,
             open_confirm: false,
             project_path: None,
             thumbnail_cache: HashMap::new(),
@@ -421,12 +484,15 @@ impl CanvasPane {
     /// the same ordered history. Pointer gestures own their transaction from
     /// press through release; immediate commands are wrapped here.
     pub fn update(&mut self, msg: CanvasMsg, studio: &mut Studio) {
+        let previous_revision = self.revision;
         let history = match &msg {
             CanvasMsg::FillSelection => Some(0),
             CanvasMsg::DeleteSelection => Some(0),
             CanvasMsg::LayerToggleVisibility(_) => Some(0),
             CanvasMsg::LayerOpacity(_, _) => Some(1),
             CanvasMsg::LayerAdd => Some(0),
+            CanvasMsg::ImportLayers(_) => Some(0),
+            CanvasMsg::HandoffImport(_) => Some(0),
             CanvasMsg::LayerAddGroup => Some(0),
             CanvasMsg::LayerDelete(_) => Some(0),
             CanvasMsg::LayerMove(_, _) | CanvasMsg::LayerDrop(_, _, _) => Some(0),
@@ -447,6 +513,20 @@ impl CanvasPane {
         if history.is_some() {
             self.commit_history();
         }
+        if self.revision != previous_revision && self.is_modified() {
+            let revision = self.revision;
+            slint::Timer::single_shot(std::time::Duration::from_millis(900), move || {
+                crate::host::Shell::with(|shell, _app| {
+                    let mut studio = shell.studio.borrow_mut();
+                    if studio.canvas.revision == revision
+                        && studio.canvas.is_modified()
+                        && let Err(error) = studio.canvas.start_auto_save()
+                    {
+                        studio.notify(&format!("画布自动保存失败：{error}"), true);
+                    }
+                });
+            });
+        }
     }
 
     /// Applies one message. The studio is the rest of the window; the host
@@ -459,6 +539,58 @@ impl CanvasPane {
                 if let Some(path) = paths.first() {
                     self.request_open(path, studio);
                 }
+            }
+            CanvasMsg::ImportLayers(paths) => {
+                self.import_layers(&paths, studio);
+            }
+            CanvasMsg::HandoffImport(paths) => {
+                let success = self.import_layers(&paths, studio);
+                report_canvas_handoff(
+                    success,
+                    if success {
+                        ""
+                    } else {
+                        "画布素材导入失败，请重试"
+                    },
+                );
+            }
+            CanvasMsg::New => self.new_blank(studio),
+            CanvasMsg::NewAndImport(paths) => {
+                if !self.validate_import_paths(&paths, studio) {
+                    report_canvas_handoff(false, "画布素材导入失败，请重试");
+                    return;
+                }
+                let generation = self.document_generation;
+                self.new_blank(studio);
+                if let Some(name) = paths
+                    .first()
+                    .and_then(|item| item.display_name.as_deref().filter(|name| !name.is_empty()))
+                {
+                    self.name = name.to_owned();
+                }
+                if self.document_generation != generation {
+                    self.begin_history_mode(0);
+                    let success = self.import_layers(&paths, studio);
+                    self.commit_history();
+                    report_canvas_handoff(
+                        success,
+                        if success {
+                            ""
+                        } else {
+                            "画布素材导入失败，请重试"
+                        },
+                    );
+                } else {
+                    report_canvas_handoff(false, "画布项目未能创建，请重试");
+                }
+            }
+            CanvasMsg::OpenAndImport(path, paths) => {
+                if !self.validate_import_paths(&paths, studio) {
+                    report_canvas_handoff(false, "画布素材导入失败，请重试");
+                    return;
+                }
+                self.pending_handoff_paths = Some(paths);
+                self.request_open(&path, studio);
             }
             CanvasMsg::Resized(width, height) => {
                 let document = self.document_size();
@@ -804,7 +936,8 @@ impl CanvasPane {
                 self.remove_curve_point(channel, index);
                 self.render(studio);
             }
-            CanvasMsg::ExportPng => self.export_png(studio),
+            CanvasMsg::ExportPng => self.export_png(studio, false),
+            CanvasMsg::ExportLibrary => self.export_png(studio, true),
             CanvasMsg::SaveComp => {
                 self.save_comp_dialog(studio);
             }
@@ -820,6 +953,9 @@ impl CanvasPane {
             CanvasMsg::OpenCancel => {
                 self.pending_open = None;
                 self.open_confirm = false;
+                if self.pending_handoff_paths.take().is_some() {
+                    report_canvas_handoff(false, "");
+                }
             }
             CanvasMsg::OpenSave => {
                 if self.save_comp_dialog(studio) {
@@ -2080,7 +2216,7 @@ impl CanvasPane {
     /// Composites the document and writes it out as a PNG, through a save
     /// dialog. The GPU path reads its own texture back; the CPU path
     /// composites from the store.
-    fn export_png(&mut self, studio: &mut Studio) {
+    fn export_png(&mut self, studio: &mut Studio, to_library: bool) {
         let Some(document) = self.document.clone() else {
             return;
         };
@@ -2099,26 +2235,60 @@ impl CanvasPane {
             Some(gpu) => gpu.compose_frame(&document, &self.store),
             None => concat_canvas::compose(&document, &self.store),
         };
-        let name = match self.name.rsplit_once('.') {
-            Some((stem, _)) => format!("{stem}.png"),
-            None => self.name.clone(),
-        };
-        let Some(path) =
-            crate::platform::save_file(&tf("Export as PNG", &[]), &name, Some(("PNG", &["png"])))
-        else {
-            return;
+        let export_stem = safe_export_stem(&self.name);
+        let name = format!("{export_stem}.png");
+        let path = if to_library {
+            let folder = match concat_host::AppDirs::locate() {
+                Ok(dirs) => dirs.data.join("canvas-exports"),
+                Err(error) => {
+                    studio.notify(&format!("无法打开个人资产库：{error}"), true);
+                    return;
+                }
+            };
+            if let Err(error) = std::fs::create_dir_all(&folder) {
+                studio.notify(&format!("无法创建画布导出目录：{error}"), true);
+                return;
+            }
+            let safe_name = name
+                .trim_end_matches(".png")
+                .chars()
+                .map(|ch| {
+                    if ch == '/' || ch == '\\' || ch.is_control() {
+                        '_'
+                    } else {
+                        ch
+                    }
+                })
+                .collect::<String>();
+            folder.join(format!("{}-{safe_name}.png", uuid::Uuid::new_v4()))
+        } else {
+            let Some(path) = crate::platform::save_file(
+                &tf("Export as PNG", &[]),
+                &name,
+                Some(("PNG", &["png"])),
+            ) else {
+                return;
+            };
+            path
         };
         match encode_png(&frame) {
             Ok(bytes) => {
                 if let Err(error) = std::fs::write(&path, bytes) {
                     log::warn!("canvas: {error}");
                     studio.notify(&tf("Canvas failed: {0}", &[&error.to_string()]), true);
-                } else {
+                } else if to_library {
                     let path = path.to_string_lossy().into_owned();
+                    let payload = serde_json::json!({
+                        "path": path,
+                        "name": export_stem,
+                    })
+                    .to_string();
                     crate::host::Shell::with(|_, app| {
                         app.global::<crate::ui::SeeCut>()
-                            .invoke_action("personal-register-canvas".into(), path.into());
+                            .invoke_action("personal-register-canvas".into(), payload.into());
                     });
+                } else {
+                    studio.notify("图片已导出", false);
                 }
             }
             Err(error) => {
@@ -2200,11 +2370,120 @@ impl CanvasPane {
         self.save_comp(path)?;
         self.saved_revision = self.revision;
         self.project_path = Some(path.to_owned());
-        self.name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.name.clone());
+        remember_canvas_project(path)?;
+        notify_canvas_registry_changed();
         Ok(())
+    }
+
+    fn save_auto(&mut self) -> Result<(), String> {
+        if self.document.is_none() {
+            return Ok(());
+        }
+        let path = match self.project_path.clone() {
+            Some(path) => path,
+            None => {
+                let dirs = concat_host::AppDirs::locate()?;
+                let folder = dirs.data.join("canvas-projects");
+                std::fs::create_dir_all(&folder)
+                    .map_err(|error| format!("无法创建画布项目目录：{error}"))?;
+                folder.join(format!("{}.comp", uuid::Uuid::new_v4()))
+            }
+        };
+        self.save_to_path(&path)
+    }
+
+    fn start_auto_save(&mut self) -> Result<(), String> {
+        if self.document.is_none() || self.autosave_inflight.is_some() {
+            return Ok(());
+        }
+        let path = match self.project_path.clone() {
+            Some(path) => path,
+            None => {
+                let dirs = concat_host::AppDirs::locate()?;
+                let folder = dirs.data.join("canvas-projects");
+                std::fs::create_dir_all(&folder)
+                    .map_err(|error| format!("无法创建画布项目目录：{error}"))?;
+                folder.join(format!("{}.comp", uuid::Uuid::new_v4()))
+            }
+        };
+        let data = self.save_data()?;
+        let revision = self.revision;
+        let generation = self.document_generation;
+        let ticket = canvas_save_ticket(&path);
+        let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        self.project_path = Some(path.clone());
+        self.autosave_inflight = Some(revision);
+        std::thread::spawn(move || {
+            let result =
+                Self::write_canvas_snapshot(&data, &path, &ticket, sequence).and_then(|written| {
+                    if written {
+                        remember_canvas_project(&path)?;
+                    }
+                    Ok(written)
+                });
+            let _ = slint::invoke_from_event_loop(move || {
+                crate::host::Shell::with(|shell, app| {
+                    let mut studio = shell.studio.borrow_mut();
+                    let pane = &mut studio.canvas;
+                    if pane.document_generation != generation
+                        || pane.project_path.as_deref() != Some(path.as_path())
+                    {
+                        if result.as_ref().is_ok_and(|written| *written) {
+                            notify_canvas_registry_changed();
+                        }
+                        return;
+                    }
+                    pane.autosave_inflight = None;
+                    match result {
+                        Ok(true) => {
+                            if pane.revision == revision {
+                                pane.saved_revision = revision;
+                            }
+                            notify_canvas_registry_changed();
+                            if pane.is_modified() {
+                                pane.schedule_auto_save(350);
+                            }
+                        }
+                        Ok(false) => {
+                            if pane.is_modified() {
+                                pane.schedule_auto_save(350);
+                            }
+                        }
+                        Err(error) => studio.notify(&format!("画布自动保存失败：{error}"), true),
+                    }
+                    studio.publish(&app, &shell.models);
+                });
+            });
+        });
+        Ok(())
+    }
+
+    fn schedule_auto_save(&self, delay_ms: u64) {
+        let generation = self.document_generation;
+        let revision = self.revision;
+        slint::Timer::single_shot(std::time::Duration::from_millis(delay_ms), move || {
+            crate::host::Shell::with(|shell, _| {
+                let mut studio = shell.studio.borrow_mut();
+                if studio.canvas.document_generation == generation
+                    && studio.canvas.revision == revision
+                    && studio.canvas.is_modified()
+                    && let Err(error) = studio.canvas.start_auto_save()
+                {
+                    studio.notify(&format!("画布自动保存失败：{error}"), true);
+                }
+            });
+        });
+    }
+
+    fn save_data(&self) -> Result<CanvasSaveData, String> {
+        Ok(CanvasSaveData {
+            document: self
+                .document
+                .clone()
+                .ok_or_else(|| tf("No image open", &[]))?,
+            store: self.store.clone(),
+            name: self.name.clone(),
+        })
     }
 
     /// Marks the current in-memory canvas as intentionally discarded after
@@ -2220,9 +2499,31 @@ impl CanvasPane {
     /// a sibling temporary directory and swapped in, so a failed save
     /// leaves the previous save untouched.
     fn save_comp(&self, path: &Path) -> Result<(), String> {
-        let Some(document) = self.document.as_ref() else {
-            return Err(tf("No image open", &[]));
-        };
+        let data = self.save_data()?;
+        let ticket = canvas_save_ticket(path);
+        let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        if !Self::write_canvas_snapshot(&data, path, &ticket, sequence)? {
+            return Err("save: a newer revision superseded this save".into());
+        }
+        Ok(())
+    }
+
+    /// Validates and writes an immutable snapshot away from the window thread.
+    fn write_canvas_snapshot(
+        data: &CanvasSaveData,
+        path: &Path,
+        ticket: &Arc<AtomicU64>,
+        sequence: u64,
+    ) -> Result<bool, String> {
+        static SAVE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = SAVE_WRITE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .map_err(|_| "save: save worker lock is poisoned".to_owned())?;
+        if ticket.load(Ordering::SeqCst) != sequence {
+            return Ok(false);
+        }
+        let document = &data.document;
         // Every bitmap the document names, layers and masks at any depth.
         let mut used = Vec::new();
         document.collect_pixels(&mut used);
@@ -2241,7 +2542,7 @@ impl CanvasPane {
         let result = (|| {
             std::fs::create_dir_all(staging.join("images")).map_err(|e| format!("save: {e}"))?;
             for id in &used {
-                let Some(frame) = self.store.get(*id) else {
+                let Some(frame) = data.store.get(*id) else {
                     return Err(format!("save: pixels {id:?} are gone"));
                 };
                 let bytes = encode_png(&frame)?;
@@ -2253,6 +2554,7 @@ impl CanvasPane {
             }
             let manifest = serde_json::json!({
                 "concat-project": 1,
+                "name": data.name,
                 "width": document.width,
                 "height": document.height,
                 "document": document,
@@ -2260,12 +2562,29 @@ impl CanvasPane {
             .to_string();
             std::fs::write(staging.join("manifest.json"), manifest)
                 .map_err(|e| format!("save: {e}"))?;
+            let preview = concat_canvas::compose(document, &data.store);
+            let source = image::RgbaImage::from_raw(
+                preview.width(),
+                preview.height(),
+                preview.pixels().to_vec(),
+            )
+            .ok_or("save: invalid preview pixels")?;
+            let thumbnail = image::imageops::thumbnail(&source, 480, 320);
+            let frame =
+                Frame::from_rgba(thumbnail.width(), thumbnail.height(), thumbnail.into_raw())
+                    .ok_or("save: invalid thumbnail pixels")?;
+            std::fs::write(staging.join("preview.png"), encode_png(&frame)?)
+                .map_err(|e| format!("save: {e}"))?;
 
             // The swap: staging takes the target's place only after every
             // file is complete.
-            replace_package(&staging, path)
+            if ticket.load(Ordering::SeqCst) != sequence {
+                return Ok(false);
+            }
+            replace_package(&staging, path)?;
+            Ok(true)
         })();
-        if result.is_err() && staging.exists() {
+        if staging.exists() {
             std::fs::remove_dir_all(&staging).ok();
         }
         result
@@ -2363,13 +2682,20 @@ impl CanvasPane {
         self.pending_history = None;
         self.revision = self.revision.wrapping_add(1).max(1);
         self.saved_revision = self.revision;
+        self.document_generation = self.document_generation.wrapping_add(1).max(1);
+        self.autosave_inflight = None;
         self.pending_open = None;
         self.open_confirm = false;
         self.project_path = Some(path.to_owned());
-        self.name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        self.name = manifest["name"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                path.file_stem()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "画布项目".to_owned());
         self.failed = false;
         let (width, height) = self
             .document
@@ -2428,6 +2754,154 @@ impl CanvasPane {
     /// Opens a path: a `.comp` project package loads as the document it
     /// saved; anything else decodes as one image, one layer the size of
     /// the canvas, the view fitted to it.
+    fn new_blank(&mut self, studio: &mut Studio) {
+        if self.is_modified()
+            && let Err(error) = self.save_auto()
+        {
+            studio.notify(&format!("画布保存失败：{error}"), true);
+            return;
+        }
+        let (width, height) = (1920, 1080);
+        self.store = PixelStore::new();
+        let pixels = self.store.put(Frame::transparent(width, height));
+        let mut document = ImageDocument::new(width, height);
+        let layer = document.new_layer("图层 1", pixels);
+        self.document = Some(document);
+        self.layer = Some(pixels);
+        self.active = Some(layer);
+        self.selection = None;
+        self.marquee = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.pending_history = None;
+        self.project_path = None;
+        self.name = "未命名画布".to_owned();
+        self.revision = self.revision.wrapping_add(1).max(1);
+        self.document_generation = self.document_generation.wrapping_add(1).max(1);
+        self.autosave_inflight = None;
+        self.failed = false;
+        self.checker = checker_image(width, height);
+        if let Some(gpu) = &mut self.gpu {
+            gpu.reset_document();
+        }
+        let size = (width as f64, height as f64);
+        self.nav.set_document(Some(size));
+        self.nav.viewport_mut().fit(size);
+        self.sync_view();
+        self.render(studio);
+    }
+
+    fn validate_import_paths(&self, paths: &[CanvasImport], studio: &mut Studio) -> bool {
+        if paths.is_empty() {
+            return false;
+        }
+        let texture_limit = self
+            .gpu
+            .as_ref()
+            .map(|gpu| gpu.device().limits().max_texture_dimension_2d)
+            .or_else(|| {
+                studio
+                    .host
+                    .gpu_device
+                    .as_ref()
+                    .map(|device| device.limits().max_texture_dimension_2d)
+            });
+        for item in paths {
+            if let Err(error) = decode(&item.path, texture_limit) {
+                studio.notify(&format!("无法导入 {}：{error}", item.path.display()), true);
+                return false;
+            }
+        }
+        true
+    }
+
+    fn import_layers(&mut self, paths: &[CanvasImport], studio: &mut Studio) -> bool {
+        if paths.is_empty() {
+            return false;
+        }
+        let texture_limit = self
+            .gpu
+            .as_ref()
+            .map(|gpu| gpu.device().limits().max_texture_dimension_2d)
+            .or_else(|| {
+                studio
+                    .host
+                    .gpu_device
+                    .as_ref()
+                    .map(|device| device.limits().max_texture_dimension_2d)
+            });
+        let mut decoded = Vec::with_capacity(paths.len());
+        for item in paths {
+            match decode(&item.path, texture_limit) {
+                Ok(frame) => decoded.push((item, frame)),
+                Err(error) => {
+                    studio.notify(&format!("无法导入 {}：{error}", item.path.display()), true);
+                    return false;
+                }
+            }
+        }
+        if self.document.is_none() {
+            self.open_now(&paths[0].path, studio);
+            if self.document.is_none() {
+                return false;
+            }
+            let name = paths[0].layer_name();
+            self.name = name.clone();
+            if let Some(active) = self.active
+                && let Some(document) = self.document.as_mut()
+                && let Some(layer) = document.layer_mut(active)
+            {
+                layer.name = name;
+            }
+            decoded.remove(0);
+        }
+        let (width, height) = self
+            .document
+            .as_ref()
+            .map(|document| (document.width, document.height))
+            .expect("checked");
+        for (item, frame) in decoded {
+            let fit = (width as f64 / frame.width() as f64)
+                .min(height as f64 / frame.height() as f64)
+                .min(1.0);
+            let layer_width = ((frame.width() as f64 * fit).round() as u32).max(1);
+            let layer_height = ((frame.height() as f64 * fit).round() as u32).max(1);
+            let source =
+                image::RgbaImage::from_raw(frame.width(), frame.height(), frame.pixels().to_vec())
+                    .expect("decoded RGBA frame");
+            let fitted = if layer_width == frame.width() && layer_height == frame.height() {
+                source
+            } else {
+                image::imageops::resize(
+                    &source,
+                    layer_width,
+                    layer_height,
+                    image::imageops::FilterType::Lanczos3,
+                )
+            };
+            let mut canvas = Frame::transparent(width, height);
+            let x = (width - layer_width) as usize / 2;
+            let y = (height - layer_height) as usize / 2;
+            for row in 0..layer_height as usize {
+                let destination = ((y + row) * width as usize + x) * 4;
+                let source = row * layer_width as usize * 4;
+                canvas.pixels_mut()[destination..destination + layer_width as usize * 4]
+                    .copy_from_slice(&fitted.as_raw()[source..source + layer_width as usize * 4]);
+            }
+            let pixels = self.store.put(canvas);
+            let name = item.layer_name();
+            let id = self
+                .document
+                .as_mut()
+                .expect("checked")
+                .new_layer(name, pixels);
+            self.active = Some(id);
+            self.layer = Some(pixels);
+        }
+        self.render(studio);
+        true
+    }
+
     fn request_open(&mut self, path: &Path, studio: &mut Studio) {
         self.brush_release();
         if self.is_modified() {
@@ -2455,8 +2929,28 @@ impl CanvasPane {
                 Ok(()) => {
                     self.failed = false;
                     self.render(studio);
+                    if let Err(error) = remember_canvas_project(path) {
+                        studio.notify(&error, true);
+                    }
+                    notify_canvas_registry_changed();
+                    if let Some(paths) = self.pending_handoff_paths.take() {
+                        self.begin_history_mode(0);
+                        let success = self.import_layers(&paths, studio);
+                        self.commit_history();
+                        report_canvas_handoff(
+                            success,
+                            if success {
+                                ""
+                            } else {
+                                "画布素材导入失败，请重试"
+                            },
+                        );
+                    }
                 }
                 Err(error) => {
+                    if self.pending_handoff_paths.take().is_some() {
+                        report_canvas_handoff(false, &error);
+                    }
                     log::warn!("canvas: {error}");
                     if !self.failed {
                         self.failed = true;
@@ -2490,7 +2984,9 @@ impl CanvasPane {
                 self.redo_stack.clear();
                 self.pending_history = None;
                 self.revision = self.revision.wrapping_add(1).max(1);
-                self.saved_revision = self.revision;
+                self.saved_revision = 0;
+                self.document_generation = self.document_generation.wrapping_add(1).max(1);
+                self.autosave_inflight = None;
                 self.pending_open = None;
                 self.open_confirm = false;
                 self.project_path = None;
@@ -2579,6 +3075,25 @@ impl CanvasPane {
                 }
             }
         }
+    }
+}
+
+fn safe_export_stem(name: &str) -> String {
+    let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
+    let safe = stem
+        .chars()
+        .map(|ch| {
+            if ch == '/' || ch == '\\' || ch.is_control() {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>();
+    if safe.trim().is_empty() {
+        "画布".to_owned()
+    } else {
+        safe
     }
 }
 
@@ -3099,6 +3614,8 @@ impl CanvasPane {
                     self.pending_history = None;
                     self.revision = self.revision.wrapping_add(1).max(1);
                     self.saved_revision = self.revision;
+                    self.document_generation = self.document_generation.wrapping_add(1).max(1);
+                    self.autosave_inflight = None;
                     self.pending_open = None;
                     self.open_confirm = false;
                     self.project_path = None;
@@ -3508,6 +4025,86 @@ fn checker_image(width: u32, height: u32) -> slint::Image {
 
 /// A temporary directory beside `path`, unique to this process: the
 /// staging ground of an atomic package save.
+fn canvas_registry_path() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    {
+        Ok(std::env::temp_dir().join(format!(
+            "concat-canvas-projects-{}.json",
+            std::process::id()
+        )))
+    }
+    #[cfg(not(test))]
+    {
+        concat_host::AppDirs::locate().map(|dirs| dirs.data.join("canvas-projects.json"))
+    }
+}
+
+fn canvas_save_ticket(path: &Path) -> Arc<AtomicU64> {
+    static TICKETS: OnceLock<Mutex<HashMap<PathBuf, Arc<AtomicU64>>>> = OnceLock::new();
+    let mut tickets = TICKETS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("canvas save ticket lock poisoned");
+    tickets
+        .entry(path.to_owned())
+        .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+        .clone()
+}
+
+fn notify_canvas_registry_changed() {
+    crate::host::Shell::with(|_, app| {
+        app.global::<crate::ui::SeeCut>()
+            .invoke_action("canvas-projects-refresh".into(), "".into());
+    });
+}
+
+fn report_canvas_handoff(success: bool, detail: &str) {
+    crate::host::Shell::with(|_, app| {
+        app.global::<crate::ui::SeeCut>().invoke_action(
+            if success {
+                "handoff-complete"
+            } else {
+                "handoff-failed"
+            }
+            .into(),
+            detail.into(),
+        );
+    });
+}
+
+pub(crate) fn canvas_recent_paths() -> Result<Vec<PathBuf>, String> {
+    let path = canvas_registry_path()?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = std::fs::read(&path).map_err(|error| format!("无法读取画布项目索引：{error}"))?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("画布项目索引已损坏，请先备份：{error}"))
+}
+
+fn remember_canvas_project(path: &Path) -> Result<(), String> {
+    static REGISTRY_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = REGISTRY_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "画布项目索引锁已损坏".to_owned())?;
+    let registry = canvas_registry_path()?;
+    let mut paths = canvas_recent_paths()?;
+    paths.retain(|entry| entry != path);
+    paths.insert(0, path.to_owned());
+    paths.truncate(100);
+    if let Some(parent) = registry.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("无法保存画布项目索引：{error}"))?;
+    }
+    let temporary = registry.with_extension("json.tmp");
+    let bytes =
+        serde_json::to_vec(&paths).map_err(|error| format!("无法生成画布项目索引：{error}"))?;
+    std::fs::write(&temporary, bytes).map_err(|error| format!("无法保存画布项目索引：{error}"))?;
+    std::fs::rename(&temporary, &registry)
+        .map_err(|error| format!("无法更新画布项目索引：{error}"))?;
+    Ok(())
+}
+
 fn sibling_temp(path: &Path) -> std::path::PathBuf {
     unique_sibling(path, "tmp")
 }
@@ -4251,6 +4848,7 @@ mod tests {
     #[test]
     fn a_project_package_round_trips_through_a_save_and_a_load() {
         let (mut pane, pixels) = painting_pane();
+        pane.name = "分层画布".to_owned();
         // Paint something so the saved bitmap differs from a blank one,
         // then add an adjustment so the tree is not trivial.
         pane.set_tool(3);
@@ -4293,6 +4891,10 @@ mod tests {
         // ids, the painted stroke back.
         let mut back = CanvasPane::default();
         back.agent_open(&path).expect("the package opened");
+        assert_eq!(
+            back.name, "分层画布",
+            "project title comes from the manifest, not the storage path"
+        );
         assert_eq!(back.project_path.as_deref(), Some(path.as_path()));
         assert_eq!(
             back.document
@@ -4320,6 +4922,53 @@ mod tests {
         std::fs::create_dir_all(&junk).expect("junk");
         assert!(back.agent_open(&junk).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn multi_layer_auto_save_uses_an_immutable_snapshot_and_leaves_later_edits_dirty() {
+        let root = std::env::temp_dir().join(format!(
+            "concat-autosave-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("test directory");
+        let path = root.join("stable-project-id.comp");
+        let mut pane = CanvasPane::default();
+        let mut document = ImageDocument::new(1920, 1080);
+        for index in 0..4 {
+            let id = pane.store.put(Frame::transparent(1920, 1080));
+            document.new_layer(format!("图层 {index}"), id);
+        }
+        pane.document = Some(document);
+        pane.project_path = Some(path.clone());
+        pane.name = "未命名画布".to_owned();
+        pane.revision = 10;
+        pane.saved_revision = 9;
+        let started = std::time::Instant::now();
+        pane.start_auto_save().expect("start background save");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "encoding must run after the call returns"
+        );
+        pane.name = "编辑后的标题".to_owned();
+        pane.revision = 11;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !path.join("manifest.json").is_file() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(path.join("manifest.json")).expect("background save completed"),
+        )
+        .expect("manifest");
+        assert_eq!(manifest["name"], "未命名画布");
+        assert_eq!(
+            manifest["document"]["root"]["children"]
+                .as_array()
+                .map(Vec::len),
+            Some(4)
+        );
+        assert!(pane.is_modified(), "an edit after the snapshot stays dirty");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

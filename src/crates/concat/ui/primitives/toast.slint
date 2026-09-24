@@ -26,6 +26,7 @@ export struct ToastData {
 
 export component ToastLayer inherits Rectangle {
     in property <ToastData> data;
+    in property <length> bottom-offset: 16px;
 
     /// Two holds, which are the reason this is a property at all: an error you
     /// missed is an error you go looking for.
@@ -85,7 +86,7 @@ export component ToastLayer inherits Rectangle {
         // 16px off both edges. The 12px it is pushed down by when it is away
         // is the rise.
         x: root.width - self.width - 16px;
-        y: root.height - self.height - 16px + (root.shown ? 0px : 12px);
+        y: root.height - self.height - root.bottom-offset + (root.shown ? 0px : 12px);
         // Capped, then the label elides: a notice is a sentence, and one long
         // enough to reach across the window has stopped being one. A failure
         // keeps room for its copy chip.
