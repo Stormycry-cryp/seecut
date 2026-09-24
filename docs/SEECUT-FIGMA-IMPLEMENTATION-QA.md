@@ -99,3 +99,28 @@ v21 完成 S09 的通用弹窗标题对齐与圆角，S12 的结果卡键盘操�
 软件渲染 fixture 从 v23 二进制完整生成 98 张图。`result-keyboard-validation.json` 返回 `passed`：Tab 27 次到第一张结果卡的隐藏入口，Enter 聚焦其“作为参考”，鼠标移至相邻卡片后再次 Enter，仍向第一张卡片发送 `task-reference`。原生 v23 中，画布“打开”菜单按 Escape 后关闭，焦点回到“打开”按钮；v21 原生包中画布／剪辑导出、剪辑导入和个人资产卡关闭预览后的焦点返回已记录，相关逻辑未在 v23 改动。`cargo fmt --all --check`、`scripts/locales.py --check` 与 `git diff --check` 通过；全量 111 项库测试为 v21 源码阶段的结果，v23 的新增 UI 与缩略图代码由构建及 fixture 覆盖。画布图片选择／移动／变换和调整滑杆问题单列后续讨论与实现，未归入本候选的已完成项。
 
 完成截图与候选包后，检查目标目录没有打开句柄，再对本 checkout 执行 `cargo clean`，清理 3.5 GiB 可再生构建产物；旧 v21 候选和安装备份经路径与句柄核对后清理。fresh `df -kP /System/Volumes/Data` 显示可用 16,141,968 KiB，约 15.39 GiB。保留 v23 候选包与已安装应用，后续构建需要重新生成 `src/target`。
+
+### v24 素材拖拽复核进行中（2026-09-24）
+
+Slint 软件渲染 fixture 使用连续 `PointerPressed`、`PointerMoved`、`PointerReleased`，从资产卡拖到左侧“灵感参考”文件夹，恰好产生一次 `personal-drop-folder(fixture-0:3)`；拖到“全部素材”和空白位置均未产生移动回调。`native-ui-v24-drag-final-fixture/personal-drag-validation.json` 明确标注这是软件窗口的合成指针事件，仅证明 DragArea → DropArea → UI action。`personal-drag-thumbnail.png` 来自与正式 `Payload.preview` 相同的位图缩略图函数，尺寸 160 × 100；多选 2 项和 20 项的叠放图及数量反馈也在该轮 fixture 中生成。软件快照未显示系统拖拽浮层，不能据此判定原生鼠标拖动态通过。
+
+定点库测试命令为 `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_INCREMENTAL=false SHERPA_ONNX_LIB_DIR=/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Concat-main/src/target/sherpa-onnx-prebuilt/sherpa-onnx-v1.13.7-osx-arm64-static-lib/lib cargo test -p concat --lib --offline --no-default-features --features wgpu folder`。本任务执行会话 `43235` 返回 2 passed、0 failed、109 filtered：`cloud::reference_tests::personal_folder_drop_uses_selected_group_only_when_source_is_selected` 覆盖选中组、拖未选项单独移动、无效／无变化目标；`personal_library::tests::folder_move_persists_ids_skips_noop_and_rolls_back_failed_save` 覆盖稳定 ID、重载后分类、无变化跳过与保存失败回滚。执行输出仅存于本任务工具记录，没有独立磁盘日志。真实安装版从拖入文件夹到 `library.json` 更新及重启后保留，仍需原生验收。
+
+后续源码已将多选数量角标改为应用现有的 Helvetica Neue SVG 文字，并使用 `Theme.accent`／`Theme.on-accent` 随浅深主题切换。此改动尚未完成构建和截图复核；`native-ui-v24-drag-final-fixture` 是此前位图数字角标的阶段证据，不能代表最新源码。重编译时 fresh `df` 最低降至 3,928,024 KiB，按低于 5 GiB 的门槛停止；在 `lsof` 无句柄后精确清理本轮旧二进制和测试产物。完整构建曾观察到约 8.4 GiB 的可用空间摆幅，恢复前需 fresh `df` 约 15 GiB 并核对活跃写入。v23 安装版与候选包继续保留，PR 保持 Draft。
+
+### v26 当前 macOS 候选与原生拖拽验收（2026-09-25）
+
+`native-candidate-v26/Seecut.app` 和同目录 `Seecut-macos.zip` 已从本分支离线构建、签名并打包；`/Applications/Seecut.app` 与候选可执行文件 SHA-256 均为 `b3fed073b2d438ea11d751777f24290d4ec73994a1116d0970fe1487c193ed8e`，`codesign --verify --deep --strict` 通过。系统图标与 v24 候选的 `.icns` SHA-256 相同；解包实查含 `icon_256x256.png` 与 `icon_256x256@2x.png`，继续保留轻微阴影。左侧导航顶端 Logo 已移除，工作区图标上移，未登录账户显示圆形品牌头像。v25 是本轮拖拽逻辑的验收包，v26 只补 macOS Cmd+Q 退出时的临时缩略图清理；两者的拖拽绘制代码相同。
+
+原生实屏捕获证实 v24 的 160 × 100 拖拽浮层是纯色矩形（`native-v24-drag-second-inflight.png`）；同一回调输出的照片位图有 11,529 种颜色。Slint 1.17.1 的 FemtoVG 直接拖拽绘制对动态内存图没有可复用缓存键，本地对照把相同像素从文件加载后，原生浮层显示了照片。v26 因此将素材位图和同一拖拽路径上的通用 SVG 写入会话临时目录，再作为路径图像交给浮层；退出时清理。v26 的 `native-v26-drag-single-light-inflight.png` 再次截到了真实拖动中的照片缩略图，没有纯色色块。v26 的 Cmd+Q 退出后，实查本次 `.tmpxxc9u4` 拖拽图目录已消失。
+
+| 原生手势 | 实际结果与证据 |
+| --- | --- |
+| 单项拖入文件夹 | v26 安装版将 `海边小屋.png` 拖到“拖拽验收 B”，截图为 `native-v26-drag-single-light-inflight.png`；隔离 HOME 的 `library.json` 写入 B 的稳定 ID `e6e9f877-46aa-41d4-b2ae-28cda91210be`，其他两项未分类。 |
+| 选中组与数量角标 | v25 安装版选中视频与图片两项后拖到 A，`native-v25-drag-group-two-inflight.png` 显示照片叠放和蓝色 `2`；`library.json` 两项均写入 A。深色主题再选两张图片拖到 B，`native-v25-drag-group-two-dark-inflight.png` 显示橙色 `2`。 |
+| 拖动未选项 | v25 在选中两项时拖动未选中的 `海边小屋.png`，`native-v25-drag-unselected-inflight.png` 为无数量角标的单项照片；库文件只移动该素材，选中视频仍保留在 B。 |
+| 无效目标、取消与重启 | 拖到“全部素材”及内容空白处前后，`library.json` SHA-256 均为 `8310e4866141364901472d9f43c15b4b9ae2d3bf32b20b73f723468876b693ee`。重启 v25 后，原生 `native-v25-restart-folder-a-dark.png` 显示 A 为 2 项，`native-v25-restart-folder-b-dark.png` 显示 B 为 1 项，与库文件一致。 |
+
+以上截图位于 `/Users/chenyunzhe/.codex/visualizations/2026/09/23/01a0cd9d-dd88-7012-bd9e-8103e508d601/`，均来自隔离 HOME 的公开演示素材。屏幕上的桌面人物浮窗属于其他应用，随系统区域截图进入画面，与 SeeCut 卡片或拖拽浮层无关；不将这些带浮窗的画面替换仓库 README 截图。v25 二进制的软件渲染 fixture 目录为 `native-ui-v25-theme-fixture/`，生成 103 张 PNG；`personal-drag-validation.json` 为 `passed`，覆盖单项像素细节、2／20 项和浅深角标，并明确只代表合成指针事件。此前定点库测试为 2 passed，覆盖稳定 ID、选中范围、无效目标及保存失败回滚，业务代码在 v26 未改动。v26 `cargo fmt --all --check`、`git diff --check`、离线构建和安装包原生单项手势均通过。
+
+本轮未实测团队素材登录、真实生成与报价、Finder 混合文件拖入、大视频／慢盘／断盘、含音轨导出及 Windows 包；相关 D/R/S 结论沿用上文标出的证据与边界。画布图片选择／变换及调整滑杆留待单独的画布任务。当前 PR 保持 Draft，未合并或发布。

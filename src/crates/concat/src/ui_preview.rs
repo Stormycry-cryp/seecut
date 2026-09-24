@@ -3,12 +3,14 @@
 //! Opt in with SEECUT_UI_PREVIEW_DIR; normal startup never enters this module.
 use crate::ui::{
     App, CanvasControls, CanvasLayerData, CanvasThumbs, CloudItem, Editor, GenerationBatch,
-    GenerationTemplate, I18n, PersonalAssetGroup, RecentProjectData, SeeCut, StartData, Theme,
+    GenerationTemplate, I18n, Payload, PersonalAssetGroup, RecentProjectData, SeeCut, StartData,
+    Theme,
 };
 use slint::platform::{
     Platform, WindowAdapter,
     software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
 };
+use slint::private_unstable_api::re_exports::DataTransfer;
 use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 use std::{cell::RefCell, path::Path, rc::Rc};
 
@@ -280,6 +282,16 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             .borrow_mut()
             .push((id.to_string(), control.to_string()));
     });
+    let payload = app.global::<Payload>();
+    payload.on_of(DataTransfer::from);
+    payload.on_text(|data| data.plain_text().unwrap_or_default());
+    payload.on_personal_id(|text| {
+        text.strip_prefix("personal:")
+            .and_then(|rest| rest.split(':').next())
+            .unwrap_or_default()
+            .into()
+    });
+    state.on_personal_can_drop(|id, index| id == "fixture-0" && index == 3);
     state.set_auth_open(false);
     state.set_creator_mode(1);
     state.set_reduced_motion(true);
@@ -812,6 +824,193 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_page(5);
     capture(&app, directory, "personal-ratio-bounds-1440x960", 1440, 960)?;
     capture(&app, directory, "personal-ratio-bounds-900x640", 900, 640)?;
+    let theme = app.global::<Theme>();
+    theme.set_dark(false);
+    let thumbnail = crate::personal_drag_thumbnail(
+        &boundary_assets[0].preview,
+        1,
+        theme.get_accent(),
+        theme.get_on_accent(),
+    )
+    .ok_or_else(|| slint::PlatformError::Other("Personal drag thumbnail is empty".into()))?;
+    let pixels = thumbnail.to_rgba8().ok_or_else(|| {
+        slint::PlatformError::Other("Personal drag thumbnail has no pixels".into())
+    })?;
+    let distinct_colors = pixels
+        .as_bytes()
+        .chunks_exact(4)
+        .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    if pixels.width() != 160 || pixels.height() != 100 || distinct_colors < 4 {
+        return Err(slint::PlatformError::Other(
+            "Personal drag thumbnail is missing image detail".into(),
+        ));
+    }
+    image::save_buffer(
+        directory.join("personal-drag-thumbnail.png"),
+        pixels.as_bytes(),
+        pixels.width(),
+        pixels.height(),
+        image::ColorType::Rgba8,
+    )
+    .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    let mut group_thumbnails = Vec::new();
+    for count in [2, 20] {
+        let image = crate::personal_drag_thumbnail(
+            &boundary_assets[0].preview,
+            count,
+            theme.get_accent(),
+            theme.get_on_accent(),
+        )
+        .ok_or_else(|| slint::PlatformError::Other("Group drag thumbnail is empty".into()))?;
+        let pixels = image.to_rgba8().ok_or_else(|| {
+            slint::PlatformError::Other("Group drag thumbnail has no pixels".into())
+        })?;
+        if pixels.width() != 168 || pixels.height() != 108 {
+            return Err(slint::PlatformError::Other(
+                "Group drag thumbnail has the wrong size".into(),
+            ));
+        }
+        image::save_buffer(
+            directory.join(format!("personal-drag-thumbnail-{count}.png")),
+            pixels.as_bytes(),
+            pixels.width(),
+            pixels.height(),
+            image::ColorType::Rgba8,
+        )
+        .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+        group_thumbnails.push(pixels.as_bytes().to_vec());
+    }
+    if group_thumbnails[0] == group_thumbnails[1] {
+        return Err(slint::PlatformError::Other(
+            "Group drag count does not change the thumbnail".into(),
+        ));
+    }
+    theme.set_dark(true);
+    let dark_thumbnail = crate::personal_drag_thumbnail(
+        &boundary_assets[0].preview,
+        20,
+        theme.get_accent(),
+        theme.get_on_accent(),
+    )
+    .and_then(|image| image.to_rgba8())
+    .ok_or_else(|| slint::PlatformError::Other("Dark drag thumbnail is empty".into()))?;
+    if dark_thumbnail.as_bytes() == group_thumbnails[1] {
+        return Err(slint::PlatformError::Other(
+            "Drag count badge did not follow the theme".into(),
+        ));
+    }
+    image::save_buffer(
+        directory.join("personal-drag-thumbnail-20-dark.png"),
+        dark_thumbnail.as_bytes(),
+        dark_thumbnail.width(),
+        dark_thumbnail.height(),
+        image::ColorType::Rgba8,
+    )
+    .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    theme.set_dark(false);
+    state.set_personal_folder_filter(0);
+    app.window().set_size(slint::PhysicalSize::new(1440, 960));
+    settle(&app)?;
+    action_log.borrow_mut().clear();
+    let points = [
+        (450.0, 300.0),
+        (465.0, 310.0),
+        (400.0, 300.0),
+        (310.0, 270.0),
+        (240.0, 225.0),
+        (170.0, 225.0),
+    ];
+    for (index, &(x, y)) in points.iter().enumerate() {
+        let position = slint::LogicalPosition::new(x, y);
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+        if index == 0 {
+            app.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                    position,
+                    button: slint::platform::PointerEventButton::Left,
+                });
+        }
+        settle(&app)?;
+    }
+    capture(
+        &app,
+        directory,
+        "personal-drag-in-flight-1440x960",
+        1440,
+        960,
+    )?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(170.0, 225.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+    settle(&app)?;
+    let drop_actions: Vec<_> = action_log
+        .borrow()
+        .iter()
+        .filter(|(name, _)| name == "personal-drop-folder")
+        .cloned()
+        .collect();
+    if drop_actions != [("personal-drop-folder".into(), "fixture-0:3".into())] {
+        return Err(slint::PlatformError::Other(format!(
+            "Personal drag delivered unexpected folder actions: {drop_actions:?}"
+        )));
+    }
+    for target in [(170.0, 78.0), (500.0, 600.0)] {
+        action_log.borrow_mut().clear();
+        let origin = slint::LogicalPosition::new(450.0, 300.0);
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: origin });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                position: origin,
+                button: slint::platform::PointerEventButton::Left,
+            });
+        for (x, y) in [(465.0, 310.0), (400.0, 300.0), target] {
+            app.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                    position: slint::LogicalPosition::new(x, y),
+                });
+            settle(&app)?;
+        }
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                position: slint::LogicalPosition::new(target.0, target.1),
+                button: slint::platform::PointerEventButton::Left,
+            });
+        settle(&app)?;
+        if action_log
+            .borrow()
+            .iter()
+            .any(|(name, _)| name == "personal-drop-folder")
+        {
+            return Err(slint::PlatformError::Other(
+                "Invalid or cancelled personal drag moved a folder".into(),
+            ));
+        }
+    }
+    std::fs::write(
+        directory.join("personal-drag-validation.json"),
+        serde_json::json!({
+            "status": "passed",
+            "scope": "Slint software renderer with synthetic pointer events; validates UI callback, not native cursor overlay or persistence",
+            "source": "fixture-0",
+            "target_folder_index": 3,
+            "drop_callbacks": drop_actions.len(),
+            "invalid_and_cancelled_drop_callbacks": 0,
+            "thumbnail_width": 160,
+            "thumbnail_height": 100,
+            "thumbnail_distinct_colors": distinct_colors,
+            "group_thumbnail_counts": [2, 20],
+            "badge_light_and_dark_checked": true
+        })
+        .to_string(),
+    )
+    .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    state.set_personal_folder_filter(2);
     state.set_personal_assets(model(assets.clone()));
     state.set_personal_groups(model(vec![
         PersonalAssetGroup {
