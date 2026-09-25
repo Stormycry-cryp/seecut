@@ -442,6 +442,7 @@ export component App inherits Window {
                     }
                     return accept;
                 }
+                if (event.modifiers.control || event.modifiers.meta || event.modifiers.alt) { return reject; }
                 if (event.text == "v" || event.text == "V") { Editor.canvas-tool-changed(0); return accept; }
                 if (event.text == "h" || event.text == "H") { Editor.canvas-tool-changed(1); return accept; }
                 if (event.text == "z" || event.text == "Z") { Editor.canvas-tool-changed(2); return accept; }
@@ -590,6 +591,7 @@ export component App inherits Window {
                     width: Math.max(0px, parent.width - rail.width);
                     height: 100%;
                     VerticalLayout {
+                        width: parent.width; height: parent.height;
                         Rectangle {
                             height: 56px; background: Theme.panel;
                             HorizontalLayout {

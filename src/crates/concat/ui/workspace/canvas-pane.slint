@@ -80,6 +80,7 @@ export struct CanvasLayerData {
     mask-paint: bool,
     mask-enabled: bool,
     kind: int,
+    adjustment-kind: int,
     blend: int,
 }
 
@@ -331,6 +332,39 @@ component CanvasInspectorTab inherits Rectangle {
     tab-touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
 
+component CanvasBlendButton inherits Rectangle {
+    in property <string> value;
+    in property <bool> enabled: true;
+    in property <bool> open;
+    property <bool> keyboard-ring: false;
+    callback clicked();
+    public function take-focus() { focus.focus(); }
+    width: 132px; height: 30px; border-radius: Theme.r-xs;
+    background: root.open ? Theme.field-active : touch.has-hover ? Theme.field-hover : Theme.field;
+    border-width: 1px;
+    border-color: root.keyboard-ring ? Theme.focus-control : root.open ? Theme.line-strong : Theme.line;
+    opacity: root.enabled ? 1 : 0.45;
+    accessible-role: button;
+    accessible-label: "混合模式，" + root.value;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-gained(reason) => { root.keyboard-ring = reason == FocusReason.tab-navigation; }
+        focus-lost => { root.keyboard-ring = false; }
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") { root.clicked(); return EventResult.accept; }
+            return EventResult.reject;
+        }
+    }
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 4px;
+        Text { text: root.value; color: Theme.fg; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Icon { glyph: Glyph.chevron-down; size: 12px; tint: Theme.fg-muted; }
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+}
+
 component PropertySlider inherits HorizontalLayout {
     in property <string> label;
     in-out property <float> value;
@@ -460,7 +494,12 @@ export component CanvasPane inherits Rectangle {
     property <int> inspector-tab: 0;
     property <int> inspector-focus-index: 0;
     property <bool> inspector-keyboard-focus: false;
+    property <length> inspector-scroll-y: 0px;
     property <bool> blend-open: false;
+    property <int> blend-menu-index: 0;
+    property <length> blend-menu-scroll-y: 0px;
+    property <bool> layer-more-open: false;
+    property <int> layer-menu-index: 0;
     property <int> renaming-row: -1;
     /// The gradient map's colour popup: open, and which swatch (0 low,
     /// 1 high) is being recoloured.
@@ -1082,6 +1121,7 @@ export component CanvasPane inherits Rectangle {
                     if root.inspector-tab == 0: ScrollView {
                         accessible-role: tab-panel;
                         accessible-label: "属性";
+                        viewport-y <=> root.inspector-scroll-y;
                         viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off; vertical-stretch: 1;
                         VerticalLayout {
                             spacing: 12px; alignment: start;
@@ -1282,8 +1322,12 @@ export component CanvasPane inherits Rectangle {
                         }
                     }
                     Rectangle {
-                        height: 6px;
-                        background: layer-resize-touch.has-hover || root.resizing-layers ? Theme.field-hover : Theme.line;
+                        height: 8px;
+                        background: transparent;
+                        Rectangle {
+                            y: 3px; height: 1px;
+                            background: layer-resize-touch.has-hover || root.resizing-layers ? Theme.line-strong : Theme.line;
+                        }
                         layer-resize-touch := TouchArea {
                             mouse-cursor: MouseCursor.ns-resize;
                             pointer-event(event) => {
@@ -1307,28 +1351,10 @@ export component CanvasPane inherits Rectangle {
                     }
                     VerticalLayout {
                         height: 64px; spacing: 4px;
-                        blend-button := Rectangle {
-                            width: 132px; height: 30px; border-radius: Theme.r-xs;
-                            background: blend-touch.has-hover ? Theme.field-hover : Theme.field;
-                            border-width: 1px; border-color: root.blend-open ? Theme.accent : Theme.line;
-                            opacity: root.active-layer >= 0 ? 1 : 0.45;
-                            accessible-role: button;
-                            accessible-label: "混合模式";
-                            accessible-enabled: root.active-layer >= 0;
-                            accessible-action-default => { if (root.active-layer >= 0) { root.blend-open = !root.blend-open; } }
-                            HorizontalLayout {
-                                padding-left: 8px; padding-right: 8px; spacing: 4px;
-                                Text {
-                                    text: ["正常", "正片叠底", "滤色", "叠加", "变暗", "变亮", "差值", "颜色减淡", "颜色加深", "色相", "饱和度", "颜色", "明度"][root.active-blend];
-                                    color: Theme.fg; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1;
-                                    overflow: elide;
-                                }
-                                Icon { glyph: Glyph.chevron-down; size: 12px; tint: Theme.fg-muted; }
-                            }
-                            blend-touch := TouchArea {
-                                enabled: root.active-layer >= 0; mouse-cursor: pointer;
-                                clicked => { root.blend-open = !root.blend-open; }
-                            }
+                        blend-button := CanvasBlendButton {
+                            value: ["正常", "正片叠底", "滤色", "叠加", "变暗", "变亮", "差值", "颜色减淡", "颜色加深", "色相", "饱和度", "颜色", "明度"][root.active-blend];
+                            enabled: root.active-layer >= 0; open: root.blend-open;
+                            clicked => { root.layer-more-open = false; root.blend-menu-index = root.active-blend; root.blend-open = !root.blend-open; }
                         }
                         if root.active-layer >= 0: PropertySlider {
                             horizontal-stretch: 1;
@@ -1405,13 +1431,25 @@ export component CanvasPane inherits Rectangle {
                                         background: Theme.well;
                                         border-width: layer.active && !layer.mask-paint ? 2px : 1px;
                                         border-color: layer.active && !layer.mask-paint ? Theme.accent : Theme.line;
-                                        if CanvasThumbs.layer-images.length > i
+                                        if layer.kind == 0 && CanvasThumbs.layer-images.length > i
                                             && CanvasThumbs.layer-images[i].width > 0: Image {
                                             width: parent.width; height: parent.height;
                                             source: CanvasThumbs.layer-images[i]; image-fit: contain;
                                         }
                                         if layer.group: Icon {
-                                            glyph: Glyph.folder; size: 13px; tint: Theme.fg-muted;
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                            glyph: Glyph.folder; size: 16px; tint: Theme.fg-muted;
+                                        }
+                                        if layer.kind == 2: Icon {
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                            glyph: layer.adjustment-kind == 1 ? Glyph.moon
+                                                : layer.adjustment-kind == 2 ? Glyph.sun
+                                                : layer.adjustment-kind == 3 ? Glyph.sliders
+                                                : layer.adjustment-kind == 4 ? Glyph.sparkle
+                                                : layer.adjustment-kind == 5 ? Glyph.filter
+                                                : layer.adjustment-kind == 6 ? Glyph.rows
+                                                : layer.adjustment-kind == 7 ? Glyph.waveform : Glyph.sliders;
+                                            size: 16px; tint: Theme.fg-muted;
                                         }
                                         CanvasChipAction {
                                             clicked => {
@@ -1424,7 +1462,11 @@ export component CanvasPane inherits Rectangle {
                                     WorkspaceIcon { glyph: layer.hidden ? Glyph.eye-off : Glyph.eye; label: layer.hidden ? "显示图层" : "隐藏图层"; clicked => { root.layer-visibility-toggled(i); } }
                                     if root.renaming-row != i: Rectangle {
                                         horizontal-stretch: 1; min-width: 0px;
-                                        Text { text: layer.name; font-size: 13px; color: Theme.fg; overflow: elide; vertical-alignment: center; }
+                                        Text {
+                                            width: parent.width; height: parent.height;
+                                            text: layer.name; font-size: 13px; color: Theme.fg;
+                                            horizontal-alignment: left; vertical-alignment: center; overflow: elide;
+                                        }
                                         TouchArea {
                                             clicked => {
                                                 root.layer-picked(i);
@@ -1436,6 +1478,7 @@ export component CanvasPane inherits Rectangle {
                                     if root.renaming-row == i: TextInput {
                                         horizontal-stretch: 1; min-width: 0px; single-line: true;
                                         text: layer.name; color: Theme.fg; font-size: 13px;
+                                        init => { self.focus(); }
                                         accepted => {
                                             root.layer-renamed(layer.id, self.text);
                                             root.renaming-row = -1;
@@ -1448,23 +1491,28 @@ export component CanvasPane inherits Rectangle {
                                             return EventResult.reject;
                                         }
                                     }
-                                    if layer.masked: Rectangle {
-                                        width: 28px; height: 28px; border-radius: Theme.r-xs;
-                                        background: Theme.well;
-                                        border-width: layer.mask-paint ? 2px : 1px;
-                                        border-color: layer.mask-paint ? Theme.accent : Theme.line;
-                                        opacity: layer.mask-enabled ? 1 : 0.45;
-                                        if CanvasThumbs.mask-images.length > i
-                                            && CanvasThumbs.mask-images[i].width > 0: Image {
+                                    Rectangle {
+                                        width: 28px; height: 28px;
+                                        if layer.masked: Rectangle {
                                             width: parent.width; height: parent.height;
-                                            source: CanvasThumbs.mask-images[i]; image-fit: contain;
-                                        }
-                                        if CanvasThumbs.mask-images.length <= i
-                                            || CanvasThumbs.mask-images[i].width == 0: Icon {
-                                            glyph: Glyph.mask; size: 12px; tint: Theme.fg-muted;
-                                        }
-                                        CanvasChipAction {
-                                            clicked => { root.layer-mask-paint-toggled(i); }
+                                            border-radius: Theme.r-xs;
+                                            background: Theme.well;
+                                            border-width: layer.mask-paint ? 2px : 1px;
+                                            border-color: layer.mask-paint ? Theme.accent : Theme.line;
+                                            opacity: layer.mask-enabled ? 1 : 0.45;
+                                            if CanvasThumbs.mask-images.length > i
+                                                && CanvasThumbs.mask-images[i].width > 0: Image {
+                                                width: parent.width; height: parent.height;
+                                                source: CanvasThumbs.mask-images[i]; image-fit: contain;
+                                            }
+                                            if CanvasThumbs.mask-images.length <= i
+                                                || CanvasThumbs.mask-images[i].width == 0: Icon {
+                                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                                glyph: Glyph.mask; size: 12px; tint: Theme.fg-muted;
+                                            }
+                                            CanvasChipAction {
+                                                clicked => { root.layer-mask-paint-toggled(i); }
+                                            }
                                         }
                                     }
                                 }
@@ -1473,30 +1521,101 @@ export component CanvasPane inherits Rectangle {
                     }
                     HorizontalLayout {
                         height: 34px; spacing: 8px;
-                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
-                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
-                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
                         Rectangle { horizontal-stretch: 1; }
-                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.mask; label: "添加图层蒙版"; enabled: root.active-layer >= 0 && !root.layers[root.active-layer].masked; clicked => { root.layer-mask-added(); } }
-                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.copy; label: "复制图层"; enabled: root.active-layer >= 0 && root.layers[root.active-layer].kind != 1; clicked => { root.layer-duplicated(root.active-layer); } }
-                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.text-mark; label: "重命名图层"; enabled: root.active-layer >= 0; clicked => { root.renaming-row = root.active-layer; } }
-                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.sliders; label: "添加调整图层"; clicked => { root.inspector-tab = 1; } }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.mask; label: "添加图层蒙版"; enabled: root.active-layer >= 0 && !root.layers[root.active-layer].masked; clicked => { root.layer-mask-added(); } }
+                        layer-more-button := WorkspaceIcon {
+                            width: 32px; height: 32px; side: 32px; glyph: Glyph.more; label: "更多图层操作";
+                            clicked => {
+                                root.blend-open = false;
+                                root.layer-menu-index = root.active-layer < 0 ? 2 : root.layers[root.active-layer].kind == 1 ? 1 : 0;
+                                root.layer-more-open = !root.layer-more-open;
+                            }
+                        }
                     }
                 }
-                if root.blend-open: TouchArea { clicked => { root.blend-open = false; } }
-                if root.blend-open: Rectangle {
+                if root.blend-open || root.layer-more-open: TouchArea {
+                    clicked => {
+                        if (root.blend-open) { root.blend-open = false; blend-button.take-focus(); }
+                        if (root.layer-more-open) { root.layer-more-open = false; layer-more-button.take-focus(); }
+                    }
+                }
+                if root.blend-open: blend-menu := FocusScope {
                     x: 12px; y: Math.max(12px, parent.height - 412px);
                     width: parent.width - 24px; height: Math.min(388px, parent.height - 24px);
-                    background: Theme.raised; border-width: 1px; border-color: Theme.line-strong;
-                    ScrollView {
-                        viewport-width: parent.width - 12px;
-                        horizontal-scrollbar-policy: always-off;
+                    init => { self.focus(); }
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) { root.blend-open = false; blend-button.take-focus(); return EventResult.accept; }
+                        if (event.text == Key.UpArrow) { root.blend-menu-index = Math.max(0, root.blend-menu-index - 1); }
+                        else if (event.text == Key.DownArrow) { root.blend-menu-index = Math.min(12, root.blend-menu-index + 1); }
+                        else if (event.text == Key.Home) { root.blend-menu-index = 0; }
+                        else if (event.text == Key.End) { root.blend-menu-index = 12; }
+                        else if (event.text == " " || event.text == "\n") {
+                            root.layer-blend-changed(root.blend-menu-index);
+                            root.blend-open = false;
+                            blend-button.take-focus();
+                            return EventResult.accept;
+                        } else { return EventResult.accept; }
+                        let row-top = 6px + root.blend-menu-index * 39px;
+                        let row-bottom = row-top + 38px;
+                        if (row-top + root.blend-menu-scroll-y < 0px) { root.blend-menu-scroll-y = -row-top; }
+                        if (row-bottom + root.blend-menu-scroll-y > self.height) { root.blend-menu-scroll-y = self.height - row-bottom; }
+                        return EventResult.accept;
+                    }
+                    Rectangle {
+                        background: Theme.raised; border-width: 1px; border-color: Theme.line-strong;
+                        ScrollView {
+                            viewport-width: parent.width - 12px;
+                            viewport-y <=> root.blend-menu-scroll-y;
+                            horizontal-scrollbar-policy: always-off;
+                            VerticalLayout {
+                                padding: 6px; spacing: 1px;
+                                for mode[i] in ["正常", "正片叠底", "滤色", "叠加", "变暗", "变亮", "差值", "颜色减淡", "颜色加深", "色相", "饱和度", "颜色", "明度"]: MenuAction {
+                                    label: mode;
+                                    background: root.blend-menu-index == i ? Theme.field-hover : transparent;
+                                    clicked => { root.layer-blend-changed(i); root.blend-open = false; blend-button.take-focus(); }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.layer-more-open: FocusScope {
+                    x: 12px; y: Math.max(12px, parent.height - 152px);
+                    width: parent.width - 24px; height: 140px;
+                    init => { self.focus(); }
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) { root.layer-more-open = false; layer-more-button.take-focus(); return EventResult.accept; }
+                        if (event.text == Key.UpArrow) {
+                            if (root.layer-menu-index == 2 && root.active-layer >= 0) { root.layer-menu-index = 1; }
+                            else if (root.layer-menu-index == 1 && root.active-layer >= 0 && root.layers[root.active-layer].kind != 1) { root.layer-menu-index = 0; }
+                            return EventResult.accept;
+                        }
+                        if (event.text == Key.DownArrow) {
+                            if (root.layer-menu-index == 0) { root.layer-menu-index = root.active-layer >= 0 ? 1 : 2; }
+                            else { root.layer-menu-index = 2; }
+                            return EventResult.accept;
+                        }
+                        if (event.text == " " || event.text == "\n") {
+                            if (root.layer-menu-index == 0 && (root.active-layer < 0 || root.layers[root.active-layer].kind == 1)) { return EventResult.accept; }
+                            if (root.layer-menu-index == 1 && root.active-layer < 0) { return EventResult.accept; }
+                            root.layer-more-open = false;
+                            if (root.layer-menu-index == 0 && root.active-layer >= 0 && root.layers[root.active-layer].kind != 1) { root.layer-duplicated(root.active-layer); }
+                            if (root.layer-menu-index == 1 && root.active-layer >= 0) { root.renaming-row = root.active-layer; }
+                            if (root.layer-menu-index == 2) { root.inspector-tab = 1; inspector-tabs.focus(); }
+                            if (root.layer-menu-index == 0) { layer-more-button.take-focus(); }
+                            return EventResult.accept;
+                        }
+                        return EventResult.accept;
+                    }
+                    Rectangle {
+                        background: Theme.raised; border-width: 1px; border-color: Theme.line-strong;
                         VerticalLayout {
                             padding: 6px; spacing: 1px;
-                            for mode[i] in ["正常", "正片叠底", "滤色", "叠加", "变暗", "变亮", "差值", "颜色减淡", "颜色加深", "色相", "饱和度", "颜色", "明度"]: MenuAction {
-                                label: mode;
-                                clicked => { root.layer-blend-changed(i); root.blend-open = false; }
-                            }
+                            MenuAction { label: "复制图层"; glyph: Glyph.copy; background: root.layer-menu-index == 0 ? Theme.field-hover : transparent; enabled: root.active-layer >= 0 && root.layers[root.active-layer].kind != 1; clicked => { root.layer-more-open = false; root.layer-duplicated(root.active-layer); layer-more-button.take-focus(); } }
+                            MenuAction { label: "重命名图层"; glyph: Glyph.text-mark; background: root.layer-menu-index == 1 ? Theme.field-hover : transparent; enabled: root.active-layer >= 0; clicked => { root.layer-more-open = false; root.renaming-row = root.active-layer; } }
+                            MenuAction { label: "添加调整图层"; glyph: Glyph.sliders; background: root.layer-menu-index == 2 ? Theme.field-hover : transparent; clicked => { root.layer-more-open = false; root.inspector-tab = 1; inspector-tabs.focus(); } }
                         }
                     }
                 }

@@ -5878,7 +5878,7 @@ impl Studio {
                         mask_paint,
                         mask_enabled,
                     ),
-                    (kind, blend),
+                    (kind, blend, adjustment_kind),
                 )| {
                     CanvasLayerData {
                         id: id as i32,
@@ -5893,6 +5893,7 @@ impl Studio {
                         mask_paint,
                         mask_enabled,
                         kind,
+                        adjustment_kind,
                         blend,
                     }
                 },

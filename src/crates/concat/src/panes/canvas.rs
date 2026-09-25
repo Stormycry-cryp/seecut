@@ -2753,7 +2753,7 @@ impl CanvasPane {
             .collect()
     }
 
-    pub fn layer_ui_details(&self) -> Vec<(i32, i32)> {
+    pub fn layer_ui_details(&self) -> Vec<(i32, i32, i32)> {
         self.rows()
             .iter()
             .map(|(node, _)| {
@@ -2766,7 +2766,11 @@ impl CanvasPane {
                     .iter()
                     .position(|mode| *mode == node.blend())
                     .unwrap_or(0) as i32;
-                (kind, blend)
+                let adjustment = match node {
+                    LayerNode::Adjustment(layer) => adjustment_kind(&layer.adjustment),
+                    _ => 0,
+                };
+                (kind, blend, adjustment)
             })
             .collect()
     }
