@@ -659,6 +659,7 @@ export component CanvasPane inherits Rectangle {
     }
 
     Pane {
+        width: parent.width; height: parent.height;
         if !root.standalone: PaneHeader {
             title: I18n.t("Canvas");
 
