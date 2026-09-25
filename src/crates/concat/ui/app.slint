@@ -591,27 +591,30 @@ export component App inherits Window {
                     height: 100%;
                     VerticalLayout {
                         Rectangle {
-                            height: 54px; background: Theme.panel;
+                            height: 56px; background: Theme.panel;
                             HorizontalLayout {
-                                padding-top: 10px; padding-bottom: 10px; padding-left: 20px; padding-right: 20px; spacing: 8px;
-                                WorkspaceIcon { glyph: Glyph.chevron-left; label: "返回画布项目"; clicked => { SeeCut.canvas-gallery-open = true; SeeCut.action("canvas-projects-refresh", ""); } }
+                                padding-top: 12px; padding-bottom: 12px; padding-left: 16px; padding-right: 16px; spacing: 10px;
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-left; label: "返回画布项目"; clicked => { SeeCut.canvas-gallery-open = true; SeeCut.action("canvas-projects-refresh", ""); } }
                                 Text { text: Editor.canvas-has-document ? Editor.canvas-name + (Editor.canvas-modified ? " · 未保存" : "") : "未打开文档"; font-size: 14px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
-                                canvas-open-button := AppButton {
+                                canvas-open-button := WorkspaceIcon {
                                     property <int> restore-token: root.focus-request-token;
                                     changed restore-token => { if root.focus-request-target == 1 { self.take-focus(); } }
-                                    label: "打开"; clicked => { root.focus-return = 1; root.canvas-open-menu = !root.canvas-open-menu; }
+                                    width: 32px; height: 32px; side: 32px;
+                                    glyph: Glyph.folder; label: "打开画布";
+                                    clicked => { root.focus-return = 1; root.canvas-open-menu = !root.canvas-open-menu; }
                                 }
-                                WorkspaceIcon { glyph: Glyph.undo; label: "撤销"; enabled: Editor.canvas-can-undo; clicked => { Editor.canvas-undo(); } }
-                                WorkspaceIcon { glyph: Glyph.redo; label: "重做"; enabled: Editor.canvas-can-redo; clicked => { Editor.canvas-redo(); } }
-                                AppButton { label: "保存工程"; primary: true; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp(); } }
-                                AppButton { label: "另存为"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp-as(); } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.undo; label: "撤销"; enabled: Editor.canvas-can-undo; clicked => { Editor.canvas-undo(); } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.redo; label: "重做"; enabled: Editor.canvas-can-redo; clicked => { Editor.canvas-redo(); } }
+                                Rectangle { width: 1px; height: 32px; Rectangle { y: 7px; width: 1px; height: 18px; background: Theme.line; } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.save; label: "保存画布工程"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp(); } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.copy; label: "另存画布工程"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp-as(); } }
                                 canvas-export-button := AppButton {
                                     property <int> restore-token: root.focus-request-token;
                                     changed restore-token => { if root.focus-request-target == 2 { self.take-focus(); } }
-                                    label: "导出图片"; enabled: Editor.canvas-has-document;
+                                    height: 32px; label: "导出"; enabled: Editor.canvas-has-document;
                                     clicked => { root.focus-return = 2; SeeCut.canvas-export-open = true; }
                                 }
-                                WorkspaceIcon { glyph: Glyph.sliders; label: Editor.canvas-sidebar-open ? "收起图层与属性" : "展开图层与属性"; checked: Editor.canvas-sidebar-open; clicked => { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.sliders; label: Editor.canvas-sidebar-open ? "收起图层与属性" : "展开图层与属性"; checked: Editor.canvas-sidebar-open; clicked => { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; } }
                             }
                         }
                         WorkflowFeedback { }

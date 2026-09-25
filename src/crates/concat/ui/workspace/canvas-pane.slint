@@ -9,7 +9,8 @@ import { Glyph, Icon } from "../icons.slint";
 import { IconButton } from "../primitives/panel.slint";
 import { NumberField } from "../primitives/number-field.slint";
 import { Focus } from "../util.slint";
-import { AppButton, WorkspaceIcon, MenuAction } from "../seecut/components.slint";
+import { WorkspaceIcon, MenuAction } from "../seecut/components.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { Pane, PaneHeader } from "pane.slint";
 import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
 
@@ -301,6 +302,35 @@ component CanvasChipAction inherits FocusScope {
     }
 }
 
+component CanvasInspectorTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    in property <bool> keyboard-focused;
+    callback clicked();
+    width: 60px; height: 32px;
+    background: transparent;
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    Text {
+        width: parent.width; height: parent.height;
+        text: root.label;
+        color: tab-touch.pressed ? Theme.accent : root.selected || tab-touch.has-hover ? Theme.fg : Theme.fg-muted;
+        font-size: 14px; font-weight: 500;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    if root.keyboard-focused: Rectangle {
+        y: 23px; x: 22px; width: 16px; height: 1px;
+        for dash[i] in [0, 1, 2]: Rectangle {
+            x: i * 6px; width: 4px; height: 1px;
+            background: Theme.focus-control;
+        }
+    }
+    tab-touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
 component PropertySlider inherits HorizontalLayout {
     in property <string> label;
     in-out property <float> value;
@@ -428,6 +458,8 @@ export component CanvasPane inherits Rectangle {
     /// round trip, the panel decides nothing else about it.
     property <bool> adjustment-open: false;
     property <int> inspector-tab: 0;
+    property <int> inspector-focus-index: 0;
+    property <bool> inspector-keyboard-focus: false;
     property <bool> blend-open: false;
     property <int> renaming-row: -1;
     /// The gradient map's colour popup: open, and which swatch (0 low,
@@ -447,7 +479,7 @@ export component CanvasPane inherits Rectangle {
     property <length> layer-list-requested: -1px;
     property <length> layer-list-height: Math.clamp(
         root.layer-list-requested >= 0px ? root.layer-list-requested
-            : root.height * 0.42,
+            : Math.min(root.height * 0.42, Math.max(root.layer-list-min, root.layers.length * 40px + 8px)),
         root.layer-list-min, root.layer-list-max);
     property <bool> resizing-layers: false;
     property <length> resize-y0: 0px;
@@ -633,13 +665,15 @@ export component CanvasPane inherits Rectangle {
             height: 40px; background: Theme.panel;
             HorizontalLayout {
                 padding-left: 10px; padding-right: 10px; spacing: 8px; alignment: center;
-                if root.tool == 0: AppButton {
+                if root.tool == 0: WorkspaceIcon {
+                    width: 32px; height: 32px; side: 32px;
+                    glyph: root.transforming ? Glyph.check : Glyph.fit;
                     label: root.transforming ? "完成变换" : "自由变换";
-                    selected: root.transforming;
+                    checked: root.transforming;
                     clicked => { if (root.transforming) { root.transform-finish(true); } else { root.transform-start(); } }
                 }
-                if root.tool == 0: WorkspaceIcon { glyph: Glyph.flip-h; label: "水平翻转"; enabled: root.has-object; clicked => { root.flip(true); } }
-                if root.tool == 0: WorkspaceIcon { glyph: Glyph.flip-v; label: "垂直翻转"; enabled: root.has-object; clicked => { root.flip(false); } }
+                if root.tool == 0: WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.flip-h; label: "水平翻转"; enabled: root.has-object; clicked => { root.flip(true); } }
+                if root.tool == 0: WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.flip-v; label: "垂直翻转"; enabled: root.has-object; clicked => { root.flip(false); } }
                 if root.tool == 3 || root.tool == 4: HorizontalLayout {
                     spacing: 4px; alignment: center;
                     Text { text: "大小"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
@@ -663,12 +697,18 @@ export component CanvasPane inherits Rectangle {
                         font-family: Theme.font-technical; font-size: 12px;
                         accepted => { CanvasControls.hex-edited(self.text); Focus.release(); }
                     }
-                    AppButton { label: CanvasControls.picking ? "点击画布" : "取色"; selected: CanvasControls.picking; clicked => { CanvasControls.picking = !CanvasControls.picking; } }
+                    WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.pointer; label: CanvasControls.picking ? "点击画布取色" : "取色"; checked: CanvasControls.picking; clicked => { CanvasControls.picking = !CanvasControls.picking; } }
                 }
                 if root.tool == 5 || root.tool == 6: HorizontalLayout {
-                    spacing: 3px; alignment: center;
-                    for mode[i] in ["新建", "添加", "减去", "交叉"]: AppButton {
-                        label: mode; selected: root.selection-mode == i;
+                    spacing: 8px; alignment: center;
+                    for mode[i] in [
+                        { label: "新建选区", glyph: Glyph.box-select },
+                        { label: "添加到选区", glyph: Glyph.plus },
+                        { label: "从选区减去", glyph: Glyph.minus },
+                        { label: "与选区交叉", glyph: Glyph.merge },
+                    ]: WorkspaceIcon {
+                        width: 32px; height: 32px; side: 32px;
+                        label: mode.label; glyph: mode.glyph; checked: root.selection-mode == i;
                         clicked => { root.selection-mode-changed(i); }
                     }
                     if root.tool == 6: Text { text: "容差"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
@@ -676,8 +716,9 @@ export component CanvasPane inherits Rectangle {
                         width: 64px; value: root.wand-tolerance; minimum: 0; maximum: 255;
                         changed(value) => { root.wand-tolerance-changed(value); }
                     }
-                    if root.tool == 6: AppButton {
-                        label: "连续"; selected: root.wand-contiguous;
+                    if root.tool == 6: WorkspaceIcon {
+                        width: 32px; height: 32px; side: 32px;
+                        glyph: Glyph.magnet; label: "连续选区"; checked: root.wand-contiguous;
                         clicked => { root.wand-contiguous-changed(!root.wand-contiguous); }
                     }
                 }
@@ -994,14 +1035,53 @@ export component CanvasPane inherits Rectangle {
                 Rectangle { x: 0px; y: 0px; width: 1px; height: 100%; background: Theme.line; }
                 VerticalLayout {
                     padding: 12px; spacing: 5px;
-                    HorizontalLayout {
-                        height: 32px; spacing: 6px;
-                        AppButton { label: "属性"; selected: root.inspector-tab == 0; clicked => { root.inspector-tab = 0; } }
-                        AppButton { label: "调整"; selected: root.inspector-tab == 1; clicked => { root.inspector-tab = 1; } }
-                        Rectangle { horizontal-stretch: 1; }
+                    inspector-tabs := FocusScope {
+                        height: 32px;
+                        accessible-role: tab-list;
+                        accessible-item-count: 2;
+                        focus-gained(reason) => {
+                            root.inspector-focus-index = root.inspector-tab;
+                            root.inspector-keyboard-focus = reason == FocusReason.tab-navigation;
+                        }
+                        focus-lost => { root.inspector-keyboard-focus = false; }
+                        key-pressed(event) => {
+                            if (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                                root.inspector-focus-index = 1 - root.inspector-focus-index;
+                                root.inspector-keyboard-focus = true;
+                                return EventResult.accept;
+                            }
+                            if (event.text == Key.Home) { root.inspector-focus-index = 0; root.inspector-keyboard-focus = true; return EventResult.accept; }
+                            if (event.text == Key.End) { root.inspector-focus-index = 1; root.inspector-keyboard-focus = true; return EventResult.accept; }
+                            if (event.text == " " || event.text == "\n") {
+                                root.inspector-tab = root.inspector-focus-index;
+                                return EventResult.accept;
+                            }
+                            return EventResult.reject;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            CanvasInspectorTab {
+                                label: "属性"; selected: root.inspector-tab == 0;
+                                keyboard-focused: root.inspector-keyboard-focus && root.inspector-focus-index == 0;
+                                clicked => { inspector-tabs.focus(); root.inspector-keyboard-focus = false; root.inspector-focus-index = 0; root.inspector-tab = 0; }
+                            }
+                            CanvasInspectorTab {
+                                label: "调整"; selected: root.inspector-tab == 1;
+                                keyboard-focused: root.inspector-keyboard-focus && root.inspector-focus-index == 1;
+                                clicked => { inspector-tabs.focus(); root.inspector-keyboard-focus = false; root.inspector-focus-index = 1; root.inspector-tab = 1; }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        Rectangle {
+                            x: 21px + root.inspector-tab * 68px;
+                            y: 27px; width: 18px; height: 2px; border-radius: 1px;
+                            background: Theme.accent;
+                            animate x { duration: SeeCut.reduced-motion ? 0ms : 140ms; easing: ease-out; }
+                        }
                     }
-                    Rectangle { height: 1px; background: Theme.line; }
                     if root.inspector-tab == 0: ScrollView {
+                        accessible-role: tab-panel;
+                        accessible-label: "属性";
                         viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off; vertical-stretch: 1;
                         VerticalLayout {
                             spacing: 12px; alignment: start;
@@ -1019,20 +1099,24 @@ export component CanvasPane inherits Rectangle {
                                 }
                                 NumberField { prefix-glyph: Glyph.angle; value: root.object-doc-angle; unit: "°"; precision: 1; changed(value) => { root.transform-set(4, value); } edit-started => { root.transform-start(); } edit-finished(commit) => { root.transform-finish(commit); } }
                             }
-                            if root.has-selection: VerticalLayout {
-                                spacing: 6px;
-                                AppButton { label: "填充选区"; clicked => { root.fill-selection(); } }
-                                AppButton { label: "删除选区内容"; danger: true; clicked => { root.delete-selection(); } }
-                                AppButton { label: "取消选择"; clicked => { root.deselect(); } }
+                            if root.has-selection && root.active-layer >= 0
+                                && (root.layers[root.active-layer].kind == 0 || root.layers[root.active-layer].mask-paint): HorizontalLayout {
+                                height: 32px; spacing: 8px;
+                                Text { text: "选区"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.paint-bucket; label: "填充选区"; clicked => { root.fill-selection(); } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "删除选区内容"; danger: true; clicked => { root.delete-selection(); } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.close; label: "取消选择"; clicked => { root.deselect(); } }
                             }
-                            if root.active-layer >= 0: VerticalLayout {
-                                spacing: 8px;
-                                if !root.layers[root.active-layer].masked: AppButton { label: "添加图层蒙版"; glyph: Glyph.mask; clicked => { root.layer-mask-added(); } }
-                                if root.layers[root.active-layer].masked: VerticalLayout {
-                                    spacing: 6px;
-                                    AppButton { label: root.layers[root.active-layer].mask-enabled ? "停用蒙版" : "启用蒙版"; clicked => { root.layer-mask-enable-toggled(); } }
-                                    AppButton { label: "移除蒙版"; danger: true; clicked => { root.layer-mask-removed(); } }
+                            if root.active-layer >= 0 && root.layers[root.active-layer].masked: HorizontalLayout {
+                                height: 32px; spacing: 8px;
+                                Text { text: "蒙版"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                                WorkspaceIcon {
+                                    width: 32px; height: 32px; side: 32px;
+                                    glyph: root.layers[root.active-layer].mask-enabled ? Glyph.eye : Glyph.eye-off;
+                                    label: root.layers[root.active-layer].mask-enabled ? "停用蒙版" : "启用蒙版";
+                                    clicked => { root.layer-mask-enable-toggled(); }
                                 }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "移除蒙版"; danger: true; clicked => { root.layer-mask-removed(); } }
                             }
                             for param[i] in root.adjustment-params: PropertySlider {
                                 label: I18n.t(param.label); value: param.value; minimum: param.minimum; maximum: param.maximum; step: 0.01; precision: 2;
@@ -1173,10 +1257,13 @@ export component CanvasPane inherits Rectangle {
 
                         }
                     }
-                    if root.inspector-tab == 1: VerticalLayout {
+                    if root.inspector-tab == 1: Rectangle {
                         vertical-stretch: 1;
+                        accessible-role: tab-panel;
+                        accessible-label: "调整";
+                        VerticalLayout {
                         HorizontalLayout {
-                            height: 32px; spacing: 4px; alignment: start;
+                            height: 32px; spacing: 8px; alignment: start;
                             for kind in [
                                 { id: 2, name: "曝光", glyph: Glyph.sun },
                                 { id: 3, name: "色阶", glyph: Glyph.sliders },
@@ -1186,10 +1273,12 @@ export component CanvasPane inherits Rectangle {
                                 { id: 1, name: "反相", glyph: Glyph.moon },
                                 { id: 6, name: "颗粒", glyph: Glyph.rows },
                             ]: WorkspaceIcon {
-                                width: 32px; height: 32px; side: 32px; icon-size: 17px;
+                                width: right-panel.width < 304px ? 30px : 32px;
+                                height: 32px; side: right-panel.width < 304px ? 30px : 32px; icon-size: 17px;
                                 label: kind.name; glyph: kind.glyph;
                                 clicked => { root.adjustment-added(kind.id); root.inspector-tab = 0; }
                             }
+                        }
                         }
                     }
                     Rectangle {
@@ -1217,12 +1306,29 @@ export component CanvasPane inherits Rectangle {
                         }
                     }
                     VerticalLayout {
-                        height: 70px; spacing: 2px;
-                        AppButton {
-                            label: ["正常", "正片叠底", "滤色", "叠加", "变暗", "变亮", "差值", "颜色减淡", "颜色加深", "色相", "饱和度", "颜色", "明度"][root.active-blend];
-                            enabled: root.active-layer >= 0;
-                            selected: root.blend-open;
-                            clicked => { root.blend-open = !root.blend-open; }
+                        height: 64px; spacing: 4px;
+                        blend-button := Rectangle {
+                            width: 132px; height: 30px; border-radius: Theme.r-xs;
+                            background: blend-touch.has-hover ? Theme.field-hover : Theme.field;
+                            border-width: 1px; border-color: root.blend-open ? Theme.accent : Theme.line;
+                            opacity: root.active-layer >= 0 ? 1 : 0.45;
+                            accessible-role: button;
+                            accessible-label: "混合模式";
+                            accessible-enabled: root.active-layer >= 0;
+                            accessible-action-default => { if (root.active-layer >= 0) { root.blend-open = !root.blend-open; } }
+                            HorizontalLayout {
+                                padding-left: 8px; padding-right: 8px; spacing: 4px;
+                                Text {
+                                    text: ["正常", "正片叠底", "滤色", "叠加", "变暗", "变亮", "差值", "颜色减淡", "颜色加深", "色相", "饱和度", "颜色", "明度"][root.active-blend];
+                                    color: Theme.fg; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                Icon { glyph: Glyph.chevron-down; size: 12px; tint: Theme.fg-muted; }
+                            }
+                            blend-touch := TouchArea {
+                                enabled: root.active-layer >= 0; mouse-cursor: pointer;
+                                clicked => { root.blend-open = !root.blend-open; }
+                            }
                         }
                         if root.active-layer >= 0: PropertySlider {
                             horizontal-stretch: 1;
@@ -1235,10 +1341,10 @@ export component CanvasPane inherits Rectangle {
                         }
                     }
                     HorizontalLayout {
-                        height: 34px;
+                        height: 34px; spacing: 8px;
                         Text { text: "图层"; font-size: 14px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
-                        WorkspaceIcon { glyph: Glyph.folder-plus; label: "添加图层组"; clicked => { root.layer-group-added(); } }
-                        WorkspaceIcon { glyph: Glyph.plus; label: "添加图层"; clicked => { root.layer-added(); } }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.folder-plus; label: "添加图层组"; clicked => { root.layer-group-added(); } }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.plus; label: "添加图层"; clicked => { root.layer-added(); } }
                     }
                     ScrollView {
                         height: root.layer-list-height;
@@ -1319,7 +1425,13 @@ export component CanvasPane inherits Rectangle {
                                     if root.renaming-row != i: Rectangle {
                                         horizontal-stretch: 1; min-width: 0px;
                                         Text { text: layer.name; font-size: 13px; color: Theme.fg; overflow: elide; vertical-alignment: center; }
-                                        TouchArea { double-clicked => { root.renaming-row = i; } }
+                                        TouchArea {
+                                            clicked => {
+                                                root.layer-picked(i);
+                                                if (layer.kind == 2) { root.inspector-tab = 0; }
+                                            }
+                                            double-clicked => { root.renaming-row = i; }
+                                        }
                                     }
                                     if root.renaming-row == i: TextInput {
                                         horizontal-stretch: 1; min-width: 0px; single-line: true;
@@ -1360,20 +1472,21 @@ export component CanvasPane inherits Rectangle {
                         }
                     }
                     HorizontalLayout {
-                        height: 34px; spacing: 4px;
-                        WorkspaceIcon { glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
-                        WorkspaceIcon { glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
-                        WorkspaceIcon { glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
+                        height: 34px; spacing: 8px;
+                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
+                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
+                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
                         Rectangle { horizontal-stretch: 1; }
-                        WorkspaceIcon { glyph: Glyph.copy; label: "复制图层"; enabled: root.active-layer >= 0 && root.layers[root.active-layer].kind != 1; clicked => { root.layer-duplicated(root.active-layer); } }
-                        WorkspaceIcon { glyph: Glyph.text-mark; label: "重命名图层"; enabled: root.active-layer >= 0; clicked => { root.renaming-row = root.active-layer; } }
-                        WorkspaceIcon { glyph: Glyph.sliders; label: "添加调整图层"; clicked => { root.inspector-tab = 1; } }
+                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.mask; label: "添加图层蒙版"; enabled: root.active-layer >= 0 && !root.layers[root.active-layer].masked; clicked => { root.layer-mask-added(); } }
+                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.copy; label: "复制图层"; enabled: root.active-layer >= 0 && root.layers[root.active-layer].kind != 1; clicked => { root.layer-duplicated(root.active-layer); } }
+                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.text-mark; label: "重命名图层"; enabled: root.active-layer >= 0; clicked => { root.renaming-row = root.active-layer; } }
+                        WorkspaceIcon { width: 30px; height: 30px; side: 30px; glyph: Glyph.sliders; label: "添加调整图层"; clicked => { root.inspector-tab = 1; } }
                     }
                 }
                 if root.blend-open: TouchArea { clicked => { root.blend-open = false; } }
                 if root.blend-open: Rectangle {
-                    x: 10px; y: Math.max(10px, parent.height - 410px);
-                    width: parent.width - 20px; height: Math.min(390px, parent.height - 20px);
+                    x: 12px; y: Math.max(12px, parent.height - 412px);
+                    width: parent.width - 24px; height: Math.min(388px, parent.height - 24px);
                     background: Theme.raised; border-width: 1px; border-color: Theme.line-strong;
                     ScrollView {
                         viewport-width: parent.width - 12px;

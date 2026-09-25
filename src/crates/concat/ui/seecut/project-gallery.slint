@@ -2,15 +2,14 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Icon } from "../primitives/primitives.slint";
 import { Modal } from "../primitives/modal.slint";
-import { NumberField } from "../primitives/number-field.slint";
 import { SeeCut } from "state.slint";
 import { AppButton, AssetPreview, CloudField, WorkspaceIcon } from "components.slint";
 
 export component CanvasProjectsPage inherits Rectangle {
     property <bool> list-view: SeeCut.canvas-project-view == 1;
     property <bool> new-open: false;
-    property <int> new-width: 1920;
-    property <int> new-height: 1080;
+    property <string> new-width-text: "1920";
+    property <string> new-height-text: "1080";
     background: Theme.page;
     VerticalLayout {
         padding-left: 32px; padding-right: 48px; padding-top: 40px; padding-bottom: 24px; spacing: 32px;
@@ -97,13 +96,13 @@ export component CanvasProjectsPage inherits Rectangle {
                 spacing: 10px;
                 VerticalLayout {
                     spacing: 5px;
-                    Text { text: "宽度"; color: Theme.fg-muted; font-size: 13px; }
-                    NumberField { value: root.new-width; minimum: 64; maximum: 4096; unit: "px"; changed(value) => { root.new-width = Math.round(value); } }
+                    Text { text: "宽度 · px"; color: Theme.fg-muted; font-size: 13px; }
+                    CloudField { value <=> root.new-width-text; }
                 }
                 VerticalLayout {
                     spacing: 5px;
-                    Text { text: "高度"; color: Theme.fg-muted; font-size: 13px; }
-                    NumberField { value: root.new-height; minimum: 64; maximum: 4096; unit: "px"; changed(value) => { root.new-height = Math.round(value); } }
+                    Text { text: "高度 · px"; color: Theme.fg-muted; font-size: 13px; }
+                    CloudField { value <=> root.new-height-text; }
                 }
             }
             HorizontalLayout {
@@ -111,9 +110,12 @@ export component CanvasProjectsPage inherits Rectangle {
                 AppButton { label: "取消"; clicked => { root.new-open = false; } }
                 AppButton {
                     label: "创建"; primary: true;
+                    enabled: root.new-width-text.is-float() && root.new-height-text.is-float()
+                        && root.new-width-text.to-float() >= 64 && root.new-width-text.to-float() <= 4096
+                        && root.new-height-text.to-float() >= 64 && root.new-height-text.to-float() <= 4096;
                     clicked => {
                         root.new-open = false;
-                        SeeCut.action("canvas-new", "\{root.new-width},\{root.new-height}");
+                        SeeCut.action("canvas-new", "\{Math.round(root.new-width-text.to-float())},\{Math.round(root.new-height-text.to-float())}");
                     }
                 }
             }
