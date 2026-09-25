@@ -757,16 +757,16 @@ pub fn render(request: &ExportRequest, mut reporter: Reporter<'_>) -> Result<Str
 /// input clip. Final placement is exclusive, including when another process
 /// creates the destination after this early check.
 fn reject_existing_output(output: &Path, clips: &[ExportClip]) -> Result<(), String> {
-    if let Ok(output_meta) = std::fs::metadata(output) {
-        if clips.iter().any(|clip| {
+    if let Ok(output_meta) = std::fs::metadata(output)
+        && clips.iter().any(|clip| {
             std::fs::metadata(&clip.path)
                 .is_ok_and(|source_meta| same_file(&output_meta, &source_meta))
-        }) {
-            return Err(format!(
-                "export destination is an input clip: {}",
-                output.display()
-            ));
-        }
+        })
+    {
+        return Err(format!(
+            "export destination is an input clip: {}",
+            output.display()
+        ));
     }
     if std::fs::symlink_metadata(output).is_ok() {
         return Err(format!(
