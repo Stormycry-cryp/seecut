@@ -768,7 +768,9 @@ export component CanvasPane inherits Rectangle {
         }
 
         HorizontalLayout {
-            vertical-stretch: 1;
+            height: Math.max(0px, root.height - (!root.standalone ? 44px : 0px)
+                - (root.has-document && (root.tool == 0 || root.tool == 3 || root.tool == 4 || root.tool == 5 || root.tool == 6) ? 40px : 0px)
+                - 28px);
             Rectangle {
                 width: 48px; background: Theme.panel;
                 VerticalLayout {
