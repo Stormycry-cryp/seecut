@@ -5813,7 +5813,8 @@ impl Studio {
         editor.set_canvas_object_h(height as f32);
         editor.set_canvas_object_angle(angle as f32);
         editor.set_canvas_transforming(self.canvas.transform_session_active());
-        let (x, y, width, height, angle, flip_h, flip_v) = self.canvas.object_doc.unwrap_or_default();
+        let (x, y, width, height, angle, flip_h, flip_v) =
+            self.canvas.object_doc.unwrap_or_default();
         editor.set_canvas_object_doc_x(x);
         editor.set_canvas_object_doc_y(y);
         editor.set_canvas_object_doc_w(width);
@@ -5863,19 +5864,22 @@ impl Studio {
             .into_iter()
             .zip(details)
             .map(
-                |((
-                    id,
-                    name,
-                    hidden,
-                    opacity,
-                    active,
-                    depth,
-                    expanded,
-                    group,
-                    masked,
-                    mask_paint,
-                    mask_enabled,
-                ), (kind, blend))| {
+                |(
+                    (
+                        id,
+                        name,
+                        hidden,
+                        opacity,
+                        active,
+                        depth,
+                        expanded,
+                        group,
+                        masked,
+                        mask_paint,
+                        mask_enabled,
+                    ),
+                    (kind, blend),
+                )| {
                     CanvasLayerData {
                         id: id as i32,
                         name: name.into(),

@@ -632,8 +632,14 @@ impl Default for LayerTransform {
 impl LayerTransform {
     /// Give legacy signed scales an equivalent positive-scale editing form.
     pub fn canonical_for_edit(mut self) -> Self {
-        if self.scale_x < 0.0 { self.scale_x = -self.scale_x; self.flip_h = !self.flip_h; }
-        if self.scale_y < 0.0 { self.scale_y = -self.scale_y; self.flip_v = !self.flip_v; }
+        if self.scale_x < 0.0 {
+            self.scale_x = -self.scale_x;
+            self.flip_h = !self.flip_h;
+        }
+        if self.scale_y < 0.0 {
+            self.scale_y = -self.scale_y;
+            self.flip_v = !self.flip_v;
+        }
         self
     }
 
@@ -680,9 +686,13 @@ impl LayerTransform {
     /// Legacy documents may contain negative or very small scales. Rendering
     /// keeps their existing meaning; editing constrains newly written values.
     pub fn is_invertible(self) -> bool {
-        self.x.is_finite() && self.y.is_finite() && self.rotation.is_finite()
-            && self.scale_x.is_finite() && self.scale_y.is_finite()
-            && self.scale_x.abs() >= f32::EPSILON && self.scale_y.abs() >= f32::EPSILON
+        self.x.is_finite()
+            && self.y.is_finite()
+            && self.rotation.is_finite()
+            && self.scale_x.is_finite()
+            && self.scale_y.is_finite()
+            && self.scale_x.abs() >= f32::EPSILON
+            && self.scale_y.abs() >= f32::EPSILON
     }
 
     /// The finite, positive range a new interactive edit may write.

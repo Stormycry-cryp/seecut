@@ -137,18 +137,34 @@ impl PaintMapping {
     fn to_target(self, point: (f32, f32)) -> Option<(f32, f32)> {
         match self {
             Self::Document => Some(point),
-            Self::Image { transform, bitmap, canvas } => transform.to_bitmap(point, bitmap, canvas),
-            Self::LinkedMask { current, anchor, bitmap, canvas } =>
-                anchor.from_bitmap(current.to_bitmap(point, bitmap, canvas)?, bitmap, canvas),
+            Self::Image {
+                transform,
+                bitmap,
+                canvas,
+            } => transform.to_bitmap(point, bitmap, canvas),
+            Self::LinkedMask {
+                current,
+                anchor,
+                bitmap,
+                canvas,
+            } => anchor.from_bitmap(current.to_bitmap(point, bitmap, canvas)?, bitmap, canvas),
         }
     }
 
     fn to_document(self, point: (f32, f32)) -> Option<(f32, f32)> {
         match self {
             Self::Document => Some(point),
-            Self::Image { transform, bitmap, canvas } => transform.from_bitmap(point, bitmap, canvas),
-            Self::LinkedMask { current, anchor, bitmap, canvas } =>
-                current.from_bitmap(anchor.to_bitmap(point, bitmap, canvas)?, bitmap, canvas),
+            Self::Image {
+                transform,
+                bitmap,
+                canvas,
+            } => transform.from_bitmap(point, bitmap, canvas),
+            Self::LinkedMask {
+                current,
+                anchor,
+                bitmap,
+                canvas,
+            } => current.from_bitmap(anchor.to_bitmap(point, bitmap, canvas)?, bitmap, canvas),
         }
     }
 }
@@ -593,7 +609,9 @@ impl CanvasPane {
             CanvasMsg::DeleteSelection => Some(0),
             CanvasMsg::LayerToggleVisibility(_) => Some(0),
             CanvasMsg::LayerOpacity(_, _) if self.parameter_gesture.is_none() => Some(0),
-            CanvasMsg::LayerBlend(_) | CanvasMsg::LayerRename(_, _) | CanvasMsg::LayerDuplicate(_) => Some(0),
+            CanvasMsg::LayerBlend(_)
+            | CanvasMsg::LayerRename(_, _)
+            | CanvasMsg::LayerDuplicate(_) => Some(0),
             CanvasMsg::TransformSet(_, _) if self.transform_session.is_none() => Some(0),
             CanvasMsg::LayerAdd => Some(0),
             CanvasMsg::ImportLayers(_) => Some(0),
@@ -767,8 +785,12 @@ impl CanvasPane {
                 if dx < -radius || dy < -radius || dx > w + radius || dy > h + radius {
                     return;
                 }
-                let Some(mapping) = self.stroke_mapping else { return; };
-                let Some((tx, ty)) = mapping.to_target((dx as f32, dy as f32)) else { return; };
+                let Some(mapping) = self.stroke_mapping else {
+                    return;
+                };
+                let Some((tx, ty)) = mapping.to_target((dx as f32, dy as f32)) else {
+                    return;
+                };
                 let changed = self.paint_at(tx as f64, ty as f64);
                 self.commit_tiles(&changed);
                 self.render(studio);
@@ -860,7 +882,9 @@ impl CanvasPane {
             CanvasMsg::WandClick { x, y } => self.wand_click(x, y),
             CanvasMsg::SelectionMode(mode) => self.selection_mode = mode.clamp(0, 3),
             CanvasMsg::WandTolerance(value) => {
-                if value.is_finite() { self.wand_tolerance = value.clamp(0.0, 255.0); }
+                if value.is_finite() {
+                    self.wand_tolerance = value.clamp(0.0, 255.0);
+                }
             }
             CanvasMsg::WandContiguous(value) => self.wand_contiguous = value,
             CanvasMsg::SelectAll => {
@@ -924,15 +948,22 @@ impl CanvasPane {
             }
             CanvasMsg::LayerOpacity(index, opacity) => {
                 let target = match self.parameter_gesture {
-                    Some(ParameterGesture { target: ParameterTarget::Opacity(id), generation })
-                        if generation == self.document_generation => Some(id),
+                    Some(ParameterGesture {
+                        target: ParameterTarget::Opacity(id),
+                        generation,
+                    }) if generation == self.document_generation => Some(id),
                     Some(_) => None,
-                    None => self.rows().get(index.max(0) as usize).map(|(node, _)| node.id()),
+                    None => self
+                        .rows()
+                        .get(index.max(0) as usize)
+                        .map(|(node, _)| node.id()),
                 };
                 let Some(id) = target else {
                     return;
                 };
-                if !opacity.is_finite() { return; }
+                if !opacity.is_finite() {
+                    return;
+                }
                 let Some(document) = self.document.as_mut() else {
                     return;
                 };
@@ -947,9 +978,22 @@ impl CanvasPane {
                 self.render(studio);
             }
             CanvasMsg::LayerBlend(index) => {
-                let Some(mode) = concat_canvas::BlendMode::ALL.get(index.max(0) as usize).copied() else { return; };
-                let Some(id) = self.active else { return; };
-                let Some(node) = self.document.as_mut().and_then(|document| document.find_mut(id)) else { return; };
+                let Some(mode) = concat_canvas::BlendMode::ALL
+                    .get(index.max(0) as usize)
+                    .copied()
+                else {
+                    return;
+                };
+                let Some(id) = self.active else {
+                    return;
+                };
+                let Some(node) = self
+                    .document
+                    .as_mut()
+                    .and_then(|document| document.find_mut(id))
+                else {
+                    return;
+                };
                 match node {
                     LayerNode::Layer(layer) => layer.blend = mode,
                     LayerNode::Group(group) => group.blend = mode,
@@ -959,9 +1003,20 @@ impl CanvasPane {
             }
             CanvasMsg::LayerRename(id, name) => {
                 let name = name.trim();
-                if name.is_empty() || name.chars().count() > 100 { return; }
-                let Some(document) = self.document.as_mut() else { return; };
-                let Some(node) = document.walk().into_iter().find(|node| node.id().as_u64() == id as u64).map(|node| node.id()) else { return; };
+                if name.is_empty() || name.chars().count() > 100 {
+                    return;
+                }
+                let Some(document) = self.document.as_mut() else {
+                    return;
+                };
+                let Some(node) = document
+                    .walk()
+                    .into_iter()
+                    .find(|node| node.id().as_u64() == id as u64)
+                    .map(|node| node.id())
+                else {
+                    return;
+                };
                 match document.find_mut(node) {
                     Some(LayerNode::Layer(layer)) => layer.name = name.into(),
                     Some(LayerNode::Group(group)) => group.name = name.into(),
@@ -975,8 +1030,13 @@ impl CanvasPane {
                 self.render(studio);
             }
             CanvasMsg::ParameterBeginOpacity(index) => {
-                let target = self.rows().get(index.max(0) as usize).map(|(node, _)| node.id());
-                if let Some(id) = target { self.begin_parameter_gesture(ParameterTarget::Opacity(id)); }
+                let target = self
+                    .rows()
+                    .get(index.max(0) as usize)
+                    .map(|(node, _)| node.id());
+                if let Some(id) = target {
+                    self.begin_parameter_gesture(ParameterTarget::Opacity(id));
+                }
             }
             CanvasMsg::ParameterBeginAdjustment(index) => {
                 if let Some(id) = self.active {
@@ -1103,11 +1163,16 @@ impl CanvasPane {
                 self.render(studio);
             }
             CanvasMsg::AdjustmentParam(index, value) => {
-                if !value.is_finite() { return; }
+                if !value.is_finite() {
+                    return;
+                }
                 match self.parameter_gesture {
-                    Some(ParameterGesture { target: ParameterTarget::Adjustment(id, pinned_index), generation })
-                        if generation == self.document_generation && pinned_index == index =>
-                            self.set_adjustment_param_for(id, index, value as f32),
+                    Some(ParameterGesture {
+                        target: ParameterTarget::Adjustment(id, pinned_index),
+                        generation,
+                    }) if generation == self.document_generation && pinned_index == index => {
+                        self.set_adjustment_param_for(id, index, value as f32)
+                    }
                     Some(_) => return,
                     None => self.set_adjustment_param(index, value as f32),
                 }
@@ -1162,8 +1227,12 @@ impl CanvasPane {
     /// brush with its erasing bit on, so the settings stay shared.
     pub fn set_tool(&mut self, tool: i32) {
         let next = (tool.max(0) as usize).min(6);
-        if next != self.tool && self.object_drag.is_some() { self.object_release(false); }
-        if self.transform_session.is_some() && next != 0 && next != 1 { self.transform_finish(true); }
+        if next != self.tool && self.object_drag.is_some() {
+            self.object_release(false);
+        }
+        if self.transform_session.is_some() && next != 0 && next != 1 {
+            self.transform_finish(true);
+        }
         self.tool = next;
         self.brush.erasing = self.tool == 4;
     }
@@ -1268,22 +1337,34 @@ impl CanvasPane {
         let Some(layer) = self.paint_target() else {
             return;
         };
-        let Some(mapping) = self.mapping_for_target(layer) else { return; };
+        let Some(mapping) = self.mapping_for_target(layer) else {
+            return;
+        };
         let Some(frame) = self.store.get(layer) else {
             return;
         };
         let (w, h) = (frame.width(), frame.height());
-        let Some((tx, ty)) = mapping.to_target((dx as f32, dy as f32)) else { return; };
+        let Some((tx, ty)) = mapping.to_target((dx as f32, dy as f32)) else {
+            return;
+        };
         if tx < 0.0 || ty < 0.0 || tx >= w as f32 || ty >= h as f32 {
             return;
         }
-        let source = Mask::from_magic_wand(&frame, (tx as u32, ty as u32), self.wand_tolerance, self.wand_contiguous);
-        let Some((doc_w, doc_h)) = self.document_size() else { return; };
+        let source = Mask::from_magic_wand(
+            &frame,
+            (tx as u32, ty as u32),
+            self.wand_tolerance,
+            self.wand_contiguous,
+        );
+        let Some((doc_w, doc_h)) = self.document_size() else {
+            return;
+        };
         let mut mask = Mask::none(doc_w as u32, doc_h as u32);
         for y in 0..mask.height {
             for x in 0..mask.width {
                 if let Some((tx, ty)) = mapping.to_target((x as f32 + 0.5, y as f32 + 0.5))
-                    && tx >= 0.0 && ty >= 0.0
+                    && tx >= 0.0
+                    && ty >= 0.0
                 {
                     mask.bytes[(y * mask.width + x) as usize] = source.at(tx as u32, ty as u32);
                 }
@@ -1301,7 +1382,9 @@ impl CanvasPane {
             (2 | 3, None) => return,
             _ => self.selection = Some(mask),
         }
-        if self.selection.as_ref().is_some_and(Mask::is_empty) { self.selection = None; }
+        if self.selection.as_ref().is_some_and(Mask::is_empty) {
+            self.selection = None;
+        }
     }
 
     /// Fill or clear whatever is selected on the paint target - the
@@ -1311,7 +1394,9 @@ impl CanvasPane {
         let Some(layer) = self.paint_target() else {
             return;
         };
-        let Some(mapping) = self.mapping_for_target(layer) else { return; };
+        let Some(mapping) = self.mapping_for_target(layer) else {
+            return;
+        };
         let Some(mask) = &self.selection else {
             return;
         };
@@ -1324,7 +1409,8 @@ impl CanvasPane {
         for y in 0..frame.height() {
             for x in 0..frame.width() {
                 if let Some((dx, dy)) = mapping.to_document((x as f32 + 0.5, y as f32 + 0.5))
-                    && dx >= 0.0 && dy >= 0.0
+                    && dx >= 0.0
+                    && dy >= 0.0
                 {
                     mapped.bytes[(y * frame.width() + x) as usize] = mask.at(dx as u32, dy as u32);
                 }
@@ -1370,22 +1456,34 @@ impl CanvasPane {
         let mut max_x = 0usize;
         let mut max_y = 0usize;
         for (index, pixel) in frame.pixels().chunks_exact(4).enumerate() {
-            if pixel[3] == 0 { continue; }
+            if pixel[3] == 0 {
+                continue;
+            }
             let (x, y) = (index % width, index / width);
             min_x = min_x.min(x);
             min_y = min_y.min(y);
             max_x = max_x.max(x + 1);
             max_y = max_y.max(y + 1);
         }
-        let bounds = (min_x < max_x).then_some((min_x as f32, min_y as f32, max_x as f32, max_y as f32));
+        let bounds =
+            (min_x < max_x).then_some((min_x as f32, min_y as f32, max_x as f32, max_y as f32));
         self.content_bounds.insert(pixels, bounds);
         bounds
     }
 
-    fn active_geometry(&mut self) -> Option<(concat_canvas::LayerId, concat_canvas::LayerTransform, (f32, f32, f32, f32), (f32, f32))> {
+    fn active_geometry(
+        &mut self,
+    ) -> Option<(
+        concat_canvas::LayerId,
+        concat_canvas::LayerTransform,
+        (f32, f32, f32, f32),
+        (f32, f32),
+    )> {
         let document = self.document.as_ref()?;
         let id = self.active?;
-        let LayerNode::Layer(layer) = document.find(id)? else { return None; };
+        let LayerNode::Layer(layer) = document.find(id)? else {
+            return None;
+        };
         let (pixels, transform) = (layer.pixels, layer.transform.canonical_for_edit());
         let frame = self.store.get(pixels)?;
         let bitmap = (frame.width() as f32, frame.height() as f32);
@@ -1395,10 +1493,14 @@ impl CanvasPane {
 
     fn hit_image(&mut self, x: f64, y: f64) -> Option<concat_canvas::LayerId> {
         fn collect(group: &concat_canvas::LayerGroup, out: &mut Vec<concat_canvas::LayerId>) {
-            if group.hidden || group.opacity <= 0.0 { return; }
+            if group.hidden || group.opacity <= 0.0 {
+                return;
+            }
             for node in group.children.iter().rev() {
                 match node {
-                    LayerNode::Layer(layer) if !layer.hidden && layer.opacity > 0.0 => out.push(layer.id),
+                    LayerNode::Layer(layer) if !layer.hidden && layer.opacity > 0.0 => {
+                        out.push(layer.id)
+                    }
                     LayerNode::Group(group) => collect(group, out),
                     _ => {}
                 }
@@ -1408,10 +1510,14 @@ impl CanvasPane {
         let mut candidates = Vec::new();
         collect(&document.root, &mut candidates);
         let (dx, dy) = self.to_document(x, y);
-        if dx < 0.0 || dy < 0.0 || dx >= document.width as f64 || dy >= document.height as f64 { return None; }
+        if dx < 0.0 || dy < 0.0 || dx >= document.width as f64 || dy >= document.height as f64 {
+            return None;
+        }
         let composer = concat_canvas::Composer::new(document, &self.store);
         for id in candidates {
-            if composer.hit_coverage(id, dx as u32, dy as u32) > 1.0 / 255.0 { return Some(id); }
+            if composer.hit_coverage(id, dx as u32, dy as u32) > 1.0 / 255.0 {
+                return Some(id);
+            }
         }
         None
     }
@@ -1421,8 +1527,14 @@ impl CanvasPane {
         let angle = degrees.to_radians();
         let (sin, cos) = angle.sin_cos();
         let positions = [
-            (-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (1.0, 0.0),
-            (1.0, 1.0), (0.0, 1.0), (-1.0, 1.0), (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
         ];
         for (index, (sx, sy)) in positions.into_iter().enumerate() {
             let (lx, ly) = (sx * width / 2.0, sy * height / 2.0);
@@ -1437,17 +1549,31 @@ impl CanvasPane {
     }
 
     fn object_press(&mut self, x: f64, y: f64) {
-        if self.object_drag.is_some() { return; }
+        if self.object_drag.is_some() {
+            return;
+        }
         let handle = self.handle_at(x, y);
-        let picked = if handle.is_some() { self.active } else { self.hit_image(x, y) };
-        if self.transform_session.is_some() && picked != self.transform_session { return; }
+        let picked = if handle.is_some() {
+            self.active
+        } else {
+            self.hit_image(x, y)
+        };
+        if self.transform_session.is_some() && picked != self.transform_session {
+            return;
+        }
         self.active = picked;
         self.paint_mask = false;
-        self.layer = picked.and_then(|id| self.document.as_ref()?.find(id)).and_then(node_image_pixels);
+        self.layer = picked
+            .and_then(|id| self.document.as_ref()?.find(id))
+            .and_then(node_image_pixels);
         self.sync_view();
-        let Some((id, original, bounds, _)) = self.active_geometry() else { return; };
+        let Some((id, original, bounds, _)) = self.active_geometry() else {
+            return;
+        };
         let point = self.to_document(x, y);
-        if self.transform_session.is_none() { self.begin_history(); }
+        if self.transform_session.is_none() {
+            self.begin_history();
+        }
         self.object_drag = Some(ObjectDrag {
             id,
             generation: self.document_generation,
@@ -1459,9 +1585,16 @@ impl CanvasPane {
     }
 
     fn object_move(&mut self, x: f64, y: f64, shift: bool, alt: bool) {
-        let Some(drag) = self.object_drag else { return; };
-        if drag.generation != self.document_generation { self.object_release(false); return; }
-        let Some(document) = self.document.as_ref() else { return; };
+        let Some(drag) = self.object_drag else {
+            return;
+        };
+        if drag.generation != self.document_generation {
+            self.object_release(false);
+            return;
+        }
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
         let canvas = (document.width as f32, document.height as f32);
         let point = self.to_document(x, y);
         let point = (point.0 as f32, point.1 as f32);
@@ -1476,35 +1609,74 @@ impl CanvasPane {
                 let start = (drag.start.1 - center.1).atan2(drag.start.0 - center.0);
                 let end = (point.1 - center.1).atan2(point.0 - center.0);
                 next.rotation += end - start;
-                if shift { next.rotation = (next.rotation / std::f32::consts::PI * 12.0).round() * std::f32::consts::PI / 12.0; }
+                if shift {
+                    next.rotation = (next.rotation / std::f32::consts::PI * 12.0).round()
+                        * std::f32::consts::PI
+                        / 12.0;
+                }
             }
             ObjectDragKind::Scale(index) => {
-                let axes = [(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (1.0, 0.0),
-                    (1.0, 1.0), (0.0, 1.0), (-1.0, 1.0), (-1.0, 0.0)];
+                let axes = [
+                    (-1.0, -1.0),
+                    (0.0, -1.0),
+                    (1.0, -1.0),
+                    (1.0, 0.0),
+                    (1.0, 1.0),
+                    (0.0, 1.0),
+                    (-1.0, 1.0),
+                    (-1.0, 0.0),
+                ];
                 let (sx, sy) = axes[index as usize];
                 let delta = (point.0 - drag.start.0, point.1 - drag.start.1);
                 let (sin, cos) = (-drag.original.rotation).sin_cos();
                 let local = (delta.0 * cos - delta.1 * sin, delta.0 * sin + delta.1 * cos);
                 let factor = if alt { 2.0 } else { 1.0 };
                 let (bw, bh) = (drag.bounds.2 - drag.bounds.0, drag.bounds.3 - drag.bounds.1);
-                let mut rx = if sx == 0.0 { 1.0 } else { 1.0 + sx * local.0 * factor / (bw * drag.original.scale_x).max(0.001) };
-                let mut ry = if sy == 0.0 { 1.0 } else { 1.0 + sy * local.1 * factor / (bh * drag.original.scale_y).max(0.001) };
+                let mut rx = if sx == 0.0 {
+                    1.0
+                } else {
+                    1.0 + sx * local.0 * factor / (bw * drag.original.scale_x).max(0.001)
+                };
+                let mut ry = if sy == 0.0 {
+                    1.0
+                } else {
+                    1.0 + sy * local.1 * factor / (bh * drag.original.scale_y).max(0.001)
+                };
                 if sx != 0.0 && sy != 0.0 && !shift {
-                    let uniform = if (rx - 1.0).abs() >= (ry - 1.0).abs() { rx } else { ry };
+                    let uniform = if (rx - 1.0).abs() >= (ry - 1.0).abs() {
+                        rx
+                    } else {
+                        ry
+                    };
                     rx = uniform;
                     ry = uniform;
                 }
                 next.scale_x = (drag.original.scale_x * rx).clamp(0.001, 1000.0);
                 next.scale_y = (drag.original.scale_y * ry).clamp(0.001, 1000.0);
-                let Some(frame) = self.document.as_ref().and_then(|d| d.find(drag.id)).and_then(|node| match node {
-                    LayerNode::Layer(layer) => self.store.get(layer.pixels), _ => None,
-                }) else { return; };
+                let Some(frame) = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| d.find(drag.id))
+                    .and_then(|node| match node {
+                        LayerNode::Layer(layer) => self.store.get(layer.pixels),
+                        _ => None,
+                    })
+                else {
+                    return;
+                };
                 let bitmap = (frame.width() as f32, frame.height() as f32);
-                let (mx, my) = ((drag.bounds.0 + drag.bounds.2) / 2.0, (drag.bounds.1 + drag.bounds.3) / 2.0);
+                let (mx, my) = (
+                    (drag.bounds.0 + drag.bounds.2) / 2.0,
+                    (drag.bounds.1 + drag.bounds.3) / 2.0,
+                );
                 let (hx, hy) = (bw / 2.0, bh / 2.0);
-                let anchor = if alt { (mx, my) } else {
-                    (mx - sx * hx * if drag.original.flip_h { -1.0 } else { 1.0 },
-                     my - sy * hy * if drag.original.flip_v { -1.0 } else { 1.0 })
+                let anchor = if alt {
+                    (mx, my)
+                } else {
+                    (
+                        mx - sx * hx * if drag.original.flip_h { -1.0 } else { 1.0 },
+                        my - sy * hy * if drag.original.flip_v { -1.0 } else { 1.0 },
+                    )
                 };
                 if let (Some(before), Some(after)) = (
                     drag.original.from_bitmap(anchor, bitmap, canvas),
@@ -1516,23 +1688,35 @@ impl CanvasPane {
             }
         }
         if next.is_valid_edit()
-            && let Some(layer) = self.document.as_mut().and_then(|document| document.layer_mut(drag.id))
+            && let Some(layer) = self
+                .document
+                .as_mut()
+                .and_then(|document| document.layer_mut(drag.id))
         {
             if next != layer.transform
                 && let Some(mask) = layer.mask.as_mut().filter(|mask| mask.linked)
                 && mask.anchor.is_none()
-            { mask.anchor = Some(layer.transform); }
+            {
+                mask.anchor = Some(layer.transform);
+            }
             layer.transform = next;
             self.sync_view();
         }
     }
 
     fn object_release(&mut self, commit: bool) {
-        let Some(drag) = self.object_drag.take() else { return; };
+        let Some(drag) = self.object_drag.take() else {
+            return;
+        };
         if self.transform_session.is_some() {
             if !commit
-                && let Some(layer) = self.document.as_mut().and_then(|document| document.layer_mut(drag.id))
-            { layer.transform = drag.original; }
+                && let Some(layer) = self
+                    .document
+                    .as_mut()
+                    .and_then(|document| document.layer_mut(drag.id))
+            {
+                layer.transform = drag.original;
+            }
         } else if commit {
             self.commit_history();
         } else if let Some((before, _)) = self.pending_history.take() {
@@ -1542,53 +1726,95 @@ impl CanvasPane {
     }
 
     fn transform_start(&mut self) {
-        if self.transform_session.is_some() { return; }
-        let Some((id, _, _, _)) = self.active_geometry() else { return; };
+        if self.transform_session.is_some() {
+            return;
+        }
+        let Some((id, _, _, _)) = self.active_geometry() else {
+            return;
+        };
         self.begin_history();
         self.transform_session = Some(id);
     }
 
     fn transform_finish(&mut self, commit: bool) {
-        if self.transform_session.take().is_none() { return; }
+        if self.transform_session.take().is_none() {
+            return;
+        }
         self.object_drag = None;
-        if commit { self.commit_history(); }
-        else if let Some((before, _)) = self.pending_history.take() { self.restore_snapshot(before); }
+        if commit {
+            self.commit_history();
+        } else if let Some((before, _)) = self.pending_history.take() {
+            self.restore_snapshot(before);
+        }
         self.sync_view();
     }
 
     fn nudge(&mut self, dx: i32, dy: i32) {
-        let Some((id, _, _, _)) = self.active_geometry() else { return; };
-        if self.transform_session.is_none() { self.begin_history(); }
-        if let Some(layer) = self.document.as_mut().and_then(|document| document.layer_mut(id)) {
+        let Some((id, _, _, _)) = self.active_geometry() else {
+            return;
+        };
+        if self.transform_session.is_none() {
+            self.begin_history();
+        }
+        if let Some(layer) = self
+            .document
+            .as_mut()
+            .and_then(|document| document.layer_mut(id))
+        {
             if (dx != 0 || dy != 0)
                 && let Some(mask) = layer.mask.as_mut().filter(|mask| mask.linked)
                 && mask.anchor.is_none()
-            { mask.anchor = Some(layer.transform); }
+            {
+                mask.anchor = Some(layer.transform);
+            }
             layer.transform.x += dx as f32;
             layer.transform.y += dy as f32;
         }
-        if self.transform_session.is_none() { self.commit_history(); }
+        if self.transform_session.is_none() {
+            self.commit_history();
+        }
         self.sync_view();
     }
 
     fn flip(&mut self, horizontal: bool) {
-        let Some((id, _, _, _)) = self.active_geometry() else { return; };
-        if self.transform_session.is_none() { self.begin_history(); }
-        if let Some(layer) = self.document.as_mut().and_then(|document| document.layer_mut(id)) {
+        let Some((id, _, _, _)) = self.active_geometry() else {
+            return;
+        };
+        if self.transform_session.is_none() {
+            self.begin_history();
+        }
+        if let Some(layer) = self
+            .document
+            .as_mut()
+            .and_then(|document| document.layer_mut(id))
+        {
             if let Some(mask) = layer.mask.as_mut().filter(|mask| mask.linked)
                 && mask.anchor.is_none()
-            { mask.anchor = Some(layer.transform); }
-            if horizontal { layer.transform.flip_h = !layer.transform.flip_h; }
-            else { layer.transform.flip_v = !layer.transform.flip_v; }
+            {
+                mask.anchor = Some(layer.transform);
+            }
+            if horizontal {
+                layer.transform.flip_h = !layer.transform.flip_h;
+            } else {
+                layer.transform.flip_v = !layer.transform.flip_v;
+            }
         }
-        if self.transform_session.is_none() { self.commit_history(); }
+        if self.transform_session.is_none() {
+            self.commit_history();
+        }
         self.sync_view();
     }
 
     fn transform_set(&mut self, index: i32, value: f32) {
-        if !value.is_finite() { return; }
-        let Some((id, old, bounds, _)) = self.active_geometry() else { return; };
-        let Some(document) = self.document.as_ref() else { return; };
+        if !value.is_finite() {
+            return;
+        }
+        let Some((id, old, bounds, _)) = self.active_geometry() else {
+            return;
+        };
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
         let canvas = (document.width as f32, document.height as f32);
         let mut next = old;
         match index {
@@ -1599,11 +1825,19 @@ impl CanvasPane {
             4 => next.rotation = value.to_radians(),
             _ => return,
         }
-        if next == old || !next.is_valid_edit() { return; }
-        if let Some(layer) = self.document.as_mut().and_then(|document| document.layer_mut(id)) {
+        if next == old || !next.is_valid_edit() {
+            return;
+        }
+        if let Some(layer) = self
+            .document
+            .as_mut()
+            .and_then(|document| document.layer_mut(id))
+        {
             if let Some(mask) = layer.mask.as_mut().filter(|mask| mask.linked)
                 && mask.anchor.is_none()
-            { mask.anchor = Some(old); }
+            {
+                mask.anchor = Some(old);
+            }
             layer.transform = next;
         }
         self.sync_view();
@@ -1767,10 +2001,16 @@ impl CanvasPane {
         let Some(layer) = self.paint_target() else {
             return;
         };
-        let Some(frame) = self.store.get(layer) else { return; };
+        let Some(frame) = self.store.get(layer) else {
+            return;
+        };
         let (w, h) = (frame.width(), frame.height());
-        let Some(mapping) = self.mapping_for_target(layer) else { return; };
-        let Some((tx, ty)) = mapping.to_target((dx as f32, dy as f32)) else { return; };
+        let Some(mapping) = self.mapping_for_target(layer) else {
+            return;
+        };
+        let Some((tx, ty)) = mapping.to_target((dx as f32, dy as f32)) else {
+            return;
+        };
         // A second press while one stroke is live finishes it first: two
         // pointers, or a lost release, must not nest strokes.
         self.brush_release();
@@ -1919,9 +2159,18 @@ impl CanvasPane {
         if self.stroke.is_some() {
             return;
         }
-        if self.transform_session.is_some() { self.transform_finish(false); return; }
-        if self.object_drag.is_some() { self.object_release(false); return; }
-        if self.parameter_gesture.is_some() { self.finish_parameter_gesture(false); return; }
+        if self.transform_session.is_some() {
+            self.transform_finish(false);
+            return;
+        }
+        if self.object_drag.is_some() {
+            self.object_release(false);
+            return;
+        }
+        if self.parameter_gesture.is_some() {
+            self.finish_parameter_gesture(false);
+            return;
+        }
         let Some(entry) = self.undo_stack.pop() else {
             return;
         };
@@ -1935,7 +2184,12 @@ impl CanvasPane {
         if self.stroke.is_some() {
             return;
         }
-        if self.transform_session.is_some() || self.object_drag.is_some() || self.parameter_gesture.is_some() { return; }
+        if self.transform_session.is_some()
+            || self.object_drag.is_some()
+            || self.parameter_gesture.is_some()
+        {
+            return;
+        }
         let Some(entry) = self.redo_stack.pop() else {
             return;
         };
@@ -2032,12 +2286,20 @@ impl CanvasPane {
     }
 
     fn duplicate_row(&mut self, index: i32) {
-        let Some(document) = self.document.as_ref() else { return; };
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
         let rows = self.rows();
-        let Some((node, _)) = rows.get(index.max(0) as usize) else { return; };
+        let Some((node, _)) = rows.get(index.max(0) as usize) else {
+            return;
+        };
         let node = (*node).clone();
-        if matches!(node, LayerNode::Group(_)) { return; }
-        let Some((parent, position)) = node_parent_slot(document, node.id()) else { return; };
+        if matches!(node, LayerNode::Group(_)) {
+            return;
+        }
+        let Some((parent, position)) = node_parent_slot(document, node.id()) else {
+            return;
+        };
         let duplicate_mask = |store: &mut PixelStore, mask: Option<LayerMask>| {
             mask.and_then(|mut mask| {
                 let frame = store.get(mask.pixels)?;
@@ -2048,7 +2310,9 @@ impl CanvasPane {
         let document = self.document.as_mut().expect("checked");
         let id = match node {
             LayerNode::Layer(mut source) => {
-                let Some(frame) = self.store.get(source.pixels) else { return; };
+                let Some(frame) = self.store.get(source.pixels) else {
+                    return;
+                };
                 let pixels = self.store.put((*frame).clone());
                 source.mask = duplicate_mask(&mut self.store, source.mask);
                 let name = format!("{} 副本", source.name);
@@ -2250,11 +2514,26 @@ impl CanvasPane {
         let canvas = (document.width as f32, document.height as f32);
         match node {
             LayerNode::Layer(layer) if layer.pixels == target => Some(PaintMapping::Image {
-                transform: layer.transform, bitmap, canvas,
+                transform: layer.transform,
+                bitmap,
+                canvas,
             }),
-            LayerNode::Layer(layer) if layer.mask.as_ref().is_some_and(|mask| mask.pixels == target) => {
-                match layer.mask.and_then(|mask| mask.linked.then_some(mask.anchor).flatten()) {
-                    Some(anchor) => Some(PaintMapping::LinkedMask { current: layer.transform, anchor, bitmap, canvas }),
+            LayerNode::Layer(layer)
+                if layer
+                    .mask
+                    .as_ref()
+                    .is_some_and(|mask| mask.pixels == target) =>
+            {
+                match layer
+                    .mask
+                    .and_then(|mask| mask.linked.then_some(mask.anchor).flatten())
+                {
+                    Some(anchor) => Some(PaintMapping::LinkedMask {
+                        current: layer.transform,
+                        anchor,
+                        bitmap,
+                        canvas,
+                    }),
                     None => Some(PaintMapping::Document),
                 }
             }
@@ -2475,21 +2754,33 @@ impl CanvasPane {
     }
 
     pub fn layer_ui_details(&self) -> Vec<(i32, i32)> {
-        self.rows().iter().map(|(node, _)| {
-            let kind = match node {
-                LayerNode::Layer(_) => 0,
-                LayerNode::Group(_) => 1,
-                LayerNode::Adjustment(_) => 2,
-            };
-            let blend = concat_canvas::BlendMode::ALL.iter().position(|mode| *mode == node.blend()).unwrap_or(0) as i32;
-            (kind, blend)
-        }).collect()
+        self.rows()
+            .iter()
+            .map(|(node, _)| {
+                let kind = match node {
+                    LayerNode::Layer(_) => 0,
+                    LayerNode::Group(_) => 1,
+                    LayerNode::Adjustment(_) => 2,
+                };
+                let blend = concat_canvas::BlendMode::ALL
+                    .iter()
+                    .position(|mode| *mode == node.blend())
+                    .unwrap_or(0) as i32;
+                (kind, blend)
+            })
+            .collect()
     }
 
     pub fn active_blend_index(&self) -> i32 {
-        self.active.and_then(|id| self.document.as_ref()?.find(id))
-            .and_then(|node| concat_canvas::BlendMode::ALL.iter().position(|mode| *mode == node.blend()))
-            .map(|index| index as i32).unwrap_or(0)
+        self.active
+            .and_then(|id| self.document.as_ref()?.find(id))
+            .and_then(|node| {
+                concat_canvas::BlendMode::ALL
+                    .iter()
+                    .position(|mode| *mode == node.blend())
+            })
+            .map(|index| index as i32)
+            .unwrap_or(0)
     }
 
     /// Returns one image and one mask thumbnail for every visible layer row.
@@ -2632,7 +2923,9 @@ impl CanvasPane {
     }
 
     fn set_adjustment_param_for(&mut self, id: concat_canvas::LayerId, index: i32, value: f32) {
-        if !value.is_finite() { return; }
+        if !value.is_finite() {
+            return;
+        }
         let Some(document) = self.document.as_mut() else {
             return;
         };
@@ -3352,23 +3645,37 @@ impl CanvasPane {
         });
         let geometry = self.active_geometry();
         self.object_doc = geometry.map(|(_, transform, bounds, _)| {
-            let canvas = self.document.as_ref().expect("active geometry has document");
-            (canvas.width as f32 / 2.0 + transform.x,
-             canvas.height as f32 / 2.0 + transform.y,
-             (bounds.2 - bounds.0) * transform.scale_x,
-             (bounds.3 - bounds.1) * transform.scale_y,
-             transform.rotation.to_degrees(), transform.flip_h, transform.flip_v)
+            let canvas = self
+                .document
+                .as_ref()
+                .expect("active geometry has document");
+            (
+                canvas.width as f32 / 2.0 + transform.x,
+                canvas.height as f32 / 2.0 + transform.y,
+                (bounds.2 - bounds.0) * transform.scale_x,
+                (bounds.3 - bounds.1) * transform.scale_y,
+                transform.rotation.to_degrees(),
+                transform.flip_h,
+                transform.flip_v,
+            )
         });
         self.object_view = geometry.and_then(|(_, transform, bounds, bitmap)| {
             let canvas = self.document_size()?;
             let centre = ((bounds.0 + bounds.2) / 2.0, (bounds.1 + bounds.3) / 2.0);
-            let point = transform.from_bitmap(centre, bitmap, (canvas.0 as f32, canvas.1 as f32))?;
-            let (x, y) = self.nav.viewport().view_point((point.0 as f64, point.1 as f64), canvas);
+            let point =
+                transform.from_bitmap(centre, bitmap, (canvas.0 as f32, canvas.1 as f32))?;
+            let (x, y) = self
+                .nav
+                .viewport()
+                .view_point((point.0 as f64, point.1 as f64), canvas);
             let pixel = self.nav.viewport().points_per_pixel();
-            Some((x, y,
+            Some((
+                x,
+                y,
                 f64::from((bounds.2 - bounds.0) * transform.scale_x) * pixel,
                 f64::from((bounds.3 - bounds.1) * transform.scale_y) * pixel,
-                f64::from(transform.rotation.to_degrees())))
+                f64::from(transform.rotation.to_degrees()),
+            ))
         });
     }
 
@@ -3507,7 +3814,11 @@ impl CanvasPane {
                 .as_mut()
                 .expect("checked")
                 .new_layer(name, pixels);
-            if let Some(layer) = self.document.as_mut().and_then(|document| document.layer_mut(id)) {
+            if let Some(layer) = self
+                .document
+                .as_mut()
+                .and_then(|document| document.layer_mut(id))
+            {
                 layer.transform.scale_x = fit as f32;
                 layer.transform.scale_y = fit as f32;
             }
@@ -4339,9 +4650,12 @@ fn restrict_to_selection(
         let y1 = (y0 + TILE as u32).min(height);
         for y in y0..y1 {
             for x in x0..x1 {
-                let coverage = mapping.to_document((x as f32 + 0.5, y as f32 + 0.5))
+                let coverage = mapping
+                    .to_document((x as f32 + 0.5, y as f32 + 0.5))
                     .filter(|point| point.0 >= 0.0 && point.1 >= 0.0)
-                    .map_or(0, |point| u16::from(selection.at(point.0 as u32, point.1 as u32)));
+                    .map_or(0, |point| {
+                        u16::from(selection.at(point.0 as u32, point.1 as u32))
+                    });
                 if coverage == 255 {
                     continue;
                 }

@@ -110,17 +110,34 @@ impl<'a> Composer<'a> {
     /// Visible coverage at one document pixel, including ancestor group
     /// masks and clipping links. Used by canvas picking so holes are click-through.
     pub fn hit_coverage(&self, id: crate::document::LayerId, x: u32, y: u32) -> f32 {
-        if x >= self.document.width || y >= self.document.height { return 0.0; }
+        if x >= self.document.width || y >= self.document.height {
+            return 0.0;
+        }
         let mut stack = vec![id];
-        let Some(mut weight) = self.layer_coverage_at(id, x, y, &mut stack) else { return 0.0; };
-        fn ancestors(composer: &Composer<'_>, group: &LayerGroup, id: crate::document::LayerId, x: u32, y: u32) -> Option<f32> {
+        let Some(mut weight) = self.layer_coverage_at(id, x, y, &mut stack) else {
+            return 0.0;
+        };
+        fn ancestors(
+            composer: &Composer<'_>,
+            group: &LayerGroup,
+            id: crate::document::LayerId,
+            x: u32,
+            y: u32,
+        ) -> Option<f32> {
             for child in &group.children {
-                if child.id() == id { return Some(1.0); }
+                if child.id() == id {
+                    return Some(1.0);
+                }
                 if let LayerNode::Group(inner) = child
                     && let Some(weight) = ancestors(composer, inner, id, x, y)
                 {
-                    if inner.hidden { return Some(0.0); }
-                    let mask = inner.mask.as_ref().filter(|mask| mask.enabled)
+                    if inner.hidden {
+                        return Some(0.0);
+                    }
+                    let mask = inner
+                        .mask
+                        .as_ref()
+                        .filter(|mask| mask.enabled)
                         .map_or(1.0, |mask| composer.mask_coverage(mask, None, x, y));
                     return Some(weight * inner.opacity * mask);
                 }
@@ -131,17 +148,36 @@ impl<'a> Composer<'a> {
         weight
     }
 
-    fn layer_coverage_at(&self, id: crate::document::LayerId, x: u32, y: u32, stack: &mut Vec<crate::document::LayerId>) -> Option<f32> {
-        let LayerNode::Layer(layer) = self.document.find(id)? else { return None; };
-        if layer.hidden { return None; }
+    fn layer_coverage_at(
+        &self,
+        id: crate::document::LayerId,
+        x: u32,
+        y: u32,
+        stack: &mut Vec<crate::document::LayerId>,
+    ) -> Option<f32> {
+        let LayerNode::Layer(layer) = self.document.find(id)? else {
+            return None;
+        };
+        if layer.hidden {
+            return None;
+        }
         let frame = fetch(self.store, layer.pixels)?;
-        let mut weight = sample_alpha(&frame, &layer.transform, layer.sampling,
-            self.document.width, self.document.height, x, y) * layer.opacity;
+        let mut weight = sample_alpha(
+            &frame,
+            &layer.transform,
+            layer.sampling,
+            self.document.width,
+            self.document.height,
+            x,
+            y,
+        ) * layer.opacity;
         if let Some(mask) = layer.mask.as_ref().filter(|mask| mask.enabled) {
             weight *= self.mask_coverage(mask, Some(&layer.transform), x, y);
         }
         if let Some(base) = layer.clips_to {
-            if stack.contains(&base) { return Some(0.0); }
+            if stack.contains(&base) {
+                return Some(0.0);
+            }
             stack.push(base);
             if let Some(base_weight) = self.layer_coverage_at(base, x, y, stack) {
                 weight *= base_weight;
@@ -311,7 +347,9 @@ impl<'a> Composer<'a> {
                         y,
                     );
                     let index = (y as usize) * (width as usize) + (x as usize);
-                    coverage[index] = alpha * layer.opacity * self.mask_coverage(mask, Some(&layer.transform), x, y);
+                    coverage[index] = alpha
+                        * layer.opacity
+                        * self.mask_coverage(mask, Some(&layer.transform), x, y);
                 }
             }
         } else {
@@ -350,18 +388,28 @@ impl<'a> Composer<'a> {
 
     /// A mask's coverage at a canvas pixel: the mask bitmap's red channel,
     /// sampled in document coordinates.
-    fn mask_coverage(&self, mask: &LayerMask, layer: Option<&crate::document::LayerTransform>, x: u32, y: u32) -> f32 {
+    fn mask_coverage(
+        &self,
+        mask: &LayerMask,
+        layer: Option<&crate::document::LayerTransform>,
+        x: u32,
+        y: u32,
+    ) -> f32 {
         let Some(frame) = fetch(self.store, mask.pixels) else {
             return 1.0;
         };
-        if mask.linked && let (Some(current), Some(anchor)) = (layer, mask.anchor) {
+        if mask.linked
+            && let (Some(current), Some(anchor)) = (layer, mask.anchor)
+        {
             let bitmap = (frame.width() as f32, frame.height() as f32);
             let canvas = (self.document.width as f32, self.document.height as f32);
             let point = (x as f32 + 0.5, y as f32 + 0.5);
             if let Some(local) = current.to_bitmap(point, bitmap, canvas)
                 && let Some(old_document) = anchor.from_bitmap(local, bitmap, canvas)
             {
-                if old_document.0 < 0.0 || old_document.1 < 0.0 { return 1.0; }
+                if old_document.0 < 0.0 || old_document.1 < 0.0 {
+                    return 1.0;
+                }
                 return sample_channel(&frame, old_document.0 as u32, old_document.1 as u32, 0);
             }
         }
@@ -1328,7 +1376,9 @@ mod tests {
         mask.set_pixel(1, 1, [0, 0, 0, 255]);
         let group_node = world.document.group_mut(group).expect("group");
         group_node.mask = Some(LayerMask::new(world.store.put(mask)));
-        group_node.children.push(LayerNode::Layer(ImageLayer::new(base, "Base", base_pixels)));
+        group_node
+            .children
+            .push(LayerNode::Layer(ImageLayer::new(base, "Base", base_pixels)));
         group_node.children.push(LayerNode::Layer(top_layer));
         let composer = Composer::new(&world.document, &world.store);
         assert!(composer.hit_coverage(top, 0, 0) > 0.0);

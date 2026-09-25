@@ -492,10 +492,12 @@ impl Params {
     fn mask_anchor(&mut self, anchor: &LayerTransform) {
         let (sin, cos) = anchor.rotation.sin_cos();
         self.pad = [
-            anchor.x, anchor.y,
+            anchor.x,
+            anchor.y,
             anchor.scale_x * if anchor.flip_h { -1.0 } else { 1.0 },
             anchor.scale_y * if anchor.flip_v { -1.0 } else { 1.0 },
-            cos, sin,
+            cos,
+            sin,
         ];
         self.flags |= 32;
     }
@@ -990,7 +992,12 @@ impl CanvasGpu {
             ..Params::default()
         };
         params.transform(&layer.transform, frame.width(), frame.height());
-        if let Some(anchor) = layer.mask.as_ref().filter(|mask| mask.enabled && mask.linked).and_then(|mask| mask.anchor) {
+        if let Some(anchor) = layer
+            .mask
+            .as_ref()
+            .filter(|mask| mask.enabled && mask.linked)
+            .and_then(|mask| mask.anchor)
+        {
             params.mask_anchor(&anchor);
         }
         if mask.is_some() {
@@ -1215,7 +1222,12 @@ impl CanvasGpu {
             ..Params::default()
         };
         params.transform(&layer.transform, frame.width(), frame.height());
-        if let Some(anchor) = layer.mask.as_ref().filter(|mask| mask.enabled && mask.linked).and_then(|mask| mask.anchor) {
+        if let Some(anchor) = layer
+            .mask
+            .as_ref()
+            .filter(|mask| mask.enabled && mask.linked)
+            .and_then(|mask| mask.anchor)
+        {
             params.mask_anchor(&anchor);
         }
         if mask.is_some() {
@@ -1841,7 +1853,9 @@ mod tests {
         world.with_layer("Back", solid(16, 16, [90, 90, 90, 255]));
         let mut mask = solid(16, 16, [255, 255, 255, 255]);
         for y in 4..9 {
-            for x in 5..10 { mask.set_pixel(x, y, [0, 0, 0, 255]); }
+            for x in 5..10 {
+                mask.set_pixel(x, y, [0, 0, 0, 255]);
+            }
         }
         let mut linked = LayerMask::new(world.store.put(mask));
         linked.anchor = Some(LayerTransform::default());
