@@ -511,18 +511,11 @@ export component CanvasPane inherits Rectangle {
     property <int> drag-row: -1;
     property <int> drop-row: -1;
     property <bool> drop-below: false;
-    /// The layer list grows with the visible row count and can be adjusted
-    /// when the window is short. A long list remains inside its ScrollView.
-    property <length> layer-list-min: 48px;
-    property <length> layer-list-max: Math.max(root.layer-list-min, root.height - 220px);
-    property <length> layer-list-requested: -1px;
-    property <length> layer-list-height: Math.clamp(
-        root.layer-list-requested >= 0px ? root.layer-list-requested
-            : Math.min(root.height * 0.42, Math.max(root.layer-list-min, root.layers.length * 40px + 8px)),
-        root.layer-list-min, root.layer-list-max);
+    /// The divider sets the inspector height; the layer list uses the space below it.
+    property <length> inspector-requested: 220px;
     property <bool> resizing-layers: false;
     property <length> resize-y0: 0px;
-    property <length> resize-list-start: 0px;
+    property <length> resize-inspector-start: 0px;
     /// The curves editor's channel tab: `0` red, `1` green, `2` blue.
     property <int> curve-channel: 0;
     /// The channel tab's points and segments, picked by the tab.
@@ -1074,8 +1067,13 @@ export component CanvasPane inherits Rectangle {
 
             if root.has-document && root.sidebar-open: right-panel := Rectangle {
                 width: root.width < 1100px ? 288px : 320px; background: Theme.panel;
+                property <length> inspector-min: 48px;
+                // Padding, six gaps, tabs, divider, blend, layer title and footer use 226px.
+                property <length> inspector-max: Math.max(self.inspector-min, self.height - 274px);
+                property <length> inspector-height: Math.clamp(root.inspector-requested, self.inspector-min, self.inspector-max);
                 Rectangle { x: 0px; y: 0px; width: 1px; height: 100%; background: Theme.line; }
                 VerticalLayout {
+                    width: parent.width; height: parent.height;
                     padding: 12px; spacing: 5px;
                     inspector-tabs := FocusScope {
                         height: 32px;
@@ -1122,10 +1120,11 @@ export component CanvasPane inherits Rectangle {
                         }
                     }
                     if root.inspector-tab == 0: ScrollView {
+                        height: right-panel.inspector-height;
                         accessible-role: tab-panel;
                         accessible-label: "属性";
                         viewport-y <=> root.inspector-scroll-y;
-                        viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off; vertical-stretch: 1;
+                        viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
                             spacing: 12px; alignment: start;
                             if root.has-object && root.tool == 0: VerticalLayout {
@@ -1301,7 +1300,7 @@ export component CanvasPane inherits Rectangle {
                         }
                     }
                     if root.inspector-tab == 1: Rectangle {
-                        vertical-stretch: 1;
+                        height: right-panel.inspector-height;
                         accessible-role: tab-panel;
                         accessible-label: "调整";
                         VerticalLayout {
@@ -1336,7 +1335,7 @@ export component CanvasPane inherits Rectangle {
                             pointer-event(event) => {
                                 if (event.kind == PointerEventKind.down) {
                                     root.resize-y0 = self.mouse-y;
-                                    root.resize-list-start = root.layer-list-height;
+                                    root.resize-inspector-start = right-panel.inspector-height;
                                     root.resizing-layers = true;
                                 } else if (event.kind == PointerEventKind.up
                                     || event.kind == PointerEventKind.cancel) {
@@ -1345,9 +1344,9 @@ export component CanvasPane inherits Rectangle {
                             }
                             moved => {
                                 if (root.resizing-layers) {
-                                    root.layer-list-requested = Math.clamp(
-                                        root.resize-list-start - self.mouse-y + root.resize-y0,
-                                        root.layer-list-min, root.layer-list-max);
+                                    root.inspector-requested = Math.clamp(
+                                        root.resize-inspector-start + self.mouse-y - root.resize-y0,
+                                        right-panel.inspector-min, right-panel.inspector-max);
                                 }
                             }
                         }
@@ -1376,7 +1375,7 @@ export component CanvasPane inherits Rectangle {
                         WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.plus; label: "添加图层"; clicked => { root.layer-added(); } }
                     }
                     ScrollView {
-                        height: root.layer-list-height;
+                        vertical-stretch: 1;
                         viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
                             spacing: 2px; alignment: start;
