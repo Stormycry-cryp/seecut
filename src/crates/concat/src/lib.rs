@@ -348,6 +348,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
         editor.set_visual_params(ModelRc::from(models.visual_params.clone()));
         editor.set_audio_params(ModelRc::from(models.audio_params.clone()));
         editor.set_adjust_params(ModelRc::from(models.adjust_params.clone()));
+        editor.set_canvas_layers(ModelRc::from(models.canvas_layers.clone()));
+        editor.set_canvas_adjustment_params(ModelRc::from(models.canvas_adjustment_params.clone()));
         app.global::<Keyframes>()
             .set_rows(ModelRc::from(models.key_rows.clone()));
         app.global::<Library>()
@@ -1088,8 +1090,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
             _ => state.notify("所选画布素材无效", true),
         }
     }));
-    app.on_canvas_new(on_window!(|state| {
-        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::New));
+    app.on_canvas_new(on_window!(|state, width: i32, height: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::New(
+            width.clamp(64, 4096) as u32,
+            height.clamp(64, 4096) as u32,
+        )));
     }));
     app.on_canvas_new_with_paths(on_window!(|state, payload: SharedString| {
         match decode_canvas_imports(payload.as_str()) {
@@ -1273,11 +1278,29 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_canvas_marquee_release(on_window!(|state| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::MarqueeRelease));
     }));
+    editor.on_canvas_marquee_cancel(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::MarqueeCancel));
+    }));
     editor.on_canvas_wand_click(on_window!(|state, x: f32, y: f32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::WandClick {
             x: f64::from(x),
             y: f64::from(y),
         }));
+    }));
+    editor.on_canvas_selection_mode_changed(on_window!(|state, mode: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::SelectionMode(
+            mode,
+        )));
+    }));
+    editor.on_canvas_wand_tolerance_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::WandTolerance(
+            value,
+        )));
+    }));
+    editor.on_canvas_wand_contiguous_changed(on_window!(|state, value: bool| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::WandContiguous(value),
+        ));
     }));
     editor.on_canvas_select_all(on_window!(|state| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::SelectAll));
@@ -1306,6 +1329,74 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_canvas_layer_opacity_changed(on_window!(|state, index: i32, opacity: f32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerOpacity(
             index, opacity,
+        )));
+    }));
+    editor.on_canvas_layer_blend_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerBlend(
+            index,
+        )));
+    }));
+    editor.on_canvas_layer_renamed(on_window!(|state, id: i32, name: slint::SharedString| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::LayerRename(
+            id,
+            name.to_string(),
+        )));
+    }));
+    editor.on_canvas_layer_duplicated(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::LayerDuplicate(index),
+        ));
+    }));
+    editor.on_canvas_layer_opacity_begin(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::ParameterBeginOpacity(index),
+        ));
+    }));
+    editor.on_canvas_object_press(on_window!(|state, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ObjectPress(
+            f64::from(x),
+            f64::from(y),
+        )));
+    }));
+    editor.on_canvas_object_move(on_window!(
+        |state, x: f32, y: f32, shift: bool, alt: bool| {
+            state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ObjectMove(
+                f64::from(x),
+                f64::from(y),
+                shift,
+                alt,
+            )));
+        }
+    ));
+    editor.on_canvas_object_release(on_window!(|state, commit: bool| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ObjectRelease(
+            commit,
+        )));
+    }));
+    editor.on_canvas_transform_start(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::TransformStart));
+    }));
+    editor.on_canvas_transform_finish(on_window!(|state, commit: bool| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::TransformFinish(commit),
+        ));
+    }));
+    editor.on_canvas_nudge(on_window!(|state, dx: i32, dy: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Nudge(dx, dy)));
+    }));
+    editor.on_canvas_flip(on_window!(|state, horizontal: bool| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Flip(
+            horizontal,
+        )));
+    }));
+    editor.on_canvas_transform_set(on_window!(|state, index: i32, value: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::TransformSet(
+            index, value,
+        )));
+    }));
+    editor.on_canvas_parameter_end(on_window!(|state, commit: bool| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ParameterEnd(
+            commit,
         )));
     }));
     editor.on_canvas_layer_added(on_window!(|state| {
@@ -1397,6 +1488,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_canvas_adjustment_param_changed(on_window!(|state, index: i32, value: f32| {
         state.handle(Msg::Canvas(
             crate::panes::canvas::CanvasMsg::AdjustmentParam(index, f64::from(value)),
+        ));
+    }));
+    editor.on_canvas_adjustment_param_begin(on_window!(|state, index: i32| {
+        state.handle(Msg::Canvas(
+            crate::panes::canvas::CanvasMsg::ParameterBeginAdjustment(index),
         ));
     }));
     editor.on_canvas_layer_group_added(on_window!(|state| {

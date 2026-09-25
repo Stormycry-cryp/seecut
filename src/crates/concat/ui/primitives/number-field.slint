@@ -38,6 +38,8 @@ export component NumberField inherits Rectangle {
     in property <bool> enabled: true;
 
     callback changed(value: float);
+    callback edit-started();
+    callback edit-finished(commit: bool);
     callback keyframe-toggled(on: bool);
 
     // Display and parsing are overridable callbacks. Defaults round to
@@ -53,6 +55,7 @@ export component NumberField inherits Rectangle {
     }
 
     property <string> display: root.format(root.value);
+    property <bool> cancel-edit: false;
     property <length> keyframe-slot: root.keyframe ? 27px : 0px;
 
     height: Theme.h;
@@ -121,11 +124,14 @@ export component NumberField inherits Rectangle {
 
             changed has-focus => {
                 if (self.has-focus) {
+                    root.cancel-edit = false;
+                    root.edit-started();
                     self.text = root.display;
                     self.select-all();
                 } else {
-                    root.apply(root.parse(self.text), false);
+                    if (!root.cancel-edit) { root.apply(root.parse(self.text), false); }
                     self.text = root.display;
+                    root.edit-finished(!root.cancel-edit);
                 }
             }
 
@@ -136,6 +142,7 @@ export component NumberField inherits Rectangle {
             key-pressed(event) => {
                 if (event.text == Key.Escape) {
                     // put the untouched display back, so the blur commits a no-op
+                    root.cancel-edit = true;
                     self.text = root.display;
                     Focus.release();
                     return EventResult.accept;

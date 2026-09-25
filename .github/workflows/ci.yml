@@ -83,8 +83,14 @@ jobs:
       # public item without documentation fails here, not in review. Lints
       # before tests: they finish in a fraction of the time and catch the
       # most.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: |
+          free -h
+          df -h .
+          /usr/bin/time -v cargo clippy --workspace --all-targets -- -D warnings
         working-directory: src
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_BUILD_JOBS: "1"
       - run: cargo test --workspace -j 1
         working-directory: src
         env:

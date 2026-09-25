@@ -9,7 +9,8 @@ import { Glyph, Icon } from "../icons.slint";
 import { IconButton } from "../primitives/panel.slint";
 import { NumberField } from "../primitives/number-field.slint";
 import { Focus } from "../util.slint";
-import { AppButton, WorkspaceIcon, MenuAction } from "../seecut/components.slint";
+import { WorkspaceIcon, MenuAction } from "../seecut/components.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { Pane, PaneHeader } from "pane.slint";
 import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
 
@@ -78,6 +79,9 @@ export struct CanvasLayerData {
     masked: bool,
     mask-paint: bool,
     mask-enabled: bool,
+    kind: int,
+    adjustment-kind: int,
+    blend: int,
 }
 
 // One control point of a curves channel, normalized `0..1` on both axes:
@@ -299,6 +303,68 @@ component CanvasChipAction inherits FocusScope {
     }
 }
 
+component CanvasInspectorTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    in property <bool> keyboard-focused;
+    callback clicked();
+    width: 60px; height: 32px;
+    background: transparent;
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    Text {
+        width: parent.width; height: parent.height;
+        text: root.label;
+        color: tab-touch.pressed ? Theme.accent : root.selected || tab-touch.has-hover ? Theme.fg : Theme.fg-muted;
+        font-size: 14px; font-weight: 500;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    if root.keyboard-focused: Rectangle {
+        y: 23px; x: 22px; width: 16px; height: 1px;
+        for dash[i] in [0, 1, 2]: Rectangle {
+            x: i * 6px; width: 4px; height: 1px;
+            background: Theme.focus-control;
+        }
+    }
+    tab-touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component CanvasBlendButton inherits Rectangle {
+    in property <string> value;
+    in property <bool> enabled: true;
+    in property <bool> open;
+    property <bool> keyboard-ring: false;
+    callback clicked();
+    public function take-focus() { focus.focus(); }
+    width: 132px; height: 30px; border-radius: Theme.r-xs;
+    background: root.open ? Theme.field-active : touch.has-hover ? Theme.field-hover : Theme.field;
+    border-width: 1px;
+    border-color: root.keyboard-ring ? Theme.focus-control : root.open ? Theme.line-strong : Theme.line;
+    opacity: root.enabled ? 1 : 0.45;
+    accessible-role: button;
+    accessible-label: "混合模式，" + root.value;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-gained(reason) => { root.keyboard-ring = reason == FocusReason.tab-navigation; }
+        focus-lost => { root.keyboard-ring = false; }
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") { root.clicked(); return EventResult.accept; }
+            return EventResult.reject;
+        }
+    }
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 4px;
+        Text { text: root.value; color: Theme.fg; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Icon { glyph: Glyph.chevron-down; size: 12px; tint: Theme.fg-muted; }
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+}
+
 component PropertySlider inherits HorizontalLayout {
     in property <string> label;
     in-out property <float> value;
@@ -307,7 +373,12 @@ component PropertySlider inherits HorizontalLayout {
     in property <float> step: 0.01;
     in property <int> precision: 2;
     in property <string> readout;
+    in property <float> default-value: root.minimum;
+    in property <bool> percent: false;
+    in property <string> unit: "";
     callback changed(value: float);
+    callback gesture-started();
+    callback gesture-ended(commit: bool);
     height: 28px; spacing: 6px;
     Text {
         text: root.label; width: 68px; overflow: elide;
@@ -316,15 +387,23 @@ component PropertySlider inherits HorizontalLayout {
     Rail {
         height: 28px; horizontal-stretch: 1;
         minimum: root.minimum; maximum: root.maximum; step: root.step;
+        default-value: root.default-value;
         value: root.value;
         changed(value) => { root.value = value; root.changed(value); }
+        gesture-started => { root.gesture-started(); }
+        gesture-ended(commit) => { root.gesture-ended(commit); }
     }
     NumberField {
-        width: 56px;
-        value <=> root.value;
-        minimum: root.minimum; maximum: root.maximum;
-        step: root.step; precision: root.precision;
-        changed(value) => { root.changed(value); }
+        width: root.unit == "" ? 56px : 72px;
+        value: root.percent ? root.value * 100 : root.value;
+        minimum: root.percent ? root.minimum * 100 : root.minimum;
+        maximum: root.percent ? root.maximum * 100 : root.maximum;
+        step: root.percent ? root.step * 100 : root.step;
+        precision: root.percent ? 0 : root.precision;
+        unit: root.percent ? "%" : root.unit;
+        changed(value) => { root.value = root.percent ? value / 100 : value; root.changed(root.value); }
+        edit-started => { root.gesture-started(); }
+        edit-finished(commit) => { root.gesture-ended(commit); }
     }
 }
 
@@ -348,6 +427,20 @@ export component CanvasPane inherits Rectangle {
     /// The document's box on screen, in viewport pixels, already zoomed.
     in property <float> stage-w;
     in property <float> stage-h;
+    in property <bool> has-object;
+    in property <float> object-cx;
+    in property <float> object-cy;
+    in property <float> object-w;
+    in property <float> object-h;
+    in property <float> object-angle;
+    in property <bool> transforming;
+    in property <float> object-doc-x;
+    in property <float> object-doc-y;
+    in property <float> object-doc-w;
+    in property <float> object-doc-h;
+    in property <float> object-doc-angle;
+    in property <bool> object-flip-h;
+    in property <bool> object-flip-v;
     /// 0 move, 1 hand, 2 zoom, 3 brush, 4 eraser.
     in property <int> tool;
     /// The brush the painting tools drive; the knobs read and write these.
@@ -362,6 +455,9 @@ export component CanvasPane inherits Rectangle {
     in property <float> selection-y;
     in property <float> selection-w;
     in property <float> selection-h;
+    in property <int> selection-mode;
+    in property <float> wand-tolerance;
+    in property <bool> wand-contiguous;
     /// The marquee drag's box, in viewport pixels, while it is in flight.
     in property <float> marquee-x;
     in property <float> marquee-y;
@@ -395,6 +491,16 @@ export component CanvasPane inherits Rectangle {
     /// The layers panel's adjustment popup, open or not. Local state: no
     /// round trip, the panel decides nothing else about it.
     property <bool> adjustment-open: false;
+    property <int> inspector-tab: 0;
+    property <int> inspector-focus-index: 0;
+    property <bool> inspector-keyboard-focus: false;
+    property <length> inspector-scroll-y: 0px;
+    property <bool> blend-open: false;
+    property <int> blend-menu-index: 0;
+    property <length> blend-menu-scroll-y: 0px;
+    property <bool> layer-more-open: false;
+    property <int> layer-menu-index: 0;
+    property <int> renaming-row: -1;
     /// The gradient map's colour popup: open, and which swatch (0 low,
     /// 1 high) is being recoloured.
     property <bool> gradient-open: false;
@@ -405,17 +511,11 @@ export component CanvasPane inherits Rectangle {
     property <int> drag-row: -1;
     property <int> drop-row: -1;
     property <bool> drop-below: false;
-    /// The layer list grows with the visible row count and can be adjusted
-    /// when the window is short. A long list remains inside its ScrollView.
-    property <length> layer-list-min: 48px;
-    property <length> layer-list-max: Math.max(root.layer-list-min, root.height - 340px);
-    property <length> layer-list-requested: -1px;
-    property <length> layer-list-height: Math.clamp(
-        root.layer-list-requested >= 0px ? root.layer-list-requested
-            : Math.min(root.layers.length * 40px + 8px, root.height * 0.32),
-        root.layer-list-min, root.layer-list-max);
+    /// The divider sets the inspector height; the layer list uses the space below it.
+    property <length> inspector-requested: 220px;
     property <bool> resizing-layers: false;
     property <length> resize-y0: 0px;
+    property <length> resize-inspector-start: 0px;
     /// The curves editor's channel tab: `0` red, `1` green, `2` blue.
     property <int> curve-channel: 0;
     /// The channel tab's points and segments, picked by the tab.
@@ -446,6 +546,14 @@ export component CanvasPane inherits Rectangle {
     callback canvas-open();
     /// The tray's tool picker.
     callback tool-changed(index: int);
+    callback object-press(x: float, y: float);
+    callback object-move(x: float, y: float, shift: bool, alt: bool);
+    callback object-release(commit: bool);
+    callback transform-start();
+    callback transform-finish(commit: bool);
+    callback nudge(dx: int, dy: int);
+    callback flip(horizontal: bool);
+    callback transform-set(index: int, value: float);
     /// A paint stroke went down, moved, ended - viewport pixels, like the
     /// navigation gestures.
     callback brush-press(x: float, y: float);
@@ -463,7 +571,11 @@ export component CanvasPane inherits Rectangle {
     callback marquee-press(x: float, y: float);
     callback marquee-move(x: float, y: float);
     callback marquee-release();
+    callback marquee-cancel();
     callback wand-click(x: float, y: float);
+    callback selection-mode-changed(mode: int);
+    callback wand-tolerance-changed(value: float);
+    callback wand-contiguous-changed(value: bool);
     /// Selection-level edits.
     callback select-all();
     callback deselect();
@@ -474,9 +586,15 @@ export component CanvasPane inherits Rectangle {
     /// footer's delete and reorder buttons act on it.
     in property <[CanvasLayerData]> layers;
     in property <int> active-layer: -1;
+    in property <int> active-blend: 0;
     callback layer-picked(index: int);
     callback layer-visibility-toggled(index: int);
     callback layer-opacity-changed(index: int, opacity: float);
+    callback layer-blend-changed(index: int);
+    callback layer-renamed(id: int, name: string);
+    callback layer-duplicated(index: int);
+    callback layer-opacity-begin(index: int);
+    callback parameter-end(commit: bool);
     callback layer-added();
     /// A new group, above the active row.
     callback layer-group-added();
@@ -504,6 +622,7 @@ export component CanvasPane inherits Rectangle {
     /// the active adjustment's knobs turned.
     callback adjustment-added(kind: int);
     callback adjustment-param-changed(index: int, value: float);
+    callback adjustment-param-begin(index: int);
     /// The curves editor, on the channel (`0` red, `1` green, `2` blue):
     /// a control point moved by index, a fresh point dropped in, and a
     /// point taken back out - coordinates normalized `0..1`.
@@ -522,7 +641,18 @@ export component CanvasPane inherits Rectangle {
     in property <bool> standalone;
     callback pane-removed();
 
+    property <angle> object-turn: root.object-angle * 1deg;
+    function object-px(sx: float, sy: float) -> float {
+        return root.object-cx + sx * root.object-w / 2 * Math.cos(root.object-turn)
+            - sy * root.object-h / 2 * Math.sin(root.object-turn);
+    }
+    function object-py(sx: float, sy: float) -> float {
+        return root.object-cy + sx * root.object-w / 2 * Math.sin(root.object-turn)
+            + sy * root.object-h / 2 * Math.cos(root.object-turn);
+    }
+
     Pane {
+        width: parent.width; height: parent.height;
         if !root.standalone: PaneHeader {
             title: I18n.t("Canvas");
 
@@ -564,8 +694,76 @@ export component CanvasPane inherits Rectangle {
             }
         }
 
+        if root.has-document && (root.tool == 0 || root.tool == 3 || root.tool == 4 || root.tool == 5 || root.tool == 6): Rectangle {
+            height: 40px; background: Theme.panel;
+            HorizontalLayout {
+                padding-left: 10px; padding-right: 10px; spacing: 8px; alignment: center;
+                if root.tool == 0: WorkspaceIcon {
+                    width: 32px; height: 32px; side: 32px;
+                    glyph: root.transforming ? Glyph.check : Glyph.fit;
+                    label: root.transforming ? "完成变换" : "自由变换";
+                    checked: root.transforming;
+                    clicked => { if (root.transforming) { root.transform-finish(true); } else { root.transform-start(); } }
+                }
+                if root.tool == 0: WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.flip-h; label: "水平翻转"; enabled: root.has-object; clicked => { root.flip(true); } }
+                if root.tool == 0: WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.flip-v; label: "垂直翻转"; enabled: root.has-object; clicked => { root.flip(false); } }
+                if root.tool == 3 || root.tool == 4: HorizontalLayout {
+                    spacing: 4px; alignment: center;
+                    Text { text: "大小"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
+                    NumberField { width: 66px; value: root.brush-diameter; minimum: 1; maximum: 400; unit: "px"; changed(value) => { root.brush-size-changed(value); } }
+                    Text { text: "不透明度"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
+                    NumberField { width: 62px; value: root.brush-opacity * 100; minimum: 1; maximum: 100; unit: "%"; changed(value) => { root.brush-opacity-changed(value / 100); } }
+                    Text { text: "硬度"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
+                    NumberField { width: 62px; value: root.brush-hardness * 100; minimum: 0; maximum: 100; unit: "%"; changed(value) => { root.brush-hardness-changed(value / 100); } }
+                }
+                if root.tool == 3: HorizontalLayout {
+                    spacing: 3px; alignment: center;
+                    for swatch[i] in Palette.colors: Rectangle {
+                        width: 20px; height: 20px; border-radius: Theme.r-xs; background: swatch;
+                        border-width: i == root.brush-color ? 2px : 1px;
+                        border-color: i == root.brush-color ? Theme.fg : Theme.line;
+                        CanvasChipAction { clicked => { root.brush-color-changed(i); } }
+                    }
+                    TextInput {
+                        width: 80px; height: 26px; single-line: true;
+                        text: CanvasControls.hex; color: Theme.fg;
+                        font-family: Theme.font-technical; font-size: 12px;
+                        accepted => { CanvasControls.hex-edited(self.text); Focus.release(); }
+                    }
+                    WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.pointer; label: CanvasControls.picking ? "点击画布取色" : "取色"; checked: CanvasControls.picking; clicked => { CanvasControls.picking = !CanvasControls.picking; } }
+                }
+                if root.tool == 5 || root.tool == 6: HorizontalLayout {
+                    spacing: 8px; alignment: center;
+                    for mode[i] in [
+                        { label: "新建选区", glyph: Glyph.box-select },
+                        { label: "添加到选区", glyph: Glyph.plus },
+                        { label: "从选区减去", glyph: Glyph.minus },
+                        { label: "与选区交叉", glyph: Glyph.merge },
+                    ]: WorkspaceIcon {
+                        width: 32px; height: 32px; side: 32px;
+                        label: mode.label; glyph: mode.glyph; checked: root.selection-mode == i;
+                        clicked => { root.selection-mode-changed(i); }
+                    }
+                    if root.tool == 6: Text { text: "容差"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
+                    if root.tool == 6: NumberField {
+                        width: 64px; value: root.wand-tolerance; minimum: 0; maximum: 255;
+                        changed(value) => { root.wand-tolerance-changed(value); }
+                    }
+                    if root.tool == 6: WorkspaceIcon {
+                        width: 32px; height: 32px; side: 32px;
+                        glyph: Glyph.magnet; label: "连续选区"; checked: root.wand-contiguous;
+                        clicked => { root.wand-contiguous-changed(!root.wand-contiguous); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.line; }
+        }
+
         HorizontalLayout {
-            vertical-stretch: 1;
+            height: Math.max(0px, root.height - (!root.standalone ? 44px : 0px)
+                - (root.has-document && (root.tool == 0 || root.tool == 3 || root.tool == 4 || root.tool == 5 || root.tool == 6) ? 40px : 0px)
+                - 28px);
             Rectangle {
                 width: 48px; background: Theme.panel;
                 VerticalLayout {
@@ -722,6 +920,7 @@ export component CanvasPane inherits Rectangle {
                 property <bool> zooming;
                 property <bool> painting;
                 property <bool> marqueeing;
+                property <bool> objecting;
                 mouse-cursor: CanvasControls.picking ? MouseCursor.crosshair
                     : self.panning ? MouseCursor.grabbing
                     : root.tool == 1 ? MouseCursor.grab
@@ -746,6 +945,10 @@ export component CanvasPane inherits Rectangle {
                             self.panning = true;
                             root.nav-pan-press(self.mouse-x / 1px, self.mouse-y / 1px);
                         } else if (event.button == PointerEventButton.left
+                            && root.tool == 0) {
+                            self.objecting = true;
+                            root.object-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else if (event.button == PointerEventButton.left
                             && root.tool == 2) {
                             self.zooming = true;
                             root.nav-zoom-press(self.mouse-x / 1px, self.mouse-y / 1px,
@@ -762,8 +965,17 @@ export component CanvasPane inherits Rectangle {
                             && root.tool == 6) {
                             root.wand-click(self.mouse-x / 1px, self.mouse-y / 1px);
                         }
+                    } else if (event.kind == PointerEventKind.move) {
+                        if (self.objecting) {
+                            root.object-move(self.mouse-x / 1px, self.mouse-y / 1px,
+                                event.modifiers.shift, event.modifiers.alt);
+                        }
                     } else if (event.kind == PointerEventKind.up
                         || event.kind == PointerEventKind.cancel) {
+                        if (self.objecting) {
+                            self.objecting = false;
+                            root.object-release(event.kind == PointerEventKind.up);
+                        }
                         if (self.panning || self.zooming) {
                             self.panning = false;
                             self.zooming = false;
@@ -775,7 +987,8 @@ export component CanvasPane inherits Rectangle {
                         }
                         if (self.marqueeing) {
                             self.marqueeing = false;
-                            root.marquee-release();
+                            if (event.kind == PointerEventKind.up) { root.marquee-release(); }
+                            else { root.marquee-cancel(); }
                         }
                     }
                 }
@@ -791,7 +1004,7 @@ export component CanvasPane inherits Rectangle {
                     }
                 }
                 // The monitor's own way back: a double-click fits.
-                double-clicked => { root.nav-fit(); }
+                double-clicked => { if (root.tool == 1 || root.tool == 2) { root.nav-fit(); } }
 
                 // The brush's shadow on the canvas: the stroke's own
                 // diameter at the view's zoom, riding the pointer while a
@@ -820,254 +1033,140 @@ export component CanvasPane inherits Rectangle {
                     }
                 }
             }
+
+            if root.has-object && root.tool == 0: Path {
+                width: well.width; height: well.height;
+                viewbox-width: well.width / 1px; viewbox-height: well.height / 1px;
+                commands: "M \{root.object-px(-1,-1)} \{root.object-py(-1,-1)} L \{root.object-px(1,-1)} \{root.object-py(1,-1)} L \{root.object-px(1,1)} \{root.object-py(1,1)} L \{root.object-px(-1,1)} \{root.object-py(-1,1)} Z";
+                stroke: Theme.accent; stroke-width: 1px; fill: transparent;
+            }
+            if root.has-object && root.tool == 0: Path {
+                width: well.width; height: well.height;
+                viewbox-width: well.width / 1px; viewbox-height: well.height / 1px;
+                commands: "M \{root.object-px(0,-1)} \{root.object-py(0,-1)} L \{root.object-cx + (root.object-px(0,-1) - root.object-cx) * (root.object-h + 44) / root.object-h} \{root.object-cy + (root.object-py(0,-1) - root.object-cy) * (root.object-h + 44) / root.object-h}";
+                stroke: Theme.accent; stroke-width: 1px;
+            }
+            if root.has-object && root.tool == 0: Rectangle {
+                x: (root.object-cx + (root.object-px(0,-1) - root.object-cx) * (root.object-h + 44) / root.object-h) * 1px - 4px;
+                y: (root.object-cy + (root.object-py(0,-1) - root.object-cy) * (root.object-h + 44) / root.object-h) * 1px - 4px;
+                width: 8px; height: 8px; border-radius: 4px;
+                background: Theme.panel; border-width: 1px; border-color: Theme.accent;
+            }
+            if root.has-object && root.tool == 0: Rectangle {
+                for handle in [
+                    { sx: -1, sy: -1 }, { sx: 0, sy: -1 }, { sx: 1, sy: -1 }, { sx: 1, sy: 0 },
+                    { sx: 1, sy: 1 }, { sx: 0, sy: 1 }, { sx: -1, sy: 1 }, { sx: -1, sy: 0 },
+                ]: Rectangle {
+                    x: root.object-px(handle.sx, handle.sy) * 1px - 4px;
+                    y: root.object-py(handle.sx, handle.sy) * 1px - 4px;
+                    width: 8px; height: 8px; border-radius: 2px;
+                    background: Theme.panel; border-width: 1px; border-color: Theme.accent;
+                }
+            }
         }
 
             if root.has-document && root.sidebar-open: right-panel := Rectangle {
-                width: 250px; background: Theme.panel;
+                width: root.width < 1100px ? 288px : 320px; background: Theme.panel;
+                property <length> inspector-min: 48px;
+                // Padding, six gaps, tabs, divider, blend, layer title and footer use 226px.
+                property <length> inspector-max: Math.max(self.inspector-min, self.height - 274px);
+                property <length> inspector-height: Math.clamp(root.inspector-requested, self.inspector-min, self.inspector-max);
                 Rectangle { x: 0px; y: 0px; width: 1px; height: 100%; background: Theme.line; }
                 VerticalLayout {
-                    padding: 12px; spacing: 10px;
-                    HorizontalLayout {
-                        height: 34px;
-                        Text { text: "图层"; font-size: 14px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
-                        WorkspaceIcon { glyph: Glyph.folder-plus; label: "添加图层组"; clicked => { root.layer-group-added(); } }
-                        WorkspaceIcon { glyph: Glyph.plus; label: "添加图层"; clicked => { root.layer-added(); } }
+                    width: parent.width; height: parent.height;
+                    padding: 12px; spacing: 5px;
+                    inspector-tabs := FocusScope {
+                        height: 32px;
+                        accessible-role: tab-list;
+                        accessible-item-count: 2;
+                        focus-gained(reason) => {
+                            root.inspector-focus-index = root.inspector-tab;
+                            root.inspector-keyboard-focus = reason == FocusReason.tab-navigation;
+                        }
+                        focus-lost => { root.inspector-keyboard-focus = false; }
+                        key-pressed(event) => {
+                            if (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                                root.inspector-focus-index = 1 - root.inspector-focus-index;
+                                root.inspector-keyboard-focus = true;
+                                return EventResult.accept;
+                            }
+                            if (event.text == Key.Home) { root.inspector-focus-index = 0; root.inspector-keyboard-focus = true; return EventResult.accept; }
+                            if (event.text == Key.End) { root.inspector-focus-index = 1; root.inspector-keyboard-focus = true; return EventResult.accept; }
+                            if (event.text == " " || event.text == "\n") {
+                                root.inspector-tab = root.inspector-focus-index;
+                                return EventResult.accept;
+                            }
+                            return EventResult.reject;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            CanvasInspectorTab {
+                                label: "属性"; selected: root.inspector-tab == 0;
+                                keyboard-focused: root.inspector-keyboard-focus && root.inspector-focus-index == 0;
+                                clicked => { inspector-tabs.focus(); root.inspector-keyboard-focus = false; root.inspector-focus-index = 0; root.inspector-tab = 0; }
+                            }
+                            CanvasInspectorTab {
+                                label: "调整"; selected: root.inspector-tab == 1;
+                                keyboard-focused: root.inspector-keyboard-focus && root.inspector-focus-index == 1;
+                                clicked => { inspector-tabs.focus(); root.inspector-keyboard-focus = false; root.inspector-focus-index = 1; root.inspector-tab = 1; }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        Rectangle {
+                            x: 21px + root.inspector-tab * 68px;
+                            y: 27px; width: 18px; height: 2px; border-radius: 1px;
+                            background: Theme.accent;
+                            animate x { duration: SeeCut.reduced-motion ? 0ms : 140ms; easing: ease-out; }
+                        }
                     }
-                    ScrollView {
-                        height: root.layer-list-height;
+                    if root.inspector-tab == 0: ScrollView {
+                        height: right-panel.inspector-height;
+                        accessible-role: tab-panel;
+                        accessible-label: "属性";
+                        viewport-y <=> root.inspector-scroll-y;
                         viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
-                            spacing: 2px; alignment: start;
-                            for layer[i] in root.layers: Rectangle {
-                                height: 38px; border-radius: Theme.r;
-                                background: layer.active ? Theme.field-active : row-touch.has-hover ? Theme.field-hover : transparent;
-                                border-width: root.drop-row == i && root.drag-row >= 0 ? 1px : 0;
-                                border-color: Theme.accent;
-                                opacity: root.drag-row == i && row-touch.dragged ? 0.5 : 1;
-                                row-touch := TouchArea {
-                                    property <length> press-y;
-                                    property <bool> dragged;
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        if (!self.dragged) { root.layer-picked(i); }
-                                    }
-                                    pointer-event(event) => {
-                                        if (event.kind == PointerEventKind.down) {
-                                            self.press-y = self.mouse-y;
-                                            self.dragged = false;
-                                            root.drag-row = i;
-                                            root.drop-row = i;
-                                        } else if (event.kind == PointerEventKind.up
-                                            || event.kind == PointerEventKind.cancel) {
-                                            if (root.drag-row == i && self.dragged
-                                                && root.drop-row != i) {
-                                                root.layer-dropped(i, root.drop-row, root.drop-below);
-                                            }
-                                            root.drag-row = -1;
-                                            root.drop-row = -1;
-                                            root.drop-below = false;
-                                        }
-                                    }
-                                    moved => {
-                                        if (root.drag-row == i) {
-                                            let offset = (self.mouse-y - self.press-y) / 1px;
-                                            let target = Math.clamp(
-                                                i + Math.round(offset / 40),
-                                                0, root.layers.length - 1);
-                                            root.drop-row = target;
-                                            root.drop-below = offset - (target - i) * 40 >= 0;
-                                            if (Math.abs(offset) > 6) {
-                                                self.dragged = true;
-                                            }
-                                        }
-                                    }
-                                }
-                                HorizontalLayout {
-                                    padding-left: 4px + Math.min(layer.depth, 3) * 10px; spacing: 4px;
-                                    Rectangle {
-                                        width: 34px; height: 28px; border-radius: Theme.r-xs;
-                                        background: Theme.well;
-                                        border-width: layer.active && !layer.mask-paint ? 2px : 1px;
-                                        border-color: layer.active && !layer.mask-paint ? Theme.accent : Theme.line;
-                                        if CanvasThumbs.layer-images.length > i
-                                            && CanvasThumbs.layer-images[i].width > 0: Image {
-                                            width: parent.width; height: parent.height;
-                                            source: CanvasThumbs.layer-images[i]; image-fit: contain;
-                                        }
-                                        if layer.group: Icon {
-                                            glyph: Glyph.folder; size: 13px; tint: Theme.fg-muted;
-                                        }
-                                        CanvasChipAction {
-                                            clicked => { root.layer-picked(i); }
-                                        }
-                                    }
-                                    if layer.group: WorkspaceIcon { glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right; label: layer.expanded ? "折叠图层组" : "展开图层组"; clicked => { root.layer-folded(i); } }
-                                    WorkspaceIcon { glyph: layer.hidden ? Glyph.eye-off : Glyph.eye; label: layer.hidden ? "显示图层" : "隐藏图层"; clicked => { root.layer-visibility-toggled(i); } }
-                                    Text { text: layer.name; font-size: 13px; color: Theme.fg; overflow: elide; min-width: 0px; vertical-alignment: center; horizontal-stretch: 1; }
-                                    if layer.masked: Rectangle {
-                                        width: 28px; height: 28px; border-radius: Theme.r-xs;
-                                        background: Theme.well;
-                                        border-width: layer.mask-paint ? 2px : 1px;
-                                        border-color: layer.mask-paint ? Theme.accent : Theme.line;
-                                        opacity: layer.mask-enabled ? 1 : 0.45;
-                                        if CanvasThumbs.mask-images.length > i
-                                            && CanvasThumbs.mask-images[i].width > 0: Image {
-                                            width: parent.width; height: parent.height;
-                                            source: CanvasThumbs.mask-images[i]; image-fit: contain;
-                                        }
-                                        if CanvasThumbs.mask-images.length <= i
-                                            || CanvasThumbs.mask-images[i].width == 0: Icon {
-                                            glyph: Glyph.mask; size: 12px; tint: Theme.fg-muted;
-                                        }
-                                        CanvasChipAction {
-                                            clicked => { root.layer-mask-paint-toggled(i); }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Rectangle {
-                        height: 6px;
-                        background: layer-resize-touch.has-hover || root.resizing-layers ? Theme.field-hover : Theme.line;
-                        layer-resize-touch := TouchArea {
-                            mouse-cursor: MouseCursor.ns-resize;
-                            pointer-event(event) => {
-                                if (event.kind == PointerEventKind.down) {
-                                    root.resize-y0 = self.mouse-y;
-                                    root.resizing-layers = true;
-                                } else if (event.kind == PointerEventKind.up
-                                    || event.kind == PointerEventKind.cancel) {
-                                    root.resizing-layers = false;
-                                }
-                            }
-                            moved => {
-                                if (root.resizing-layers) {
-                                    root.layer-list-requested = Math.clamp(
-                                        root.layer-list-height + self.mouse-y - root.resize-y0,
-                                        root.layer-list-min, root.layer-list-max);
-                                }
-                            }
-                        }
-                    }
-                    HorizontalLayout {
-                        height: 34px; spacing: 4px;
-                        WorkspaceIcon { glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
-                        WorkspaceIcon { glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
-                        WorkspaceIcon { glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
-                        Rectangle { horizontal-stretch: 1; }
-                        AppButton { label: "调整"; selected: root.adjustment-open; clicked => { root.adjustment-open = !root.adjustment-open; } }
-                    }
-                    Rectangle { height: 1px; background: Theme.line; }
-                    Text { text: root.tool == 3 ? "画笔 · " + CanvasControls.target : root.tool == 4 ? "橡皮擦 · " + CanvasControls.target : root.tool == 5 || root.tool == 6 ? "选区与图层" : "图层属性"; height: 24px; font-size: 14px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; }
-                    ScrollView {
-                        viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off; vertical-stretch: 1;
-                        VerticalLayout {
                             spacing: 12px; alignment: start;
-                            if root.tool == 3 || root.tool == 4: VerticalLayout {
-                                spacing: 4px;
-                                if root.tool == 3: HorizontalLayout {
-                                    height: 28px; spacing: 4px;
-                                    for swatch[i] in Palette.colors: Rectangle {
-                                        width: 24px; height: 28px; border-radius: Theme.r; background: swatch;
-                                        border-width: i == root.brush-color ? 2px : 1px; border-color: i == root.brush-color ? Theme.fg : Theme.line;
-                                        CanvasChipAction { clicked => { root.brush-color-changed(i); } }
-                                    }
+                            if root.has-object && root.tool == 0: VerticalLayout {
+                                spacing: 5px;
+                                HorizontalLayout {
+                                    spacing: 5px;
+                                    NumberField { prefix: "X"; value: root.object-doc-x; precision: 1; changed(value) => { root.transform-set(0, value); } edit-started => { root.transform-start(); } edit-finished(commit) => { root.transform-finish(commit); } }
+                                    NumberField { prefix: "Y"; value: root.object-doc-y; precision: 1; changed(value) => { root.transform-set(1, value); } edit-started => { root.transform-start(); } edit-finished(commit) => { root.transform-finish(commit); } }
                                 }
                                 HorizontalLayout {
-                                    height: 34px; spacing: 6px;
-                                    Rectangle {
-                                        horizontal-stretch: 1; border-radius: Theme.r;
-                                        background: Theme.field;
-                                        HorizontalLayout {
-                                            padding: 6px; spacing: 5px;
-                                            Rectangle {
-                                                width: 16px; height: 20px; border-radius: Theme.r-xs;
-                                                background: CanvasControls.color;
-                                                border-width: 1px; border-color: Theme.line;
-                                            }
-                                    hex-input := TextInput {
-                                        horizontal-stretch: 1; single-line: true;
-                                        property <string> canonical: CanvasControls.hex;
-                                        text: self.canonical;
-                                        color: Theme.fg; font-family: Theme.font-technical; font-size: 13px;
-                                        vertical-alignment: center;
-                                        changed canonical => {
-                                            if (!self.has-focus) { self.text = self.canonical; }
-                                        }
-                                        changed has-focus => {
-                                            if (self.has-focus) {
-                                                self.text = CanvasControls.hex;
-                                                self.select-all();
-                                            } else {
-                                                CanvasControls.hex-edited(self.text);
-                                                self.text = CanvasControls.hex;
-                                            }
-                                        }
-                                        accepted => { Focus.release(); }
-                                        key-pressed(event) => {
-                                            if (event.text == Key.Escape) {
-                                                self.text = CanvasControls.hex;
-                                                Focus.release();
-                                                return EventResult.accept;
-                                            }
-                                            return EventResult.reject;
-                                        }
-                                    }
-                                        }
-                                    }
-                                    AppButton {
-                                        label: CanvasControls.picking ? "点击画布" : "取色";
-                                        selected: CanvasControls.picking;
-                                        clicked => { CanvasControls.picking = !CanvasControls.picking; }
-                                    }
+                                    spacing: 5px;
+                                    NumberField { prefix: "W"; value: root.object-doc-w; minimum: 1; precision: 1; changed(value) => { root.transform-set(2, value); } edit-started => { root.transform-start(); } edit-finished(commit) => { root.transform-finish(commit); } }
+                                    NumberField { prefix: "H"; value: root.object-doc-h; minimum: 1; precision: 1; changed(value) => { root.transform-set(3, value); } edit-started => { root.transform-start(); } edit-finished(commit) => { root.transform-finish(commit); } }
                                 }
-                                PropertySlider { label: "大小"; value: root.brush-diameter; minimum: 1; maximum: 400; step: 1; precision: 0; readout: Math.round(root.brush-diameter) + " px"; changed(value) => { root.brush-size-changed(value); } }
-                                PropertySlider { label: "不透明度"; value: root.brush-opacity; minimum: 0.01; maximum: 1; step: 0.01; precision: 2; readout: Math.round(root.brush-opacity * 100) + "%"; changed(value) => { root.brush-opacity-changed(value); } }
-                                PropertySlider { label: "硬度"; value: root.brush-hardness; minimum: 0; maximum: 1; step: 0.01; precision: 2; readout: Math.round(root.brush-hardness * 100) + "%"; changed(value) => { root.brush-hardness-changed(value); } }
-                                AppButton {
-                                    label: CanvasControls.rgb-expanded ? "收起 RGB" : "RGB 调色";
-                                    glyph: CanvasControls.rgb-expanded ? Glyph.chevron-up : Glyph.chevron-down;
-                                    clicked => { CanvasControls.rgb-expanded = !CanvasControls.rgb-expanded; }
-                                }
-                                if CanvasControls.rgb-expanded: VerticalLayout {
-                                    spacing: 4px;
-                                PropertySlider {
-                                    label: "R"; value <=> CanvasControls.red;
-                                    minimum: 0; maximum: 255; step: 1; precision: 0;
-                                    changed(value) => { CanvasControls.rgb-changed(value, CanvasControls.green, CanvasControls.blue); }
-                                }
-                                PropertySlider {
-                                    label: "G"; value <=> CanvasControls.green;
-                                    minimum: 0; maximum: 255; step: 1; precision: 0;
-                                    changed(value) => { CanvasControls.rgb-changed(CanvasControls.red, value, CanvasControls.blue); }
-                                }
-                                PropertySlider {
-                                    label: "B"; value <=> CanvasControls.blue;
-                                    minimum: 0; maximum: 255; step: 1; precision: 0;
-                                    changed(value) => { CanvasControls.rgb-changed(CanvasControls.red, CanvasControls.green, value); }
-                                }
-                                }
+                                NumberField { prefix-glyph: Glyph.angle; value: root.object-doc-angle; unit: "°"; precision: 1; changed(value) => { root.transform-set(4, value); } edit-started => { root.transform-start(); } edit-finished(commit) => { root.transform-finish(commit); } }
                             }
-                            if root.has-selection: VerticalLayout {
-                                spacing: 6px;
-                                AppButton { label: "填充选区"; clicked => { root.fill-selection(); } }
-                                AppButton { label: "删除选区内容"; danger: true; clicked => { root.delete-selection(); } }
-                                AppButton { label: "取消选择"; clicked => { root.deselect(); } }
+                            if root.has-selection && root.active-layer >= 0
+                                && (root.layers[root.active-layer].kind == 0 || root.layers[root.active-layer].mask-paint): HorizontalLayout {
+                                height: 32px; spacing: 8px;
+                                Text { text: "选区"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.paint-bucket; label: "填充选区"; clicked => { root.fill-selection(); } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "删除选区内容"; danger: true; clicked => { root.delete-selection(); } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.close; label: "取消选择"; clicked => { root.deselect(); } }
                             }
-                            if root.active-layer >= 0: VerticalLayout {
-                                spacing: 8px;
-                                PropertySlider { label: "图层透明度"; value: root.layers[root.active-layer].opacity; minimum: 0; maximum: 1; step: 0.01; precision: 2; readout: Math.round(root.layers[root.active-layer].opacity * 100) + "%"; changed(value) => { root.layer-opacity-changed(root.active-layer, value); } }
-                                if !root.layers[root.active-layer].masked: AppButton { label: "添加图层蒙版"; glyph: Glyph.mask; clicked => { root.layer-mask-added(); } }
-                                if root.layers[root.active-layer].masked: VerticalLayout {
-                                    spacing: 6px;
-                                    AppButton { label: root.layers[root.active-layer].mask-enabled ? "停用蒙版" : "启用蒙版"; clicked => { root.layer-mask-enable-toggled(); } }
-                                    AppButton { label: "移除蒙版"; danger: true; clicked => { root.layer-mask-removed(); } }
+                            if root.active-layer >= 0 && root.layers[root.active-layer].masked: HorizontalLayout {
+                                height: 32px; spacing: 8px;
+                                Text { text: "蒙版"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                                WorkspaceIcon {
+                                    width: 32px; height: 32px; side: 32px;
+                                    glyph: root.layers[root.active-layer].mask-enabled ? Glyph.eye : Glyph.eye-off;
+                                    label: root.layers[root.active-layer].mask-enabled ? "停用蒙版" : "启用蒙版";
+                                    clicked => { root.layer-mask-enable-toggled(); }
                                 }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "移除蒙版"; danger: true; clicked => { root.layer-mask-removed(); } }
                             }
                             for param[i] in root.adjustment-params: PropertySlider {
                                 label: I18n.t(param.label); value: param.value; minimum: param.minimum; maximum: param.maximum; step: 0.01; precision: 2;
-                                readout: Math.round(param.value * 100) / 100; changed(value) => { root.adjustment-param-changed(i, value); }
+                                default-value: root.adjustment-kind == 3 && i == 2 ? 1 : root.adjustment-kind == 3 && (i == 1 || i == 4) ? 1 : 0;
+                                unit: root.adjustment-kind == 2 ? "档" : "";
+                                changed(value) => { root.adjustment-param-changed(i, value); }
+                                gesture-started => { root.adjustment-param-begin(i); }
+                                gesture-ended(commit) => { root.parameter-end(commit); }
                             }
                     if root.adjustment-kind == 5: VerticalLayout {
                         spacing: 4px;
@@ -1200,18 +1299,326 @@ export component CanvasPane inherits Rectangle {
 
                         }
                     }
-                }
-                if root.adjustment-open: TouchArea { clicked => { root.adjustment-open = false; } }
-                if root.adjustment-open: Rectangle {
-                    x: 10px; y: 54px; width: parent.width - 20px; height: 304px;
-                    background: Theme.raised; border-width: 1px; border-color: Theme.line-strong; border-radius: Theme.r-lg;
+                    if root.inspector-tab == 1: Rectangle {
+                        height: right-panel.inspector-height;
+                        accessible-role: tab-panel;
+                        accessible-label: "调整";
+                        VerticalLayout {
+                        HorizontalLayout {
+                            height: 32px; spacing: 8px; alignment: start;
+                            for kind in [
+                                { id: 2, name: "曝光", glyph: Glyph.sun },
+                                { id: 3, name: "色阶", glyph: Glyph.sliders },
+                                { id: 7, name: "曲线", glyph: Glyph.waveform },
+                                { id: 4, name: "色相与饱和度", glyph: Glyph.sparkle },
+                                { id: 5, name: "渐变映射", glyph: Glyph.filter },
+                                { id: 1, name: "反相", glyph: Glyph.moon },
+                                { id: 6, name: "颗粒", glyph: Glyph.rows },
+                            ]: WorkspaceIcon {
+                                width: right-panel.width < 304px ? 30px : 32px;
+                                height: 32px; side: right-panel.width < 304px ? 30px : 32px; icon-size: 17px;
+                                label: kind.name; glyph: kind.glyph;
+                                clicked => { root.adjustment-added(kind.id); root.inspector-tab = 0; }
+                            }
+                        }
+                        }
+                    }
+                    Rectangle {
+                        height: 8px;
+                        background: transparent;
+                        Rectangle {
+                            y: 3px; height: 1px;
+                            background: layer-resize-touch.has-hover || root.resizing-layers ? Theme.line-strong : Theme.line;
+                        }
+                        layer-resize-touch := TouchArea {
+                            mouse-cursor: MouseCursor.ns-resize;
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down) {
+                                    root.resize-y0 = self.mouse-y;
+                                    root.resize-inspector-start = right-panel.inspector-height;
+                                    root.resizing-layers = true;
+                                } else if (event.kind == PointerEventKind.up
+                                    || event.kind == PointerEventKind.cancel) {
+                                    root.resizing-layers = false;
+                                }
+                            }
+                            moved => {
+                                if (root.resizing-layers) {
+                                    root.inspector-requested = Math.clamp(
+                                        root.resize-inspector-start + self.mouse-y - root.resize-y0,
+                                        right-panel.inspector-min, right-panel.inspector-max);
+                                }
+                            }
+                        }
+                    }
                     VerticalLayout {
-                        padding: 8px; spacing: 0px;
-                        Text { text: "添加调整图层"; height: 22px; color: Theme.fg-muted; font-size: 13px; }
-                        for kind in [
-                            { id: 1, name: "反相" }, { id: 2, name: "曝光" }, { id: 3, name: "色阶" },
-                            { id: 4, name: "色相与饱和度" }, { id: 5, name: "渐变映射" }, { id: 6, name: "颗粒" }, { id: 7, name: "曲线" },
-                        ]: MenuAction { label: kind.name; glyph: Glyph.sliders; clicked => { root.adjustment-added(kind.id); root.adjustment-open = false; } }
+                        height: 64px; spacing: 4px;
+                        blend-button := CanvasBlendButton {
+                            value: ["正常", "正片叠底", "滤色", "叠加", "变暗", "变亮", "差值", "颜色减淡", "颜色加深", "色相", "饱和度", "颜色", "明度"][root.active-blend];
+                            enabled: root.active-layer >= 0; open: root.blend-open;
+                            clicked => { root.layer-more-open = false; root.blend-menu-index = root.active-blend; root.blend-open = !root.blend-open; }
+                        }
+                        if root.active-layer >= 0: PropertySlider {
+                            horizontal-stretch: 1;
+                            label: "不透明度"; value: root.layers[root.active-layer].opacity;
+                            minimum: 0; maximum: 1; step: 0.01; precision: 0;
+                            percent: true; default-value: 1;
+                            changed(value) => { root.layer-opacity-changed(root.active-layer, value); }
+                            gesture-started => { root.layer-opacity-begin(root.active-layer); }
+                            gesture-ended(commit) => { root.parameter-end(commit); }
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 34px; spacing: 8px;
+                        Text { text: "图层"; font-size: 14px; font-weight: Theme.weight-title; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.folder-plus; label: "添加图层组"; clicked => { root.layer-group-added(); } }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.plus; label: "添加图层"; clicked => { root.layer-added(); } }
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off;
+                        VerticalLayout {
+                            spacing: 2px; alignment: start;
+                            for layer[i] in root.layers: Rectangle {
+                                height: 38px; border-radius: Theme.r;
+                                background: layer.active ? Theme.field-active : row-touch.has-hover ? Theme.field-hover : transparent;
+                                border-width: root.drop-row == i && root.drag-row >= 0 ? 1px : 0;
+                                border-color: Theme.accent;
+                                opacity: root.drag-row == i && row-touch.dragged ? 0.5 : 1;
+                                row-touch := TouchArea {
+                                    property <length> press-y;
+                                    property <bool> dragged;
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        if (!self.dragged) {
+                                            root.layer-picked(i);
+                                            if (layer.kind == 2) { root.inspector-tab = 0; }
+                                        }
+                                    }
+                                    pointer-event(event) => {
+                                        if (event.kind == PointerEventKind.down) {
+                                            self.press-y = self.mouse-y;
+                                            self.dragged = false;
+                                            root.drag-row = i;
+                                            root.drop-row = i;
+                                        } else if (event.kind == PointerEventKind.up
+                                            || event.kind == PointerEventKind.cancel) {
+                                            if (root.drag-row == i && self.dragged
+                                                && root.drop-row != i) {
+                                                root.layer-dropped(i, root.drop-row, root.drop-below);
+                                            }
+                                            root.drag-row = -1;
+                                            root.drop-row = -1;
+                                            root.drop-below = false;
+                                        }
+                                    }
+                                    moved => {
+                                        if (root.drag-row == i) {
+                                            let offset = (self.mouse-y - self.press-y) / 1px;
+                                            let target = Math.clamp(
+                                                i + Math.round(offset / 40),
+                                                0, root.layers.length - 1);
+                                            root.drop-row = target;
+                                            root.drop-below = offset - (target - i) * 40 >= 0;
+                                            if (Math.abs(offset) > 6) {
+                                                self.dragged = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 4px + Math.min(layer.depth, 3) * 10px; spacing: 4px;
+                                    Rectangle {
+                                        width: 34px; height: 28px; border-radius: Theme.r-xs;
+                                        background: Theme.well;
+                                        border-width: layer.active && !layer.mask-paint ? 2px : 1px;
+                                        border-color: layer.active && !layer.mask-paint ? Theme.accent : Theme.line;
+                                        if layer.kind == 0 && CanvasThumbs.layer-images.length > i
+                                            && CanvasThumbs.layer-images[i].width > 0: Image {
+                                            width: parent.width; height: parent.height;
+                                            source: CanvasThumbs.layer-images[i]; image-fit: contain;
+                                        }
+                                        if layer.group: Icon {
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                            glyph: Glyph.folder; size: 16px; tint: Theme.fg-muted;
+                                        }
+                                        if layer.kind == 2: Icon {
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                            glyph: layer.adjustment-kind == 1 ? Glyph.moon
+                                                : layer.adjustment-kind == 2 ? Glyph.sun
+                                                : layer.adjustment-kind == 3 ? Glyph.sliders
+                                                : layer.adjustment-kind == 4 ? Glyph.sparkle
+                                                : layer.adjustment-kind == 5 ? Glyph.filter
+                                                : layer.adjustment-kind == 6 ? Glyph.rows
+                                                : layer.adjustment-kind == 7 ? Glyph.waveform : Glyph.sliders;
+                                            size: 16px; tint: Theme.fg-muted;
+                                        }
+                                        CanvasChipAction {
+                                            clicked => {
+                                                root.layer-picked(i);
+                                                if (layer.kind == 2) { root.inspector-tab = 0; }
+                                            }
+                                        }
+                                    }
+                                    if layer.group: WorkspaceIcon { glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right; label: layer.expanded ? "折叠图层组" : "展开图层组"; clicked => { root.layer-folded(i); } }
+                                    WorkspaceIcon { glyph: layer.hidden ? Glyph.eye-off : Glyph.eye; label: layer.hidden ? "显示图层" : "隐藏图层"; clicked => { root.layer-visibility-toggled(i); } }
+                                    if root.renaming-row != i: Rectangle {
+                                        horizontal-stretch: 1; min-width: 0px;
+                                        Text {
+                                            width: parent.width; height: parent.height;
+                                            text: layer.name; font-size: 13px; color: Theme.fg;
+                                            horizontal-alignment: left; vertical-alignment: center; overflow: elide;
+                                        }
+                                        TouchArea {
+                                            clicked => {
+                                                root.layer-picked(i);
+                                                if (layer.kind == 2) { root.inspector-tab = 0; }
+                                            }
+                                            double-clicked => { root.renaming-row = i; }
+                                        }
+                                    }
+                                    if root.renaming-row == i: TextInput {
+                                        horizontal-stretch: 1; min-width: 0px; single-line: true;
+                                        text: layer.name; color: Theme.fg; font-size: 13px;
+                                        init => { self.focus(); }
+                                        accepted => {
+                                            root.layer-renamed(layer.id, self.text);
+                                            root.renaming-row = -1;
+                                        }
+                                        key-pressed(event) => {
+                                            if (event.text == Key.Escape) {
+                                                root.renaming-row = -1;
+                                                return EventResult.accept;
+                                            }
+                                            return EventResult.reject;
+                                        }
+                                    }
+                                    Rectangle {
+                                        width: 28px; height: 28px;
+                                        if layer.masked: Rectangle {
+                                            width: parent.width; height: parent.height;
+                                            border-radius: Theme.r-xs;
+                                            background: Theme.well;
+                                            border-width: layer.mask-paint ? 2px : 1px;
+                                            border-color: layer.mask-paint ? Theme.accent : Theme.line;
+                                            opacity: layer.mask-enabled ? 1 : 0.45;
+                                            if CanvasThumbs.mask-images.length > i
+                                                && CanvasThumbs.mask-images[i].width > 0: Image {
+                                                width: parent.width; height: parent.height;
+                                                source: CanvasThumbs.mask-images[i]; image-fit: contain;
+                                            }
+                                            if CanvasThumbs.mask-images.length <= i
+                                                || CanvasThumbs.mask-images[i].width == 0: Icon {
+                                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                                glyph: Glyph.mask; size: 12px; tint: Theme.fg-muted;
+                                            }
+                                            CanvasChipAction {
+                                                clicked => { root.layer-mask-paint-toggled(i); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 34px; spacing: 8px;
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.mask; label: "添加图层蒙版"; enabled: root.active-layer >= 0 && !root.layers[root.active-layer].masked; clicked => { root.layer-mask-added(); } }
+                        layer-more-button := WorkspaceIcon {
+                            width: 32px; height: 32px; side: 32px; glyph: Glyph.more; label: "更多图层操作";
+                            clicked => {
+                                root.blend-open = false;
+                                root.layer-menu-index = root.active-layer < 0 ? 2 : root.layers[root.active-layer].kind == 1 ? 1 : 0;
+                                root.layer-more-open = !root.layer-more-open;
+                            }
+                        }
+                    }
+                }
+                if root.blend-open || root.layer-more-open: TouchArea {
+                    clicked => {
+                        if (root.blend-open) { root.blend-open = false; blend-button.take-focus(); }
+                        if (root.layer-more-open) { root.layer-more-open = false; layer-more-button.take-focus(); }
+                    }
+                }
+                if root.blend-open: blend-menu := FocusScope {
+                    x: 12px; y: Math.max(12px, parent.height - 412px);
+                    width: parent.width - 24px; height: Math.min(388px, parent.height - 24px);
+                    init => { self.focus(); }
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) { root.blend-open = false; blend-button.take-focus(); return EventResult.accept; }
+                        if (event.text == Key.UpArrow) { root.blend-menu-index = Math.max(0, root.blend-menu-index - 1); }
+                        else if (event.text == Key.DownArrow) { root.blend-menu-index = Math.min(12, root.blend-menu-index + 1); }
+                        else if (event.text == Key.Home) { root.blend-menu-index = 0; }
+                        else if (event.text == Key.End) { root.blend-menu-index = 12; }
+                        else if (event.text == " " || event.text == "\n") {
+                            root.layer-blend-changed(root.blend-menu-index);
+                            root.blend-open = false;
+                            blend-button.take-focus();
+                            return EventResult.accept;
+                        } else { return EventResult.accept; }
+                        let row-top = 6px + root.blend-menu-index * 39px;
+                        let row-bottom = row-top + 38px;
+                        if (row-top + root.blend-menu-scroll-y < 0px) { root.blend-menu-scroll-y = -row-top; }
+                        if (row-bottom + root.blend-menu-scroll-y > self.height) { root.blend-menu-scroll-y = self.height - row-bottom; }
+                        return EventResult.accept;
+                    }
+                    Rectangle {
+                        background: Theme.raised; border-width: 1px; border-color: Theme.line-strong;
+                        ScrollView {
+                            viewport-width: parent.width - 12px;
+                            viewport-y <=> root.blend-menu-scroll-y;
+                            horizontal-scrollbar-policy: always-off;
+                            VerticalLayout {
+                                padding: 6px; spacing: 1px;
+                                for mode[i] in ["正常", "正片叠底", "滤色", "叠加", "变暗", "变亮", "差值", "颜色减淡", "颜色加深", "色相", "饱和度", "颜色", "明度"]: MenuAction {
+                                    label: mode;
+                                    background: root.blend-menu-index == i ? Theme.field-hover : transparent;
+                                    clicked => { root.layer-blend-changed(i); root.blend-open = false; blend-button.take-focus(); }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.layer-more-open: FocusScope {
+                    x: 12px; y: Math.max(12px, parent.height - 152px);
+                    width: parent.width - 24px; height: 140px;
+                    init => { self.focus(); }
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) { root.layer-more-open = false; layer-more-button.take-focus(); return EventResult.accept; }
+                        if (event.text == Key.UpArrow) {
+                            if (root.layer-menu-index == 2 && root.active-layer >= 0) { root.layer-menu-index = 1; }
+                            else if (root.layer-menu-index == 1 && root.active-layer >= 0 && root.layers[root.active-layer].kind != 1) { root.layer-menu-index = 0; }
+                            return EventResult.accept;
+                        }
+                        if (event.text == Key.DownArrow) {
+                            if (root.layer-menu-index == 0) { root.layer-menu-index = root.active-layer >= 0 ? 1 : 2; }
+                            else { root.layer-menu-index = 2; }
+                            return EventResult.accept;
+                        }
+                        if (event.text == " " || event.text == "\n") {
+                            if (root.layer-menu-index == 0 && (root.active-layer < 0 || root.layers[root.active-layer].kind == 1)) { return EventResult.accept; }
+                            if (root.layer-menu-index == 1 && root.active-layer < 0) { return EventResult.accept; }
+                            root.layer-more-open = false;
+                            if (root.layer-menu-index == 0 && root.active-layer >= 0 && root.layers[root.active-layer].kind != 1) { root.layer-duplicated(root.active-layer); }
+                            if (root.layer-menu-index == 1 && root.active-layer >= 0) { root.renaming-row = root.active-layer; }
+                            if (root.layer-menu-index == 2) { root.inspector-tab = 1; inspector-tabs.focus(); }
+                            if (root.layer-menu-index == 0) { layer-more-button.take-focus(); }
+                            return EventResult.accept;
+                        }
+                        return EventResult.accept;
+                    }
+                    Rectangle {
+                        background: Theme.raised; border-width: 1px; border-color: Theme.line-strong;
+                        VerticalLayout {
+                            padding: 6px; spacing: 1px;
+                            MenuAction { label: "复制图层"; glyph: Glyph.copy; background: root.layer-menu-index == 0 ? Theme.field-hover : transparent; enabled: root.active-layer >= 0 && root.layers[root.active-layer].kind != 1; clicked => { root.layer-more-open = false; root.layer-duplicated(root.active-layer); layer-more-button.take-focus(); } }
+                            MenuAction { label: "重命名图层"; glyph: Glyph.text-mark; background: root.layer-menu-index == 1 ? Theme.field-hover : transparent; enabled: root.active-layer >= 0; clicked => { root.layer-more-open = false; root.renaming-row = root.active-layer; } }
+                            MenuAction { label: "添加调整图层"; glyph: Glyph.sliders; background: root.layer-menu-index == 2 ? Theme.field-hover : transparent; clicked => { root.layer-more-open = false; root.inspector-tab = 1; inspector-tabs.focus(); } }
+                        }
                     }
                 }
             }

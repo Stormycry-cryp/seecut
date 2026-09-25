@@ -157,6 +157,8 @@ export component Rail inherits Rectangle {
     in property <bool> enabled: true;
 
     callback changed(value: float);
+    callback gesture-started();
+    callback gesture-ended(commit: bool);
 
     height: Theme.h;
     opacity: root.enabled ? 1.0 : 0.45;
@@ -226,15 +228,22 @@ export component Rail inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: ew-resize;
+        property <bool> dragging: false;
 
         pointer-event(event) => {
             if (event.kind == PointerEventKind.down
                 && event.button == PointerEventButton.left) {
+                self.dragging = true;
+                root.gesture-started();
                 root.apply-at(self.mouse-x);
+            } else if (event.kind == PointerEventKind.up
+                || event.kind == PointerEventKind.cancel) {
+                if (self.dragging) { root.gesture-ended(event.kind == PointerEventKind.up); }
+                self.dragging = false;
             }
         }
         moved => {
-            root.apply-at(self.mouse-x);
+            if (self.dragging) { root.apply-at(self.mouse-x); }
         }
         double-clicked => {
             root.settle(root.default-value);

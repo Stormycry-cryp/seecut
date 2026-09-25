@@ -729,19 +729,28 @@ mod tests {
             Some(folder.as_str())
         );
         assert_eq!(library.items().len(), 2);
-        assert_eq!(library.move_to_folder(&[first.clone()], None).unwrap(), 1);
+        assert_eq!(
+            library
+                .move_to_folder(std::slice::from_ref(&first), None)
+                .unwrap(),
+            1
+        );
         assert!(library.get(&first).unwrap().folder_id.is_none());
         library.trash(&first).unwrap();
         assert!(
             library
-                .move_to_folder(&[first.clone()], Some(&folder))
+                .move_to_folder(std::slice::from_ref(&first), Some(&folder))
                 .is_err()
         );
         assert!(library.get(&first).unwrap().folder_id.is_none());
 
         // With storage unavailable, the in-memory category must also stay put.
         fs::remove_dir_all(&root).unwrap();
-        assert!(library.move_to_folder(&[second.clone()], None).is_err());
+        assert!(
+            library
+                .move_to_folder(std::slice::from_ref(&second), None)
+                .is_err()
+        );
         assert_eq!(
             library.get(&second).unwrap().folder_id.as_deref(),
             Some(folder.as_str())

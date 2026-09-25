@@ -6792,9 +6792,12 @@ pub fn bind(app: &App) {
         },
         "canvas-projects-refresh" => refresh_canvas_projects(&app, &shared),
         "canvas-new" => {
+            let (width, height) = id.split_once(',')
+                .and_then(|(width, height)| Some((width.parse::<i32>().ok()?, height.parse::<i32>().ok()?)))
+                .unwrap_or((1920, 1080));
             ui.set_canvas_gallery_open(false);
             ui.set_page(6);
-            app.invoke_canvas_new();
+            app.invoke_canvas_new(width, height);
         },
         "canvas-open" => {
             let path = PathBuf::from(id.as_str());

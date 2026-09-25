@@ -54,6 +54,7 @@ export enum Glyph {
     lock,
     frame,
     copy,
+    more,
     flip-h,
     flip-v,
     keyframe,
@@ -719,6 +720,12 @@ export component Icon inherits Rectangle {
     if root.glyph == Glyph.frame: Stroked {
         size: root.size; tint: root.tint; weight: root.weight;
         commands: "M 4 8 L 20 8 M 4 16 L 20 16 M 8 4 L 8 20 M 16 4 L 16 20";
+    }
+
+    // lucide/ellipsis
+    if root.glyph == Glyph.more: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M12 5h.01 M12 12h.01 M12 19h.01";
     }
 
     // hand-drawn: no library carries it
