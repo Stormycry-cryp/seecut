@@ -44,6 +44,13 @@ enum EditKind {
     Delete,
 }
 
+type ActiveGeometry = (
+    concat_canvas::LayerId,
+    concat_canvas::LayerTransform,
+    (f32, f32, f32, f32),
+    (f32, f32),
+);
+
 /// The brush tile edge, in pixels - [`BrushStroke`] paints in these tiles,
 /// and the dirty rectangles follow them.
 const TILE: usize = 256;
@@ -1471,14 +1478,7 @@ impl CanvasPane {
         bounds
     }
 
-    fn active_geometry(
-        &mut self,
-    ) -> Option<(
-        concat_canvas::LayerId,
-        concat_canvas::LayerTransform,
-        (f32, f32, f32, f32),
-        (f32, f32),
-    )> {
+    fn active_geometry(&mut self) -> Option<ActiveGeometry> {
         let document = self.document.as_ref()?;
         let id = self.active?;
         let LayerNode::Layer(layer) = document.find(id)? else {
@@ -1514,12 +1514,9 @@ impl CanvasPane {
             return None;
         }
         let composer = concat_canvas::Composer::new(document, &self.store);
-        for id in candidates {
-            if composer.hit_coverage(id, dx as u32, dy as u32) > 1.0 / 255.0 {
-                return Some(id);
-            }
-        }
-        None
+        candidates
+            .into_iter()
+            .find(|&id| composer.hit_coverage(id, dx as u32, dy as u32) > 1.0 / 255.0)
     }
 
     fn handle_at(&self, x: f64, y: f64) -> Option<ObjectDragKind> {
