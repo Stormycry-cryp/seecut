@@ -926,8 +926,7 @@ impl CanvasPane {
                 };
                 self.active = Some(id);
                 self.paint_mask = false;
-                // Painting lands on the picked layer when it can hold
-                // pixels; groups and adjustments fall back to the base.
+                // Only an explicitly picked image or mask can receive paint.
                 self.layer = pixels;
                 self.sync_view();
             }
@@ -2650,9 +2649,8 @@ impl CanvasPane {
         }
     }
 
-    /// The mask chip on a row was clicked: pick the row, and either
-    /// start painting its mask or - when this very row was already the
-    /// one being painted - stop.
+    /// The mask chip selects its mask for painting, including when it is
+    /// already selected.
     fn mask_chip_click(&mut self, index: i32) {
         let picked = self
             .rows()
@@ -2667,6 +2665,8 @@ impl CanvasPane {
         self.active = Some(id);
         self.layer = pixels;
         self.paint_mask = true;
+        self.tool = 3;
+        self.brush.erasing = false;
         self.sync_view();
     }
 
@@ -5246,7 +5246,7 @@ mod tests {
         let frame = Frame::from_rgba(300, 200, vec![0; 300 * 200 * 4]).expect("frame");
         let mut document = ImageDocument::new(frame.width(), frame.height());
         let pixels = pane.store.put(frame);
-        document.new_layer("probe", pixels);
+        pane.active = Some(document.new_layer("probe", pixels));
         pane.document = Some(document);
         pane.layer = Some(pixels);
         pane.nav.set_document(Some((300.0, 200.0)));
@@ -5813,6 +5813,7 @@ mod tests {
             !pane.is_modified(),
             "a successful save clears the canvas dirty state"
         );
+        pane.agent_layer_pick(1); // Paint the image, not the selected adjustment.
         pane.set_tool(3);
         pane.brush_press(150.0, 100.0);
         pane.brush_release();
@@ -6218,6 +6219,7 @@ mod tests {
         // Paint beneath the curve - the adjustment colours whatever the
         // layers under it already show - and compare against the same
         // stroke with no adjustment over it.
+        pane.agent_layer_pick(1); // Explicitly select the image below the curve.
         pane.set_tool(3);
         pane.brush_press(150.0, 100.0);
         pane.brush_release();
@@ -6240,11 +6242,55 @@ mod tests {
         );
 
         // The other channels keep their identity while red bends.
+        pane.agent_layer_pick(0);
         assert_eq!(pane.agent_curve_channels()[1], vec![(0.0, 0.0), (1.0, 1.0)]);
 
         // A non-curves row publishes no curves at all.
         pane.agent_layer_pick(1);
         assert!(pane.agent_curve_channels().is_empty());
+    }
+
+    #[test]
+    fn non_image_rows_without_a_selected_mask_do_not_edit_image_pixels() {
+        for kind in ["adjustment", "group"] {
+            let (mut pane, pixels) = painting_pane();
+            let mut frame = Frame::transparent(300, 200);
+            frame.set_pixel(150, 100, [10, 20, 30, 255]);
+            pane.store.replace(pixels, frame);
+            if kind == "adjustment" {
+                pane.agent_adjustment_add(2);
+            } else {
+                pane.agent_layer_group();
+            }
+            assert!(pane.paint_target().is_none(), "{kind} has no paint target");
+            let before = pane
+                .store
+                .get(pixels)
+                .expect("base image")
+                .pixels()
+                .to_vec();
+            let revision = pane.revision;
+            let history_len = pane.undo_stack.len();
+
+            pane.set_tool(3);
+            pane.brush_press(150.0, 100.0);
+            pane.brush_release();
+            pane.agent_select_all();
+            pane.agent_fill_selection();
+            pane.agent_delete_selection();
+
+            assert_eq!(
+                pane.store.get(pixels).expect("base image").pixels(),
+                before,
+                "{kind}"
+            );
+            assert_eq!(pane.revision, revision, "{kind} added no pixel history");
+            assert_eq!(
+                pane.undo_stack.len(),
+                history_len,
+                "{kind} added no undo entry"
+            );
+        }
     }
 
     #[test]
@@ -6450,6 +6496,21 @@ mod tests {
             .and_then(|node| node.mask())
             .map(|mask| mask.pixels)
             .expect("the mask exists");
+        let revision = pane.revision;
+        let history_len = pane.undo_stack.len();
+        pane.mask_chip_click(0);
+        assert_eq!(
+            pane.paint_target(),
+            Some(mask_id),
+            "repeat click keeps the mask selected"
+        );
+        assert_eq!(pane.tool, 3, "repeat click keeps the brush active");
+        assert_eq!(pane.revision, revision, "repeat click adds no history");
+        assert_eq!(
+            pane.undo_stack.len(),
+            history_len,
+            "repeat click adds no undo entry"
+        );
         let mask = pane.store.get(mask_id).expect("mask pixels");
         assert!(
             mask.pixels()
