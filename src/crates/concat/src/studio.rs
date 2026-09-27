@@ -432,6 +432,8 @@ pub struct Models {
     pub audio_params: Rc<VecModel<AppliedParamData>>,
     /// The colour panel's knobs.
     pub adjust_params: Rc<VecModel<AppliedParamData>>,
+    pub canvas_layers: Rc<VecModel<CanvasLayerData>>,
+    pub canvas_adjustment_params: Rc<VecModel<CanvasAdjustmentParam>>,
     /// The keyframe cluster's rows and the libraries' views: synced like
     /// the rest, since a model handed over fresh is unequal to the last by
     /// identity and re-evaluates every binding on it.
@@ -475,6 +477,8 @@ impl Models {
             visual_params: Rc::new(VecModel::default()),
             audio_params: Rc::new(VecModel::default()),
             adjust_params: Rc::new(VecModel::default()),
+            canvas_layers: Rc::new(VecModel::default()),
+            canvas_adjustment_params: Rc::new(VecModel::default()),
             key_rows: Rc::new(VecModel::default()),
             library_views: Rc::new(VecModel::default()),
             menu: Rc::new(VecModel::default()),
@@ -4806,6 +4810,9 @@ impl Studio {
     /// request, and File > Close Window. A dirty canvas opens the global
     /// confirmation sheet; a clean canvas proceeds to the clip save.
     pub fn request_window_close(&mut self) -> bool {
+        if self.canvas.defer_window_close_for_transform() {
+            return false;
+        }
         if self.exit_pending {
             return false;
         }
@@ -4815,6 +4822,38 @@ impl Studio {
             return false;
         }
         self.finish_window_close()
+    }
+
+    /// Finishes a canvas transform boundary, then resumes its original action.
+    /// Returns actions that the window or navigation layer must complete.
+    pub(crate) fn resolve_canvas_transform_boundary(
+        &mut self,
+        choice: i32,
+    ) -> Option<crate::panes::canvas::CanvasBoundaryAction> {
+        let mut canvas = std::mem::take(&mut self.canvas);
+        let action = canvas.resolve_transform_boundary(choice);
+        if action.is_some() {
+            canvas.render(self);
+        }
+        self.canvas = canvas;
+        let action = action?;
+        match action {
+            crate::panes::canvas::CanvasBoundaryAction::Message(message) => {
+                self.handle(crate::panes::Msg::Canvas(message));
+                None
+            }
+            crate::panes::canvas::CanvasBoundaryAction::SelectObject(id) => {
+                self.canvas.select_object_after_transform(id);
+                None
+            }
+            crate::panes::canvas::CanvasBoundaryAction::GestureStartExpired => None,
+            crate::panes::canvas::CanvasBoundaryAction::WindowClose => self
+                .request_window_close()
+                .then_some(crate::panes::canvas::CanvasBoundaryAction::WindowClose),
+            crate::panes::canvas::CanvasBoundaryAction::NavigatePage(target) => Some(
+                crate::panes::canvas::CanvasBoundaryAction::NavigatePage(target),
+            ),
+        }
     }
 
     /// Cancels the pending window close and leaves both the canvas and the
@@ -5083,7 +5122,7 @@ impl Studio {
         self.publish_lanes(app, models);
         self.publish_chrome(app, models);
         self.publish_dock(app, models);
-        self.publish_canvas(app);
+        self.publish_canvas(app, models);
     }
 
     pub fn publish_dock(&self, _app: &App, models: &Models) {
@@ -5785,7 +5824,7 @@ impl Studio {
 
     /// The canvas pane's readouts: the picture and the view Rust holds.
     /// Values, not models, so it rides in whichever publish is running.
-    fn publish_canvas(&self, app: &App) {
+    fn publish_canvas(&self, app: &App, models: &Models) {
         let editor = app.global::<Editor>();
         editor.set_canvas_frame(self.canvas.image.clone());
         editor.set_canvas_has_document(self.canvas.document.is_some());
@@ -5793,6 +5832,8 @@ impl Studio {
         editor.set_canvas_can_redo(self.canvas.can_redo());
         editor.set_canvas_modified(self.canvas.is_modified());
         editor.set_canvas_open_confirm(self.canvas.open_confirm);
+        editor.set_canvas_transform_confirm(self.canvas.transform_confirmation_open());
+        editor.set_canvas_transform_context(self.canvas.transform_confirmation_label().into());
         editor.set_canvas_exit_confirm(self.exit_pending);
         editor.set_canvas_exit_error(self.exit_error.as_str().into());
         editor.set_canvas_name(self.canvas.name.as_str().into());
@@ -5801,7 +5842,27 @@ impl Studio {
         editor.set_canvas_pan_y(self.canvas.pan.1 as f32);
         editor.set_canvas_stage_w(self.canvas.stage.0 as f32);
         editor.set_canvas_stage_h(self.canvas.stage.1 as f32);
+        editor.set_canvas_has_object(self.canvas.object_view.is_some());
+        let (cx, cy, width, height, angle) = self.canvas.object_view.unwrap_or_default();
+        editor.set_canvas_object_cx(cx as f32);
+        editor.set_canvas_object_cy(cy as f32);
+        editor.set_canvas_object_w(width as f32);
+        editor.set_canvas_object_h(height as f32);
+        editor.set_canvas_object_angle(angle as f32);
+        editor.set_canvas_transforming(self.canvas.transform_session_active());
+        let (x, y, width, height, angle, flip_h, flip_v) =
+            self.canvas.object_doc.unwrap_or_default();
+        editor.set_canvas_object_doc_x(x);
+        editor.set_canvas_object_doc_y(y);
+        editor.set_canvas_object_doc_w(width);
+        editor.set_canvas_object_doc_h(height);
+        editor.set_canvas_object_doc_angle(angle);
+        editor.set_canvas_object_flip_h(flip_h);
+        editor.set_canvas_object_flip_v(flip_v);
         editor.set_canvas_tool(self.canvas.tool as i32);
+        editor.set_canvas_selection_mode(self.canvas.selection_mode);
+        editor.set_canvas_wand_tolerance(self.canvas.wand_tolerance);
+        editor.set_canvas_wand_contiguous(self.canvas.wand_contiguous);
         editor.set_canvas_brush_diameter(self.canvas.brush.diameter as f32);
         editor.set_canvas_brush_opacity(self.canvas.brush.opacity as f32);
         editor.set_canvas_brush_hardness(self.canvas.brush.hardness as f32);
@@ -5833,23 +5894,28 @@ impl Studio {
             self.canvas.marquee_view,
         );
         // The layers panel: rows front-to-back, and the picked row's index.
+        let details = self.canvas.layer_ui_details();
         let rows: Vec<CanvasLayerData> = self
             .canvas
             .layers_data()
             .into_iter()
+            .zip(details)
             .map(
                 |(
-                    id,
-                    name,
-                    hidden,
-                    opacity,
-                    active,
-                    depth,
-                    expanded,
-                    group,
-                    masked,
-                    mask_paint,
-                    mask_enabled,
+                    (
+                        id,
+                        name,
+                        hidden,
+                        opacity,
+                        active,
+                        depth,
+                        expanded,
+                        group,
+                        masked,
+                        mask_paint,
+                        mask_enabled,
+                    ),
+                    (kind, blend, adjustment_kind),
                 )| {
                     CanvasLayerData {
                         id: id as i32,
@@ -5863,6 +5929,9 @@ impl Studio {
                         masked,
                         mask_paint,
                         mask_enabled,
+                        kind,
+                        adjustment_kind,
+                        blend,
                     }
                 },
             )
@@ -5873,7 +5942,8 @@ impl Studio {
                 .map(|index| index as i32)
                 .unwrap_or(-1),
         );
-        editor.set_canvas_layers(slint::ModelRc::new(slint::VecModel::from(rows)));
+        editor.set_canvas_active_blend(self.canvas.active_blend_index());
+        sync(&models.canvas_layers, rows);
         crate::publish_canvas_aux(self, app);
         // The checker under the picture, the active row's adjustment and
         // its knobs - the same publish, one block over.
@@ -5889,7 +5959,7 @@ impl Studio {
                 maximum,
             })
             .collect();
-        editor.set_canvas_adjustment_params(slint::ModelRc::new(slint::VecModel::from(params)));
+        sync(&models.canvas_adjustment_params, params);
         // The active gradient map's two colours, as the swatches read
         // them; the defaults stand in when the row is not one.
         let (low, high) = self

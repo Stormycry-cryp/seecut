@@ -206,6 +206,20 @@ export component Seat inherits Rectangle {
             pan-y: Editor.canvas-pan-y;
             stage-w: Editor.canvas-stage-w;
             stage-h: Editor.canvas-stage-h;
+            has-object: Editor.canvas-has-object;
+            object-cx: Editor.canvas-object-cx;
+            object-cy: Editor.canvas-object-cy;
+            object-w: Editor.canvas-object-w;
+            object-h: Editor.canvas-object-h;
+            object-angle: Editor.canvas-object-angle;
+            transforming: Editor.canvas-transforming;
+            object-doc-x: Editor.canvas-object-doc-x;
+            object-doc-y: Editor.canvas-object-doc-y;
+            object-doc-w: Editor.canvas-object-doc-w;
+            object-doc-h: Editor.canvas-object-doc-h;
+            object-doc-angle: Editor.canvas-object-doc-angle;
+            object-flip-h: Editor.canvas-object-flip-h;
+            object-flip-v: Editor.canvas-object-flip-v;
             tool: Editor.canvas-tool;
             brush-diameter <=> Editor.canvas-brush-diameter;
             brush-opacity <=> Editor.canvas-brush-opacity;
@@ -216,12 +230,16 @@ export component Seat inherits Rectangle {
             selection-y: Editor.canvas-selection-y;
             selection-w: Editor.canvas-selection-w;
             selection-h: Editor.canvas-selection-h;
+            selection-mode: Editor.canvas-selection-mode;
+            wand-tolerance: Editor.canvas-wand-tolerance;
+            wand-contiguous: Editor.canvas-wand-contiguous;
             marquee-x: Editor.canvas-marquee-x;
             marquee-y: Editor.canvas-marquee-y;
             marquee-w: Editor.canvas-marquee-w;
             marquee-h: Editor.canvas-marquee-h;
             layers <=> Editor.canvas-layers;
             active-layer: Editor.canvas-active-layer;
+            active-blend: Editor.canvas-active-blend;
             checker: Editor.canvas-checker;
             adjustment-kind: Editor.canvas-adjustment-kind;
             adjustment-params <=> Editor.canvas-adjustment-params;
@@ -245,6 +263,14 @@ export component Seat inherits Rectangle {
             canvas-resized(width, height) => { Editor.canvas-resized(width, height); }
             canvas-open => { Editor.canvas-open(); }
             tool-changed(index) => { Editor.canvas-tool-changed(index); }
+            object-press(x, y) => { Editor.canvas-object-press(x, y); }
+            object-move(x, y, shift, alt) => { Editor.canvas-object-move(x, y, shift, alt); }
+            object-release(commit) => { Editor.canvas-object-release(commit); }
+            transform-start => { Editor.canvas-transform-start(); }
+            transform-finish(commit) => { Editor.canvas-transform-finish(commit); }
+            nudge(dx, dy) => { Editor.canvas-nudge(dx, dy); }
+            flip(horizontal) => { Editor.canvas-flip(horizontal); }
+            transform-set(index, value) => { Editor.canvas-transform-set(index, value); }
             brush-press(x, y) => { Editor.canvas-brush-press(x, y); }
             brush-move(x, y) => { Editor.canvas-brush-move(x, y); }
             brush-release => { Editor.canvas-brush-release(); }
@@ -257,7 +283,11 @@ export component Seat inherits Rectangle {
             marquee-press(x, y) => { Editor.canvas-marquee-press(x, y); }
             marquee-move(x, y) => { Editor.canvas-marquee-move(x, y); }
             marquee-release => { Editor.canvas-marquee-release(); }
+            marquee-cancel => { Editor.canvas-marquee-cancel(); }
             wand-click(x, y) => { Editor.canvas-wand-click(x, y); }
+            selection-mode-changed(mode) => { Editor.canvas-selection-mode-changed(mode); }
+            wand-tolerance-changed(value) => { Editor.canvas-wand-tolerance-changed(value); }
+            wand-contiguous-changed(value) => { Editor.canvas-wand-contiguous-changed(value); }
             select-all => { Editor.canvas-select-all(); }
             deselect => { Editor.canvas-deselect(); }
             fill-selection => { Editor.canvas-fill-selection(); }
@@ -265,6 +295,11 @@ export component Seat inherits Rectangle {
             layer-picked(index) => { Editor.canvas-layer-picked(index); }
             layer-visibility-toggled(index) => { Editor.canvas-layer-visibility-toggled(index); }
             layer-opacity-changed(index, opacity) => { Editor.canvas-layer-opacity-changed(index, opacity); }
+            layer-blend-changed(index) => { Editor.canvas-layer-blend-changed(index); }
+            layer-renamed(id, name) => { Editor.canvas-layer-renamed(id, name); }
+            layer-duplicated(index) => { Editor.canvas-layer-duplicated(index); }
+            layer-opacity-begin(index) => { Editor.canvas-layer-opacity-begin(index); }
+            parameter-end(commit) => { Editor.canvas-parameter-end(commit); }
             layer-added => { Editor.canvas-layer-added(); }
             layer-group-added => { Editor.canvas-layer-group-added(); }
             layer-folded(index) => { Editor.canvas-layer-folded(index); }
@@ -278,6 +313,7 @@ export component Seat inherits Rectangle {
             gradient-color-changed(slot, index) => { Editor.canvas-gradient-color-changed(slot, index); }
             adjustment-added(kind) => { Editor.canvas-adjustment-added(kind); }
             adjustment-param-changed(index, value) => { Editor.canvas-adjustment-param-changed(index, value); }
+            adjustment-param-begin(index) => { Editor.canvas-adjustment-param-begin(index); }
             curve-set(channel, index, x, y) => { Editor.canvas-curve-set(channel, index, x, y); }
             curve-add(channel, x, y) => { Editor.canvas-curve-add(channel, x, y); }
             curve-remove(channel, index) => { Editor.canvas-curve-remove(channel, index); }

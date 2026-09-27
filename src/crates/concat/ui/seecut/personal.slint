@@ -124,6 +124,7 @@ export component PersonalPage inherits Rectangle {
             WorkspaceIcon { glyph: Glyph.import; label: "导入素材"; clicked => { SeeCut.action("personal-browse", ""); } }
             WorkspaceIcon {
                 glyph: Glyph.box-select;
+                checkable: true;
                 checked: SeeCut.personal-selection-mode;
                 label: SeeCut.personal-selection-mode ? "完成批量管理" : "批量管理";
                 clicked => { SeeCut.personal-selection-mode = !SeeCut.personal-selection-mode; SeeCut.changed("personal-selection-mode", ""); }
@@ -291,8 +292,8 @@ export component PersonalPage inherits Rectangle {
                                         y: parent.height - 48px; height: 48px; width: 100%; background: Theme.scrim;
                                         Text { x: 10px; width: parent.width - 20px; height: 100%; text: asset.ready ? asset.status : "文件已移动或丢失"; color: Theme.on-scrim; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
                                     }
-                                    if SeeCut.personal-selection-mode: WorkspaceIcon { x: 8px; y: 8px; on-image: true; glyph: asset.selected ? Glyph.check : Glyph.box-select; checked: asset.selected; label: asset.selected ? "取消选择" : "选择素材"; clicked => { SeeCut.action("personal-select", asset.id); } }
-                                    if !SeeCut.personal-selection-mode: WorkspaceIcon { x: 8px; y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.star; checked: asset.favorite; label: asset.favorite ? "取消收藏" : "收藏素材"; clicked => { SeeCut.action("personal-favorite", asset.id); } }
+                                    if SeeCut.personal-selection-mode: WorkspaceIcon { x: 8px; y: 8px; on-image: true; glyph: asset.selected ? Glyph.check : Glyph.box-select; checkable: true; checked: asset.selected; label: asset.selected ? "取消选择" : "选择素材"; clicked => { SeeCut.action("personal-select", asset.id); } }
+                                    if !SeeCut.personal-selection-mode: WorkspaceIcon { x: 8px; y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.star; checkable: true; checked: asset.favorite; label: asset.favorite ? "取消收藏" : "收藏素材"; clicked => { SeeCut.action("personal-favorite", asset.id); } }
                                     WorkspaceIcon { x: parent.width - self.width - 8px; y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.chevron-down; label: "更多素材操作"; clicked => { root.open-menu(2, asset.id, asset.name, asset.kind, asset.ready, self.absolute-position.x - root.absolute-position.x, self.absolute-position.y - root.absolute-position.y + self.height + 4px); } }
                                 }
                                 HorizontalLayout {

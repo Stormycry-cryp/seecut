@@ -6,8 +6,8 @@ import { Theme } from "../theme/theme.slint";
 import { SeeCut } from "../seecut/state.slint";
 import { Glyph, Icon } from "../icons.slint";
 import { Button, DialogRow, DialogSection, Field, Progress } from "../primitives/modal.slint";
+import { FocusRing } from "../primitives/focus-ring.slint";
 import { IconButton } from "../primitives/panel.slint";
-import { SegmentedControl } from "../primitives/segmented-control.slint";
 import { Select } from "../primitives/select.slint";
 import { Switch } from "../inspector/controls.slint";
 import { PaneScroll } from "../workspace/pane.slint";
@@ -73,6 +73,80 @@ export struct SettingsData {
     disk: string,
     version: string,
     engine: string,
+}
+
+// A compact setting value with one keyboard stop and two named radio choices.
+component SettingsChoice inherits Rectangle {
+    in property <string> label;
+    in property <[string]> options;
+    in-out property <int> current;
+    in property <bool> reduced-motion;
+    callback changed(index: int);
+
+    property <bool> ring;
+    property <length> option-width: root.width / 2;
+    width: 188px;
+    height: 36px;
+    background: transparent;
+    accessible-role: radio-group;
+    accessible-label: root.label;
+    accessible-item-count: 2;
+
+    function select(index: int) {
+        if (index >= 0 && index < 2 && index != root.current) {
+            root.current = index;
+            root.changed(index);
+        }
+    }
+
+    group-focus := FocusScope {
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost => { root.ring = false; }
+        key-pressed(event) => {
+            if (event.text == Key.RightArrow || event.text == Key.DownArrow) { root.select(Math.mod(root.current + 1, 2)); return EventResult.accept; }
+            if (event.text == Key.LeftArrow || event.text == Key.UpArrow) { root.select(Math.mod(root.current + 1, 2)); return EventResult.accept; }
+            if (event.text == Key.Home) { root.select(0); return EventResult.accept; }
+            if (event.text == Key.End) { root.select(1); return EventResult.accept; }
+            if (event.text == " " || event.text == "\n") { root.select(root.current); return EventResult.accept; }
+            return EventResult.reject;
+        }
+    }
+
+    Rectangle {
+        x: root.current * root.option-width;
+        width: root.option-width;
+        height: root.height;
+        background: Theme.accent-soft;
+        border-radius: 8px;
+        animate x { duration: root.reduced-motion ? 0ms : 180ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    }
+
+    for option[index] in root.options: Rectangle {
+        x: index * root.option-width;
+        width: root.option-width;
+        height: root.height;
+        accessible-role: radio-button;
+        accessible-label: root.label + "，" + option;
+        accessible-enabled: true;
+        accessible-checkable: true;
+        accessible-checked: root.current == index;
+        accessible-item-index: index;
+        accessible-action-default => { group-focus.focus(); root.select(index); }
+        Text {
+            width: parent.width;
+            height: parent.height;
+            text: option;
+            font-size: 14px;
+            color: index == root.current ? Theme.accent : Theme.fg-muted;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            accessible-role: none;
+            animate color { duration: root.reduced-motion ? 0ms : 140ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        }
+        TouchArea { mouse-cursor: pointer; clicked => { group-focus.focus(); root.select(index); } }
+    }
+
+    FocusRing { active: root.ring; radius: 8px; }
 }
 
 // Accuracy, as pips rather than a number: five little bars say "third of five"
@@ -380,11 +454,30 @@ export component SettingsDialog inherits Rectangle {
     callback closed();
 
     visible: root.data.open;
+    property <bool> sheet-visible: root.data.open;
+    property <int> reverse-focus-token;
+    changed sheet-visible => {
+        if root.sheet-visible { close-button.take-focus(); }
+    }
     background: Colors.transparent;
 
     // The app's navigation rail remains visible at the left. A press there
     // leaves settings; the page itself keeps the workbench's right-hand area.
     TouchArea { clicked => { root.closed(); } }
+
+    // Slint's Tab traversal includes the mounted workbench behind this sheet.
+    // Redirect both ends of the settings controls back into the sheet.
+    first-tab-guard := FocusScope {
+        width: 1px;
+        height: 1px;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            if reason == FocusReason.tab-navigation {
+                if root.data.tab == 0 { root.reverse-focus-token += 1; }
+                else { last-tab-guard.focus(); }
+            }
+        }
+    }
 
     page := Rectangle {
         x: 80px;
@@ -409,7 +502,7 @@ export component SettingsDialog inherits Rectangle {
                     font-weight: Theme.weight-title;
                 }
 
-                IconButton {
+                close-button := IconButton {
                     x: parent.width - 64px;
                     y: 68px;
                     glyph: Glyph.close;
@@ -649,14 +742,13 @@ export component SettingsDialog inherits Rectangle {
                         vertical-alignment: center;
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    Rectangle {
-                        width: 344px;
-                        height: 36px;
-                        SegmentedControl {
-                            width: parent.width;
+                    VerticalLayout {
+                        width: 188px;
+                        alignment: center;
+                        SettingsChoice {
+                            label: "工作模式";
                             options: ["快速", "专业"];
                             current: SeeCut.creator-mode == 1 ? 1 : 0;
-                            workbench: true;
                             reduced-motion: SeeCut.reduced-motion;
                             changed(index) => { SeeCut.action("creator-mode", index == 1 ? "1" : "0"); }
                         }
@@ -673,14 +765,13 @@ export component SettingsDialog inherits Rectangle {
                         vertical-alignment: center;
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    Rectangle {
-                        width: 344px;
-                        height: 36px;
-                        SegmentedControl {
-                            width: parent.width;
+                    VerticalLayout {
+                        width: 188px;
+                        alignment: center;
+                        SettingsChoice {
+                            label: "外观";
                             options: ["浅色", "深色"];
                             current: Theme.dark ? 1 : 0;
-                            workbench: true;
                             reduced-motion: SeeCut.reduced-motion;
                             changed(index) => { root.theme-changed(index == 1); }
                         }
@@ -702,6 +793,7 @@ export component SettingsDialog inherits Rectangle {
                         Switch {
                             accessible-label: "减少动态效果";
                             reduced-motion: SeeCut.reduced-motion;
+                            focus-request: root.reverse-focus-token;
                             checked <=> SeeCut.reduced-motion;
                             toggled(value) => { SeeCut.changed("reduced-motion", value ? "true" : "false"); }
                         }
@@ -933,6 +1025,15 @@ export component SettingsDialog inherits Rectangle {
             }
         }
     }
+        }
+    }
+
+    last-tab-guard := FocusScope {
+        width: 1px;
+        height: 1px;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            if reason == FocusReason.tab-navigation { close-button.take-focus(); }
         }
     }
 }

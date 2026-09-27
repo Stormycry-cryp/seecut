@@ -69,7 +69,7 @@ export component TeamPage inherits Rectangle {
                 if root.width >= 560px: CloudField { value <=> SeeCut.asset-search; placeholder: "搜索团队资产"; edited(value) => { SeeCut.changed("asset-search", value); } }
                 WorkspaceSelect { width: 116px; options: ["全部类型", "图片", "视频", "音频"]; current: SeeCut.asset-filter; changed(index) => { SeeCut.asset-filter = index; SeeCut.changed("asset-filter", index); } }
                 if root.width < 560px: Rectangle { horizontal-stretch: 1; }
-                WorkspaceIcon { glyph: Glyph.trash; label: "回收站"; checked: SeeCut.trash-open; clicked => { SeeCut.trash-open = !SeeCut.trash-open; SeeCut.action("assets-refresh", ""); } }
+                WorkspaceIcon { glyph: Glyph.trash; label: "回收站"; checkable: true; checked: SeeCut.trash-open; clicked => { SeeCut.trash-open = !SeeCut.trash-open; SeeCut.action("assets-refresh", ""); } }
                 WorkspaceIcon { glyph: Glyph.reset; label: "刷新团队资产"; enabled: !SeeCut.working; clicked => { SeeCut.action("assets-refresh", ""); } }
             }
             if SeeCut.trash-open: Heading { text: "回收站"; }

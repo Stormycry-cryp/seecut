@@ -95,6 +95,33 @@ struct Params {
     d: f32,
     e: f32,
     f: f32,
+    mx: f32,
+    my: f32,
+    msx: f32,
+    msy: f32,
+    mcos: f32,
+    msin: f32,
+}
+
+fn mask_red(uv: vec2<f32>) -> f32 {
+    if (p.flags & 32u) == 0u {
+        return textureSampleLevel(mask_texture, tex_sampler, uv, 0.0).r;
+    }
+    let canvas = vec2<f32>(textureDimensions(backdrop_texture).xy);
+    let d = uv * canvas - (canvas / 2.0 + vec2<f32>(p.tx, p.ty));
+    let u = vec2<f32>(d.x * p.cs - d.y * p.sn, d.x * p.sn + d.y * p.cs);
+    let s = u / vec2<f32>(p.sx, p.sy);
+    let local = vec2<f32>(
+        select(s.x, -s.x, (p.flags & 8u) != 0u),
+        select(s.y, -s.y, (p.flags & 16u) != 0u));
+    let a = local * vec2<f32>(p.msx, p.msy);
+    let old_doc = canvas / 2.0 + vec2<f32>(p.mx, p.my)
+        + vec2<f32>(a.x * p.mcos - a.y * p.msin, a.x * p.msin + a.y * p.mcos);
+    let size = vec2<f32>(textureDimensions(mask_texture).xy);
+    if old_doc.x < 0.0 || old_doc.y < 0.0 || old_doc.x >= size.x || old_doc.y >= size.y {
+        return 1.0;
+    }
+    return textureLoad(mask_texture, vec2<i32>(floor(old_doc)), 0).r;
 }
 
 // A float snapped to the byte grid: the shader-side twin of the CPU's
@@ -265,7 +292,7 @@ fn hsl_to_rgb(hsl: vec3<f32>) -> vec3<f32> {
 fn blend_one(back: vec4<f32>, src: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     var a_s = src.a * p.opacity;
     if (p.flags & 1u) != 0u {
-        a_s *= textureSampleLevel(mask_texture, tex_sampler, uv, 0.0).r;
+        a_s *= mask_red(uv);
     }
     if (p.flags & 2u) != 0u {
         a_s *= textureSampleLevel(clip_texture, tex_sampler, uv, 0.0).r;
@@ -340,7 +367,7 @@ fn adjust_one(back: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     let adjusted = vec3<f32>(byte(rgb.r), byte(rgb.g), byte(rgb.b));
     var weight = p.opacity;
     if (p.flags & 1u) != 0u {
-        weight *= textureSampleLevel(mask_texture, tex_sampler, uv, 0.0).r;
+        weight *= mask_red(uv);
     }
     let a = back.a * weight;
     let out_rgb = back.rgb * (1.0 - a) + adjusted * a;
@@ -379,7 +406,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // own upstream coverage - the GPU twin of `coverage_of`.
         var a = src.a * p.opacity;
         if (p.flags & 1u) != 0u {
-            a *= textureSampleLevel(mask_texture, tex_sampler, uv, 0.0).r;
+            a *= mask_red(uv);
         }
         if (p.flags & 2u) != 0u {
             a *= textureSampleLevel(clip_texture, tex_sampler, uv, 0.0).r;
@@ -456,7 +483,23 @@ impl Params {
         {
             word(4 + index, value.to_ne_bytes());
         }
+        for (index, value) in self.pad.into_iter().enumerate() {
+            word(18 + index, value.to_ne_bytes());
+        }
         out
+    }
+
+    fn mask_anchor(&mut self, anchor: &LayerTransform) {
+        let (sin, cos) = anchor.rotation.sin_cos();
+        self.pad = [
+            anchor.x,
+            anchor.y,
+            anchor.scale_x * if anchor.flip_h { -1.0 } else { 1.0 },
+            anchor.scale_y * if anchor.flip_v { -1.0 } else { 1.0 },
+            cos,
+            sin,
+        ];
+        self.flags |= 32;
     }
 
     /// The transform payload from a layer transform and its bitmap size.
@@ -949,6 +992,14 @@ impl CanvasGpu {
             ..Params::default()
         };
         params.transform(&layer.transform, frame.width(), frame.height());
+        if let Some(anchor) = layer
+            .mask
+            .as_ref()
+            .filter(|mask| mask.enabled && mask.linked)
+            .and_then(|mask| mask.anchor)
+        {
+            params.mask_anchor(&anchor);
+        }
         if mask.is_some() {
             params.flags |= 1;
         }
@@ -1171,6 +1222,14 @@ impl CanvasGpu {
             ..Params::default()
         };
         params.transform(&layer.transform, frame.width(), frame.height());
+        if let Some(anchor) = layer
+            .mask
+            .as_ref()
+            .filter(|mask| mask.enabled && mask.linked)
+            .and_then(|mask| mask.anchor)
+        {
+            params.mask_anchor(&anchor);
+        }
         if mask.is_some() {
             params.flags |= 1;
         }
@@ -1786,6 +1845,27 @@ mod tests {
         let id = world.with_layer("Top", solid(16, 16, [250, 180, 30, 255]));
         world.document.layer_mut(id).expect("layer").mask = Some(LayerMask::new(mask_id));
         assert_parity(&world);
+    }
+
+    #[test]
+    fn a_linked_mask_keeps_cpu_gpu_parity_after_transform() {
+        let mut world = World::new();
+        world.with_layer("Back", solid(16, 16, [90, 90, 90, 255]));
+        let mut mask = solid(16, 16, [255, 255, 255, 255]);
+        for y in 4..9 {
+            for x in 5..10 {
+                mask.set_pixel(x, y, [0, 0, 0, 255]);
+            }
+        }
+        let mut linked = LayerMask::new(world.store.put(mask));
+        linked.anchor = Some(LayerTransform::default());
+        let id = world.with_layer("Top", solid(16, 16, [250, 180, 30, 255]));
+        let layer = world.document.layer_mut(id).expect("layer");
+        layer.mask = Some(linked);
+        layer.transform.x = 2.0;
+        layer.transform.y = -1.0;
+        let mut gpu = required_gpu();
+        assert_parity_on(&world, &mut gpu);
     }
 
     #[test]

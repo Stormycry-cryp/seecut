@@ -45,7 +45,7 @@ pub use blend::BlendMode;
 pub use brush::{BrushError, BrushSettings, BrushStroke, TILE_SIZE, spacing_fraction};
 #[cfg(feature = "gpu")]
 pub use brush_gpu::BrushStrokeGpu;
-pub use compositor::{apply_one, compose, curve_at_bytes};
+pub use compositor::{Composer, apply_one, compose, curve_at_bytes};
 pub use document::{
     Adjustment, AdjustmentLayer, CLIP_CHAIN_LIMIT, DocumentError, ImageDocument, ImageLayer,
     LayerGroup, LayerId, LayerMask, LayerNode, LayerSampling, LayerTransform,

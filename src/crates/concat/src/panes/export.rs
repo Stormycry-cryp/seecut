@@ -562,13 +562,15 @@ mod tests {
 
     #[test]
     fn late_completion_cannot_claim_a_new_job() {
-        let mut pane = ExportPane::default();
-        pane.active_job = Some(ActiveExport {
-            id: 2,
-            to_library: true,
-            name: "new".into(),
-            output: "new.mp4".into(),
-        });
+        let mut pane = ExportPane {
+            active_job: Some(ActiveExport {
+                id: 2,
+                to_library: true,
+                name: "new".into(),
+                output: "new.mp4".into(),
+            }),
+            ..Default::default()
+        };
         assert!(pane.take_finished_job(1).is_none());
         assert_eq!(pane.take_finished_job(2).unwrap().name, "new");
         assert!(pane.take_finished_job(2).is_none());
