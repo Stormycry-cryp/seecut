@@ -1097,6 +1097,7 @@ impl CanvasPane {
                     .new_layer(name, pixels);
                 self.active = Some(id);
                 self.layer = Some(pixels);
+                self.paint_mask = false;
                 self.sync_view();
                 self.render(studio);
             }
@@ -2743,7 +2744,7 @@ impl CanvasPane {
                     expanded,
                     matches!(node, LayerNode::Group(_)),
                     mask.is_some(),
-                    self.paint_mask && active,
+                    self.paint_mask && active && mask.is_some(),
                     mask.map(|m| m.enabled).unwrap_or(true),
                 )
             })
@@ -2869,8 +2870,7 @@ impl CanvasPane {
 
     /// Adds an adjustment of `kind` above the active layer, so it colours
     /// everything beneath it - the whole point of the placement. A new
-    /// adjustment becomes the active row; there is nothing to paint on it,
-    /// so the paint target falls back to the topmost image layer.
+    /// adjustment becomes the active row; there is nothing to paint on it.
     fn add_adjustment(&mut self, kind: i32) {
         let Some(document) = self.document.as_ref() else {
             return;
@@ -2906,8 +2906,8 @@ impl CanvasPane {
             document.root.children.push(node);
         }
         self.active = Some(id);
-        // Adjustments hold no pixels; the tools keep working on the
-        // topmost image layer in the same parent beneath them.
+        self.paint_mask = false;
+        // Keep the nearest image cached for geometry and preview state.
         self.layer = topmost_image_in_parent(document, parent)
             .or_else(|| topmost_image_in_parent(document, None));
         self.sync_view();
@@ -2982,8 +2982,7 @@ impl CanvasPane {
     /// the panel's "new group" is an insertion relative to what is
     /// picked, and a nested or absent pick lands the group at the top of
     /// the root. A group holds nothing until layers move into it, and
-    /// paints nothing, so the paint target falls back to the topmost
-    /// image layer.
+    /// paints nothing.
     fn add_group(&mut self) {
         let Some(document) = self.document.as_ref() else {
             return;
@@ -3012,6 +3011,7 @@ impl CanvasPane {
             document.root.children.push(node);
         }
         self.active = Some(id);
+        self.paint_mask = false;
         self.layer = topmost_image_in_parent(document, parent)
             .or_else(|| topmost_image_in_parent(document, None));
         self.sync_view();
@@ -4181,6 +4181,7 @@ impl CanvasPane {
         };
         self.active = Some(id);
         self.layer = pixels;
+        self.paint_mask = false;
         self.sync_view();
     }
 
@@ -4241,6 +4242,7 @@ impl CanvasPane {
                 .new_layer(name, pixels);
             pane.active = Some(id);
             pane.layer = Some(pixels);
+            pane.paint_mask = false;
             pane.sync_view();
         });
     }
@@ -5689,7 +5691,8 @@ mod tests {
         // base, so it is the front row - and it became the active one.
         assert_eq!(rows[0].0, pane.active.expect("active").as_u64());
         // It is an adjustment: no pixels of its own.
-        assert!(pane.layer.is_some(), "painting falls back to the base");
+        assert!(pane.layer.is_some(), "the base image remains cached");
+        assert_eq!(pane.paint_target(), None, "adjustment has no paint pixels");
 
         let (kind, parameters) = pane.agent_adjustment_state();
         assert_eq!(kind, 2);
@@ -6451,6 +6454,35 @@ mod tests {
             Some(1),
             "the new group remains nested"
         );
+    }
+
+    #[test]
+    fn mask_adjustment_and_image_picks_have_one_paint_target() {
+        let (mut pane, image_pixels) = painting_pane();
+        pane.agent_layer_mask_add(0);
+        pane.agent_adjustment_add(2);
+
+        pane.mask_chip_click(1);
+        let mask_id = pane.paint_target().expect("selected mask pixels");
+        assert_ne!(mask_id, image_pixels);
+        assert!(pane.layers_data()[1].9, "only the active mask is marked");
+
+        pane.agent_layer_pick(0);
+        assert!(
+            !pane.agent_paint_mask(),
+            "picking exposure leaves mask mode"
+        );
+        assert_eq!(pane.paint_target(), None, "exposure has no paint pixels");
+        let rows = pane.layers_data();
+        assert!(rows[0].4, "exposure is active");
+        assert!(!rows[1].9, "the previous image mask is not marked");
+        assert!(!rows[0].9, "exposure has no selected mask");
+
+        pane.agent_layer_pick(1);
+        assert_eq!(pane.paint_target(), Some(image_pixels));
+        let rows = pane.layers_data();
+        assert!(rows[1].4, "image is active");
+        assert!(!rows[1].9, "image pixels, not its mask, are selected");
     }
 
     #[test]

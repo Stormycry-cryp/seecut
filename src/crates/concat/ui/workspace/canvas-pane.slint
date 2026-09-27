@@ -284,6 +284,7 @@ component Ants inherits Rectangle {
 
 // A focusable target for image, mask, and palette chips.
 component CanvasChipAction inherits FocusScope {
+    in property <bool> accent-focus: true;
     callback clicked();
     key-pressed(event) => {
         if (event.text == "\n" || event.text == " ") {
@@ -293,8 +294,8 @@ component CanvasChipAction inherits FocusScope {
         return EventResult.reject;
     }
     Rectangle {
-        border-width: root.has-focus ? 2px : 0px;
-        border-color: Theme.accent;
+        border-width: root.has-focus ? (root.accent-focus ? 2px : 1px) : 0px;
+        border-color: root.accent-focus ? Theme.accent : Theme.line;
         border-radius: Theme.r-xs;
     }
     TouchArea {
@@ -1161,7 +1162,7 @@ export component CanvasPane inherits Rectangle {
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "移除蒙版"; danger: true; clicked => { root.layer-mask-removed(); } }
                             }
                             for param[i] in root.adjustment-params: PropertySlider {
-                                label: I18n.t(param.label); value: param.value; minimum: param.minimum; maximum: param.maximum; step: 0.01; precision: 2;
+                                label: root.adjustment-kind == 2 ? "曝光" : I18n.t(param.label); value: param.value; minimum: param.minimum; maximum: param.maximum; step: 0.01; precision: 2;
                                 default-value: root.adjustment-kind == 3 && i == 2 ? 1 : root.adjustment-kind == 3 && (i == 1 || i == 4) ? 1 : 0;
                                 unit: root.adjustment-kind == 2 ? "档" : "";
                                 changed(value) => { root.adjustment-param-changed(i, value); }
@@ -1454,6 +1455,7 @@ export component CanvasPane inherits Rectangle {
                                             size: 16px; tint: Theme.fg-muted;
                                         }
                                         CanvasChipAction {
+                                            accent-focus: layer.active && !layer.mask-paint;
                                             clicked => {
                                                 root.layer-picked(i);
                                                 if (layer.kind == 2) { root.inspector-tab = 0; }
@@ -1499,8 +1501,8 @@ export component CanvasPane inherits Rectangle {
                                             width: parent.width; height: parent.height;
                                             border-radius: Theme.r-xs;
                                             background: Theme.well;
-                                            border-width: layer.mask-paint ? 2px : 1px;
-                                            border-color: layer.mask-paint ? Theme.accent : Theme.line;
+                                            border-width: layer.active && layer.mask-paint ? 2px : 1px;
+                                            border-color: layer.active && layer.mask-paint ? Theme.accent : Theme.line;
                                             opacity: layer.mask-enabled ? 1 : 0.45;
                                             if CanvasThumbs.mask-images.length > i
                                                 && CanvasThumbs.mask-images[i].width > 0: Image {
@@ -1513,6 +1515,7 @@ export component CanvasPane inherits Rectangle {
                                                 glyph: Glyph.mask; size: 12px; tint: Theme.fg-muted;
                                             }
                                             CanvasChipAction {
+                                                accent-focus: layer.active && layer.mask-paint;
                                                 clicked => { root.layer-mask-paint-toggled(i); }
                                             }
                                         }
