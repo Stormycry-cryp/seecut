@@ -1546,8 +1546,42 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             "Canvas keyboard focus did not resume after closing workflow sheets".into(),
         ));
     }
+    editor.set_canvas_has_selection(false);
+    editor.set_canvas_active_layer(0);
+    let layer_deletes = Rc::new(RefCell::new(Vec::<i32>::new()));
+    let layer_delete_log = layer_deletes.clone();
+    editor.on_canvas_layer_deleted(move |index| layer_delete_log.borrow_mut().push(index));
+    for key in [
+        slint::platform::Key::Backspace,
+        slint::platform::Key::Delete,
+    ] {
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: key.into() });
+        app.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: key.into() });
+    }
+    if layer_deletes.borrow().as_slice() != [0, 0] {
+        return Err(slint::PlatformError::Other(
+            "Backspace and Delete did not target the active canvas layer".into(),
+        ));
+    }
+    state.set_canvas_gallery_open(true);
+    settle(&app)?;
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Backspace.into(),
+        });
+    app.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Backspace.into(),
+        });
+    if layer_deletes.borrow().as_slice() != [0, 0] {
+        return Err(slint::PlatformError::Other(
+            "Canvas layer shortcut remained active in the project gallery".into(),
+        ));
+    }
     std::fs::write(directory.join("keyboard-validation.json"),
-        r#"{"status":"passed","backend":"Slint software fixture","checks":["Exit confirmation dismisses canvas menu","Escape cancels exit and preserves underlying picker","Canvas export, clip export and handoff isolate Delete, undo and select-all","Escape closes each modal and preserves canvas selection","Nested workflow sheets close from the top and canvas keyboard actions resume afterward"]}"#
+        r#"{"status":"passed","backend":"Slint software fixture","checks":["Exit confirmation dismisses canvas menu","Escape cancels exit and preserves underlying picker","Canvas export, clip export and handoff isolate Delete, undo and select-all","Escape closes each modal and preserves canvas selection","Nested workflow sheets close from the top and canvas keyboard actions resume afterward","Backspace and Delete target the active layer when no pixel selection exists","Project gallery blocks canvas layer shortcuts"]}"#
     ).map_err(|error| slint::PlatformError::Other(error.to_string()))?;
     state.set_page(5);
     state.set_personal_folder_filter(0);

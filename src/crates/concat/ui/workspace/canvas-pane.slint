@@ -673,6 +673,8 @@ export component CanvasPane inherits Rectangle {
     in property <int> pane-seat;
     in property <bool> pane-removable: true;
     in property <bool> standalone;
+    property <bool> show-context-bar: root.has-document &&
+        (root.tool == 3 || root.tool == 4 || root.tool == 5 || root.tool == 6 || (!root.standalone && root.tool == 0));
     callback pane-removed();
 
     property <angle> object-turn: root.object-angle * 1deg;
@@ -686,6 +688,7 @@ export component CanvasPane inherits Rectangle {
     }
 
     Pane {
+        border-radius: root.standalone ? 0px : Theme.r-lg;
         width: parent.width; height: parent.height;
         if !root.standalone: PaneHeader {
             title: I18n.t("Canvas");
@@ -728,7 +731,7 @@ export component CanvasPane inherits Rectangle {
             }
         }
 
-        if root.has-document && (root.tool == 0 || root.tool == 3 || root.tool == 4 || root.tool == 5 || root.tool == 6): Rectangle {
+        if root.show-context-bar: Rectangle {
             height: 40px; background: Theme.panel;
             HorizontalLayout {
                 padding-left: 10px; padding-right: 10px; spacing: 8px; alignment: center;
@@ -809,8 +812,7 @@ export component CanvasPane inherits Rectangle {
 
         HorizontalLayout {
             height: Math.max(0px, root.height - (!root.standalone ? 44px : 0px)
-                - (root.has-document && (root.tool == 0 || root.tool == 3 || root.tool == 4 || root.tool == 5 || root.tool == 6) ? 40px : 0px)
-                - 28px);
+                - (root.show-context-bar ? 40px : 0px) - 28px);
             Rectangle {
                 width: 48px; background: Theme.panel;
                 VerticalLayout {

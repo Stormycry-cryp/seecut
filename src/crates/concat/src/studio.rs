@@ -4825,28 +4825,34 @@ impl Studio {
     }
 
     /// Finishes a canvas transform boundary, then resumes its original action.
-    /// Returns true only when that action completed a window close.
-    pub fn resolve_canvas_transform_boundary(&mut self, choice: i32) -> bool {
+    /// Returns actions that the window or navigation layer must complete.
+    pub(crate) fn resolve_canvas_transform_boundary(
+        &mut self,
+        choice: i32,
+    ) -> Option<crate::panes::canvas::CanvasBoundaryAction> {
         let mut canvas = std::mem::take(&mut self.canvas);
         let action = canvas.resolve_transform_boundary(choice);
         if action.is_some() {
             canvas.render(self);
         }
         self.canvas = canvas;
-        let Some(action) = action else {
-            return false;
-        };
+        let action = action?;
         match action {
             crate::panes::canvas::CanvasBoundaryAction::Message(message) => {
                 self.handle(crate::panes::Msg::Canvas(message));
-                false
+                None
             }
             crate::panes::canvas::CanvasBoundaryAction::SelectObject(id) => {
                 self.canvas.select_object_after_transform(id);
-                false
+                None
             }
-            crate::panes::canvas::CanvasBoundaryAction::GestureStartExpired => false,
-            crate::panes::canvas::CanvasBoundaryAction::WindowClose => self.request_window_close(),
+            crate::panes::canvas::CanvasBoundaryAction::GestureStartExpired => None,
+            crate::panes::canvas::CanvasBoundaryAction::WindowClose => self
+                .request_window_close()
+                .then_some(crate::panes::canvas::CanvasBoundaryAction::WindowClose),
+            crate::panes::canvas::CanvasBoundaryAction::NavigatePage(target) => Some(
+                crate::panes::canvas::CanvasBoundaryAction::NavigatePage(target),
+            ),
         }
     }
 

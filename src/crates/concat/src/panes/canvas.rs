@@ -443,6 +443,7 @@ pub(crate) enum CanvasBoundaryAction {
     SelectObject(Option<concat_canvas::LayerId>),
     GestureStartExpired,
     WindowClose,
+    NavigatePage(i32),
 }
 
 const CANVAS_HANDOFF_CANCEL_ACTION: &str = "handoff-cancel";
@@ -773,6 +774,19 @@ impl CanvasPane {
             return false;
         }
         self.defer_transform_boundary(CanvasBoundaryAction::WindowClose, "关闭窗口");
+        true
+    }
+
+    pub fn defer_navigation_for_transform(&mut self, target: i32) -> bool {
+        if self.transform_session.is_none() {
+            return false;
+        }
+        let label = if target == 6 {
+            "返回画布项目"
+        } else {
+            "切换工作区"
+        };
+        self.defer_transform_boundary(CanvasBoundaryAction::NavigatePage(target), label);
         true
     }
 
@@ -6484,6 +6498,64 @@ mod tests {
         assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), before);
         assert_eq!(pane.undo_stack.len(), history_len);
         assert!(!pane.transform_confirmation_open());
+    }
+
+    #[test]
+    fn leaving_canvas_waits_for_transform_choice_and_resumes_one_destination() {
+        let mut pane = pending_transform_pane();
+        let before = pane
+            .pending_history
+            .as_ref()
+            .unwrap()
+            .0
+            .document
+            .to_json()
+            .unwrap();
+        let preview = pane.document.as_ref().unwrap().to_json().unwrap();
+        let history_len = pane.undo_stack.len();
+
+        assert!(pane.defer_navigation_for_transform(6));
+        assert_eq!(pane.transform_confirmation_label(), "返回画布项目");
+        assert!(pane.resolve_transform_boundary(0).is_none());
+        assert!(pane.transform_session.is_some());
+        assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), preview);
+        assert_eq!(pane.undo_stack.len(), history_len);
+
+        assert!(pane.defer_navigation_for_transform(0));
+        assert_eq!(pane.transform_confirmation_label(), "切换工作区");
+        assert!(pane.defer_navigation_for_transform(6));
+        assert_eq!(pane.transform_confirmation_label(), "切换工作区");
+        assert!(matches!(
+            pane.resolve_transform_boundary(1),
+            Some(CanvasBoundaryAction::NavigatePage(0))
+        ));
+        assert!(pane.transform_session.is_none());
+        assert!(!pane.defer_navigation_for_transform(6));
+        assert_eq!(pane.undo_stack.len(), history_len + 1);
+        pane.undo();
+        assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), before);
+
+        let mut pane = pending_transform_pane();
+        let discard_before = pane
+            .pending_history
+            .as_ref()
+            .unwrap()
+            .0
+            .document
+            .to_json()
+            .unwrap();
+        let history_len = pane.undo_stack.len();
+        assert!(pane.defer_navigation_for_transform(6));
+        assert!(matches!(
+            pane.resolve_transform_boundary(2),
+            Some(CanvasBoundaryAction::NavigatePage(6))
+        ));
+        assert_eq!(
+            pane.document.as_ref().unwrap().to_json().unwrap(),
+            discard_before
+        );
+        assert_eq!(pane.undo_stack.len(), history_len);
+        assert!(!pane.defer_navigation_for_transform(0));
     }
 
     #[test]

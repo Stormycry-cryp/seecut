@@ -2085,6 +2085,14 @@ fn apply_generation_configuration(
 
 fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
     let ui = app.global::<SeeCut>();
+    if ui.get_page() == 6 && !ui.get_canvas_gallery_open() && app.invoke_canvas_leave_page(target) {
+        return;
+    }
+    navigate_unchecked(app, state, target);
+}
+
+fn navigate_unchecked(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
+    let ui = app.global::<SeeCut>();
     if target == 6 {
         ui.set_canvas_gallery_open(true);
         refresh_canvas_projects(app, state);
@@ -6848,6 +6856,7 @@ pub fn bind(app: &App) {
         "purchase"=>job(&app,&shared,"purchase".into(),request("POST","/api/orders",json!({"plan_id":id.to_string()}))),
         "order-refresh"=>job(&app,&shared,"order".into(),request("POST",format!("/api/orders/{id}/refresh"),Value::Null)),
         "navigate"=>navigate(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
+        "navigate-resume"=>navigate_unchecked(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
         "creator-mode"=>{
             if let Ok(mode) = id.parse::<i32>() {
                 ui.set_creator_mode(mode.clamp(0, 1));

@@ -64,9 +64,23 @@ export component EditorBridgeBar inherits Rectangle {
     in property <string> project-status;
     in property <int> focus-request-target;
     in property <int> focus-request-token;
+    in property <bool> focus-restore-allowed;
+    property <bool> focus-restore-pending;
     changed focus-request-token => {
-        if root.focus-request-target == 3 { root.focus-assets(); }
-        else if root.focus-request-target == 4 { root.focus-export(); }
+        if root.focus-request-target == 3 || root.focus-request-target == 4 {
+            root.focus-restore-pending = true;
+        }
+    }
+    Timer {
+        interval: 1ms;
+        running: root.focus-restore-pending;
+        triggered => {
+            root.focus-restore-pending = false;
+            if root.focus-restore-allowed {
+                if root.focus-request-target == 3 { root.focus-assets(); }
+                else if root.focus-request-target == 4 { root.focus-export(); }
+            }
+        }
     }
     height: 54px;
     callback export-clicked();

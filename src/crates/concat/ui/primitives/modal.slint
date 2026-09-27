@@ -41,8 +41,10 @@ export component Modal inherits Rectangle {
     // Keep the layer mounted until the exit finishes. Its TouchArea still
     // blocks the app underneath, and a quick reopen cancels the old exit.
     property <bool> exiting;
+    property <int> close-focus-request;
     changed open => {
         root.exiting = !root.open && !SeeCut.reduced-motion;
+        root.close-focus-request = 0;
         if root.open && root.trap-focus { first-tab-guard.focus(); }
     }
     visible: root.open || root.exiting;
@@ -174,8 +176,15 @@ export component Modal inherits Rectangle {
                             accessible-action-default => { root.closed(); }
 
                             close-focus := FocusScope {
+                                property <int> focus-request: root.close-focus-request;
+                                changed focus-request => {
+                                    if root.open && root.trap-focus && self.focus-request > 0 { self.focus(); }
+                                }
                                 enabled: root.open;
-                                focus-gained(reason) => { parent.ring = reason == FocusReason.tab-navigation; }
+                                focus-gained(reason) => {
+                                    parent.ring = reason == FocusReason.tab-navigation
+                                        || (root.trap-focus && root.close-focus-request > 0);
+                                }
                                 focus-lost(reason) => { parent.ring = false; }
                                 key-pressed(event) => {
                                     if event.text == " " || event.text == "\n" {
@@ -212,7 +221,7 @@ export component Modal inherits Rectangle {
                 enabled: root.open && root.trap-focus;
                 focus-on-click: false;
                 focus-gained(reason) => {
-                    if reason == FocusReason.tab-navigation { first-tab-guard.focus(); }
+                    if reason == FocusReason.tab-navigation { root.close-focus-request += 1; }
                 }
             }
         }

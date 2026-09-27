@@ -114,6 +114,7 @@ export component App inherits Window {
     callback canvas-new-with-paths(payload: string);
     callback canvas-handoff-current(payload: string);
     callback canvas-open-with-paths(path: string, payload: string);
+    callback canvas-leave-page(target: int) -> bool;
     callback close-clip-project();
     property <int> workspace-page: SeeCut.page;
     changed workspace-page => {
@@ -131,6 +132,7 @@ export component App inherits Window {
     property <int> focus-return;
     property <int> focus-request-target;
     property <int> focus-request-token;
+    property <bool> focus-restore-pending;
     function restore-focus() {
         if !root.workflow-modal-open && !root.sheet-open {
             if SeeCut.focus-return-claimed {
@@ -155,15 +157,27 @@ export component App inherits Window {
             root.focus-return = 0;
         }
     }
+    // Modal changes can be evaluated while AccessKit is rebuilding its tree.
+    // Move focus after that pass has returned to the event loop.
+    Timer {
+        interval: 1ms;
+        running: root.focus-restore-pending;
+        triggered => {
+            root.focus-restore-pending = false;
+            root.restore-focus();
+        }
+    }
     property <bool> handoff-keyboard-open: SeeCut.handoff-open;
     changed handoff-keyboard-open => { if root.handoff-keyboard-open { keys.focus(); Tips.close(); } }
     changed workflow-modal-open => {
-        if root.workflow-modal-open { Tips.close(); SeeCut.focus-return-claimed = false; }
-        else { root.restore-focus(); }
+        if root.workflow-modal-open {
+            root.focus-restore-pending = false;
+            Tips.close(); SeeCut.focus-return-claimed = false;
+        } else { root.focus-restore-pending = true; }
     }
     changed sheet-open => {
-        if root.sheet-open { SeeCut.focus-return-claimed = false; }
-        else { root.restore-focus(); }
+        if root.sheet-open { root.focus-restore-pending = false; SeeCut.focus-return-claimed = false; }
+        else { root.focus-restore-pending = true; }
     }
     // The parameter section remains mounted under a viewer. If its card was
     // removed while the viewer was open, retain a working keyboard target.
@@ -417,7 +431,7 @@ export component App inherits Window {
             if event.text == Key.Escape && SeeCut.template-editor-open { SeeCut.template-editor-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.template-delete-id = ""; return accept; }
             if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } return accept; }
-            if (SeeCut.page == 6 && !root.workflow-modal-open && !root.sheet-open) {
+            if (SeeCut.page == 6 && !SeeCut.canvas-gallery-open && !root.workflow-modal-open && !root.sheet-open) {
                 if (event.modifiers.control || event.modifiers.meta) {
                     let shortcut = event.text.to-lowercase();
                     if (shortcut == "z") { if event.modifiers.shift { if Editor.canvas-can-redo { Editor.canvas-redo(); } } else { if Editor.canvas-can-undo { Editor.canvas-undo(); } } return accept; }
@@ -455,7 +469,11 @@ export component App inherits Window {
                     if (event.text == Key.UpArrow) { Editor.canvas-nudge(0, -step); return accept; }
                     if (event.text == Key.DownArrow) { Editor.canvas-nudge(0, step); return accept; }
                 }
-                if ((event.text == Key.Delete || event.text == Key.Backspace) && Editor.canvas-has-selection) { Editor.canvas-delete-selection(); return accept; }
+                if (event.text == Key.Delete || event.text == Key.Backspace) {
+                    if (Editor.canvas-has-selection) { Editor.canvas-delete-selection(); return accept; }
+                    if (Editor.canvas-active-layer >= 0) { Editor.canvas-layer-deleted(Editor.canvas-active-layer); return accept; }
+                    return reject;
+                }
                 if (event.text == Key.Escape) { Editor.canvas-deselect(); return accept; }
                 return reject;
             }
@@ -591,15 +609,46 @@ export component App inherits Window {
                     height: 100%;
                     VerticalLayout {
                         width: parent.width; height: parent.height;
-                        Rectangle {
+                        canvas-header := Rectangle {
                             height: 56px; background: Theme.panel;
+                            property <int> restore-token: root.focus-request-token;
+                            property <bool> restore-pending;
+                            changed restore-token => {
+                                if root.focus-request-target == 1 || root.focus-request-target == 2 {
+                                    self.restore-pending = true;
+                                }
+                            }
+                            Timer {
+                                interval: 1ms;
+                                running: canvas-header.restore-pending;
+                                triggered => {
+                                    canvas-header.restore-pending = false;
+                                    if !root.workflow-modal-open && !root.sheet-open && SeeCut.page == 6 && !SeeCut.canvas-gallery-open {
+                                        if root.focus-request-target == 1 { canvas-open-button.take-focus(); }
+                                        else if root.focus-request-target == 2 { canvas-export-button.take-focus(); }
+                                    }
+                                }
+                            }
                             HorizontalLayout {
                                 padding-top: 12px; padding-bottom: 12px; padding-left: 16px; padding-right: 16px; spacing: 10px;
-                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-left; label: "返回画布项目"; clicked => { SeeCut.canvas-gallery-open = true; SeeCut.action("canvas-projects-refresh", ""); } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-left; label: "返回画布项目"; clicked => {
+                                    if !root.canvas-leave-page(6) {
+                                        SeeCut.canvas-gallery-open = true;
+                                        SeeCut.action("canvas-projects-refresh", "");
+                                    }
+                                } }
                                 Text { text: Editor.canvas-has-document ? Editor.canvas-name + (Editor.canvas-modified ? " · 未保存" : "") : "未打开文档"; font-size: 14px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+                                WorkspaceIcon {
+                                    width: 32px; height: 32px; side: 32px;
+                                    glyph: Editor.canvas-transforming ? Glyph.check : Glyph.fit;
+                                    label: Editor.canvas-transforming ? "完成变换" : "自由变换";
+                                    enabled: Editor.canvas-has-document;
+                                    checkable: true; checked: Editor.canvas-transforming;
+                                    clicked => { if (Editor.canvas-transforming) { Editor.canvas-transform-finish(true); } else { Editor.canvas-transform-start(); } }
+                                }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.flip-h; label: "水平翻转"; enabled: Editor.canvas-has-object; clicked => { Editor.canvas-flip(true); } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.flip-v; label: "垂直翻转"; enabled: Editor.canvas-has-object; clicked => { Editor.canvas-flip(false); } }
                                 canvas-open-button := WorkspaceIcon {
-                                    property <int> restore-token: root.focus-request-token;
-                                    changed restore-token => { if root.focus-request-target == 1 { self.take-focus(); } }
                                     width: 32px; height: 32px; side: 32px;
                                     glyph: Glyph.folder; label: "打开画布";
                                     clicked => { root.focus-return = 1; root.canvas-open-menu = !root.canvas-open-menu; }
@@ -610,8 +659,6 @@ export component App inherits Window {
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.save; label: "保存画布工程"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp(); } }
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.copy; label: "另存画布工程"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp-as(); } }
                                 canvas-export-button := AppButton {
-                                    property <int> restore-token: root.focus-request-token;
-                                    changed restore-token => { if root.focus-request-target == 2 { self.take-focus(); } }
                                     height: 32px; label: "导出"; enabled: Editor.canvas-has-document;
                                     clicked => { root.focus-return = 2; SeeCut.canvas-export-open = true; }
                                 }
@@ -632,6 +679,7 @@ export component App inherits Window {
                         project-status: root.project-status;
                         focus-request-target: root.focus-request-target;
                         focus-request-token: root.focus-request-token;
+                        focus-restore-allowed: !root.workflow-modal-open && !root.sheet-open && SeeCut.page == 0 && !root.on-start;
                         assets-clicked => { root.focus-return = 3; SeeCut.action("project-assets", ""); }
                         export-clicked => { root.focus-return = 4; root.export-clicked(); }
                     }

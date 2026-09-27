@@ -1078,6 +1078,22 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
 
     // ── the canvas ──
+    app.on_canvas_leave_page(|target: i32| {
+        let deferred = std::cell::Cell::new(false);
+        Shell::with(|shell, app| {
+            let pending = shell
+                .studio
+                .borrow_mut()
+                .canvas
+                .defer_navigation_for_transform(target);
+            deferred.set(pending);
+            if pending {
+                shell.studio.borrow_mut().refresh_art();
+                shell.studio.borrow().publish(&app, &shell.models);
+            }
+        });
+        deferred.get()
+    });
     app.on_open_canvas_path(on_window!(|state, path: SharedString| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Picked(vec![
             std::path::PathBuf::from(path.as_str()),
@@ -1384,15 +1400,22 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     editor.on_canvas_transform_resolve(|choice: i32| {
         Shell::with(|shell, app| {
-            let should_close = shell
+            let follow_up = shell
                 .studio
                 .borrow_mut()
                 .resolve_canvas_transform_boundary(choice);
             shell.studio.borrow_mut().refresh_art();
             shell.studio.borrow().publish(&app, &shell.models);
-            if should_close {
-                app.window().hide().ok();
-                slint::quit_event_loop().ok();
+            match follow_up {
+                Some(crate::panes::canvas::CanvasBoundaryAction::WindowClose) => {
+                    app.window().hide().ok();
+                    slint::quit_event_loop().ok();
+                }
+                Some(crate::panes::canvas::CanvasBoundaryAction::NavigatePage(target)) => {
+                    app.global::<SeeCut>()
+                        .invoke_action("navigate-resume".into(), target.to_string().into());
+                }
+                _ => {}
             }
         });
     });
