@@ -4810,6 +4810,9 @@ impl Studio {
     /// request, and File > Close Window. A dirty canvas opens the global
     /// confirmation sheet; a clean canvas proceeds to the clip save.
     pub fn request_window_close(&mut self) -> bool {
+        if self.canvas.defer_window_close_for_transform() {
+            return false;
+        }
         if self.exit_pending {
             return false;
         }
@@ -4819,6 +4822,26 @@ impl Studio {
             return false;
         }
         self.finish_window_close()
+    }
+
+    /// Finishes a canvas transform boundary, then resumes its original action.
+    /// Returns true only when that action completed a window close.
+    pub fn resolve_canvas_transform_boundary(&mut self, choice: i32) -> bool {
+        let Some(action) = self.canvas.resolve_transform_boundary(choice) else {
+            return false;
+        };
+        match action {
+            crate::panes::canvas::CanvasBoundaryAction::Message(message) => {
+                self.handle(crate::panes::Msg::Canvas(message));
+                false
+            }
+            crate::panes::canvas::CanvasBoundaryAction::SelectObject(id) => {
+                self.canvas.select_object_after_transform(id);
+                false
+            }
+            crate::panes::canvas::CanvasBoundaryAction::GestureStartExpired => false,
+            crate::panes::canvas::CanvasBoundaryAction::WindowClose => self.request_window_close(),
+        }
     }
 
     /// Cancels the pending window close and leaves both the canvas and the
@@ -5797,6 +5820,8 @@ impl Studio {
         editor.set_canvas_can_redo(self.canvas.can_redo());
         editor.set_canvas_modified(self.canvas.is_modified());
         editor.set_canvas_open_confirm(self.canvas.open_confirm);
+        editor.set_canvas_transform_confirm(self.canvas.transform_confirmation_open());
+        editor.set_canvas_transform_context(self.canvas.transform_confirmation_label().into());
         editor.set_canvas_exit_confirm(self.exit_pending);
         editor.set_canvas_exit_error(self.exit_error.as_str().into());
         editor.set_canvas_name(self.canvas.name.as_str().into());

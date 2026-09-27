@@ -36,6 +36,7 @@ export component NumberField inherits Rectangle {
     in property <bool> keyframe;
     in-out property <bool> keyframed;
     in property <bool> enabled: true;
+    in property <bool> block-editor-shortcuts: false;
 
     callback changed(value: float);
     callback edit-started();
@@ -163,6 +164,12 @@ export component NumberField inherits Rectangle {
                 if (event.text == Key.End) {
                     self.set-selection-offsets(1000000000, 1000000000);
                     return EventResult.accept;
+                }
+                // The text input handles its own undo, redo and selection.
+                // Keep editor commands it does not handle inside this field.
+                if (root.block-editor-shortcuts && (event.modifiers.control || event.modifiers.meta)) {
+                    let key = event.text.to-lowercase();
+                    if (key == "d" || key == "o" || key == "s" || key == "t") { return EventResult.accept; }
                 }
                 return EventResult.reject;
             }

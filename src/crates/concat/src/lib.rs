@@ -244,6 +244,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 || !cloud.get_template_delete_id().is_empty()
                 || cloud.get_template_editor_open()
                 || editor.get_canvas_open_confirm()
+                || editor.get_canvas_transform_confirm()
                 || editor.get_canvas_exit_confirm()
             {
                 return;
@@ -1381,6 +1382,20 @@ pub fn run() -> Result<(), slint::PlatformError> {
             crate::panes::canvas::CanvasMsg::TransformFinish(commit),
         ));
     }));
+    editor.on_canvas_transform_resolve(|choice: i32| {
+        Shell::with(|shell, app| {
+            let should_close = shell
+                .studio
+                .borrow_mut()
+                .resolve_canvas_transform_boundary(choice);
+            shell.studio.borrow_mut().refresh_art();
+            shell.studio.borrow().publish(&app, &shell.models);
+            if should_close {
+                app.window().hide().ok();
+                slint::quit_event_loop().ok();
+            }
+        });
+    });
     editor.on_canvas_nudge(on_window!(|state, dx: i32, dy: i32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::Nudge(dx, dy)));
     }));

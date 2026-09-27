@@ -192,6 +192,8 @@ export component IconButton inherits Rectangle {
     /// accessible name; also what a tooltip would show
     in property <string> label;
     in property <bool> checked;
+    /// Set for controls whose checked state represents a persistent choice.
+    in property <bool> checkable;
     in property <bool> enabled: true;
     /// Destructive action: the button states in red instead of the neutral
     /// hover, so a delete announces itself before it is pressed rather than
@@ -210,6 +212,15 @@ export component IconButton inherits Rectangle {
 
     callback clicked();
     public function take-focus() { fs.focus(); }
+    function activate() { if root.enabled { root.clicked(); } }
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.checked;
+    accessible-action-default => { if root.enabled { root.ring = false; fs.focus(); root.activate(); } }
+    forward-focus: fs;
 
     out property <bool> lit: touch.has-hover && root.enabled;
     // Selected tools share the brand accent; disabled glyphs remain readable.
@@ -249,7 +260,7 @@ export component IconButton inherits Rectangle {
         }
         key-pressed(event) => {
             if (event.text == " " || event.text == "\n") {
-                root.clicked();
+                root.activate();
                 return EventResult.accept;
             }
             return EventResult.reject;
@@ -282,6 +293,7 @@ export component IconButton inherits Rectangle {
             glyph: root.glyph;
             size: root.icon-size;
             tint: root.tint;
+            accessible-role: none;
         }
 
         // Given the chip's whole box, because an alignment is only ever
@@ -299,14 +311,16 @@ export component IconButton inherits Rectangle {
             font-size: Theme.fs;
             horizontal-alignment: center;
             vertical-alignment: center;
+            accessible-role: none;
         }
 
         touch := TouchArea {
             enabled: root.enabled;
             mouse-cursor: pointer;
             clicked => {
+                root.ring = false;
                 fs.focus();
-                root.clicked();
+                root.activate();
             }
         }
 

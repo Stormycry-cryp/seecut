@@ -186,6 +186,7 @@ component Header inherits Rectangle {
                     glyph: root.track.locked ? Glyph.lock : Glyph.unlock;
                     label: root.track.locked ? I18n.t("Unlock lane") : I18n.t("Lock lane");
                     icon-size: 12px;
+                    checkable: true;
                     checked: root.track.locked;
                     clicked => {
                         root.flag-changed(root.track.visible, root.track.muted,
@@ -203,6 +204,7 @@ component Header inherits Rectangle {
                     glyph: root.track.visible ? Glyph.eye : Glyph.eye-off;
                     label: root.track.visible ? I18n.t("Hide lane") : I18n.t("Show lane");
                     icon-size: 12px;
+                    checkable: true;
                     checked: !root.track.visible;
                     clicked => {
                         root.flag-changed(!root.track.visible, root.track.muted,
@@ -217,6 +219,7 @@ component Header inherits Rectangle {
                     glyph: root.track.muted ? Glyph.volume-off : Glyph.volume;
                     label: root.track.muted ? I18n.t("Unmute lane") : I18n.t("Mute lane");
                     icon-size: 12px;
+                    checkable: true;
                     checked: root.track.muted;
                     clicked => {
                         root.flag-changed(root.track.visible, !root.track.muted,

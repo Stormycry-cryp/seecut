@@ -124,7 +124,7 @@ export component App inherits Window {
         SeeCut.personal-dialog = 0;
         SeeCut.template-delete-id = "";
     }
-    property <bool> workflow-modal-open: SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || Editor.canvas-open-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
+    property <bool> workflow-modal-open: SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
     // A small set of stable opening controls can receive focus again after
     // their sheet closes. Other workflows use the window keyboard scope.
     // 1 canvas open, 2 canvas export, 3 clip assets, 4 clip export, 5 settings.
@@ -404,6 +404,7 @@ export component App inherits Window {
         // its own letters and spaces before a key can walk up to this
         // scope, which is what keeps typing a title from cutting a clip.
         key-pressed(event) => {
+            if event.text == Key.Escape && Editor.canvas-transform-confirm { Editor.canvas-transform-resolve(0); return accept; }
             if event.text == Key.Escape && Editor.canvas-exit-confirm { Editor.canvas-exit-cancel(); return accept; }
             if event.text == Key.Escape && root.canvas-open-menu { root.canvas-open-menu = false; return accept; }
             if event.text == Key.Escape && Editor.canvas-open-confirm { Editor.canvas-open-cancel(); return accept; }
@@ -422,19 +423,21 @@ export component App inherits Window {
             if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } return accept; }
             if (SeeCut.page == 6 && !root.workflow-modal-open) {
                 if (event.modifiers.control || event.modifiers.meta) {
-                    if (event.text == "z") { if event.modifiers.shift { if Editor.canvas-can-redo { Editor.canvas-redo(); } } else { if Editor.canvas-can-undo { Editor.canvas-undo(); } } return accept; }
-                    if (event.text == "a" && Editor.canvas-has-document) { Editor.canvas-select-all(); return accept; }
-                    if (event.text == "d") { Editor.canvas-deselect(); return accept; }
-                    if (event.text == "o") { Editor.canvas-open(); return accept; }
-                    if (event.modifiers.shift && event.text == "s" && Editor.canvas-has-document) { Editor.canvas-save-comp-as(); return accept; }
-                    if (event.text == "s" && Editor.canvas-has-document) { Editor.canvas-save-comp(); return accept; }
-                    if (event.text == "t" && Editor.canvas-has-object) {
+                    let shortcut = event.text.to-lowercase();
+                    if (shortcut == "z") { if event.modifiers.shift { if Editor.canvas-can-redo { Editor.canvas-redo(); } } else { if Editor.canvas-can-undo { Editor.canvas-undo(); } } return accept; }
+                    if (shortcut == "a" && Editor.canvas-has-document) { Editor.canvas-select-all(); return accept; }
+                    if (shortcut == "d") { Editor.canvas-deselect(); return accept; }
+                    if (shortcut == "o") { Editor.canvas-open(); return accept; }
+                    if (event.modifiers.shift && shortcut == "s" && Editor.canvas-has-document) { Editor.canvas-save-comp-as(); return accept; }
+                    if (shortcut == "s" && Editor.canvas-has-document) { Editor.canvas-save-comp(); return accept; }
+                    if (shortcut == "t" && Editor.canvas-has-object) {
                         Editor.canvas-tool-changed(0);
                         Editor.canvas-transform-start();
                         return accept;
                     }
                 }
                 if (event.text == Key.Space && Editor.canvas-has-document) {
+                    if (Editor.canvas-transforming) { return accept; }
                     if (!root.canvas-space-hand) {
                         root.canvas-tool-before-space = Editor.canvas-tool;
                         root.canvas-space-hand = true;
@@ -616,7 +619,7 @@ export component App inherits Window {
                                     height: 32px; label: "导出"; enabled: Editor.canvas-has-document;
                                     clicked => { root.focus-return = 2; SeeCut.canvas-export-open = true; }
                                 }
-                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.sliders; label: Editor.canvas-sidebar-open ? "收起图层与属性" : "展开图层与属性"; checked: Editor.canvas-sidebar-open; clicked => { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; } }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.sliders; label: Editor.canvas-sidebar-open ? "收起图层与属性" : "展开图层与属性"; checkable: true; checked: Editor.canvas-sidebar-open; clicked => { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; } }
                             }
                         }
                         WorkflowFeedback { }
@@ -974,6 +977,39 @@ export component App inherits Window {
         data: root.toast;
     }
     WorkflowToast { width: root.width; height: root.height; }
+    Modal {
+        open: Editor.canvas-transform-confirm;
+        title: "结束自由变换？";
+        glyph: Glyph.fit;
+        surface-width: Math.min(440px, root.width - 32px);
+        closed => { Editor.canvas-transform-resolve(0); }
+        changed open => {
+            if Editor.canvas-transform-confirm {
+                root.canvas-open-menu = false;
+                transform-keys.focus();
+            }
+        }
+        transform-keys := FocusScope {
+            enabled: Editor.canvas-transform-confirm;
+            focus-on-tab-navigation: false;
+            key-pressed(event) => {
+                if event.text == Key.Escape { Editor.canvas-transform-resolve(0); return accept; }
+                return reject;
+            }
+            VerticalLayout {
+                padding: 20px; spacing: 16px;
+                Text {
+                    text: Editor.canvas-transform-context + "前，先处理当前变换。";
+                    color: Theme.fg; wrap: word-wrap;
+                }
+                HorizontalLayout { spacing: 8px; alignment: end;
+                    AppButton { label: "返回编辑"; clicked => { Editor.canvas-transform-resolve(0); } }
+                    AppButton { label: "放弃并继续"; danger: true; clicked => { Editor.canvas-transform-resolve(2); } }
+                    AppButton { label: "应用并继续"; primary: true; clicked => { Editor.canvas-transform-resolve(1); } }
+                }
+            }
+        }
+    }
     Modal {
         open: Editor.canvas-open-confirm; title: "保存画布修改？"; glyph: Glyph.save;
         surface-width: Math.min(480px, root.width - 32px);

@@ -84,6 +84,7 @@ export component StartScreen inherits Rectangle {
             WorkspaceIcon {
                 glyph: Glyph.filter;
                 label: SeeCut.clip-project-sort == 0 ? "按最近更新排序" : "按名称排序";
+                checkable: true;
                 checked: SeeCut.clip-project-sort == 1;
                 clicked => {
                     SeeCut.clip-project-sort = Math.mod(SeeCut.clip-project-sort + 1, 2);
@@ -93,6 +94,7 @@ export component StartScreen inherits Rectangle {
             WorkspaceIcon {
                 glyph: Glyph.rows;
                 label: SeeCut.clip-project-view == 1 ? "网格视图" : "列表视图";
+                checkable: true;
                 checked: root.list-view;
                 clicked => {
                     SeeCut.clip-project-view = root.list-view ? 0 : 1;

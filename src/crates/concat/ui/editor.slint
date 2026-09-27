@@ -239,6 +239,8 @@ export global Editor {
     in-out property <bool> canvas-can-redo;
     in-out property <bool> canvas-modified;
     in-out property <bool> canvas-open-confirm;
+    in-out property <bool> canvas-transform-confirm;
+    in-out property <string> canvas-transform-context;
     in-out property <bool> canvas-exit-confirm;
     in-out property <string> canvas-exit-error;
     in-out property <bool> canvas-sidebar-open: true;
@@ -338,6 +340,8 @@ export global Editor {
     callback canvas-object-release(commit: bool);
     callback canvas-transform-start();
     callback canvas-transform-finish(commit: bool);
+    /// 0 returns to editing, 1 applies then continues, 2 discards then continues.
+    callback canvas-transform-resolve(choice: int);
     callback canvas-nudge(dx: int, dy: int);
     callback canvas-flip(horizontal: bool);
     callback canvas-transform-set(index: int, value: float);

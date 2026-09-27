@@ -100,6 +100,7 @@ export component TimelineTray inherits Rectangle {
             glyph: Glyph.pointer;
             label: I18n.t("Select (A or V)");
             icon-size: 16px;
+            checkable: true;
             checked: root.tool == TimelineTool.select;
             clicked => { root.tool-changed(TimelineTool.select); }
         }
@@ -107,6 +108,7 @@ export component TimelineTray inherits Rectangle {
             glyph: Glyph.razor;
             label: I18n.t("Razor (B)");
             icon-size: 16px;
+            checkable: true;
             checked: root.tool == TimelineTool.razor;
             clicked => { root.tool-changed(TimelineTool.razor); }
         }
@@ -158,6 +160,7 @@ export component TimelineTray inherits Rectangle {
             glyph: Glyph.hand;
             label: I18n.t("Pan tool");
             icon-size: 16px;
+            checkable: true;
             checked: root.pan-mode;
             clicked => { root.pan-changed(!root.pan-mode); }
         }
@@ -168,6 +171,7 @@ export component TimelineTray inherits Rectangle {
             glyph: Glyph.magnet;
             label: I18n.t("Snap to edges");
             icon-size: 16px;
+            checkable: true;
             checked: root.snap;
             clicked => { root.snap-changed(!root.snap); }
         }

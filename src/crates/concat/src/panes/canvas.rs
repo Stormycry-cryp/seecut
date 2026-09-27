@@ -83,6 +83,14 @@ struct CanvasSaveData {
     name: String,
 }
 
+#[derive(PartialEq, Eq)]
+struct AutoSaveInFlight {
+    generation: u64,
+    path: PathBuf,
+    revision: u64,
+    sequence: u64,
+}
+
 impl CanvasSnapshot {
     fn same_state(&self, other: &Self) -> bool {
         self.document == other.document
@@ -430,6 +438,33 @@ pub enum CanvasMsg {
     OpenSave,
 }
 
+pub(crate) enum CanvasBoundaryAction {
+    Message(CanvasMsg),
+    SelectObject(Option<concat_canvas::LayerId>),
+    GestureStartExpired,
+    WindowClose,
+}
+
+const CANVAS_HANDOFF_CANCEL_ACTION: &str = "handoff-cancel";
+
+impl CanvasBoundaryAction {
+    fn is_canvas_handoff(&self) -> bool {
+        matches!(
+            self,
+            Self::Message(
+                CanvasMsg::HandoffImport(..)
+                    | CanvasMsg::NewAndImport(..)
+                    | CanvasMsg::OpenAndImport(..)
+            )
+        )
+    }
+}
+
+struct PendingTransformBoundary {
+    action: CanvasBoundaryAction,
+    label: &'static str,
+}
+
 /// The canvas pane's state.
 pub struct CanvasPane {
     /// The composed document, as the pane shows it.
@@ -484,6 +519,7 @@ pub struct CanvasPane {
     parameter_gesture: Option<ParameterGesture>,
     object_drag: Option<ObjectDrag>,
     transform_session: Option<concat_canvas::LayerId>,
+    pending_transform_boundary: Option<PendingTransformBoundary>,
     content_bounds: HashMap<PixelId, Option<(f32, f32, f32, f32)>>,
     pub object_view: Option<(f64, f64, f64, f64, f64)>,
     pub object_doc: Option<(f32, f32, f32, f32, f32, bool, bool)>,
@@ -519,11 +555,17 @@ pub struct CanvasPane {
     /// to say: a mode without a mask under it paints the pixels, so the
     /// flag can never strand a stroke.
     pub paint_mask: bool,
-    /// Monotonic document revision and the revision last saved or opened.
+    /// Current history state and the state last saved or opened.
     revision: u64,
     saved_revision: u64,
+    /// Never rewinds when undo restores an older history state.
+    revision_clock: u64,
     document_generation: u64,
-    autosave_inflight: Option<u64>,
+    autosave_inflight: Option<AutoSaveInFlight>,
+    /// A timer expired while a live edit still owned its history transaction.
+    autosave_pending: bool,
+    #[cfg(test)]
+    autosave_test_completion: Option<std::sync::mpsc::Sender<Result<bool, String>>>,
     /// A requested image/project held while the discard dialog is visible.
     pending_open: Option<PathBuf>,
     pending_handoff_paths: Option<Vec<CanvasImport>>,
@@ -574,6 +616,7 @@ impl Default for CanvasPane {
             parameter_gesture: None,
             object_drag: None,
             transform_session: None,
+            pending_transform_boundary: None,
             content_bounds: HashMap::new(),
             object_view: None,
             object_doc: None,
@@ -592,8 +635,12 @@ impl Default for CanvasPane {
             paint_mask: false,
             revision: 1,
             saved_revision: 1,
+            revision_clock: 1,
             document_generation: 1,
             autosave_inflight: None,
+            autosave_pending: false,
+            #[cfg(test)]
+            autosave_test_completion: None,
             pending_open: None,
             pending_handoff_paths: None,
             open_confirm: false,
@@ -606,10 +653,155 @@ impl Default for CanvasPane {
 }
 
 impl CanvasPane {
+    fn transform_boundary_label(&mut self, msg: &CanvasMsg) -> Option<&'static str> {
+        let target = self.transform_session?;
+        match msg {
+            CanvasMsg::Tool(tool) => {
+                let next = ((*tool).max(0) as usize).min(6);
+                (next != self.tool).then_some("切换工具")
+            }
+            CanvasMsg::LayerPick(index) => self
+                .rows()
+                .get((*index).max(0) as usize)
+                .map(|(node, _)| node.id())
+                .filter(|id| *id != target)
+                .map(|_| "切换图层"),
+            CanvasMsg::ObjectPress(x, y) => {
+                let picked = if self.handle_at(*x, *y).is_some() {
+                    self.active
+                } else {
+                    self.hit_image(*x, *y)
+                };
+                (picked != Some(target)).then_some("切换对象")
+            }
+            CanvasMsg::Picked(paths) if !paths.is_empty() => Some("打开其他画布"),
+            CanvasMsg::New(..) | CanvasMsg::NewAndImport(..) => Some("新建画布"),
+            CanvasMsg::OpenAndImport(..) | CanvasMsg::OpenDiscard | CanvasMsg::OpenSave => {
+                Some("打开其他画布")
+            }
+            CanvasMsg::SaveComp => Some("保存画布"),
+            CanvasMsg::SaveCompAs => Some("另存画布"),
+            CanvasMsg::ExportPng | CanvasMsg::ExportLibrary => Some("导出画布"),
+            CanvasMsg::ImportLayers(..)
+            | CanvasMsg::HandoffImport(..)
+            | CanvasMsg::BrushPress { .. }
+            | CanvasMsg::FillSelection
+            | CanvasMsg::DeleteSelection
+            | CanvasMsg::LayerToggleVisibility(..)
+            | CanvasMsg::LayerOpacity(..)
+            | CanvasMsg::LayerBlend(..)
+            | CanvasMsg::LayerRename(..)
+            | CanvasMsg::LayerDuplicate(..)
+            | CanvasMsg::ParameterBeginOpacity(..)
+            | CanvasMsg::ParameterBeginAdjustment(..)
+            | CanvasMsg::LayerAdd
+            | CanvasMsg::LayerAddGroup
+            | CanvasMsg::LayerDelete(..)
+            | CanvasMsg::LayerMove(..)
+            | CanvasMsg::LayerDrop(..)
+            | CanvasMsg::LayerMaskAdd
+            | CanvasMsg::LayerMaskRemove
+            | CanvasMsg::LayerMaskToggle
+            | CanvasMsg::LayerMaskPaint(..)
+            | CanvasMsg::GradientColor(..)
+            | CanvasMsg::AdjustmentAdd(..)
+            | CanvasMsg::AdjustmentParam(..)
+            | CanvasMsg::CurveSet(..)
+            | CanvasMsg::CurveAdd(..)
+            | CanvasMsg::CurveRemove(..) => Some("继续编辑画布"),
+            _ => None,
+        }
+    }
+
+    fn defer_transform_boundary(&mut self, action: CanvasBoundaryAction, label: &'static str) {
+        if self.pending_transform_boundary.is_none() {
+            self.pending_transform_boundary = Some(PendingTransformBoundary { action, label });
+        }
+    }
+
+    fn route_transform_boundary(&mut self, msg: CanvasMsg) -> Option<CanvasMsg> {
+        if let Some(label) = self.transform_boundary_label(&msg) {
+            let action = match msg {
+                CanvasMsg::ObjectPress(x, y) => {
+                    let picked = if self.handle_at(x, y).is_some() {
+                        self.active
+                    } else {
+                        self.hit_image(x, y)
+                    };
+                    CanvasBoundaryAction::SelectObject(picked)
+                }
+                CanvasMsg::BrushPress { .. }
+                | CanvasMsg::ParameterBeginOpacity(..)
+                | CanvasMsg::ParameterBeginAdjustment(..) => {
+                    CanvasBoundaryAction::GestureStartExpired
+                }
+                other => CanvasBoundaryAction::Message(other),
+            };
+            self.defer_transform_boundary(action, label);
+            None
+        } else {
+            Some(msg)
+        }
+    }
+
+    pub(crate) fn select_object_after_transform(&mut self, id: Option<concat_canvas::LayerId>) {
+        self.active = id.filter(|id| {
+            self.document
+                .as_ref()
+                .is_some_and(|doc| doc.find(*id).is_some())
+        });
+        self.paint_mask = false;
+        self.layer = self
+            .active
+            .and_then(|id| self.document.as_ref()?.find(id))
+            .and_then(node_image_pixels);
+        self.sync_view();
+    }
+
+    pub fn transform_confirmation_open(&self) -> bool {
+        self.pending_transform_boundary.is_some()
+    }
+
+    pub fn transform_confirmation_label(&self) -> &'static str {
+        self.pending_transform_boundary
+            .as_ref()
+            .map_or("", |pending| pending.label)
+    }
+
+    pub fn defer_window_close_for_transform(&mut self) -> bool {
+        if self.transform_session.is_none() {
+            return false;
+        }
+        self.defer_transform_boundary(CanvasBoundaryAction::WindowClose, "关闭窗口");
+        true
+    }
+
+    /// 0 returns to editing, 1 applies the transform, 2 discards it.
+    pub(crate) fn resolve_transform_boundary(
+        &mut self,
+        choice: i32,
+    ) -> Option<CanvasBoundaryAction> {
+        let pending = self.pending_transform_boundary.take()?;
+        match choice {
+            1 => self.transform_finish(true),
+            2 => self.transform_finish(false),
+            _ => {
+                if pending.action.is_canvas_handoff() {
+                    cancel_canvas_handoff();
+                }
+                return None;
+            }
+        }
+        Some(pending.action)
+    }
+
     /// Applies one message and records every document or pixel mutation in
     /// the same ordered history. Pointer gestures own their transaction from
     /// press through release; immediate commands are wrapped here.
     pub fn update(&mut self, msg: CanvasMsg, studio: &mut Studio) {
+        let Some(msg) = self.route_transform_boundary(msg) else {
+            return;
+        };
         let previous_revision = self.revision;
         let history = match &msg {
             CanvasMsg::FillSelection => Some(0),
@@ -643,19 +835,11 @@ impl CanvasPane {
         if history.is_some() {
             self.commit_history();
         }
+        if let Err(error) = self.flush_pending_auto_save() {
+            studio.notify(&format!("画布自动保存失败：{error}"), true);
+        }
         if self.revision != previous_revision && self.is_modified() {
-            let revision = self.revision;
-            slint::Timer::single_shot(std::time::Duration::from_millis(900), move || {
-                crate::host::Shell::with(|shell, _app| {
-                    let mut studio = shell.studio.borrow_mut();
-                    if studio.canvas.revision == revision
-                        && studio.canvas.is_modified()
-                        && let Err(error) = studio.canvas.start_auto_save()
-                    {
-                        studio.notify(&format!("画布自动保存失败：{error}"), true);
-                    }
-                });
-            });
+            self.schedule_auto_save(900);
         }
     }
 
@@ -1234,11 +1418,15 @@ impl CanvasPane {
     /// brush with its erasing bit on, so the settings stay shared.
     pub fn set_tool(&mut self, tool: i32) {
         let next = (tool.max(0) as usize).min(6);
+        if self.transform_session.is_some() && next != self.tool {
+            self.defer_transform_boundary(
+                CanvasBoundaryAction::Message(CanvasMsg::Tool(next as i32)),
+                "切换工具",
+            );
+            return;
+        }
         if next != self.tool && self.object_drag.is_some() {
             self.object_release(false);
-        }
-        if self.transform_session.is_some() && next != 0 && next != 1 {
-            self.transform_finish(true);
         }
         self.tool = next;
         self.brush.erasing = self.tool == 4;
@@ -1737,6 +1925,7 @@ impl CanvasPane {
         if self.transform_session.take().is_none() {
             return;
         }
+        self.pending_transform_boundary = None;
         self.object_drag = None;
         if commit {
             self.commit_history();
@@ -1887,6 +2076,15 @@ impl CanvasPane {
         self.commit_history();
     }
 
+    fn allocate_revision(&mut self) -> u64 {
+        self.revision_clock = self
+            .revision_clock
+            .max(self.revision)
+            .checked_add(1)
+            .expect("canvas history revision exhausted");
+        self.revision_clock
+    }
+
     fn commit_history(&mut self) {
         let Some((before, coalesce_kind)) = self.pending_history.take() else {
             return;
@@ -1897,12 +2095,17 @@ impl CanvasPane {
         if before.same_state(&after) {
             return;
         }
-        self.revision = self.revision.wrapping_add(1).max(1);
+        self.revision = self.allocate_revision();
         after.revision = self.revision;
         if coalesce_kind != 0
             && let Some(last) = self.undo_stack.last_mut()
             && last.coalesce_kind == coalesce_kind
             && last.after.same_state(&before)
+            && last.after.revision != self.saved_revision
+            && !self
+                .autosave_inflight
+                .as_ref()
+                .is_some_and(|save| save.revision == last.after.revision)
             && last.before.store.same_versions(&before.store)
         {
             last.after = after;
@@ -1958,6 +2161,7 @@ impl CanvasPane {
         self.parameter_gesture = None;
         self.object_drag = None;
         self.transform_session = None;
+        self.pending_transform_boundary = None;
         self.thumbnail_cache.clear();
         self.content_bounds.clear();
         self.pixel_revisions.clear();
@@ -3119,6 +3323,9 @@ impl CanvasPane {
     /// dialog. The GPU path reads its own texture back; the CPU path
     /// composites from the store.
     fn export_png(&mut self, studio: &mut Studio, to_library: bool) {
+        if self.transform_session.is_some() {
+            return;
+        }
         let Some(document) = self.document.clone() else {
             return;
         };
@@ -3240,6 +3447,9 @@ impl CanvasPane {
         if self.document.is_none() {
             return Ok(false);
         }
+        if self.transform_session.is_some() {
+            return Err("save: finish the pending transform first".into());
+        }
         if let Some(path) = self.project_path.clone() {
             self.save_to_path(&path)?;
             return Ok(true);
@@ -3252,6 +3462,9 @@ impl CanvasPane {
     fn save_as(&mut self) -> Result<bool, String> {
         if self.document.is_none() {
             return Ok(false);
+        }
+        if self.transform_session.is_some() {
+            return Err("save: finish the pending transform first".into());
         }
         let stem = match self.name.rsplit_once('.') {
             Some((stem, _)) => stem.to_owned(),
@@ -3269,9 +3482,17 @@ impl CanvasPane {
     }
 
     fn save_to_path(&mut self, path: &Path) -> Result<(), String> {
+        if self.transform_session.is_some() {
+            return Err("save: finish the pending transform first".into());
+        }
+        let path_changed = self.project_path.as_deref() != Some(path);
         self.save_comp(path)?;
         self.saved_revision = self.revision;
         self.project_path = Some(path.to_owned());
+        if path_changed {
+            // A worker for the old path cannot complete this document's new save.
+            self.autosave_inflight = None;
+        }
         remember_canvas_project(path)?;
         notify_canvas_registry_changed();
         Ok(())
@@ -3295,7 +3516,14 @@ impl CanvasPane {
     }
 
     fn start_auto_save(&mut self) -> Result<(), String> {
-        if self.document.is_none() || self.autosave_inflight.is_some() {
+        if !self.is_modified() {
+            return Ok(());
+        }
+        if self.has_uncommitted_edit() {
+            self.autosave_pending = true;
+            return Ok(());
+        }
+        if self.autosave_inflight.is_some() {
             return Ok(());
         }
         let path = match self.project_path.clone() {
@@ -3314,7 +3542,15 @@ impl CanvasPane {
         let ticket = canvas_save_ticket(&path);
         let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
         self.project_path = Some(path.clone());
-        self.autosave_inflight = Some(revision);
+        self.autosave_inflight = Some(AutoSaveInFlight {
+            generation,
+            path: path.clone(),
+            revision,
+            sequence,
+        });
+        self.autosave_pending = false;
+        #[cfg(test)]
+        let test_completion = self.autosave_test_completion.clone();
         std::thread::spawn(move || {
             let result =
                 Self::write_canvas_snapshot(&data, &path, &ticket, sequence).and_then(|written| {
@@ -3323,35 +3559,41 @@ impl CanvasPane {
                     }
                     Ok(written)
                 });
+            #[cfg(test)]
+            if let Some(sender) = test_completion {
+                let _ = sender.send(result.clone());
+            }
             let _ = slint::invoke_from_event_loop(move || {
                 crate::host::Shell::with(|shell, app| {
                     let mut studio = shell.studio.borrow_mut();
                     let pane = &mut studio.canvas;
-                    if pane.document_generation != generation
-                        || pane.project_path.as_deref() != Some(path.as_path())
-                    {
+                    let written = result.as_ref().is_ok_and(|written| *written);
+                    let Some(dirty) = pane.complete_auto_save(
+                        generation, &path, revision, &ticket, sequence, written,
+                    ) else {
                         if result.as_ref().is_ok_and(|written| *written) {
                             notify_canvas_registry_changed();
                         }
                         return;
-                    }
-                    pane.autosave_inflight = None;
+                    };
                     match result {
                         Ok(true) => {
-                            if pane.revision == revision {
-                                pane.saved_revision = revision;
-                            }
                             notify_canvas_registry_changed();
-                            if pane.is_modified() {
+                            if dirty {
                                 pane.schedule_auto_save(350);
                             }
                         }
                         Ok(false) => {
-                            if pane.is_modified() {
+                            if dirty {
                                 pane.schedule_auto_save(350);
                             }
                         }
-                        Err(error) => studio.notify(&format!("画布自动保存失败：{error}"), true),
+                        Err(error) => {
+                            if pane.autosave_pending && dirty {
+                                pane.schedule_auto_save(350);
+                            }
+                            studio.notify(&format!("画布自动保存失败：{error}"), true);
+                        }
                     }
                     studio.publish(&app, &shell.models);
                 });
@@ -3360,21 +3602,75 @@ impl CanvasPane {
         Ok(())
     }
 
+    /// A completion may arrive after a newer manual save on the same path.
+    /// Only the latest successful write owns the disk's saved state.
+    fn complete_auto_save(
+        &mut self,
+        generation: u64,
+        path: &Path,
+        revision: u64,
+        ticket: &AtomicU64,
+        sequence: u64,
+        written: bool,
+    ) -> Option<bool> {
+        if self.document_generation != generation
+            || self.project_path.as_deref() != Some(path)
+            || !self.autosave_inflight.as_ref().is_some_and(|save| {
+                save.generation == generation
+                    && save.path.as_path() == path
+                    && save.revision == revision
+                    && save.sequence == sequence
+            })
+        {
+            return None;
+        }
+        self.autosave_inflight = None;
+        if written && ticket.load(Ordering::SeqCst) == sequence {
+            self.saved_revision = revision;
+        }
+        Some(self.is_modified())
+    }
+
     fn schedule_auto_save(&self, delay_ms: u64) {
         let generation = self.document_generation;
         let revision = self.revision;
         slint::Timer::single_shot(std::time::Duration::from_millis(delay_ms), move || {
             crate::host::Shell::with(|shell, _| {
                 let mut studio = shell.studio.borrow_mut();
-                if studio.canvas.document_generation == generation
-                    && studio.canvas.revision == revision
-                    && studio.canvas.is_modified()
-                    && let Err(error) = studio.canvas.start_auto_save()
-                {
+                if let Err(error) = studio.canvas.auto_save_due(generation, revision) {
                     studio.notify(&format!("画布自动保存失败：{error}"), true);
                 }
             });
         });
+    }
+
+    fn has_uncommitted_edit(&self) -> bool {
+        self.pending_history.is_some()
+            || self.parameter_gesture.is_some()
+            || self.object_drag.is_some()
+            || self.transform_session.is_some()
+            || self.stroke.is_some()
+    }
+
+    fn auto_save_due(&mut self, generation: u64, revision: u64) -> Result<(), String> {
+        if self.document_generation == generation && self.revision == revision && self.is_modified()
+        {
+            self.start_auto_save()?;
+        }
+        Ok(())
+    }
+
+    /// Runs once the gesture that held an expired timer commits or cancels.
+    fn flush_pending_auto_save(&mut self) -> Result<(), String> {
+        if !self.autosave_pending || self.has_uncommitted_edit() || self.autosave_inflight.is_some()
+        {
+            return Ok(());
+        }
+        self.autosave_pending = false;
+        if self.is_modified() {
+            self.start_auto_save()?;
+        }
+        Ok(())
     }
 
     fn save_data(&self) -> Result<CanvasSaveData, String> {
@@ -3583,13 +3879,15 @@ impl CanvasPane {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.pending_history = None;
-        self.revision = self.revision.wrapping_add(1).max(1);
+        self.revision = self.allocate_revision();
         self.saved_revision = self.revision;
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
         self.object_drag = None;
         self.transform_session = None;
+        self.pending_transform_boundary = None;
         self.parameter_gesture = None;
         self.autosave_inflight = None;
+        self.autosave_pending = false;
         self.pending_open = None;
         self.open_confirm = false;
         self.project_path = Some(path.to_owned());
@@ -3717,12 +4015,14 @@ impl CanvasPane {
         self.pending_history = None;
         self.project_path = None;
         self.name = "未命名画布".to_owned();
-        self.revision = self.revision.wrapping_add(1).max(1);
+        self.revision = self.allocate_revision();
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
         self.object_drag = None;
         self.transform_session = None;
+        self.pending_transform_boundary = None;
         self.parameter_gesture = None;
         self.autosave_inflight = None;
+        self.autosave_pending = false;
         self.failed = false;
         self.checker = checker_image(width, height);
         if let Some(gpu) = &mut self.gpu {
@@ -3912,13 +4212,15 @@ impl CanvasPane {
                 self.undo_stack.clear();
                 self.redo_stack.clear();
                 self.pending_history = None;
-                self.revision = self.revision.wrapping_add(1).max(1);
+                self.revision = self.allocate_revision();
                 self.saved_revision = 0;
                 self.document_generation = self.document_generation.wrapping_add(1).max(1);
                 self.object_drag = None;
                 self.transform_session = None;
+                self.pending_transform_boundary = None;
                 self.parameter_gesture = None;
                 self.autosave_inflight = None;
+                self.autosave_pending = false;
                 self.pending_open = None;
                 self.open_confirm = false;
                 self.project_path = None;
@@ -4172,6 +4474,12 @@ impl CanvasPane {
     /// pick, toggle visibility, set opacity (0..1), add, delete, and move
     /// (`direction` -1 up, 1 down) - the panel's own verbs, on its rows.
     pub fn agent_layer_pick(&mut self, row: i32) {
+        if self
+            .route_transform_boundary(CanvasMsg::LayerPick(row))
+            .is_none()
+        {
+            return;
+        }
         let picked = self
             .rows()
             .get(row.max(0) as usize)
@@ -4499,6 +4807,13 @@ impl CanvasPane {
     /// Opens a `.comp` project package, or an image, from `path` - the
     /// open without the dialog.
     pub fn agent_open(&mut self, path: &Path) -> Result<(), String> {
+        if self.transform_session.is_some() {
+            self.defer_transform_boundary(
+                CanvasBoundaryAction::Message(CanvasMsg::Picked(vec![path.to_owned()])),
+                "打开其他画布",
+            );
+            return Err("open: finish the pending transform first".into());
+        }
         self.brush_release();
         if self.is_modified() {
             self.pending_open = Some(path.to_owned());
@@ -4547,13 +4862,15 @@ impl CanvasPane {
                     self.undo_stack.clear();
                     self.redo_stack.clear();
                     self.pending_history = None;
-                    self.revision = self.revision.wrapping_add(1).max(1);
+                    self.revision = self.allocate_revision();
                     self.saved_revision = self.revision;
                     self.document_generation = self.document_generation.wrapping_add(1).max(1);
                     self.object_drag = None;
                     self.transform_session = None;
+                    self.pending_transform_boundary = None;
                     self.parameter_gesture = None;
                     self.autosave_inflight = None;
+                    self.autosave_pending = false;
                     self.pending_open = None;
                     self.open_confirm = false;
                     self.project_path = None;
@@ -5016,6 +5333,13 @@ fn report_canvas_handoff(success: bool, detail: &str) {
     });
 }
 
+fn cancel_canvas_handoff() {
+    crate::host::Shell::with(|_, app| {
+        app.global::<crate::ui::SeeCut>()
+            .invoke_action(CANVAS_HANDOFF_CANCEL_ACTION.into(), "".into());
+    });
+}
+
 pub(crate) fn canvas_recent_paths() -> Result<Vec<PathBuf>, String> {
     let path = canvas_registry_path()?;
     if !path.exists() {
@@ -5258,6 +5582,37 @@ mod tests {
         (pane, pixels)
     }
 
+    fn reopen_written_project(path: &Path) -> CanvasPane {
+        let mut reopened = CanvasPane::default();
+        reopened.agent_open(path).expect("written project reopens");
+        reopened
+    }
+
+    fn watch_auto_save(pane: &mut CanvasPane) -> std::sync::mpsc::Receiver<Result<bool, String>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        pane.autosave_test_completion = Some(sender);
+        receiver
+    }
+
+    fn await_auto_save(receiver: &std::sync::mpsc::Receiver<Result<bool, String>>) {
+        assert!(
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("background worker completes")
+                .expect("background write succeeds")
+        );
+    }
+
+    fn expire_auto_save_during_edit(pane: &mut CanvasPane, path: &Path) {
+        pane.auto_save_due(pane.document_generation, pane.revision)
+            .expect("timer expiry");
+        assert!(
+            pane.autosave_pending,
+            "timer waits for the live transaction"
+        );
+        assert!(!path.exists(), "uncommitted preview was not written");
+    }
+
     #[test]
     fn custom_colour_input_rejects_invalid_hex_and_picks_composite_without_painting() {
         let (mut pane, pixels) = painting_pane();
@@ -5483,6 +5838,777 @@ mod tests {
             pane.store.get(pixels).unwrap().pixel(150, 100).unwrap()[3],
             0
         );
+    }
+
+    #[test]
+    fn divergent_edit_after_undo_gets_a_new_identity_and_round_trips() {
+        let root =
+            std::env::temp_dir().join(format!("concat-divergent-history-{}", uuid::Uuid::new_v4()));
+        let path = root.join("project.comp");
+        let (mut pane, _) = painting_pane();
+        pane.agent_layer_toggle_visibility(0);
+        let saved_a = pane.revision;
+        pane.save_to_path(&path).expect("save A");
+
+        pane.undo();
+        assert_ne!(pane.revision, saved_a);
+        pane.agent_layer_group();
+        let b = pane.revision;
+        assert_ne!(b, saved_a, "a divergent edit must not reuse A's identity");
+        assert!(pane.is_modified(), "B differs from the saved A");
+
+        let expected = pane
+            .document
+            .as_ref()
+            .expect("B document")
+            .to_json()
+            .expect("B json");
+        pane.save_to_path(&path).expect("save B");
+        assert!(!pane.is_modified());
+        pane.undo();
+        assert!(pane.is_modified());
+        pane.redo();
+        assert_eq!(pane.revision, b);
+        assert!(!pane.is_modified(), "redo returns to the exact saved B");
+
+        let mut reopened = CanvasPane::default();
+        reopened.agent_open(&path).expect("reopen B");
+        assert_eq!(
+            reopened
+                .document
+                .as_ref()
+                .expect("reopened")
+                .to_json()
+                .expect("reopened json"),
+            expected
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn coalesced_edits_stop_at_a_saved_state() {
+        let root = std::env::temp_dir().join(format!(
+            "concat-saved-history-boundary-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = root.join("project.comp");
+        let (mut pane, _) = painting_pane();
+        let toggle = |pane: &mut CanvasPane| {
+            pane.begin_history_mode(3);
+            let id = pane.active.expect("active image");
+            let LayerNode::Layer(layer) = pane
+                .document
+                .as_mut()
+                .expect("document")
+                .find_mut(id)
+                .expect("layer")
+            else {
+                panic!("active row is an image layer");
+            };
+            layer.hidden = !layer.hidden;
+            pane.commit_history();
+        };
+        toggle(&mut pane);
+        let saved = pane.revision;
+        pane.save_to_path(&path).expect("save between edits");
+        toggle(&mut pane);
+        assert_eq!(pane.undo_stack.len(), 2, "save splits same-kind edits");
+        pane.undo();
+        assert_eq!(pane.revision, saved);
+        assert!(!pane.is_modified(), "undo reaches the saved state");
+        pane.redo();
+        assert!(pane.is_modified());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn auto_save_completion_tracks_the_latest_disk_state() {
+        let root =
+            std::env::temp_dir().join(format!("concat-save-completion-{}", uuid::Uuid::new_v4()));
+        let path = root.join("project.comp");
+        let (mut pane, _) = painting_pane();
+        pane.project_path = Some(path.clone());
+        pane.agent_layer_toggle_visibility(0);
+        let a = pane.revision;
+        let generation = pane.document_generation;
+        let ticket = canvas_save_ticket(&path);
+        let a_sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation,
+            path: path.clone(),
+            revision: a,
+            sequence: a_sequence,
+        });
+
+        pane.undo();
+        pane.agent_layer_group();
+        let b = pane.revision;
+        assert_ne!(a, b);
+        assert_eq!(
+            pane.complete_auto_save(generation, &path, a, &ticket, a_sequence, true),
+            Some(true),
+            "A's write leaves divergent B dirty"
+        );
+        assert_eq!(pane.saved_revision, a);
+
+        pane.save_to_path(&path)
+            .expect("a newer manual save writes B");
+        let c = {
+            pane.agent_layer_add();
+            pane.revision
+        };
+        assert_ne!(b, c);
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation,
+            path: path.clone(),
+            revision: a,
+            sequence: a_sequence,
+        });
+        assert_eq!(
+            pane.complete_auto_save(generation, &path, a, &ticket, a_sequence, true),
+            Some(true)
+        );
+        assert_eq!(pane.saved_revision, b, "stale A cannot replace saved B");
+        assert!(
+            pane.is_modified(),
+            "C remains dirty after the stale callback"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn expired_auto_save_waits_for_parameter_cancel_or_commit() {
+        let root = std::env::temp_dir().join(format!(
+            "concat-parameter-autosave-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("test directory");
+        for commit in [false, true] {
+            let path = root.join(format!("parameter-{commit}.comp"));
+            let (mut pane, _) = painting_pane();
+            pane.project_path = Some(path.clone());
+            pane.agent_layer_opacity(0, 0.8);
+            let completed = watch_auto_save(&mut pane);
+            let committed_before = pane.document.as_ref().expect("document").to_json().unwrap();
+            let id = pane.active.expect("active layer");
+            pane.begin_parameter_gesture(ParameterTarget::Opacity(id));
+            pane.document
+                .as_mut()
+                .expect("document")
+                .layer_mut(id)
+                .expect("layer")
+                .opacity = 0.25;
+            expire_auto_save_during_edit(&mut pane, &path);
+
+            pane.finish_parameter_gesture(commit);
+            pane.flush_pending_auto_save().expect("save stable state");
+            await_auto_save(&completed);
+            let expected = pane.document.as_ref().expect("document").to_json().unwrap();
+            if commit {
+                assert_ne!(expected, committed_before);
+            } else {
+                assert_eq!(expected, committed_before);
+            }
+            let reopened = reopen_written_project(&path);
+            assert_eq!(
+                reopened.document.as_ref().unwrap().to_json().unwrap(),
+                expected
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn expired_auto_save_waits_for_transform_and_object_drag() {
+        let root = std::env::temp_dir().join(format!(
+            "concat-transform-autosave-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("test directory");
+        for (object_drag, commit) in [(false, false), (false, true), (true, false), (true, true)] {
+            let path = root.join(format!("geometry-{object_drag}-{commit}.comp"));
+            let (mut pane, pixels) = painting_pane();
+            pane.store.replace(
+                pixels,
+                Frame::from_rgba(300, 200, vec![255; 300 * 200 * 4]).unwrap(),
+            );
+            pane.project_path = Some(path.clone());
+            pane.agent_layer_opacity(0, 0.8);
+            let completed = watch_auto_save(&mut pane);
+            let committed_before = pane.document.as_ref().expect("document").to_json().unwrap();
+            if object_drag {
+                pane.object_press(150.0, 100.0);
+                assert!(pane.object_drag.is_some(), "object drag started");
+                pane.object_move(165.0, 100.0, false, false);
+            } else {
+                pane.transform_start();
+                assert!(pane.transform_session.is_some(), "transform started");
+                pane.nudge(15, 0);
+            }
+            assert_ne!(
+                pane.document.as_ref().unwrap().to_json().unwrap(),
+                committed_before,
+                "geometry preview changed the document"
+            );
+            expire_auto_save_during_edit(&mut pane, &path);
+
+            if object_drag {
+                pane.object_release(commit);
+            } else {
+                pane.transform_finish(commit);
+            }
+            pane.flush_pending_auto_save()
+                .expect("save stable geometry");
+            await_auto_save(&completed);
+            let expected = pane.document.as_ref().unwrap().to_json().unwrap();
+            if commit {
+                assert_ne!(expected, committed_before);
+            } else {
+                assert_eq!(expected, committed_before);
+            }
+            let reopened = reopen_written_project(&path);
+            assert_eq!(
+                reopened.document.as_ref().unwrap().to_json().unwrap(),
+                expected
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn expired_auto_save_waits_for_stroke_pixels_to_commit() {
+        let root =
+            std::env::temp_dir().join(format!("concat-stroke-autosave-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory");
+        let path = root.join("stroke.comp");
+        let (mut pane, pixels) = painting_pane();
+        pane.project_path = Some(path.clone());
+        pane.agent_layer_opacity(0, 0.8);
+        let completed = watch_auto_save(&mut pane);
+        pane.brush_press_document(150.0, 100.0);
+        assert!(pane.stroke.is_some(), "stroke preview started");
+        expire_auto_save_during_edit(&mut pane, &path);
+
+        pane.brush_release();
+        pane.flush_pending_auto_save()
+            .expect("save completed stroke");
+        await_auto_save(&completed);
+        let reopened = reopen_written_project(&path);
+        assert!(
+            reopened.store.get(pixels).unwrap().pixel(150, 100).unwrap()[3] > 0,
+            "the committed stroke pixels reached disk"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn older_auto_saves_cannot_replace_manual_save_or_new_project() {
+        let root = std::env::temp_dir().join(format!(
+            "concat-autosave-boundaries-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("test directory");
+
+        let manual = root.join("manual.comp");
+        let (mut pane, _) = painting_pane();
+        pane.project_path = Some(manual.clone());
+        pane.agent_layer_opacity(0, 0.8);
+        let old_data = pane.save_data().unwrap();
+        let old_revision = pane.revision;
+        let generation = pane.document_generation;
+        let ticket = canvas_save_ticket(&manual);
+        let old_sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation,
+            path: manual.clone(),
+            revision: old_revision,
+            sequence: old_sequence,
+        });
+        pane.agent_layer_opacity(0, 0.3);
+        let manual_state = pane.document.as_ref().unwrap().to_json().unwrap();
+        pane.save_to_path(&manual).expect("newer manual save");
+        assert!(
+            !CanvasPane::write_canvas_snapshot(&old_data, &manual, &ticket, old_sequence)
+                .expect("old ticket is rejected"),
+            "old write cannot replace the manual save"
+        );
+        assert_eq!(
+            pane.complete_auto_save(
+                generation,
+                &manual,
+                old_revision,
+                &ticket,
+                old_sequence,
+                true,
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            reopen_written_project(&manual)
+                .document
+                .as_ref()
+                .unwrap()
+                .to_json()
+                .unwrap(),
+            manual_state
+        );
+
+        let old_path = root.join("old-path.comp");
+        let new_path = root.join("save-as.comp");
+        let (mut pane, _) = painting_pane();
+        pane.project_path = Some(old_path.clone());
+        pane.agent_layer_opacity(0, 0.8);
+        let old_revision = pane.revision;
+        let old_generation = pane.document_generation;
+        let old_ticket = canvas_save_ticket(&old_path);
+        let old_sequence = old_ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation: old_generation,
+            path: old_path.clone(),
+            revision: old_revision,
+            sequence: old_sequence,
+        });
+        pane.save_to_path(&new_path).expect("save as a new path");
+        assert!(
+            pane.autosave_inflight.is_none(),
+            "old path no longer blocks saves"
+        );
+        pane.agent_layer_opacity(0, 0.3);
+        let new_state = pane.document.as_ref().unwrap().to_json().unwrap();
+        let completed = watch_auto_save(&mut pane);
+        pane.auto_save_due(pane.document_generation, pane.revision)
+            .expect("new path autosave starts");
+        await_auto_save(&completed);
+        assert_eq!(
+            pane.complete_auto_save(
+                old_generation,
+                &old_path,
+                old_revision,
+                &old_ticket,
+                old_sequence,
+                true,
+            ),
+            None,
+            "old path callback does not touch the new project"
+        );
+        assert_eq!(pane.project_path.as_deref(), Some(new_path.as_path()));
+        assert_eq!(
+            reopen_written_project(&new_path)
+                .document
+                .as_ref()
+                .unwrap()
+                .to_json()
+                .unwrap(),
+            new_state
+        );
+
+        let next_path = root.join("next-project.comp");
+        let (mut next, _) = painting_pane();
+        next.agent_layer_opacity(0, 0.6);
+        next.save_to_path(&next_path).expect("next project exists");
+        pane.autosave_pending = true;
+        pane.discard_unsaved();
+        pane.agent_open(&next_path).expect("switch project");
+        assert!(
+            !pane.autosave_pending,
+            "new project drops an old pending timer"
+        );
+        let switched = pane.document.as_ref().unwrap().to_json().unwrap();
+        pane.auto_save_due(old_generation, old_revision)
+            .expect("old timer ignored");
+        assert_eq!(
+            pane.complete_auto_save(
+                old_generation,
+                &old_path,
+                old_revision,
+                &old_ticket,
+                old_sequence,
+                true,
+            ),
+            None
+        );
+        assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), switched);
+        assert_eq!(pane.project_path.as_deref(), Some(next_path.as_path()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn old_a_callback_cannot_clear_a_new_worker_after_save_as_round_trip() {
+        let root = std::env::temp_dir().join(format!(
+            "concat-autosave-return-path-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("test directory");
+        let a_path = root.join("a.comp");
+        let b_path = root.join("b.comp");
+        let (mut pane, _) = painting_pane();
+        pane.project_path = Some(a_path.clone());
+        pane.agent_layer_opacity(0, 0.8);
+        let generation = pane.document_generation;
+        let old_revision = pane.revision;
+        let ticket = canvas_save_ticket(&a_path);
+        let old_sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation,
+            path: a_path.clone(),
+            revision: old_revision,
+            sequence: old_sequence,
+        });
+
+        pane.save_to_path(&b_path).expect("save as B");
+        pane.save_to_path(&a_path).expect("save as A again");
+        pane.agent_layer_opacity(0, 0.3);
+        let new_revision = pane.revision;
+        let new_state = pane.document.as_ref().unwrap().to_json().unwrap();
+        let completed = watch_auto_save(&mut pane);
+        pane.start_auto_save().expect("new A worker starts");
+        let new_sequence = pane.autosave_inflight.as_ref().unwrap().sequence;
+        assert_ne!(old_sequence, new_sequence);
+
+        assert_eq!(
+            pane.complete_auto_save(
+                generation,
+                &a_path,
+                old_revision,
+                &ticket,
+                old_sequence,
+                true,
+            ),
+            None,
+            "old A callback does not claim the new A worker"
+        );
+        assert_eq!(
+            pane.autosave_inflight.as_ref().unwrap().sequence,
+            new_sequence
+        );
+        assert!(pane.is_modified());
+
+        await_auto_save(&completed);
+        assert_eq!(
+            pane.complete_auto_save(
+                generation,
+                &a_path,
+                new_revision,
+                &ticket,
+                new_sequence,
+                true,
+            ),
+            Some(false),
+            "new A callback records the state on disk"
+        );
+        assert_eq!(pane.saved_revision, new_revision);
+        assert_eq!(
+            reopen_written_project(&a_path)
+                .document
+                .as_ref()
+                .unwrap()
+                .to_json()
+                .unwrap(),
+            new_state
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn pending_transform_pane() -> CanvasPane {
+        let (mut pane, pixels) = painting_pane();
+        pane.store.replace(
+            pixels,
+            Frame::from_rgba(300, 200, vec![255; 300 * 200 * 4]).unwrap(),
+        );
+        pane.agent_layer_opacity(0, 0.8);
+        pane.transform_start();
+        assert!(pane.transform_session.is_some());
+        pane.nudge(15, 0);
+        assert!(pane.pending_history.is_some());
+        pane
+    }
+
+    #[test]
+    fn transform_choice_applies_or_discards_before_save_and_tool_change() {
+        let root = std::env::temp_dir().join(format!(
+            "concat-transform-boundary-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("test directory");
+
+        let mut pane = pending_transform_pane();
+        let before = pane
+            .pending_history
+            .as_ref()
+            .unwrap()
+            .0
+            .document
+            .to_json()
+            .unwrap();
+        let preview = pane.document.as_ref().unwrap().to_json().unwrap();
+        let history_len = pane.undo_stack.len();
+        let applied_path = root.join("applied.comp");
+        assert!(pane.save_to_path(&applied_path).is_err());
+        assert!(!applied_path.exists(), "a pending preview cannot be saved");
+        assert!(pane.route_transform_boundary(CanvasMsg::Tool(3)).is_none());
+        assert_eq!(pane.transform_confirmation_label(), "切换工具");
+        assert_eq!(pane.tool, 0);
+        assert!(pane.resolve_transform_boundary(0).is_none());
+        assert!(pane.transform_session.is_some(), "return keeps editing");
+        assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), preview);
+        assert_eq!(pane.undo_stack.len(), history_len);
+
+        assert!(pane.route_transform_boundary(CanvasMsg::Tool(3)).is_none());
+        let Some(CanvasBoundaryAction::Message(CanvasMsg::Tool(tool))) =
+            pane.resolve_transform_boundary(1)
+        else {
+            panic!("tool action resumes after applying");
+        };
+        pane.set_tool(tool);
+        assert_eq!(pane.tool, 3);
+        assert!(pane.transform_session.is_none());
+        assert_eq!(pane.undo_stack.len(), history_len + 1);
+        pane.save_to_path(&applied_path)
+            .expect("save applied transform");
+        assert_eq!(
+            reopen_written_project(&applied_path)
+                .document
+                .as_ref()
+                .unwrap()
+                .to_json()
+                .unwrap(),
+            preview
+        );
+        pane.undo();
+        assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), before);
+        pane.redo();
+        assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), preview);
+
+        let mut pane = pending_transform_pane();
+        let before = pane
+            .pending_history
+            .as_ref()
+            .unwrap()
+            .0
+            .document
+            .to_json()
+            .unwrap();
+        let history_len = pane.undo_stack.len();
+        let discarded_path = root.join("discarded.comp");
+        assert!(
+            pane.route_transform_boundary(CanvasMsg::SaveCompAs)
+                .is_none()
+        );
+        assert_eq!(pane.transform_confirmation_label(), "另存画布");
+        assert!(matches!(
+            pane.resolve_transform_boundary(2),
+            Some(CanvasBoundaryAction::Message(CanvasMsg::SaveCompAs))
+        ));
+        assert_eq!(pane.undo_stack.len(), history_len);
+        assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), before);
+        pane.save_to_path(&discarded_path)
+            .expect("save after discarding preview");
+        assert_eq!(
+            reopen_written_project(&discarded_path)
+                .document
+                .as_ref()
+                .unwrap()
+                .to_json()
+                .unwrap(),
+            before
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transform_boundary_keeps_target_until_layer_object_or_window_decision() {
+        let (mut pane, base_pixels) = painting_pane();
+        pane.store.replace(
+            base_pixels,
+            Frame::from_rgba(300, 200, vec![255; 300 * 200 * 4]).unwrap(),
+        );
+        let base = pane.active.unwrap();
+        pane.agent_layer_add();
+        let top_pixels = pane.layer.unwrap();
+        pane.store.replace(
+            top_pixels,
+            Frame::from_rgba(300, 200, vec![255; 300 * 200 * 4]).unwrap(),
+        );
+        pane.agent_layer_pick(1);
+        assert_eq!(pane.active, Some(base));
+        pane.transform_start();
+        pane.nudge(12, 0);
+        let before = pane
+            .pending_history
+            .as_ref()
+            .unwrap()
+            .0
+            .document
+            .to_json()
+            .unwrap();
+        let history_len = pane.undo_stack.len();
+
+        assert!(
+            pane.route_transform_boundary(CanvasMsg::LayerPick(0))
+                .is_none()
+        );
+        assert_eq!(pane.transform_confirmation_label(), "切换图层");
+        assert_eq!(pane.active, Some(base));
+        assert!(pane.resolve_transform_boundary(0).is_none());
+        assert!(
+            pane.route_transform_boundary(CanvasMsg::ObjectPress(150.0, 100.0))
+                .is_none()
+        );
+        assert_eq!(pane.transform_confirmation_label(), "切换对象");
+        assert_eq!(pane.active, Some(base));
+        assert!(pane.resolve_transform_boundary(0).is_none());
+
+        for (message, label) in [
+            (CanvasMsg::SaveComp, "保存画布"),
+            (CanvasMsg::ExportPng, "导出画布"),
+            (CanvasMsg::ExportLibrary, "导出画布"),
+            (CanvasMsg::New(300, 200), "新建画布"),
+            (
+                CanvasMsg::Picked(vec![PathBuf::from("other.comp")]),
+                "打开其他画布",
+            ),
+        ] {
+            assert!(pane.route_transform_boundary(message).is_none());
+            assert_eq!(pane.transform_confirmation_label(), label);
+            assert!(pane.resolve_transform_boundary(0).is_none());
+            assert!(pane.transform_session.is_some());
+            assert_eq!(pane.active, Some(base));
+        }
+
+        assert!(pane.defer_window_close_for_transform());
+        assert_eq!(pane.transform_confirmation_label(), "关闭窗口");
+        assert!(matches!(
+            pane.resolve_transform_boundary(2),
+            Some(CanvasBoundaryAction::WindowClose)
+        ));
+        assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), before);
+        assert_eq!(pane.undo_stack.len(), history_len);
+        assert!(!pane.transform_confirmation_open());
+    }
+
+    #[test]
+    fn transform_boundary_selects_object_without_replaying_expired_press() {
+        let (mut pane, base_pixels) = painting_pane();
+        pane.store.replace(
+            base_pixels,
+            Frame::from_rgba(300, 200, vec![255; 300 * 200 * 4]).unwrap(),
+        );
+        pane.agent_layer_add();
+        let next = pane.active.expect("new layer");
+        let top_pixels = pane.layer.expect("new layer pixels");
+        pane.store.replace(
+            top_pixels,
+            Frame::from_rgba(300, 200, vec![255; 300 * 200 * 4]).unwrap(),
+        );
+        pane.content_bounds.remove(&top_pixels);
+        pane.agent_layer_pick(1);
+        let original = pane.active.expect("original layer");
+        pane.transform_start();
+        pane.nudge(12, 0);
+
+        assert!(
+            pane.route_transform_boundary(CanvasMsg::ObjectPress(150.0, 100.0))
+                .is_none()
+        );
+        let Some(CanvasBoundaryAction::SelectObject(picked)) = pane.resolve_transform_boundary(1)
+        else {
+            panic!("the expired press resumes as a selection");
+        };
+        assert_eq!(picked, Some(next));
+        assert_eq!(pane.active, Some(original));
+        pane.select_object_after_transform(picked);
+        assert_eq!(pane.active, Some(next));
+        assert!(pane.object_drag.is_none());
+        assert!(pane.pending_history.is_none());
+
+        let after_transform = pane.undo_stack.len();
+        pane.object_press(150.0, 100.0);
+        assert!(pane.object_drag.is_some(), "a new press starts a new drag");
+        pane.object_move(160.0, 100.0, false, false);
+        pane.object_release(true);
+        assert!(pane.object_drag.is_none());
+        assert!(pane.pending_history.is_none());
+        assert_eq!(pane.undo_stack.len(), after_transform + 1);
+    }
+
+    #[test]
+    fn transform_boundary_drops_expired_stroke_and_parameter_starts() {
+        let mut stroke_pane = pending_transform_pane();
+        assert!(
+            stroke_pane
+                .route_transform_boundary(CanvasMsg::BrushPress { x: 150.0, y: 100.0 })
+                .is_none()
+        );
+        assert!(matches!(
+            stroke_pane.resolve_transform_boundary(2),
+            Some(CanvasBoundaryAction::GestureStartExpired)
+        ));
+        assert!(stroke_pane.stroke.is_none());
+        assert!(stroke_pane.stroke_scratch.is_none());
+        assert!(stroke_pane.pending_history.is_none());
+        let after_discard = stroke_pane.undo_stack.len();
+        stroke_pane.brush_press(150.0, 100.0);
+        assert!(
+            stroke_pane.stroke.is_some(),
+            "a new press starts a new stroke"
+        );
+        stroke_pane.brush_release();
+        assert!(stroke_pane.pending_history.is_none());
+        assert_eq!(stroke_pane.undo_stack.len(), after_discard + 1);
+
+        let mut parameter_pane = pending_transform_pane();
+        assert!(
+            parameter_pane
+                .route_transform_boundary(CanvasMsg::ParameterBeginOpacity(0))
+                .is_none()
+        );
+        assert!(matches!(
+            parameter_pane.resolve_transform_boundary(1),
+            Some(CanvasBoundaryAction::GestureStartExpired)
+        ));
+        assert!(parameter_pane.parameter_gesture.is_none());
+        assert!(parameter_pane.pending_history.is_none());
+        let after_apply = parameter_pane.undo_stack.len();
+        let id = parameter_pane.active.expect("active layer");
+        parameter_pane.begin_parameter_gesture(ParameterTarget::Opacity(id));
+        assert!(parameter_pane.parameter_gesture.is_some());
+        parameter_pane
+            .document
+            .as_mut()
+            .unwrap()
+            .layer_mut(id)
+            .unwrap()
+            .opacity = 0.35;
+        parameter_pane.finish_parameter_gesture(true);
+        assert!(parameter_pane.parameter_gesture.is_none());
+        assert!(parameter_pane.pending_history.is_none());
+        assert_eq!(parameter_pane.undo_stack.len(), after_apply + 1);
+    }
+
+    #[test]
+    fn cancelled_transform_handoff_is_identified_for_return_notification() {
+        for message in [
+            CanvasMsg::HandoffImport(vec![]),
+            CanvasMsg::NewAndImport(vec![]),
+            CanvasMsg::OpenAndImport(PathBuf::from("other.comp"), vec![]),
+        ] {
+            assert!(CanvasBoundaryAction::Message(message).is_canvas_handoff());
+        }
+        assert!(!CanvasBoundaryAction::Message(CanvasMsg::SaveComp).is_canvas_handoff());
+
+        let mut pane = pending_transform_pane();
+        let preview = pane.document.as_ref().unwrap().to_json().unwrap();
+        let active = pane.active;
+        assert!(
+            pane.route_transform_boundary(CanvasMsg::HandoffImport(vec![]))
+                .is_none()
+        );
+        assert!(pane.resolve_transform_boundary(0).is_none());
+        assert_eq!(CANVAS_HANDOFF_CANCEL_ACTION, "handoff-cancel");
+        assert!(pane.transform_session.is_some());
+        assert_eq!(pane.active, active);
+        assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), preview);
+        assert!(!pane.transform_confirmation_open());
     }
 
     #[test]

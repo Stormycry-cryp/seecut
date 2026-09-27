@@ -318,6 +318,7 @@ export component PresetStack inherits VerticalLayout {
                             IconButton {
                                 glyph: Glyph.eye;
                                 label: item.on ? I18n.t1("Bypass {0}", "\{item.name}") : I18n.t1("Enable {0}", "\{item.name}");
+                                checkable: true;
                                 checked: item.on;
                                 clicked => { root.toggle(index); }
                             }
@@ -750,6 +751,7 @@ component ToolButton inherits Rectangle {
         width: 30px;
         glyph: root.glyph;
         label: root.label;
+        checkable: true;
         checked: root.checked;
         icon-size: 15px;
         clicked => { root.clicked(); }
