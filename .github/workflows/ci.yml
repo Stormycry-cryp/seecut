@@ -44,8 +44,13 @@ jobs:
       - name: Software Vulkan adapter
         run: |
           set -euo pipefail
-          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          test -f "$VK_ICD_FILENAMES"
+          dpkg -L mesa-vulkan-drivers | grep -E 'icd.d|vulkan_lvp'
+          export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -maxdepth 1 -name 'lvp_icd*.json' -print -quit)"
+          if [[ -z "$VK_ICD_FILENAMES" ]]; then
+            echo '::error::Mesa Lavapipe ICD manifest missing'
+            exit 1
+          fi
+          echo "Using Vulkan ICD: $VK_ICD_FILENAMES"
           vulkaninfo --summary
           echo "VK_ICD_FILENAMES=$VK_ICD_FILENAMES" >> "$GITHUB_ENV"
 
