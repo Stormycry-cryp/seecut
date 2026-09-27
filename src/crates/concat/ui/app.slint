@@ -124,7 +124,7 @@ export component App inherits Window {
         SeeCut.personal-dialog = 0;
         SeeCut.template-delete-id = "";
     }
-    property <bool> workflow-modal-open: SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
+    property <bool> workflow-modal-open: SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
     // A small set of stable opening controls can receive focus again after
     // their sheet closes. Other workflows use the window keyboard scope.
     // 1 canvas open, 2 canvas export, 3 clip assets, 4 clip export, 5 settings.
@@ -383,17 +383,17 @@ export component App inherits Window {
             keys: @keys(Control + S);
             // Nothing on the launch screen has a project to act on, which is
             // why the strip up there is missing the menus this belongs to.
-            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open;
+            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open && !root.sheet-open;
             activated => { root.app-menu-selected("save"); }
         }
         KeyBinding {
             keys: @keys(Control + Z);
-            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open;
+            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open && !root.sheet-open;
             activated => { root.app-menu-selected("undo"); }
         }
         KeyBinding {
             keys: @keys(Control + Shift + Z);
-            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open;
+            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open && !root.sheet-open;
             activated => { root.app-menu-selected("redo"); }
         }
 
@@ -421,7 +421,7 @@ export component App inherits Window {
             if event.text == Key.Escape && SeeCut.template-editor-open { SeeCut.template-editor-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.template-delete-id = ""; return accept; }
             if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } return accept; }
-            if (SeeCut.page == 6 && !root.workflow-modal-open) {
+            if (SeeCut.page == 6 && !root.workflow-modal-open && !root.sheet-open) {
                 if (event.modifiers.control || event.modifiers.meta) {
                     let shortcut = event.text.to-lowercase();
                     if (shortcut == "z") { if event.modifiers.shift { if Editor.canvas-can-redo { Editor.canvas-redo(); } } else { if Editor.canvas-can-undo { Editor.canvas-undo(); } } return accept; }
@@ -463,7 +463,7 @@ export component App inherits Window {
                 if (event.text == Key.Escape) { Editor.canvas-deselect(); return accept; }
                 return reject;
             }
-            if (root.on-start || SeeCut.page != 0 || root.workflow-modal-open) {
+            if (root.on-start || SeeCut.page != 0 || root.workflow-modal-open || root.sheet-open) {
                 return reject;
             }
             // The command key arrives as meta on a Mac and as control
