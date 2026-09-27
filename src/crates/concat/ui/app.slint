@@ -431,6 +431,7 @@ export component App inherits Window {
             if event.text == Key.Escape && SeeCut.template-editor-open { SeeCut.template-editor-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.template-delete-id = ""; return accept; }
             if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } return accept; }
+            if event.text == Key.Escape && root.settings.open { root.settings-closed(); return accept; }
             if (SeeCut.page == 6 && !SeeCut.canvas-gallery-open && !root.workflow-modal-open && !root.sheet-open) {
                 if (event.modifiers.control || event.modifiers.meta) {
                     let shortcut = event.text.to-lowercase();
