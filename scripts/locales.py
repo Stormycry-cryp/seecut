@@ -48,7 +48,10 @@ def keys() -> set[str]:
     for path in (CRATE / "src").rglob("*.rs"):
         # Code only: not the comments that describe the call, and not the
         # tests, whose keys are made up.
-        text = path.read_text(encoding="utf-8").split("#[cfg(test)]")[0]
+        text = path.read_text(encoding="utf-8")
+        test_section = re.search(r"(?m)^#\[cfg\(test\)\]", text)
+        if test_section:
+            text = text[:test_section.start()]
         text = "\n".join(line for line in text.split("\n") if not line.lstrip().startswith("//"))
         for match in RUST_CALL.finditer(text):
             out.add(unescape(match.group(1)))
