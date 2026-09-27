@@ -4827,7 +4827,13 @@ impl Studio {
     /// Finishes a canvas transform boundary, then resumes its original action.
     /// Returns true only when that action completed a window close.
     pub fn resolve_canvas_transform_boundary(&mut self, choice: i32) -> bool {
-        let Some(action) = self.canvas.resolve_transform_boundary(choice) else {
+        let mut canvas = std::mem::take(&mut self.canvas);
+        let action = canvas.resolve_transform_boundary(choice);
+        if action.is_some() {
+            canvas.render(self);
+        }
+        self.canvas = canvas;
+        let Some(action) = action else {
             return false;
         };
         match action {
