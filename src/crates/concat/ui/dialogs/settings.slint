@@ -454,11 +454,30 @@ export component SettingsDialog inherits Rectangle {
     callback closed();
 
     visible: root.data.open;
+    property <bool> sheet-visible: root.data.open;
+    property <int> reverse-focus-token;
+    changed sheet-visible => {
+        if root.sheet-visible { close-button.take-focus(); }
+    }
     background: Colors.transparent;
 
     // The app's navigation rail remains visible at the left. A press there
     // leaves settings; the page itself keeps the workbench's right-hand area.
     TouchArea { clicked => { root.closed(); } }
+
+    // Slint's Tab traversal includes the mounted workbench behind this sheet.
+    // Redirect both ends of the settings controls back into the sheet.
+    first-tab-guard := FocusScope {
+        width: 1px;
+        height: 1px;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            if reason == FocusReason.tab-navigation {
+                if root.data.tab == 0 { root.reverse-focus-token += 1; }
+                else { last-tab-guard.focus(); }
+            }
+        }
+    }
 
     page := Rectangle {
         x: 80px;
@@ -483,7 +502,7 @@ export component SettingsDialog inherits Rectangle {
                     font-weight: Theme.weight-title;
                 }
 
-                IconButton {
+                close-button := IconButton {
                     x: parent.width - 64px;
                     y: 68px;
                     glyph: Glyph.close;
@@ -774,6 +793,7 @@ export component SettingsDialog inherits Rectangle {
                         Switch {
                             accessible-label: "减少动态效果";
                             reduced-motion: SeeCut.reduced-motion;
+                            focus-request: root.reverse-focus-token;
                             checked <=> SeeCut.reduced-motion;
                             toggled(value) => { SeeCut.changed("reduced-motion", value ? "true" : "false"); }
                         }
@@ -1005,6 +1025,15 @@ export component SettingsDialog inherits Rectangle {
             }
         }
     }
+        }
+    }
+
+    last-tab-guard := FocusScope {
+        width: 1px;
+        height: 1px;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            if reason == FocusReason.tab-navigation { close-button.take-focus(); }
         }
     }
 }

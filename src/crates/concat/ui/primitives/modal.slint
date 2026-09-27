@@ -17,6 +17,7 @@ import { FocusRing } from "focus-ring.slint";
 // pointer events rather than merely painting over them.
 export component Modal inherits Rectangle {
     in property <bool> open;
+    in property <bool> trap-focus: false;
     in property <string> title;
     in property <Glyph> glyph;
     /// A fact about what the sheet is acting on, set against the trailing edge
@@ -42,6 +43,7 @@ export component Modal inherits Rectangle {
     property <bool> exiting;
     changed open => {
         root.exiting = !root.open && !SeeCut.reduced-motion;
+        if root.open && root.trap-focus { first-tab-guard.focus(); }
     }
     visible: root.open || root.exiting;
     Timer {
@@ -84,6 +86,28 @@ export component Modal inherits Rectangle {
         // Swallows presses that land on the dialog, so they do not reach the
         // scrim underneath and dismiss it.
         TouchArea { }
+
+        modal-keys := FocusScope {
+            width: parent.width;
+            height: parent.height;
+            focus-on-click: false;
+            focus-on-tab-navigation: false;
+            key-pressed(event) => {
+                if root.trap-focus && root.open && root.dismissable && event.text == Key.Escape {
+                    root.closed();
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+
+            first-tab-guard := FocusScope {
+                width: 1px; height: 1px;
+                enabled: root.open && root.trap-focus;
+                focus-on-click: false;
+                focus-gained(reason) => {
+                    if reason == FocusReason.tab-navigation { last-tab-guard.focus(); }
+                }
+            }
 
         body := VerticalLayout {
             Rectangle {
@@ -181,6 +205,16 @@ export component Modal inherits Rectangle {
             }
 
             @children
+        }
+
+            last-tab-guard := FocusScope {
+                width: 1px; height: 1px;
+                enabled: root.open && root.trap-focus;
+                focus-on-click: false;
+                focus-gained(reason) => {
+                    if reason == FocusReason.tab-navigation { first-tab-guard.focus(); }
+                }
+            }
         }
 
         // The outgoing surface stays painted for its fade, but no action in

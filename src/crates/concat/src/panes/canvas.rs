@@ -2102,10 +2102,10 @@ impl CanvasPane {
             && last.coalesce_kind == coalesce_kind
             && last.after.same_state(&before)
             && last.after.revision != self.saved_revision
-            && !self
+            && self
                 .autosave_inflight
                 .as_ref()
-                .is_some_and(|save| save.revision == last.after.revision)
+                .is_none_or(|save| save.revision != last.after.revision)
             && last.before.store.same_versions(&before.store)
         {
             last.after = after;

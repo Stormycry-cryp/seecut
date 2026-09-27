@@ -155,10 +155,6 @@ export component App inherits Window {
             root.focus-return = 0;
         }
     }
-    property <bool> canvas-export-keyboard-open: SeeCut.canvas-export-open;
-    changed canvas-export-keyboard-open => { if root.canvas-export-keyboard-open { keys.focus(); Tips.close(); } }
-    property <bool> clip-export-keyboard-open: SeeCut.clip-export-open;
-    changed clip-export-keyboard-open => { if root.clip-export-keyboard-open { keys.focus(); Tips.close(); } }
     property <bool> handoff-keyboard-open: SeeCut.handoff-open;
     changed handoff-keyboard-open => { if root.handoff-keyboard-open { keys.focus(); Tips.close(); } }
     changed workflow-modal-open => {
@@ -789,6 +785,7 @@ export component App inherits Window {
     AuthDialog { width: root.width; height: root.height; }
     Modal {
         open: SeeCut.clip-export-open;
+        trap-focus: true;
         title: "导出";
         title-at-start: true;
         show-close-for-start-title: true;
@@ -896,6 +893,7 @@ export component App inherits Window {
     }
     Modal {
         open: SeeCut.canvas-export-open;
+        trap-focus: true;
         title: "导出";
         title-at-start: true;
         show-close-for-start-title: true;
