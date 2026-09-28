@@ -129,9 +129,12 @@
           # minutes; `cargo test` in `nix develop` is where they belong.
           doCheck = false;
 
-          # Limit concurrent compilers on the Linux CI runner.
+          # The Linux runner's 15 GiB memory cannot compile the editor with
+          # cross-crate LTO: rustc alone exceeded 14 GiB before the OOM kill.
+          # Keep release opt-level and the single codegen unit for this build.
           preBuild = ''
             export NIX_BUILD_CORES=2
+            export CARGO_PROFILE_RELEASE_LTO=false
           '';
 
           env.SHERPA_ONNX_ARCHIVE_DIR = sherpaArchiveDir pkgs;
