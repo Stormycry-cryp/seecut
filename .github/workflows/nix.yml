@@ -49,7 +49,26 @@ jobs:
           fi
 
       - name: Build
-        run: nix build .#concat --print-build-logs
+        run: |
+          free -h
+          df -h .
+          if test -r /sys/fs/cgroup/memory.events; then
+            cat /sys/fs/cgroup/memory.events
+          fi
+          nix build .#concat --print-build-logs
+
+      - name: Build failure diagnostics
+        if: failure()
+        run: |
+          free -h
+          df -h .
+          for metric in /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.max; do
+            if test -r "$metric"; then
+              printf '%s\n' "$metric"
+              cat "$metric"
+            fi
+          done
+          sudo dmesg 2>&1 | grep -Ei 'out of memory|oom|killed process|memory cgroup' | tail -n 30 || true
 
       # A window cannot open on the runner, so the check is that the binary
       # is there, links, and resolves every library it needs.

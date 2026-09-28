@@ -245,10 +245,10 @@ impl BridgeUi {
         }
         let active = self.active_ids(studio, app);
         let Some((kind, ids)) = active else {
-            if !self
+            if self
                 .grants
                 .get(&request.client_id)
-                .is_some_and(|grant| grant.token == request.client_token)
+                .is_none_or(|grant| grant.token != request.client_token)
             {
                 return UiReply::Response(Response::error("notAuthorized"));
             }
@@ -397,7 +397,7 @@ impl BridgeUi {
         if u64::from(document.width) * u64::from(document.height) > 4_194_304 {
             return UiReply::Response(Response::error("unsupportedPreview"));
         }
-        UiReply::Preview(PreviewJob {
+        UiReply::Preview(Box::new(PreviewJob {
             request: request.clone(),
             ids,
             revision,
@@ -405,7 +405,7 @@ impl BridgeUi {
             max_edge,
             document: document.clone(),
             store: studio.canvas.store.clone(),
-        })
+        }))
     }
 }
 
@@ -421,7 +421,7 @@ struct PreviewJob {
 
 enum UiReply {
     Response(Response),
-    Preview(PreviewJob),
+    Preview(Box<PreviewJob>),
 }
 
 fn preview_slot() -> &'static Mutex<()> {
@@ -542,9 +542,10 @@ pub fn start(instance: &str) -> String {
     format!("Ready: {}", path.display())
 }
 
-fn server_slot() -> &'static Mutex<Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>> {
-    static SERVER: OnceLock<Mutex<Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>>> =
-        OnceLock::new();
+type ServerThread = (Arc<AtomicBool>, std::thread::JoinHandle<()>);
+
+fn server_slot() -> &'static Mutex<Option<ServerThread>> {
+    static SERVER: OnceLock<Mutex<Option<ServerThread>>> = OnceLock::new();
     SERVER.get_or_init(|| Mutex::new(None))
 }
 
