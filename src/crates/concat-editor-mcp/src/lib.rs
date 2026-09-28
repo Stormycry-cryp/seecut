@@ -149,10 +149,10 @@ pub fn endpoint(instance_id: &str) -> Result<PathBuf, String> {
             return Err(error.to_string());
         }
         let mut builder = std::fs::DirBuilder::new();
-        if let Err(error) = builder.mode(0o700).create(&dir) {
-            if error.kind() != std::io::ErrorKind::AlreadyExists {
-                return Err(error.to_string());
-            }
+        if let Err(error) = builder.mode(0o700).create(&dir)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(error.to_string());
         }
     }
     let metadata = std::fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
