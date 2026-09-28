@@ -37,6 +37,8 @@ mod chips;
 mod cloud;
 mod cloud_files;
 mod dock;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod editor_mcp;
 mod format;
 mod generation_templates;
 mod gpu;
@@ -324,6 +326,18 @@ pub fn run() -> Result<(), slint::PlatformError> {
         models: Models::new(),
     });
     Shell::install(shell.clone());
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    {
+        let instance = shell
+            .studio
+            .borrow()
+            .editor_mcp
+            .borrow()
+            .instance_id
+            .clone();
+        let status = editor_mcp::start(&instance);
+        shell.studio.borrow().editor_mcp.borrow_mut().socket_status = status;
+    }
 
     // Handed over once, here, and never replaced: a fresh model is a reset,
     // and a reset rebuilds every row that hangs off it.
@@ -1779,6 +1793,44 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_settings_server_token_generated(on_window!(|state| {
         state.handle(Msg::Settings(SettingsMsg::ServerTokenGenerated));
     }));
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    {
+        app.on_settings_mcp_client_edited(|text: SharedString| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                studio.editor_mcp.borrow_mut().client_draft = text.to_string();
+                studio.publish(&app, &shell.models);
+            });
+        });
+        app.on_settings_mcp_grant_r(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                studio.editor_mcp.borrow_mut().grant(&studio, &app, false);
+                studio.publish(&app, &shell.models);
+            });
+        });
+        app.on_settings_mcp_grant_m(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                studio.editor_mcp.borrow_mut().grant(&studio, &app, true);
+                studio.publish(&app, &shell.models);
+            });
+        });
+        app.on_settings_mcp_revoke(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                studio.editor_mcp.borrow_mut().revoke();
+                studio.publish(&app, &shell.models);
+            });
+        });
+    }
+    #[cfg(not(all(unix, not(any(target_os = "android", target_os = "ios")))))]
+    {
+        app.on_settings_mcp_client_edited(|_| {});
+        app.on_settings_mcp_grant_r(|| {});
+        app.on_settings_mcp_grant_m(|| {});
+        app.on_settings_mcp_revoke(|| {});
+    }
     app.on_model_activated(on_window!(|state, id: SharedString| {
         state.handle(Msg::Settings(SettingsMsg::ModelActivated(id.to_string())));
     }));
@@ -2156,6 +2208,17 @@ pub fn run() -> Result<(), slint::PlatformError> {
     std::mem::forget(ants);
 
     let result = app.run();
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    {
+        let instance = shell
+            .studio
+            .borrow()
+            .editor_mcp
+            .borrow()
+            .instance_id
+            .clone();
+        editor_mcp::remove_endpoint(&instance);
+    }
     log::info!("close: event loop exited (ok={})", result.is_ok());
     if let Err(error) = drag_image_dir.close() {
         log::warn!("Could not remove drag previews: {error}");
