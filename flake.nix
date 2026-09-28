@@ -117,6 +117,11 @@
           buildAndTestSubdir = "src";
           cargoLock.lockFile = ./src/Cargo.lock;
           cargoBuildFlags = [
+            # Split only the large editor crate into smaller codegen units.
+            # rustc may use more memory in parallel; the Nix CI build must
+            # confirm whether this lowers its peak on the 15 GiB runner.
+            "--config"
+            "profile.release.package.concat.codegen-units=16"
             "-p"
             "concat"
             "--no-default-features"
@@ -129,12 +134,14 @@
           # minutes; `cargo test` in `nix develop` is where they belong.
           doCheck = false;
 
-          # The Linux runner's 15 GiB memory cannot compile the editor with
-          # cross-crate LTO: rustc alone exceeded 14 GiB before the OOM kill.
-          # Keep release opt-level and the single codegen unit for this build.
+          # The Linux runner's 15 GiB memory OOM-killed rustc even after
+          # cross-crate LTO was disabled. Cargo's `lto = false` would enable
+          # local ThinLTO once concat uses multiple codegen units; `off`
+          # disables it while preserving release opt-level for this build.
+          # See https://doc.rust-lang.org/cargo/reference/profiles.html#lto
           preBuild = ''
             export NIX_BUILD_CORES=2
-            export CARGO_PROFILE_RELEASE_LTO=false
+            export CARGO_PROFILE_RELEASE_LTO=off
           '';
 
           env.SHERPA_ONNX_ARCHIVE_DIR = sherpaArchiveDir pkgs;
