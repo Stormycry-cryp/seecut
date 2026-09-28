@@ -6372,6 +6372,10 @@ mod tests {
         std::fs::create_dir_all(&root).expect("test directory");
 
         let mut pane = pending_transform_pane();
+        assert!(
+            pane.mcp_state().2,
+            "pending transform keeps project reads busy"
+        );
         let before = pane
             .pending_history
             .as_ref()
@@ -6390,6 +6394,7 @@ mod tests {
         assert_eq!(pane.tool, 0);
         assert!(pane.resolve_transform_boundary(0).is_none());
         assert!(pane.transform_session.is_some(), "return keeps editing");
+        assert!(pane.mcp_state().2, "return keeps project reads busy");
         assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), preview);
         assert_eq!(pane.undo_stack.len(), history_len);
 
@@ -6402,6 +6407,7 @@ mod tests {
         pane.set_tool(tool);
         assert_eq!(pane.tool, 3);
         assert!(pane.transform_session.is_none());
+        assert!(!pane.mcp_state().2, "applied transform is committed");
         assert_eq!(pane.undo_stack.len(), history_len + 1);
         pane.save_to_path(&applied_path)
             .expect("save applied transform");
@@ -6439,6 +6445,7 @@ mod tests {
             pane.resolve_transform_boundary(2),
             Some(CanvasBoundaryAction::Message(CanvasMsg::SaveCompAs))
         ));
+        assert!(!pane.mcp_state().2, "discarded transform is settled");
         assert_eq!(pane.undo_stack.len(), history_len);
         assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), before);
         pane.save_to_path(&discarded_path)

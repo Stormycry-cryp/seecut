@@ -315,6 +315,9 @@ impl BridgeUi {
             return UiReply::Response(Response::error("wrongProject"));
         }
         if matches!(request.method, Method::Project) {
+            if busy {
+                return UiReply::Response(Response::error("busy"));
+            }
             let offset = request.offset.unwrap_or(0);
             let limit = request.limit.unwrap_or(50);
             if limit == 0 || limit > 100 || offset > 1_000_000 {
@@ -324,7 +327,7 @@ impl BridgeUi {
                 let document = studio.canvas.document.as_ref().unwrap();
                 let (total, objects) = match canvas_objects(document, offset, limit) {
                     Ok(page) => page,
-                    Err(()) => return UiReply::Response(Response::error("busy")),
+                    Err(()) => return UiReply::Response(Response::error("resourceLimit")),
                 };
                 (
                     total,
