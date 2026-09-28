@@ -121,7 +121,7 @@
             "concat"
             "--no-default-features"
             "--features"
-            "wgpu"
+            "concat/wgpu"
           ];
 
           # The workspace's tests generate their own media through the
