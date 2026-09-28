@@ -129,6 +129,11 @@
           # minutes; `cargo test` in `nix develop` is where they belong.
           doCheck = false;
 
+          # Limit concurrent compilers on the Linux CI runner.
+          preBuild = ''
+            export NIX_BUILD_CORES=2
+          '';
+
           env.SHERPA_ONNX_ARCHIVE_DIR = sherpaArchiveDir pkgs;
           env.ORT_LIB_LOCATION = "${pkgs.onnxruntime}/lib";
           env.ORT_PREFER_DYNAMIC_LINK = "1";
