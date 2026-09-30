@@ -31,6 +31,7 @@ use concat_canvas::{
     fill_region,
 };
 use concat_core::frame::Frame;
+use concat_host::ownership::{ResourceIdentity, WriterGuard, desktop_writer_ownership_supported};
 use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, SharedPixelBuffer};
 
@@ -577,6 +578,8 @@ pub struct CanvasPane {
     /// one. Ordinary Save writes here; a newly opened image uses Save As
     /// before it acquires a project path.
     project_path: Option<PathBuf>,
+    /// Clones retained by save workers keep this binding locked until writes finish.
+    writer_owner: Option<WriterGuard>,
     /// Small layer and mask previews, keyed by their immutable pixel source.
     thumbnail_cache: HashMap<PixelId, ThumbnailCacheEntry>,
     thumbnail_rows: (Vec<slint::Image>, Vec<slint::Image>),
@@ -649,6 +652,7 @@ impl Default for CanvasPane {
             pending_handoff_paths: None,
             open_confirm: false,
             project_path: None,
+            writer_owner: None,
             thumbnail_cache: HashMap::new(),
             thumbnail_rows: (Vec::new(), Vec::new()),
             pixel_revisions: HashMap::new(),
@@ -3516,20 +3520,74 @@ impl CanvasPane {
         Ok(true)
     }
 
+    /// Acquires a candidate without changing the current binding. Reusing a
+    /// held guard avoids a second independent lock for canonical aliases.
+    fn owner_for_path(&self, path: &Path) -> Result<Option<WriterGuard>, String> {
+        if !desktop_writer_ownership_supported() {
+            return Ok(None);
+        }
+        if let Some(owner) = &self.writer_owner
+            && owner
+                .matches_canvas(path)
+                .map_err(|error| error.to_string())?
+        {
+            return Ok(Some(owner.clone()));
+        }
+        let identity = ResourceIdentity::for_canvas(path).map_err(|error| error.to_string())?;
+        WriterGuard::acquire(identity)
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+
+    fn owns_canvas_path(&self, path: &Path) -> Result<bool, String> {
+        if self.document.is_none()
+            || !path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("comp"))
+        {
+            return Ok(false);
+        }
+        self.writer_owner
+            .as_ref()
+            .map(|owner| {
+                owner
+                    .matches_canvas(path)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap_or(Ok(false))
+    }
+
+    fn invalidate_auto_save(&mut self) {
+        if let Some(save) = self.autosave_inflight.take() {
+            // A detached worker still holds its owner, but its snapshot no
+            // longer represents the binding being edited in this pane.
+            canvas_save_ticket(&save.path).fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     fn save_to_path(&mut self, path: &Path) -> Result<(), String> {
         if self.transform_session.is_some() {
             return Err("save: finish the pending transform first".into());
         }
+        let owner = self.owner_for_path(path)?;
+        let path = owner
+            .as_ref()
+            .map(|owner| owner.identity().target())
+            .unwrap_or(path);
         let path_changed = self.project_path.as_deref() != Some(path);
-        self.save_comp(path)?;
+        self.save_comp(path, owner.as_ref())?;
         self.saved_revision = self.revision;
-        self.project_path = Some(path.to_owned());
         if path_changed {
+            self.invalidate_auto_save();
             self.mcp_binding_epoch = self.mcp_binding_epoch.saturating_add(1);
-            // A worker for the old path cannot complete this document's new save.
-            self.autosave_inflight = None;
         }
-        remember_canvas_project(path)?;
+        self.project_path = Some(path.to_owned());
+        self.writer_owner = owner;
+        if let Err(error) =
+            remember_canvas_project(self.project_path.as_deref().expect("just bound"))
+        {
+            log::warn!("canvas: saved package, but could not update registry: {error}");
+        }
         notify_canvas_registry_changed();
         Ok(())
     }
@@ -3562,7 +3620,6 @@ impl CanvasPane {
         if self.autosave_inflight.is_some() {
             return Ok(());
         }
-        let first_binding = self.project_path.is_none();
         let path = match self.project_path.clone() {
             Some(path) => path,
             None => {
@@ -3573,15 +3630,19 @@ impl CanvasPane {
                 folder.join(format!("{}.comp", uuid::Uuid::new_v4()))
             }
         };
+        let owner = self.owner_for_path(&path)?;
+        let path = owner
+            .as_ref()
+            .map(|owner| owner.identity().target().to_owned())
+            .unwrap_or(path);
         let data = self.save_data()?;
         let revision = self.revision;
         let generation = self.document_generation;
         let ticket = canvas_save_ticket(&path);
         let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
-        self.project_path = Some(path.clone());
-        if first_binding {
-            self.mcp_binding_epoch = self.mcp_binding_epoch.saturating_add(1);
-        }
+        // A first automatic save holds its candidate owner immediately but
+        // records the path only after the worker has successfully written it.
+        self.writer_owner = owner.clone();
         self.autosave_inflight = Some(AutoSaveInFlight {
             generation,
             path: path.clone(),
@@ -3593,12 +3654,14 @@ impl CanvasPane {
         let test_completion = self.autosave_test_completion.clone();
         std::thread::spawn(move || {
             let result =
-                Self::write_canvas_snapshot(&data, &path, &ticket, sequence).and_then(|written| {
-                    if written {
-                        remember_canvas_project(&path)?;
-                    }
-                    Ok(written)
-                });
+                Self::write_canvas_snapshot(&data, &path, &ticket, sequence, owner.as_ref())
+                    .inspect(|&written| {
+                        if written && let Err(error) = remember_canvas_project(&path) {
+                            log::warn!(
+                                "canvas: saved package, but could not update registry: {error}"
+                            );
+                        }
+                    });
             #[cfg(test)]
             if let Some(sender) = test_completion {
                 let _ = sender.send(result.clone());
@@ -3654,7 +3717,16 @@ impl CanvasPane {
         written: bool,
     ) -> Option<bool> {
         if self.document_generation != generation
-            || self.project_path.as_deref() != Some(path)
+            || self
+                .project_path
+                .as_deref()
+                .is_some_and(|bound| bound != path)
+            || (self.project_path.is_none()
+                && self
+                    .writer_owner
+                    .as_ref()
+                    .is_none_or(|owner| owner.identity().target() != path)
+                && desktop_writer_ownership_supported())
             || !self.autosave_inflight.as_ref().is_some_and(|save| {
                 save.generation == generation
                     && save.path.as_path() == path
@@ -3666,7 +3738,13 @@ impl CanvasPane {
         }
         self.autosave_inflight = None;
         if written && ticket.load(Ordering::SeqCst) == sequence {
+            if self.project_path.is_none() {
+                self.project_path = Some(path.to_owned());
+                self.mcp_binding_epoch = self.mcp_binding_epoch.saturating_add(1);
+            }
             self.saved_revision = revision;
+        } else if self.project_path.is_none() {
+            self.writer_owner = None;
         }
         Some(self.is_modified())
     }
@@ -3736,11 +3814,11 @@ impl CanvasPane {
     /// tree still names, layers and masks alike. The package is staged in
     /// a sibling temporary directory and swapped in, so a failed save
     /// leaves the previous save untouched.
-    fn save_comp(&self, path: &Path) -> Result<(), String> {
+    fn save_comp(&self, path: &Path, owner: Option<&WriterGuard>) -> Result<(), String> {
         let data = self.save_data()?;
         let ticket = canvas_save_ticket(path);
         let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
-        if !Self::write_canvas_snapshot(&data, path, &ticket, sequence)? {
+        if !Self::write_canvas_snapshot(&data, path, &ticket, sequence, owner)? {
             return Err("save: a newer revision superseded this save".into());
         }
         Ok(())
@@ -3752,7 +3830,9 @@ impl CanvasPane {
         path: &Path,
         ticket: &Arc<AtomicU64>,
         sequence: u64,
+        owner: Option<&WriterGuard>,
     ) -> Result<bool, String> {
+        Self::validate_save_owner(path, owner)?;
         static SAVE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let _guard = SAVE_WRITE_LOCK
             .get_or_init(|| Mutex::new(()))
@@ -3819,6 +3899,7 @@ impl CanvasPane {
             if ticket.load(Ordering::SeqCst) != sequence {
                 return Ok(false);
             }
+            Self::validate_save_owner(path, owner)?;
             replace_package(&staging, path)?;
             Ok(true)
         })();
@@ -3828,12 +3909,33 @@ impl CanvasPane {
         result
     }
 
+    fn validate_save_owner(path: &Path, owner: Option<&WriterGuard>) -> Result<(), String> {
+        if desktop_writer_ownership_supported() {
+            let owner = owner.ok_or("save: canvas writer ownership is missing")?;
+            if !owner
+                .matches_canvas(path)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("save: canvas writer ownership does not match target".into());
+            }
+        }
+        Ok(())
+    }
+
     /// Reads a `.comp` package back: the manifest's document tree keeps
     /// its ids, every bitmap it names is decoded and restored under the
     /// same id, and the tree is validated before anything is shown. The
     /// returned pixels were never re-minted, so a save of the re-opened
     /// document is byte-for-byte the same tree again.
     fn load_comp(&mut self, path: &Path, texture_limit: Option<u32>) -> Result<(), String> {
+        if self.owns_canvas_path(path)? {
+            return Ok(());
+        }
+        let owner = self.owner_for_path(path)?;
+        let path = owner
+            .as_ref()
+            .map(|owner| owner.identity().target())
+            .unwrap_or(path);
         let manifest_path = path.join("manifest.json");
         if std::fs::metadata(&manifest_path)
             .map_err(|e| format!("open: {e}"))?
@@ -3897,6 +3999,10 @@ impl CanvasPane {
             store.restore(*id, frame);
         }
 
+        if let Some(owner) = &owner {
+            owner.validate().map_err(|error| error.to_string())?;
+        }
+        self.invalidate_auto_save();
         self.document = Some(document);
         self.store = store;
         self.thumbnail_cache.clear();
@@ -3940,6 +4046,7 @@ impl CanvasPane {
                     .map(|name| name.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "画布项目".to_owned());
+        self.writer_owner = owner;
         self.failed = false;
         let (width, height) = self
             .document
@@ -4040,6 +4147,7 @@ impl CanvasPane {
             studio.notify(&format!("画布保存失败：{error}"), true);
             return;
         }
+        self.invalidate_auto_save();
         let (width, height) = (width.clamp(64, 4096), height.clamp(64, 4096));
         self.store = PixelStore::new();
         let pixels = self.store.put(Frame::transparent(width, height));
@@ -4054,6 +4162,7 @@ impl CanvasPane {
         self.redo_stack.clear();
         self.pending_history = None;
         self.project_path = None;
+        self.writer_owner = None;
         self.name = "未命名画布".to_owned();
         self.revision = self.allocate_revision();
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
@@ -4171,6 +4280,14 @@ impl CanvasPane {
     }
 
     fn request_open(&mut self, path: &Path, studio: &mut Studio) {
+        match self.owns_canvas_path(path) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                studio.notify(&tf("Could not open {0}", &[&error]), true);
+                return;
+            }
+        }
         self.brush_release();
         if self.is_modified() {
             self.pending_open = Some(path.to_owned());
@@ -4197,7 +4314,9 @@ impl CanvasPane {
                 Ok(()) => {
                     self.failed = false;
                     self.render(studio);
-                    if let Err(error) = remember_canvas_project(path) {
+                    if let Err(error) =
+                        remember_canvas_project(self.project_path.as_deref().unwrap_or(path))
+                    {
                         studio.notify(&error, true);
                     }
                     notify_canvas_registry_changed();
@@ -4230,6 +4349,7 @@ impl CanvasPane {
         }
         match decode(path, texture_limit) {
             Ok(frame) => {
+                self.invalidate_auto_save();
                 let (width, height) = (frame.width(), frame.height());
                 let mut document = ImageDocument::new(width, height);
                 self.store = PixelStore::new();
@@ -4264,6 +4384,7 @@ impl CanvasPane {
                 self.pending_open = None;
                 self.open_confirm = false;
                 self.project_path = None;
+                self.writer_owner = None;
                 self.name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -4847,6 +4968,9 @@ impl CanvasPane {
     /// Opens a `.comp` project package, or an image, from `path` - the
     /// open without the dialog.
     pub fn agent_open(&mut self, path: &Path) -> Result<(), String> {
+        if self.owns_canvas_path(path)? {
+            return Ok(());
+        }
         if self.transform_session.is_some() {
             self.defer_transform_boundary(
                 CanvasBoundaryAction::Message(CanvasMsg::Picked(vec![path.to_owned()])),
@@ -4875,6 +4999,7 @@ impl CanvasPane {
                     .map(|gpu| gpu.device().limits().max_texture_dimension_2d),
             ) {
                 Ok(frame) => {
+                    self.invalidate_auto_save();
                     let (width, height) = (frame.width(), frame.height());
                     let mut document = ImageDocument::new(width, height);
                     self.store = PixelStore::new();
@@ -4914,6 +5039,7 @@ impl CanvasPane {
                     self.pending_open = None;
                     self.open_confirm = false;
                     self.project_path = None;
+                    self.writer_owner = None;
                     self.name = path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
@@ -5622,10 +5748,37 @@ mod tests {
         (pane, pixels)
     }
 
-    fn reopen_written_project(path: &Path) -> CanvasPane {
-        let mut reopened = CanvasPane::default();
-        reopened.agent_open(path).expect("written project reopens");
-        reopened
+    /// Disk assertions do not create a second editable pane or share its owner.
+    struct CanvasReadback {
+        document: Option<ImageDocument>,
+        store: PixelStore,
+    }
+
+    fn read_written_project(path: &Path) -> CanvasReadback {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(path.join("manifest.json")).expect("written manifest"),
+        )
+        .expect("valid manifest");
+        let document: ImageDocument =
+            serde_json::from_value(manifest["document"].clone()).expect("written document tree");
+        let mut used = Vec::new();
+        document.collect_pixels(&mut used);
+        used.sort();
+        used.dedup();
+        let mut store = PixelStore::new();
+        for id in used {
+            let bytes = std::fs::read(path.join("images").join(format!("{}.png", id.as_u64())))
+                .expect("written bitmap");
+            let (width, height, rgba) = decode_png(&bytes, None).expect("written PNG");
+            store.restore(
+                id,
+                Frame::from_rgba(width, height, rgba).expect("written pixels"),
+            );
+        }
+        CanvasReadback {
+            document: Some(document),
+            store,
+        }
     }
 
     fn watch_auto_save(pane: &mut CanvasPane) -> std::sync::mpsc::Receiver<Result<bool, String>> {
@@ -5884,6 +6037,8 @@ mod tests {
     fn divergent_edit_after_undo_gets_a_new_identity_and_round_trips() {
         let root =
             std::env::temp_dir().join(format!("concat-divergent-history-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
         let path = root.join("project.comp");
         let (mut pane, _) = painting_pane();
         pane.agent_layer_toggle_visibility(0);
@@ -5912,6 +6067,7 @@ mod tests {
         assert!(!pane.is_modified(), "redo returns to the exact saved B");
 
         let mut reopened = CanvasPane::default();
+        drop(pane);
         reopened.agent_open(&path).expect("reopen B");
         assert_eq!(
             reopened
@@ -5931,6 +6087,8 @@ mod tests {
             "concat-saved-history-boundary-{}",
             uuid::Uuid::new_v4()
         ));
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
         let path = root.join("project.comp");
         let (mut pane, _) = painting_pane();
         let toggle = |pane: &mut CanvasPane| {
@@ -5965,6 +6123,8 @@ mod tests {
     fn auto_save_completion_tracks_the_latest_disk_state() {
         let root =
             std::env::temp_dir().join(format!("concat-save-completion-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
         let path = root.join("project.comp");
         let (mut pane, _) = painting_pane();
         pane.project_path = Some(path.clone());
@@ -6022,7 +6182,8 @@ mod tests {
             "concat-parameter-autosave-{}",
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&root).expect("test directory");
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
         for commit in [false, true] {
             let path = root.join(format!("parameter-{commit}.comp"));
             let (mut pane, _) = painting_pane();
@@ -6049,7 +6210,7 @@ mod tests {
             } else {
                 assert_eq!(expected, committed_before);
             }
-            let reopened = reopen_written_project(&path);
+            let reopened = read_written_project(&path);
             assert_eq!(
                 reopened.document.as_ref().unwrap().to_json().unwrap(),
                 expected
@@ -6064,7 +6225,8 @@ mod tests {
             "concat-transform-autosave-{}",
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&root).expect("test directory");
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
         for (object_drag, commit) in [(false, false), (false, true), (true, false), (true, true)] {
             let path = root.join(format!("geometry-{object_drag}-{commit}.comp"));
             let (mut pane, pixels) = painting_pane();
@@ -6106,7 +6268,7 @@ mod tests {
             } else {
                 assert_eq!(expected, committed_before);
             }
-            let reopened = reopen_written_project(&path);
+            let reopened = read_written_project(&path);
             assert_eq!(
                 reopened.document.as_ref().unwrap().to_json().unwrap(),
                 expected
@@ -6119,7 +6281,8 @@ mod tests {
     fn expired_auto_save_waits_for_stroke_pixels_to_commit() {
         let root =
             std::env::temp_dir().join(format!("concat-stroke-autosave-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("test directory");
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
         let path = root.join("stroke.comp");
         let (mut pane, pixels) = painting_pane();
         pane.project_path = Some(path.clone());
@@ -6133,7 +6296,7 @@ mod tests {
         pane.flush_pending_auto_save()
             .expect("save completed stroke");
         await_auto_save(&completed);
-        let reopened = reopen_written_project(&path);
+        let reopened = read_written_project(&path);
         assert!(
             reopened.store.get(pixels).unwrap().pixel(150, 100).unwrap()[3] > 0,
             "the committed stroke pixels reached disk"
@@ -6147,7 +6310,8 @@ mod tests {
             "concat-autosave-boundaries-{}",
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&root).expect("test directory");
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
 
         let manual = root.join("manual.comp");
         let (mut pane, _) = painting_pane();
@@ -6168,8 +6332,14 @@ mod tests {
         let manual_state = pane.document.as_ref().unwrap().to_json().unwrap();
         pane.save_to_path(&manual).expect("newer manual save");
         assert!(
-            !CanvasPane::write_canvas_snapshot(&old_data, &manual, &ticket, old_sequence)
-                .expect("old ticket is rejected"),
+            !CanvasPane::write_canvas_snapshot(
+                &old_data,
+                &manual,
+                &ticket,
+                old_sequence,
+                pane.writer_owner.as_ref()
+            )
+            .expect("old ticket is rejected"),
             "old write cannot replace the manual save"
         );
         assert_eq!(
@@ -6184,7 +6354,7 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            reopen_written_project(&manual)
+            read_written_project(&manual)
                 .document
                 .as_ref()
                 .unwrap()
@@ -6233,7 +6403,7 @@ mod tests {
         );
         assert_eq!(pane.project_path.as_deref(), Some(new_path.as_path()));
         assert_eq!(
-            reopen_written_project(&new_path)
+            read_written_project(&new_path)
                 .document
                 .as_ref()
                 .unwrap()
@@ -6248,6 +6418,7 @@ mod tests {
         next.save_to_path(&next_path).expect("next project exists");
         pane.autosave_pending = true;
         pane.discard_unsaved();
+        drop(next);
         pane.agent_open(&next_path).expect("switch project");
         assert!(
             !pane.autosave_pending,
@@ -6278,7 +6449,8 @@ mod tests {
             "concat-autosave-return-path-{}",
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&root).expect("test directory");
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
         let a_path = root.join("a.comp");
         let b_path = root.join("b.comp");
         let (mut pane, _) = painting_pane();
@@ -6338,7 +6510,7 @@ mod tests {
         );
         assert_eq!(pane.saved_revision, new_revision);
         assert_eq!(
-            reopen_written_project(&a_path)
+            read_written_project(&a_path)
                 .document
                 .as_ref()
                 .unwrap()
@@ -6369,7 +6541,8 @@ mod tests {
             "concat-transform-boundary-{}",
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&root).expect("test directory");
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
 
         let mut pane = pending_transform_pane();
         assert!(
@@ -6412,7 +6585,7 @@ mod tests {
         pane.save_to_path(&applied_path)
             .expect("save applied transform");
         assert_eq!(
-            reopen_written_project(&applied_path)
+            read_written_project(&applied_path)
                 .document
                 .as_ref()
                 .unwrap()
@@ -6451,7 +6624,7 @@ mod tests {
         pane.save_to_path(&discarded_path)
             .expect("save after discarding preview");
         assert_eq!(
-            reopen_written_project(&discarded_path)
+            read_written_project(&discarded_path)
                 .document
                 .as_ref()
                 .unwrap()
@@ -6891,8 +7064,9 @@ mod tests {
 
     #[test]
     fn project_open_checks_the_device_limit_before_replacing_the_document() {
-        let dir = std::env::temp_dir().join(format!("concat-thin-comp-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        let root = ownership_test_root();
+        let dir = root.join("oversized.comp");
+        std::fs::create_dir(&dir).expect("package directory");
         let document = ImageDocument::new(16_385, 1);
         let manifest = serde_json::json!({
             "concat-project": 1,
@@ -6906,7 +7080,7 @@ mod tests {
         let error = pane.load_comp(&dir, Some(16_384)).unwrap_err();
         assert!(error.contains("16384px texture limit"));
         assert_eq!(pane.document_size(), Some((300.0, 200.0)));
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -7039,7 +7213,8 @@ mod tests {
             .expect("json");
 
         let dir = std::env::temp_dir().join("concat-agent-comp");
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::create_dir_all(&dir).expect("test parent");
+        let dir = std::fs::canonicalize(dir).expect("canonical test parent");
         let path = dir.join("round-trip.comp");
         pane.agent_save_comp(&path).expect("the save wrote");
         assert_eq!(pane.project_path.as_deref(), Some(path.as_path()));
@@ -7067,6 +7242,7 @@ mod tests {
         // A fresh pane loads the package: the same tree, the same pixel
         // ids, the painted stroke back.
         let mut back = CanvasPane::default();
+        drop(pane);
         back.agent_open(&path).expect("the package opened");
         assert_eq!(
             back.name, "分层画布",
@@ -7108,7 +7284,8 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&root).expect("test directory");
+        std::fs::create_dir_all(&root).expect("test parent");
+        let root = std::fs::canonicalize(root).expect("canonical test parent");
         let path = root.join("stable-project-id.comp");
         let mut pane = CanvasPane::default();
         let mut document = ImageDocument::new(1920, 1080);
@@ -7152,7 +7329,8 @@ mod tests {
     fn save_current_writes_new_stroke_to_recorded_path_and_clears_dirty() {
         let dir =
             std::env::temp_dir().join(format!("concat-save-current-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("isolated temp directory");
+        std::fs::create_dir_all(&dir).expect("test parent");
+        let dir = std::fs::canonicalize(dir).expect("canonical test parent");
         let path = dir.join("original.comp");
         let (mut pane, pixels) = painting_pane();
         pane.save_to_path(&path).expect("initial save records path");
@@ -7182,6 +7360,7 @@ mod tests {
             "ordinary save actually rewrites the recorded package"
         );
         let mut reopened = CanvasPane::default();
+        drop(pane);
         reopened.agent_open(&path).expect("reopen ordinary save");
         assert_eq!(
             reopened.store.get(pixels).expect("reopened frame").pixels(),
@@ -7192,11 +7371,314 @@ mod tests {
         std::fs::remove_dir_all(&dir).expect("remove isolated fixture");
     }
 
+    fn ownership_test_root() -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("concat-canvas-owner-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::canonicalize(root).unwrap()
+    }
+
+    #[test]
+    fn independent_canvas_writers_cannot_save_or_open_an_owned_package() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let root = ownership_test_root();
+        let a = root.join("a.comp");
+        let b = root.join("b.comp");
+        let (mut first, _) = painting_pane();
+        first.agent_save_comp(&a).unwrap();
+        let (mut second, _) = painting_pane();
+        second.agent_save_comp(&b).unwrap();
+        second.agent_layer_opacity(0, 0.3);
+        second.selection = Some(Mask::all(300, 200));
+        let state = second.snapshot().unwrap();
+        let history = second.undo_stack.len();
+        let owner = second.writer_owner.as_ref().unwrap().identity().clone();
+        let a_bytes = std::fs::read(a.join("manifest.json")).unwrap();
+        let mut unopened = CanvasPane::default();
+        assert!(
+            unopened.agent_open(&a).is_err(),
+            "public open also refuses the owned package"
+        );
+        assert!(unopened.document.is_none());
+        assert!(unopened.project_path.is_none());
+        let b_bytes = std::fs::read(b.join("manifest.json")).unwrap();
+
+        assert!(
+            second.agent_save_comp(&a).is_err(),
+            "agent save uses the same lock"
+        );
+        assert!(
+            second.load_comp(&a, None).is_err(),
+            "open cannot create another writer"
+        );
+        assert!(second.snapshot().unwrap().same_state(&state));
+        assert_eq!(second.undo_stack.len(), history);
+        assert!(second.selection.is_some());
+        assert!(second.is_modified());
+        assert_eq!(second.project_path.as_deref(), Some(b.as_path()));
+        assert_eq!(second.writer_owner.as_ref().unwrap().identity(), &owner);
+        assert_eq!(std::fs::read(a.join("manifest.json")).unwrap(), a_bytes);
+        assert_eq!(std::fs::read(b.join("manifest.json")).unwrap(), b_bytes);
+
+        drop(first);
+        second
+            .load_comp(&a, None)
+            .expect("closed writer releases ownership");
+        let released_b = WriterGuard::acquire(ResourceIdentity::for_canvas(&b).unwrap()).unwrap();
+        drop(released_b);
+        drop(second);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_canvas_load_or_save_preserves_the_previous_owner_and_edits() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let root = ownership_test_root();
+        let path = root.join("original.comp");
+        let (mut pane, _) = painting_pane();
+        pane.save_to_path(&path).unwrap();
+        pane.agent_layer_opacity(0, 0.2);
+        pane.selection = Some(Mask::all(300, 200));
+        let state = pane.snapshot().unwrap();
+        let owner = pane.writer_owner.as_ref().unwrap().identity().clone();
+        let generation = pane.document_generation;
+        let epoch = pane.mcp_binding_epoch;
+        let saved = pane.saved_revision;
+        let history = pane.undo_stack.len();
+        let bytes = std::fs::read(path.join("manifest.json")).unwrap();
+        let invalid = root.join("invalid.comp");
+        std::fs::create_dir(&invalid).unwrap();
+        std::fs::write(invalid.join("manifest.json"), b"invalid json").unwrap();
+        assert!(pane.load_comp(&invalid, None).is_err());
+        let blocker = root.join("file");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        assert!(pane.save_to_path(&blocker.join("blocked.comp")).is_err());
+
+        assert!(pane.snapshot().unwrap().same_state(&state));
+        assert_eq!(pane.undo_stack.len(), history);
+        assert!(pane.selection.is_some());
+        assert!(pane.is_modified());
+        assert_eq!(pane.project_path.as_deref(), Some(path.as_path()));
+        assert_eq!(pane.document_generation, generation);
+        assert_eq!(pane.mcp_binding_epoch, epoch);
+        assert_eq!(pane.saved_revision, saved);
+        assert_eq!(pane.writer_owner.as_ref().unwrap().identity(), &owner);
+        assert_eq!(std::fs::read(path.join("manifest.json")).unwrap(), bytes);
+        assert!(WriterGuard::acquire(ResourceIdentity::for_canvas(&path).unwrap()).is_err());
+        let failed_candidate =
+            WriterGuard::acquire(ResourceIdentity::for_canvas(&invalid).unwrap()).unwrap();
+        drop(failed_candidate);
+        drop(pane);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_unicode_canvas_and_canonical_aliases_reuse_the_same_owner() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let root = ownership_test_root();
+        let path = root.join("画布.comp");
+        let parent_alias = root.join("parent-alias");
+        std::os::unix::fs::symlink(&root, &parent_alias).unwrap();
+        let alias = parent_alias.join("画布.comp");
+        let (mut pane, _) = painting_pane();
+        pane.writer_owner = pane.owner_for_path(&path).unwrap();
+        let owner = pane.writer_owner.as_ref().unwrap().identity().clone();
+        assert!(
+            !path.exists(),
+            "ownership does not create the canvas package"
+        );
+        assert_eq!(
+            pane.owner_for_path(&alias).unwrap().unwrap().identity(),
+            &owner
+        );
+        pane.save_to_path(&path).unwrap();
+        let epoch = pane.mcp_binding_epoch;
+        let generation = pane.document_generation;
+        pane.agent_layer_opacity(0, 0.3);
+        pane.save_to_path(&alias)
+            .expect("same identity save-as reuses the lock");
+        assert_eq!(pane.mcp_binding_epoch, epoch);
+        assert_eq!(pane.document_generation, generation);
+        assert_eq!(pane.project_path.as_deref(), Some(path.as_path()));
+        assert_eq!(pane.writer_owner.as_ref().unwrap().identity(), &owner);
+        let package_alias = root.join("package-alias.comp");
+        std::os::unix::fs::symlink(&path, &package_alias).unwrap();
+        pane.save_to_path(&package_alias)
+            .expect("package alias saves to canonical target");
+        assert!(package_alias.is_symlink());
+        assert_eq!(pane.mcp_binding_epoch, epoch);
+        pane.agent_layer_opacity(0, 0.6);
+        let state = pane.snapshot().unwrap();
+        let history = pane.undo_stack.len();
+        pane.agent_open(&package_alias)
+            .expect("same identity reopen keeps the live document");
+        assert!(pane.snapshot().unwrap().same_state(&state));
+        assert_eq!(pane.undo_stack.len(), history);
+        assert!(pane.is_modified());
+        drop(pane);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn detached_old_canvas_worker_holds_owner_until_its_invalidated_write_finishes() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let root = ownership_test_root();
+        let old = root.join("old.comp");
+        let new = root.join("new.comp");
+        let (mut pane, _) = painting_pane();
+        pane.save_to_path(&old).unwrap();
+        pane.agent_layer_opacity(0, 0.4);
+        let data = pane.save_data().unwrap();
+        let owner = pane.writer_owner.as_ref().unwrap().clone();
+        let generation = pane.document_generation;
+        let revision = pane.revision;
+        let ticket = canvas_save_ticket(&old);
+        let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation,
+            path: old.clone(),
+            revision,
+            sequence,
+        });
+        let (ready_sender, ready) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        let worker_path = old.clone();
+        let worker_ticket = ticket.clone();
+        let worker = std::thread::spawn(move || {
+            ready_sender.send(()).unwrap();
+            resumed.recv().unwrap();
+            let result = CanvasPane::write_canvas_snapshot(
+                &data,
+                &worker_path,
+                &worker_ticket,
+                sequence,
+                Some(&owner),
+            );
+            drop(owner);
+            result
+        });
+        ready
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        pane.agent_layer_opacity(0, 0.7);
+        pane.save_to_path(&new).unwrap();
+        let new_bytes = std::fs::read(new.join("manifest.json")).unwrap();
+        assert!(
+            WriterGuard::acquire(ResourceIdentity::for_canvas(&old).unwrap()).is_err(),
+            "detached worker still owns old target"
+        );
+        resume.send(()).unwrap();
+        assert!(
+            !worker.join().unwrap().unwrap(),
+            "binding change invalidates the old snapshot"
+        );
+        assert_eq!(
+            pane.complete_auto_save(generation, &old, revision, &ticket, sequence, true),
+            None
+        );
+        assert_eq!(std::fs::read(new.join("manifest.json")).unwrap(), new_bytes);
+        let released = WriterGuard::acquire(ResourceIdentity::for_canvas(&old).unwrap()).unwrap();
+        drop(released);
+        drop(pane);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn first_canvas_auto_save_binds_only_after_a_successful_worker_completion() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let root = ownership_test_root();
+        let path = root.join("first.comp");
+        let (mut pane, _) = painting_pane();
+        pane.agent_layer_opacity(0, 0.3);
+        let epoch = pane.mcp_binding_epoch;
+        let revision = pane.revision;
+        let generation = pane.document_generation;
+        let ticket = canvas_save_ticket(&path);
+        let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        pane.writer_owner = pane.owner_for_path(&path).unwrap();
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation,
+            path: path.clone(),
+            revision,
+            sequence,
+        });
+        let mut broken_snapshot = pane.save_data().unwrap();
+        broken_snapshot.store = PixelStore::new();
+        assert!(
+            CanvasPane::write_canvas_snapshot(
+                &broken_snapshot,
+                &path,
+                &ticket,
+                sequence,
+                pane.writer_owner.as_ref()
+            )
+            .is_err(),
+            "failed worker does not produce a package"
+        );
+        assert_eq!(
+            pane.complete_auto_save(generation, &path, revision, &ticket, sequence, false),
+            Some(true)
+        );
+        assert!(pane.project_path.is_none());
+        assert!(pane.writer_owner.is_none());
+        assert_eq!(pane.mcp_binding_epoch, epoch);
+        assert!(!path.exists());
+        assert!(pane.is_modified());
+
+        let old_sequence = sequence;
+        let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        pane.writer_owner = pane.owner_for_path(&path).unwrap();
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation,
+            path: path.clone(),
+            revision,
+            sequence,
+        });
+        assert_eq!(
+            pane.complete_auto_save(generation, &path, revision, &ticket, old_sequence, false),
+            None,
+            "late failure cannot clear the replacement candidate owner"
+        );
+        assert!(pane.writer_owner.is_some());
+        let data = pane.save_data().unwrap();
+        assert!(
+            CanvasPane::write_canvas_snapshot(
+                &data,
+                &path,
+                &ticket,
+                sequence,
+                pane.writer_owner.as_ref()
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            pane.complete_auto_save(generation, &path, revision, &ticket, sequence, true),
+            Some(false)
+        );
+        assert_eq!(pane.project_path.as_deref(), Some(path.as_path()));
+        assert_eq!(pane.mcp_binding_epoch, epoch + 1);
+        assert!(path.join("manifest.json").is_file());
+        drop(pane);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn failed_save_to_path_preserves_original_path_dirty_state_and_saved_content() {
         let dir =
             std::env::temp_dir().join(format!("concat-save-failure-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("isolated temp directory");
+        std::fs::create_dir_all(&dir).expect("test parent");
+        let dir = std::fs::canonicalize(dir).expect("canonical test parent");
         let path = dir.join("original.comp");
         let (mut pane, pixels) = painting_pane();
         pane.set_tool(3);
@@ -7252,6 +7734,7 @@ mod tests {
             b"fixture blocker"
         );
         let mut reopened = CanvasPane::default();
+        drop(pane);
         reopened
             .agent_open(&path)
             .expect("original package still opens");

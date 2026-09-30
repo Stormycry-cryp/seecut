@@ -18,6 +18,151 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(
+    target_os = "macos",
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
+use crate::ownership::ResourceIdentity;
+use crate::ownership::{OwnershipError, WriterGuard};
+
+/// A project failure with an explicit, branchable ownership error channel.
+#[derive(Debug)]
+pub enum OwnedProjectError {
+    /// Writer conflict, invalid/stale identity, unsupported lock, or lock I/O.
+    Ownership(OwnershipError),
+    /// Project creation, parsing, or document writing failed.
+    Project(String),
+}
+
+impl std::fmt::Display for OwnedProjectError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ownership(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Project(error) => formatter.write_str(error),
+        }
+    }
+}
+
+impl std::error::Error for OwnedProjectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Ownership(error) => Some(error),
+            Self::Project(_) => None,
+        }
+    }
+}
+
+impl From<OwnershipError> for OwnedProjectError {
+    fn from(error: OwnershipError) -> Self {
+        Self::Ownership(error)
+    }
+}
+
+impl From<String> for OwnedProjectError {
+    fn from(error: String) -> Self {
+        Self::Project(error)
+    }
+}
+
+impl From<&str> for OwnedProjectError {
+    fn from(error: &str) -> Self {
+        Self::Project(error.to_owned())
+    }
+}
+
+/// A newly written project and its uninterrupted creator ownership.
+/// This sealed handoff is not Clone: adopting it moves the original owner into
+/// one Session. Reading its info does not transfer or release ownership.
+#[derive(Debug)]
+pub struct CreatedProject {
+    info: ProjectInfo,
+    owner: Option<WriterGuard>,
+}
+
+impl CreatedProject {
+    /// The completed artifact's metadata while creator ownership remains held.
+    pub fn info(&self) -> &ProjectInfo {
+        &self.info
+    }
+
+    /// Consumes this creation and moves its original owner into one Session.
+    pub fn into_session(self) -> Result<crate::session::Session, OwnedProjectError> {
+        crate::session::Session::from_created(self)
+    }
+
+    /// Releases creator ownership and returns completed artifact metadata.
+    /// Interactive handoffs should use into_session instead to retain the lock.
+    pub fn into_info(self) -> ProjectInfo {
+        self.info
+    }
+
+    /// Writes a filled template or other initial document under the original
+    /// creator owner, without dropping/reacquiring it before adoption.
+    pub fn save(&self, document: &serde_json::Value) -> Result<(), OwnedProjectError> {
+        save_owned(&self.info.path, document, self.owner.as_ref())
+    }
+
+    pub(crate) fn into_parts(self) -> (ProjectInfo, Option<WriterGuard>) {
+        (self.info, self.owner)
+    }
+}
+
+pub(crate) fn acquire_project_owner(path: &Path) -> Result<Option<WriterGuard>, OwnedProjectError> {
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    {
+        Ok(Some(WriterGuard::acquire(ResourceIdentity::for_project(
+            path,
+        )?)?))
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
+pub(crate) fn validate_project_owner(
+    path: &str,
+    owner: Option<&WriterGuard>,
+) -> Result<(), OwnedProjectError> {
+    if let Some(owner) = owner {
+        owner.validate()?;
+        if owner.matches_project(path)? {
+            return Ok(());
+        }
+        return Err(OwnershipError::InvalidTarget {
+            target: PathBuf::from(path),
+            reason: "writer guard belongs to another project",
+        }
+        .into());
+    }
+    if crate::ownership::desktop_writer_ownership_supported() {
+        return Err(OwnershipError::InvalidTarget {
+            target: PathBuf::from(path),
+            reason: "desktop project save requires its existing writer owner",
+        }
+        .into());
+    }
+    // Explicit native compatibility path. No ownership protection is claimed
+    // for mobile, Windows, or an unaudited architecture, and no MCP grant follows.
+    Ok(())
+}
+
 const MANIFEST: &str = "concat.json";
 static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -42,13 +187,30 @@ impl SaveLane {
 
     /// Writes only the latest snapshot. A synchronous close uses this same
     /// lane and waits for an in-flight write before it returns.
+    /// This standalone compatibility entry acquires an independent owner;
+    /// workers of an open Session must call write_owned with their retained owner.
     pub fn write(
         &self,
         ticket: u64,
         path: &str,
         document: &serde_json::Value,
     ) -> Result<bool, String> {
-        self.write_with(ticket, path, document, || {})
+        let owner = acquire_project_owner(Path::new(path)).map_err(|error| error.to_string())?;
+        self.write_owned(ticket, path, document, owner.as_ref())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Writes the latest snapshot with its existing Session/creator owner.
+    /// The worker must retain its guard clone until this call finishes or its
+    /// snapshot is discarded. None is only native compatibility off desktop.
+    pub fn write_owned(
+        &self,
+        ticket: u64,
+        path: &str,
+        document: &serde_json::Value,
+        owner: Option<&WriterGuard>,
+    ) -> Result<bool, OwnedProjectError> {
+        self.write_with(ticket, path, document, owner, || {})
     }
 
     fn write_with(
@@ -56,8 +218,9 @@ impl SaveLane {
         ticket: u64,
         path: &str,
         document: &serde_json::Value,
+        owner: Option<&WriterGuard>,
         entered: impl FnOnce(),
-    ) -> Result<bool, String> {
+    ) -> Result<bool, OwnedProjectError> {
         let _writer = self
             .writer
             .lock()
@@ -66,7 +229,7 @@ impl SaveLane {
         if !self.is_latest(ticket) {
             return Ok(false);
         }
-        save_guarded(path, document, || self.is_latest(ticket))
+        save_guarded(path, document, owner, || self.is_latest(ticket))
     }
 }
 /// The manifest's earlier names, newest first. Projects created before a
@@ -156,6 +319,8 @@ fn now_millis() -> u64 {
 ///
 /// Refuses to touch a folder that already holds a manifest. Overwriting
 /// someone's edit because they reused a name is not a recoverable mistake.
+/// This compatibility wrapper returns a completed artifact and releases its
+/// creator owner. Interactive creation should hand create_owned into Session.
 pub fn create(
     location: &str,
     name: &str,
@@ -164,20 +329,62 @@ pub fn create(
     rate_num: i64,
     rate_den: i64,
 ) -> Result<ProjectInfo, String> {
+    create_owned(location, name, width, height, rate_num, rate_den)
+        .map(CreatedProject::into_info)
+        .map_err(|error| error.to_string())
+}
+
+/// Creates a fresh project while retaining creator ownership for template
+/// filling and Session adoption. Rechecks every manifest after taking the lock.
+pub fn create_owned(
+    location: &str,
+    name: &str,
+    width: u32,
+    height: u32,
+    rate_num: i64,
+    rate_den: i64,
+) -> Result<CreatedProject, OwnedProjectError> {
     let root = Path::new(location).join(folder_name(name));
-    let manifest = root.join(MANIFEST);
-
-    // Any name counts as an existing project - a legacy folder must be
-    // just as safe from being clobbered as a new one.
-    if is_project(&root) {
-        return Err(format!(
-            "a Concat project already exists at {}",
-            root.display()
-        ));
-    }
-
     std::fs::create_dir_all(&root)
         .map_err(|error| format!("could not create {}: {error}", root.display()))?;
+    let owner = acquire_project_owner(&root)?;
+    let root = owner
+        .as_ref()
+        .map(|owner| owner.identity().target().to_owned())
+        .unwrap_or(root);
+    finish_creation(root, name, width, height, rate_num, rate_den, owner)
+}
+
+fn finish_creation(
+    root: PathBuf,
+    name: &str,
+    width: u32,
+    height: u32,
+    rate_num: i64,
+    rate_den: i64,
+    owner: Option<WriterGuard>,
+) -> Result<CreatedProject, OwnedProjectError> {
+    validate_project_owner(&root.to_string_lossy(), owner.as_ref())?;
+    // A contender may have observed an empty directory before another creator
+    // wrote it. This check is deliberately *after* ownership acquisition.
+    for filename in std::iter::once(MANIFEST).chain(LEGACY_MANIFESTS.iter().copied()) {
+        match std::fs::symlink_metadata(root.join(filename)) {
+            Ok(_) => {
+                return Err(
+                    format!("a Concat project already exists at {}", root.display()).into(),
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect {}: {error}",
+                    root.join(filename).display()
+                )
+                .into());
+            }
+        }
+    }
+    let manifest = root.join(MANIFEST);
 
     // Settings only: a fresh project has no edit yet. The full document -
     // timelines included - is written by the session's save from the first
@@ -196,17 +403,32 @@ pub fn create(
 
     let encoded = serde_json::to_vec_pretty(&document)
         .map_err(|error| format!("could not encode the manifest: {error}"))?;
-    std::fs::write(&manifest, encoded)
-        .map_err(|error| format!("could not write {}: {error}", manifest.display()))?;
+    // create_new never truncates an existing entry, including a dangling link
+    // or unexpected file that arrived after the post-owner manifest check.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&manifest)
+        .map_err(|error| format!("could not create {}: {error}", manifest.display()))?;
+    let written = std::io::Write::write_all(&mut file, &encoded).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = written {
+        // Only the manifest this invocation successfully created is cleanup.
+        let _ = std::fs::remove_file(&manifest);
+        return Err(format!("could not write {}: {error}", manifest.display()).into());
+    }
 
-    Ok(ProjectInfo {
-        path: root.to_string_lossy().into_owned(),
-        name: name.to_owned(),
-        width,
-        height,
-        rate_num,
-        rate_den,
-        opened_at: now_millis(),
+    Ok(CreatedProject {
+        info: ProjectInfo {
+            path: root.to_string_lossy().into_owned(),
+            name: name.to_owned(),
+            width,
+            height,
+            rate_num,
+            rate_den,
+            opened_at: now_millis(),
+        },
+        owner,
     })
 }
 
@@ -220,15 +442,30 @@ pub fn create(
 /// Written to a temporary file and renamed into place, because a save
 /// interrupted halfway is worse than no save at all - a truncated manifest
 /// loses the project, while a failed rename leaves the previous one intact.
+/// This standalone entry acquires a writer; a live Session uses save_owned.
 pub fn save(path: &str, document: &serde_json::Value) -> Result<(), String> {
-    save_guarded(path, document, || true).map(|_| ())
+    std::fs::create_dir_all(path).map_err(|error| format!("could not create {path}: {error}"))?;
+    let owner = acquire_project_owner(Path::new(path)).map_err(|error| error.to_string())?;
+    save_owned(path, document, owner.as_ref()).map_err(|error| error.to_string())
+}
+
+/// Saves with the caller's already-held owner. Never reacquires a second writer
+/// under an open Session. None is accepted only on native compatibility targets.
+pub fn save_owned(
+    path: &str,
+    document: &serde_json::Value,
+    owner: Option<&WriterGuard>,
+) -> Result<(), OwnedProjectError> {
+    save_guarded(path, document, owner, || true).map(|_| ())
 }
 
 fn save_guarded(
     path: &str,
     document: &serde_json::Value,
+    owner: Option<&WriterGuard>,
     is_current: impl Fn() -> bool,
-) -> Result<bool, String> {
+) -> Result<bool, OwnedProjectError> {
+    validate_project_owner(path, owner)?;
     let root = PathBuf::from(path);
     let manifest = manifest_path(&root);
     let temporary = root.join(format!(
@@ -255,17 +492,19 @@ fn save_guarded(
         .create_new(true)
         .open(&temporary)
         .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
-    let written = (|| {
+    let written: Result<(), OwnedProjectError> = (|| {
         std::io::Write::write_all(&mut file, &encoded)
             .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
         file.sync_all()
             .map_err(|error| format!("could not flush {}: {error}", temporary.display()))
+            .map_err(OwnedProjectError::Project)
     })();
     drop(file);
     let result = written.and_then(|_| {
         if !is_current() {
             return Ok(false);
         }
+        validate_project_owner(path, owner)?;
         std::fs::rename(&temporary, &manifest)
             .map_err(|error| format!("could not replace {}: {error}", manifest.display()))?;
         Ok(true)
@@ -445,27 +684,36 @@ mod tests {
         let root = save_scratch();
         let path = root.to_string_lossy().into_owned();
         let lane = std::sync::Arc::new(SaveLane::default());
+        let owner = acquire_project_owner(&root).unwrap();
+        let old_owner = owner.clone();
         let old_ticket = lane.next();
         let (release, wait) = std::sync::mpsc::channel();
         let old_lane = lane.clone();
         let old_path = path.clone();
         let old = std::thread::spawn(move || {
             wait.recv().expect("release old save");
-            old_lane.write(
+            old_lane.write_owned(
                 old_ticket,
                 &old_path,
                 &serde_json::json!({"version": "old"}),
+                old_owner.as_ref(),
             )
         });
 
         let new_ticket = lane.next();
         assert!(
-            lane.write(new_ticket, &path, &serde_json::json!({"version": "new"}))
-                .unwrap()
+            lane.write_owned(
+                new_ticket,
+                &path,
+                &serde_json::json!({"version": "new"}),
+                owner.as_ref()
+            )
+            .unwrap()
         );
         release.send(()).unwrap();
         assert!(!old.join().unwrap().unwrap());
         assert_eq!(read_document(&path).unwrap()["version"], "new");
+        drop(owner);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -474,6 +722,8 @@ mod tests {
         let root = save_scratch();
         let path = root.to_string_lossy().into_owned();
         let lane = std::sync::Arc::new(SaveLane::default());
+        let owner = acquire_project_owner(&root).unwrap();
+        let old_owner = owner.clone();
         let old_ticket = lane.next();
         let (entered, inside) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
@@ -484,6 +734,7 @@ mod tests {
                 old_ticket,
                 &old_path,
                 &serde_json::json!({"version": "old"}),
+                old_owner.as_ref(),
                 || {
                     entered.send(()).unwrap();
                     wait.recv().unwrap();
@@ -495,14 +746,16 @@ mod tests {
         let close_ticket = lane.next();
         let close_lane = lane.clone();
         let close_path = path.clone();
+        let close_owner = owner.clone();
         let (started, starting) = std::sync::mpsc::channel();
         let (finished, result) = std::sync::mpsc::channel();
         let close = std::thread::spawn(move || {
             started.send(()).unwrap();
-            let saved = close_lane.write(
+            let saved = close_lane.write_owned(
                 close_ticket,
                 &close_path,
                 &serde_json::json!({"version": "closed"}),
+                close_owner.as_ref(),
             );
             finished.send(saved).unwrap();
         });
@@ -516,7 +769,47 @@ mod tests {
         close.join().unwrap();
         assert!(result.recv().unwrap().unwrap());
         assert_eq!(read_document(&path).unwrap()["version"], "closed");
+        drop(owner);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_late_creator_rechecks_current_and_legacy_after_acquiring_owner() {
+        for legacy in [false, true] {
+            let scratch = save_scratch();
+            let root = scratch.join("Shared");
+            std::fs::create_dir(&root).unwrap();
+            assert!(
+                !is_project(&root),
+                "the late creator's original observation"
+            );
+            let first =
+                create_owned(&scratch.to_string_lossy(), "Shared", 1920, 1080, 30, 1).unwrap();
+            if legacy {
+                std::fs::rename(root.join(MANIFEST), root.join(LEGACY_MANIFESTS[0])).unwrap();
+            }
+            let manifest = manifest_path(&root);
+            let before = std::fs::read(&manifest).unwrap();
+            let _artifact = first.into_info();
+            // The contender now gets ownership, but the earlier empty-folder
+            // observation must not authorize truncating the winner's manifest.
+            let late_owner = acquire_project_owner(&root).unwrap();
+            let late = finish_creation(root, "Replacement", 1, 1, 1, 1, late_owner);
+            assert!(matches!(late, Err(OwnedProjectError::Project(_))));
+            assert_eq!(std::fs::read(&manifest).unwrap(), before);
+            std::fs::remove_dir_all(scratch).unwrap();
+        }
+    }
+
+    #[test]
+    fn initial_creation_never_follows_or_truncates_an_existing_manifest_entry() {
+        let scratch = save_scratch();
+        let root = scratch.join("Existing");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(root.join(MANIFEST)).unwrap();
+        assert!(create_owned(&scratch.to_string_lossy(), "Existing", 1, 1, 1, 1).is_err());
+        assert!(root.join(MANIFEST).is_dir());
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     #[test]
