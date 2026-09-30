@@ -12,6 +12,19 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Whether native project sessions use the audited desktop ownership path.
+/// Other native platforms keep their existing editing behavior without an OS
+/// writer guard; this does not enable or grant any MCP writing capability.
+pub const fn desktop_writer_ownership_supported() -> bool {
+    cfg!(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))
+}
+
 #[derive(Debug)]
 /// A failed writer acquisition or filesystem identity resolution.
 pub enum OwnershipError {
@@ -148,9 +161,9 @@ impl ResourceIdentity {
         })
     }
 
-    /// Resolves an existing regular `.comp` file or an absent `.comp` entry
+    /// Resolves an existing `.comp` directory package or an absent `.comp` entry
     /// below an existing parent. Existing symlinks resolve to their final target;
-    /// dangling symlinks and hard links are refused. This creates stable private
+    /// dangling symlinks and regular-file targets are refused. This creates stable private
     /// sidecars if needed, but creates no document and acquires no writer lock.
     pub fn for_canvas(path: impl AsRef<Path>) -> Result<Self, OwnershipError> {
         let path = path.as_ref();
@@ -300,6 +313,140 @@ impl WriterGuard {
     pub fn identity(&self) -> &ResourceIdentity {
         &self.inner.identity
     }
+
+    /// Checks the held file and its current directory entries without creating
+    /// any filesystem entries or acquiring another lock. A stale owner fails.
+    pub fn validate(&self) -> Result<(), OwnershipError> {
+        let identity = self.identity();
+        identity.verify()?;
+        if checked_lock_metadata(&self.inner._file, &identity.lock_path)? != identity.lock_id {
+            return Err(ambiguous(&identity.lock_path, "held lock identity changed"));
+        }
+        Ok(())
+    }
+
+    /// Matches an existing project root to this owner using OS identity only.
+    /// Missing/unopened targets return false. No sidecar is created or opened.
+    pub fn matches_project(&self, path: impl AsRef<Path>) -> Result<bool, OwnershipError> {
+        let identity = self.identity();
+        if identity.kind != Kind::Project {
+            return Ok(false);
+        }
+        let path = path.as_ref();
+        let Some(root) = existing_lookup_directory(path)? else {
+            if std::path::absolute(path).map_err(|error| io_error(path, error))? == identity.root {
+                self.validate()?;
+            }
+            return Ok(false);
+        };
+        let root_id = os_identity(&metadata(&root)?, &root)?;
+        if root_id != identity.root_id && root != identity.root {
+            return Ok(false);
+        }
+        // Validate only a relevant owner, so a stale unrelated Session cannot
+        // hide a matching Session during a caller's read-only lookup loop.
+        self.validate()?;
+        verify_lock_entry(&root.join(".seecut-writer.lock"), identity.lock_id)?;
+        Ok(true)
+    }
+
+    /// Matches a canvas entry, including an absent document whose stable
+    /// sidecar already exists. Missing other targets return false, with no
+    /// directory/file creation and no independent lock acquisition.
+    pub fn matches_canvas(&self, path: impl AsRef<Path>) -> Result<bool, OwnershipError> {
+        let identity = self.identity();
+        if identity.kind != Kind::Canvas {
+            return Ok(false);
+        }
+        let path = path.as_ref();
+        let target = match fs::symlink_metadata(path) {
+            Ok(_) => {
+                let resolved = fs::canonicalize(path).map_err(|error| target_error(path, error))?;
+                validate_canvas(&resolved)?;
+                resolved
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let name = path
+                    .file_name()
+                    .ok_or_else(|| invalid(path, "missing filename"))?;
+                let parent = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                let Some(parent) = existing_lookup_directory(parent)? else {
+                    if std::path::absolute(path).map_err(|error| io_error(path, error))?
+                        == identity.target
+                    {
+                        self.validate()?;
+                    }
+                    return Ok(false);
+                };
+                parent.join(name)
+            }
+            Err(error) => return Err(io_error(path, error)),
+        };
+        if !target
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("comp"))
+        {
+            return Err(invalid(&target, "canvas filename must end in .comp"));
+        }
+        let root = target
+            .parent()
+            .ok_or_else(|| invalid(&target, "missing parent"))?;
+        let root_id = os_identity(&metadata(root)?, root)?;
+        if root_id != identity.root_id && root != identity.root {
+            return Ok(false);
+        }
+        let directory = root.join(".seecut-canvas-locks");
+        let sidecar = directory.join(
+            target
+                .file_name()
+                .ok_or_else(|| invalid(&target, "missing filename"))?,
+        );
+        let meta = match fs::symlink_metadata(&sidecar) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if target == identity.target {
+                    self.validate()?;
+                }
+                return Ok(false);
+            }
+            Err(error) => return Err(io_error(&sidecar, error)),
+        };
+        validate_lock_meta(&meta, &sidecar)?;
+        let sidecar_id = os_identity(&meta, &sidecar)?;
+        let same_entry = sidecar_id == identity.lock_id
+            || target == identity.target
+            || fs::canonicalize(&sidecar).map_err(|error| io_error(&sidecar, error))?
+                == identity.lock_path;
+        if !same_entry {
+            return Ok(false);
+        }
+        self.validate()?;
+        verify_directory(&directory, identity.lock_directory_id)?;
+        Ok(sidecar_id == identity.lock_id)
+    }
+}
+
+fn existing_lookup_directory(path: &Path) -> Result<Option<PathBuf>, OwnershipError> {
+    match fs::canonicalize(path) {
+        Ok(canonical) => {
+            if !metadata(&canonical)?.is_dir() {
+                return Err(invalid(path, "expected an existing directory"));
+            }
+            Ok(Some(canonical))
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(io_error(path, error)),
+    }
 }
 
 fn metadata(path: &Path) -> Result<Metadata, OwnershipError> {
@@ -316,14 +463,16 @@ fn canonical_directory(path: &Path) -> Result<PathBuf, OwnershipError> {
 
 fn validate_canvas(path: &Path) -> Result<(), OwnershipError> {
     let meta = metadata(path)?;
-    if !meta.is_file() || meta.file_type().is_symlink() {
-        return Err(invalid(path, "expected a regular canvas file"));
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(invalid(path, "expected a canvas directory package"));
     }
-    reject_hardlinks(&meta, path)
+    // Directory nlink naturally counts its children. Only the independent
+    // regular lock sidecar needs the single-hardlink rule.
+    Ok(())
 }
 
 fn verify_directory(path: &Path, expected: FileIdentity) -> Result<(), OwnershipError> {
-    let meta = metadata(path)?;
+    let meta = stable_entry_metadata(path)?;
     if meta.file_type().is_symlink() || !meta.is_dir() || os_identity(&meta, path)? != expected {
         return Err(ambiguous(
             path,
@@ -437,7 +586,7 @@ fn checked_lock_metadata(file: &File, path: &Path) -> Result<FileIdentity, Owner
 }
 
 fn verify_lock_entry(path: &Path, expected: FileIdentity) -> Result<(), OwnershipError> {
-    let meta = metadata(path)?;
+    let meta = stable_entry_metadata(path)?;
     validate_lock_meta(&meta, path)?;
     if os_identity(&meta, path)? != expected {
         return Err(ambiguous(
@@ -446,6 +595,19 @@ fn verify_lock_entry(path: &Path, expected: FileIdentity) -> Result<(), Ownershi
         ));
     }
     Ok(())
+}
+
+fn stable_entry_metadata(path: &Path) -> Result<Metadata, OwnershipError> {
+    fs::symlink_metadata(path).map_err(|error| {
+        if matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+        ) {
+            ambiguous(path, "owned directory or sidecar disappeared")
+        } else {
+            io_error(path, error)
+        }
+    })
 }
 
 fn validate_lock_meta(meta: &Metadata, path: &Path) -> Result<(), OwnershipError> {

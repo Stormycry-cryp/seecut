@@ -463,6 +463,12 @@ pub enum ErrorCode {
     /// The transport wanted a token and did not get the right one. Never
     /// raised by the API itself.
     Unauthorized,
+    /// Another independent writer owns the project.
+    OwnershipConflict,
+    /// The owned project or its lock entry changed filesystem identity.
+    OwnershipIdentityChanged,
+    /// The platform, filesystem or alias cannot provide writer ownership.
+    OwnershipUnavailable,
     /// Everything else: a file that could not be read or written, a decode
     /// that failed, a model that did not download.
     Failed,
@@ -482,6 +488,9 @@ impl ErrorCode {
             ErrorCode::Busy => -32004,
             ErrorCode::Cancelled => -32005,
             ErrorCode::Unauthorized => -32006,
+            ErrorCode::OwnershipConflict => -32007,
+            ErrorCode::OwnershipIdentityChanged => -32008,
+            ErrorCode::OwnershipUnavailable => -32009,
         }
     }
 }

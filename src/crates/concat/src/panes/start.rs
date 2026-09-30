@@ -105,8 +105,9 @@ impl StartPane {
             self.error = t("Choose where the project folder should go");
             return;
         }
-        let opened = projects::create(&self.location, &name, width, height, num, den)
-            .and_then(|info| studio.open_project(info));
+        let opened = projects::create_owned(&self.location, &name, width, height, num, den)
+            .map_err(|error| error.to_string())
+            .and_then(|created| studio.open_created_project(created));
         self.opened(opened);
     }
 

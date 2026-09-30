@@ -8,14 +8,16 @@
 //! state is what the window draws. The window never keeps a model of its
 //! own; it renders the [`Project`] this session hands back.
 //!
-//! Saving reuses `projects::save`'s temp-file-and-rename, so the document on
+//! Saving reuses `projects::save_owned`'s temp-file-and-rename, so the document on
 //! disk is written by exactly one code path.
 
 use concat_project::model::VideoSettings;
 use concat_project::{Command, DocumentSettings, Editor, Project};
 use serde::Serialize;
 
+use crate::ownership::WriterGuard;
 use crate::projects;
+use crate::projects::{CreatedProject, OwnedProjectError};
 
 /// One open project: its folder, its settings and its undo history.
 pub struct Session {
@@ -23,6 +25,9 @@ pub struct Session {
     path: String,
     settings: DocumentSettings,
     editor: Editor,
+    // Some on audited desktop platforms. None preserves native compatibility
+    // elsewhere without claiming ownership protection or granting MCP writes.
+    owner: Option<WriterGuard>,
 }
 
 /// What every mutating call returns: the authoritative state plus history
@@ -63,7 +68,7 @@ pub struct SettingsView {
 impl Session {
     /// Opens a project folder as the editing session.
     ///
-    /// A folder whose document is missing or unreadable opens as an empty
+    /// A folder whose document is missing opens as an empty
     /// project rather than failing, but a *corrupt* document is an error,
     /// because silently replacing an edit with emptiness is how projects get
     /// lost. `settings` come from the manifest and seed the first timeline
@@ -71,8 +76,47 @@ impl Session {
     /// every timeline's own frame with it, and those win, because that is
     /// where an edited frame was saved.
     pub fn open(path: &str, settings: DocumentSettings) -> Result<Session, String> {
-        let editor = match projects::read_document(path) {
-            Ok(document) => match Editor::from_document(&document) {
+        Self::open_owned(path, settings).map_err(|error| error.to_string())
+    }
+
+    /// Opens an independent writer with typed ownership/project errors. The
+    /// owner is acquired before reading any mutable document state.
+    pub fn open_owned(
+        path: &str,
+        settings: DocumentSettings,
+    ) -> Result<Session, OwnedProjectError> {
+        let owner = projects::acquire_project_owner(std::path::Path::new(path))?;
+        let path = owner
+            .as_ref()
+            .map(|owner| owner.identity().target().to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_owned());
+        Self::load_owned(path, settings, owner)
+    }
+
+    pub(crate) fn from_created(created: CreatedProject) -> Result<Session, OwnedProjectError> {
+        let (info, owner) = created.into_parts();
+        let settings = settings_from_info(&info);
+        Self::load_owned(info.path, settings, owner)
+    }
+
+    fn load_owned(
+        path: String,
+        settings: DocumentSettings,
+        owner: Option<WriterGuard>,
+    ) -> Result<Session, OwnedProjectError> {
+        projects::validate_project_owner(&path, owner.as_ref())?;
+        // Only a genuinely absent manifest seeds emptiness. A failed read or
+        // JSON parse of an existing document must not prepare an empty overwrite.
+        let manifest = projects::manifest_path(std::path::Path::new(&path));
+        let document = match std::fs::symlink_metadata(&manifest) {
+            Ok(_) => Some(projects::read_document(&path)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(format!("could not inspect {}: {error}", manifest.display()).into());
+            }
+        };
+        let editor = match document {
+            Some(document) => match Editor::from_document(&document) {
                 Some(editor) => editor,
                 // The settings-only manifest `create` writes: a project
                 // closed before its first edit reopens empty, it is not
@@ -85,34 +129,63 @@ impl Session {
                 {
                     return Err(format!(
                         "{path} was saved by a newer Concat than this one: update to open it"
-                    ));
+                    )
+                    .into());
                 }
                 None => {
-                    return Err(format!("{path} holds a document this build cannot read"));
+                    return Err(format!("{path} holds a document this build cannot read").into());
                 }
             },
             // No document yet - a project created moments ago.
-            Err(_) => Editor::with_video(settings.video()),
+            None => Editor::with_video(settings.video()),
         };
         Ok(Session {
-            path: path.to_owned(),
+            path,
             settings,
             editor,
+            owner,
         })
     }
 
     /// Opens the project a [`projects::ProjectInfo`] describes.
     pub fn open_info(info: &projects::ProjectInfo) -> Result<Session, String> {
-        Session::open(
-            &info.path,
-            DocumentSettings {
-                name: info.name.clone(),
-                width: info.width,
-                height: info.height,
-                rate_num: info.rate_num,
-                rate_den: info.rate_den,
-            },
-        )
+        Self::open_info_owned(info).map_err(|error| error.to_string())
+    }
+
+    /// Opens the described independent writer with branchable ownership errors.
+    pub fn open_info_owned(info: &projects::ProjectInfo) -> Result<Session, OwnedProjectError> {
+        Self::open_owned(&info.path, settings_from_info(info))
+    }
+
+    /// Checks whether this Session already owns a target, without creating a
+    /// sidecar or opening a second writer. Unrelated missing targets are false.
+    pub fn matches_project(&self, path: &str) -> Result<bool, OwnedProjectError> {
+        if let Some(owner) = self.owner.as_ref() {
+            return Ok(owner.matches_project(path)?);
+        }
+        // Portable native compatibility: canonical comparison only, no claim
+        // that another writer is prevented and no ownership sidecar creation.
+        match std::fs::canonicalize(path) {
+            Ok(target) => Ok(target
+                == std::fs::canonicalize(&self.path)
+                    .map_err(|error| format!("could not resolve {}: {error}", self.path))?),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(format!("could not resolve {path}: {error}").into()),
+        }
+    }
+
+    /// Retains the Session's existing owner for a save worker. This clone must
+    /// live until that worker finishes or is discarded; it cannot create another
+    /// logical Session. None is the explicit unsupported-native compatibility path.
+    pub fn writer_guard(&self) -> Option<WriterGuard> {
+        self.owner.clone()
     }
 
     /// The project folder.
@@ -244,8 +317,14 @@ impl Session {
 
     /// Writes the session's document to its project folder.
     pub fn save(&mut self, name: Option<&str>) -> Result<(), String> {
+        self.save_owned(name).map_err(|error| error.to_string())
+    }
+
+    /// Saves through the existing owner with typed errors, never reacquiring a
+    /// second independent writer against this Session's own lock.
+    pub fn save_owned(&mut self, name: Option<&str>) -> Result<(), OwnedProjectError> {
         let (path, document) = self.prepare_save(name);
-        projects::save(&path, &document)
+        projects::save_owned(&path, &document, self.owner.as_ref())
     }
 
     /// The document as it would be saved.
@@ -262,6 +341,16 @@ impl Session {
             None,
             Some(std::path::Path::new(&self.path)),
         )
+    }
+}
+
+fn settings_from_info(info: &projects::ProjectInfo) -> DocumentSettings {
+    DocumentSettings {
+        name: info.name.clone(),
+        width: info.width,
+        height: info.height,
+        rate_num: info.rate_num,
+        rate_den: info.rate_den,
     }
 }
 
@@ -306,7 +395,8 @@ mod tests {
             })
             .expect("sets the frame");
         session.save(Some("Renamed")).expect("saves");
-
+        let track_count = session.project().active().tracks.len();
+        drop(session);
         let reopened = Session::open(&info.path, settings()).expect("reopens");
         assert_eq!(
             reopened.settings().name,
@@ -319,10 +409,7 @@ mod tests {
             "the document's frame wins over the manifest's"
         );
         assert_eq!(reopened.settings().rate_num, 25, "and so does its rate");
-        assert_eq!(
-            reopened.project().active().tracks.len(),
-            session.project().active().tracks.len()
-        );
+        assert_eq!(reopened.project().active().tracks.len(), track_count);
 
         let _ = std::fs::remove_dir_all(&scratch);
     }
@@ -337,5 +424,116 @@ mod tests {
             .expect("writes");
         assert!(Session::open(&scratch.to_string_lossy(), settings()).is_err());
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn malformed_json_is_refused_without_retaining_a_writer() {
+        let scratch = projects_test_dir("malformed");
+        std::fs::write(scratch.join("concat.json"), b"{broken").unwrap();
+        assert!(matches!(
+            Session::open_owned(&scratch.to_string_lossy(), settings()),
+            Err(OwnedProjectError::Project(_))
+        ));
+        std::fs::write(scratch.join("concat.json"), b"{}").unwrap();
+        assert!(Session::open_owned(&scratch.to_string_lossy(), settings()).is_ok());
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    fn projects_test_dir(label: &str) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "concat-session-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    #[test]
+    fn creator_handoff_and_save_worker_keep_the_same_uninterrupted_owner() {
+        let scratch = projects_test_dir("handoff");
+        let created =
+            projects::create_owned(&scratch.to_string_lossy(), "Fresh", 1920, 1080, 30, 1).unwrap();
+        let info = created.info().clone();
+        assert!(matches!(
+            Session::open_info_owned(&info),
+            Err(OwnedProjectError::Ownership(
+                crate::ownership::OwnershipError::Conflict { .. }
+            ))
+        ));
+        let mut session = created.into_session().unwrap();
+        assert!(matches!(
+            Session::open_info_owned(&info),
+            Err(OwnedProjectError::Ownership(
+                crate::ownership::OwnershipError::Conflict { .. }
+            ))
+        ));
+        session.apply(Command::AddTrack).unwrap();
+        let expected_tracks = session.project().active().tracks.len();
+        session.save_owned(None).unwrap();
+        let worker_owner = session.writer_guard().unwrap();
+        let (path, document) = session.prepare_save(None);
+        drop(session);
+        assert!(matches!(
+            Session::open_info_owned(&info),
+            Err(OwnedProjectError::Ownership(
+                crate::ownership::OwnershipError::Conflict { .. }
+            ))
+        ));
+        let lane = projects::SaveLane::default();
+        assert!(
+            lane.write_owned(lane.next(), &path, &document, Some(&worker_owner))
+                .unwrap()
+        );
+        drop(worker_owner);
+        let reopened = Session::open_info_owned(&info).unwrap();
+        assert_eq!(reopened.project().active().tracks.len(), expected_tracks);
+        drop(reopened);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    #[test]
+    fn a_stale_owner_cannot_save_or_hide_an_unrelated_lookup() {
+        let scratch = projects_test_dir("stale");
+        let created =
+            projects::create_owned(&scratch.to_string_lossy(), "First", 1920, 1080, 30, 1).unwrap();
+        let mut session = created.into_session().unwrap();
+        let path = session.path().to_owned();
+        let before = std::fs::read(std::path::Path::new(&path).join("concat.json")).unwrap();
+        let lock = std::path::Path::new(&path).join(".seecut-writer.lock");
+        std::fs::rename(&lock, scratch.join("old-lock")).unwrap();
+        std::fs::write(&lock, b"replacement").unwrap();
+        let other = scratch.join("Other");
+        std::fs::create_dir(&other).unwrap();
+        assert!(!session.matches_project(&other.to_string_lossy()).unwrap());
+        assert!(!other.join(".seecut-writer.lock").exists());
+        assert!(matches!(
+            session.matches_project(&path),
+            Err(OwnedProjectError::Ownership(
+                crate::ownership::OwnershipError::IdentityAmbiguous { .. }
+            ))
+        ));
+        assert!(session.save_owned(None).is_err());
+        assert_eq!(
+            std::fs::read(std::path::Path::new(&path).join("concat.json")).unwrap(),
+            before
+        );
+        drop(session);
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 }

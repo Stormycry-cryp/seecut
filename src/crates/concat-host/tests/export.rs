@@ -513,11 +513,20 @@ impl Studio {
             .unwrap_or_else(|error| panic!("{label}: the export failed: {error}"));
 
         self.session.save(None).expect("saves the project");
-        let reopened = Session::open(self.session.path(), self.session.settings())
-            .unwrap_or_else(|error| panic!("{label}: the saved project does not reopen: {error}"));
+        // Read the saved bytes through the engine while the real writer stays
+        // open; a second independent writable Session must now conflict.
+        let document = projects::read_document(self.session.path())
+            .unwrap_or_else(|error| panic!("{label}: the saved project does not read: {error}"));
+        let reopened = concat_project::Editor::from_document(&document)
+            .unwrap_or_else(|| panic!("{label}: the saved project does not parse"));
+        let saved_clips = concat_export::flatten::flatten_timeline_in(
+            reopened.project(),
+            None,
+            Some(Path::new(self.session.path())),
+        );
         assert!(
-            reopened.flattened_clips() == self.session.flattened_clips(),
-            "{label}: the project flattens differently after a save and reopen"
+            saved_clips == self.session.flattened_clips(),
+            "{label}: the project flattens differently after reading its saved document"
         );
 
         Exported::read(

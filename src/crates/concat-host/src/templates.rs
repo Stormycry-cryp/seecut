@@ -94,8 +94,17 @@ pub fn save(
     name: &str,
 ) -> Result<TemplateInfo, String> {
     let root = templates_dir(config).join(projects::folder_name(name));
-    if root.join(MANIFEST).exists() {
-        return Err(format!("a template named {name:?} already exists"));
+    std::fs::create_dir_all(&root)
+        .map_err(|error| format!("could not create {}: {error}", root.display()))?;
+    let owner = projects::acquire_project_owner(&root).map_err(|error| error.to_string())?;
+    projects::validate_project_owner(&root.to_string_lossy(), owner.as_ref())
+        .map_err(|error| error.to_string())?;
+    // Recheck after the bundle writer is held, so a late creator cannot use
+    // an earlier empty-folder observation to replace another completed bundle.
+    match std::fs::symlink_metadata(root.join(MANIFEST)) {
+        Ok(_) => return Err(format!("a template named {name:?} already exists")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("could not inspect template {name:?}: {error}")),
     }
     let assets = root.join(ASSETS);
     std::fs::create_dir_all(&assets)
@@ -128,7 +137,15 @@ pub fn save(
 
     let encoded = serde_json::to_vec_pretty(&document)
         .map_err(|error| format!("could not encode the template: {error}"))?;
-    std::fs::write(root.join(MANIFEST), encoded)
+    projects::validate_project_owner(&root.to_string_lossy(), owner.as_ref())
+        .map_err(|error| error.to_string())?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(root.join(MANIFEST))
+        .map_err(|error| format!("could not create the template: {error}"))?;
+    std::io::Write::write_all(&mut file, &encoded)
+        .and_then(|()| file.sync_all())
         .map_err(|error| format!("could not write the template: {error}"))?;
 
     // Best effort: a template without a poster is still a template.
@@ -275,6 +292,20 @@ pub fn instantiate(
     name: &str,
     fills: Vec<SlotFill>,
 ) -> Result<projects::ProjectInfo, String> {
+    instantiate_owned(template, location, name, fills)
+        .map(projects::CreatedProject::into_info)
+        .map_err(|error| error.to_string())
+}
+
+/// Fills a new project under its uninterrupted creator owner and returns a
+/// sealed handoff for Session adoption. No drop/reacquire window separates the
+/// settings-only manifest, asset filling, final save, and caller adoption.
+pub fn instantiate_owned(
+    template: &str,
+    location: &str,
+    name: &str,
+    fills: Vec<SlotFill>,
+) -> Result<projects::CreatedProject, projects::OwnedProjectError> {
     let bundle = PathBuf::from(template);
     let manifest = bundle.join(MANIFEST);
     let bytes = std::fs::read(&manifest)
@@ -289,10 +320,10 @@ pub fn instantiate(
         .filter(|slot| !fills.iter().any(|fill| fill.media_id == slot.media_id))
         .collect();
     if !unfilled.is_empty() {
-        return Err(format!("{} slot(s) still need a clip", unfilled.len()));
+        return Err(format!("{} slot(s) still need a clip", unfilled.len()).into());
     }
 
-    let project = projects::create(
+    let project = projects::create_owned(
         location,
         name,
         info.width,
@@ -300,12 +331,12 @@ pub fn instantiate(
         info.rate_num,
         info.rate_den,
     )?;
-    let root = PathBuf::from(&project.path);
+    let root = PathBuf::from(&project.info().path);
 
     // The bundle's assets move into the project so it stands alone; the
     // document's relative paths become project-local absolute ones.
     copy_assets(&bundle.join(ASSETS), &root.join(ASSETS))?;
-    document["name"] = Value::String(project.name.clone());
+    document["name"] = Value::String(project.info().name.clone());
     for section in ["media", "fonts"] {
         if let Some(items) = document.get_mut(section).and_then(Value::as_array_mut) {
             for item in items {
@@ -337,13 +368,13 @@ pub fn instantiate(
     }
 
     let settings = DocumentSettings {
-        name: project.name.clone(),
+        name: project.info().name.clone(),
         width: info.width,
         height: info.height,
         rate_num: info.rate_num,
         rate_den: info.rate_den,
     };
-    projects::save(&project.path, &editor.to_document(&settings))?;
+    project.save(&editor.to_document(&settings))?;
 
     // After the save, so the cached poster reads as fresh.
     if bundle.join(POSTER).is_file() {

@@ -43,7 +43,9 @@ use concat_export::{ExportClip, ExportRequest};
 pub use concat_host::AppDirs;
 use concat_host::cutout::{self, AnalyseRequest, Cutouts};
 use concat_host::export::{self, Exporter};
+use concat_host::ownership::OwnershipError;
 use concat_host::preview::{FrameSpec, Monitor};
+use concat_host::projects::{CreatedProject, OwnedProjectError};
 use concat_host::session::EditorView;
 use concat_host::templates::{self, SlotFill};
 use concat_host::{ProjectInfo, Session, Titles, media, projects};
@@ -72,7 +74,8 @@ pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
 /// The dispatcher: the open sessions and the services behind them.
 pub struct Api {
     dirs: AppDirs,
-    /// Open projects by canonical folder path.
+    /// Open projects by the path held by their session. Lookups use the
+    /// session's owned identity, so aliases share the same edit history.
     sessions: BTreeMap<String, Session>,
     titles: Titles,
     cutouts: Arc<Cutouts>,
@@ -235,7 +238,7 @@ impl Api {
         name: &str,
         video: VideoSettings,
     ) -> Result<EditorView, ApiError> {
-        let info = projects::create(
+        let created = projects::create_owned(
             location,
             name,
             video.width,
@@ -243,41 +246,49 @@ impl Api {
             video.rate_num,
             video.rate_den,
         )
-        .map_err(ApiError::failed)?;
-        self.adopt(info)
+        .map_err(owned_error)?;
+        self.adopt(created)
     }
 
     /// [`Request::ProjectOpen`].
     pub fn open(&mut self, path: &str) -> Result<EditorView, ApiError> {
-        let key = key_of(path);
-        if let Some(session) = self.sessions.get(&key) {
-            return Ok(session.view());
+        if let Some(key) = self.session_key(path)? {
+            return Ok(self.sessions[&key].view());
         }
         let info = projects::open(path).map_err(ApiError::failed)?;
-        self.adopt(info)
+        let session = Session::open_info_owned(&info).map_err(owned_error)?;
+        Ok(self.adopt_session(info, session))
     }
 
     /// Opens a session on a project the host just described and puts it at
     /// the front of the recents list.
-    fn adopt(&mut self, info: ProjectInfo) -> Result<EditorView, ApiError> {
-        let session = Session::open_info(&info).map_err(ApiError::failed)?;
+    fn adopt(&mut self, created: CreatedProject) -> Result<EditorView, ApiError> {
+        let info = created.info().clone();
+        let session = created.into_session().map_err(owned_error)?;
+        Ok(self.adopt_session(info, session))
+    }
+
+    fn adopt_session(&mut self, info: ProjectInfo, session: Session) -> EditorView {
         // Recents are a convenience for the launch screen; a machine whose
         // config folder cannot be written still edits.
         let _ = projects::remember(&self.dirs.config, &info);
         let view = session.view();
-        self.sessions.insert(key_of(&info.path), session);
-        Ok(view)
+        self.sessions.insert(session.path().to_owned(), session);
+        view
     }
 
     /// [`Request::ProjectClose`].
     pub fn close(&mut self, path: &str, save: bool) -> Result<(), ApiError> {
+        let key = self.session_key(path)?.ok_or_else(|| not_open(path))?;
         if save {
-            self.save(path, None)?;
+            self.sessions
+                .get_mut(&key)
+                .expect("the matched session is still open")
+                .save_owned(None)
+                .map_err(owned_error)?;
         }
-        self.sessions
-            .remove(&key_of(path))
-            .map(drop)
-            .ok_or_else(|| not_open(path))
+        self.sessions.remove(&key);
+        Ok(())
     }
 
     /// [`Request::ProjectList`].
@@ -287,7 +298,9 @@ impl Api {
 
     /// [`Request::ProjectSave`].
     pub fn save(&mut self, path: &str, name: Option<&str>) -> Result<(), ApiError> {
-        self.session_mut(path)?.save(name).map_err(ApiError::failed)
+        self.session_mut(path)?
+            .save_owned(name)
+            .map_err(owned_error)
     }
 
     /// [`Request::EditApply`].
@@ -322,9 +335,9 @@ impl Api {
                 })
             })
             .collect::<Result<Vec<SlotFill>, ApiError>>()?;
-        let info =
-            templates::instantiate(template, location, name, fills).map_err(ApiError::failed)?;
-        self.adopt(info)
+        let created =
+            templates::instantiate_owned(template, location, name, fills).map_err(owned_error)?;
+        self.adopt(created)
     }
 
     /// [`Request::TemplateSave`].
@@ -509,15 +522,27 @@ impl Api {
     }
 
     fn session(&self, path: &str) -> Result<&Session, ApiError> {
-        self.sessions
-            .get(&key_of(path))
-            .ok_or_else(|| not_open(path))
+        let key = self.session_key(path)?.ok_or_else(|| not_open(path))?;
+        Ok(&self.sessions[&key])
     }
 
     fn session_mut(&mut self, path: &str) -> Result<&mut Session, ApiError> {
-        self.sessions
-            .get_mut(&key_of(path))
-            .ok_or_else(|| not_open(path))
+        let key = self.session_key(path)?.ok_or_else(|| not_open(path))?;
+        Ok(self
+            .sessions
+            .get_mut(&key)
+            .expect("the matched session is still open"))
+    }
+
+    /// Resolve against identities already held by this API. This must not
+    /// create a sidecar or acquire a second writer for a lookup.
+    fn session_key(&self, path: &str) -> Result<Option<String>, ApiError> {
+        for (key, session) in &self.sessions {
+            if session.matches_project(path).map_err(owned_error)? {
+                return Ok(Some(key.clone()));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -668,13 +693,24 @@ fn catalogue(kind: Option<&str>) -> Result<Vec<PackageInfo>, ApiError> {
     Ok(packages)
 }
 
-/// The key a project folder is held under: its canonical path where the
-/// folder exists, so `.` and an absolute spelling of it are one session,
-/// and the path as given where it does not yet.
-fn key_of(path: &str) -> String {
-    std::fs::canonicalize(path)
-        .map(|canonical| canonical.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| path.to_owned())
+/// Preserve the host's typed ownership failures across every API writer.
+fn owned_error(error: OwnedProjectError) -> ApiError {
+    let code = match &error {
+        OwnedProjectError::Ownership(OwnershipError::Conflict { .. }) => {
+            ErrorCode::OwnershipConflict
+        }
+        OwnedProjectError::Ownership(OwnershipError::IdentityAmbiguous { .. }) => {
+            ErrorCode::OwnershipIdentityChanged
+        }
+        OwnedProjectError::Ownership(
+            OwnershipError::UnsupportedLock { .. } | OwnershipError::UnsupportedAlias { .. },
+        ) => ErrorCode::OwnershipUnavailable,
+        OwnedProjectError::Ownership(OwnershipError::InvalidTarget { .. }) => ErrorCode::Invalid,
+        OwnedProjectError::Ownership(OwnershipError::Io { .. }) | OwnedProjectError::Project(_) => {
+            ErrorCode::Failed
+        }
+    };
+    ApiError::new(code, error.to_string())
 }
 
 fn not_open(path: &str) -> ApiError {
@@ -941,6 +977,14 @@ mod tests {
             video: None,
         };
         ok(api.dispatch(create()));
+        if concat_host::ownership::desktop_writer_ownership_supported() {
+            assert_eq!(
+                err(api.dispatch(create())).code,
+                ErrorCode::OwnershipConflict
+            );
+        }
+        api.close(&format!("{location}/Twice"), false)
+            .expect("release the first creator's session");
         let again = err(api.dispatch(create()));
         assert_eq!(again.code, ErrorCode::Failed);
         assert!(again.message.contains("already exists"));
@@ -1034,6 +1078,7 @@ mod tests {
     fn an_export_is_a_job_that_reports_how_it_ended() {
         let (mut api, scratch, events) = api();
         let path = project(&mut api, &scratch, "Job");
+        let owned_path = api.session(&path).expect("session").path().to_owned();
         // A still that does not exist: the job starts, since the timeline
         // has a clip, and fails in the render, which is an event.
         let added = view(ok(api.dispatch(Request::EditApply {
@@ -1064,6 +1109,7 @@ mod tests {
             _ => panic!("not a job"),
         };
         assert_eq!(started.job, "j1");
+        assert_eq!(started.path, owned_path);
         api.finish();
         let events = events.lock().expect("events");
         let last = events.last().expect("the job said how it ended");
@@ -1072,7 +1118,7 @@ mod tests {
             Event::ExportFailed {
                 path: at, error, ..
             } => {
-                assert_eq!(at, &path);
+                assert_eq!(at, &owned_path);
                 assert_eq!(error.code, ErrorCode::Failed);
             }
             other => panic!("ended with {other:?}"),
@@ -1110,5 +1156,330 @@ mod tests {
             height: Some(9),
         }));
         assert_eq!(refused.code, ErrorCode::Invalid);
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    mod ownership {
+        use super::*;
+
+        fn add_text(api: &mut Api, path: &str) -> EditorView {
+            api.apply(
+                path,
+                Command::AddTextClip {
+                    track_id: None,
+                    start: 0.0,
+                    style: None,
+                    duration: Some(3.0),
+                    offset_y: None,
+                },
+            )
+            .expect("edit")
+        }
+
+        #[test]
+        fn independent_api_and_native_sessions_cannot_open_the_same_writer() {
+            let (mut first, scratch, _) = api();
+            let path = project(&mut first, &scratch, "Owned");
+            let manifest = projects::manifest_path(Path::new(&path));
+            let before = std::fs::read(&manifest).expect("manifest");
+            let (mut second, _other, _) = api();
+            assert_eq!(
+                second.open(&path).err().expect("conflict").code,
+                ErrorCode::OwnershipConflict
+            );
+            let info = projects::open(&path).expect("info");
+            assert!(matches!(
+                Session::open_info_owned(&info),
+                Err(OwnedProjectError::Ownership(
+                    OwnershipError::Conflict { .. }
+                ))
+            ));
+            assert_eq!(
+                std::fs::read(&manifest).expect("unchanged manifest"),
+                before
+            );
+            first.close(&path, false).expect("close releases owner");
+            let native = Session::open_info_owned(&info).expect("native opens after close");
+            assert_eq!(
+                second.open(&path).err().expect("native conflict").code,
+                ErrorCode::OwnershipConflict
+            );
+            drop(native);
+            second.open(&path).expect("native drop releases owner");
+        }
+
+        #[test]
+        fn create_cannot_write_a_root_already_owned_by_a_native_session() {
+            let (mut api, scratch, _) = api();
+            let root = scratch.path().join("Reserved");
+            std::fs::create_dir(&root).expect("empty root");
+            let native = Session::open_owned(
+                &root.to_string_lossy(),
+                concat_project::DocumentSettings {
+                    name: "Reserved".to_owned(),
+                    width: 1920,
+                    height: 1080,
+                    rate_num: 30,
+                    rate_den: 1,
+                },
+            )
+            .expect("native owns empty root");
+            let entries_before: Vec<_> = std::fs::read_dir(&root)
+                .expect("entries")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect();
+            let error = api
+                .create(
+                    &scratch.path().to_string_lossy(),
+                    "Reserved",
+                    VideoSettings::default(),
+                )
+                .err()
+                .expect("create refuses owner");
+            assert_eq!(error.code, ErrorCode::OwnershipConflict);
+            let entries_after: Vec<_> = std::fs::read_dir(&root)
+                .expect("entries")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect();
+            assert_eq!(entries_after, entries_before);
+            assert!(!projects::manifest_path(&root).exists());
+            drop(native);
+            api.create(
+                &scratch.path().to_string_lossy(),
+                "Reserved",
+                VideoSettings::default(),
+            )
+            .expect("creator hands its owner to API session");
+        }
+
+        #[test]
+        fn canonical_and_symlink_requests_share_unsaved_edit_history() {
+            let (mut api, scratch, _) = api();
+            let path = project(&mut api, &scratch, "Aliases");
+            let canonical = std::fs::canonicalize(&path)
+                .expect("canonical")
+                .to_string_lossy()
+                .into_owned();
+            let alias = scratch.path().join("Alias");
+            std::os::unix::fs::symlink(&path, &alias).expect("alias");
+            let alias = alias.to_string_lossy().into_owned();
+            let edited = add_text(&mut api, &path);
+            for spelling in [&path, &canonical, &alias] {
+                let reopened = api.open(spelling).expect("reuse owner");
+                assert_eq!(reopened.project.active().clips.len(), 1);
+                assert!(reopened.can_undo);
+                let fetched = view(ok(api.dispatch(Request::ProjectGet {
+                    path: spelling.clone(),
+                })));
+                assert_eq!(
+                    fetched.project.active().clips.len(),
+                    edited.project.active().clips.len()
+                );
+                let document = match ok(api.dispatch(Request::ProjectDocument {
+                    path: spelling.clone(),
+                })) {
+                    Reply::Document(document) => document,
+                    _ => panic!("document"),
+                };
+                assert_eq!(document, api.session(&path).expect("session").document());
+            }
+            assert_eq!(api.sessions.len(), 1);
+            let undone = view(ok(api.dispatch(Request::EditUndo {
+                path: alias.clone(),
+            })));
+            assert!(undone.project.active().clips.is_empty());
+            let redone = view(ok(api.dispatch(Request::EditRedo { path: canonical })));
+            assert_eq!(redone.project.active().clips.len(), 1);
+            add_text(&mut api, &alias);
+            api.save(&alias, None).expect("save via alias");
+            api.close(&alias, true).expect("close via alias");
+            assert!(api.sessions.is_empty());
+            let reopened = api.open(&path).expect("reopen saved edit");
+            assert_eq!(reopened.project.active().clips.len(), 2);
+            assert!(!reopened.can_undo);
+        }
+
+        #[test]
+        fn unopened_lookups_do_not_create_sidecars() {
+            let (mut api, scratch, _) = api();
+            project(&mut api, &scratch, "Held");
+            let unopened = scratch.path().join("Unopened");
+            std::fs::create_dir(&unopened).expect("unopened root");
+            let path = unopened.to_string_lossy().into_owned();
+            let requests = [
+                Request::ProjectGet { path: path.clone() },
+                Request::ProjectDocument { path: path.clone() },
+                Request::EditUndo { path: path.clone() },
+                Request::EditRedo { path: path.clone() },
+                Request::ProjectSave {
+                    path: path.clone(),
+                    name: None,
+                },
+                Request::ProjectClose {
+                    path: path.clone(),
+                    save: true,
+                },
+                Request::ProjectClose {
+                    path: path.clone(),
+                    save: false,
+                },
+                Request::EditApply {
+                    path,
+                    command: Box::new(Command::AddTextClip {
+                        track_id: None,
+                        start: 0.0,
+                        style: None,
+                        duration: None,
+                        offset_y: None,
+                    }),
+                },
+            ];
+            for request in requests {
+                assert_eq!(err(api.dispatch(request)).code, ErrorCode::NotOpen);
+                assert_eq!(std::fs::read_dir(&unopened).expect("entries").count(), 0);
+            }
+        }
+
+        #[test]
+        fn close_with_a_failed_save_keeps_the_owner_and_unsaved_history() {
+            let (mut api, scratch, _) = api();
+            let path = project(&mut api, &scratch, "Save failure");
+            add_text(&mut api, &path);
+            let manifest = projects::manifest_path(Path::new(&path));
+            let backup = scratch.path().join("saved-manifest.json");
+            std::fs::rename(&manifest, &backup).expect("backup manifest");
+            std::fs::create_dir(&manifest).expect("manifest target blocks rename");
+            assert_eq!(
+                api.close(&path, true).expect_err("save fails").code,
+                ErrorCode::Failed
+            );
+            let retained = api.session(&path).expect("session retained").view();
+            assert_eq!(retained.project.active().clips.len(), 1);
+            assert!(retained.can_undo);
+            std::fs::remove_dir(&manifest).expect("remove blocker");
+            std::fs::rename(&backup, &manifest).expect("restore manifest");
+            let info = projects::open(&path).expect("info");
+            assert!(matches!(
+                Session::open_info_owned(&info),
+                Err(OwnedProjectError::Ownership(
+                    OwnershipError::Conflict { .. }
+                ))
+            ));
+            api.close(&path, true).expect("retry saves and closes");
+            let native = Session::open_info_owned(&info).expect("owner released");
+            assert_eq!(native.project().active().clips.len(), 1);
+        }
+
+        #[test]
+        fn failed_candidate_load_releases_only_its_owner() {
+            let (mut api, scratch, _) = api();
+            let held = project(&mut api, &scratch, "Held");
+            add_text(&mut api, &held);
+            let candidate = project(&mut api, &scratch, "Candidate");
+            api.save(&candidate, None).expect("full document");
+            api.close(&candidate, false).expect("close candidate");
+            let manifest = projects::manifest_path(Path::new(&candidate));
+            let bytes = std::fs::read(&manifest).expect("manifest");
+            let mut document: serde_json::Value = serde_json::from_slice(&bytes).expect("document");
+            document["version"] = json!(concat_project::DOCUMENT_VERSION + 1);
+            std::fs::write(&manifest, serde_json::to_vec(&document).expect("encode"))
+                .expect("newer document");
+            assert_eq!(
+                api.open(&candidate).err().expect("load fails").code,
+                ErrorCode::Failed
+            );
+            let retained = api.session(&held).expect("held session").view();
+            assert_eq!(retained.project.active().clips.len(), 1);
+            assert!(retained.can_undo);
+            assert_eq!(api.sessions.len(), 1);
+            std::fs::write(&manifest, bytes).expect("restore document");
+            let info = projects::open(&candidate).expect("info");
+            let _native = Session::open_info_owned(&info).expect("failed candidate released owner");
+        }
+
+        #[test]
+        fn template_creator_hands_its_owner_to_the_api_session() {
+            let (mut api, scratch, _) = api();
+            let source = project(&mut api, &scratch, "Source");
+            add_text(&mut api, &source);
+            let template = api
+                .save_template(&source, "Text template")
+                .expect("template");
+            let made = api
+                .instantiate(
+                    &template.path,
+                    &scratch.path().to_string_lossy(),
+                    "From template",
+                    Vec::new(),
+                )
+                .expect("instantiate hands owner to session without reacquiring");
+            assert_eq!(made.project.active().clips.len(), 1);
+            let path = scratch
+                .path()
+                .join("From template")
+                .to_string_lossy()
+                .into_owned();
+            api.save(&path, None)
+                .expect("created session saves through same owner");
+            let info = projects::open(&path).expect("info");
+            assert!(matches!(
+                Session::open_info_owned(&info),
+                Err(OwnedProjectError::Ownership(
+                    OwnershipError::Conflict { .. }
+                ))
+            ));
+            api.close(&path, false).expect("close");
+            let _native = Session::open_info_owned(&info).expect("handoff owner releases on close");
+        }
+
+        #[test]
+        fn replaced_sidecar_is_reported_as_an_identity_change() {
+            let (mut api, scratch, _) = api();
+            let path = project(&mut api, &scratch, "Replaced lock");
+            let sidecar = Path::new(&path).join(".seecut-writer.lock");
+            std::fs::rename(&sidecar, scratch.path().join("original.lock"))
+                .expect("retain old inode");
+            std::fs::write(&sidecar, []).expect("replacement inode");
+            let error = api.open(&path).err().expect("identity changed");
+            assert_eq!(error.code, ErrorCode::OwnershipIdentityChanged);
+            assert_eq!(error.code.number(), -32008);
+            assert_eq!(
+                api.sessions.len(),
+                1,
+                "failed lookup retains the existing session"
+            );
+        }
+
+        #[test]
+        fn an_unrelated_stale_session_does_not_hide_a_matching_session() {
+            let (mut api, scratch, _) = api();
+            let stale = project(&mut api, &scratch, "A stale");
+            let live = project(&mut api, &scratch, "B live");
+            add_text(&mut api, &live);
+            let sidecar = Path::new(&stale).join(".seecut-writer.lock");
+            std::fs::rename(&sidecar, scratch.path().join("old.lock")).expect("retain stale inode");
+            std::fs::write(&sidecar, []).expect("replacement inode");
+            let fetched = view(ok(api.dispatch(Request::ProjectGet { path: live.clone() })));
+            assert_eq!(fetched.project.active().clips.len(), 1);
+            assert!(fetched.can_undo);
+            api.save(&live, None)
+                .expect("unrelated stale owner cannot block save");
+            let unopened = scratch.path().join("Unopened");
+            std::fs::create_dir(&unopened).expect("unopened directory");
+            assert_eq!(
+                err(api.dispatch(Request::ProjectGet {
+                    path: unopened.to_string_lossy().into_owned(),
+                }))
+                .code,
+                ErrorCode::NotOpen
+            );
+            assert_eq!(std::fs::read_dir(unopened).expect("entries").count(), 0);
+        }
     }
 }

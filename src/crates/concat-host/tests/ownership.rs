@@ -29,6 +29,14 @@ use std::sync::{Mutex, MutexGuard};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 static TEST_SEQUENCE: Mutex<()> = Mutex::new(());
+// These tiny packages exercise the OS target shape only, not the loader's full
+// schema. preview.png is a valid 1x1 RGBA PNG (Python stdlib zlib/CRC generated).
+const PACKAGE_MANIFEST: &[u8] = br#"{"width":1,"height":1,"layers":[]}"#;
+const PREVIEW_PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
+    0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 96, 96, 96, 248, 15, 0, 1,
+    4, 1, 0, 95, 229, 195, 75, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
 
 fn serialized() -> MutexGuard<'static, ()> {
     // Avoid unrelated tests spawning a process during another test's last-FD
@@ -65,7 +73,10 @@ impl Fixture {
     }
     fn canvas(&self, name: &str) -> PathBuf {
         let path = self.path(name);
-        fs::write(&path, b"document").unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::create_dir(path.join("images")).unwrap();
+        fs::write(path.join("manifest.json"), PACKAGE_MANIFEST).unwrap();
+        fs::write(path.join("preview.png"), PREVIEW_PNG).unwrap();
         path
     }
 }
@@ -363,18 +374,19 @@ fn case_and_unicode_aliases_follow_the_actual_filesystem() {
 }
 
 #[test]
-fn hardlinked_targets_and_sidecars_are_rejected() {
+fn regular_file_targets_and_hardlinked_sidecars_are_rejected() {
     let _serial = serialized();
     let fixture = Fixture::new();
-    let canvas = fixture.canvas("image.comp");
+    let canvas = fixture.path("image.comp");
+    fs::write(&canvas, b"unsupported regular-file canvas").unwrap();
     fs::hard_link(&canvas, fixture.path("hard.comp")).unwrap();
     assert!(matches!(
         ResourceIdentity::for_canvas(&canvas),
-        Err(OwnershipError::UnsupportedAlias { .. })
+        Err(OwnershipError::InvalidTarget { .. })
     ));
     assert!(matches!(
         ResourceIdentity::for_canvas(fixture.path("hard.comp")),
-        Err(OwnershipError::UnsupportedAlias { .. })
+        Err(OwnershipError::InvalidTarget { .. })
     ));
     let project = fixture.project("clip");
     ResourceIdentity::for_project(&project).unwrap();
@@ -406,8 +418,10 @@ fn invalid_targets_and_malicious_sidecar_paths_are_rejected() {
     use std::os::unix::fs::symlink;
     let fixture = Fixture::new();
     let file = fixture.canvas("image.comp");
+    let regular_file = fixture.path("file.comp");
+    fs::write(&regular_file, b"regular file").unwrap();
     assert!(matches!(
-        ResourceIdentity::for_project(&file),
+        ResourceIdentity::for_project(&regular_file),
         Err(OwnershipError::InvalidTarget { .. })
     ));
     assert!(matches!(
@@ -418,9 +432,8 @@ fn invalid_targets_and_malicious_sidecar_paths_are_rejected() {
         ResourceIdentity::for_canvas(fixture.path("missing-parent/a.comp")),
         Err(OwnershipError::InvalidTarget { .. })
     ));
-    let directory = fixture.project("directory.comp");
     assert!(matches!(
-        ResourceIdentity::for_canvas(&directory),
+        ResourceIdentity::for_canvas(&regular_file),
         Err(OwnershipError::InvalidTarget { .. })
     ));
     symlink(fixture.path("missing.comp"), fixture.path("dangling.comp")).unwrap();
@@ -438,7 +451,10 @@ fn invalid_targets_and_malicious_sidecar_paths_are_rejected() {
         ResourceIdentity::for_project(&project),
         Err(OwnershipError::UnsupportedAlias { .. })
     ));
-    assert_eq!(fs::read(&file).unwrap(), b"document");
+    assert_eq!(
+        fs::read(file.join("manifest.json")).unwrap(),
+        PACKAGE_MANIFEST
+    );
     let lock_directory_target = fixture.project("actual-locks");
     symlink(&lock_directory_target, fixture.path(".seecut-canvas-locks")).unwrap();
     assert!(matches!(
@@ -476,8 +492,17 @@ fn atomic_document_replacement_does_not_replace_ownership() {
     child_result("canvas", &canvas, &fixture.0, "CONFLICT");
     fs::write(project.join("saving"), b"new").unwrap();
     fs::rename(project.join("saving"), project.join("concat.json")).unwrap();
-    fs::write(fixture.path("saving"), b"new").unwrap();
-    fs::rename(fixture.path("saving"), &canvas).unwrap();
+    let candidate = fixture.canvas("saving.comp");
+    fs::write(
+        candidate.join("manifest.json"),
+        br#"{"width":1,"height":1,"layers":[],"label":"replacement"}"#,
+    )
+    .unwrap();
+    fs::rename(&canvas, fixture.path("backup.comp")).unwrap();
+    // The package replacement's brief absent-target interval still names the
+    // original stable sidecar; no second writer can exploit that interval.
+    child_result("canvas", &canvas, &fixture.0, "CONFLICT");
+    fs::rename(&candidate, &canvas).unwrap();
     assert_eq!(project_id, ResourceIdentity::for_project(&project).unwrap());
     assert_eq!(canvas_id, ResourceIdentity::for_canvas(&canvas).unwrap());
     child_result("project", &project, &fixture.0, "CONFLICT");
@@ -677,4 +702,76 @@ fn stale_identity_refuses_a_replaced_sidecar_and_releases_failed_candidate() {
     ));
     let fresh = ResourceIdentity::for_canvas(&canvas).unwrap();
     assert!(WriterGuard::acquire(fresh).is_ok());
+}
+
+#[test]
+fn readonly_matching_creates_no_sidecars_or_unopened_targets() {
+    let _serial = serialized();
+    assert!(ownership::desktop_writer_ownership_supported());
+    let fixture = Fixture::new();
+    let project = fixture.project("held");
+    let owner = WriterGuard::acquire(ResourceIdentity::for_project(&project).unwrap()).unwrap();
+    let other = fixture.project("not-open");
+    assert!(!owner.matches_project(&other).unwrap());
+    assert!(!other.join(".seecut-writer.lock").exists());
+    assert!(!owner.matches_project(fixture.path("missing-root")).unwrap());
+    assert!(!fixture.path("missing-root").exists());
+    assert!(owner.matches_project(&project).unwrap());
+    owner.validate().unwrap();
+    let package = fixture.canvas("held.comp");
+    let canvas_owner =
+        WriterGuard::acquire(ResourceIdentity::for_canvas(&package).unwrap()).unwrap();
+    assert!(canvas_owner.matches_canvas(&package).unwrap());
+    assert!(
+        !canvas_owner
+            .matches_canvas(fixture.path("unopened.comp"))
+            .unwrap()
+    );
+    assert!(!fixture.path(".seecut-canvas-locks/unopened.comp").exists());
+    let absent = fixture.path("not-saved.comp");
+    let absent_owner =
+        WriterGuard::acquire(ResourceIdentity::for_canvas(&absent).unwrap()).unwrap();
+    assert!(absent_owner.matches_canvas(&absent).unwrap());
+    let case_alias = fs::metadata(fixture.path("HELD.COMP")).is_ok();
+    assert_eq!(
+        absent_owner
+            .matches_canvas(fixture.path("NOT-SAVED.COMP"))
+            .unwrap(),
+        case_alias
+    );
+    assert!(!absent.exists());
+}
+
+#[test]
+fn stale_owner_matches_fail_only_for_the_related_target() {
+    let _serial = serialized();
+    let fixture = Fixture::new();
+    let project = fixture.project("held");
+    let owner = WriterGuard::acquire(ResourceIdentity::for_project(&project).unwrap()).unwrap();
+    let sidecar = project.join(".seecut-writer.lock");
+    fs::rename(&sidecar, fixture.path("project-old-lock")).unwrap();
+    fs::write(&sidecar, b"replacement").unwrap();
+    let other = fixture.project("unrelated");
+    assert!(!owner.matches_project(&other).unwrap());
+    assert!(!other.join(".seecut-writer.lock").exists());
+    assert!(matches!(
+        owner.matches_project(&project),
+        Err(OwnershipError::IdentityAmbiguous { .. })
+    ));
+    let package = fixture.canvas("held.comp");
+    let canvas_owner =
+        WriterGuard::acquire(ResourceIdentity::for_canvas(&package).unwrap()).unwrap();
+    let sidecar = fixture.path(".seecut-canvas-locks/held.comp");
+    fs::rename(&sidecar, fixture.path("canvas-old-lock")).unwrap();
+    fs::write(&sidecar, b"replacement").unwrap();
+    assert!(
+        !canvas_owner
+            .matches_canvas(fixture.path("unrelated.comp"))
+            .unwrap()
+    );
+    assert!(!fixture.path(".seecut-canvas-locks/unrelated.comp").exists());
+    assert!(matches!(
+        canvas_owner.matches_canvas(&package),
+        Err(OwnershipError::IdentityAmbiguous { .. })
+    ));
 }

@@ -1701,6 +1701,7 @@ impl Studio {
         };
         self.autosave.stop();
         let (path, document) = session.prepare_save(None);
+        let writer_guard = session.writer_guard();
         let lane = self
             .save_lane
             .get_or_insert_with(|| Arc::new(projects::SaveLane::default()))
@@ -1713,7 +1714,11 @@ impl Studio {
         };
         let worker_lane = Arc::clone(&lane);
         spawn(
-            move || worker_lane.write(stamp.ticket, &path, &document),
+            move || {
+                worker_lane
+                    .write_owned(stamp.ticket, &path, &document, writer_guard.as_ref())
+                    .map_err(|error| error.to_string())
+            },
             move |studio, _, _, result| {
                 let current_path = studio
                     .session
@@ -4684,69 +4689,85 @@ impl Studio {
     /// Opens a project as the session and leaves the launch screen, or
     /// says why it could not.
     pub fn open_project(&mut self, info: ProjectInfo) -> Result<(), String> {
+        if let Some(session) = &self.session
+            && session
+                .matches_project(&info.path)
+                .map_err(|error| error.to_string())?
+        {
+            self.on_start = false;
+            return Ok(());
+        }
+        let session = Session::open_info_owned(&info).map_err(|error| error.to_string())?;
+        self.adopt_project_session(info, session)
+    }
+
+    /// Adopts a newly created project without releasing its writer ownership.
+    pub fn open_created_project(
+        &mut self,
+        created: projects::CreatedProject,
+    ) -> Result<(), String> {
+        let info = created.info().clone();
+        let session = created.into_session().map_err(|error| error.to_string())?;
+        self.adopt_project_session(info, session)
+    }
+
+    fn adopt_project_session(&mut self, info: ProjectInfo, session: Session) -> Result<(), String> {
         if self.session.is_some() {
-            // Keep the current edit open if the requested project is invalid.
-            Session::open_info(&info)?;
             self.close_project()?;
         }
-        match Session::open_info(&info) {
-            Ok(session) => {
-                if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
-                    log::warn!("{error}");
-                }
-                self.pause();
-                self.session = Some(session);
-                self.session_generation = self.session_generation.wrapping_add(1).max(1);
-                self.save_lane = Some(Arc::new(projects::SaveLane::default()));
-                self.echo = None;
-                self.dirty = false;
-                self.project_name = info.name.clone();
-                self.export.name = projects::folder_name(&info.name);
-                self.selection.clear();
-                self.media.selected.clear();
-                self.lane_view.clear();
-                self.playhead = 0.0;
-                self.scroll_left = 0.0;
-                self.on_start = false;
-                self.handle(crate::panes::Msg::Monitor(
-                    crate::panes::monitor::MonitorMsg::Opened,
-                ));
-                self.recents = projects::list(&self.host.dirs.config);
-                self.invalidate_recent_gallery();
-                self.host.monitor.clear();
-                self.audition = None;
-                self.revision += 1;
-                self.flat = None;
-                self.sync_audio();
-                self.request_media_art();
-                self.request_preview();
-                self.ensure_cutouts();
-                self.ensure_regions();
+        if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
+            log::warn!("{error}");
+        }
+        self.pause();
+        self.session = Some(session);
+        self.session_generation = self.session_generation.wrapping_add(1).max(1);
+        self.save_lane = Some(Arc::new(projects::SaveLane::default()));
+        self.echo = None;
+        self.dirty = false;
+        self.project_name = info.name.clone();
+        self.export.name = projects::folder_name(&info.name);
+        self.selection.clear();
+        self.media.selected.clear();
+        self.lane_view.clear();
+        self.playhead = 0.0;
+        self.scroll_left = 0.0;
+        self.on_start = false;
+        self.handle(crate::panes::Msg::Monitor(
+            crate::panes::monitor::MonitorMsg::Opened,
+        ));
+        self.recents = projects::list(&self.host.dirs.config);
+        self.invalidate_recent_gallery();
+        self.host.monitor.clear();
+        self.audition = None;
+        self.revision += 1;
+        self.flat = None;
+        self.sync_audio();
+        self.request_media_art();
+        self.request_preview();
+        self.ensure_cutouts();
+        self.ensure_regions();
 
-                // Log missing media to file for debugging
-                if let Some(session) = &self.session {
-                    let missing = session.project().missing_media();
-                    if !missing.is_empty() {
-                        let log_path = std::path::Path::new(&info.path)
-                            .join("cache")
-                            .join("missing_media.log");
-                        if let Ok(mut file) = std::fs::File::create(&log_path) {
-                            use std::io::Write;
-                            let _ = writeln!(file, "{} media files missing:", missing.len());
-                            for m in &missing {
-                                let _ = writeln!(file, "  - {} ({})", m.name, m.path);
-                            }
-                        }
-
-                        self.handle(crate::panes::Msg::Relink(
-                            crate::panes::relink::RelinkMsg::Show(missing),
-                        ));
+        // Log missing media to file for debugging
+        if let Some(session) = &self.session {
+            let missing = session.project().missing_media();
+            if !missing.is_empty() {
+                let log_path = std::path::Path::new(&info.path)
+                    .join("cache")
+                    .join("missing_media.log");
+                if let Ok(mut file) = std::fs::File::create(&log_path) {
+                    use std::io::Write;
+                    let _ = writeln!(file, "{} media files missing:", missing.len());
+                    for m in &missing {
+                        let _ = writeln!(file, "  - {} ({})", m.name, m.path);
                     }
                 }
-                Ok(())
+
+                self.handle(crate::panes::Msg::Relink(
+                    crate::panes::relink::RelinkMsg::Show(missing),
+                ));
             }
-            Err(error) => Err(error),
         }
+        Ok(())
     }
 
     /// Clears all cached artwork and waveforms from the current project.
@@ -4773,17 +4794,21 @@ impl Studio {
         self.pause();
         if let Some(session) = self.session.as_mut() {
             let (path, document) = session.prepare_save(None);
+            let writer_guard = session.writer_guard();
             let lane = self
                 .save_lane
                 .get_or_insert_with(|| Arc::new(projects::SaveLane::default()));
             let ticket = lane.next();
-            let saved = lane.write(ticket, &path, &document).and_then(|written| {
-                if written {
-                    Ok(())
-                } else {
-                    Err("a newer project save superseded the close".to_owned())
-                }
-            });
+            let saved = lane
+                .write_owned(ticket, &path, &document, writer_guard.as_ref())
+                .map_err(|error| error.to_string())
+                .and_then(|written| {
+                    if written {
+                        Ok(())
+                    } else {
+                        Err("a newer project save superseded the close".to_owned())
+                    }
+                });
             if let Err(error) = saved {
                 self.dirty = true;
                 let message = tf("Could not save: {0}", &[&error]);
