@@ -17,6 +17,15 @@ use crate::i18n::t;
 use crate::studio::Studio;
 use crate::ui::{App, SeeCut};
 
+const MAX_PROJECT_OBJECTS: usize = 10_000;
+
+fn bounded_object_count(total: usize, additional: usize) -> Result<usize, ()> {
+    total
+        .checked_add(additional)
+        .filter(|&count| count <= MAX_PROJECT_OBJECTS)
+        .ok_or(())
+}
+
 #[derive(Clone)]
 struct DocumentIds {
     project: String,
@@ -63,13 +72,15 @@ fn canvas_objects(
     let mut rows = Vec::with_capacity(limit);
     let mut total = 0usize;
     while let Some(entry) = stack.pop() {
-        if total >= 10_000 {
-            return Err(());
-        }
         let included = total >= offset && total < offset.saturating_add(limit);
-        total += 1;
+        total = bounded_object_count(total, 1)?;
         match entry {
             Entry::Group(group, parent) => {
+                // Account for pending siblings before allocating any child entries.
+                bounded_object_count(
+                    bounded_object_count(total, stack.len())?,
+                    group.children.len(),
+                )?;
                 if included {
                     rows.push(json!({"kind":"group", "id":format!("layer:{}", group.id.as_u64()),
                         "parentId":parent.map(|id| format!("layer:{}", id.as_u64())),
@@ -109,6 +120,93 @@ fn canvas_objects(
             Entry::Leaf(_, _) => {}
         }
     }
+    Ok((total, rows))
+}
+
+enum ClipObject<'a> {
+    Media(&'a concat_project::model::MediaItem),
+    Timeline(&'a concat_project::model::Timeline),
+    Track(
+        &'a concat_project::model::Track,
+        &'a concat_project::model::Timeline,
+    ),
+    Clip(
+        &'a concat_project::model::Clip,
+        &'a concat_project::model::Timeline,
+    ),
+}
+
+impl ClipObject<'_> {
+    fn into_value(self) -> Value {
+        match self {
+            Self::Media(item) => json!({
+                "kind":"media", "id":format!("media:{}", item.id),
+                "name":bounded_name(&item.name), "duration":item.duration,
+            }),
+            Self::Timeline(timeline) => json!({
+                "kind":"timeline", "id":format!("timeline:{}", timeline.id),
+                "name":bounded_name(&timeline.name), "video":timeline.video,
+            }),
+            Self::Track(track, timeline) => json!({
+                "kind":"track", "id":format!("track:{}", track.id),
+                "parentId":format!("timeline:{}", timeline.id),
+                "visible":track.visible, "muted":track.muted,
+            }),
+            Self::Clip(clip, timeline) => json!({
+                "kind":"clip", "id":format!("clip:{}", clip.id),
+                "parentId":format!("track:{}", clip.track_id),
+                "timelineId":format!("timeline:{}", timeline.id),
+                "name":bounded_name(&clip.name), "mediaId":format!("media:{}", clip.media_id),
+                "start":clip.start, "duration":clip.duration,
+                "sourceStart":clip.source_start, "opacity":clip.opacity,
+                "scale":clip.scale, "rotation":clip.rotation, "volume":clip.volume,
+                "reverse":clip.reverse,
+            }),
+        }
+    }
+}
+
+fn clip_object_page(
+    project: &concat_project::model::Project,
+    offset: usize,
+    limit: usize,
+) -> impl Iterator<Item = ClipObject<'_>> {
+    project
+        .media
+        .iter()
+        .map(ClipObject::Media)
+        .chain(project.timelines.iter().flat_map(|timeline| {
+            std::iter::once(ClipObject::Timeline(timeline))
+                .chain(
+                    timeline
+                        .tracks
+                        .iter()
+                        .map(|track| ClipObject::Track(track, timeline)),
+                )
+                .chain(
+                    timeline
+                        .clips
+                        .iter()
+                        .map(|clip| ClipObject::Clip(clip, timeline)),
+                )
+        }))
+        .skip(offset)
+        .take(limit)
+}
+
+fn clip_objects(
+    project: &concat_project::model::Project,
+    offset: usize,
+    limit: usize,
+) -> Result<(usize, Vec<Value>), ()> {
+    let mut total = bounded_object_count(project.media.len(), project.timelines.len())?;
+    for timeline in &project.timelines {
+        total = bounded_object_count(total, timeline.tracks.len())?;
+        total = bounded_object_count(total, timeline.clips.len())?;
+    }
+    let rows = clip_object_page(project, offset, limit)
+        .map(ClipObject::into_value)
+        .collect();
     Ok((total, rows))
 }
 
@@ -268,7 +366,7 @@ impl BridgeUi {
                 "appInstanceId": self.instance_id,
                 "tools": ["capabilities", "context", "project", "preview"],
                 "permissions": ["R", "M"], "readOnly": true,
-                "maxPageSize": 100, "maxProjectObjects": 10000,
+                "maxPageSize": 100, "maxProjectObjects": MAX_PROJECT_OBJECTS,
                 "previewWorkspace": "canvas", "maxPreviewEdge": 256,
                 "maxPreviewSourcePixels": 4194304,
             })));
@@ -336,32 +434,10 @@ impl BridgeUi {
                 )
             } else {
                 let project = studio.session.as_ref().unwrap().project();
-                let total = project
-                    .timelines
-                    .iter()
-                    .map(|timeline| 1 + timeline.tracks.len() + timeline.clips.len())
-                    .sum::<usize>()
-                    + project.media.len();
-                let objects = project.media.iter().map(|item| json!({
-                    "kind":"media", "id":format!("media:{}", item.id),
-                    "name":bounded_name(&item.name), "duration":item.duration,
-                })).chain(project.timelines.iter().flat_map(|timeline| {
-                    std::iter::once(json!({"kind": "timeline", "id":format!("timeline:{}", timeline.id),
-                        "name":bounded_name(&timeline.name), "video":timeline.video}))
-                        .chain(timeline.tracks.iter().map(|track| json!({"kind": "track",
-                            "id":format!("track:{}", track.id),
-                            "parentId":format!("timeline:{}", timeline.id), "visible":track.visible,
-                            "muted":track.muted})))
-                        .chain(timeline.clips.iter().map(|clip| json!({"kind": "clip",
-                            "id":format!("clip:{}", clip.id),
-                            "parentId":format!("track:{}", clip.track_id),
-                            "timelineId":format!("timeline:{}", timeline.id),
-                            "name":bounded_name(&clip.name), "mediaId":format!("media:{}", clip.media_id),
-                            "start":clip.start, "duration":clip.duration,
-                            "sourceStart":clip.source_start, "opacity":clip.opacity,
-                            "scale":clip.scale, "rotation":clip.rotation, "volume":clip.volume,
-                            "reverse":clip.reverse})))
-                })).skip(offset).take(limit).collect::<Vec<_>>();
+                let (total, objects) = match clip_objects(project, offset, limit) {
+                    Ok(page) => page,
+                    Err(()) => return UiReply::Response(Response::error("resourceLimit")),
+                };
                 (total, objects, json!(project.active().video))
             };
             return UiReply::Response(Response::ok(json!({
@@ -562,6 +638,222 @@ pub fn remove_endpoint(instance: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn object_count_rejects_overflow_and_allows_exact_limit() {
+        assert_eq!(
+            bounded_object_count(MAX_PROJECT_OBJECTS - 1, 1),
+            Ok(MAX_PROJECT_OBJECTS)
+        );
+        assert_eq!(bounded_object_count(MAX_PROJECT_OBJECTS, 1), Err(()));
+        assert_eq!(bounded_object_count(1, usize::MAX), Err(()));
+    }
+
+    #[test]
+    fn canvas_object_limit_includes_root_nested_groups_and_pending_siblings() {
+        use concat_canvas::{ImageDocument, LayerGroup, LayerNode};
+
+        let mut flat = ImageDocument::new(1, 1);
+        for _ in 1..MAX_PROJECT_OBJECTS {
+            flat.new_group("Group");
+        }
+        let (total, rows) = canvas_objects(&flat, MAX_PROJECT_OBJECTS - 1, 1).unwrap();
+        assert_eq!(total, MAX_PROJECT_OBJECTS);
+        assert_eq!(
+            rows[0]["id"],
+            format!("layer:{}", flat.root.children.last().unwrap().id().as_u64())
+        );
+        flat.new_group("Over limit");
+        assert!(canvas_objects(&flat, usize::MAX, 1).is_err());
+
+        let mut nested = ImageDocument::new(1, 1);
+        let group_id = nested.mint_id();
+        let mut group = LayerGroup::new(group_id, "Nested");
+        for _ in 0..MAX_PROJECT_OBJECTS - 3 {
+            let id = nested.mint_id();
+            group
+                .children
+                .push(LayerNode::Group(LayerGroup::new(id, "Child")));
+        }
+        nested.root.children.push(LayerNode::Group(group));
+        let sibling_id = nested.new_group("Pending sibling");
+        let (total, rows) = canvas_objects(&nested, MAX_PROJECT_OBJECTS - 2, 2).unwrap();
+        assert_eq!(total, MAX_PROJECT_OBJECTS);
+        assert_eq!(rows[0]["parentId"], format!("layer:{}", group_id.as_u64()));
+        assert_eq!(rows[1]["id"], format!("layer:{}", sibling_id.as_u64()));
+        let extra_id = nested.mint_id();
+        nested
+            .group_mut(group_id)
+            .unwrap()
+            .children
+            .push(LayerNode::Group(LayerGroup::new(extra_id, "Over limit")));
+        assert!(canvas_objects(&nested, 0, 1).is_err());
+    }
+
+    #[test]
+    fn canvas_structure_drops_deleted_ids_and_keeps_remaining_order() {
+        let mut document = concat_canvas::ImageDocument::new(1, 1);
+        let group = document.new_group("Group");
+        let removed = document.new_group("Removed");
+        let retained = document.new_group("Retained");
+        assert!(document.move_node(removed, Some(group), 0));
+        assert!(document.move_node(retained, Some(group), 1));
+        let (_, before) = canvas_objects(&document, 0, 10).unwrap();
+        let old_id = format!("layer:{}", removed.as_u64());
+        assert!(before.iter().any(|row| row["id"] == old_id));
+        assert!(document.remove(removed).is_some());
+        let (total, after) = canvas_objects(&document, 0, 10).unwrap();
+        assert_eq!(total, 3);
+        assert!(after.iter().all(|row| row["id"] != old_id));
+        assert_eq!(after[1]["id"], format!("layer:{}", group.as_u64()));
+        assert_eq!(after[2]["id"], format!("layer:{}", retained.as_u64()));
+        assert_eq!(after[2]["parentId"], after[1]["id"]);
+    }
+
+    #[test]
+    fn clip_object_limit_counts_media_timelines_tracks_and_clips() {
+        use concat_project::model::{Clip, ClipKind, MediaItem, Project, Timeline, Track};
+
+        for kind in ["media", "timeline", "track", "clip"] {
+            let mut project = Project::new();
+            match kind {
+                "media" => {
+                    project.media = (0..MAX_PROJECT_OBJECTS - 5)
+                        .map(|i| MediaItem {
+                            id: format!("m{i}"),
+                            ..MediaItem::default()
+                        })
+                        .collect();
+                }
+                "timeline" => {
+                    project.timelines = (0..MAX_PROJECT_OBJECTS)
+                        .map(|i| {
+                            Arc::new(Timeline {
+                                id: format!("tl{i}"),
+                                ..Timeline::default()
+                            })
+                        })
+                        .collect();
+                }
+                "track" => {
+                    project.active_mut().tracks = (0..MAX_PROJECT_OBJECTS - 1)
+                        .map(|i| Track {
+                            id: format!("t{i}"),
+                            ..Track::default()
+                        })
+                        .collect();
+                }
+                "clip" => {
+                    project.active_mut().clips = (0..MAX_PROJECT_OBJECTS - 5)
+                        .map(|i| {
+                            Arc::new(Clip::blank(
+                                format!("c{i}"),
+                                "T1",
+                                ClipKind::Video,
+                                "Clip",
+                                0.0,
+                                1.0,
+                            ))
+                        })
+                        .collect();
+                }
+                _ => unreachable!(),
+            }
+            let (total, rows) = clip_objects(&project, MAX_PROJECT_OBJECTS - 1, 1).unwrap();
+            assert_eq!(total, MAX_PROJECT_OBJECTS, "{kind}");
+            assert_eq!(rows.len(), 1, "{kind}");
+            match kind {
+                "media" => project.media.push(MediaItem::default()),
+                "timeline" => project.timelines.push(Arc::new(Timeline::default())),
+                "track" => project.active_mut().tracks.push(Track::default()),
+                "clip" => project.active_mut().clips.push(Arc::new(Clip::default())),
+                _ => unreachable!(),
+            }
+            assert!(clip_objects(&project, usize::MAX, 1).is_err(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn clip_pages_cross_object_kinds_without_serializing_skipped_entries() {
+        use concat_project::model::{Clip, ClipKind, MediaItem, Project, Timeline, Track};
+
+        let mut project = Project::new();
+        project.media = ["m1", "m2"]
+            .into_iter()
+            .map(|id| MediaItem {
+                id: id.into(),
+                ..MediaItem::default()
+            })
+            .collect();
+        project.active_mut().tracks.truncate(2);
+        project.active_mut().clips = ["c1", "c2"]
+            .into_iter()
+            .map(|id| {
+                let mut clip = Clip::blank(id, "T1", ClipKind::Video, id, 0.0, 1.0);
+                clip.media_id = "m1".into();
+                Arc::new(clip)
+            })
+            .collect();
+        project.timelines.push(Arc::new(Timeline {
+            id: "TL2".into(),
+            tracks: vec![Track {
+                id: "T3".into(),
+                ..Track::default()
+            }],
+            clips: vec![Arc::new(Clip::blank(
+                "c3",
+                "T3",
+                ClipKind::Video,
+                "Third",
+                0.0,
+                1.0,
+            ))],
+            ..Timeline::default()
+        }));
+        let (total, all) = clip_objects(&project, 0, 100).unwrap();
+        assert_eq!(total, 10);
+        assert_eq!(
+            all.iter()
+                .map(|row| row["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "media:m1",
+                "media:m2",
+                "timeline:TL1",
+                "track:T1",
+                "track:T2",
+                "clip:c1",
+                "clip:c2",
+                "timeline:TL2",
+                "track:T3",
+                "clip:c3"
+            ]
+        );
+        for (offset, limit) in [(1, 4), (4, 4), (7, 3)] {
+            let (page_total, page) = clip_objects(&project, offset, limit).unwrap();
+            assert_eq!(page_total, total);
+            assert_eq!(page, all[offset..offset + limit]);
+        }
+        assert_eq!(all[3]["parentId"], "timeline:TL1");
+        assert_eq!(all[5]["parentId"], "track:T1");
+        assert_eq!(all[5]["timelineId"], "timeline:TL1");
+        assert_eq!(all[5]["mediaId"], "media:m1");
+        assert_eq!(all[9]["parentId"], "track:T3");
+        assert_eq!(all[9]["timelineId"], "timeline:TL2");
+        let mut serialized = 0;
+        let page: Vec<_> = clip_object_page(&project, 4, 4)
+            .map(|object| {
+                serialized += 1;
+                object.into_value()
+            })
+            .collect();
+        assert_eq!(serialized, 4);
+        assert_eq!(page, all[4..8]);
+        assert_eq!(
+            clip_objects(&project, usize::MAX, 1).unwrap(),
+            (total, vec![])
+        );
+    }
 
     #[test]
     fn grants_are_per_client_project_permission_and_session() {
