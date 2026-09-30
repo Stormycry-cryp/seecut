@@ -2255,3 +2255,6 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
     std::process::exit(0);
 }
+
+#[cfg(test)]
+mod field_tests;

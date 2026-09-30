@@ -8,21 +8,41 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      linux_window_diagnostic:
+        description: Only capture the normal Linux App's ungranted Settings window
+        type: boolean
+        default: false
+      expected_sha:
+        description: Exact 40-character feature HEAD required for the window diagnostic
+        type: string
+        default: ''
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A manual window capture must not cancel the feature's ordinary CI.
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && format('ci-window-{0}', github.ref) || format('ci-{0}', github.ref) }}
   cancel-in-progress: true
 
 jobs:
   engine:
-    name: Engine tests and lints
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && 'Linux actual window diagnostic' || 'Engine tests and lints' }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && 90 || 360 }}
     env:
       FFMPEG_LINUX: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-shared-8.1.tar.xz
       # See build-app.yml: the version the ort crate is built against.
       ORT_VERSION: 1.28.0
     steps:
       - uses: actions/checkout@v7
+      - name: Verify the requested window candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          echo "Window candidate: $EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -40,6 +60,11 @@ jobs:
             libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libgl1-mesa-dev \
             libgtk-3-dev libasound2-dev libclang-dev cmake \
             mesa-vulkan-drivers vulkan-tools
+
+      - name: Window diagnostic tools
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        run: |
+          sudo apt-get install -y xvfb xdotool imagemagick fonts-noto-cjk
 
       - name: Software Vulkan adapter
         run: |
@@ -101,26 +126,89 @@ jobs:
           free -h
           df -h .
           /usr/bin/time -v cargo clippy --workspace --all-targets -- -D warnings
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_BUILD_JOBS: "1"
       - run: cargo test --workspace -j 1
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
       # The gRPC transport is a feature nothing else in the workspace turns
       # on, so it is linted and tested here on its own. See concat-server.
       - run: cargo clippy -p concat-server -p concat-cli --features grpc --all-targets -- -D warnings
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
       - run: cargo test -p concat-server --features grpc
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
+
+      - name: Build the normal window candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        working-directory: src
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_BUILD_JOBS: '1'
+        run: cargo build -p concat -j 1
+
+      - name: Capture the normal App window
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
+            timeout --signal=TERM --kill-after=10s 290s \
+            python3 scripts/check-linux-window.py \
+            --binary "$PWD/src/target/debug/concat" \
+            --output "$RUNNER_TEMP/seecut-window-evidence" \
+            --expected-sha "$EXPECTED_SHA"
+
+      - name: Verify bounded window evidence
+        id: window_evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/seecut-window-evidence
+        run: |
+          python3 - <<'PY'
+          import os
+          import stat
+          from pathlib import Path
+          root = Path(os.environ['EVIDENCE_DIR'])
+          files = []
+          if root.exists():
+              assert root.is_dir() and not root.is_symlink(), 'Invalid evidence directory'
+              for path in root.rglob('*'):
+                  assert not path.is_symlink(), 'Evidence contains a symlink'
+                  mode = path.stat().st_mode
+                  if stat.S_ISDIR(mode):
+                      continue
+                  assert stat.S_ISREG(mode), 'Evidence contains a non-regular file'
+                  files.append(path)
+          size = sum(path.stat().st_size for path in files)
+          assert size <= 15 * 1024 * 1024, 'Window evidence exceeds 15 MiB'
+          print(f'Window evidence: {len(files)} files, {size} bytes')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'upload={str(bool(files)).lower()}\n')
+          PY
+
+      - name: Upload bounded window evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && steps.window_evidence.outputs.upload == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: seecut-linux-window-${{ github.sha }}
+          path: ${{ runner.temp }}/seecut-window-evidence
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The engine crates that carry no native library build for the web. This
   # job is what keeps that true: a std::thread or a blocking wait that
   # creeps into concat-core or concat-project fails here, not when someone
   # next tries the target. See src/README.md for the list.
   web:
+    if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
     name: Engine on wasm32
     runs-on: ubuntu-latest
     steps:

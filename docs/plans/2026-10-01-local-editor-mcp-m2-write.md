@@ -120,3 +120,19 @@ M1 的只读 `on_ui` 750ms 超时语义保持。阶段 3 的写请求采用独�
 证据目录：`/private/tmp/sc-m2-stage2-mjbnrul2`（registry/request）、`/private/tmp/sc-m2-protocol-jec3i7hi`（协议与 adapter 编译、测试、Clippy）。本机 Data 仍超过项目 256 GB 上限，仅小型源码/harness 写入；本地大型 App 构建、下载与打包未执行。
 
 主审指出三处技术 Field 原先可编辑且聚焦时保留旧 draft，现已最小扩展 Field 默认 `read-only: false`。仅实例 ID/读取 token/写 token 启用只读：使用直接绑定 `value` 的只读 TextInput，原可编辑输入的 focused draft 逻辑保留；两个输入互斥 visible/enabled。按钮按权限区实际容器宽度在正常尺寸同行、较窄纵向，保留 6px 与换行。修正后的 app.slint 全树再次经 Slint 编译器检查退出 0、无诊断；真实复制、焦点时轮换/撤销同步与默认编辑行为仍未运行验证。未找到可复用的小型运行 harness，不为此扩展大型本地链接。
+
+## 2026-10-01 编译检查点与直接控件回归
+
+独立 Draft PR #7 的首个 head `c4ad161e7aa622bd23321c78ac472fa47aa00dec`：CI `36754060750` 的 wasm 与完整 workspace 严格 Clippy 已成功；Phones `36754060528` 的 Android 已成功。workspace 测试与 iOS 在此记录时仍运行，不把以上结果扩展为完整 CI 或实际窗口验收。
+
+新增 `src/crates/concat/src/field_tests.rs`，由现有 workspace 测试入口执行。测试导入产品 Field，使用真实 Slint pointer/key 事件、虚拟时钟、软件渲染和测试 Platform 的内存剪贴板：覆盖默认可编辑字段在聚焦时保留已输入草稿、只读字段拒绝编辑、聚焦时凭据轮换后复制新值、清空后的实际空显示，以及 Tab 跳过互斥隐藏输入。空选择不产生复制请求；这不清除系统剪贴板原有内容，也不证明 macOS 原生按键或系统剪贴板行为。
+
+准备阶段复用既有依赖的 Rust 类型检查、严格 Clippy 和格式检查成功；8 MiB 受限链接触发文件体量门槛后停止，没有可运行测试二进制，行为测试尚未执行。源码审查与后续实际运行结果分别记录。
+
+## 最小 Linux 正常窗口诊断
+
+主审已批准首次窗口诊断的实现和远端执行，具体脚本/配置须审阅后运行。复用默认分支已注册的 `ci.yml`，增加默认关闭的 `linux_window_diagnostic` 手动选项及精确 `expected_sha`；诊断只使用现有 engine 单 Ubuntu 环境，跳过 workspace Clippy/test、gRPC 和 wasm，普通 PR/push/无诊断的手动检查保持原路径。诊断使用独立 concurrency，不取消普通 CI；启动前核 checkout HEAD。
+
+远端 dev debug=0、单 job 构建同 HEAD 正常 App，Xvfb/xdotool 操作一个隔离 portable 实例，使用自有微型 PNG 和真实 X11 键鼠形成未授权 Settings 页的中文/英文、浅/深及窄/宽截图。不得设置 preview 环境变量、注入 UI/授权属性或运行发布流程。job 上限 90 分钟，窗口段外层 TERM 290 秒、10 秒后 KILL，总上限 300 秒；脚本工作 280 秒，精确回收进程。只上传不超过 15 MiB 的截图、操作记录与精简日志；本机不下载 App 或扩建大产物。
+
+首次范围只提供无工程、未授权正常候选窗口的可见区域供主审观察；微型 PNG 仅准备未导入，不证明有工程或有效/到期/撤销租约，下方未入画的控件仍未观察。页面导航失败或窗口启动失败立即停止后续状态采集。真实 grant/移动/undo/保存闭环须在实际图观察后再推进；Linux 证据不替代 macOS 原生焦点、复制或保存验收。
