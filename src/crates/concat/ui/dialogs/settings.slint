@@ -74,6 +74,15 @@ export struct SettingsData {
     mcp-client: string,
     mcp-grant: string,
     mcp-token: string,
+    mcp-project-name: string,
+    mcp-project-path: string,
+    mcp-write-client: string,
+    mcp-write-status: string,
+    mcp-write-reason: string,
+    mcp-write-token: string,
+    mcp-write-can-grant: bool,
+    mcp-write-can-renew: bool,
+    mcp-write-can-revoke: bool,
     /// "3 installed · 612 MB on disk"
     disk: string,
     version: string,
@@ -422,6 +431,51 @@ component FactRow inherits HorizontalLayout {
     }
 }
 
+// Permission actions retain the dialog button's tones, with a caption that
+// can wrap inside a narrow settings page and its own keyboard focus stop.
+component PermissionButton inherits Button {
+    in property <string> caption;
+    property <bool> ring;
+    label: "";
+    min-width: 0px;
+    min-height: Math.max(28px, caption-text.preferred-height + 12px);
+    max-height: self.min-height;
+    horizontal-stretch: 1;
+    accessible-role: button;
+    accessible-label: root.caption;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+
+    caption-text := Text {
+        x: 12px;
+        y: (parent.height - self.height) / 2;
+        width: Math.max(0px, parent.width - 24px);
+        height: self.preferred-height;
+        text: root.caption;
+        color: !root.enabled ? Theme.fg-dim : root.primary ? Theme.on-accent : Theme.fg;
+        font-size: Theme.fs;
+        font-weight: Theme.weight-title;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+    action-focus := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+    // Mouse activation stays with Button's inherited TouchArea; keyboard
+    // activation is handled only by this focus scope.
+    FocusRing { active: root.ring; radius: Theme.r; }
+}
+
 export component SettingsDialog inherits Rectangle {
     in property <SettingsData> data;
     in property <[ModelData]> transcribers;
@@ -456,6 +510,9 @@ export component SettingsDialog inherits Rectangle {
     callback mcp-grant-r();
     callback mcp-grant-m();
     callback mcp-revoke();
+    callback mcp-grant-move();
+    callback mcp-renew-move();
+    callback mcp-revoke-move();
     callback model-activated(id: string);
     callback model-download(id: string);
     callback model-cancel(id: string);
@@ -884,23 +941,100 @@ export component SettingsDialog inherits Rectangle {
             if root.data.tab == 4: VerticalLayout {
                 DialogSection {
                     first: true;
-                    title: I18n.t("Local Agent read access");
-                    hint: I18n.t("Grant this running editor's active project to one named local client. R reads structure; M also reads canvas previews. Grants end when the App closes or the project session changes.");
+                    title: I18n.t("Local Agent permissions");
 
-                    Text { text: root.data.mcp-status; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; }
-                    Text { text: I18n.t("App instance ID"); color: Theme.fg; font-size: Theme.fs; }
-                    Field { value: root.data.mcp-instance; technical: true; edited(text) => {} }
-                    Text { text: I18n.t("Client ID"); color: Theme.fg; font-size: Theme.fs; }
-                    Field { value: root.data.mcp-client; technical: true; edited(text) => { root.mcp-client-edited(text); } }
-                    Text { text: root.data.mcp-grant; color: Theme.fg-muted; font-size: Theme.fs-sm; }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Button { label: I18n.t("Grant R"); clicked => { root.mcp-grant-r(); } }
-                        Button { label: I18n.t("Grant R + M"); clicked => { root.mcp-grant-m(); } }
-                        Button { label: I18n.t("Revoke"); clicked => { root.mcp-revoke(); } }
+                    Text {
+                        text: root.data.mcp-project-name != "" ? root.data.mcp-project-name : I18n.t("No canvas project");
+                        color: Theme.fg;
+                        font-size: Theme.fs;
+                        font-weight: Theme.weight-title;
+                        wrap: word-wrap;
+                        min-width: 0px;
                     }
-                    Text { text: I18n.t("Client token (SEECUT_MCP_CLIENT_TOKEN)"); color: Theme.fg; font-size: Theme.fs; }
-                    Field { value: root.data.mcp-token; technical: true; edited(text) => {} }
+                    if root.data.mcp-project-path != "": TextInput {
+                        text: root.data.mcp-project-path;
+                        color: Theme.fg-muted;
+                        font-family: Theme.font-technical;
+                        font-size: Theme.fs-sm;
+                        read-only: true;
+                        single-line: false;
+                        wrap: word-wrap;
+                        min-width: 0px;
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.on-accent;
+                    }
+                    Text { text: root.data.mcp-status; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; min-width: 0px; }
+                    Text { text: I18n.t("App instance ID"); color: Theme.fg; font-size: Theme.fs; }
+                    Field { value: root.data.mcp-instance; technical: true; read-only: true; min-width: 0px; }
+                    Text { text: I18n.t("Client ID"); color: Theme.fg; font-size: Theme.fs; }
+                    Field { value: root.data.mcp-client; technical: true; min-width: 0px; edited(text) => { root.mcp-client-edited(text); } }
+
+                    Text { text: I18n.t1("Read access: {0}", root.data.mcp-grant); color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; min-width: 0px; }
+                    read-actions := VerticalLayout {
+                        spacing: 6px;
+                        if read-actions.width >= 480px: HorizontalLayout {
+                            spacing: 6px;
+                            PermissionButton { caption: I18n.t("Allow reading"); enabled: root.data.mcp-instance != ""; clicked => { root.mcp-grant-r(); } }
+                            PermissionButton { caption: I18n.t("Read and preview"); enabled: root.data.mcp-instance != ""; clicked => { root.mcp-grant-m(); } }
+                            PermissionButton { caption: I18n.t("Revoke read access"); enabled: root.data.mcp-token != ""; clicked => { root.mcp-revoke(); } }
+                        }
+                        if read-actions.width < 480px: VerticalLayout {
+                            spacing: 6px;
+                            PermissionButton { caption: I18n.t("Allow reading"); enabled: root.data.mcp-instance != ""; clicked => { root.mcp-grant-r(); } }
+                            PermissionButton { caption: I18n.t("Read and preview"); enabled: root.data.mcp-instance != ""; clicked => { root.mcp-grant-m(); } }
+                            PermissionButton { caption: I18n.t("Revoke read access"); enabled: root.data.mcp-token != ""; clicked => { root.mcp-revoke(); } }
+                        }
+                    }
+                    Text { text: I18n.t("Client token (SEECUT_MCP_CLIENT_TOKEN)"); color: Theme.fg; font-size: Theme.fs; wrap: word-wrap; min-width: 0px; }
+                    Field { value: root.data.mcp-token; technical: true; read-only: true; min-width: 0px; }
+
+                    Rectangle { height: 1px; background: Theme.line; }
+                    Text { text: I18n.t("Move selected image layer"); color: Theme.fg; font-size: Theme.fs; font-weight: Theme.weight-title; wrap: word-wrap; min-width: 0px; }
+                    Text { text: I18n.t("Only moves the currently selected image layer. Valid for 5 minutes."); color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; min-width: 0px; }
+                    Text { text: I18n.t("Client ID"); color: Theme.fg; font-size: Theme.fs; }
+                    TextInput {
+                        text: root.data.mcp-write-client;
+                        color: Theme.fg;
+                        font-family: Theme.font-technical;
+                        font-size: Theme.fs;
+                        read-only: true;
+                        single-line: false;
+                        wrap: word-wrap;
+                        min-width: 0px;
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.on-accent;
+                    }
+                    Text { text: root.data.mcp-write-status; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; min-width: 0px; }
+                    move-actions := VerticalLayout {
+                        spacing: 6px;
+                        if !root.data.mcp-write-can-revoke: PermissionButton {
+                            caption: I18n.t("Allow moving · 5 minutes");
+                            enabled: root.data.mcp-write-can-grant;
+                            clicked => { root.mcp-grant-move(); }
+                        }
+                        if root.data.mcp-write-can-revoke && move-actions.width >= 400px: HorizontalLayout {
+                            spacing: 6px;
+                            PermissionButton { caption: I18n.t("Renew 5 minutes"); enabled: root.data.mcp-write-can-renew; clicked => { root.mcp-renew-move(); } }
+                            PermissionButton { caption: I18n.t("Revoke edit access"); enabled: root.data.mcp-write-can-revoke; clicked => { root.mcp-revoke-move(); } }
+                        }
+                        if root.data.mcp-write-can-revoke && move-actions.width < 400px: VerticalLayout {
+                            spacing: 6px;
+                            PermissionButton { caption: I18n.t("Renew 5 minutes"); enabled: root.data.mcp-write-can-renew; clicked => { root.mcp-renew-move(); } }
+                            PermissionButton { caption: I18n.t("Revoke edit access"); enabled: root.data.mcp-write-can-revoke; clicked => { root.mcp-revoke-move(); } }
+                        }
+                    }
+                    if root.data.mcp-write-reason != "": Text {
+                        text: root.data.mcp-write-reason;
+                        color: Theme.danger;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                        min-width: 0px;
+                    }
+                    if root.data.mcp-write-token != "": VerticalLayout {
+                        spacing: 6px;
+                        Text { text: I18n.t("Write token (SEECUT_MCP_WRITE_TOKEN)"); color: Theme.fg; font-size: Theme.fs; wrap: word-wrap; min-width: 0px; }
+                        Field { value: root.data.mcp-write-token; technical: true; read-only: true; min-width: 0px; }
+                    }
                 }
                 DialogSection {
                     title: I18n.t("Remote control");

@@ -300,6 +300,11 @@ impl Navigator {
         self.pan_drag.is_some()
     }
 
+    /// Whether a pointer pan or zoom gesture is still in progress.
+    pub fn is_gesturing(&self) -> bool {
+        self.pan_drag.is_some() || self.zoom_drag.is_some()
+    }
+
     /// Whether the space bar is down, for the open-hand cursor.
     pub fn space_held(&self) -> bool {
         self.space_held

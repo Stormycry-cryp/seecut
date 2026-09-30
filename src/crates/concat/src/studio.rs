@@ -5156,6 +5156,8 @@ impl Studio {
     // ── publishing ──
 
     pub fn publish(&self, app: &App, models: &Models) {
+        #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+        self.editor_mcp.borrow_mut().sync_document(self, app);
         let mut selection = self
             .selection
             .iter()
