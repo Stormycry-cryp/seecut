@@ -25,6 +25,7 @@ concat-vision = { path = "crates/concat-vision" }
 # ported from Compositor's design (see docs/plans/2026-09-20-compositor-canvas-port-plan.md).
 concat-canvas = { path = "crates/concat-canvas" }
 concat = { path = "crates/concat" }
+concat-editor-mcp = { path = "crates/concat-editor-mcp" }
 
 serde_json = "1"
 thiserror = "2"

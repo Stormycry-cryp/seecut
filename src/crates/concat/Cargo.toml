@@ -105,6 +105,7 @@ concat-canvas = { workspace = true, features = ["gpu"] }
 # window is open. JSON-RPC only; the gRPC feature stays with concat-cli.
 concat-server.workspace = true
 concat-api.workspace = true
+concat-editor-mcp.workspace = true
 # The effect catalogue: the inspector's shelves and each link's knobs.
 concat-effects.workspace = true
 # The cutout's mapping from a stage press to a source fraction; the model
@@ -125,6 +126,7 @@ toml = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "webp", "bmp", "png"] }
 tempfile = "3"
 libc = "0.2"
+base64 = "0.22"
 
 # The renderer is picked by a feature here rather than by editing the
 # dependency, so both variants build from one tree and can be compared:

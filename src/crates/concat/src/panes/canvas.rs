@@ -562,6 +562,8 @@ pub struct CanvasPane {
     /// Never rewinds when undo restores an older history state.
     revision_clock: u64,
     document_generation: u64,
+    /// Changes when Save As or the first automatic save binds a new path.
+    mcp_binding_epoch: u64,
     autosave_inflight: Option<AutoSaveInFlight>,
     /// A timer expired while a live edit still owned its history transaction.
     autosave_pending: bool,
@@ -638,6 +640,7 @@ impl Default for CanvasPane {
             saved_revision: 1,
             revision_clock: 1,
             document_generation: 1,
+            mcp_binding_epoch: 1,
             autosave_inflight: None,
             autosave_pending: false,
             #[cfg(test)]
@@ -2202,6 +2205,24 @@ impl CanvasPane {
         self.document.is_some() && self.revision != self.saved_revision
     }
 
+    pub(crate) fn mcp_state(&self) -> (u64, u64, bool) {
+        (
+            self.document_generation,
+            self.revision,
+            self.stroke.is_some()
+                || self.object_drag.is_some()
+                || self.parameter_gesture.is_some()
+                || self.pending_history.is_some()
+                || self.transform_session.is_some()
+                || self.pending_transform_boundary.is_some()
+                || self.marquee_start.is_some(),
+        )
+    }
+
+    pub(crate) fn mcp_binding_epoch(&self) -> u64 {
+        self.mcp_binding_epoch
+    }
+
     /// Starts a stroke: the paint target's pixels are snapshotted for the
     /// undo entry and for the tiles' base, a scratch frame is copied once,
     /// and the first dab goes down. Pixel work only; the caller renders.
@@ -3504,6 +3525,7 @@ impl CanvasPane {
         self.saved_revision = self.revision;
         self.project_path = Some(path.to_owned());
         if path_changed {
+            self.mcp_binding_epoch = self.mcp_binding_epoch.saturating_add(1);
             // A worker for the old path cannot complete this document's new save.
             self.autosave_inflight = None;
         }
@@ -3540,6 +3562,7 @@ impl CanvasPane {
         if self.autosave_inflight.is_some() {
             return Ok(());
         }
+        let first_binding = self.project_path.is_none();
         let path = match self.project_path.clone() {
             Some(path) => path,
             None => {
@@ -3556,6 +3579,9 @@ impl CanvasPane {
         let ticket = canvas_save_ticket(&path);
         let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
         self.project_path = Some(path.clone());
+        if first_binding {
+            self.mcp_binding_epoch = self.mcp_binding_epoch.saturating_add(1);
+        }
         self.autosave_inflight = Some(AutoSaveInFlight {
             generation,
             path: path.clone(),
@@ -6346,6 +6372,10 @@ mod tests {
         std::fs::create_dir_all(&root).expect("test directory");
 
         let mut pane = pending_transform_pane();
+        assert!(
+            pane.mcp_state().2,
+            "pending transform keeps project reads busy"
+        );
         let before = pane
             .pending_history
             .as_ref()
@@ -6364,6 +6394,7 @@ mod tests {
         assert_eq!(pane.tool, 0);
         assert!(pane.resolve_transform_boundary(0).is_none());
         assert!(pane.transform_session.is_some(), "return keeps editing");
+        assert!(pane.mcp_state().2, "return keeps project reads busy");
         assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), preview);
         assert_eq!(pane.undo_stack.len(), history_len);
 
@@ -6376,6 +6407,7 @@ mod tests {
         pane.set_tool(tool);
         assert_eq!(pane.tool, 3);
         assert!(pane.transform_session.is_none());
+        assert!(!pane.mcp_state().2, "applied transform is committed");
         assert_eq!(pane.undo_stack.len(), history_len + 1);
         pane.save_to_path(&applied_path)
             .expect("save applied transform");
@@ -6413,6 +6445,7 @@ mod tests {
             pane.resolve_transform_boundary(2),
             Some(CanvasBoundaryAction::Message(CanvasMsg::SaveCompAs))
         ));
+        assert!(!pane.mcp_state().2, "discarded transform is settled");
         assert_eq!(pane.undo_stack.len(), history_len);
         assert_eq!(pane.document.as_ref().unwrap().to_json().unwrap(), before);
         pane.save_to_path(&discarded_path)

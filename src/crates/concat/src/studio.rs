@@ -567,6 +567,8 @@ impl SaveStamp {
 pub struct Studio {
     pub host: Host,
     pub prefs: Preferences,
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    pub(crate) editor_mcp: RefCell<crate::editor_mcp::BridgeUi>,
     /// What each effect library is showing, indexed the way `SHELF_KINDS`
     /// is: 0 filters, 1 effects, 2 audio.
     pub library: [LibraryView; 3],
@@ -677,6 +679,11 @@ pub struct Studio {
     /// Counts every change to the document. What the flattened clip list
     /// below is keyed on, so a frame of an unchanged document reuses it.
     revision: u64,
+    /// A conservative view epoch for local Agent snapshots. Every UI publish
+    /// invalidates an older preview even if the document itself did not edit.
+    mcp_context_epoch: std::cell::Cell<u64>,
+    mcp_selection_epoch: std::cell::Cell<u64>,
+    mcp_selection_key: RefCell<Vec<String>>,
     /// The last flattening of the document for the monitor - titles
     /// included - and the revision and output size it was made at. Shared
     /// with the monitor by pointer, so it can keep its plan for as long as
@@ -1342,6 +1349,8 @@ impl Studio {
             echo: None,
             empty: Project::new(),
             dirty: false,
+            #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+            editor_mcp: RefCell::new(crate::editor_mcp::BridgeUi::new()),
             autosave: slint::Timer::default(),
             save_lane: None,
             media: crate::panes::media_bin::MediaBin::default(),
@@ -1394,6 +1403,9 @@ impl Studio {
             inspector_jump: (0, "", ""),
             audition: None,
             revision: 0,
+            mcp_context_epoch: std::cell::Cell::new(1),
+            mcp_selection_epoch: std::cell::Cell::new(1),
+            mcp_selection_key: RefCell::new(Vec::new()),
             flat: None,
             commit_pending: false,
             commit_timer: slint::Timer::default(),
@@ -5119,10 +5131,47 @@ impl Studio {
     // ── publishing ──
 
     pub fn publish(&self, app: &App, models: &Models) {
+        let mut selection = self
+            .selection
+            .iter()
+            .map(|id| format!("clip:{}:{id}", self.session_generation))
+            .collect::<Vec<_>>();
+        if let Some(active) = self.canvas.active {
+            selection.push(format!(
+                "canvas:{}:{}:{}",
+                self.canvas.mcp_state().0,
+                self.canvas.mcp_binding_epoch(),
+                active.as_u64()
+            ));
+        }
+        if self.mcp_selection_key.borrow().as_slice() != selection.as_slice() {
+            *self.mcp_selection_key.borrow_mut() = selection;
+            self.mcp_selection_epoch
+                .set(self.mcp_selection_epoch.get().saturating_add(1));
+        }
+        self.mcp_context_epoch
+            .set(self.mcp_context_epoch.get().saturating_add(1));
         self.publish_lanes(app, models);
         self.publish_chrome(app, models);
         self.publish_dock(app, models);
         self.publish_canvas(app, models);
+    }
+
+    pub(crate) fn mcp_clip_state(&self) -> (u64, u64, bool, bool) {
+        (
+            self.session_generation,
+            self.revision,
+            self.dirty,
+            self.echo.is_some() || !matches!(self.gesture, Gesture::None) || self.commit_pending,
+        )
+    }
+
+    pub(crate) fn mcp_context_epoch(&self) -> u64 {
+        self.mcp_context_epoch.get()
+    }
+
+    pub(crate) fn mcp_selection_epoch(&self) -> u64 {
+        self.mcp_selection_epoch.get()
     }
 
     pub fn publish_dock(&self, _app: &App, models: &Models) {

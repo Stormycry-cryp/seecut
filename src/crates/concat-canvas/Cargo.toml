@@ -15,6 +15,9 @@ description = "The image-editing canvas: layer documents, blend modes and edit h
 # The wgpu compositor, behind a feature like concat-render's: the parity
 # tests and the app turn it on; document-model work never pays for it.
 gpu = ["dep:wgpu", "dep:pollster"]
+# cargo-auditable replays the App's enabled `wgpu` feature through workspace
+# metadata; keep that spelling as an alias for this crate's `gpu` feature.
+wgpu = ["gpu"]
 
 [dependencies]
 concat-core.workspace = true

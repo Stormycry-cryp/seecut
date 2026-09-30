@@ -48,8 +48,91 @@ jobs:
             exit 1
           fi
 
+      # This hosted runner is discarded after the job. Keep its existing swap
+      # and add 8 GiB for the compiler, leaving at least 20 GiB for the build.
+      - name: Add build swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          swap_mib=8192
+          reserve_kib=$((20 * 1024 * 1024))
+          available_kib=$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 { print $4 }')
+          if (( available_kib < swap_mib * 1024 + reserve_kib )); then
+            echo "Insufficient disk space for 8 GiB swap and 20 GiB build reserve" >&2
+            df -h "$RUNNER_TEMP"
+            exit 1
+          fi
+          swap_file=$(mktemp "$RUNNER_TEMP/seecut-nix-swap.XXXXXX")
+          chmod 600 "$swap_file"
+          dd if=/dev/zero of="$swap_file" bs=1M count="$swap_mib" conv=fsync status=none
+          sudo mkswap "$swap_file"
+          sudo swapon "$swap_file"
+          if ! sudo swapon --show --bytes --noheadings --raw --output NAME,SIZE |
+            awk -v path="$swap_file" -v size="$((swap_mib * 1024 * 1024 - 4096))" \
+              '$1 == path && $2 >= size { found = 1 } END { exit !found }'; then
+            echo "Additional build swap was not activated at the expected size" >&2
+            exit 1
+          fi
+          sudo swapon --show --bytes
+          free -h
+          df -h "$RUNNER_TEMP"
+
+      - name: Record Nix daemon memory limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl show nix-daemon.service --property=MainPID,ControlGroup,MemoryMax,MemoryHigh,MemorySwapMax
+          daemon_pid=$(systemctl show nix-daemon.service --property=MainPID --value)
+          if [[ "$daemon_pid" == 0 || ! -r "/proc/$daemon_pid/cgroup" ]]; then
+            echo "Nix daemon cgroup could not be observed" >&2
+            exit 1
+          fi
+          cat "/proc/$daemon_pid/cgroup"
+          cgroup_path=$(awk -F: '$1 == "0" { print $3 }' "/proc/$daemon_pid/cgroup")
+          if [[ -z "$cgroup_path" ]]; then
+            echo "No cgroup v2 path; effective swap limit remains unknown"
+            exit 0
+          fi
+          # Ancestor limits also apply. These are cgroup values, not the
+          # peak or limit of an individual compiler process.
+          while :; do
+            for metric in memory.max memory.swap.max memory.swap.current; do
+              metric_path="/sys/fs/cgroup${cgroup_path%/}/$metric"
+              if [[ -r "$metric_path" ]]; then
+                printf '%s: ' "$metric_path"
+                cat "$metric_path"
+              else
+                printf '%s: unavailable\n' "$metric_path"
+              fi
+            done
+            [[ "$cgroup_path" == / ]] && break
+            cgroup_path=$(dirname "$cgroup_path")
+          done
+
       - name: Build
-        run: nix build .#concat --print-build-logs
+        run: |
+          free -h
+          df -h .
+          if test -r /sys/fs/cgroup/memory.events; then
+            cat /sys/fs/cgroup/memory.events
+          fi
+          nix build .#concat --print-build-logs
+          free -h
+          sudo swapon --show --bytes
+
+      - name: Build failure diagnostics
+        if: failure()
+        run: |
+          free -h
+          sudo swapon --show --bytes
+          df -h .
+          for metric in /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.max; do
+            if test -r "$metric"; then
+              printf '%s\n' "$metric"
+              cat "$metric"
+            fi
+          done
+          sudo dmesg 2>&1 | grep -Ei 'out of memory|oom|killed process|memory cgroup' | tail -n 30 || true
 
       # A window cannot open on the runner, so the check is that the binary
       # is there, links, and resolves every library it needs.

@@ -541,6 +541,26 @@ impl SettingsPane {
 
     /// The sheet as Slint shows it.
     pub fn data(&self, studio: &Studio) -> SettingsData {
+        #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+        let (mcp_instance, mcp_status, mcp_client, mcp_grant, mcp_token) = {
+            let bridge = studio.editor_mcp.borrow();
+            let (grant, token) = bridge.grant_view();
+            (
+                bridge.instance_id.clone(),
+                bridge.socket_status.clone(),
+                bridge.client_draft.clone(),
+                grant,
+                token,
+            )
+        };
+        #[cfg(not(all(unix, not(any(target_os = "android", target_os = "ios")))))]
+        let (mcp_instance, mcp_status, mcp_client, mcp_grant, mcp_token) = (
+            String::new(),
+            "Unavailable on this platform".to_owned(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
         SettingsData {
             open: self.open,
             tab: self.tab,
@@ -561,6 +581,11 @@ impl SettingsPane {
                 _ => studio.prefs.server.token.as_str().into(),
             },
             server_status: self.server_status(studio).into(),
+            mcp_instance: mcp_instance.into(),
+            mcp_status: mcp_status.into(),
+            mcp_client: mcp_client.into(),
+            mcp_grant: mcp_grant.into(),
+            mcp_token: mcp_token.into(),
             disk: {
                 let on_disk: Vec<&ModelState> = installed(&self.transcribers)
                     .into_iter()
