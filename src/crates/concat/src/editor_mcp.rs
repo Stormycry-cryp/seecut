@@ -17,6 +17,11 @@ use crate::i18n::t;
 use crate::studio::Studio;
 use crate::ui::{App, SeeCut};
 
+#[path = "editor_mcp_endpoint.rs"]
+mod endpoint_cleanup;
+
+static BOUND_ENDPOINT: OnceLock<endpoint_cleanup::BoundEndpoint> = OnceLock::new();
+
 const MAX_PROJECT_OBJECTS: usize = 10_000;
 
 fn bounded_object_count(total: usize, additional: usize) -> Result<usize, ()> {
@@ -603,6 +608,19 @@ pub fn start(instance: &str) -> String {
         Ok(listener) => listener,
         Err(error) => return error,
     };
+    let endpoint = match endpoint_cleanup::BoundEndpoint::capture(path.clone()) {
+        Ok(endpoint) => endpoint,
+        Err(error) => return error.to_string(),
+    };
+    if let Err(endpoint) = BOUND_ENDPOINT.set(endpoint) {
+        endpoint.remove();
+        return "ioFailure: editor MCP already started".into();
+    }
+    #[cfg(target_os = "macos")]
+    if unsafe { libc::atexit(remove_bound_endpoint_at_exit) } != 0 {
+        remove_bound_endpoint();
+        return "ioFailure: could not register editor MCP cleanup".into();
+    }
     let instance = instance.to_owned();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = stop.clone();
@@ -625,14 +643,25 @@ fn server_slot() -> &'static Mutex<Option<ServerThread>> {
     SERVER.get_or_init(|| Mutex::new(None))
 }
 
-pub fn remove_endpoint(instance: &str) {
+fn remove_bound_endpoint() {
+    if let Some(endpoint) = BOUND_ENDPOINT.get() {
+        endpoint.remove();
+    }
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn remove_bound_endpoint_at_exit() {
+    // Cocoa's Cmd+Q can exit before app.run() returns. Only unlink the saved
+    // endpoint here: never access UI state, lock SERVER, or wait for threads.
+    remove_bound_endpoint();
+}
+
+pub fn remove_endpoint(_instance: &str) {
     if let Some((stop, thread)) = server_slot().lock().unwrap().take() {
         stop.store(true, Ordering::Release);
         let _ = thread.join();
     }
-    if let Ok(path) = concat_editor_mcp::endpoint(instance) {
-        let _ = std::fs::remove_file(path);
-    }
+    remove_bound_endpoint();
 }
 
 #[cfg(test)]
