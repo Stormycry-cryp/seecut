@@ -3654,16 +3654,14 @@ impl CanvasPane {
         let test_completion = self.autosave_test_completion.clone();
         std::thread::spawn(move || {
             let result =
-                Self::write_canvas_snapshot(&data, &path, &ticket, sequence, owner.as_ref()).map(
-                    |written| {
+                Self::write_canvas_snapshot(&data, &path, &ticket, sequence, owner.as_ref())
+                    .inspect(|&written| {
                         if written && let Err(error) = remember_canvas_project(&path) {
                             log::warn!(
                                 "canvas: saved package, but could not update registry: {error}"
                             );
                         }
-                        written
-                    },
-                );
+                    });
             #[cfg(test)]
             if let Some(sender) = test_completion {
                 let _ = sender.send(result.clone());
@@ -3724,10 +3722,10 @@ impl CanvasPane {
                 .as_deref()
                 .is_some_and(|bound| bound != path)
             || (self.project_path.is_none()
-                && !self
+                && self
                     .writer_owner
                     .as_ref()
-                    .is_some_and(|owner| owner.identity().target() == path)
+                    .is_none_or(|owner| owner.identity().target() != path)
                 && desktop_writer_ownership_supported())
             || !self.autosave_inflight.as_ref().is_some_and(|save| {
                 save.generation == generation
