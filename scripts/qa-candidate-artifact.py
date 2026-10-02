@@ -15,12 +15,14 @@ close to 512 MiB can exceed the combined archive limit.
 """
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -43,6 +45,9 @@ LIMIT = 512 * 1024 * 1024
 TAR_LIMIT = LIMIT - 1024 * 1024  # Reserve room for GitHub's ZIP wrapper.
 MANIFEST_LIMIT = 16 * 1024
 JSON_LIMIT = 2 * 1024 * 1024
+BUILD_READY_SECONDS = 60
+BUILD_READY_OBSERVATIONS = 8
+BUILD_READY_INTERVAL = 2
 CHUNK = 1024 * 1024
 MANIFEST_KEYS = {"schema", "repository", "source_head", "platform", "app_sha256",
                  "app_bytes", "build_run_id", "build_job", "build_job_id",
@@ -115,16 +120,28 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
-def bounded_read(response, maximum):
+def remaining_time(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ValueError("API response exceeded its deadline")
+    return remaining
+
+
+def bounded_read(response, maximum, deadline=None):
     length = response.headers.get("Content-Length")
     if length is not None and (not length.isdecimal() or int(length) > maximum):
         raise ValueError("HTTP declared size exceeds the limit")
     chunks, total = [], 0
-    deadline = time.monotonic() + 60
+    shared_deadline = deadline is not None
+    deadline = time.monotonic() + 60 if deadline is None else deadline
     while True:
-        if time.monotonic() > deadline:
+        if shared_deadline:
+            remaining_time(deadline)
+        elif time.monotonic() > deadline:
             raise ValueError("API response exceeded its deadline")
         data = response.read1(min(CHUNK, maximum - total + 1))
+        if shared_deadline:
+            remaining_time(deadline)
         if not data:
             break
         total += len(data)
@@ -151,9 +168,13 @@ class GitHub:
                                                "X-GitHub-Api-Version": "2022-11-28",
                                                "User-Agent": "seecut-qa-candidate"})
 
-    def get(self, suffix):
-        with OPENER.open(self.request(suffix), timeout=30) as response:
-            return strict_json(bounded_read(response, JSON_LIMIT))
+    def get(self, suffix, deadline=None):
+        if deadline is None:
+            with OPENER.open(self.request(suffix), timeout=30) as response:
+                return strict_json(bounded_read(response, JSON_LIMIT))
+        timeout = min(30, remaining_time(deadline))
+        with OPENER.open(self.request(suffix), timeout=timeout) as response:
+            return strict_json(bounded_read(response, JSON_LIMIT, deadline))
 
     def archive_url(self, artifact_id):
         try:
@@ -216,8 +237,77 @@ def download(api, artifact_id, destination, expected_digest):
     raise ValueError("artifact redirect limit reached")
 
 
+@contextmanager
+def create_source_deadline():
+    # A Linux wall-clock watchdog covers the wait, including API I/O and sleeps.
+    if any(signal.getitimer(signal.ITIMER_REAL)):
+        raise ValueError("create source check requires an unused wall-clock timer")
+    previous = signal.getsignal(signal.SIGALRM)
+    deadline = time.monotonic() + BUILD_READY_SECONDS
+    def expired(_signum, _frame):
+        raise ValueError("create source Build readiness exceeded its 60 second deadline")
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, remaining_time(deadline))
+    try:
+        yield deadline
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def wait_for_build(api, job, run_id, deadline):
+    pinned_id = job["id"]
+    for observation in range(BUILD_READY_OBSERVATIONS):
+        if (not isinstance(job, dict) or type(job.get("id")) is not int or job["id"] != pinned_id or
+                type(job.get("run_id")) is not int or job["run_id"] != run_id or
+                job.get("name") != JOB_NAME):
+            raise ValueError("pinned source build job identity changed")
+        steps = job.get("steps", [])
+        if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+            raise ValueError("invalid source build steps response")
+        matching = [step for step in steps if step.get("name") == BUILD_STEP]
+        if len(matching) > 1:
+            raise ValueError("source must have exactly one matching Build step")
+        step = matching[0] if matching else {}
+        status = step.get("status") if matching else "missing"
+        conclusion = step.get("conclusion")
+        def label(value):
+            return str(value) if value in (None, "missing", "queued", "in_progress", "completed",
+                                           "success", "failure", "skipped", "cancelled", "timed_out",
+                                           "action_required", "neutral", "startup_failure") else "invalid"
+        print(f"candidate build observation {observation + 1}/{BUILD_READY_OBSERVATIONS}: "
+              f"job_id={pinned_id} run_id={run_id} job_status={label(job.get('status'))} "
+              f"job_conclusion={label(job.get('conclusion'))} "
+              f"step_status={label(status)} step_conclusion={label(conclusion)}", file=sys.stderr)
+        job_status, job_conclusion = job.get("status"), job.get("conclusion")
+        if (job_status not in ("queued", "in_progress", "completed") or
+                (job_status == "completed" and job_conclusion != "success") or
+                (job_status != "completed" and job_conclusion is not None)):
+            raise ValueError("source build job status or conclusion is invalid")
+        if status == "completed" and conclusion == "success":
+            return pinned_id
+        if (status not in ("missing", "queued", "in_progress") or
+                conclusion is not None or job_status == "completed"):
+            raise ValueError(f"source step was not successfully completed: {BUILD_STEP}")
+        if observation + 1 == BUILD_READY_OBSERVATIONS:
+            raise ValueError("source Build readiness observation limit exhausted")
+        time.sleep(min(BUILD_READY_INTERVAL, remaining_time(deadline)))
+        remaining_time(deadline)
+        job = api.get(f"/actions/jobs/{pinned_id}", deadline=deadline)
+    raise ValueError("source Build readiness observation limit exhausted")
+
+
 def source_job(api, run_id, head, restoring):
-    run = api.get(f"/actions/runs/{run_id}")
+    if restoring:
+        return checked_source_job(api, run_id, head, True)
+    with create_source_deadline() as deadline:
+        return checked_source_job(api, run_id, head, False, deadline)
+
+
+def checked_source_job(api, run_id, head, restoring, deadline=None):
+    def get(suffix):
+        return api.get(suffix) if restoring else api.get(suffix, deadline=deadline)
+    run = get(f"/actions/runs/{run_id}")
     if (type(run.get("id")) is not int or run.get("id") != run_id or run.get("repository", {}).get("full_name") != REPOSITORY or
             run.get("head_repository", {}).get("full_name") != REPOSITORY or
             run.get("head_sha") != head or run.get("event") != "workflow_dispatch" or
@@ -227,7 +317,7 @@ def source_job(api, run_id, head, restoring):
         raise ValueError("source run must be completed before restore")
     jobs = []
     for page in range(1, 6):
-        data = api.get(f"/actions/runs/{run_id}/jobs?filter=all&per_page=100&page={page}")
+        data = get(f"/actions/runs/{run_id}/jobs?filter=all&per_page=100&page={page}")
         current = data.get("jobs")
         if not isinstance(current, list):
             raise ValueError("invalid source jobs response")
@@ -247,7 +337,9 @@ def source_job(api, run_id, head, restoring):
     if type(job.get("run_id")) is not int or job.get("run_id") != run_id or (restoring and (job.get("status") != "completed" or
                                       job.get("conclusion") not in ("success", "failure"))):
         raise ValueError("source build job identity or completion is invalid")
-    for name in ((BUILD_STEP, *RETAIN_STEPS) if restoring else (BUILD_STEP,)):
+    if not restoring:
+        return wait_for_build(api, job, run_id, deadline)
+    for name in (BUILD_STEP, *RETAIN_STEPS):
         steps = [step for step in job.get("steps", []) if step.get("name") == name]
         if len(steps) != 1 or steps[0].get("status") != "completed" or steps[0].get("conclusion") != "success":
             raise ValueError(f"source step was not successfully completed: {name}")
