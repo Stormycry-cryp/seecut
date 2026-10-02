@@ -282,11 +282,18 @@ def main():
                 return 0
             if args.next_stage == "canvas-create-observation":
                 pointer(*coords["new_dialog_header"], "visible new-canvas dialog header to establish App input focus", click=True)
-                focused = int(command(["xdotool", "getwindowfocus"]).strip())
-                focused_pid = int(command(["xdotool", "getwindowpid", str(focused)]).strip())
-                report["keyboard_target_before_escape"] = {"window_id": focused, "pid": focused_pid}
-                if focused_pid != args.app_pid:
-                    raise Blocked("Keyboard focus is not owned by this App; no Escape or create sequence.")
+            if args.next_stage == "project-entry":
+                # The new dialog geometry is deliberately unknown on a new candidate.
+                # Focus the already verified App window without guessing a dialog control.
+                command(["xdotool", "windowfocus", "--sync", str(window)])
+                report["actions"].append({"kind": "window_focus", "window_id": window,
+                                           "intent": "Focus verified App window before one Escape; no guessed dialog coordinate",
+                                           "monotonic": time.monotonic()})
+            focused = int(command(["xdotool", "getwindowfocus"]).strip())
+            focused_pid = int(command(["xdotool", "getwindowpid", str(focused)]).strip())
+            report["keyboard_target_before_escape"] = {"window_id": focused, "pid": focused_pid}
+            if focused != window or focused_pid != args.app_pid:
+                raise Blocked("Keyboard focus does not match this exact App window/PID; no Escape or subsequent input.")
             command(["xdotool", "key", "--clearmodifiers", "Escape"])
             report["actions"].append({"kind": "key", "key": "Escape", "intent": "Observe top-level temporary UI cancellation without guessing a form", "monotonic": time.monotonic()})
             pause(0.6)
