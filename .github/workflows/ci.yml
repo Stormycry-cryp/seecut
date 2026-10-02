@@ -13,6 +13,15 @@ on:
         description: Only capture the normal Linux App's ungranted Settings window
         type: boolean
         default: false
+      linux_blackbox_qa:
+        description: Run the reviewed independent black-box script instead of window capture
+        type: boolean
+        default: false
+      blackbox_timeout_seconds:
+        description: Total QA time including cleanup (420 only for real lease expiry)
+        type: choice
+        options: ['300', '420']
+        default: '300'
       expected_sha:
         description: Exact 40-character feature HEAD required for the window diagnostic
         type: string
@@ -25,7 +34,7 @@ concurrency:
 
 jobs:
   engine:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && 'Linux actual window diagnostic' || 'Engine tests and lints' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && (inputs.linux_blackbox_qa && 'Linux independent black-box QA' || 'Linux actual window diagnostic') || 'Engine tests and lints' }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && 90 || 360 }}
     env:
@@ -64,7 +73,7 @@ jobs:
       - name: Window diagnostic tools
         if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
         run: |
-          sudo apt-get install -y xvfb xdotool imagemagick fonts-noto-cjk
+          sudo apt-get install -y xvfb xdotool imagemagick fonts-noto-cjk libxkbcommon-x11-0
 
       - name: Software Vulkan adapter
         run: |
@@ -154,7 +163,7 @@ jobs:
         run: cargo build -p concat -j 1
 
       - name: Capture the normal App window
-        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa != true
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           # Lavapipe is a CPU adapter; Slint requires an explicit opt-in.
@@ -168,11 +177,36 @@ jobs:
             --output "$RUNNER_TEMP/seecut-window-evidence" \
             --expected-sha "$EXPECTED_SHA"
 
+      - name: Run the independent black-box script
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
+          SLINT_WGPU_CPU: '1'
+        run: |
+          set -euo pipefail
+          [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
+          xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
+            timeout --signal=TERM --kill-after=10s "$((QA_SECONDS - 10))s" \
+            python3 scripts/run-linux-blackbox.py \
+            --binary "$PWD/src/target/debug/concat" \
+            --qa-script "$PWD/scripts/independent-linux-blackbox.py" \
+            --output "$RUNNER_TEMP/seecut-window-evidence" \
+            --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS"
+
+      - name: Seal private QA evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
+        run: |
+          python3 scripts/seal-qa-evidence.py \
+            --source "$RUNNER_TEMP/seecut-window-evidence" \
+            --recipient "$PWD/scripts/qa-evidence-recipient.pem" \
+            --output "$RUNNER_TEMP/seecut-private-qa-evidence"
+
       - name: Verify bounded window evidence
         id: window_evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
         env:
-          EVIDENCE_DIR: ${{ runner.temp }}/seecut-window-evidence
+          EVIDENCE_DIR: ${{ runner.temp }}/${{ inputs.linux_blackbox_qa && 'seecut-private-qa-evidence' || 'seecut-window-evidence' }}
         run: |
           python3 - <<'PY'
           import os
@@ -200,8 +234,8 @@ jobs:
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && steps.window_evidence.outputs.upload == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: seecut-linux-window-${{ github.sha }}
-          path: ${{ runner.temp }}/seecut-window-evidence
+          name: seecut-linux-${{ inputs.linux_blackbox_qa && 'private-qa' || 'window' }}-${{ github.sha }}
+          path: ${{ runner.temp }}/${{ inputs.linux_blackbox_qa && 'seecut-private-qa-evidence' || 'seecut-window-evidence' }}
           if-no-files-found: ignore
           retention-days: 7
 
