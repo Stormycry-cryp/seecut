@@ -3,10 +3,11 @@
 
 create --app ABSOLUTE --output-dir FRESH_ABSOLUTE --expected-head FULL_SHA
 restore --source-run-id ID --source-artifact-id ID --output-dir FRESH_ABSOLUTE
-        --expected-head FULL_SHA
+        --expected-head WORKFLOW_SHA --source-head APP_SOURCE_SHA
 
 Both commands require a Linux x86_64 GitHub Actions runner, the exact checked-out
-HEAD and GH_TOKEN/GITHUB_TOKEN. Only candidate.tar belongs in the ordinary
+HEAD and GH_TOKEN/GITHUB_TOKEN. For restore, the App source HEAD may differ from
+the checked-out workflow HEAD. Only candidate.tar belongs in the ordinary
 one-day artifact; private QA evidence must be uploaded separately. Stdout and
 outputs.json contain paths and identity, never credentials. All limits are hard
 limits, including wrapper overhead; create reserves 1 MiB for the ZIP wrapper. An App
@@ -325,7 +326,7 @@ def create(app, output, head, api, run_id):
                 raise ValueError("source App changed before archive completion")
     with new_file(output / "manifest.json") as target:
         target.write(encoded)
-    return outputs(output, app, manifest, None)
+    return outputs(output, app, manifest, None, head)
 
 
 def unwrap_zip(zip_path, archive):
@@ -421,7 +422,7 @@ def check_archive(archive, head, run_id, job_id, restored_app):
     return manifest
 
 
-def restore(output, head, api, run_id, artifact_id):
+def restore(output, head, api, run_id, artifact_id, workflow_head):
     job_id = source_job(api, run_id, head, True)
     artifact = api.get(f"/actions/artifacts/{artifact_id}")
     origin = artifact.get("workflow_run", {})
@@ -445,12 +446,13 @@ def restore(output, head, api, run_id, artifact_id):
     with new_file(output / "manifest.json") as target:
         target.write(json_bytes(manifest))
     zip_path.unlink()
-    return outputs(output, output / "concat", manifest, artifact_id)
+    return outputs(output, output / "concat", manifest, artifact_id, workflow_head)
 
 
-def outputs(output, app, manifest, artifact_id):
+def outputs(output, app, manifest, artifact_id, workflow_head):
     result = {"binary_path": str(app), "manifest_path": str(output / "manifest.json"),
               "archive_path": str(output / "candidate.tar"), "source_head": manifest["source_head"],
+              "workflow_head": workflow_head,
               "app_sha256": manifest["app_sha256"], "app_bytes": manifest["app_bytes"],
               "source_run_id": manifest["build_run_id"], "source_artifact_id": artifact_id,
               "artifact_name": artifact_name(manifest["source_head"], manifest["build_run_id"])}
@@ -480,16 +482,18 @@ def main():
         else:
             command.add_argument("--source-run-id", required=True)
             command.add_argument("--source-artifact-id", required=True)
+            command.add_argument("--source-head", required=True)
     args = parser.parse_args()
     try:
-        head = full_head(args.expected_head)
-        runner_head(head)
+        workflow_head = full_head(args.expected_head)
+        runner_head(workflow_head)
+        head = full_head(args.source_head) if args.mode == "restore" else workflow_head
         run_id = positive(os.environ.get("GITHUB_RUN_ID", "")) if args.mode == "create" else positive(args.source_run_id)
         artifact_id = positive(args.source_artifact_id) if args.mode == "restore" else None
         output = absolute_path(args.output_dir)
         output.mkdir(mode=0o700, parents=False, exist_ok=False)
         api = GitHub()
-        result = create(args.app, output, head, api, run_id) if args.mode == "create" else restore(output, head, api, run_id, artifact_id)
+        result = create(args.app, output, head, api, run_id) if args.mode == "create" else restore(output, head, api, run_id, artifact_id, workflow_head)
         print(json_bytes(result).decode(), end="")
         return 0
     except (ValueError, OSError, KeyError, TypeError, tarfile.TarError, zipfile.BadZipFile,

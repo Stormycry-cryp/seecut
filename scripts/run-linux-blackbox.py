@@ -9,8 +9,9 @@ files in output or its known observation/navigation directories, and never
 include secrets in artifacts. Optional --identity-approval and --ui-approval are
 copied verbatim and forwarded; this harness never creates or interprets a declaration.
 An optional candidate manifest binds the copied executable to its actual source
-HEAD, build run/job and content hash before launch; this revision permits only
-the same source and workflow HEAD. This first contract supports one App lifetime: QA must not launch another App,
+HEAD, build run/job and content hash before launch. Explicit source HEAD and
+artifact ID allow a reviewed test-only workflow revision to use the original App.
+QA receives the actual App source HEAD. This contract supports one App lifetime: QA must not launch another App,
 detach descendants, or move them into new process groups. This harness supplies
 no UI navigation, authorization, product assertions, or product test results.
 It is resource isolation for trusted QA, not a security sandbox: HOME and X11
@@ -241,9 +242,10 @@ def arguments():
     parser.add_argument("--client-binary")
     parser.add_argument("--candidate-manifest")
     parser.add_argument("--candidate-artifact-id")
+    parser.add_argument("--source-head", help="Exact immutable App source HEAD; defaults to workflow HEAD")
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
-    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry"), default="navigation")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation"), default="navigation")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     return parser.parse_args()
 
@@ -291,6 +293,13 @@ def main():
                                        stderr=subprocess.DEVNULL, text=True).strip()
         if head != args.expected_sha:
             raise ValueError("checkout HEAD does not match --expected-sha")
+        source_head = args.source_head if args.source_head is not None else head
+        if not re.fullmatch(r"[0-9a-f]{40}", source_head):
+            raise ValueError("--source-head must be 40 lowercase hex characters")
+        if args.source_head is not None and args.candidate_manifest is None:
+            raise ValueError("explicit App source HEAD requires an immutable candidate manifest")
+        if source_head != head and args.candidate_artifact_id is None:
+            raise ValueError("cross-HEAD App source requires an exact candidate artifact ID")
         candidate = None
         if args.candidate_manifest is not None:
             if not Path(args.candidate_manifest).is_absolute():
@@ -310,14 +319,14 @@ def main():
                 raise ValueError("invalid candidate manifest fields")
             if (type(candidate["schema"]) is not int or candidate["schema"] != 1
                     or candidate["repository"] != "Stormycry-cryp/seecut"
-                    or candidate["source_head"] != head
+                    or candidate["source_head"] != source_head
                     or candidate["platform"] != "Linux x86_64" or platform.machine() != "x86_64"
                     or candidate["build_job"] != "engine"
                     or candidate["build_job_name"] != "Linux independent black-box QA"
                     or candidate["build_step_name"] != "Build the normal window candidate"
                     or not isinstance(candidate["app_sha256"], str)
                     or not re.fullmatch(r"[0-9a-f]{64}", candidate["app_sha256"])):
-                raise ValueError("candidate provenance does not match this workflow and platform")
+                raise ValueError("candidate provenance does not match the requested App source and platform")
             for key in ("app_bytes", "build_run_id", "build_job_id"):
                 if type(candidate[key]) is not int or candidate[key] <= 0:
                     raise ValueError("candidate manifest requires positive integer sizes and IDs")
@@ -379,7 +388,7 @@ def main():
             env[key] = str(isolated)
         for key in ("SEECUT_MCP_CLIENT_TOKEN", "SEECUT_MCP_WRITE_TOKEN"):
             env.pop(key, None)
-        result.update(head=head, workflow_head=head, source_head=head,
+        result.update(head=head, workflow_head=head, source_head=source_head,
                       expected_head=args.expected_sha, sha256=hashes,
                       app_binary=str(copied["app"]),
                       platform=platform.platform(), display=env["DISPLAY"],
@@ -405,7 +414,7 @@ def main():
         qa_command = [sys.executable, str(copied["qa"]), "--app-pid", str(app.pid),
                       "--client-binary", str(copied["client"]),
                       "--work-dir", str(work), "--output", str(output),
-                      "--expected-sha", args.expected_sha,
+                      "--expected-sha", source_head,
                       "--deadline-monotonic", str(qa_deadline),
                       "--next-stage", args.next_stage]
         if approval is not None:

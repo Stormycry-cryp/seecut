@@ -58,7 +58,7 @@ def main():
                    required=True, help="Schema 2 main-reviewed exact runtime HEAD and App SHA256")
     p.add_argument("--ui-approval", type=Path,
                    help="Independent-QA reviewed UI actions and coordinates bound to observed App SHA256")
-    p.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry"), default="navigation",
+    p.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation"), default="navigation",
                    help="project-entry additionally clicks the independently observed new-project card and observes Escape")
     args = p.parse_args()
     start = time.monotonic()
@@ -93,6 +93,12 @@ def main():
         time.sleep(seconds)
 
     def capture(name, meaning):
+        # Replay already reviewed navigation without duplicating its five snapshots.
+        # Keep the actual gallery plus five new observations within six PNGs total.
+        if args.next_stage == "canvas-create-observation" and name in {
+            "01-before-mode-choice.png", "02-after-quick-choice.png", "03-canvas-hover.png", "05-settings-hover.png"
+        }:
+            return
         path = evidence / name
         command(["import", "-window", str(window), "-strip", str(path)], timeout=8)
         os.chmod(path, 0o600)
@@ -137,13 +143,18 @@ def main():
                     or not isinstance(ui.get("coordinates"), dict)):
                 raise Blocked("Independent UI declaration is invalid; no UI permission inferred.")
             required = {"quick-mode", "canvas-navigation", "settings-hover"}
-            if args.next_stage == "project-entry":
+            if args.next_stage in ("project-entry", "canvas-create-observation"):
                 required.add("project-entry-escape")
+            if args.next_stage == "canvas-create-observation":
+                required.add("canvas-create-observation")
             report["ui_approval"] = dict(ui, declaration_sha256=ui_digest)
             report["coordinate_baseline_head"] = ui["observed_head"]
             report["coordinate_baseline_app_sha256"] = ui["observed_app_sha256"]
             report["coordinate_basis"] = ui["evidence_id"]
-            for key in ("quick_mode", "canvas_navigation", "settings_hover", "new_project"):
+            coordinate_keys = ["quick_mode", "canvas_navigation", "settings_hover", "new_project"]
+            if args.next_stage == "canvas-create-observation":
+                coordinate_keys.extend(["new_dialog_header", "new_cancel", "new_create"])
+            for key in coordinate_keys:
                 xy = ui["coordinates"].get(key)
                 if (not isinstance(xy, list) or len(xy) != 2
                         or any(type(v) is not int for v in xy)
@@ -236,16 +247,37 @@ def main():
         pointer(*coords["settings_hover"], "bottom settings icon independently observed at left")
         pause(0.7)
         capture("05-settings-hover.png", "Only hover: settings and permission UI not opened")
-        if args.next_stage == "project-entry":
+        if args.next_stage in ("project-entry", "canvas-create-observation"):
             report["project_creation_requested"] = True
             pointer(*coords["new_project"], "new-project card plus independently observed in the empty canvas gallery", click=True)
             pointer(800, 650, "neutral content area")
             pause(0.8)
             capture("06-after-new-project-click.png", "Actual new-project dialog or editor; no form values inferred or submitted")
+            if args.next_stage == "canvas-create-observation":
+                pointer(*coords["new_dialog_header"], "visible new-canvas dialog header to establish App input focus", click=True)
+                focused = int(command(["xdotool", "getwindowfocus"]).strip())
+                focused_pid = int(command(["xdotool", "getwindowpid", str(focused)]).strip())
+                report["keyboard_target_before_escape"] = {"window_id": focused, "pid": focused_pid}
+                if focused_pid != args.app_pid:
+                    raise Blocked("Keyboard focus is not owned by this App; no Escape or create sequence.")
             command(["xdotool", "key", "--clearmodifiers", "Escape"])
             report["actions"].append({"kind": "key", "key": "Escape", "intent": "Observe top-level temporary UI cancellation without guessing a form", "monotonic": time.monotonic()})
             pause(0.6)
             capture("07-after-project-escape.png", "Actual Escape result; project creation/cancellation determined only from screenshots")
+            if args.next_stage == "canvas-create-observation":
+                pointer(*coords["new_cancel"], "visible Cancel on observed new-canvas dialog; if Escape closed it this is a neutral content click", click=True)
+                pointer(800, 650, "neutral content area")
+                pause(0.6)
+                capture("08-after-visible-cancel.png", "Actual cancel result; no project creation inferred")
+                pointer(*coords["new_project"], "observed new-project card to reopen the dialog", click=True)
+                pointer(800, 650, "neutral content area")
+                pause(0.6)
+                capture("09-before-visible-create.png", "Actual reopened dialog and its displayed values before one Create click")
+                report["visible_create_requested"] = True
+                pointer(*coords["new_create"], "visible Create button on the independently observed new-canvas dialog, using displayed defaults", click=True)
+                pointer(800, 650, "neutral area; no painting gesture")
+                pause(0.8)
+                capture("10-after-visible-create.png", "Actual editor/result after one Create; persistence, content and success require independent review")
         report["status"] = "bounded_actions_completed_review_pending"
     except ReviewRequired as exc:
         report["review_reason"] = str(exc)

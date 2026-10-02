@@ -20,7 +20,7 @@ on:
       qa_next_stage:
         description: Reviewed independent script stage
         type: choice
-        options: ['observe-only', 'navigation', 'project-entry']
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation']
         default: 'navigation'
       qa_ui_approval:
         description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
@@ -41,6 +41,10 @@ on:
         default: ''
       qa_source_artifact_id:
         description: Exact immutable candidate artifact ID; required with source run ID
+        type: string
+        default: ''
+      qa_source_head:
+        description: Exact App source HEAD; required with both immutable candidate IDs
         type: string
         default: ''
       expected_sha:
@@ -73,15 +77,15 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
           SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          SOURCE_HEAD: ${{ inputs.qa_source_head }}
           BLACKBOX_QA: ${{ inputs.linux_blackbox_qa }}
         run: |
           set -euo pipefail
-          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
-          if [[ -n "$SOURCE_RUN_ID" || -n "$SOURCE_ARTIFACT_ID" ]]; then
-            [[ "$BLACKBOX_QA" == true ]]
-            [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-            [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]] || exit 1
+          if [[ -n "$SOURCE_RUN_ID" || -n "$SOURCE_ARTIFACT_ID" || -n "$SOURCE_HEAD" ]]; then
+            [[ "$BLACKBOX_QA" == true && "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ &&
+               "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
           fi
           echo "Window candidate: $EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@stable
@@ -187,7 +191,7 @@ jobs:
         working-directory: src
 
       - name: Build the normal window candidate
-        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.qa_source_run_id == '' && inputs.qa_source_artifact_id == ''
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.qa_source_run_id == '' && inputs.qa_source_artifact_id == '' && inputs.qa_source_head == ''
         working-directory: src
         env:
           CARGO_PROFILE_DEV_DEBUG: '0'
@@ -201,10 +205,11 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
           SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          SOURCE_HEAD: ${{ inputs.qa_source_head }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ -z "$SOURCE_RUN_ID" && -z "$SOURCE_ARTIFACT_ID" ]]; then
+          if [[ -z "$SOURCE_RUN_ID" && -z "$SOURCE_ARTIFACT_ID" && -z "$SOURCE_HEAD" ]]; then
             python3 scripts/qa-candidate-artifact.py create \
               --app "$PWD/src/target/debug/concat" \
               --expected-head "$EXPECTED_SHA" \
@@ -212,6 +217,7 @@ jobs:
           else
             python3 scripts/qa-candidate-artifact.py restore \
               --source-run-id "$SOURCE_RUN_ID" --source-artifact-id "$SOURCE_ARTIFACT_ID" \
+              --source-head "$SOURCE_HEAD" \
               --expected-head "$EXPECTED_SHA" \
               --output-dir "$RUNNER_TEMP/seecut-normal-candidate"
           fi
@@ -221,7 +227,8 @@ jobs:
           from pathlib import Path
           root = Path(os.environ['RUNNER_TEMP']) / 'seecut-normal-candidate'
           data = json.loads((root / 'outputs.json').read_text())
-          assert data['source_head'] == os.environ['EXPECTED_SHA']
+          assert data['workflow_head'] == os.environ['EXPECTED_SHA']
+          assert data['source_head'] == (os.environ['SOURCE_HEAD'] or os.environ['EXPECTED_SHA'])
           for key in ('binary_path', 'manifest_path'):
               path = Path(data[key])
               assert path.is_absolute() and path.is_file() and not path.is_symlink()
@@ -229,6 +236,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('binary=' + data['binary_path'] + '\n')
               output.write('manifest=' + data['manifest_path'] + '\n')
+              output.write('source_head=' + data['source_head'] + '\n')
               output.write('upload=' + str(not os.environ['SOURCE_RUN_ID']).lower() + '\n')
           PYCANDIDATE
 
@@ -271,6 +279,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           APP_BINARY: ${{ steps.candidate.outputs.binary }}
           CANDIDATE_MANIFEST: ${{ steps.candidate.outputs.manifest }}
+          SOURCE_HEAD: ${{ steps.candidate.outputs.source_head }}
           SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
           QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
           NEXT_STAGE: ${{ inputs.qa_next_stage }}
@@ -280,8 +289,8 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
-          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry ]]
-          CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST")
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation ]]
+          CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST" --source-head "$SOURCE_HEAD")
           if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
             CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
           fi
