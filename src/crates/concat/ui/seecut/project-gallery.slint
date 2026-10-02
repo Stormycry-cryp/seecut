@@ -87,37 +87,51 @@ export component CanvasProjectsPage inherits Rectangle {
             }
         }
     }
-    Modal {
-        open: root.new-open;
-        title: "新建画布"; glyph: Glyph.plus;
-        surface-width: 360px;
-        closed => { root.new-open = false; }
-        VerticalLayout {
-            padding: 20px; spacing: 14px;
-            HorizontalLayout {
-                spacing: 10px;
-                VerticalLayout {
-                    spacing: 5px;
-                    Text { text: "宽度 · px"; color: Theme.fg-muted; font-size: 13px; }
-                    CloudField { value <=> root.new-width-text; }
-                }
-                VerticalLayout {
-                    spacing: 5px;
-                    Text { text: "高度 · px"; color: Theme.fg-muted; font-size: 13px; }
-                    CloudField { value <=> root.new-height-text; }
-                }
+    // Keep non-control clicks in the new dialog off the window shortcut scope.
+    FocusScope {
+        width: 100%; height: 100%;
+        focus-on-click: root.new-open;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if root.new-open && event.text == Key.Escape {
+                root.new-open = false;
+                return EventResult.accept;
             }
-            HorizontalLayout {
-                spacing: 8px; alignment: end;
-                AppButton { label: "取消"; clicked => { root.new-open = false; } }
-                AppButton {
-                    label: "创建"; primary: true;
-                    enabled: root.new-width-text.is-float() && root.new-height-text.is-float()
-                        && root.new-width-text.to-float() >= 64 && root.new-width-text.to-float() <= 4096
-                        && root.new-height-text.to-float() >= 64 && root.new-height-text.to-float() <= 4096;
-                    clicked => {
-                        root.new-open = false;
-                        SeeCut.action("canvas-new", "\{Math.round(root.new-width-text.to-float())},\{Math.round(root.new-height-text.to-float())}");
+            return EventResult.reject;
+        }
+        Modal {
+            open: root.new-open;
+            trap-focus: true;
+            title: "新建画布"; glyph: Glyph.plus;
+            surface-width: 360px;
+            closed => { root.new-open = false; }
+            VerticalLayout {
+                padding: 20px; spacing: 14px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        spacing: 5px;
+                        Text { text: "宽度 · px"; color: Theme.fg-muted; font-size: 13px; }
+                        CloudField { value <=> root.new-width-text; }
+                    }
+                    VerticalLayout {
+                        spacing: 5px;
+                        Text { text: "高度 · px"; color: Theme.fg-muted; font-size: 13px; }
+                        CloudField { value <=> root.new-height-text; }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px; alignment: end;
+                    AppButton { label: "取消"; clicked => { root.new-open = false; } }
+                    AppButton {
+                        label: "创建"; primary: true;
+                        enabled: root.new-width-text.is-float() && root.new-height-text.is-float()
+                            && root.new-width-text.to-float() >= 64 && root.new-width-text.to-float() <= 4096
+                            && root.new-height-text.to-float() >= 64 && root.new-height-text.to-float() <= 4096;
+                        clicked => {
+                            root.new-open = false;
+                            SeeCut.action("canvas-new", "\{Math.round(root.new-width-text.to-float())},\{Math.round(root.new-height-text.to-float())}");
+                        }
                     }
                 }
             }
