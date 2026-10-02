@@ -219,7 +219,7 @@ jobs:
         run: |
           set -o pipefail
           eval "$(scripts/mobile-env.sh aarch64-apple-ios)"
-          cargo build --release -p concat --target aarch64-apple-ios 2>&1 | tee build.log
+          cargo build --release -p concat --target aarch64-apple-ios --config 'profile.release.package.concat.codegen-units=16' 2>&1 | tee build.log
 
       - name: Build log to the summary (failure only)
         if: failure()
