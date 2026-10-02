@@ -210,6 +210,7 @@ pub(crate) fn home_folder(name: &str) -> String {
 pub struct ToastState {
     pub token: i32,
     pub message: String,
+    pub detail: String,
     pub failed: bool,
 }
 
@@ -5148,8 +5149,14 @@ impl Studio {
     /// this only records; the publish that handler was going to make anyway
     /// is what puts it on screen.
     pub fn notify(&mut self, message: &str, failed: bool) {
+        self.notify_with_detail(message, message, failed);
+    }
+
+    /// Shows a short notice while keeping the full diagnostic in Copy.
+    pub fn notify_with_detail(&mut self, message: &str, detail: &str, failed: bool) {
         self.toast.token += 1;
         self.toast.message = message.into();
+        self.toast.detail = detail.into();
         self.toast.failed = failed;
     }
 
@@ -6155,6 +6162,7 @@ impl Studio {
         app.set_toast(ToastData {
             token: self.toast.token,
             message: self.toast.message.as_str().into(),
+            detail: self.toast.detail.as_str().into(),
             failed: self.toast.failed,
         });
         app.set_start(self.start.data());

@@ -47,6 +47,7 @@
   "Audio": "オーディオ",
   "Audio Effects": "オーディオエフェクト",
   "Audio effects": "オーディオエフェクト",
+  "Audio output unavailable. Retrying.": "音声出力を利用できません。再試行中です。",
   "Audio track": "Audio track",
   "Auto": "自動",
   "Auto removal": "自動削除",

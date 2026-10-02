@@ -131,6 +131,11 @@ pub trait PlaybackEvents: Send + Sync + 'static {
     fn position(&self, seconds: f64);
     /// A failure the user should see.
     fn error(&self, message: String);
+    /// Output setup failed and the supervisor will keep retrying. The full
+    /// diagnostic can be copied while the window shows a shorter notice.
+    fn audio_output_unavailable(&self, detail: String) {
+        self.error(detail);
+    }
 }
 
 /// Decoded audio: 16-bit little-endian stereo at [`PCM_RATE`] inside a WAV
@@ -888,10 +893,9 @@ fn supervise_stream(
                 // Once, not every retry: a machine with no sound card would
                 // otherwise toast every backoff tick forever.
                 if !reported_missing {
-                    report(
-                        events.as_ref(),
-                        format!("audio output unavailable: {error}; will keep trying"),
-                    );
+                    let detail = format!("audio output unavailable: {error}; will keep trying");
+                    log::warn!("{detail}");
+                    events.audio_output_unavailable(detail);
                     reported_missing = true;
                 }
                 // No stream means no callback to drain the channel, and

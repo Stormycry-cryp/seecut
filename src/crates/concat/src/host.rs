@@ -24,6 +24,7 @@ use concat_host::{AppDirs, media};
 use concat_speech::{Speech, Transcriber};
 
 use crate::gpu::Gpu;
+use crate::i18n::t;
 use crate::studio::{Models, Studio};
 use crate::ui::App;
 
@@ -104,6 +105,19 @@ impl PlaybackEvents for Events {
         let _ = slint::invoke_from_event_loop(move || {
             Shell::with(|shell, app| {
                 shell.studio.borrow_mut().notify(&message, true);
+                shell.studio.borrow().publish(&app, &shell.models);
+            });
+        });
+    }
+
+    fn audio_output_unavailable(&self, detail: String) {
+        let _ = slint::invoke_from_event_loop(move || {
+            Shell::with(|shell, app| {
+                shell.studio.borrow_mut().notify_with_detail(
+                    &t("Audio output unavailable. Retrying."),
+                    &detail,
+                    true,
+                );
                 shell.studio.borrow().publish(&app, &shell.models);
             });
         });

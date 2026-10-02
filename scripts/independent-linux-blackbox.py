@@ -2,7 +2,8 @@
 """Visible UI steps chosen independently from the reviewed first-run screenshots.
 
 Select quick mode, observe the actual workbench, hover/click canvas navigation,
-and hover settings. No project creation, token grant, file picker, or paid action.
+and hover settings. Optional project-entry observes the new-project card and Escape.
+No guessed form confirmation, token grant, file picker, or paid action.
 """
 import argparse
 import hashlib
@@ -23,8 +24,25 @@ class ReviewRequired(Exception):
     pass
 
 
-BASELINE_HEAD = "48d4f771a2327e6982f6b4d2189c72d8f4cfbe75"
-BASELINE_APP_SHA256 = "88a8981f684de6b9a326823bfbb4437cbd7ed80fad215d9cfb513c8a9d9d65f5"
+def declaration(path, label):
+    if (path is None or not path.is_absolute() or path.is_symlink()
+            or not path.is_file() or path.stat().st_size > 16384):
+        raise Blocked(label + " must be an explicit regular JSON file <=16 KiB.")
+    with path.open("rb") as stream:
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        raise Blocked(label + " exceeds 16 KiB.")
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise Blocked(label + " has invalid JSON.") from None
+    if not isinstance(value, dict):
+        raise Blocked(label + " must contain an object.")
+    return value, hashlib.sha256(raw).hexdigest()
+
+
+def exact_hex(value, length):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{" + str(length) + r"}", value) is not None
 
 
 def main():
@@ -37,7 +55,11 @@ def main():
     p.add_argument("--deadline-monotonic", type=float, required=True)
     p.add_argument("--window-id", type=int)
     p.add_argument("--identity-approval", type=Path,
-                   help="Main-reviewer declaration for an exact newer runtime HEAD with test/runtime-only changes")
+                   required=True, help="Schema 2 main-reviewed exact runtime HEAD and App SHA256")
+    p.add_argument("--ui-approval", type=Path,
+                   help="Independent-QA reviewed UI actions and coordinates bound to observed App SHA256")
+    p.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry"), default="navigation",
+                   help="project-entry additionally clicks the independently observed new-project card and observes Escape")
     args = p.parse_args()
     start = time.monotonic()
     deadline = min(args.deadline_monotonic, start + 45)
@@ -47,11 +69,10 @@ def main():
         "candidate_head_from_launcher": args.expected_sha,
         "status": "blocked", "product_verdict": "pending_independent_image_review",
         "pid": args.app_pid, "actions": [], "captures": [],
-        "coordinate_basis": "Independent review of initial-1280x900.png for HEAD 48d4f771a2327e6982f6b4d2189c72d8f4cfbe75; no implementation coordinates",
-        "coordinate_baseline_head": BASELINE_HEAD,
-        "coordinate_baseline_app_sha256": BASELINE_APP_SHA256,
+        "coordinate_basis": "Only a separately supplied independent-QA UI declaration can authorize coordinates",
         "runtime_head_verification": "exact HEAD supplied by launcher; separate from observed coordinate baseline",
         "limitations": "Click targets are intended targets until resulting screenshots are independently reviewed.",
+        "requested_stage": args.next_stage,
     }
 
     def command(argv, timeout=6):
@@ -78,6 +99,8 @@ def main():
         size = path.stat().st_size
         if size > 2 * 1024 * 1024:
             raise Blocked("Capture exceeds 2 MiB; stop before artifact publication.")
+        if sum(item["bytes"] for item in report["captures"]) + size > 14 * 1024 * 1024:
+            raise Blocked("Aggregate screenshots exceeded 14 MiB; stop before artifact publication.")
         report["captures"].append({"file": name, "bytes": size,
                                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                                    "meaning": meaning})
@@ -92,37 +115,43 @@ def main():
     try:
         if not re.fullmatch(r"[0-9a-f]{40}", args.expected_sha):
             raise Blocked("Invalid candidate HEAD attestation.")
-        # A QA-script integration changes HEAD without establishing a new UI baseline.
-        # Require a review declaration naming the actual new HEAD; never substitute the old HEAD.
-        if args.expected_sha != BASELINE_HEAD:
-            approval_path = args.identity_approval
-            if approval_path is None:
-                raise Blocked("New runtime HEAD requires an exact main-reviewer test/runtime-only declaration.")
-            if (not approval_path.is_absolute() or approval_path.is_symlink()
-                    or not approval_path.is_file() or approval_path.stat().st_size > 16384):
-                raise Blocked("Identity approval must be an explicit small regular JSON file.")
-            try:
-                with approval_path.open("rb") as stream:
-                    approval_bytes = stream.read(16385)
-                if len(approval_bytes) > 16384:
-                    raise Blocked("Identity approval exceeds 16 KiB.")
-                approval = json.loads(approval_bytes)
-            except (ValueError, UnicodeError):
-                raise Blocked("Invalid identity approval JSON.") from None
-            if (not isinstance(approval, dict) or approval.get("schema") != 1
-                    or approval.get("coordinate_baseline_head") != BASELINE_HEAD
-                    or approval.get("approved_runtime_head") != args.expected_sha
-                    or approval.get("reviewed_change_scope") != "tests-and-runtime-only"
-                    or approval.get("reviewed_by") != "main-reviewer"):
-                raise Blocked("Identity approval does not cover this exact runtime HEAD and coordinate baseline.")
-            report["identity_approval"] = {
-                "approved_runtime_head": approval["approved_runtime_head"],
-                "coordinate_baseline_head": approval["coordinate_baseline_head"],
-                "reviewed_change_scope": approval["reviewed_change_scope"],
-                "reviewed_by": approval["reviewed_by"],
-                "declaration_sha256": hashlib.sha256(approval_bytes).hexdigest(),
-                "provenance": "main-reviewer declaration; no product acceptance asserted",
-            }
+        # Runtime identity establishes which candidate may be observed, never which UI may be clicked.
+        runtime, runtime_digest = declaration(args.identity_approval, "Runtime declaration")
+        if (runtime.get("schema") != 2 or runtime.get("runtime_head") != args.expected_sha
+                or "runtime_app_sha256" not in runtime
+                or not (runtime["runtime_app_sha256"] is None or exact_hex(runtime["runtime_app_sha256"], 64))
+                or runtime.get("reviewed_by") != "main-reviewer"
+                or runtime.get("change_scope") not in ("tests-and-runtime-only", "product-candidate")):
+            raise Blocked("Schema 2 runtime declaration must match this exact HEAD and reviewed binary identity.")
+        report["identity_approval"] = dict(runtime, declaration_sha256=runtime_digest)
+        ui = None
+        if args.ui_approval is not None:
+            ui, ui_digest = declaration(args.ui_approval, "Independent UI declaration")
+            if (ui.get("schema") != 1 or ui.get("reviewed_by") != "independent-qa"
+                    or not exact_hex(ui.get("observed_head"), 40)
+                    or not exact_hex(ui.get("observed_app_sha256"), 64)
+                    or not isinstance(ui.get("evidence_id"), str)
+                    or ui.get("window") != {"width": 1280, "height": 900}
+                    or not isinstance(ui.get("approved_actions"), list)
+                    or any(not isinstance(action, str) for action in ui["approved_actions"])
+                    or not isinstance(ui.get("coordinates"), dict)):
+                raise Blocked("Independent UI declaration is invalid; no UI permission inferred.")
+            required = {"quick-mode", "canvas-navigation", "settings-hover"}
+            if args.next_stage == "project-entry":
+                required.add("project-entry-escape")
+            report["ui_approval"] = dict(ui, declaration_sha256=ui_digest)
+            report["coordinate_baseline_head"] = ui["observed_head"]
+            report["coordinate_baseline_app_sha256"] = ui["observed_app_sha256"]
+            report["coordinate_basis"] = ui["evidence_id"]
+            for key in ("quick_mode", "canvas_navigation", "settings_hover", "new_project"):
+                xy = ui["coordinates"].get(key)
+                if (not isinstance(xy, list) or len(xy) != 2
+                        or any(type(v) is not int for v in xy)
+                        or not (0 <= xy[0] < 1280 and 32 <= xy[1] < 900)):
+                    raise Blocked("UI declaration contains an invalid visible-window coordinate.")
+            actions_covered = required.issubset(set(ui["approved_actions"]))
+        else:
+            actions_covered = False
         if args.app_pid < 2 or not deadline > start or not os.environ.get("DISPLAY"):
             raise Blocked("Missing live QA PID/display or expired deadline.")
         for directory in (args.work_dir, args.output):
@@ -150,8 +179,16 @@ def main():
                     break
                 digest.update(data)
         report["app_binary_sha256"] = digest.hexdigest()
-        binary_matches = report["app_binary_sha256"] == BASELINE_APP_SHA256
+        runtime_binary_attested = runtime["runtime_app_sha256"] is not None
+        report["runtime_binary_mapping_attested"] = runtime_binary_attested
+        if runtime_binary_attested and report["app_binary_sha256"] != runtime["runtime_app_sha256"]:
+            raise Blocked("Actual App SHA256 does not match the main-reviewed runtime candidate; no UI input.")
+        binary_matches = ui is not None and report["app_binary_sha256"] == ui["observed_app_sha256"]
         report["app_binary_matches_coordinate_baseline"] = binary_matches
+        product_head_reviewed = (runtime["change_scope"] == "tests-and-runtime-only"
+                                 or (ui is not None and ui["observed_head"] == args.expected_sha))
+        may_navigate = runtime_binary_attested and binary_matches and actions_covered and product_head_reviewed and args.next_stage != "observe-only"
+        report["navigation_authorized_by_independent_review"] = may_navigate
         report["client_binary_available"] = args.client_binary.is_file() and os.access(args.client_binary, os.X_OK)
         report["client_started"] = False
         if args.window_id is None:
@@ -172,30 +209,43 @@ def main():
         fields = dict(line.split("=", 1) for line in geometry.splitlines() if "=" in line)
         if fields.get("WIDTH") != "1280" or fields.get("HEIGHT") != "900":
             raise Blocked("Actual window geometry is not the independently reviewed 1280x900.")
-        if not binary_matches:
-            # Do not use old coordinates to click any control on a changed binary.
-            pause(0.5)
-            capture("00-new-binary-initial-1280x900.png", "New binary initial UI; coordinate reuse requires independent image review")
-            report["status"] = "new_binary_observed_review_required"
+        if not may_navigate:
+            # No pointer, click or key actions without matching independent UI review.
+            for width in (1280, 1024, 1440):
+                command(["xdotool", "windowsize", "--sync", str(window), str(width), "900"])
+                pause(0.4)
+                capture(f"00-observe-only-{width}x900.png", "Exact runtime candidate raw initial UI; no navigation attempted")
+            report["status"] = "candidate_observed_review_required"
             report["product_verdict"] = "not_tested"
-            raise ReviewRequired("Binary SHA256 changed; initial image captured, no pointer or click actions performed.")
+            raise ReviewRequired("Candidate observed only; missing/mismatched independent UI review or explicit observe-only stage. No automatic navigation retry.")
+        coords = ui["coordinates"]
         pointer(800, 650, "neutral area outside first-run dialog")
         pause(0.5)
         capture("01-before-mode-choice.png", "Verify fresh first-run modal before interpreting any later click")
-        pointer(558, 500, "quick-mode button from independently reviewed first-run screenshot", click=True)
+        pointer(*coords["quick_mode"], "quick-mode button from independently reviewed first-run screenshot", click=True)
         pointer(800, 650, "neutral result area")
         pause(0.6)
         capture("02-after-quick-choice.png", "Actual UI after one quick-mode click, selection not inferred")
-        pointer(40, 170, "canvas navigation icon independently observed at left")
+        pointer(*coords["canvas_navigation"], "canvas navigation icon independently observed at left")
         pause(0.7)
         capture("03-canvas-hover.png", "Actual tooltip/hover feedback for canvas icon")
-        pointer(40, 170, "canvas navigation icon", click=True)
+        pointer(*coords["canvas_navigation"], "canvas navigation icon", click=True)
         pointer(800, 650, "neutral content area")
         pause(0.8)
         capture("04-after-canvas-navigation.png", "Actual canvas/project entry after click; no precreated project")
-        pointer(40, 805, "bottom settings icon independently observed at left")
+        pointer(*coords["settings_hover"], "bottom settings icon independently observed at left")
         pause(0.7)
         capture("05-settings-hover.png", "Only hover: settings and permission UI not opened")
+        if args.next_stage == "project-entry":
+            report["project_creation_requested"] = True
+            pointer(*coords["new_project"], "new-project card plus independently observed in the empty canvas gallery", click=True)
+            pointer(800, 650, "neutral content area")
+            pause(0.8)
+            capture("06-after-new-project-click.png", "Actual new-project dialog or editor; no form values inferred or submitted")
+            command(["xdotool", "key", "--clearmodifiers", "Escape"])
+            report["actions"].append({"kind": "key", "key": "Escape", "intent": "Observe top-level temporary UI cancellation without guessing a form", "monotonic": time.monotonic()})
+            pause(0.6)
+            capture("07-after-project-escape.png", "Actual Escape result; project creation/cancellation determined only from screenshots")
         report["status"] = "bounded_actions_completed_review_pending"
     except ReviewRequired as exc:
         report["review_reason"] = str(exc)
@@ -204,7 +254,7 @@ def main():
     finally:
         report["elapsed_seconds"] = round(time.monotonic() - start, 3)
         report["permissions_granted"] = False
-        report["project_created"] = False
+        report["project_created"] = "pending_independent_image_review" if report.get("project_creation_requested") else False
         report["paid_action_requested"] = False
         report["cleanup_owner"] = "launcher; no App process is killed by this script"
         if evidence is not None:
@@ -214,7 +264,7 @@ def main():
         print(json.dumps(report, ensure_ascii=False))
     if report["status"] == "bounded_actions_completed_review_pending":
         return 0
-    return 3 if report["status"] == "new_binary_observed_review_required" else 2
+    return 3 if report["status"] == "candidate_observed_review_required" else 2
 
 
 if __name__ == "__main__":

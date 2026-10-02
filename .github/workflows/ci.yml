@@ -17,6 +17,15 @@ on:
         description: Run the reviewed independent black-box script instead of window capture
         type: boolean
         default: false
+      qa_next_stage:
+        description: Reviewed independent script stage
+        type: choice
+        options: ['observe-only', 'navigation', 'project-entry']
+        default: 'navigation'
+      qa_ui_approval:
+        description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
+        type: string
+        default: ''
       qa_identity_approval:
         description: Exact main-reviewer runtime identity JSON; forwarded unchanged, no automatic approval
         type: string
@@ -166,6 +175,14 @@ jobs:
           CARGO_BUILD_JOBS: '1'
         run: cargo build -p concat -j 1
 
+      - name: Build the public stdio client
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa && inputs.qa_next_stage == 'project-entry'
+        working-directory: src
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_BUILD_JOBS: '1'
+        run: cargo build -p concat-editor-mcp --features stdio --bin seecut-editor-mcp -j 1
+
       - name: Capture the normal App window
         if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa != true
         env:
@@ -186,11 +203,18 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
+          NEXT_STAGE: ${{ inputs.qa_next_stage }}
           QA_IDENTITY_APPROVAL: ${{ inputs.qa_identity_approval }}
+          QA_UI_APPROVAL: ${{ inputs.qa_ui_approval }}
           SLINT_WGPU_CPU: '1'
         run: |
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry ]]
+          CLIENT_ARGS=()
+          if [[ "$NEXT_STAGE" == project-entry ]]; then
+            CLIENT_ARGS=(--client-binary "$PWD/src/target/debug/seecut-editor-mcp")
+          fi
           APPROVAL_ARGS=()
           if [[ -n "$QA_IDENTITY_APPROVAL" ]]; then
             python3 - <<'PYAPPROVAL'
@@ -205,13 +229,28 @@ jobs:
           PYAPPROVAL
             APPROVAL_ARGS=(--identity-approval "$RUNNER_TEMP/qa-identity-approval.json")
           fi
+          UI_ARGS=()
+          if [[ -n "$QA_UI_APPROVAL" ]]; then
+            python3 - <<'PYUIAPPROVAL'
+          import os
+          from pathlib import Path
+          data = os.environ['QA_UI_APPROVAL'].encode('utf-8')
+          assert len(data) <= 16384, 'UI declaration exceeds 16 KiB'
+          path = Path(os.environ['RUNNER_TEMP']) / 'qa-ui-approval.json'
+          with path.open('xb') as stream:
+              os.fchmod(stream.fileno(), 0o600)
+              stream.write(data)
+          PYUIAPPROVAL
+            UI_ARGS=(--ui-approval "$RUNNER_TEMP/qa-ui-approval.json")
+          fi
           xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
             timeout --signal=TERM --kill-after=10s "$((QA_SECONDS - 10))s" \
             python3 scripts/run-linux-blackbox.py \
             --binary "$PWD/src/target/debug/concat" \
             --qa-script "$PWD/scripts/independent-linux-blackbox.py" \
             --output "$RUNNER_TEMP/seecut-window-evidence" \
-            --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" "${APPROVAL_ARGS[@]}"
+            --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" \
+            --next-stage "$NEXT_STAGE" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}"
 
       - name: Seal private QA evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa

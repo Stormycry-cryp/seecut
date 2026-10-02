@@ -2,12 +2,12 @@
 """Run one normal Linux App and an independent, trusted black-box QA script.
 
 QA receives --app-pid, --client-binary, --work-dir, --output, --expected-sha,
-and --deadline-monotonic. An absent optional client is passed as a nonexistent
+--deadline-monotonic, and --next-stage. An absent optional client is passed as a nonexistent
 absolute work path. QA records /proc binary identity and the unique visible X11
 window ID itself. It must finish before the monotonic deadline, leave regular
 files in output or its known observation/navigation directories, and never
-include secrets in artifacts. Optional --identity-approval is copied verbatim
-and forwarded; this harness never creates or interprets an approval declaration.
+include secrets in artifacts. Optional --identity-approval and --ui-approval are
+copied verbatim and forwarded; this harness never creates or interprets a declaration.
 This first contract supports one App lifetime: QA must not launch another App,
 detach descendants, or move them into new process groups. This harness supplies
 no UI navigation, authorization, product assertions, or product test results.
@@ -237,6 +237,8 @@ def arguments():
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--client-binary")
     parser.add_argument("--identity-approval")
+    parser.add_argument("--ui-approval")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry"), default="navigation")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     return parser.parse_args()
 
@@ -250,6 +252,7 @@ def main():
     output = work = None
     phase = "setup"
     result = {"schema": 1, "status": "incomplete", "seconds": args.seconds,
+              "next_stage": args.next_stage,
               "qa_contract": "one App lifetime; no detached children; known QA directory; secret-free artifacts",
               "product_acceptance": "not established by this harness"}
     exit_code = 1
@@ -285,6 +288,8 @@ def main():
             raise ValueError("checkout HEAD does not match --expected-sha")
         sources = {"app": regular_input(args.binary), "qa": regular_input(args.qa_script)}
         if args.client_binary is not None:
+            if not Path(args.client_binary).is_absolute():
+                raise ValueError("--client-binary must be absolute")
             sources["client"] = regular_input(args.client_binary)
         approval = None
         if args.identity_approval is not None:
@@ -293,6 +298,13 @@ def main():
             approval = regular_input(args.identity_approval)
             if approval.lstat().st_size > APPROVAL_LIMIT:
                 raise ValueError("--identity-approval exceeds 16 KiB")
+        ui_approval = None
+        if args.ui_approval is not None:
+            if not Path(args.ui_approval).is_absolute():
+                raise ValueError("--ui-approval must be absolute")
+            ui_approval = regular_input(args.ui_approval)
+            if ui_approval.lstat().st_size > APPROVAL_LIMIT:
+                raise ValueError("--ui-approval exceeds 16 KiB")
         output = fresh_output(args.output)
         work = Path(tempfile.mkdtemp(prefix="seecut-blackbox-"))
         copied = {"app": work / "concat", "client": work / "concat-editor-mcp",
@@ -303,6 +315,10 @@ def main():
             copied["identity_approval"] = work / "identity-approval.json"
             hashes["identity_approval"] = copy_and_hash(
                 approval, copied["identity_approval"], limit=APPROVAL_LIMIT)
+        if ui_approval is not None:
+            copied["ui_approval"] = work / "ui-approval.json"
+            hashes["ui_approval"] = copy_and_hash(
+                ui_approval, copied["ui_approval"], limit=APPROVAL_LIMIT)
         portable = work / "portable"
         portable.mkdir(mode=0o700)
         prefs = {"locale": "en", "dark": False, "server": {"enabled": False}}
@@ -341,9 +357,12 @@ def main():
                       "--client-binary", str(copied["client"]),
                       "--work-dir", str(work), "--output", str(output),
                       "--expected-sha", args.expected_sha,
-                      "--deadline-monotonic", str(qa_deadline)]
+                      "--deadline-monotonic", str(qa_deadline),
+                      "--next-stage", args.next_stage]
         if approval is not None:
             qa_command.extend(("--identity-approval", str(copied["identity_approval"])))
+        if ui_approval is not None:
+            qa_command.extend(("--ui-approval", str(copied["ui_approval"])))
         qa = spawn(qa_command, work, env)
         processes.append(qa)
         logs.append(BoundedLog(qa.stdout))
