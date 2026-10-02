@@ -340,6 +340,8 @@ class Probe:
         self.event("launch", head=actual, expected_head=self.args.expected_sha,
                    platform=platform.platform(), binary_sha256=hashlib.sha256(copied.read_bytes()).hexdigest(),
                    display=env["DISPLAY"], portable_strategy="copied executable beside fresh portable",
+                   wgpu_cpu_allowed=env.get("SLINT_WGPU_CPU") == "1",
+                   vulkan_icd=env.get("VK_ICD_FILENAMES", ""),
                    startup_preferences={"locale": "en", "dark": False, "server_enabled": False},
                    preference_source="explicit isolated configuration, not UI operation",
                    fixture="owned 16x16 PNG prepared only; not imported",
