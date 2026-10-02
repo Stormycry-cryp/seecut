@@ -8,7 +8,9 @@ window ID itself. It must finish before the monotonic deadline, leave regular
 files in output or its known observation/navigation directories, and never
 include secrets in artifacts. Optional --identity-approval and --ui-approval are
 copied verbatim and forwarded; this harness never creates or interprets a declaration.
-This first contract supports one App lifetime: QA must not launch another App,
+An optional candidate manifest binds the copied executable to its actual source
+HEAD, build run/job and content hash before launch; this revision permits only
+the same source and workflow HEAD. This first contract supports one App lifetime: QA must not launch another App,
 detach descendants, or move them into new process groups. This harness supplies
 no UI navigation, authorization, product assertions, or product test results.
 It is resource isolation for trusted QA, not a security sandbox: HOME and X11
@@ -40,6 +42,7 @@ SENSITIVE = re.compile(rb"token|authorization|credential|password|secret|bearer"
 RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
 APPROVAL_LIMIT = 16 * 1024
+APP_LIMIT = 512 * 1024 * 1024
 HARNESS_RESERVE = 2 * LOG_LIMIT + 32 * 1024
 
 
@@ -236,6 +239,8 @@ def arguments():
     for name in ("binary", "qa-script", "output", "expected-sha"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--client-binary")
+    parser.add_argument("--candidate-manifest")
+    parser.add_argument("--candidate-artifact-id")
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
     parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry"), default="navigation")
@@ -286,6 +291,44 @@ def main():
                                        stderr=subprocess.DEVNULL, text=True).strip()
         if head != args.expected_sha:
             raise ValueError("checkout HEAD does not match --expected-sha")
+        candidate = None
+        if args.candidate_manifest is not None:
+            if not Path(args.candidate_manifest).is_absolute():
+                raise ValueError("--candidate-manifest must be absolute")
+            source = regular_input(args.candidate_manifest)
+            fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("candidate manifest changed to a non-regular file")
+                raw = stream.read(APPROVAL_LIMIT + 1)
+            if len(raw) > APPROVAL_LIMIT:
+                raise ValueError("candidate manifest exceeds 16 KiB")
+            candidate = json.loads(raw)
+            fields = {"schema", "repository", "source_head", "platform", "app_sha256", "app_bytes",
+                      "build_run_id", "build_job_id", "build_job", "build_job_name", "build_step_name"}
+            if not isinstance(candidate, dict) or set(candidate) != fields:
+                raise ValueError("invalid candidate manifest fields")
+            if (type(candidate["schema"]) is not int or candidate["schema"] != 1
+                    or candidate["repository"] != "Stormycry-cryp/seecut"
+                    or candidate["source_head"] != head
+                    or candidate["platform"] != "Linux x86_64" or platform.machine() != "x86_64"
+                    or candidate["build_job"] != "engine"
+                    or candidate["build_job_name"] != "Linux independent black-box QA"
+                    or candidate["build_step_name"] != "Build the normal window candidate"
+                    or not isinstance(candidate["app_sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", candidate["app_sha256"])):
+                raise ValueError("candidate provenance does not match this workflow and platform")
+            for key in ("app_bytes", "build_run_id", "build_job_id"):
+                if type(candidate[key]) is not int or candidate[key] <= 0:
+                    raise ValueError("candidate manifest requires positive integer sizes and IDs")
+            if candidate["app_bytes"] > APP_LIMIT:
+                raise ValueError("candidate App exceeds 512 MiB")
+            result["candidate"] = dict(candidate,
+                manifest_sha256=hashlib.sha256(raw).hexdigest(), source_artifact_id=None)
+        if args.candidate_artifact_id is not None:
+            if candidate is None or not re.fullmatch(r"[1-9][0-9]*", args.candidate_artifact_id):
+                raise ValueError("candidate artifact ID requires a valid manifest")
+            result["candidate"]["source_artifact_id"] = int(args.candidate_artifact_id)
         sources = {"app": regular_input(args.binary), "qa": regular_input(args.qa_script)}
         if args.client_binary is not None:
             if not Path(args.client_binary).is_absolute():
@@ -309,8 +352,13 @@ def main():
         work = Path(tempfile.mkdtemp(prefix="seecut-blackbox-"))
         copied = {"app": work / "concat", "client": work / "concat-editor-mcp",
                   "qa": work / "independent-qa.py"}
-        hashes = {name: copy_and_hash(source, copied[name], executable=name != "qa")
+        hashes = {name: copy_and_hash(source, copied[name], executable=name != "qa",
+                                      limit=APP_LIMIT if name == "app" else None)
                   for name, source in sources.items()}
+        if candidate is not None:
+            if (hashes["app"] != candidate["app_sha256"]
+                    or copied["app"].stat().st_size != candidate["app_bytes"]):
+                raise ValueError("copied App does not match the immutable candidate manifest")
         if approval is not None:
             copied["identity_approval"] = work / "identity-approval.json"
             hashes["identity_approval"] = copy_and_hash(
@@ -331,7 +379,8 @@ def main():
             env[key] = str(isolated)
         for key in ("SEECUT_MCP_CLIENT_TOKEN", "SEECUT_MCP_WRITE_TOKEN"):
             env.pop(key, None)
-        result.update(head=head, expected_head=args.expected_sha, sha256=hashes,
+        result.update(head=head, workflow_head=head, source_head=head,
+                      expected_head=args.expected_sha, sha256=hashes,
                       app_binary=str(copied["app"]),
                       platform=platform.platform(), display=env["DISPLAY"],
                       slint_scale_factor=env["SLINT_SCALE_FACTOR"],

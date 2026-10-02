@@ -35,6 +35,14 @@ on:
         type: choice
         options: ['300', '420']
         default: '300'
+      qa_source_run_id:
+        description: Exact prior candidate build run ID; empty builds a fresh candidate
+        type: string
+        default: ''
+      qa_source_artifact_id:
+        description: Exact immutable candidate artifact ID; required with source run ID
+        type: string
+        default: ''
       expected_sha:
         description: Exact 40-character feature HEAD required for the window diagnostic
         type: string
@@ -49,6 +57,9 @@ jobs:
   engine:
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && (inputs.linux_blackbox_qa && 'Linux independent black-box QA' || 'Linux actual window diagnostic') || 'Engine tests and lints' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && 90 || 360 }}
     env:
       FFMPEG_LINUX: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-shared-8.1.tar.xz
@@ -60,10 +71,18 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          BLACKBOX_QA: ${{ inputs.linux_blackbox_qa }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          if [[ -n "$SOURCE_RUN_ID" || -n "$SOURCE_ARTIFACT_ID" ]]; then
+            [[ "$BLACKBOX_QA" == true ]]
+            [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          fi
           echo "Window candidate: $EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -168,12 +187,60 @@ jobs:
         working-directory: src
 
       - name: Build the normal window candidate
-        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.qa_source_run_id == '' && inputs.qa_source_artifact_id == ''
         working-directory: src
         env:
           CARGO_PROFILE_DEV_DEBUG: '0'
           CARGO_BUILD_JOBS: '1'
         run: cargo build -p concat -j 1
+
+      - name: Prepare the immutable normal App candidate
+        id: candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SOURCE_RUN_ID" && -z "$SOURCE_ARTIFACT_ID" ]]; then
+            python3 scripts/qa-candidate-artifact.py create \
+              --app "$PWD/src/target/debug/concat" \
+              --expected-head "$EXPECTED_SHA" \
+              --output-dir "$RUNNER_TEMP/seecut-normal-candidate"
+          else
+            python3 scripts/qa-candidate-artifact.py restore \
+              --source-run-id "$SOURCE_RUN_ID" --source-artifact-id "$SOURCE_ARTIFACT_ID" \
+              --expected-head "$EXPECTED_SHA" \
+              --output-dir "$RUNNER_TEMP/seecut-normal-candidate"
+          fi
+          python3 - <<'PYCANDIDATE'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'seecut-normal-candidate'
+          data = json.loads((root / 'outputs.json').read_text())
+          assert data['source_head'] == os.environ['EXPECTED_SHA']
+          for key in ('binary_path', 'manifest_path'):
+              path = Path(data[key])
+              assert path.is_absolute() and path.is_file() and not path.is_symlink()
+              assert '\n' not in str(path) and '\r' not in str(path)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('binary=' + data['binary_path'] + '\n')
+              output.write('manifest=' + data['manifest_path'] + '\n')
+              output.write('upload=' + str(not os.environ['SOURCE_RUN_ID']).lower() + '\n')
+          PYCANDIDATE
+
+      - name: Retain the immutable normal App candidate
+        if: always() && steps.candidate.outcome == 'success' && steps.candidate.outputs.upload == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: seecut-linux-candidate-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/seecut-normal-candidate/candidate.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       - name: Build the public stdio client
         if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa && inputs.qa_next_stage == 'project-entry'
@@ -202,6 +269,9 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          APP_BINARY: ${{ steps.candidate.outputs.binary }}
+          CANDIDATE_MANIFEST: ${{ steps.candidate.outputs.manifest }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
           QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
           NEXT_STAGE: ${{ inputs.qa_next_stage }}
           QA_IDENTITY_APPROVAL: ${{ inputs.qa_identity_approval }}
@@ -211,6 +281,10 @@ jobs:
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
           [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry ]]
+          CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST")
+          if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
+            CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
+          fi
           CLIENT_ARGS=()
           if [[ "$NEXT_STAGE" == project-entry ]]; then
             CLIENT_ARGS=(--client-binary "$PWD/src/target/debug/seecut-editor-mcp")
@@ -246,11 +320,11 @@ jobs:
           xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
             timeout --signal=TERM --kill-after=10s "$((QA_SECONDS - 10))s" \
             python3 scripts/run-linux-blackbox.py \
-            --binary "$PWD/src/target/debug/concat" \
+            --binary "$APP_BINARY" \
             --qa-script "$PWD/scripts/independent-linux-blackbox.py" \
             --output "$RUNNER_TEMP/seecut-window-evidence" \
             --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" \
-            --next-stage "$NEXT_STAGE" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}"
+            --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}"
 
       - name: Seal private QA evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
