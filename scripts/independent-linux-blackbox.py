@@ -2,8 +2,8 @@
 """Visible UI steps chosen independently from the reviewed first-run screenshots.
 
 Select quick mode, observe the actual workbench, hover/click canvas navigation,
-and hover settings. Optional project-entry observes the new-project card and Escape.
-No guessed form confirmation, token grant, file picker, or paid action.
+and hover settings. Finite later stages inspect independently reviewed creation
+buttons and editor toolbar entries. No file selection, token grant, or paid action.
 """
 import argparse
 import hashlib
@@ -58,7 +58,7 @@ def main():
                    required=True, help="Schema 2 main-reviewed exact runtime HEAD and App SHA256")
     p.add_argument("--ui-approval", type=Path,
                    help="Independent-QA reviewed UI actions and coordinates bound to observed App SHA256")
-    p.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation"), default="navigation",
+    p.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "editor-entry-observation"), default="navigation",
                    help="project-entry additionally clicks the independently observed new-project card and observes Escape")
     args = p.parse_args()
     start = time.monotonic()
@@ -97,6 +97,11 @@ def main():
         # Keep the actual gallery plus five new observations within six PNGs total.
         if args.next_stage == "canvas-create-observation" and name in {
             "01-before-mode-choice.png", "02-after-quick-choice.png", "03-canvas-hover.png", "05-settings-hover.png"
+        }:
+            return
+        if args.next_stage == "editor-entry-observation" and name in {
+            "01-before-mode-choice.png", "02-after-quick-choice.png", "03-canvas-hover.png",
+            "04-after-canvas-navigation.png", "05-settings-hover.png", "06-after-new-project-click.png"
         }:
             return
         path = evidence / name
@@ -147,6 +152,8 @@ def main():
                 required.add("project-entry-escape")
             if args.next_stage == "canvas-create-observation":
                 required.add("canvas-create-observation")
+            if args.next_stage == "editor-entry-observation":
+                required.update({"canvas-create-observation", "editor-entry-observation"})
             report["ui_approval"] = dict(ui, declaration_sha256=ui_digest)
             report["coordinate_baseline_head"] = ui["observed_head"]
             report["coordinate_baseline_app_sha256"] = ui["observed_app_sha256"]
@@ -154,6 +161,8 @@ def main():
             coordinate_keys = ["quick_mode", "canvas_navigation", "settings_hover", "new_project"]
             if args.next_stage == "canvas-create-observation":
                 coordinate_keys.extend(["new_dialog_header", "new_cancel", "new_create"])
+            if args.next_stage == "editor-entry-observation":
+                coordinate_keys.extend(["new_create", "editor_save_hover", "editor_folder_entry"])
             for key in coordinate_keys:
                 xy = ui["coordinates"].get(key)
                 if (not isinstance(xy, list) or len(xy) != 2
@@ -247,12 +256,30 @@ def main():
         pointer(*coords["settings_hover"], "bottom settings icon independently observed at left")
         pause(0.7)
         capture("05-settings-hover.png", "Only hover: settings and permission UI not opened")
-        if args.next_stage in ("project-entry", "canvas-create-observation"):
+        if args.next_stage in ("project-entry", "canvas-create-observation", "editor-entry-observation"):
             report["project_creation_requested"] = True
             pointer(*coords["new_project"], "new-project card plus independently observed in the empty canvas gallery", click=True)
             pointer(800, 650, "neutral content area")
             pause(0.8)
             capture("06-after-new-project-click.png", "Actual new-project dialog or editor; no form values inferred or submitted")
+            if args.next_stage == "editor-entry-observation":
+                report["visible_create_requested"] = True
+                pointer(*coords["new_create"], "independently observed Create button using displayed values on own empty portable", click=True)
+                pointer(800, 650, "neutral area; no painting gesture")
+                pause(0.8)
+                capture("10-after-visible-create.png", "Actual editor baseline; creation and content need independent image review")
+                pointer(*coords["editor_save_hover"], "save-shaped toolbar icon visible in independently reviewed editor; hover only")
+                pause(0.8)
+                capture("11-editor-save-hover.png", "Actual tooltip for observed save-shaped icon; no save requested")
+                pointer(*coords["editor_folder_entry"], "folder-shaped toolbar icon visible in independently reviewed editor; semantic label not presumed")
+                pause(0.8)
+                capture("12-editor-folder-hover.png", "Actual tooltip for observed folder icon before interpreting its function")
+                report["editor_folder_entry_clicked"] = True
+                pointer(*coords["editor_folder_entry"], "observed folder-shaped toolbar entry; one click only, stop at resulting UI", click=True)
+                pause(0.8)
+                capture("13-after-editor-folder-click.png", "Actual menu/dialog/result; no path, file, confirmation or subsequent key input")
+                report["status"] = "bounded_actions_completed_review_pending"
+                return 0
             if args.next_stage == "canvas-create-observation":
                 pointer(*coords["new_dialog_header"], "visible new-canvas dialog header to establish App input focus", click=True)
                 focused = int(command(["xdotool", "getwindowfocus"]).strip())

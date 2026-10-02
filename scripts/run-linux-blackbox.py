@@ -245,7 +245,7 @@ def arguments():
     parser.add_argument("--source-head", help="Exact immutable App source HEAD; defaults to workflow HEAD")
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
-    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation"), default="navigation")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "editor-entry-observation"), default="navigation")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     return parser.parse_args()
 

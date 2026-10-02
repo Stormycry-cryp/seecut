@@ -20,7 +20,7 @@ on:
       qa_next_stage:
         description: Reviewed independent script stage
         type: choice
-        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation']
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'editor-entry-observation']
         default: 'navigation'
       qa_ui_approval:
         description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
@@ -289,7 +289,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
-          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation ]]
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == editor-entry-observation ]]
           CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST" --source-head "$SOURCE_HEAD")
           if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
             CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
