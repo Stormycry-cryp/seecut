@@ -291,6 +291,9 @@ export component App inherits Window {
     callback settings-mcp-grant-r();
     callback settings-mcp-grant-m();
     callback settings-mcp-revoke();
+    callback settings-mcp-grant-move();
+    callback settings-mcp-renew-move();
+    callback settings-mcp-revoke-move();
     callback model-activated(id: string);
     callback model-download(id: string);
     callback model-cancel(id: string);
@@ -770,6 +773,9 @@ export component App inherits Window {
         mcp-grant-r => { root.settings-mcp-grant-r(); }
         mcp-grant-m => { root.settings-mcp-grant-m(); }
         mcp-revoke => { root.settings-mcp-revoke(); }
+        mcp-grant-move => { root.settings-mcp-grant-move(); }
+        mcp-renew-move => { root.settings-mcp-renew-move(); }
+        mcp-revoke-move => { root.settings-mcp-revoke-move(); }
         model-activated(id) => { root.model-activated(id); }
         model-download(id) => { root.model-download(id); }
         model-cancel(id) => { root.model-cancel(id); }

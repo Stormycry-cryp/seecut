@@ -1,24 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Local Agent reads from the UI-owned Studio. Grants live only in this App
-//! process and are issued or revoked by the Settings UI.
+//! Local Agent reads and one scoped move from the UI-owned Studio. Grants live
+//! only in this App process and are issued or revoked by the trusted Settings UI.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
-use concat_editor_mcp::{Method, Request, Response};
+use concat_editor_mcp::{Method, MoveParameters, Request, Response};
 use serde_json::{Value, json};
 use slint::ComponentHandle;
 
 use crate::host::Shell;
-use crate::i18n::t;
+use crate::i18n::{t, tf};
+use crate::panes::canvas::{CanvasMoveCheckedError, CanvasMoveError};
 use crate::studio::Studio;
-use crate::ui::{App, SeeCut};
+use crate::ui::{App, Editor, SeeCut};
 
 #[path = "editor_mcp_endpoint.rs"]
 mod endpoint_cleanup;
+
+#[path = "editor_mcp_write_registry.rs"]
+mod write_registry;
+#[path = "editor_mcp_write_request.rs"]
+mod write_request;
+
+use write_registry::{Begin, LeaseStatus, OperationKey, RegistryError, Scope, WriteRegistry};
+use write_request::{WriteRequest, WriteRequestOutcome};
 
 static BOUND_ENDPOINT: OnceLock<endpoint_cleanup::BoundEndpoint> = OnceLock::new();
 
@@ -215,6 +224,24 @@ fn clip_objects(
     Ok((total, rows))
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct MoveFingerprint {
+    revision: u64,
+    parameters: MoveParameters,
+}
+
+pub(crate) struct WriteView {
+    pub project_name: String,
+    pub project_path: String,
+    pub client: String,
+    pub status: String,
+    pub reason: String,
+    pub token: String,
+    pub can_grant: bool,
+    pub can_renew: bool,
+    pub can_revoke: bool,
+}
+
 /// App-side, ephemeral grant and session registry.
 pub(crate) struct BridgeUi {
     pub instance_id: String,
@@ -223,6 +250,13 @@ pub(crate) struct BridgeUi {
     grants: HashMap<String, Grant>,
     canvas_ids: Option<(String, DocumentIds)>,
     clip_ids: Option<(String, DocumentIds)>,
+    active_canvas: bool,
+    active_clip: bool,
+    writes: WriteRegistry<MoveFingerprint, Response>,
+    write_token: String,
+    write_message: String,
+    write_revoked: bool,
+    write_timer: slint::Timer,
 }
 
 impl BridgeUi {
@@ -234,6 +268,13 @@ impl BridgeUi {
             grants: HashMap::new(),
             canvas_ids: None,
             clip_ids: None,
+            active_canvas: false,
+            active_clip: false,
+            writes: WriteRegistry::new(),
+            write_token: String::new(),
+            write_message: String::new(),
+            write_revoked: false,
+            write_timer: slint::Timer::default(),
         }
     }
 
@@ -284,6 +325,15 @@ impl BridgeUi {
             studio.canvas.document.is_some(),
             studio.session.is_some(),
         );
+        self.sync_workspace(kind);
+        let scope = self.canvas_ids.as_ref().map(|(_, ids)| self.scope(ids));
+        self.writes.bind_scope(scope);
+        if !matches!(
+            self.writes.lease_status(Instant::now()),
+            LeaseStatus::Active { .. }
+        ) {
+            self.write_token.clear();
+        }
         if kind == Some("canvas") {
             return self
                 .canvas_ids
@@ -297,6 +347,240 @@ impl BridgeUi {
                 .map(|(_, ids)| ("clip".into(), ids.clone()));
         }
         None
+    }
+
+    fn sync_workspace(&mut self, kind: Option<&str>) {
+        if self.active_canvas && kind != Some("canvas") {
+            // Leaving the granted workspace withdraws E, but preserves this
+            // document session's sequence/results so returning cannot replay an edit.
+            self.revoke_move();
+        }
+        self.active_canvas = kind == Some("canvas");
+        self.active_clip = kind == Some("clip");
+    }
+
+    fn scope(&self, ids: &DocumentIds) -> Scope {
+        Scope {
+            instance: self.instance_id.clone(),
+            project: ids.project.clone(),
+            session: ids.session.clone(),
+        }
+    }
+
+    /// Refresh identities before publishing Settings. This never grants access.
+    pub(crate) fn sync_document(&mut self, studio: &Studio, app: &App) {
+        let previous = self.canvas_ids.as_ref().map(|(_, ids)| ids.session.clone());
+        self.active_ids(studio, app);
+        if previous != self.canvas_ids.as_ref().map(|(_, ids)| ids.session.clone()) {
+            self.write_message.clear();
+            self.write_revoked = false;
+            self.write_timer.stop();
+        }
+    }
+
+    fn current_scope(&self) -> Option<Scope> {
+        self.canvas_ids.as_ref().map(|(_, ids)| self.scope(ids))
+    }
+
+    fn current_lease_status(&self, now: Instant) -> LeaseStatus<'_> {
+        let status = self.writes.lease_status(now);
+        match &status {
+            LeaseStatus::Active { scope, .. } | LeaseStatus::Expired { scope, .. }
+                if self.current_scope().as_ref() != Some(scope) =>
+            {
+                LeaseStatus::Unauthorized
+            }
+            _ => status,
+        }
+    }
+
+    fn grant_ready(&self, studio: &Studio, app: &App) -> Result<Scope, String> {
+        if !self.active_canvas {
+            return Err(t("No canvas project"));
+        }
+        if modal_busy(studio, app, false) {
+            return Err(t("Canvas is busy"));
+        }
+        studio
+            .canvas
+            .mcp_writer_ready()
+            .map_err(|error| canvas_ui_reason(&error))?;
+        self.current_scope().ok_or_else(|| t("No canvas project"))
+    }
+
+    fn refresh_write_minutes(&self) {
+        self.write_timer
+            .start(slint::TimerMode::Repeated, Duration::from_secs(60), || {
+                Shell::with(|shell, app| {
+                    let studio = shell.studio.borrow();
+                    if studio.settings.open {
+                        studio.publish(&app, &shell.models);
+                    }
+                });
+            });
+    }
+
+    /// Only the trusted Settings button calls this; reads cannot obtain a lease.
+    pub(crate) fn grant_move(&mut self, studio: &Studio, app: &App) {
+        self.sync_document(studio, app);
+        let result = (|| {
+            let scope = self.grant_ready(studio, app)?;
+            let client = self.client_draft.trim();
+            if client.is_empty() || client.len() > 64 {
+                return Err(t("Enter a client ID (up to 64 bytes)"));
+            }
+            let token = uuid::Uuid::new_v4().to_string();
+            self.writes
+                .trusted_grant(&scope, client, token.clone(), Instant::now())
+                .map_err(|error| self.grant_error(error))?;
+            self.write_token = token;
+            self.write_revoked = false;
+            self.refresh_write_minutes();
+            Ok(())
+        })();
+        self.write_message = result.err().unwrap_or_default();
+    }
+
+    /// Renew the actual lease owner, even if the client draft has since changed.
+    pub(crate) fn renew_move(&mut self, studio: &Studio, app: &App) {
+        self.sync_document(studio, app);
+        let result = (|| {
+            let scope = self.grant_ready(studio, app)?;
+            let client = match self.current_lease_status(Instant::now()) {
+                LeaseStatus::Active { client, .. } | LeaseStatus::Expired { client, .. } => {
+                    client.to_owned()
+                }
+                LeaseStatus::Unauthorized => return Err(t("No edit grant")),
+            };
+            let token = uuid::Uuid::new_v4().to_string();
+            self.writes
+                .trusted_renew(&scope, &client, token.clone(), Instant::now())
+                .map_err(|error| self.grant_error(error))?;
+            self.write_token = token;
+            self.write_revoked = false;
+            self.refresh_write_minutes();
+            Ok(())
+        })();
+        self.write_message = result.err().unwrap_or_default();
+    }
+
+    pub(crate) fn revoke_move(&mut self) {
+        self.writes.revoke();
+        self.write_token.clear();
+        self.write_timer.stop();
+        self.write_message.clear();
+        self.write_revoked = true;
+    }
+
+    fn grant_error(&self, error: RegistryError) -> String {
+        match error {
+            RegistryError::ClientConflict | RegistryError::AlreadyGranted => {
+                let client = match self.current_lease_status(Instant::now()) {
+                    LeaseStatus::Active { client, .. } | LeaseStatus::Expired { client, .. } => {
+                        client
+                    }
+                    LeaseStatus::Unauthorized => "",
+                };
+                tf("Editing is already allowed for {0}", &[&client])
+            }
+            _ => t("Unable to grant editing access"),
+        }
+    }
+
+    pub(crate) fn write_view(&self, studio: &Studio) -> WriteView {
+        let ready_reason = if !self.active_canvas {
+            Some(t("No canvas project"))
+        } else if studio.settings.open && studio.settings.tab == 4 {
+            studio
+                .canvas
+                .mcp_writer_ready()
+                .err()
+                .map(|error| canvas_ui_reason(&error))
+        } else {
+            None
+        };
+        let draft = self.client_draft.trim();
+        let draft_valid = !draft.is_empty() && draft.len() <= 64;
+        let (client, status, can_grant, can_renew, can_revoke, token) =
+            match self.current_lease_status(Instant::now()) {
+                LeaseStatus::Unauthorized => (
+                    draft.to_owned(),
+                    if self.write_revoked {
+                        t("Editing access revoked")
+                    } else {
+                        t("No edit grant")
+                    },
+                    draft_valid,
+                    false,
+                    false,
+                    String::new(),
+                ),
+                LeaseStatus::Active {
+                    client,
+                    remaining_minutes,
+                    ..
+                } => (
+                    client.to_owned(),
+                    tf("Granted · {0} min remaining", &[&remaining_minutes]),
+                    false,
+                    true,
+                    true,
+                    self.write_token.clone(),
+                ),
+                LeaseStatus::Expired { client, .. } => (
+                    client.to_owned(),
+                    t("Expired"),
+                    false,
+                    true,
+                    true,
+                    String::new(),
+                ),
+            };
+        let reason = ready_reason
+            .clone()
+            .or_else(|| {
+                if !self.write_message.is_empty() {
+                    Some(self.write_message.clone())
+                } else if can_revoke && can_renew && client != draft && !token.is_empty() {
+                    Some(tf("Editing is already allowed for {0}", &[&client]))
+                } else if !draft_valid && !can_revoke {
+                    Some(t("Enter a client ID (up to 64 bytes)"))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        WriteView {
+            project_name: if self.active_canvas {
+                studio.canvas.name.clone()
+            } else if self.active_clip {
+                studio.project_name.clone()
+            } else {
+                String::new()
+            },
+            project_path: if self.active_canvas {
+                studio
+                    .canvas
+                    .mcp_project_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            } else if self.active_clip {
+                studio
+                    .session
+                    .as_ref()
+                    .map(|session| session.path().to_owned())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            },
+            client,
+            status,
+            reason,
+            token,
+            can_grant: can_grant && ready_reason.is_none(),
+            can_renew: can_renew && ready_reason.is_none(),
+            can_revoke,
+        }
     }
 
     /// The user enters a client name in Settings and grants only the currently
@@ -327,7 +611,11 @@ impl BridgeUi {
     pub fn grant_view(&self) -> (String, String) {
         match self.grants.get(self.client_draft.trim()) {
             Some(grant) => (
-                if grant.media { "R + M" } else { "R" }.into(),
+                if grant.media {
+                    t("Read structure and preview (R + M)")
+                } else {
+                    t("Read structure (R)")
+                },
                 grant.token.clone(),
             ),
             None => (t("No grant"), String::new()),
@@ -367,10 +655,36 @@ impl BridgeUi {
             return UiReply::Response(Response::error("notAuthorized"));
         }
         if matches!(request.method, Method::Capabilities) {
+            let mut granted = vec!["R"];
+            if self
+                .grants
+                .get(&request.client_id)
+                .is_some_and(|grant| grant.media)
+            {
+                granted.push("M");
+            }
+            let edit_minutes = match self.current_lease_status(Instant::now()) {
+                LeaseStatus::Active {
+                    client,
+                    remaining_minutes,
+                    scope,
+                } if kind == "canvas"
+                    && client == request.client_id
+                    && scope.project == ids.project =>
+                {
+                    granted.push("E");
+                    Some(remaining_minutes)
+                }
+                _ => None,
+            };
             return UiReply::Response(Response::ok(json!({
                 "appInstanceId": self.instance_id,
-                "tools": ["capabilities", "context", "project", "preview"],
-                "permissions": ["R", "M"], "readOnly": true,
+                "tools": ["capabilities", "context", "project", "preview", "move_selected_image"],
+                "permissions": ["R", "M", "E"], "readOnly": false,
+                "writeAction": "moveSelectedImage", "writeLeaseSeconds": 300,
+                "writeWorkspace": "canvas", "maxMoveDelta": 32768, "maxMovePosition": 1_000_000,
+                "writeAuthorization": "trustedUI", "writeTokenEnvironment": "SEECUT_MCP_WRITE_TOKEN",
+                "writeGrantRequired": true, "grantedPermissions": granted, "editLeaseRemainingMinutes": edit_minutes,
                 "maxPageSize": 100, "maxProjectObjects": MAX_PROJECT_OBJECTS,
                 "previewWorkspace": "canvas", "maxPreviewEdge": 256,
                 "maxPreviewSourcePixels": 4194304,
@@ -528,7 +842,300 @@ fn on_ui<T: Send + 'static>(
         })
 }
 
+fn registry_status(error: RegistryError) -> &'static str {
+    match error {
+        RegistryError::ScopeMismatch => "wrongProject",
+        RegistryError::Unauthorized
+        | RegistryError::AlreadyGranted
+        | RegistryError::ClientConflict => "notAuthorized",
+        RegistryError::LeaseExpired => "leaseExpired",
+        RegistryError::InvalidInput
+        | RegistryError::InvalidSequence
+        | RegistryError::ParameterMismatch => "invalidInput",
+        RegistryError::OutcomeUnknown => "outcomeUnknown",
+    }
+}
+
+fn canvas_status(error: &CanvasMoveError) -> &'static str {
+    use concat_host::ownership::OwnershipError;
+    match error {
+        CanvasMoveError::UnsupportedPlatform => "unsupportedPlatform",
+        CanvasMoveError::NoDocument => "wrongProject",
+        CanvasMoveError::Busy | CanvasMoveError::UnstableBinding => "busy",
+        CanvasMoveError::MissingOwner => "ownershipUnavailable",
+        CanvasMoveError::OwnerMismatch => "ownershipChanged",
+        CanvasMoveError::Ownership(error) => match error {
+            OwnershipError::Conflict { .. } => "ownershipConflict",
+            OwnershipError::IdentityAmbiguous { .. } => "ownershipChanged",
+            _ => "ownershipUnavailable",
+        },
+        CanvasMoveError::SelectionChanged => "selectionChanged",
+        CanvasMoveError::ObjectGone | CanvasMoveError::MissingPixels => "objectGone",
+        CanvasMoveError::PixelSelection
+        | CanvasMoveError::MaskTarget
+        | CanvasMoveError::NonImageTarget => "unsupportedTarget",
+        CanvasMoveError::InvalidDelta
+        | CanvasMoveError::InvalidTransform
+        | CanvasMoveError::InvalidAnchor => "invalidInput",
+    }
+}
+
+fn canvas_ui_reason(error: &CanvasMoveError) -> String {
+    match error {
+        CanvasMoveError::UnsupportedPlatform => t("This platform cannot edit local projects"),
+        CanvasMoveError::NoDocument => t("No canvas project"),
+        CanvasMoveError::Busy => t("Canvas is busy"),
+        CanvasMoveError::UnstableBinding => t("Project binding is not stable"),
+        CanvasMoveError::OwnerMismatch => t("Project ownership changed"),
+        _ => t("Project ownership is unavailable"),
+    }
+}
+
+/// Settings itself may grant a lease, but external edits wait until every sheet
+/// and relevant popup closes. All these values are UI-owned in this callback.
+fn modal_busy(studio: &Studio, app: &App, include_settings: bool) -> bool {
+    let cloud = app.global::<SeeCut>();
+    let editor = app.global::<Editor>();
+    studio.exit_pending
+        || (include_settings && studio.settings.open)
+        || studio.export.open
+        || studio.project_sheet.open
+        || studio.captions.open
+        || studio.speech.open
+        || studio.open_menu != 0
+        || app.get_canvas_open_menu()
+        || app.get_clip_create_open()
+        || cloud.get_auth_open()
+        || cloud.get_handoff_open()
+        || cloud.get_canvas_export_open()
+        || cloud.get_clip_export_open()
+        || cloud.get_result_preview_open()
+        || cloud.get_media_preview_open()
+        || cloud.get_asset_picker_open()
+        || cloud.get_personal_dialog() > 0
+        || cloud.get_personal_menu() > 0
+        || !cloud.get_template_menu_id().is_empty()
+        || !cloud.get_template_delete_id().is_empty()
+        || cloud.get_template_editor_open()
+        || editor.get_canvas_open_confirm()
+        || editor.get_canvas_transform_confirm()
+        || editor.get_canvas_exit_confirm()
+}
+
+fn request_scope(request: &Request) -> Option<Scope> {
+    Some(Scope {
+        instance: request.instance_id.clone(),
+        project: request.project_id.clone()?,
+        session: request.document_session_id.clone()?,
+    })
+}
+
+/// Reserve and finish under short bridge borrows. The Canvas action and the
+/// final lease check run in this same exclusive UI callback with no reentry.
+fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response, bool) {
+    let Some(claimed) = request_scope(request) else {
+        return (Response::error("invalidInput"), false);
+    };
+    let Some(parameters) = request.move_parameters.as_ref() else {
+        return (Response::error("invalidInput"), false);
+    };
+    let Some(revision) = request.revision else {
+        return (Response::error("invalidInput"), false);
+    };
+    let fingerprint = MoveFingerprint {
+        revision,
+        parameters: parameters.clone(),
+    };
+    let key = OperationKey {
+        client: request.client_id.clone(),
+        document_session: claimed.session.clone(),
+        client_sequence: parameters.client_sequence,
+    };
+    let current = {
+        let mut bridge = studio.editor_mcp.borrow_mut();
+        if request.instance_id != bridge.instance_id {
+            return (Response::error("appUnavailable"), false);
+        }
+        let Some((kind, ids)) = bridge.active_ids(studio, app) else {
+            return (Response::error("wrongProject"), false);
+        };
+        if kind != "canvas" {
+            return (Response::error("wrongProject"), false);
+        }
+        let current = bridge.scope(&ids);
+        // Authentication precedes validation/dedup; rejected clients allocate no history.
+        if let Err(error) = bridge.writes.authorize(
+            &current,
+            &claimed,
+            &request.client_id,
+            &request.client_token,
+            Instant::now(),
+        ) {
+            return (Response::error(registry_status(error)), false);
+        }
+        if concat_editor_mcp::validate_move_parameters(
+            &request.client_id,
+            &claimed.session,
+            parameters,
+        )
+        .is_err()
+        {
+            return (Response::error("invalidInput"), false);
+        }
+        match bridge.writes.begin(
+            &current,
+            &claimed,
+            &key,
+            &request.client_token,
+            &fingerprint,
+            Instant::now(),
+        ) {
+            Ok(Begin::Cached(response)) => return (response, false),
+            Err(error) => return (Response::error(registry_status(error)), false),
+            Ok(Begin::New) => {}
+        }
+        current
+    };
+    let generation = studio.canvas.mcp_state().0;
+    let binding_epoch = studio.canvas.mcp_binding_epoch();
+    let selection_revision = studio.mcp_selection_epoch();
+    let modal = modal_busy(studio, app, true);
+    let layer_id = concat_editor_mcp::parse_layer_id(&parameters.object_id)
+        .ok()
+        .and_then(|id| serde_json::from_value::<concat_canvas::LayerId>(json!(id)).ok());
+    let result = (|| {
+        if modal {
+            return Err(Response::error("busy"));
+        }
+        if revision != studio.canvas.mcp_state().1 {
+            return Err(Response::error("staleRevision"));
+        }
+        if parameters.selection_revision != selection_revision {
+            return Err(Response::error("selectionChanged"));
+        }
+        let layer_id = layer_id.ok_or_else(|| Response::error("invalidInput"))?;
+        // Disjoint field borrow: no RefMut<BridgeUi> is held during preflight/history/render.
+        let bridge_cell = &studio.editor_mcp;
+        studio
+            .canvas
+            .mcp_translate_selected_checked(
+                layer_id,
+                parameters.delta_x,
+                parameters.delta_y,
+                |canvas| {
+                    let bridge = bridge_cell.borrow();
+                    bridge
+                        .writes
+                        .authorize(
+                            &current,
+                            &claimed,
+                            &request.client_id,
+                            &request.client_token,
+                            Instant::now(),
+                        )
+                        .map_err(|error| Response::error(registry_status(error)))?;
+                    if bridge.current_scope().as_ref() != Some(&current)
+                        || canvas.mcp_state().0 != generation
+                        || canvas.mcp_binding_epoch() != binding_epoch
+                    {
+                        return Err(Response::error("wrongProject"));
+                    }
+                    if canvas.mcp_state().1 != revision {
+                        return Err(Response::error("staleRevision"));
+                    }
+                    // Exclusive Studio + no event-loop reentry keep the selection epoch
+                    // and modal snapshot unchanged while read-only transform math runs.
+                    if parameters.selection_revision != selection_revision
+                        || canvas.active != Some(layer_id)
+                    {
+                        return Err(Response::error("selectionChanged"));
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|error| match error {
+                CanvasMoveCheckedError::Canvas(error) => Response::error(canvas_status(&error)),
+                CanvasMoveCheckedError::Commit(response) => response,
+            })
+    })();
+    let (response, changed) = match result {
+        Ok(result) => (
+            Response {
+                status: if result.changed { "ok" } else { "unchanged" }.into(),
+                data: Some(json!({
+                    "operationId": parameters.operation_id, "projectId": current.project,
+                    "documentSessionId": current.session, "objectId": parameters.object_id,
+                    "revision": studio.canvas.mcp_state().1, "selectionRevision": selection_revision,
+                    "x": result.x, "y": result.y, "changed": result.changed,
+                    "coordinateSystem": "documentPixels",
+                })),
+            },
+            result.changed,
+        ),
+        Err(response) => (response, false),
+    };
+    // Finish cannot reauthorize: the actual result survives expiry after commit.
+    // Failure here leaves InProgress/unknown and must never schedule another edit.
+    let stored = studio.editor_mcp.borrow_mut().writes.finish(
+        &current,
+        &key,
+        response.clone(),
+        Instant::now(),
+    );
+    if stored.is_err() {
+        return (Response::error("outcomeUnknown"), changed);
+    }
+    (response, changed)
+}
+
+fn request_outcome(outcome: WriteRequestOutcome<Response>) -> Response {
+    match outcome {
+        WriteRequestOutcome::Completed(response) => response,
+        WriteRequestOutcome::Busy => Response::error("busy"),
+        WriteRequestOutcome::OutcomeUnknown => Response::error("outcomeUnknown"),
+        WriteRequestOutcome::AppUnavailable => Response::error("appUnavailable"),
+    }
+}
+
+fn dispatch_move(request: Request) -> Response {
+    let state = Arc::new(WriteRequest::new());
+    let queued = Arc::clone(&state);
+    let scheduled = slint::invoke_from_event_loop(move || {
+        let mut installed = false;
+        Shell::with(|shell, app| {
+            installed = true;
+            // Cancellation wins before registry access, sequence consumption, or history.
+            if !queued.claim() {
+                return;
+            }
+            let mut studio = shell.studio.borrow_mut();
+            let (response, changed) = execute_move(&request, &mut studio, &app);
+            queued.complete(response);
+            // Store both cache and request result before rendering can publish Settings.
+            if changed {
+                let mut canvas = std::mem::take(&mut studio.canvas);
+                canvas.mcp_move_committed(&mut studio);
+                studio.canvas = canvas;
+                studio.publish(&app, &shell.models);
+            }
+        });
+        if !installed {
+            queued.scheduling_failed();
+        }
+    });
+    if scheduled.is_err() {
+        return request_outcome(state.scheduling_failed());
+    }
+    request_outcome(state.wait(Duration::from_millis(750)))
+}
+
 fn dispatch(request: Request) -> Response {
+    if concat_editor_mcp::validate_request_shape(&request).is_err() {
+        return Response::error("invalidInput");
+    }
+    if matches!(request.method, Method::MoveSelectedImage) {
+        return dispatch_move(request);
+    }
     let reply = on_ui({
         let request = request.clone();
         move |shell, app| {
@@ -667,6 +1274,228 @@ pub fn remove_endpoint(_instance: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_fixture() -> (BridgeUi, Scope, OperationKey, MoveFingerprint, Instant) {
+        let mut bridge = BridgeUi::new();
+        let ids = bridge.ids("canvas", "1:1".into());
+        let scope = bridge.scope(&ids);
+        let now = Instant::now();
+        bridge.writes.bind_scope(Some(scope.clone()));
+        bridge
+            .writes
+            .trusted_grant(&scope, "writer", "write-token".into(), now)
+            .unwrap();
+        let key = OperationKey {
+            client: "writer".into(),
+            document_session: scope.session.clone(),
+            client_sequence: 7,
+        };
+        let parameters = MoveParameters {
+            operation_id: concat_editor_mcp::operation_id("writer", &scope.session, 7).unwrap(),
+            client_sequence: 7,
+            selection_revision: 3,
+            object_id: "layer:2".into(),
+            delta_x: 4.0,
+            delta_y: -5.0,
+        };
+        (
+            bridge,
+            scope,
+            key,
+            MoveFingerprint {
+                revision: 11,
+                parameters,
+            },
+            now,
+        )
+    }
+
+    #[test]
+    fn read_and_write_credentials_and_revocation_are_independent() {
+        let (mut bridge, scope, _, _, now) = write_fixture();
+        bridge.grants.insert(
+            "writer".into(),
+            Grant {
+                token: "read-token".into(),
+                project: scope.project.clone(),
+                media: true,
+            },
+        );
+        let mut request = Request {
+            instance_id: scope.instance.clone(),
+            client_id: "writer".into(),
+            client_token: "write-token".into(),
+            method: Method::Context,
+            project_id: None,
+            document_session_id: None,
+            revision: None,
+            context_revision: None,
+            offset: None,
+            limit: None,
+            max_edge: None,
+            move_parameters: None,
+        };
+        assert!(
+            !bridge.authorized(&request, &scope.project, false),
+            "write credential cannot read"
+        );
+        request.client_token = "read-token".into();
+        assert!(bridge.authorized(&request, &scope.project, true));
+        assert_eq!(
+            bridge
+                .writes
+                .authorize(&scope, &scope, "writer", "read-token", now),
+            Err(RegistryError::Unauthorized)
+        );
+        bridge.client_draft = "writer".into();
+        bridge.revoke();
+        assert!(!bridge.authorized(&request, &scope.project, false));
+        assert!(
+            bridge
+                .writes
+                .authorize(&scope, &scope, "writer", "write-token", now)
+                .is_ok()
+        );
+        bridge.grants.insert(
+            "writer".into(),
+            Grant {
+                token: "read-token".into(),
+                project: scope.project.clone(),
+                media: true,
+            },
+        );
+        bridge.revoke_move();
+        assert!(bridge.authorized(&request, &scope.project, true));
+        assert_eq!(
+            bridge
+                .writes
+                .authorize(&scope, &scope, "writer", "write-token", now),
+            Err(RegistryError::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn move_fingerprint_retains_original_revision_selection_object_and_both_deltas() {
+        let (mut bridge, scope, key, params, now) = write_fixture();
+        assert!(matches!(
+            bridge
+                .writes
+                .begin(&scope, &scope, &key, "write-token", &params, now),
+            Ok(Begin::New)
+        ));
+        let original = Response::ok(json!({"revision": 12, "x": 4.0, "y": -5.0}));
+        bridge
+            .writes
+            .finish(&scope, &key, original.clone(), now)
+            .unwrap();
+        let Ok(Begin::Cached(cached)) =
+            bridge
+                .writes
+                .begin(&scope, &scope, &key, "write-token", &params, now)
+        else {
+            panic!("original expected revision must replay cached result");
+        };
+        assert_eq!(cached.data, original.data);
+        for mutate in 0..5 {
+            let mut changed = params.clone();
+            match mutate {
+                0 => changed.revision += 1,
+                1 => changed.parameters.selection_revision += 1,
+                2 => changed.parameters.object_id = "layer:3".into(),
+                3 => changed.parameters.delta_x += 1.0,
+                _ => changed.parameters.delta_y += 1.0,
+            }
+            assert!(matches!(
+                bridge
+                    .writes
+                    .begin(&scope, &scope, &key, "write-token", &changed, now),
+                Err(RegistryError::ParameterMismatch)
+            ));
+        }
+        bridge.client_draft = "someone-else".into();
+        assert!(
+            matches!(
+                bridge.writes.lease_status(now),
+                LeaseStatus::Active {
+                    client: "writer",
+                    ..
+                }
+            ),
+            "draft does not rename actual grant"
+        );
+    }
+
+    #[test]
+    fn leaving_canvas_revokes_editing_without_losing_current_session_retry_history() {
+        let (mut bridge, scope, key, params, now) = write_fixture();
+        bridge.sync_workspace(Some("canvas"));
+        assert!(matches!(
+            bridge
+                .writes
+                .begin(&scope, &scope, &key, "write-token", &params, now),
+            Ok(Begin::New)
+        ));
+        bridge
+            .writes
+            .finish(&scope, &key, Response::ok(json!({"revision": 12})), now)
+            .unwrap();
+        bridge.sync_workspace(Some("clip"));
+        assert!(bridge.active_clip);
+        assert!(!bridge.active_canvas);
+        assert_eq!(
+            bridge
+                .writes
+                .authorize(&scope, &scope, "writer", "write-token", now),
+            Err(RegistryError::Unauthorized)
+        );
+        bridge.sync_workspace(Some("canvas"));
+        bridge
+            .writes
+            .trusted_grant(&scope, "writer", "new-write-token".into(), now)
+            .unwrap();
+        assert!(
+            matches!(
+                bridge
+                    .writes
+                    .begin(&scope, &scope, &key, "new-write-token", &params, now),
+                Ok(Begin::Cached(_))
+            ),
+            "returning and explicitly granting again cannot replay an already committed sequence"
+        );
+    }
+
+    #[test]
+    fn cached_move_and_request_completion_release_bridge_before_view_reborrow() {
+        let (bridge, scope, key, params, now) = write_fixture();
+        let cell = std::cell::RefCell::new(bridge);
+        let request = WriteRequest::new();
+        assert!(request.claim());
+        assert!(matches!(
+            cell.borrow_mut()
+                .writes
+                .begin(&scope, &scope, &key, "write-token", &params, now),
+            Ok(Begin::New)
+        ));
+        let original = Response::ok(json!({"revision": 12}));
+        cell.borrow_mut()
+            .writes
+            .finish(&scope, &key, original.clone(), now)
+            .unwrap();
+        assert!(request.complete(original.clone()));
+        // Model the Settings reborrow performed after the production callback stores its result.
+        cell.borrow().grant_view();
+        let mut published = cell.borrow_mut();
+        assert!(matches!(
+            published
+                .writes
+                .begin(&scope, &scope, &key, "write-token", &params, now),
+            Ok(Begin::Cached(_))
+        ));
+        let WriteRequestOutcome::Completed(result) = request.wait(Duration::ZERO) else {
+            panic!("completion lost");
+        };
+        assert_eq!(result.data, original.data);
+    }
 
     #[test]
     fn object_count_rejects_overflow_and_allows_exact_limit() {
@@ -908,6 +1737,7 @@ mod tests {
             offset: None,
             limit: None,
             max_edge: None,
+            move_parameters: None,
         };
         assert!(bridge.authorized(&request, &first.project, false));
         assert!(!bridge.authorized(&request, &first.project, true));

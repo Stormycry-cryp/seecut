@@ -8,21 +8,86 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      linux_window_diagnostic:
+        description: Only capture the normal Linux App's ungranted Settings window
+        type: boolean
+        default: false
+      linux_blackbox_qa:
+        description: Run the reviewed independent black-box script instead of window capture
+        type: boolean
+        default: false
+      qa_next_stage:
+        description: Reviewed independent script stage
+        type: choice
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation']
+        default: 'navigation'
+      qa_ui_approval:
+        description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
+        type: string
+        default: ''
+      qa_identity_approval:
+        description: Exact main-reviewer runtime identity JSON; forwarded unchanged, no automatic approval
+        type: string
+        default: ''
+      blackbox_timeout_seconds:
+        description: Total QA time including cleanup (420 only for real lease expiry)
+        type: choice
+        options: ['300', '420']
+        default: '300'
+      qa_source_run_id:
+        description: Exact prior candidate build run ID; empty builds a fresh candidate
+        type: string
+        default: ''
+      qa_source_artifact_id:
+        description: Exact immutable candidate artifact ID; required with source run ID
+        type: string
+        default: ''
+      qa_source_head:
+        description: Exact App source HEAD; required with both immutable candidate IDs
+        type: string
+        default: ''
+      expected_sha:
+        description: Exact 40-character feature HEAD required for the window diagnostic
+        type: string
+        default: ''
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A manual window capture must not cancel the feature's ordinary CI.
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && format('ci-window-{0}', github.ref) || format('ci-{0}', github.ref) }}
   cancel-in-progress: true
 
 jobs:
   engine:
-    name: Engine tests and lints
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && (inputs.linux_blackbox_qa && 'Linux independent black-box QA' || 'Linux actual window diagnostic') || 'Engine tests and lints' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && 90 || 360 }}
     env:
       FFMPEG_LINUX: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-shared-8.1.tar.xz
       # See build-app.yml: the version the ort crate is built against.
       ORT_VERSION: 1.28.0
     steps:
       - uses: actions/checkout@v7
+      - name: Verify the requested window candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          SOURCE_HEAD: ${{ inputs.qa_source_head }}
+          BLACKBOX_QA: ${{ inputs.linux_blackbox_qa }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]] || exit 1
+          if [[ -n "$SOURCE_RUN_ID" || -n "$SOURCE_ARTIFACT_ID" || -n "$SOURCE_HEAD" ]]; then
+            [[ "$BLACKBOX_QA" == true && "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ &&
+               "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          fi
+          echo "Window candidate: $EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -40,6 +105,11 @@ jobs:
             libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libgl1-mesa-dev \
             libgtk-3-dev libasound2-dev libclang-dev cmake \
             mesa-vulkan-drivers vulkan-tools
+
+      - name: Window diagnostic tools
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        run: |
+          sudo apt-get install -y xvfb xdotool imagemagick fonts-noto-cjk libxkbcommon-x11-0
 
       - name: Software Vulkan adapter
         run: |
@@ -101,26 +171,221 @@ jobs:
           free -h
           df -h .
           /usr/bin/time -v cargo clippy --workspace --all-targets -- -D warnings
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_BUILD_JOBS: "1"
       - run: cargo test --workspace -j 1
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
       # The gRPC transport is a feature nothing else in the workspace turns
       # on, so it is linted and tested here on its own. See concat-server.
       - run: cargo clippy -p concat-server -p concat-cli --features grpc --all-targets -- -D warnings
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
       - run: cargo test -p concat-server --features grpc
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
+
+      - name: Build the normal window candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.qa_source_run_id == '' && inputs.qa_source_artifact_id == '' && inputs.qa_source_head == ''
+        working-directory: src
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_BUILD_JOBS: '1'
+        run: cargo build -p concat -j 1
+
+      - name: Prepare the immutable normal App candidate
+        id: candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          SOURCE_HEAD: ${{ inputs.qa_source_head }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SOURCE_RUN_ID" && -z "$SOURCE_ARTIFACT_ID" && -z "$SOURCE_HEAD" ]]; then
+            python3 scripts/qa-candidate-artifact.py create \
+              --app "$PWD/src/target/debug/concat" \
+              --expected-head "$EXPECTED_SHA" \
+              --output-dir "$RUNNER_TEMP/seecut-normal-candidate"
+          else
+            python3 scripts/qa-candidate-artifact.py restore \
+              --source-run-id "$SOURCE_RUN_ID" --source-artifact-id "$SOURCE_ARTIFACT_ID" \
+              --source-head "$SOURCE_HEAD" \
+              --expected-head "$EXPECTED_SHA" \
+              --output-dir "$RUNNER_TEMP/seecut-normal-candidate"
+          fi
+          python3 - <<'PYCANDIDATE'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'seecut-normal-candidate'
+          data = json.loads((root / 'outputs.json').read_text())
+          assert data['workflow_head'] == os.environ['EXPECTED_SHA']
+          assert data['source_head'] == (os.environ['SOURCE_HEAD'] or os.environ['EXPECTED_SHA'])
+          for key in ('binary_path', 'manifest_path'):
+              path = Path(data[key])
+              assert path.is_absolute() and path.is_file() and not path.is_symlink()
+              assert '\n' not in str(path) and '\r' not in str(path)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('binary=' + data['binary_path'] + '\n')
+              output.write('manifest=' + data['manifest_path'] + '\n')
+              output.write('source_head=' + data['source_head'] + '\n')
+              output.write('upload=' + str(not os.environ['SOURCE_RUN_ID']).lower() + '\n')
+          PYCANDIDATE
+
+      - name: Retain the immutable normal App candidate
+        if: always() && steps.candidate.outcome == 'success' && steps.candidate.outputs.upload == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: seecut-linux-candidate-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/seecut-normal-candidate/candidate.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Build the public stdio client
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa && inputs.qa_next_stage == 'project-entry'
+        working-directory: src
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_BUILD_JOBS: '1'
+        run: cargo build -p concat-editor-mcp --features stdio --bin seecut-editor-mcp -j 1
+
+      - name: Capture the normal App window
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa != true
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          # Lavapipe is a CPU adapter; Slint requires an explicit opt-in.
+          SLINT_WGPU_CPU: '1'
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
+            timeout --signal=TERM --kill-after=10s 290s \
+            python3 scripts/check-linux-window.py \
+            --binary "$PWD/src/target/debug/concat" \
+            --output "$RUNNER_TEMP/seecut-window-evidence" \
+            --expected-sha "$EXPECTED_SHA"
+
+      - name: Run the independent black-box script
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          APP_BINARY: ${{ steps.candidate.outputs.binary }}
+          CANDIDATE_MANIFEST: ${{ steps.candidate.outputs.manifest }}
+          SOURCE_HEAD: ${{ steps.candidate.outputs.source_head }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
+          NEXT_STAGE: ${{ inputs.qa_next_stage }}
+          QA_IDENTITY_APPROVAL: ${{ inputs.qa_identity_approval }}
+          QA_UI_APPROVAL: ${{ inputs.qa_ui_approval }}
+          SLINT_WGPU_CPU: '1'
+        run: |
+          set -euo pipefail
+          [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation ]]
+          CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST" --source-head "$SOURCE_HEAD")
+          if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
+            CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
+          fi
+          CLIENT_ARGS=()
+          if [[ "$NEXT_STAGE" == project-entry ]]; then
+            CLIENT_ARGS=(--client-binary "$PWD/src/target/debug/seecut-editor-mcp")
+          fi
+          APPROVAL_ARGS=()
+          if [[ -n "$QA_IDENTITY_APPROVAL" ]]; then
+            python3 - <<'PYAPPROVAL'
+          import os
+          from pathlib import Path
+          data = os.environ['QA_IDENTITY_APPROVAL'].encode('utf-8')
+          assert len(data) <= 16384, 'Runtime declaration exceeds 16 KiB'
+          path = Path(os.environ['RUNNER_TEMP']) / 'qa-identity-approval.json'
+          with path.open('xb') as stream:
+              os.fchmod(stream.fileno(), 0o600)
+              stream.write(data)
+          PYAPPROVAL
+            APPROVAL_ARGS=(--identity-approval "$RUNNER_TEMP/qa-identity-approval.json")
+          fi
+          UI_ARGS=()
+          if [[ -n "$QA_UI_APPROVAL" ]]; then
+            python3 - <<'PYUIAPPROVAL'
+          import os
+          from pathlib import Path
+          data = os.environ['QA_UI_APPROVAL'].encode('utf-8')
+          assert len(data) <= 16384, 'UI declaration exceeds 16 KiB'
+          path = Path(os.environ['RUNNER_TEMP']) / 'qa-ui-approval.json'
+          with path.open('xb') as stream:
+              os.fchmod(stream.fileno(), 0o600)
+              stream.write(data)
+          PYUIAPPROVAL
+            UI_ARGS=(--ui-approval "$RUNNER_TEMP/qa-ui-approval.json")
+          fi
+          xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
+            timeout --signal=TERM --kill-after=10s "$((QA_SECONDS - 10))s" \
+            python3 scripts/run-linux-blackbox.py \
+            --binary "$APP_BINARY" \
+            --qa-script "$PWD/scripts/independent-linux-blackbox.py" \
+            --output "$RUNNER_TEMP/seecut-window-evidence" \
+            --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" \
+            --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}"
+
+      - name: Seal private QA evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
+        run: |
+          python3 scripts/seal-qa-evidence.py \
+            --source "$RUNNER_TEMP/seecut-window-evidence" \
+            --recipient "$PWD/scripts/qa-evidence-recipient.pem" \
+            --output "$RUNNER_TEMP/seecut-private-qa-evidence"
+
+      - name: Verify bounded window evidence
+        id: window_evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/${{ inputs.linux_blackbox_qa && 'seecut-private-qa-evidence' || 'seecut-window-evidence' }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import stat
+          from pathlib import Path
+          root = Path(os.environ['EVIDENCE_DIR'])
+          files = []
+          if root.exists():
+              assert root.is_dir() and not root.is_symlink(), 'Invalid evidence directory'
+              for path in root.rglob('*'):
+                  assert not path.is_symlink(), 'Evidence contains a symlink'
+                  mode = path.stat().st_mode
+                  if stat.S_ISDIR(mode):
+                      continue
+                  assert stat.S_ISREG(mode), 'Evidence contains a non-regular file'
+                  files.append(path)
+          size = sum(path.stat().st_size for path in files)
+          assert size <= 15 * 1024 * 1024, 'Window evidence exceeds 15 MiB'
+          print(f'Window evidence: {len(files)} files, {size} bytes')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'upload={str(bool(files)).lower()}\n')
+          PY
+
+      - name: Upload bounded window evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && steps.window_evidence.outputs.upload == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: seecut-linux-${{ inputs.linux_blackbox_qa && 'private-qa' || 'window' }}-${{ github.sha }}
+          path: ${{ runner.temp }}/${{ inputs.linux_blackbox_qa && 'seecut-private-qa-evidence' || 'seecut-window-evidence' }}
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The engine crates that carry no native library build for the web. This
   # job is what keeps that true: a std::thread or a blocking wait that
   # creeps into concat-core or concat-project fails here, not when someone
   # next tries the target. See src/README.md for the list.
   web:
+    if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
     name: Engine on wasm32
     runs-on: ubuntu-latest
     steps:

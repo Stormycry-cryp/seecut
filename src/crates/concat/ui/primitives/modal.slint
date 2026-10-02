@@ -556,6 +556,8 @@ export component Field inherits Rectangle {
     in property <string> placeholder;
     /// numbers, paths and names read better in the technical face
     in property <bool> technical;
+    /// Facts remain selectable, while published values update even with focus.
+    in property <bool> read-only: false;
 
     callback edited(text: string);
 
@@ -567,11 +569,11 @@ export component Field inherits Rectangle {
     max-height: 28px;
     horizontal-stretch: 1;
     border-radius: Theme.r;
-    background: input.has-focus ? Theme.field
+    background: root.input-focused ? Theme.field
         : touch.has-hover ? Theme.field-hover
         : Theme.field;
     border-width: 1px;
-    border-color: input.has-focus ? Theme.accent : Colors.transparent;
+    border-color: root.input-focused ? Theme.accent : Colors.transparent;
     clip: true;
 
     animate background, border-color { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
@@ -581,25 +583,29 @@ export component Field inherits Rectangle {
     // A TextInput writes to whatever property it is two-way bound to, and an
     // assignment in Slint replaces the binding the caller declared — so
     // binding it straight to `value` works for exactly one keystroke and then
-    // goes deaf to the model. This is seeded instead, and never while the
-    // field has focus, so a republish mid-sentence cannot yank the caret.
+    // goes deaf to the model. Editable fields preserve their focused draft.
+    // Read-only facts use a separate TextInput bound directly to the value.
     property <string> draft;
+    property <bool> input-focused: root.read-only ? read-input.has-focus : input.has-focus;
     function seed() {
         root.draft = root.value;
     }
     init => { root.seed(); }
     changed value => {
-        if (!input.has-focus) {
+        if (!root.read-only && !input.has-focus) {
             root.seed();
         }
     }
+    changed read-only => { if !root.read-only { root.seed(); } }
 
     touch := TouchArea {
         mouse-cursor: MouseCursor.text;
-        clicked => { input.focus(); }
+        clicked => { if root.read-only { read-input.focus(); } else { input.focus(); } }
     }
 
     input := TextInput {
+        visible: !root.read-only;
+        enabled: !root.read-only;
         x: 10px;
         y: (parent.height - self.height) / 2;
         width: parent.width - 20px;
@@ -619,7 +625,24 @@ export component Field inherits Rectangle {
         edited => { root.edited(self.text); }
     }
 
-    if root.draft == "" && !input.has-focus: Text {
+    read-input := TextInput {
+        visible: root.read-only;
+        enabled: root.read-only;
+        x: 10px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - 20px;
+        height: self.preferred-height;
+        text: root.value;
+        color: Theme.fg;
+        font-family: root.technical ? Theme.font-technical : Theme.font;
+        font-size: Theme.fs;
+        single-line: true;
+        read-only: true;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.on-accent;
+    }
+
+    if (root.read-only ? root.value == "" : root.draft == "") && !root.input-focused: Text {
         x: 10px;
         y: (parent.height - self.height) / 2;
         height: self.preferred-height;

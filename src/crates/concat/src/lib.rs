@@ -1823,6 +1823,33 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 studio.publish(&app, &shell.models);
             });
         });
+        app.on_settings_mcp_grant_move(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                {
+                    studio.editor_mcp.borrow_mut().grant_move(&studio, &app);
+                }
+                studio.publish(&app, &shell.models);
+            });
+        });
+        app.on_settings_mcp_renew_move(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                {
+                    studio.editor_mcp.borrow_mut().renew_move(&studio, &app);
+                }
+                studio.publish(&app, &shell.models);
+            });
+        });
+        app.on_settings_mcp_revoke_move(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                {
+                    studio.editor_mcp.borrow_mut().revoke_move();
+                }
+                studio.publish(&app, &shell.models);
+            });
+        });
     }
     #[cfg(not(all(unix, not(any(target_os = "android", target_os = "ios")))))]
     {
@@ -1830,6 +1857,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
         app.on_settings_mcp_grant_r(|| {});
         app.on_settings_mcp_grant_m(|| {});
         app.on_settings_mcp_revoke(|| {});
+        app.on_settings_mcp_grant_move(|| {});
+        app.on_settings_mcp_renew_move(|| {});
+        app.on_settings_mcp_revoke_move(|| {});
     }
     app.on_model_activated(on_window!(|state, id: SharedString| {
         state.handle(Msg::Settings(SettingsMsg::ModelActivated(id.to_string())));
@@ -2225,3 +2255,6 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
     std::process::exit(0);
 }
+
+#[cfg(test)]
+mod field_tests;
