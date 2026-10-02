@@ -5,8 +5,9 @@ QA receives --app-pid, --client-binary, --work-dir, --output, --expected-sha,
 and --deadline-monotonic. An absent optional client is passed as a nonexistent
 absolute work path. QA records /proc binary identity and the unique visible X11
 window ID itself. It must finish before the monotonic deadline, leave regular
-files in output or its known independent-qa-observation directory, and never
-include secrets in artifacts.
+files in output or its known observation/navigation directories, and never
+include secrets in artifacts. Optional --identity-approval is copied verbatim
+and forwarded; this harness never creates or interprets an approval declaration.
 This first contract supports one App lifetime: QA must not launch another App,
 detach descendants, or move them into new process groups. This harness supplies
 no UI navigation, authorization, product assertions, or product test results.
@@ -37,7 +38,8 @@ ARTIFACT_LIMIT = 15 * 1024 * 1024
 LINE_LIMIT = 16 * 1024
 SENSITIVE = re.compile(rb"token|authorization|credential|password|secret|bearer", re.I)
 RESERVED = {"harness.json", "app.log", "qa.log"}
-QA_DIRECTORY = "independent-qa-observation"
+QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
+APPROVAL_LIMIT = 16 * 1024
 HARNESS_RESERVE = 2 * LOG_LIMIT + 32 * 1024
 
 
@@ -117,16 +119,20 @@ def fresh_output(value):
     return path
 
 
-def copy_and_hash(source, destination, executable=False):
+def copy_and_hash(source, destination, executable=False, limit=None):
     digest = hashlib.sha256()
     fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as incoming, destination.open("xb") as outgoing:
         if not stat.S_ISREG(os.fstat(incoming.fileno()).st_mode):
             raise ValueError("input changed to a non-regular file")
+        copied_bytes = 0
         while True:
             chunk = incoming.read(1024 * 1024)
             if not chunk:
                 break
+            copied_bytes += len(chunk)
+            if limit is not None and copied_bytes > limit:
+                raise ValueError("input exceeds its copy budget")
             digest.update(chunk)
             outgoing.write(chunk)
     destination.chmod(0o700 if executable else 0o600)
@@ -186,7 +192,7 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT):
         with os.scandir(directory) as entries:
             for entry in entries:
                 info = entry.stat(follow_symlinks=False)
-                if stat.S_ISDIR(info.st_mode) and directory == output and entry.name == QA_DIRECTORY:
+                if stat.S_ISDIR(info.st_mode) and directory == output and entry.name in QA_DIRECTORIES:
                     pending.append(Path(entry.path))
                     continue
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
@@ -230,6 +236,7 @@ def arguments():
     for name in ("binary", "qa-script", "output", "expected-sha"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--client-binary")
+    parser.add_argument("--identity-approval")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     return parser.parse_args()
 
@@ -279,12 +286,23 @@ def main():
         sources = {"app": regular_input(args.binary), "qa": regular_input(args.qa_script)}
         if args.client_binary is not None:
             sources["client"] = regular_input(args.client_binary)
+        approval = None
+        if args.identity_approval is not None:
+            if not Path(args.identity_approval).is_absolute():
+                raise ValueError("--identity-approval must be absolute")
+            approval = regular_input(args.identity_approval)
+            if approval.lstat().st_size > APPROVAL_LIMIT:
+                raise ValueError("--identity-approval exceeds 16 KiB")
         output = fresh_output(args.output)
         work = Path(tempfile.mkdtemp(prefix="seecut-blackbox-"))
         copied = {"app": work / "concat", "client": work / "concat-editor-mcp",
                   "qa": work / "independent-qa.py"}
         hashes = {name: copy_and_hash(source, copied[name], executable=name != "qa")
                   for name, source in sources.items()}
+        if approval is not None:
+            copied["identity_approval"] = work / "identity-approval.json"
+            hashes["identity_approval"] = copy_and_hash(
+                approval, copied["identity_approval"], limit=APPROVAL_LIMIT)
         portable = work / "portable"
         portable.mkdir(mode=0o700)
         prefs = {"locale": "en", "dark": False, "server": {"enabled": False}}
@@ -324,6 +342,8 @@ def main():
                       "--work-dir", str(work), "--output", str(output),
                       "--expected-sha", args.expected_sha,
                       "--deadline-monotonic", str(qa_deadline)]
+        if approval is not None:
+            qa_command.extend(("--identity-approval", str(copied["identity_approval"])))
         qa = spawn(qa_command, work, env)
         processes.append(qa)
         logs.append(BoundedLog(qa.stdout))
@@ -335,8 +355,8 @@ def main():
                 interrupted(signal.SIGALRM, None)
             time.sleep(min(0.25, max(0, qa_deadline - time.monotonic())))
         result["qa_exit_code"] = qa.returncode
-        result["status"] = "qa_exited" if qa.returncode == 0 else "qa_failed"
-        exit_code = 0 if qa.returncode == 0 else 1
+        result["status"] = {0: "qa_exited", 3: "qa_review_required"}.get(qa.returncode, "qa_failed")
+        exit_code = qa.returncode if qa.returncode in (0, 3) else 1
     except StopRun:
         result["status"] = "interrupted_or_timed_out"
         exit_code = 124

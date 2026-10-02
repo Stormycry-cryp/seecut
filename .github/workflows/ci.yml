@@ -17,6 +17,10 @@ on:
         description: Run the reviewed independent black-box script instead of window capture
         type: boolean
         default: false
+      qa_identity_approval:
+        description: Exact main-reviewer runtime identity JSON; forwarded unchanged, no automatic approval
+        type: string
+        default: ''
       blackbox_timeout_seconds:
         description: Total QA time including cleanup (420 only for real lease expiry)
         type: choice
@@ -182,17 +186,32 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
+          QA_IDENTITY_APPROVAL: ${{ inputs.qa_identity_approval }}
           SLINT_WGPU_CPU: '1'
         run: |
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
+          APPROVAL_ARGS=()
+          if [[ -n "$QA_IDENTITY_APPROVAL" ]]; then
+            python3 - <<'PYAPPROVAL'
+          import os
+          from pathlib import Path
+          data = os.environ['QA_IDENTITY_APPROVAL'].encode('utf-8')
+          assert len(data) <= 16384, 'Runtime declaration exceeds 16 KiB'
+          path = Path(os.environ['RUNNER_TEMP']) / 'qa-identity-approval.json'
+          with path.open('xb') as stream:
+              os.fchmod(stream.fileno(), 0o600)
+              stream.write(data)
+          PYAPPROVAL
+            APPROVAL_ARGS=(--identity-approval "$RUNNER_TEMP/qa-identity-approval.json")
+          fi
           xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
             timeout --signal=TERM --kill-after=10s "$((QA_SECONDS - 10))s" \
             python3 scripts/run-linux-blackbox.py \
             --binary "$PWD/src/target/debug/concat" \
             --qa-script "$PWD/scripts/independent-linux-blackbox.py" \
             --output "$RUNNER_TEMP/seecut-window-evidence" \
-            --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS"
+            --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" "${APPROVAL_ARGS[@]}"
 
       - name: Seal private QA evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
