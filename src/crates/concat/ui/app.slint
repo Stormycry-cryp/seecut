@@ -1155,8 +1155,13 @@ export component App inherits Window {
         width: root.width;
         height: root.height;
         data: root.toast;
+        // Leave the canvas layer actions and zoom status unobstructed.
+        bottom-offset: root.canvas-editor-active ? 80px : 16px;
     }
-    WorkflowToast { width: root.width; height: root.height; }
+    WorkflowToast {
+        width: root.width; height: root.height;
+        bottom-offset: root.canvas-editor-active ? 122px : 58px;
+    }
     Modal {
         open: Editor.canvas-transform-confirm;
         title: "结束自由变换？";
