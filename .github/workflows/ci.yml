@@ -91,11 +91,13 @@ jobs:
             [[ "$BLACKBOX_QA" == true && "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ &&
                "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
           fi
-          if [[ "$NEXT_STAGE" == workflow-observation ]]; then
+          if [[ "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation ]]; then
             [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
-               -n "$SOURCE_RUN_ID" && -n "$SOURCE_ARTIFACT_ID" && -n "$SOURCE_HEAD" ]] || exit 1
+               "$SOURCE_RUN_ID" == 37328783317 && "$SOURCE_ARTIFACT_ID" == 11355501142 &&
+               "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
           fi
-          if [[ "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation ]]; then
+          if [[ "$NEXT_STAGE" == fresh-workbench-observation ]]; then
             [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
                "$SOURCE_RUN_ID" == 37312315509 && "$SOURCE_ARTIFACT_ID" == 11345919609 &&
                "$SOURCE_HEAD" == cecc8fdf9578675051dae58bda25f0ff805ce235 &&
@@ -313,6 +315,7 @@ jobs:
           APP_BINARY: ${{ steps.candidate.outputs.binary }}
           CANDIDATE_MANIFEST: ${{ steps.candidate.outputs.manifest }}
           SOURCE_HEAD: ${{ steps.candidate.outputs.source_head }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
           SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
           QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
           NEXT_STAGE: ${{ inputs.qa_next_stage }}
@@ -340,8 +343,10 @@ jobs:
           BUS_ARGS=()
           INPUT_ARGS=()
           if [[ "$NEXT_STAGE" == workflow-observation ]]; then
-            [[ "$QA_SECONDS" == 300 && -n "$SOURCE_ARTIFACT_ID" ]]
-            QA_SCRIPT="$PWD/scripts/independent-workflow-ui.py"
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37328783317 &&
+               "$SOURCE_ARTIFACT_ID" == 11355501142 && "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+            QA_SCRIPT="$PWD/scripts/workflow_ui_11ebf20.py"
             BUS_COMMAND=(dbus-run-session --)
             BUS_ARGS=(--private-accessibility-bus)
             INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
@@ -354,10 +359,10 @@ jobs:
             BUS_ARGS=(--private-accessibility-bus)
           elif [[ "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation ]]; then
             # One invocation owns one fresh App and one independently reviewed A2 scope.
-            [[ "$QA_SECONDS" == 300 && "$SOURCE_ARTIFACT_ID" == 11345919609 &&
-               "$SOURCE_HEAD" == cecc8fdf9578675051dae58bda25f0ff805ce235 &&
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37328783317 &&
+               "$SOURCE_ARTIFACT_ID" == 11355501142 && "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
                -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
-            QA_SCRIPT="$PWD/scripts/next_ui_cecc8fd_a2.py"
+            QA_SCRIPT="$PWD/scripts/next_ui_11ebf20_a2.py"
             BUS_COMMAND=(dbus-run-session --)
             BUS_ARGS=(--private-accessibility-bus)
           fi

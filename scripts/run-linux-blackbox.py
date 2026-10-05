@@ -7,7 +7,7 @@ absolute work path. QA records /proc binary identity and the unique visible X11
 window ID itself. It must finish before the monotonic deadline, leave regular
 files in output or its known observation/navigation directories, and never
 include secrets in artifacts. Optional --identity-approval and --ui-approval are
-copied verbatim and forwarded; this harness never creates or interprets a declaration.
+copied verbatim and forwarded; fixed reviewed stages verify their raw identities.
 An optional candidate manifest binds the copied executable to its actual source
 HEAD, build run/job and content hash before launch. Explicit source HEAD and
 artifact ID allow a reviewed test-only workflow revision to use the original App.
@@ -51,11 +51,17 @@ SENSITIVE = re.compile(rb"token|authorization|credential|password|secret|bearer"
 RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
 WORKFLOW_DIRECTORY = "independent-qa-workflow"
+WORKFLOW_HEAD = "11ebf203e1a78d3b6a21677c4b17e96223c74b0e"
+WORKFLOW_APP_SHA = "8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30"
+WORKFLOW_BUILD_RUN = 37328783317
+WORKFLOW_ARTIFACT = "11355501142"
+WORKFLOW_UI = ("reviewed-ui-11ebf20-workflow.json", "a3cc14171f1c4a0f62806d1333a2fc19e47707f05ef4a42814b5dc01870dddaa")
+WORKFLOW_IDENTITY_SHA = "2b94fc606a46d7d0df43ea2d07a29e5a3b5075253521a201e65d264ee5933574"
 WORKFLOW_SCRIPTS = {
-    "qa": ("independent-workflow-ui.py", "bbe11a02d958355b63330a4e76230922412632a63a6c2c770391021077e6ab5d"),
+    "qa": ("workflow_ui_11ebf20.py", "2b208fe3de01e5bc1b1a65506fe2acf2855cfc764f752dc4b09cff837df5f9d5"),
     "public_ui_probe": ("public_ui_probe.py", "d6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2"),
     "workflow_checks": ("workflow_checks.py", "93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853"),
-    "native_ui_action": ("native_ui_action.py", "f0061bf9f93ac5407a086403d508b4ce691d8369a4677638bdc56a7942e65dbc"),
+    "native_ui_action": ("native_ui_action_11ebf20.py", "5284f9da2cb5cb73d0a4cb042b443d60dc8f558b65460fdfbbc9e6250e484b42"),
 }
 WORKFLOW_PNG_NAMES = {
     name + ".png" for name in (
@@ -110,15 +116,19 @@ A2_SCOPES = {
     "canvas-entry-observation": "canvas-entry",
 }
 # Final independently delivered byte identities; controller/helpers are not adapters.
+A2_HEAD = "11ebf203e1a78d3b6a21677c4b17e96223c74b0e"
+A2_APP_SHA = "8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30"
+A2_BUILD_RUN = 37328783317
+A2_ARTIFACT = "11355501142"
 A2_SCRIPTS = {
-    "qa": ("next_ui_cecc8fd_a2.py", "c26afa6ad02fcfb3627d78ca25abaf452fd710ee675f0ca41b7985cd27384d1c"),
+    "qa": ("next_ui_11ebf20_a2.py", "e246852d4ac98d1bb8f14e0f4fcb3a2f58bb4399b77c1365a26548c828087338"),
     "a2_probe": ("public_probe_cecc8fd_ui3.py", "a52b62daf9f13b1b21f881edcf34ebeb12596266212faf94d8cb0ef43415d2e2"),
-    "a2_action": ("public_action_cecc8fd_ui3.py", "e7122a9bf6d7b5bcba211c010c1939f000ce0000dc5513b1a22ece65a7d7bb0a"),
+    "a2_action": ("public_action_11ebf20_ui3.py", "e60362bc4af029d47b1b631fa918b0be714cfc15834311ae914940776afd621a"),
 }
-A2_UI = ("reviewed-ui-cecc8fd-a2.json", "0115fda3e041377af6589aaeacb8c8eed7d11da960947b227c07afb1ba0d1301")
-A2_IDENTITY_SHA = "2d0dc9ebda453814f8357fa16acdda99a87b8448cd0a9ff7757dc6c022f8dee3"
+A2_UI = ("reviewed-ui-11ebf20-a2.json", "bc21ccbf31917abefca4bd213f33aceb962ec68c7965ab743824686b9dde4375")
+A2_IDENTITY_SHA = "2b94fc606a46d7d0df43ea2d07a29e5a3b5075253521a201e65d264ee5933574"
 A2_CONTROLLER_SECONDS = 120
-A2_DIRECTORIES = {stage: "independent-qa-cecc8fd-a2-" + scope for stage, scope in A2_SCOPES.items()}
+A2_DIRECTORIES = {stage: "independent-qa-11ebf20-a2-" + scope for stage, scope in A2_SCOPES.items()}
 A2_PNG_NAMES = {
     "settings-controls": {
         "01-before-quick.png", "02-after-quick-1280x900.png", "07-after-close-workbench-1280x900.png",
@@ -551,11 +561,15 @@ def arguments():
     if args.input_dir is not None and args.next_stage != "workflow-observation":
         parser.error("--input-dir is only valid for workflow-observation")
     if args.next_stage == "workflow-observation":
+        if not args.private_accessibility_bus:
+            parser.error("workflow-observation requires --private-accessibility-bus")
         if args.seconds != 300 or args.client_binary is not None:
             parser.error("workflow-observation requires 300 seconds and no MCP client")
         if not all((args.identity_approval, args.ui_approval, args.source_head,
                     args.candidate_manifest, args.candidate_artifact_id, args.input_dir)):
             parser.error("workflow-observation requires exact candidate provenance, declarations and owned fixtures")
+        if args.source_head != WORKFLOW_HEAD or args.candidate_artifact_id != WORKFLOW_ARTIFACT:
+            parser.error("workflow-observation requires the exact reviewed candidate source and artifact")
     if args.next_stage == "fresh-workbench-observation":
         if not args.private_accessibility_bus:
             parser.error("fresh-workbench-observation requires --private-accessibility-bus")
@@ -572,7 +586,7 @@ def arguments():
             parser.error("A2 observation requires 300 seconds, no MCP client and no fixture inputs")
         if not all((args.identity_approval, args.ui_approval, args.source_head, args.candidate_manifest)):
             parser.error("A2 observation requires candidate provenance and both declarations")
-        if args.source_head != NEXT_UI_HEAD or args.candidate_artifact_id != NEXT_UI_ARTIFACT:
+        if args.source_head != A2_HEAD or args.candidate_artifact_id != A2_ARTIFACT:
             parser.error("A2 observation requires the exact reviewed candidate source and artifact")
     return args
 
@@ -671,12 +685,20 @@ def main():
             if candidate is None or not re.fullmatch(r"[1-9][0-9]*", args.candidate_artifact_id):
                 raise ValueError("candidate artifact ID requires a valid manifest")
             result["candidate"]["source_artifact_id"] = int(args.candidate_artifact_id)
-        if args.next_stage == "fresh-workbench-observation" or args.next_stage in A2_SCOPES:
+        if args.next_stage == "fresh-workbench-observation":
             if (candidate is None or source_head != NEXT_UI_HEAD
                     or args.candidate_artifact_id != NEXT_UI_ARTIFACT
                     or candidate["app_sha256"] != NEXT_UI_APP_SHA
                     or candidate["build_run_id"] != NEXT_UI_BUILD_RUN):
                 raise ValueError("fresh workbench candidate differs from its reviewed immutable provenance")
+        if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES:
+            workflow = args.next_stage == "workflow-observation"
+            reviewed_head, app_sha, build_run, artifact = (
+                (WORKFLOW_HEAD, WORKFLOW_APP_SHA, WORKFLOW_BUILD_RUN, WORKFLOW_ARTIFACT) if workflow else
+                (A2_HEAD, A2_APP_SHA, A2_BUILD_RUN, A2_ARTIFACT))
+            if (candidate is None or source_head != reviewed_head or args.candidate_artifact_id != artifact
+                    or candidate["app_sha256"] != app_sha or candidate["build_run_id"] != build_run):
+                raise ValueError("reviewed candidate differs from its immutable provenance")
         sources = {"app": regular_input(args.binary), "qa": regular_input(args.qa_script)}
         if args.next_stage == "workflow-observation":
             if sources["qa"] != root / "scripts" / WORKFLOW_SCRIPTS["qa"][0]:
@@ -728,7 +750,7 @@ def main():
                     copied[name] = work / filename
         hashes = {name: copy_and_hash(source, copied[name], executable=name in {"app", "client"},
                                       limit=(APP_LIMIT if name == "app" else
-                                             (64 * 1024 if args.next_stage in A2_SCOPES else None)))
+                                             (64 * 1024 if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES else None)))
                   for name, source in sources.items()}
         if args.next_stage == "workflow-observation":
             for name, (_filename, digest) in WORKFLOW_SCRIPTS.items():
@@ -757,16 +779,20 @@ def main():
             copied["ui_approval"] = work / "ui-approval.json"
             hashes["ui_approval"] = copy_and_hash(
                 ui_approval, copied["ui_approval"], limit=APPROVAL_LIMIT)
-        if args.next_stage in A2_SCOPES:
-            if hashes.get("identity_approval") != A2_IDENTITY_SHA:
-                raise ValueError("A2 runtime identity differs from its reviewed raw bytes")
-            if hashes.get("ui_approval") != A2_UI[1]:
-                raise ValueError("A2 UI declaration differs from its reviewed raw bytes")
+        if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES:
+            workflow = args.next_stage == "workflow-observation"
+            identity_sha, ui_sha, reviewed_head, app_sha = (
+                (WORKFLOW_IDENTITY_SHA, WORKFLOW_UI[1], WORKFLOW_HEAD, WORKFLOW_APP_SHA) if workflow else
+                (A2_IDENTITY_SHA, A2_UI[1], A2_HEAD, A2_APP_SHA))
+            if hashes.get("identity_approval") != identity_sha:
+                raise ValueError("runtime identity differs from its reviewed raw bytes")
+            if hashes.get("ui_approval") != ui_sha:
+                raise ValueError("UI declaration differs from its reviewed raw bytes")
             identity = json.loads(copied["identity_approval"].read_bytes())
             if (not isinstance(identity, dict) or identity.get("schema") != 2
-                    or identity.get("reviewed_by") != "main-reviewer" or identity.get("runtime_head") != NEXT_UI_HEAD
-                    or identity.get("runtime_app_sha256") != NEXT_UI_APP_SHA or identity.get("change_scope") != "product-candidate"):
-                raise ValueError("A2 main runtime identity differs from the reviewed App")
+                    or identity.get("reviewed_by") != "main-reviewer" or identity.get("runtime_head") != reviewed_head
+                    or identity.get("runtime_app_sha256") != app_sha or identity.get("change_scope") != "product-candidate"):
+                raise ValueError("main runtime identity differs from the reviewed App")
         portable = work / "portable"
         portable.mkdir(mode=0o700)
         prefs = {"locale": "en", "dark": False, "server": {"enabled": False}}
@@ -799,7 +825,7 @@ def main():
                               "log_bytes_per_process": LOG_LIMIT})
         if args.next_stage in A2_SCOPES:
             result["limits"]["controller_seconds"] = A2_CONTROLLER_SECONDS
-        if args.next_stage == "fresh-workbench-observation" or args.next_stage in A2_SCOPES:
+        if args.next_stage in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES}:
             phase = "accessibility_preparation"
             enable_private_accessibility(env, qa_deadline, result)
         phase = "launch"
