@@ -149,6 +149,16 @@ export component App inherits Window {
     callback canvas-leave-page(target: int) -> bool;
     callback close-clip-project();
     property <int> workspace-page: SeeCut.page;
+    property <bool> canvas-editor-active: SeeCut.page == 6 && !SeeCut.canvas-gallery-open;
+    changed canvas-editor-active => {
+        if root.canvas-editor-active {
+            // Opening a gallery card destroys the item that held focus. Restore
+            // the window keyboard scope after the new editor has been mounted.
+            root.focus-return = 0;
+            SeeCut.focus-return-claimed = false;
+            root.focus-restore-pending = true;
+        }
+    }
     changed workspace-page => {
         SeeCut.generation-parameters-open = false; SeeCut.result-preview-open = false; SeeCut.media-preview-open = false;
         SeeCut.personal-menu = 0;
