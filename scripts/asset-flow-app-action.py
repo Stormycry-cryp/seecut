@@ -15,6 +15,32 @@ TARGET_KEYS = ('path','role','label','showing','enabled','sensitive','focusable'
                'entry','editable','editable_text_interface','action_interface','bounds','allowed_actions')
 
 
+
+SAFE_REASONS = frozenset((
+    'named_probe_SHA_required','complete_current_nonfield_metadata_required',
+    'one_current_unmodal_asset_surface_required','current_owned_App_window_required',
+    'unknown_field_overlay_no_input','current_visible_target_changed',
+    'healthy_focusable_target_required','fixed_nonreadable_search_entry_required',
+    'unique_current_search_focus_required','closed_visible_nonfield_Action_required',
+    'one_current_owned_asset_required','fresh_exact_single_selection_count_required',
+    'one_current_selected_preview_required','observed_unchecked_batch_control_required',
+    'unique_preview_select_button_required','closed_search_mode_required',
+    'final_nonfield_closed_Action_state_required','final_Action_bounds_changed',
+    'one_advertised_click_required','deadline_before_Action','Action_false_no_retry',
+    'deadline_no_input','owned_command_failed','owned_App_focus_required',
+    'task_limit','descendant_limit','extra_owned_window_forbidden',
+    'exact_private_owned_context_required','exact_scope_action_SHA_required',
+    'no_file_list_path_required','visible_target_missing',
+    'public_accessibility_unavailable','public_accessibility_deadline',
+    'ambiguous_public_app_root','target_not_exposed_by_public_accessibility'))
+
+
+def safe_reason(exc):
+    if isinstance(exc,subprocess.TimeoutExpired):return 'owned_command_timeout'
+    reason=str(exc)
+    return reason if isinstance(exc,(ValueError,RuntimeError)) and reason in SAFE_REASONS else 'unknown_runtime_failure_raw_withheld'
+
+
 def load_probe(digest):
     path=Path(__file__).with_name('asset-flow-public-probe.py')
     if (path.is_symlink() or not path.is_file() or path.stat().st_size>65536
@@ -93,7 +119,9 @@ def search_sequence(mode,target,focus,observe,command,record):
     record['phase']='fixed_edit';record['edit_attempted']=True
     if mode=='search-miss':command(['xdotool','type','--clearmodifiers','--delay','1','--',MATCH_WORD])
     else:command(['xdotool','key','--clearmodifiers','BackSpace'])
+    record['phase']='post_edit_observation'
     observe(True)
+    record['post_edit_target_verified']=True
 
 
 def once_action(node,Atspi,target,focus,record,end):
@@ -124,7 +152,8 @@ def main():
     end=min(a.deadline_monotonic,time.monotonic()+8)
     record={'scope':'asset-library-flow','mode':a.mode,'success':False,'phase':'dependencies',
             'window':a.window_id,'field_values_read':False,'file_lists_read':False,
-            'focus_click_attempted':False,'select_all_attempted':False,'edit_attempted':False,'Action_attempted':False}
+            'focus_click_attempted':False,'select_all_attempted':False,'edit_attempted':False,'Action_attempted':False,
+            'post_edit_probe_completed':False,'post_edit_target_verified':False}
     def command(argv,search=False):
         left=end-time.monotonic()
         if left<0.1:raise ValueError('deadline_no_input')
@@ -150,8 +179,14 @@ def main():
                         if command(['xdotool','search','--onlyvisible','--pid',str(child)],True).strip():
                             raise ValueError('extra_owned_window_forbidden')
     def observe(focused=False):
-        focus();data=probe.collect(a.app_pid,min(end,time.monotonic()+2))
+        post_edit=record['phase']=='post_edit_observation'
+        record['phase']='post_edit_focus' if post_edit else 'target_focus'
+        focus()
+        record['phase']='post_edit_probe' if post_edit else 'target_probe'
+        data=probe.collect(a.app_pid,min(end,time.monotonic()+2))
+        if post_edit:record['post_edit_probe_completed']=True
         data.update(app_pid=a.app_pid,field_values_read=False)
+        record['phase']='post_edit_target_check' if post_edit else 'target_check'
         return target_current(data,a.app_pid,expected,a.mode,focused)
     try:
         path=a.ui_approval
@@ -176,7 +211,9 @@ def main():
                 if node is None:raise ValueError('visible_target_missing')
             node.clear_cache_single();observe();once_action(node,Atspi,target,focus,record,end)
         record.update(success=True,phase='completed')
-    except Exception:record['blocking_reason']='asset_app_input_unconfirmed_raw_withheld_no_retry'
+    except Exception as exc:
+        record['blocking_reason']='asset_app_input_unconfirmed_raw_withheld_no_retry'
+        record['reason']=safe_reason(exc)
     print(json.dumps(record,ensure_ascii=False,separators=(',',':')))
     return 0 if record['success'] else 2
 
