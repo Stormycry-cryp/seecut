@@ -2270,13 +2270,31 @@ impl CanvasPane {
         self.mcp_binding_epoch
     }
 
+    /// A rendering hint only: no filesystem or ownership validation. An
+    /// explicit grant/renew and every actual write still use mcp_writer_ready.
+    pub(crate) fn mcp_move_permission_request_ready(&self) -> Result<(), CanvasMoveError> {
+        self.mcp_writer_preflight(desktop_writer_ownership_supported())?;
+        if self.writer_owner.is_none()
+            && (self.project_path.is_some() || self.autosave_inflight.is_some())
+        {
+            return Err(CanvasMoveError::MissingOwner);
+        }
+        if self.project_path.is_none()
+            && self.writer_owner.is_some()
+            && self.autosave_inflight.is_none()
+        {
+            return Err(CanvasMoveError::UnstableBinding);
+        }
+        Ok(())
+    }
+
     /// Read-only check of the existing App-held writer and document binding.
     /// This never acquires a guard, saves, or creates a filesystem entry.
     pub(crate) fn mcp_writer_ready(&self) -> Result<(), CanvasMoveError> {
         self.mcp_writer_ready_on_platform(desktop_writer_ownership_supported())
     }
 
-    fn mcp_writer_ready_on_platform(&self, supported: bool) -> Result<(), CanvasMoveError> {
+    fn mcp_writer_preflight(&self, supported: bool) -> Result<(), CanvasMoveError> {
         if !supported {
             return Err(CanvasMoveError::UnsupportedPlatform);
         }
@@ -2293,6 +2311,11 @@ impl CanvasPane {
         if self.mcp_state().2 || self.nav.is_gesturing() {
             return Err(CanvasMoveError::Busy);
         }
+        Ok(())
+    }
+
+    fn mcp_writer_ready_on_platform(&self, supported: bool) -> Result<(), CanvasMoveError> {
+        self.mcp_writer_preflight(supported)?;
         match (
             self.project_path.as_deref(),
             self.writer_owner.as_ref(),
@@ -8185,6 +8208,10 @@ mod tests {
         let (mut pane, _) = painting_pane();
         let id = pane.active.unwrap();
         pane.project_path = Some(path.clone());
+        assert!(matches!(
+            pane.mcp_move_permission_request_ready(),
+            Err(CanvasMoveError::MissingOwner)
+        ));
         mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
             matches!(e, CanvasMoveError::MissingOwner)
         });
@@ -8202,6 +8229,10 @@ mod tests {
         pane.writer_owner = pane.owner_for_path(&path).unwrap();
         assert!(pane.mcp_writer_ready().is_ok());
         pane.project_path = Some(other.clone());
+        assert!(
+            pane.mcp_move_permission_request_ready().is_ok(),
+            "UI readiness does not validate ownership or touch the mismatched path"
+        );
         mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
             matches!(e, CanvasMoveError::OwnerMismatch)
         });
@@ -8227,6 +8258,10 @@ mod tests {
         let sidecar = root.join(".seecut-canvas-locks/bound.comp");
         std::fs::rename(&sidecar, root.join("held-old-lock")).unwrap();
         std::fs::write(&sidecar, b"replacement").unwrap();
+        assert!(
+            pane.mcp_move_permission_request_ready().is_ok(),
+            "UI readiness does not inspect the replaced owner file"
+        );
         mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
             matches!(
                 e,

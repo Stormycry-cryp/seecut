@@ -47,9 +47,10 @@ RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
 WORKFLOW_DIRECTORY = "independent-qa-workflow"
 WORKFLOW_SCRIPTS = {
-    "qa": ("independent-workflow-ui.py", "e4c16c49450019164c70f6cf4f96bafaaec95224e3341ac263d4f42fbb4c7aca"),
-    "public_ui_probe": ("public_ui_probe.py", "347f78240b81af991947d0f343648ae1aeffa132589fd20da1a4dfe8c99d1f79"),
+    "qa": ("independent-workflow-ui.py", "2a58bd3baf36de4a7a700d656a68dffc23bb0dff19611e9f271475df0db0c146"),
+    "public_ui_probe": ("public_ui_probe.py", "d6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2"),
     "workflow_checks": ("workflow_checks.py", "de496988f07b0846c5055c3884948233f1a885c40dc88b7aa721825359fcf65f"),
+    "native_ui_action": ("native_ui_action.py", "459ae6acf351dcf4cb2dd4029566ee11c13ef0a555fbf3c8d9a6d941452b8ebd"),
 }
 WORKFLOW_PNG_NAMES = {
     name + ".png" for name in (
@@ -63,10 +64,14 @@ WORKFLOW_PNG_NAMES = {
 } | {
     phase + suffix + ".png"
     for phase in ("08-import", "11-save", "17-reopen", "21-export")
-    for suffix in ("-returned-App", "-menu-closed", "-native-not-gone")
+    for suffix in ("-returned-App", "-menu-closed", "-native-not-gone", "-native-chrome", "-location-visible")
 } | {
     phase + suffix + ".png"
     for phase in ("09-edit", "18-reopened-edit") for suffix in ("-dragged", "-one-Undo")
+} | {
+    phase + suffix + ".png"
+    for phase in ("08-import", "17-reopen")
+    for suffix in ("-fixture-visible-stable", "-fixture-not-confirmed-after-wait")
 }
 WORKFLOW_JSON_NAMES = {"workflow.json", "public-accessibility.json"} | {
     phase + suffix + ".json"

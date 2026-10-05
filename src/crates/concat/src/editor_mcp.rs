@@ -73,6 +73,20 @@ pub enum AssistantPermission {
     RevokeWrite,
 }
 
+pub(crate) enum AssistantPermissionError {
+    NotAllowed,
+    WriterUnavailable,
+}
+
+impl AssistantPermissionError {
+    pub(crate) fn message(&self) -> &'static str {
+        match self {
+            Self::NotAllowed => "权限状态已变化，请重新检查",
+            Self::WriterUnavailable => "当前画布无法授权移动，请检查工程状态",
+        }
+    }
+}
+
 /// Ephemeral credentials for the trusted host only. Deliberately not Debug or
 /// serializable; never publish either token to Slint, logs, or disk.
 pub struct AssistantSnapshot {
@@ -500,7 +514,11 @@ impl BridgeUi {
             Some("clip") => studio.project_name.clone(),
             _ => String::new(),
         };
-        let ready = canvas && self.grant_ready(studio, app).is_ok();
+        // A 40ms render tick must not validate filesystem ownership. This only
+        // enables an explicit request; permission and writes recheck ownership.
+        let ready = canvas
+            && !modal_busy(studio, app, false)
+            && studio.canvas.mcp_move_permission_request_ready().is_ok();
         assistant_registry_snapshot(
             AssistantPermissionContext {
                 scope: scope.as_ref(),
@@ -523,11 +541,21 @@ impl BridgeUi {
         studio: &Studio,
         app: &App,
         action: AssistantPermission,
-    ) {
+    ) -> Result<(), AssistantPermissionError> {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
         let canvas = active.as_ref().is_some_and(|(kind, _)| kind == "canvas");
-        let ready = canvas && self.grant_ready(studio, app).is_ok();
+        let ready = if matches!(
+            action,
+            AssistantPermission::GrantWrite | AssistantPermission::RenewWrite
+        ) {
+            self.grant_ready(studio, app)
+                .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
+            true
+        } else {
+            // Reading and revoking do not inspect an unrelated writer's files.
+            false
+        };
         match assistant_registry_permission(
             AssistantPermissionContext {
                 scope: scope.as_ref(),
@@ -551,8 +579,10 @@ impl BridgeUi {
                 self.write_message.clear();
                 self.write_timer.stop();
             }
-            _ => {}
+            Some(AssistantWriteChange::None) => {}
+            None => return Err(AssistantPermissionError::NotAllowed),
         }
+        Ok(())
     }
 
     pub fn new() -> Self {

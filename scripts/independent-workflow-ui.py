@@ -269,39 +269,70 @@ def main():
     def choose_owned_path(native, path, phase, accept_labels):
         metadata = public_metadata(native['pid'], phase + '-public-before')
         nodes = metadata['nodes']
-        if (metadata.get('toolkit') != 'GTK'
-                or not any(n.get('file_chooser') and n.get('showing') and inside(n, native) for n in nodes)
-                or not any(n.get('button') and n.get('showing') and n.get('enabled')
-                           and n.get('label') in accept_labels and inside(n, native) for n in nodes)):
+        accept_labels = set(accept_labels) | {'OK', 'Ok'}
+        if (metadata.get('toolkit') != 'GTK' or not any(n.get('dialog') and n.get('showing') for n in nodes)
+                or not any(n.get('button') and n.get('showing') and n.get('action_interface')
+                           and n.get('label') in accept_labels for n in nodes)):
             raise Stop('native_file_chooser_semantics_not_confirmed:' + phase)
+        # GTK4 exposes generic containers and unreliable child extents in this observed runner.
+        # The current, owned native window's actual Cancel/OK chrome is the pixel gate.
+        footer = ui['native_footer_guard']
+        x, y, width, height = native['bounds']
+        fx = x + width - footer['right'] - footer['width']
+        fy = y + height - footer['bottom'] - footer['height']
+        frame = snapshot(phase + '-native-chrome', root=True)
+        rgb = command(['convert', str(frame), '-crop', f"{footer['width']}x{footer['height']}+{fx}+{fy}",
+                       '+repage', '-alpha', 'off', '-depth', '8', 'rgb:-'], binary=True)
+        if hashlib.sha256(rgb).hexdigest() != footer['rgb_sha256']:
+            raise Stop('current_native_chooser_chrome_differs_no_location_input:' + phase)
         focus_visible(native)
-        # GTK's documented location-popup binding, after actual role/toolkit/action proof.
+        before_entries = {tuple(n['path']) for n in nodes if n.get('entry') and n.get('showing') and n.get('editable_text_interface')}
+        # GTK's documented location-popup binding, after actual native pixel/toolkit/action proof.
         command(['xdotool', 'key', '--clearmodifiers', 'ctrl+l'])
         pause()
+        snapshot(phase + '-location-visible', root=True)
         metadata = public_metadata(native['pid'], phase + '-public-location')
-        entries = [n for n in metadata['nodes'] if n.get('entry') and n.get('editable')
-                   and n.get('showing') and n.get('enabled') and n.get('focused') and inside(n, native)]
+        entries = [n for n in metadata['nodes'] if n.get('entry') and n.get('editable_text_interface')
+                   and n.get('showing') and (n.get('enabled') or n.get('sensitive'))
+                   and (n.get('focused') or tuple(n['path']) not in before_entries)]
         if len(entries) != 1:
-            raise Stop('GTK_location_entry_not_unique_focused_no_typing:' + phase)
+            raise Stop('GTK_location_entry_not_unique_new_or_focused_no_input:' + phase)
         focus_visible(native)
-        command(['xdotool', 'key', '--clearmodifiers', 'ctrl+a'])
-        command(['xdotool', 'type', '--clearmodifiers', '--delay', '1', '--', str(path)])
         report['file_input_attempted'] = True
-        report['actions'].append({'kind': 'owned-path-input', 'purpose': phase, 'basename': path.name,
-                                  'native_window': native['window'], 'entry_role_verified': True})
+        native_action(native, entries[0], path, phase, 'set-location')
         pause()
         metadata = public_metadata(native['pid'], phase + '-public-before-accept')
-        buttons = [n for n in metadata['nodes'] if n.get('button') and n.get('showing') and n.get('enabled')
-                   and n.get('label') in accept_labels and inside(n, native)]
+        buttons = [n for n in metadata['nodes'] if n.get('button') and n.get('showing') and n.get('action_interface')
+                   and (n.get('enabled') or n.get('sensitive'))
+                   and n.get('label') in accept_labels and n.get('allowed_actions')]
         if len(buttons) != 1:
             raise Stop('native_accept_action_not_unique:' + phase)
         focus_visible(native)
-        bounds = buttons[0]['bounds']
-        command(['xdotool', 'mousemove', str(bounds['x'] + bounds['width'] // 2), str(bounds['y'] + bounds['height'] // 2)])
-        command(['xdotool', 'click', '1'])
-        report['actions'].append({'kind': 'public-semantic-click', 'label': buttons[0]['label'],
-                                  'purpose': phase, 'native_window': native['window']})
+        native_action(native, buttons[0], path, phase, 'accept')
         return await_native_gone(native, phase)
+
+    def native_action(native, node, path, phase, mode):
+        purpose = phase.split('-')[-1]
+        if native not in visible_windows():
+            raise Stop('native_not_visible_before_public_action')
+        try:
+            completed = subprocess.run([args.probe_python, '-B', str(action_helper), '--target-pid', str(native['pid']),
+                                        '--owned-root-pid', str(args.app_pid), '--node-path', json.dumps(node['path']),
+                                        '--purpose', purpose, '--owned-path', str(path), '--input-dir', str(args.input_dir),
+                                        '--deliverable-dir', str(deliverables), '--mode', mode, '--ui-approval', str(args.ui_approval),
+                                        '--deadline-monotonic', str(min(deadline, time.monotonic() + 3)),
+                                        '--private-accessibility-bus'], capture_output=True,
+                                       timeout=min(5, max(0.25, deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            raise Stop('native_public_action_timeout_unknown_result_no_retry:' + phase) from None
+        if completed.returncode != 0 or len(completed.stdout) > 4096:
+            raise Stop('native_public_action_not_confirmed_no_retry:' + phase)
+        result = json.loads(completed.stdout)
+        if not result.get('success'):
+            raise Stop('native_public_action_returned_false_no_retry:' + phase)
+        report['actions'].append({'kind': 'public-native-UI-' + mode, 'purpose': purpose,
+                                  'basename': path.name, 'node_path': node['path'], 'native_window': native['window'],
+                                  'API_returned_success': True})
 
     def image_info(frame):
         raw = command(['convert', str(frame), '-alpha', 'off', '-depth', '8', 'rgb:-'], binary=True)
@@ -309,6 +340,27 @@ def main():
             return locate_fixture(raw, 1280, 900, (128, 88, 960, 870))
         except ValueError as exc:
             raise Stop(str(exc)) from None
+
+    def await_fixture(frame, phase):
+        until = min(deadline, time.monotonic() + 12)
+        previous, stable_at = None, None
+        while time.monotonic() < until:
+            # Read only the verified App's current visible pixels into memory; no repeated PNG dump.
+            raw = command(['import', '-window', str(window), '-depth', '8', 'rgb:-'], binary=True)
+            try:
+                info = locate_fixture(raw, 1280, 900, (128, 88, 960, 870))
+                current = (info['bounds'], info['color_pixels'])
+                if current == previous and time.monotonic() - stable_at >= 0.5:
+                    ready = snapshot(phase + '-fixture-visible-stable')
+                    image_info(ready)
+                    return ready
+                if current != previous:
+                    previous, stable_at = current, time.monotonic()
+            except ValueError:
+                previous, stable_at = None, None
+            time.sleep(0.25)
+        snapshot(phase + '-fixture-not-confirmed-after-wait')
+        raise Stop('owned_fixture_not_visibly_stable_after_wait:' + phase)
 
     def edit_and_undo(frame, phase):
         before = image_info(frame)
@@ -374,12 +426,14 @@ def main():
         if (ui.get('schema') != 2 or ui.get('reviewed_by') != 'independent-qa'
                 or ui.get('observed_head') != HEAD or ui.get('observed_app_sha256') != APP_SHA
                 or ui.get('window') != {'width': 1280, 'height': 900}
-                or ui.get('workflow_revision') != 2):
+                or ui.get('workflow_revision') != 3):
             raise Stop('independent_UI_identity_mismatch')
         helper = Path(__file__).with_name('public_ui_probe.py')
         checks = Path(__file__).with_name('workflow_checks.py')
+        action_helper = Path(__file__).with_name('native_ui_action.py')
         if (hashlib.sha256(helper.read_bytes()).hexdigest() != ui.get('public_probe_sha256')
-                or hashlib.sha256(checks.read_bytes()).hexdigest() != ui.get('workflow_checks_sha256')):
+                or hashlib.sha256(checks.read_bytes()).hexdigest() != ui.get('workflow_checks_sha256')
+                or hashlib.sha256(action_helper.read_bytes()).hexdigest() != ui.get('native_action_sha256')):
             raise Stop('reviewed_helpers_changed_no_UI_input')
         manifest, manifest_sha = read_json(args.input_dir / 'manifest.json')
         if manifest_sha != '8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7':
@@ -462,8 +516,9 @@ def main():
         click('open_local_image', frame, ['open-menu'])
         native = await_native('07-import')
         frame = choose_owned_path(native, fixture, '08-import', {'Open', '打开'})
-        report['file_selected'] = True
+        frame = await_fixture(frame, '08-import')
         imported = image_info(frame)
+        report['file_selected'] = True
         report['stages']['import'] = {'visible_fixture': imported, 'source_sha256': manifest['files'][0]['sha256'],
                                       'verdict': 'pending_independent_image_review'}
         frame = edit_and_undo(frame, '09-edit')
@@ -494,6 +549,7 @@ def main():
         click('open_project', frame, ['open-menu'])
         native = await_native('16-reopen')
         frame = choose_owned_path(native, project, '17-reopen', {'Open', '打开'})
+        frame = await_fixture(frame, '17-reopen')
         reopened = image_info(frame)
         if not translated(imported, reopened, 0, 0):
             raise Stop('reopened_fixture_geometry_not_preserved')

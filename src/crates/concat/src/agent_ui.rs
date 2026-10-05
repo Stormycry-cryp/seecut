@@ -51,7 +51,9 @@ mod desktop {
         ConnectionConfig, Controller, DocumentIdentity, Phase, TaskOutcome,
     };
     use crate::agent_process::LaunchSpec;
-    use crate::editor_mcp::{ASSISTANT_CLIENT_ID, AssistantPermission, AssistantSnapshot};
+    use crate::editor_mcp::{
+        ASSISTANT_CLIENT_ID, AssistantPermission, AssistantPermissionError, AssistantSnapshot,
+    };
     use crate::host::{Shell, spawn_detached};
     use crate::ui::AssistantMessage;
     use serde_json::json;
@@ -98,6 +100,17 @@ mod desktop {
             epoch: u64,
             config: Result<ConnectionConfig, &'static str>,
         },
+    }
+
+    // The bounded channel holds at most four results. Drop stale configurations
+    // (including their keys) even after close invalidated their epoch/flags.
+    fn discard_closed_worker_results<T>(receiver: &Receiver<T>) {
+        for _ in 0..4 {
+            let Ok(result) = receiver.try_recv() else {
+                break;
+            };
+            drop(result);
+        }
     }
     #[derive(Clone, PartialEq)]
     struct FrozenApproval {
@@ -156,6 +169,13 @@ mod desktop {
             result
         }
         fn refresh(&self, app: &App) {
+            if !app.global::<Assistant>().get_open() {
+                discard_closed_worker_results(&self.receiver);
+                // close already disconnected. Reap responses/process exit
+                // without reading Studio, publishing UI, or clearing unknown.
+                self.state.borrow_mut().controller.tick(None);
+                return;
+            }
             let Some(snapshot) = Self::snapshot(app) else {
                 return;
             };
@@ -389,15 +409,14 @@ mod desktop {
             ui.set_approval_description(description.into());
             ui.set_can_allow(view.can_approve && valid_approval);
             ui.set_can_reject(view.can_approve);
-            if let Some(index) = state.assistant_row {
-                if let Some(mut row) = self.messages.row_data(index) {
-                    if row.text.as_str() != view.text || row.state.as_str() != outcome {
-                        row.text = view.text.into();
-                        row.state = outcome.into();
-                        self.messages.set_row_data(index, row);
-                    }
-                }
-            }
+            let next_row = update_streaming_reply(
+                &self.messages,
+                state.assistant_row,
+                phase,
+                view.outcome,
+                view.text,
+            );
+            state.assistant_row = next_row;
             state.approval = frozen_approval;
             self.trim(&mut state);
         }
@@ -470,7 +489,8 @@ mod desktop {
             ui.set_open(false);
             ui.set_secret_clear_token(ui.get_secret_clear_token().wrapping_add(1));
             // App may call close while Studio::publish still holds its borrow.
-            // The next timer tick publishes facts; closing itself never borrows Studio.
+            // Subsequent closed ticks only discard stale worker results and
+            // pump shutdown; closing itself never borrows Studio.
         }
         fn disconnect(&self, app: &App) {
             {
@@ -496,16 +516,28 @@ mod desktop {
                 AssistantPermission::RenewWrite => ui.get_can_renew_write() && !ui.get_busy(),
                 AssistantPermission::RevokeWrite => ui.get_can_revoke_write(),
             };
-            if !ui.get_open() || !allowed {
+            if !ui.get_open() {
                 return;
             }
+            if !allowed {
+                self.state.borrow_mut().notice =
+                    AssistantPermissionError::NotAllowed.message().into();
+                self.refresh(app);
+                return;
+            }
+            let mut result = Err(AssistantPermissionError::NotAllowed);
             Shell::with(|shell, _| {
                 let studio = shell.studio.borrow();
-                studio
+                result = studio
                     .editor_mcp
                     .borrow_mut()
                     .assistant_permission(&studio, app, action);
             });
+            self.state.borrow_mut().notice = result
+                .err()
+                .map(|error| error.message())
+                .unwrap_or_default()
+                .into();
             self.refresh(app);
         }
         fn approve(&self, app: &App, allowed: bool) {
@@ -764,6 +796,47 @@ mod desktop {
             None => "",
         }
     }
+
+    // Once a reply is terminal, the host detaches its streaming row. Failed or
+    // disconnected transport cannot replace retained text with a reset buffer.
+    // Closing is not final: process exit can still establish an unknown result.
+    fn reply_row_update(
+        phase: Phase,
+        outcome: Option<TaskOutcome>,
+        text: &str,
+    ) -> (Option<&str>, &'static str, bool) {
+        if outcome.is_some() {
+            return (Some(text), outcome_label(outcome), true);
+        }
+        match phase {
+            Phase::Failed => (None, "连接失败", true),
+            Phase::Disconnected => (None, "已断开", true),
+            Phase::OutcomeUnknown => (Some(text), "操作结果待核实", true),
+            _ => (Some(text), "", false),
+        }
+    }
+
+    fn update_streaming_reply(
+        messages: &VecModel<AssistantMessage>,
+        index: Option<usize>,
+        phase: Phase,
+        outcome: Option<TaskOutcome>,
+        text: &str,
+    ) -> Option<usize> {
+        let index = index?;
+        let mut row = messages.row_data(index)?;
+        let (reply_text, reply_state, terminal) = reply_row_update(phase, outcome, text);
+        if reply_text.is_some_and(|text| row.text.as_str() != text)
+            || row.state.as_str() != reply_state
+        {
+            if let Some(text) = reply_text {
+                row.text = text.into();
+            }
+            row.state = reply_state.into();
+            messages.set_row_data(index, row);
+        }
+        if terminal { None } else { Some(index) }
+    }
     fn filename(path: Option<&Path>) -> String {
         path.and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned())
@@ -799,7 +872,7 @@ mod desktop {
         Ok(())
     }
     fn app_environment() -> Result<BTreeMap<String, String>, &'static str> {
-        let mut values = BTreeMap::new();
+        let mut values: BTreeMap<String, String> = BTreeMap::new();
         let temporary = std::env::var_os("TMPDIR")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
@@ -878,6 +951,113 @@ mod desktop {
         use super::*;
         use std::os::unix::fs::symlink;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        #[test]
+        fn closed_ticks_discard_queued_and_late_credential_results() {
+            use std::cell::Cell;
+            struct CredentialResult {
+                secret: String,
+                dropped: Rc<Cell<usize>>,
+            }
+            impl Drop for CredentialResult {
+                fn drop(&mut self) {
+                    assert!(!self.secret.is_empty());
+                    self.dropped.set(self.dropped.get() + 1);
+                }
+            }
+            let dropped = Rc::new(Cell::new(0));
+            let (sender, receiver) = sync_channel(4);
+            for _ in 0..4 {
+                assert!(
+                    sender
+                        .send(CredentialResult {
+                            secret: "fixture-key".into(),
+                            dropped: dropped.clone(),
+                        })
+                        .is_ok()
+                );
+            }
+            discard_closed_worker_results(&receiver);
+            assert_eq!(dropped.get(), 4);
+            assert!(receiver.try_recv().is_err());
+            // A cancelled preparation can report after close cleared its flags.
+            assert!(
+                sender
+                    .send(CredentialResult {
+                        secret: "late-fixture-key".into(),
+                        dropped: dropped.clone(),
+                    })
+                    .is_ok()
+            );
+            discard_closed_worker_results(&receiver);
+            assert_eq!(dropped.get(), 5);
+            assert!(receiver.try_recv().is_err());
+            discard_closed_worker_results(&receiver);
+            assert_eq!(dropped.get(), 5);
+        }
+
+        #[test]
+        fn terminal_replies_detach_and_transport_failure_preserves_text() {
+            for outcome in [
+                TaskOutcome::Completed,
+                TaskOutcome::SubmittedPendingVerification,
+                TaskOutcome::Failed,
+                TaskOutcome::Stopped,
+                TaskOutcome::OutcomeUnknown,
+            ] {
+                let (text, state, terminal) =
+                    reply_row_update(Phase::Ready, Some(outcome), "最终回复");
+                assert_eq!(text, Some("最终回复"));
+                assert!(!state.is_empty() && terminal);
+            }
+            for phase in [Phase::Failed, Phase::Disconnected] {
+                let (text, state, terminal) = reply_row_update(phase, None, "");
+                assert!(
+                    text.is_none(),
+                    "transport state must not erase the retained row"
+                );
+                assert!(!state.is_empty() && terminal);
+            }
+            assert_eq!(
+                reply_row_update(Phase::Closing, None, "处理中"),
+                (Some("处理中"), "", false)
+            );
+            assert_eq!(
+                reply_row_update(
+                    Phase::Closing,
+                    Some(TaskOutcome::OutcomeUnknown),
+                    "保留回复"
+                ),
+                (Some("保留回复"), "操作结果待核实", true)
+            );
+        }
+
+        #[test]
+        fn completed_reply_survives_new_connection_buffer_reset() {
+            let messages = VecModel::from(vec![AssistantMessage {
+                role: "助手".into(),
+                text: "".into(),
+                state: "".into(),
+            }]);
+            let mut index =
+                update_streaming_reply(&messages, Some(0), Phase::Running, None, "流式回复");
+            assert_eq!(messages.row_data(0).unwrap().text.as_str(), "流式回复");
+            index = update_streaming_reply(
+                &messages,
+                index,
+                Phase::Ready,
+                Some(TaskOutcome::Completed),
+                "最终回复",
+            );
+            assert!(index.is_none());
+            // Controller.connect resets text/outcome before initialize/create.
+            index = update_streaming_reply(&messages, index, Phase::Initializing, None, "");
+            index = update_streaming_reply(&messages, index, Phase::Ready, None, "");
+            assert!(index.is_none());
+            let retained = messages.row_data(0).unwrap();
+            assert_eq!(retained.text.as_str(), "最终回复");
+            assert_eq!(retained.state.as_str(), "已完成");
+        }
 
         struct Fixture(PathBuf);
         impl Fixture {

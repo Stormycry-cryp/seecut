@@ -302,24 +302,24 @@ export component AssistantPanel inherits Rectangle {
                     VerticalLayout {
                         spacing: 4px;
                         AssistantText { text: "服务地址"; color: Theme.fg-muted; }
-                        AssistantInput { value <=> root.service-url; label: "服务地址"; placeholder: "兼容 OpenAI 的接口地址"; enabled: !root.connecting && !root.busy; }
+                        AssistantInput { value <=> root.service-url; label: "服务地址"; placeholder: "兼容 OpenAI 的接口地址"; enabled: !root.connected && !root.connecting && !root.busy; }
                     }
                     VerticalLayout {
                         spacing: 4px;
                         AssistantText { text: "模型"; color: Theme.fg-muted; }
-                        AssistantInput { value <=> root.model-name; label: "模型"; placeholder: "输入模型名称"; enabled: !root.connecting && !root.busy; }
+                        AssistantInput { value <=> root.model-name; label: "模型"; placeholder: "输入模型名称"; enabled: !root.connected && !root.connecting && !root.busy; }
                     }
                     VerticalLayout {
                         spacing: 4px;
                         AssistantText { text: "API 密钥"; color: Theme.fg-muted; }
-                        AssistantInput { value <=> root.session-api-key; label: "API 密钥"; placeholder: "仅用于本次会话"; password: true; enabled: !root.connecting && !root.busy; }
+                        AssistantInput { value <=> root.session-api-key; label: "API 密钥"; placeholder: "仅用于本次会话"; password: true; enabled: !root.connected && !root.connecting && !root.busy; }
                     }
                     HorizontalLayout {
                         spacing: 8px;
                         AssistantText { text: "图片支持"; vertical-alignment: center; horizontal-stretch: 1; }
                         Rectangle {
                             width: 48px; height: 36px;
-                            Switch { x: 4px; y: 6px; width: 40px; height: 24px; checked <=> root.images; enabled: !root.connecting && !root.busy; reduced-motion: root.reduced-motion; accessible-label: "服务支持图片"; }
+                            Switch { x: 4px; y: 6px; width: 40px; height: 24px; checked <=> root.images; enabled: !root.connected && !root.connecting && !root.busy; reduced-motion: root.reduced-motion; accessible-label: "服务支持图片"; }
                         }
                     }
                     AssistantText { text: "连接只初始化助手，不发送问题。"; color: Theme.fg-muted; }

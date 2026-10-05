@@ -23,6 +23,7 @@ SAFE_LABELS = frozenset({
     'Filename', '文件名', '路径', '位置',
     'Open Image', 'Open File', 'Select a File', 'Save As', 'Export',
     '导出至资产库', '导出至其他文件夹', '导出到其他文件夹', '撤销', 'Undo',
+    'OK', 'Ok', 'Images',
 })
 
 
@@ -30,7 +31,7 @@ def safe_label(value):
     return value if isinstance(value, str) and value in SAFE_LABELS else None
 
 
-def collect(app_pid, deadline):
+def target_root(app_pid, deadline):
     import gi
     gi.require_version('Atspi', '2.0')
     from gi.repository import Atspi
@@ -49,6 +50,11 @@ def collect(app_pid, deadline):
             root = candidate
     if root is None:
         raise RuntimeError('target_not_exposed_by_public_accessibility')
+    return root, Atspi
+
+
+def collect(app_pid, deadline):
+    root, Atspi = target_root(app_pid, deadline)
     toolkit = root.get_toolkit_name()
     toolkit = 'GTK' if isinstance(toolkit, str) and toolkit.lower().startswith('gtk') else 'unknown'
     pending = [(root, [], 0)]
@@ -59,9 +65,10 @@ def collect(app_pid, deadline):
             complete = False
             break
         node, path, depth = pending.pop()
-        if depth > 12:
+        if depth > 24:
             complete = False
             continue
+        node.clear_cache_single()
         states = node.get_state_set()
         role = node.get_role()
         skip_children = role in (Atspi.Role.TABLE, Atspi.Role.TREE, Atspi.Role.TREE_TABLE,
@@ -70,6 +77,7 @@ def collect(app_pid, deadline):
         record = {'path': path, 'role': int(role), 'label': None if no_name else safe_label(node.get_name()),
                   'showing': bool(states.contains(Atspi.StateType.SHOWING)),
                   'enabled': bool(states.contains(Atspi.StateType.ENABLED)),
+                  'sensitive': bool(states.contains(Atspi.StateType.SENSITIVE)),
                   'focused': bool(states.contains(Atspi.StateType.FOCUSED)),
                   'modal': bool(states.contains(Atspi.StateType.MODAL)),
                   'file_chooser': role == Atspi.Role.FILE_CHOOSER,
@@ -77,6 +85,13 @@ def collect(app_pid, deadline):
                   'button': role == Atspi.Role.PUSH_BUTTON,
                   'entry': role in (Atspi.Role.ENTRY, Atspi.Role.TEXT),
                   'editable': bool(states.contains(Atspi.StateType.EDITABLE))}
+        interfaces = set(node.get_interfaces())
+        record['editable_text_interface'] = 'EditableText' in interfaces
+        record['action_interface'] = 'Action' in interfaces
+        if record['button'] and record['action_interface']:
+            action = node.get_action_iface()
+            record['allowed_actions'] = [action.get_action_name(index) for index in range(min(action.get_n_actions(), 8))
+                                         if action.get_action_name(index) in ('click', 'activate', 'press')]
         try:
             component = node.get_component_iface()
             extent = component.get_extents(Atspi.CoordType.SCREEN) if component else None
