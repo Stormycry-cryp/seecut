@@ -97,15 +97,15 @@ def main():
                                   'surface': 'dedicated-private-Xvfb' if root else 'App-window'})
         return path
 
-    def matched(frame, name):
+    def matched(frame, name, region=None):
         spec = ui['guards'][name]
-        x, y, width, height = spec['region']
+        x, y, width, height = region or spec['region']
         raw = command(['convert', str(frame), '-crop', f'{width}x{height}+{x}+{y}',
                        '+repage', '-alpha', 'off', '-depth', '8', 'rgb:-'], binary=True)
         digest = hashlib.sha256(raw).hexdigest()
         matched = len(raw) == width * height * 3 and digest == spec['rgb_sha256']
         report['guards'].append({'frame': frame.name, 'control_context': name,
-                                 'rgb_sha256': digest, 'matched': matched})
+                                 'rgb_sha256': digest, 'matched': matched, 'actual_region': [x, y, width, height]})
         return matched
 
     def guard(frame, name):
@@ -123,6 +123,34 @@ def main():
         command(['xdotool', 'click', '1'])
         command(['xdotool', 'mousemove', '--window', str(window), '100', '700'])
         report['actions'].append({'kind': 'click', 'target': key,
+                                  'guarded_frame': frame.name, 'xy': xy})
+        pause()
+
+    def click_gallery_card(kind, frame):
+        # Match exact reviewed card identity in the two already-visible grid slots.
+        # Opening another document may reorder them; never click a stale position.
+        slots = ui['gallery_slot_lefts']
+        if slots != [493, 875]:
+            raise Stop('only_two_reviewed_gallery_slots_allowed')
+        found = []
+        for left in slots:
+            contexts = ['gallery-' + kind + '-preview', 'gallery-' + kind + '-title']
+            checks = []
+            for context in contexts:
+                region = list(ui['guards'][context]['region'])
+                region[0] = left
+                checks.append(matched(frame, context, region))
+            if all(checks):
+                found.append(left)
+        if len(found) != 1 or slots != [493, 875]:
+            raise Stop('reviewed_gallery_card_not_uniquely_visible:' + kind)
+        if int(command(['xdotool', 'getwindowpid', str(window)]).strip()) != args.app_pid or visible_windows():
+            raise Stop('gallery_App_identity_or_native_state_changed')
+        xy = [found[0] + 179, 240]
+        command(['xdotool', 'mousemove', '--window', str(window), *map(str, xy)])
+        command(['xdotool', 'click', '1'])
+        command(['xdotool', 'mousemove', '--window', str(window), '100', '700'])
+        report['actions'].append({'kind': 'exact_reviewed_gallery_card_click', 'card': kind,
                                   'guarded_frame': frame.name, 'xy': xy})
         pause()
 
@@ -442,7 +470,7 @@ def main():
         if (ui.get('schema') != 2 or ui.get('reviewed_by') != 'independent-qa'
                 or ui.get('observed_head') != HEAD or ui.get('observed_app_sha256') != APP_SHA
                 or ui.get('window') != {'width': 1280, 'height': 900}
-                or ui.get('workflow_revision') != 5):
+                or ui.get('workflow_revision') != 6):
             raise Stop('independent_UI_identity_mismatch')
         if ui.get('opened_document_contract', {}).get('expected_export_dimensions') != [256, 192]:
             raise Stop('reviewed_opened_document_contract_required')
@@ -545,6 +573,9 @@ def main():
         frame = edit_and_undo(frame, '09-edit')
         click('editor_save', frame, ['save-control', 'editor-tools'])
         native = await_native('10-save', allow_absence=True)
+        if hashlib.sha256(fixture.read_bytes()).hexdigest() != manifest['files'][0]['sha256']:
+            raise Stop('fixture_source_changed_after_save')
+        report['fixture_source_unchanged_after_save'] = True
         if native is None:
             # Actual rev4 save removed the dirty label without a native picker.
             # This is a UI transition, not proof of a persisted/reopenable file.
@@ -557,78 +588,82 @@ def main():
                 'dirty_label_removed': True, 'actual_file_verified': False,
                 'reopen_verified': False, 'verdict': 'visible_transition_only'}
             click('editor_back', frame, ['back-control', 'editor-tools', 'saved-image-title'])
-            snapshot('12-save-gallery-requires-review')
+            frame = snapshot('12-save-gallery')
             try:
                 public_metadata(args.app_pid, '12-save-gallery-public')
             except Stop as exc:
                 report['save_gallery_metadata'] = str(exc)
-            raise Stop('save_gallery_requires_independent_review_before_file_reopen_and_export')
-        frame = choose_owned_path(native, deliverables / 'qa-project', '11-save', {'Save', '保存'})
-        until = min(deadline, time.monotonic() + 10)
-        candidates = []
-        while time.monotonic() < until:
-            candidates = [p for p in deliverables.iterdir() if re.fullmatch(r'qa-project(?:\.[A-Za-z0-9_-]{1,16})?', p.name)]
-            if candidates:
-                break
-            time.sleep(0.25)
-        if len(candidates) != 1:
-            raise Stop('one_exact_new_project_output_not_found')
-        project = candidates[0]
-        report['stages']['save'] = stable_file(project)
-        copy_owned_output(project, 'saved-project' + project.suffix)
-        # Leave the saved editor, create a visibly blank document, then reopen the exact saved file.
-        click('editor_back', frame, ['back-control', 'editor-tools'])
-        frame = snapshot('12-left-saved-editor')
-        click('new_project', frame, ['new-project'])
-        frame = snapshot('13-new-blank-dialog')
-        click('new_create', frame, ['create-dialog'])
-        frame = snapshot('14-new-blank-editor')
-        guard(frame, 'blank-canvas')
-        click('editor_folder', frame, ['folder-control', 'editor-tools'])
-        frame = snapshot('15-reopen-menu')
-        click('open_project', frame, ['open-menu'])
-        native = await_native('16-reopen')
-        frame = choose_owned_path(native, project, '17-reopen', {'Open', '打开'})
-        frame = await_fixture(frame, '17-reopen')
-        reopened = image_info(frame)
-        guard(frame, 'opened-image-properties')
-        guard(frame, 'opened-image-zoom')
-        if not translated(imported, reopened, 0, 0):
-            raise Stop('reopened_fixture_geometry_not_preserved')
-        frame = edit_and_undo(frame, '18-reopened-edit')
-        report['stages']['reopen'] = {'visible_fixture': reopened, 'reopened_layer_editable': True,
-                                      'verdict': 'pending_independent_image_review'}
+            # These two exact cards are now personally reviewed in actual rev5.
+            click_gallery_card('blank', frame)
+            frame = snapshot('13-gallery-other-blank')
+            guard(frame, 'blank-canvas')
+            guard(frame, 'editor-tools')
+            click('editor_back', frame, ['back-control', 'editor-tools'])
+            frame = snapshot('14-gallery-after-other-document')
+            click_gallery_card('image', frame)
+            frame = await_fixture(frame, '15-gallery-reopen')
+            reopened = image_info(frame)
+            guard(frame, 'opened-image-properties')
+            guard(frame, 'opened-image-zoom')
+            if not translated(imported, reopened, 0, 0):
+                raise Stop('gallery_reopened_fixture_geometry_not_preserved')
+            frame = edit_and_undo(frame, '16-gallery-reopened-edit')
+            report['stages']['reopen'] = {'visible_fixture': reopened,
+                'different_blank_document_visibly_opened_first': True,
+                'restored_image_edit_and_Undo_observed': True,
+                'actual_project_file_verified': False, 'restart_persistence_verified': False,
+                'verdict': 'same_App_gallery_reopen_pending_independent_image_review'}
+            # The visible overlapping-page icon is not yet named: hover only.
+            command(['xdotool', 'mousemove', '--window', str(window), '1144', '60'])
+            pause()
+            frame = snapshot('17-secondary-project-control-hover')
+            command(['xdotool', 'mousemove', '--window', str(window), '100', '700'])
+        else:
+            frame = choose_owned_path(native, deliverables / 'qa-project', '11-save', {'Save', '保存'})
+            until = min(deadline, time.monotonic() + 10)
+            candidates = []
+            while time.monotonic() < until:
+                candidates = [p for p in deliverables.iterdir() if re.fullmatch(r'qa-project(?:\.[A-Za-z0-9_-]{1,16})?', p.name)]
+                if candidates:
+                    break
+                time.sleep(0.25)
+            if len(candidates) != 1:
+                raise Stop('one_exact_new_project_output_not_found')
+            project = candidates[0]
+            report['stages']['save'] = stable_file(project)
+            copy_owned_output(project, 'saved-project' + project.suffix)
+            # Leave the saved editor, create a visibly blank document, then reopen the exact saved file.
+            click('editor_back', frame, ['back-control', 'editor-tools'])
+            frame = snapshot('12-left-saved-editor')
+            click('new_project', frame, ['new-project'])
+            frame = snapshot('13-new-blank-dialog')
+            click('new_create', frame, ['create-dialog'])
+            frame = snapshot('14-new-blank-editor')
+            guard(frame, 'blank-canvas')
+            click('editor_folder', frame, ['folder-control', 'editor-tools'])
+            frame = snapshot('15-reopen-menu')
+            click('open_project', frame, ['open-menu'])
+            native = await_native('16-reopen')
+            frame = choose_owned_path(native, project, '17-reopen', {'Open', '打开'})
+            frame = await_fixture(frame, '17-reopen')
+            reopened = image_info(frame)
+            guard(frame, 'opened-image-properties')
+            guard(frame, 'opened-image-zoom')
+            if not translated(imported, reopened, 0, 0):
+                raise Stop('reopened_fixture_geometry_not_preserved')
+            frame = edit_and_undo(frame, '18-reopened-edit')
+            report['stages']['reopen'] = {'visible_fixture': reopened, 'reopened_layer_editable': True,
+                                          'verdict': 'pending_independent_image_review'}
         click('editor_export', frame, ['export-control', 'editor-tools', 'opened-image-properties', 'opened-image-zoom'])
         snapshot('19-export-destination', root=True)
-        # A normal export chooser may open directly, or the confirmed product destination appears first.
-        export_until = min(deadline, time.monotonic() + 12)
-        probes = 0
-        while not visible_windows() and time.monotonic() < export_until:
-            options = []
-            if probes < 3:
-                probes += 1
-                try:
-                    metadata = public_metadata(args.app_pid, '19-export-public-' + str(probes))
-                    options = [n for n in metadata['nodes'] if n.get('showing') and n.get('enabled')
-                               and n.get('label') in {'导出至其他文件夹', '导出到其他文件夹'}
-                               and n.get('button') and n.get('bounds')]
-                except Stop as exc:
-                    if not str(exc).startswith('public_accessibility_unavailable:'):
-                        raise
-            if len(options) > 1:
-                raise Stop('export_destination_semantics_ambiguous_no_blind_click')
-            if len(options) == 1:
-                bounds = options[0]['bounds']
-                wx, wy = int(fields['X']), int(fields['Y'])
-                if not (wx <= bounds['x'] < wx + 1280 and wy <= bounds['y'] < wy + 900
-                        and bounds['x'] + bounds['width'] <= wx + 1280 and bounds['y'] + bounds['height'] <= wy + 900):
-                    raise Stop('export_destination_outside_visible_App')
-                command(['xdotool', 'mousemove', str(bounds['x'] + bounds['width'] // 2), str(bounds['y'] + bounds['height'] // 2)])
-                command(['xdotool', 'click', '1'])
-                report['actions'].append({'kind': 'public-semantic-click', 'label': options[0]['label']})
-                break
-            time.sleep(0.5)
-        native = await_native('20-export')
+        native = await_native('20-export', allow_absence=True)
+        if native is None:
+            snapshot('20-export-App-destination-requires-review')
+            try:
+                public_metadata(args.app_pid, '20-export-public')
+            except Stop as exc:
+                report['export_destination_metadata'] = str(exc)
+            raise Stop('actual_export_destination_requires_review_before_output')
         export = deliverables / 'qa-export.png'
         frame = choose_owned_path(native, export, '21-export', {'Save', '保存', 'Export', '导出'})
         info = stable_file(export)

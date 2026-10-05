@@ -13,8 +13,9 @@ HEAD, build run/job and content hash before launch. Explicit source HEAD and
 artifact ID allow a reviewed test-only workflow revision to use the original App.
 The explicit workflow-observation stage instead uses its reviewed fixed script
 and helper, window ID, approvals and isolated-display flags without legacy args.
-The fresh-workbench-observation stage uses only its fixed script, exact candidate,
-window ID and approvals, with no client, fixture inputs or accessibility bus.
+The fresh-workbench-observation stage uses its fixed script and metadata helper,
+exact candidate, window ID, approvals and private accessibility bus, with no client
+or fixture inputs. Settings entry permanently ends pixel capture.
 QA receives the actual App source HEAD. This contract supports one App lifetime:
 QA must not launch another App,
 detach descendants, or move them into new process groups. This harness supplies
@@ -49,16 +50,17 @@ RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
 WORKFLOW_DIRECTORY = "independent-qa-workflow"
 WORKFLOW_SCRIPTS = {
-    "qa": ("independent-workflow-ui.py", "9f2b1ecd7df04668d43c3150df6cb36312564c177cc20647bcb88ed17aabda0b"),
+    "qa": ("independent-workflow-ui.py", "bbe11a02d958355b63330a4e76230922412632a63a6c2c770391021077e6ab5d"),
     "public_ui_probe": ("public_ui_probe.py", "d6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2"),
     "workflow_checks": ("workflow_checks.py", "93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853"),
-    "native_ui_action": ("native_ui_action.py", "3946eedb0774863e88a44c8651ac2cde03c4327e4a5636bfb27faa5d491de82a"),
+    "native_ui_action": ("native_ui_action.py", "f0061bf9f93ac5407a086403d508b4ce691d8369a4677638bdc56a7942e65dbc"),
 }
 WORKFLOW_PNG_NAMES = {
     name + ".png" for name in (
         "01-current-initial", "02-after-quick", "03-gallery", "04-create-dialog", "05-editor", "06-open-menu",
         "12-left-saved-editor", "13-new-blank-dialog", "14-new-blank-editor", "15-reopen-menu", "19-export-destination",
-        "12-save-gallery-requires-review",
+        "12-save-gallery", "13-gallery-other-blank", "14-gallery-after-other-document",
+        "17-secondary-project-control-hover", "20-export-App-destination-requires-review",
     )
 } | {
     phase + suffix + ".png"
@@ -70,31 +72,36 @@ WORKFLOW_PNG_NAMES = {
     for suffix in ("-returned-App", "-menu-closed", "-native-not-gone", "-native-chrome", "-location-visible")
 } | {
     phase + suffix + ".png"
-    for phase in ("09-edit", "18-reopened-edit") for suffix in ("-dragged", "-one-Undo")
+    for phase in ("09-edit", "16-gallery-reopened-edit", "18-reopened-edit") for suffix in ("-dragged", "-one-Undo")
 } | {
     phase + suffix + ".png"
-    for phase in ("08-import", "17-reopen")
+    for phase in ("08-import", "15-gallery-reopen", "17-reopen")
     for suffix in ("-fixture-visible-stable", "-fixture-not-confirmed-after-wait")
 }
 WORKFLOW_JSON_NAMES = {"workflow.json", "public-accessibility.json", "12-save-gallery-public.json"} | {
     phase + suffix + ".json"
     for phase in ("08-import", "11-save", "17-reopen", "21-export")
     for suffix in ("-public-before", "-public-location", "-public-before-accept")
-} | {"19-export-public-" + str(index) + ".json" for index in range(1, 4)}
+} | {"20-export-public.json"}
 WORKFLOW_FILE_LIMIT = 2 * 1024 * 1024
 WORKFLOW_PNG_LIMIT = 14 * 1024 * 1024
 WORKFLOW_METADATA_LIMIT = 128 * 1024
-NEXT_UI_SCRIPT = ("independent-next-ui.py", "acb109b038afd214b1e8106250d23b19aadfb34a9f004b1313079b160a3df4d2")
+NEXT_UI_SCRIPT = ("independent-next-ui.py", "0f6bea99d3ff0a8d9c884a697e416409b1dc89692ccf78d3dc118af9ca7af476")
+NEXT_UI_PROBE = ("public_probe_cecc8fd_ui2.py", "8db69027991a7fe49beb8f4515926b7fd932436c0034ccffd03d6a543f36954b")
 NEXT_UI_HEAD = "cecc8fdf9578675051dae58bda25f0ff805ce235"
 NEXT_UI_APP_SHA = "8859b10e7b8a58785d6a60454995f33d56efea554011825287917d06064aff55"
 NEXT_UI_BUILD_RUN = 37312315509
 NEXT_UI_ARTIFACT = "11345919609"
-NEXT_UI_DIRECTORY = "independent-qa-cecc8fd-ui1"
+NEXT_UI_DIRECTORY = "independent-qa-cecc8fd-ui2"
 NEXT_UI_PNG_NAMES = {
     "01-before-quick.png", "02-after-quick-1280x900.png",
-    "03-workbench-1024x900.png", "03-workbench-1440x900.png",
-    "04-sidebar-hover-170.png", "05-sidebar-hover-227.png", "06-sidebar-hover-285.png",
-    "07-sidebar-hover-748.png", "08-sidebar-hover-805.png",
+    "03-workbench-Tab.png", "04-workbench-ShiftTab.png",
+    "05-after-canvas-navigation.png", "06-after-clip-navigation.png", "07-after-assets-navigation.png",
+}
+NEXT_UI_JSON_NAMES = {
+    "navigation.json", "03-workbench-tab-public.json", "04-workbench-shifttab-public.json",
+    "08-settings-public.json", "09-settings-tab-public.json", "10-settings-shifttab-public.json",
+    "11-settings-after-escape-public.json",
 }
 WORKFLOW_FIXTURE_MANIFEST = "8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7"
 WORKFLOW_FIXTURES = {
@@ -318,9 +325,9 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                     elif entry.name in NEXT_UI_PNG_NAMES:
                         png_count += 1
                         png_bytes += info.st_size
-                        if png_count > 9 or info.st_size > WORKFLOW_FILE_LIMIT or png_bytes > WORKFLOW_PNG_LIMIT:
+                        if png_count > 7 or info.st_size > WORKFLOW_FILE_LIMIT or png_bytes > WORKFLOW_PNG_LIMIT:
                             raise ValueError("fresh workbench PNG count or byte budget exceeded")
-                    elif entry.name == "navigation.json":
+                    elif entry.name in NEXT_UI_JSON_NAMES:
                         if info.st_size > WORKFLOW_METADATA_LIMIT:
                             raise ValueError("fresh workbench metadata exceeds 128 KiB")
                     else:
@@ -369,6 +376,67 @@ def verify_private_accessibility_bus(env):
         raise ValueError("private accessibility bus requires a direct dbus-run-session parent")
 
 
+def enable_private_accessibility(env, deadline, result):
+    """Prepare only the attested fresh-stage bus before any App process exists."""
+    state = {"status": "unavailable", "before": None, "after": None,
+             "screen_reader_enabled": None}
+    result["accessibility_preparation"] = state
+    left = deadline - time.monotonic()
+    if left <= 0:
+        state["status"] = "deadline"
+        raise ValueError("private accessibility preparation deadline")
+    program = '''import json
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+state = {"status": "unavailable", "before": None, "after": None, "screen_reader_enabled": None}
+try:
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    def get(name):
+        reply = bus.call_sync("org.a11y.Bus", "/org/a11y/bus", "org.freedesktop.DBus.Properties", "Get",
+            GLib.Variant("(ss)", ("org.a11y.Status", name)), GLib.VariantType.new("(v)"),
+            Gio.DBusCallFlags.NONE, 1000, None)
+        value = reply.unpack()[0]
+        if type(value) is not bool:
+            raise ValueError("non_boolean")
+        return value
+    state["before"] = get("IsEnabled")
+    state["screen_reader_enabled"] = get("ScreenReaderEnabled")
+    bus.call_sync("org.a11y.Bus", "/org/a11y/bus", "org.freedesktop.DBus.Properties", "Set",
+        GLib.Variant("(ssv)", ("org.a11y.Status", "IsEnabled", GLib.Variant("b", True))),
+        GLib.VariantType.new("()"), Gio.DBusCallFlags.NONE, 1000, None)
+    state["after"] = get("IsEnabled")
+    state["status"] = "verified" if state["after"] is True else "not_enabled"
+except Exception:
+    pass
+print(json.dumps(state))
+'''
+    try:
+        completed = subprocess.run(["/usr/bin/python3", "-B", "-c", program], env=env,
+                                   capture_output=True, timeout=min(5, left), check=False)
+    except subprocess.TimeoutExpired:
+        state["status"] = "timeout"
+        raise ValueError("private accessibility preparation timed out") from None
+    except OSError:
+        raise ValueError("private accessibility preparation unavailable") from None
+    try:
+        data = json.loads(completed.stdout) if len(completed.stdout) <= 1024 else None
+        if (completed.returncode != 0 or not isinstance(data, dict) or set(data) != set(state)
+                or data["status"] not in {"verified", "unavailable", "not_enabled"}
+                or any(data[key] is not None and type(data[key]) is not bool
+                       for key in ("before", "after", "screen_reader_enabled"))):
+            raise ValueError("invalid preparation result")
+        state.update(data)
+    except (ValueError, TypeError):
+        raise ValueError("private accessibility preparation unavailable") from None
+    if time.monotonic() >= deadline:
+        state["status"] = "deadline"
+        raise ValueError("private accessibility preparation deadline")
+    if (state["status"] != "verified" or state["after"] is not True
+            or type(state["before"]) is not bool or type(state["screen_reader_enabled"]) is not bool):
+        raise ValueError("private accessibility preparation not verified")
+
+
 def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_deadline):
     command = [sys.executable, str(copied["qa"]), "--app-pid", str(app_pid),
                "--work-dir", str(work), "--output", str(output),
@@ -379,7 +447,8 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
             command.extend(("--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
     elif args.next_stage == "fresh-workbench-observation":
         command.extend(("--window-id", str(window_id), "--expected-sha", source_head,
-                        "--next-stage", "navigation"))
+                        "--next-stage", "navigation", "--private-accessibility-bus",
+                        "--probe-python", "/usr/bin/python3"))
     else:
         command.extend(("--client-binary", str(copied["client"]),
                         "--expected-sha", source_head, "--next-stage", args.next_stage))
@@ -406,7 +475,7 @@ def arguments():
     parser.add_argument("--isolated-display-capture", action="store_true",
                         help="Explicit isolated-display declaration for reviewed observation stages")
     parser.add_argument("--private-accessibility-bus", action="store_true",
-                        help="workflow-observation only; requires a direct dedicated dbus-run-session parent")
+                        help="workflow/fresh observation only; requires a direct dedicated dbus-run-session parent")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     args = parser.parse_args()
     capture_stages = {"image-picker-observation", "workflow-observation", "fresh-workbench-observation"}
@@ -414,8 +483,8 @@ def arguments():
         parser.error(args.next_stage + " requires --isolated-display-capture")
     if args.isolated_display_capture and args.next_stage not in capture_stages:
         parser.error("--isolated-display-capture requires an authorized observation stage")
-    if args.private_accessibility_bus and args.next_stage != "workflow-observation":
-        parser.error("--private-accessibility-bus is only valid for workflow-observation")
+    if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation"}:
+        parser.error("--private-accessibility-bus is only valid for workflow/fresh observation")
     if args.input_dir is not None and args.next_stage != "workflow-observation":
         parser.error("--input-dir is only valid for workflow-observation")
     if args.next_stage == "workflow-observation":
@@ -425,6 +494,8 @@ def arguments():
                     args.candidate_manifest, args.candidate_artifact_id, args.input_dir)):
             parser.error("workflow-observation requires exact candidate provenance, declarations and owned fixtures")
     if args.next_stage == "fresh-workbench-observation":
+        if not args.private_accessibility_bus:
+            parser.error("fresh-workbench-observation requires --private-accessibility-bus")
         if args.seconds != 300 or args.client_binary is not None:
             parser.error("fresh-workbench-observation requires 300 seconds and no MCP client")
         if not all((args.identity_approval, args.ui_approval, args.candidate_manifest)):
@@ -544,6 +615,7 @@ def main():
         elif args.next_stage == "fresh-workbench-observation":
             if sources["qa"] != root / "scripts" / NEXT_UI_SCRIPT[0]:
                 raise ValueError("fresh-workbench-observation requires the fixed reviewed QA script")
+            sources["next_ui_probe"] = regular_input(root / "scripts" / NEXT_UI_PROBE[0])
         if args.client_binary is not None:
             if not Path(args.client_binary).is_absolute():
                 raise ValueError("--client-binary must be absolute")
@@ -570,6 +642,8 @@ def main():
             for name, (filename, _digest) in WORKFLOW_SCRIPTS.items():
                 if name != "qa":
                     copied[name] = work / filename
+        elif args.next_stage == "fresh-workbench-observation":
+            copied["next_ui_probe"] = work / NEXT_UI_PROBE[0]
         hashes = {name: copy_and_hash(source, copied[name], executable=name in {"app", "client"},
                                       limit=APP_LIMIT if name == "app" else None)
                   for name, source in sources.items()}
@@ -582,6 +656,8 @@ def main():
         elif args.next_stage == "fresh-workbench-observation":
             if hashes["qa"] != NEXT_UI_SCRIPT[1]:
                 raise ValueError("fresh workbench script differs from its reviewed SHA256")
+            if hashes["next_ui_probe"] != NEXT_UI_PROBE[1]:
+                raise ValueError("fresh workbench helper differs from its reviewed SHA256")
         if candidate is not None:
             if (hashes["app"] != candidate["app_sha256"]
                     or copied["app"].stat().st_size != candidate["app_bytes"]):
@@ -624,6 +700,9 @@ def main():
                       limits={"artifact_total_bytes": ARTIFACT_LIMIT,
                               "wall_seconds": args.seconds, "cleanup_reserve_seconds": 15,
                               "log_bytes_per_process": LOG_LIMIT})
+        if args.next_stage == "fresh-workbench-observation":
+            phase = "accessibility_preparation"
+            enable_private_accessibility(env, qa_deadline, result)
         phase = "launch"
         app = spawn([str(copied["app"])], work, env)
         processes.append(app)

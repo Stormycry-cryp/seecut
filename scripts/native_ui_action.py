@@ -65,7 +65,7 @@ def main():
             raise ValueError('exact_reviewed_native_contract_required')
         ui = json.loads(args.ui_approval.read_text())
         if (ui.get('schema') != 2 or ui.get('reviewed_by') != 'independent-qa'
-                or ui.get('workflow_revision') != 5 or ui.get('observed_head') != 'ef1831769d52daceb1f38bcd15679c61f595408d'
+                or ui.get('workflow_revision') != 6 or ui.get('observed_head') != 'ef1831769d52daceb1f38bcd15679c61f595408d'
                 or ui.get('observed_app_sha256') != 'a734649f619c317e5d051b0d98b5d590f8ee7db8cddfaa437d19fe4143b8db67'
                 or ui.get('native_action_sha256') != hashlib.sha256(Path(__file__).read_bytes()).hexdigest()):
             raise ValueError('native_contract_identity_mismatch')

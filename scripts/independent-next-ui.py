@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""One reviewed mode click, three workbench sizes and five sidebar hovers.
+"""Reviewed navigation and safe Settings/control/focus observation.
 
-No App/client launch, Settings entry, hidden control clicks or project mutation.
+Seven App PNGs before Settings only; no Settings pixels, values or UI grants.
+Theme controls are discovered through bounded public metadata, never activated.
 """
 import argparse
 import hashlib
@@ -40,15 +41,19 @@ def main():
     parser.add_argument('--client-binary', type=Path)  # Launcher compatibility; never accessed/launched.
     parser.add_argument('--next-stage', choices=['navigation'], default='navigation')
     parser.add_argument('--isolated-display-capture', action='store_true')
+    parser.add_argument('--private-accessibility-bus', action='store_true')
+    parser.add_argument('--probe-python', default='/usr/bin/python3')
     args = parser.parse_args()
     start = time.monotonic()
-    deadline = min(args.deadline_monotonic - 15, start + 45)
+    deadline = min(args.deadline_monotonic - 15, start + 90)
     evidence = None
-    report = {'phase': 'cecc8fd-fresh-workbench-observation', 'status': 'blocked',
+    settings_pixels_forbidden = False
+    report = {'phase': 'cecc8fd-navigation-settings-observation', 'status': 'blocked',
               'source_head': HEAD, 'product_verdict': 'pending_independent_actual_image_review',
               'actions': [], 'captures': [], 'client_started': False,
               'permissions_granted': False, 'project_created': False,
-              'paid_action_requested': False, 'settings_entered': False,
+              'paid_action_requested': False, 'settings_entered': False, 'settings_entry_attempted': False,
+              'settings_pixels_captured': False, 'theme_changed': False, 'public_probe_results': [],
               'cleanup_owner': 'launcher; whole App run including cleanup <=300 seconds'}
 
     def command(argv, binary=False):
@@ -67,6 +72,8 @@ def main():
         time.sleep(0.7)
 
     def snapshot(name):
+        if settings_pixels_forbidden:
+            raise Stop('Settings_pixels_permanently_forbidden')
         path = evidence / (name + '.png')
         if path.exists():
             raise Stop('capture_path_already_exists')
@@ -101,10 +108,62 @@ def main():
             raise Stop('mode_guard_RGB_size_differs')
         return hashlib.sha256(raw).hexdigest()
 
+    def matched_guard(frame, name):
+        spec = ui['guards'][name]
+        x, y, width, height = spec['region']
+        raw = command(['convert', str(frame), '-crop', f'{width}x{height}+{x}+{y}',
+                       '+repage', '-alpha', 'off', '-depth', '8', 'rgb:-'], binary=True)
+        digest = hashlib.sha256(raw).hexdigest()
+        report.setdefault('guards', []).append({'frame': frame.name, 'control': name, 'RGB_sha256': digest})
+        if len(raw) != width * height * 3 or digest != spec['rgb_sha256']:
+            raise Stop('current_navigation_control_differs:' + name)
+
+    def ensure_main_focus():
+        if int(command(['xdotool', 'getwindowpid', str(window)]).strip()) != args.app_pid:
+            raise Stop('App_window_identity_changed')
+        if int(command(['xdotool', 'getwindowfocus']).strip()) != window:
+            raise Stop('focus_outside_reviewed_App_no_key_or_click')
+
+    def key(name):
+        ensure_main_focus()
+        command(['xdotool', 'key', '--clearmodifiers', name])
+        report['actions'].append({'kind': 'key', 'key': name, 'meaning': 'actual_focus_or_dialog_observation'})
+        pause()
+
+    def click_navigation(target, frame):
+        matched_guard(frame, 'nav-' + target)
+        ensure_main_focus()
+        x, y = ui['navigation_targets'][target]
+        command(['xdotool', 'mousemove', '--window', str(window), str(x), str(y)])
+        command(['xdotool', 'click', '1'])
+        report['actions'].append({'kind': 'click', 'target': target, 'xy': [x, y]})
+        command(['xdotool', 'mousemove', '--window', str(window), '100', '700'])
+        pause()
+
+    def probe(name, required=False):
+        until = min(deadline, time.monotonic() + 3)
+        try:
+            completed = subprocess.run([args.probe_python, '-B', str(helper), '--app-pid', str(args.app_pid),
+                '--owned-root-pid', str(args.app_pid), '--output', str(evidence), '--output-name', name.lower() + '.json',
+                '--deadline-monotonic', str(until), '--private-accessibility-bus'], capture_output=True,
+                timeout=min(5, max(0.25, deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            raise Stop('public_probe_timeout_no_retry') from None
+        path = evidence / (name.lower() + '.json')
+        data = {}
+        if path.is_file() and not path.is_symlink() and path.stat().st_size <= 128 * 1024:
+            data = json.loads(path.read_text())
+        valid = completed.returncode == 0 and data.get('coverage_complete') and data.get('status') == 'public_metadata_observed'
+        report['public_probe_results'].append({'file': path.name, 'complete': bool(valid),
+            'focused_nodes': [{k: n.get(k) for k in ('path', 'label', 'role', 'showing')} for n in data.get('nodes', []) if n.get('focused')]})
+        if required and not valid:
+            raise Stop('public_settings_metadata_incomplete_no_further_input')
+        return data
+
     try:
         if args.expected_sha != HEAD or args.app_pid < 2 or deadline <= start:
             raise Stop('exact_candidate_and_live_deadline_required')
-        if not args.isolated_display_capture or not os.environ.get('DISPLAY'):
+        if not args.isolated_display_capture or not args.private_accessibility_bus or not os.environ.get('DISPLAY'):
             raise Stop('private_QA_display_attestation_required')
         runtime, runtime_sha = read_declaration(args.identity_approval)
         ui, ui_sha = read_declaration(args.ui_approval)
@@ -114,12 +173,15 @@ def main():
             raise Stop('main_exact_runtime_identity_required')
         if (ui.get('schema') != 1 or ui.get('reviewed_by') != 'independent-qa'
                 or ui.get('observed_head') != HEAD or ui.get('observed_app_sha256') != APP_SHA
-                or ui.get('stage') != 'fresh-workbench-observation'
+                or ui.get('stage') != 'navigation-settings-observation'
                 or ui.get('window') != {'width': 1280, 'height': 900}
                 or ui.get('quick_mode') != [558, 500]
-                or ui.get('hover_targets') != [[40, 170], [40, 227], [40, 285], [40, 748], [40, 805]]
+                or ui.get('navigation_targets') != {'canvas': [40, 170], 'clip': [40, 227], 'assets': [40, 285], 'settings': [40, 805]}
                 or ui.get('mode_guard', {}).get('region') != [420, 388, 520, 155]):
             raise Stop('independent_current_UI_declaration_required')
+        helper = Path(__file__).with_name('public_probe_cecc8fd_ui2.py')
+        if not helper.is_file() or hashlib.sha256(helper.read_bytes()).hexdigest() != ui.get('public_probe_sha256'):
+            raise Stop('reviewed_public_probe_SHA_required')
         for path in (args.work_dir, args.output):
             if not path.is_absolute() or path.is_symlink() or not path.is_dir() or path.stat().st_uid != os.getuid():
                 raise Stop('explicit_owned_isolated_directory_required')
@@ -151,7 +213,7 @@ def main():
             window = args.window_id
         if str(window) not in command(['xdotool', 'search', '--onlyvisible', '--pid', str(args.app_pid)]).split():
             raise Stop('explicit_App_window_not_visible')
-        new_evidence = args.output / 'independent-qa-cecc8fd-ui1'
+        new_evidence = args.output / 'independent-qa-cecc8fd-ui2'
         new_evidence.mkdir(mode=0o700)
         evidence = new_evidence
         geometry(1280)
@@ -168,15 +230,47 @@ def main():
         after = snapshot('02-after-quick-1280x900')
         if modal_digest(after) == ui['mode_guard']['rgb_sha256']:
             raise Stop('reviewed_mode_dialog_still_visible')
-        for width in (1024, 1440):
-            geometry(width)
-            snapshot('03-workbench-' + str(width) + 'x900')
-        geometry(1280)
-        for index, (x, y) in enumerate(ui['hover_targets'], 4):
-            command(['xdotool', 'mousemove', '--window', str(window), str(x), str(y)])
-            report['actions'].append({'kind': 'hover', 'xy': [x, y], 'label': 'unknown_until_actual_review'})
-            pause()
-            snapshot(f'{index:02d}-sidebar-hover-{y}')
+        # No activation keys: only inspect real focus and its reverse traversal.
+        key('Tab')
+        frame = snapshot('03-workbench-Tab')
+        probe('03-workbench-Tab-public')
+        key('shift+Tab')
+        frame = snapshot('04-workbench-ShiftTab')
+        probe('04-workbench-ShiftTab-public')
+        for index, target in enumerate(('canvas', 'clip', 'assets'), 5):
+            click_navigation(target, frame)
+            frame = snapshot(f'{index:02d}-after-' + target + '-navigation')
+        # The actual hover identified Settings. Entry is the final pixel action.
+        # Set the prohibition BEFORE input; even a timeout cannot permit a screenshot.
+        matched_guard(frame, 'nav-settings')
+        ensure_main_focus()
+        settings_pixels_forbidden = True
+        report['settings_entry_attempted'] = True
+        command(['xdotool', 'mousemove', '--window', str(window), '40', '805'])
+        command(['xdotool', 'click', '1'])
+        report['actions'].append({'kind': 'click', 'target': 'actual_Settings_entry', 'xy': [40, 805]})
+        command(['xdotool', 'mousemove', '--window', str(window), '100', '700'])
+        pause()
+        metadata = probe('08-settings-public', required=True)
+        context_labels = {'主题', '外观', '通用', '常规', '工作模式', '本地 Agent 权限',
+                          'General', 'Appearance', 'Theme', 'Local Agent Permissions'}
+        if not any(n.get('showing') and n.get('label') in context_labels for n in metadata['nodes']):
+            raise Stop('Settings_context_not_publicly_identified_no_more_keys')
+        report['settings_entered'] = True
+        report['theme_candidates'] = [{k: n.get(k) for k in ('path', 'label', 'role', 'showing', 'enabled',
+            'sensitive', 'selected', 'checked', 'action_interface')} for n in metadata['nodes']
+            if n.get('showing') and n.get('label') in {'浅色', '深色', '跟随系统', '系统', 'Light', 'Dark', 'System'}]
+        # Safe observation only; names/bounds do not authorize theme changes.
+        key('Tab')
+        probe('09-settings-Tab-public', required=True)
+        key('shift+Tab')
+        metadata = probe('10-settings-ShiftTab-public', required=True)
+        if any(n.get('showing') and n.get('dialog') for n in metadata['nodes']):
+            key('Escape')
+            probe('11-settings-after-Escape-public', required=True)
+            report['Settings_Escape'] = 'one_key_on_publicly_observed_dialog; actual_close/focus_requires_review'
+        else:
+            report['Settings_Escape'] = 'not_sent_no_public_dialog_evidence'
         report['status'] = 'finite_observation_completed_review_pending'
     except (Stop, OSError, ValueError, KeyError, TypeError) as exc:
         report['blocking_reason'] = str(exc) if isinstance(exc, Stop) else 'public_runtime_unavailable_raw_error_withheld'
