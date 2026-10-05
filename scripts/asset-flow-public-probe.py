@@ -54,7 +54,7 @@ SAFE_LABELS = SAFE_LABELS | frozenset(
 
 TRANSIENT_INTERFACE_CODES = frozenset((
     'probe_node_state_set_missing', 'probe_node_interfaces_missing',
-    'probe_node_action_iface_missing'))
+    'probe_node_action_iface_missing','probe_node_defunct'))
 
 
 class ProbeInterfaceUnavailable(RuntimeError):
@@ -170,8 +170,25 @@ def collect(app_pid, deadline):
             states = node.get_state_set()
             if states is None:
                 raise ProbeInterfaceUnavailable('probe_node_state_set_missing')
+            if states.contains(Atspi.StateType.DEFUNCT):
+                raise ProbeInterfaceUnavailable('probe_node_defunct')
             stage='node_role'
-            role = node.get_role()
+            try:
+                role = node.get_role()
+            except RuntimeError:
+                # A RuntimeError alone is never recoverable. Confirm DEFUNCT
+                # through state only; do not inspect the original error text.
+                if time.monotonic() >= deadline:
+                    raise
+                try:
+                    current_states = node.get_state_set()
+                    defunct = (current_states is not None
+                               and current_states.contains(Atspi.StateType.DEFUNCT))
+                except Exception:
+                    defunct = False
+                if defunct:
+                    raise ProbeInterfaceUnavailable('probe_node_defunct') from None
+                raise
             skip_children = role in (Atspi.Role.TABLE, Atspi.Role.TREE, Atspi.Role.TREE_TABLE,
                                      Atspi.Role.LIST, Atspi.Role.DIRECTORY_PANE)
             stage='node_interfaces'

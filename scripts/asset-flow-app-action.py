@@ -34,7 +34,7 @@ SAFE_REASONS = frozenset((
     'public_accessibility_unavailable','public_accessibility_deadline',
     'ambiguous_public_app_root','target_not_exposed_by_public_accessibility',
     'probe_node_state_set_missing','probe_node_interfaces_missing','probe_node_action_iface_missing',
-    'probe_node_interfaces_invalid','post_edit_probe_transient_exhausted',
+    'probe_node_interfaces_invalid','probe_node_defunct','post_edit_probe_transient_exhausted',
     'post_edit_probe_deadline','unknown_probe_transient_code'))
 
 
@@ -47,12 +47,12 @@ def safe_reason(exc):
 
 POST_EDIT_TRANSIENT_CODES = frozenset((
     'probe_node_state_set_missing','probe_node_interfaces_missing',
-    'probe_node_action_iface_missing'))
+    'probe_node_action_iface_missing','probe_node_defunct'))
 
 
 def stable_post_edit(probe, pid, end, focus, validate, record,
                      now=time.monotonic, wait=time.sleep):
-    """At most three READ-ONLY samples, only mandatory interface None is recoverable.
+    """At most three READ-ONLY samples, only exact None or confirmed DEFUNCT recovers.
 
     Every collect takes a new current App root; no input/click/Action or cached
     snapshot is replayed. Unknown errors, incomplete coverage and failed target

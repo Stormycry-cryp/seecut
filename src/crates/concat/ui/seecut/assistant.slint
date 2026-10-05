@@ -245,10 +245,10 @@ export component AssistantPanel inherits Rectangle {
                 padding: 12px;
                 spacing: 12px;
                 alignment: start;
-                if root.connection != "": AssistantText { text: root.connection; color: Theme.fg-muted; }
-                if root.status != "": AssistantText { text: root.status; color: root.unknown ? Theme.danger : Theme.fg; }
-                if root.unknown && root.status == "": AssistantText { text: "操作结果待核实"; color: Theme.danger; }
-                if root.details != "": VerticalLayout {
+                if !root.settings-open && root.connection != "": AssistantText { text: root.connection; color: Theme.fg-muted; }
+                if !root.settings-open && root.status != "": AssistantText { text: root.status; color: root.unknown ? Theme.danger : Theme.fg; }
+                if !root.settings-open && root.unknown && root.status == "": AssistantText { text: "操作结果待核实"; color: Theme.danger; }
+                if !root.settings-open && root.details != "": VerticalLayout {
                     spacing: 4px;
                     AppButton { label: root.details-open ? "收起详情" : "查看详情"; subtle: true; height: 36px; clicked => { root.details-open = !root.details-open; } }
                     if root.details-open: AssistantText { text: root.details; color: Theme.fg-muted; }
@@ -336,6 +336,16 @@ export component AssistantPanel inherits Rectangle {
                             if root.connected { root.disconnect(); }
                             else if root.connect-ready { root.connect(root.service-url, root.model-name, root.session-api-key, root.images); }
                         }
+                    }
+                    // Asynchronous connection feedback must not move the inputs
+                    // or the connection button while the user is targeting them.
+                    if root.connection != "": AssistantText { text: root.connection; color: Theme.fg-muted; }
+                    if root.status != "": AssistantText { text: root.status; color: root.unknown ? Theme.danger : Theme.fg; }
+                    if root.unknown && root.status == "": AssistantText { text: "操作结果待核实"; color: Theme.danger; }
+                    if root.details != "": VerticalLayout {
+                        spacing: 4px;
+                        AppButton { label: root.details-open ? "收起详情" : "查看详情"; subtle: true; height: 36px; clicked => { root.details-open = !root.details-open; } }
+                        if root.details-open: AssistantText { text: root.details; color: Theme.fg-muted; }
                     }
                     Rectangle { height: 1px; background: Theme.line; }
                     AppButton { label: root.advanced-open ? "收起本地助手组件" : "本地助手组件"; subtle: true; height: 36px; clicked => { root.advanced-open = !root.advanced-open; } }
