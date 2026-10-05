@@ -296,6 +296,74 @@ NATIVE_SCOPES.update({'assistant-config-observation': {'scripts': {'qa': ['agent
                                                                                     '04-close-assistant-action.json'],
                                                                          'other': ['agent-config.json']}}}})
 
+NATIVE_SCOPES.update({'assets-import': {'scripts': {'qa': ['asset-clip-assets-controller.py',
+                                      'c636176895cf36115c396854296ee57a4cff9d6fcaa1b95d588443f1235587e1'],
+                               'native_public_probe': ['asset-clip-public-probe.py',
+                                                       'a4c7f841a3bc091c6aa9fced8b9f7c9e04618997db32d8526169c80274067c38'],
+                               'native_action': ['asset-clip-native-action.py',
+                                                 'd06bfe6d3df84bb7d2145f69ff8c1180bb1a27875f694e0934816c26ee2abd46']},
+                   'ui': ['asset-clip-assets-import-ui.json',
+                          'd461489d9bb723b4aed85722f26eaad235a972a2fab80ee8f273ce6cdcf51329'],
+                   'next_stage': None,
+                   'artifacts': {'main-qa-asset-clip-assets-import': {'png': ['01-after-quick.png',
+                                                                              '02-page.png',
+                                                                              '03-native-observed.png',
+                                                                              '03-app-unknown-result.png',
+                                                                              '04-native-location.png',
+                                                                              '06-native-still-visible.png',
+                                                                              '06-assets-import-result.png'],
+                                                                      'public': ['01-after-quick-prepixels-public.json',
+                                                                                 '01-after-quick-public.json',
+                                                                                 '02-before-navigation-public.json',
+                                                                                 '02-page-public.json',
+                                                                                 '02-page-target-public.json',
+                                                                                 '02-target-recheck-public.json',
+                                                                                 '03-native-observed-public.json',
+                                                                                 '03-app-unknown-result-public.json',
+                                                                                 '04-native-before-public.json',
+                                                                                 '04-native-location-public.json',
+                                                                                 '05-native-location-public.json',
+                                                                                 '05-native-before-accept-public.json',
+                                                                                 '06-native-still-visible-public.json',
+                                                                                 '06-assets-import-result-public.json'],
+                                                                      'action': ['05-native-set-location-action.json',
+                                                                                 '05-native-accept-action.json'],
+                                                                      'other': ['asset-clip-report.json']}},
+                   'artifact_JSON_limits': {'public_metadata_each': 131072,
+                                            'native_action_each': 8192,
+                                            'report_each': 16384},
+                   'fixture': {'source': 'scripts/qa-fixtures/opaque-quadrants.png',
+                               'destination_directory': 'asset-clip-inputs',
+                               'basename': 'opaque-quadrants.png',
+                               'bytes': 800,
+                               'sha256': '0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63',
+                               'launcher_argument': ['--input-dir', '<work>/asset-clip-inputs'],
+                               'copy_policy': 'Register and copy only for assets-import, mkdir0700 then '
+                                              'exact regular fixture copy0600; validate only one file. Other '
+                                              'native scopes keep fixture/input-dir forbidden.'}},
+ 'clip-create-observation': {'scripts': {'qa': ['asset-clip-clip-controller.py',
+                                                '01003a99989cc03d986ae46eccef719d52c1cffd829451b4b8553bc5e1091e27'],
+                                         'native_public_probe': ['public_probe_11ebf20_ui4.py',
+                                                                 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd']},
+                             'ui': ['asset-clip-clip-create-observation-ui.json',
+                                    '2e00eb06a48e2c2069e9a7358e7b4149e22cd0027d027c728b55ceb012e7785b'],
+                             'next_stage': None,
+                             'artifacts': {'main-qa-asset-clip-clip-create-observation': {'png': ['01-after-quick.png',
+                                                                                                  '02-page.png',
+                                                                                                  '03-new-clip-dialog-observed.png'],
+                                                                                          'public': ['01-after-quick-prepixels-public.json',
+                                                                                                     '01-after-quick-public.json',
+                                                                                                     '02-before-navigation-public.json',
+                                                                                                     '02-page-public.json',
+                                                                                                     '02-page-target-public.json',
+                                                                                                     '02-target-recheck-public.json',
+                                                                                                     '03-new-clip-dialog-observed-public.json'],
+                                                                                          'action': [],
+                                                                                          'other': ['asset-clip-report.json']}},
+                             'artifact_JSON_limits': {'public_metadata_each': 131072,
+                                                      'native_action_each': 8192,
+                                                      'report_each': 16384}}})
+
 WORKFLOW_FIXTURE_MANIFEST = "8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7"
 WORKFLOW_FIXTURES = {
     "opaque-quadrants.png": (800, "0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63"),
@@ -429,6 +497,25 @@ def copy_workflow_fixtures(source, work):
             raise ValueError("copied fixture differs from its reviewed identity")
         hashes[name] = digest
     return destination, hashes
+
+
+def copy_assets_fixture(source, work):
+    """Only assets-import receives one copied synthetic PNG."""
+    if (not source.is_absolute() or source.is_symlink() or not source.is_dir()
+            or source.stat().st_uid != os.getuid()):
+        raise ValueError('exact owned fixture directory required')
+    fixture = source / 'opaque-quadrants.png'
+    info = fixture.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or info.st_uid != os.getuid() or info.st_size != 800):
+        raise ValueError('exact ordinary 800-byte assets fixture required')
+    destination = work / 'asset-clip-inputs'
+    destination.mkdir(mode=0o700)
+    digest = copy_and_hash(fixture, destination / fixture.name, limit=800)
+    expected = NATIVE_SCOPES['assets-import']['fixture']['sha256']
+    if digest != expected:
+        raise ValueError('assets fixture SHA256 changed')
+    return destination, {fixture.name: digest}
 
 
 def spawn(command, work, env):
@@ -694,6 +781,8 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
                         "--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
         if native["next_stage"] is not None:
             command.extend(("--next-stage", native["next_stage"]))
+        if args.next_stage == 'assets-import':
+            command.extend(('--input-dir', str(copied['input_dir'])))
     elif args.next_stage in A2_SCOPES:
         command[command.index("--deadline-monotonic") + 1] = str(
             min(qa_deadline, time.monotonic() + A2_CONTROLLER_SECONDS + 15))
@@ -736,8 +825,8 @@ def arguments():
         parser.error("--isolated-display-capture requires an authorized observation stage")
     if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES}:
         parser.error("--private-accessibility-bus is only valid for workflow/fresh observation")
-    if args.input_dir is not None and args.next_stage != "workflow-observation":
-        parser.error("--input-dir is only valid for workflow-observation")
+    if args.input_dir is not None and args.next_stage not in ('workflow-observation', 'assets-import'):
+        parser.error('--input-dir is only valid for reviewed workflow or assets fixture scopes')
     if args.next_stage == "workflow-observation":
         if not args.private_accessibility_bus:
             parser.error("workflow-observation requires --private-accessibility-bus")
@@ -769,8 +858,10 @@ def arguments():
     if args.next_stage in NATIVE_SCOPES:
         if not args.private_accessibility_bus:
             parser.error("native observation requires --private-accessibility-bus")
-        if args.seconds != 300 or args.client_binary is not None or args.input_dir is not None:
-            parser.error("native observation requires 300 seconds, no MCP client and no fixture inputs")
+        if args.seconds != 300 or args.client_binary is not None:
+            parser.error('native observation requires 300 seconds and no MCP client')
+        if (args.next_stage == 'assets-import') != (args.input_dir is not None):
+            parser.error('only assets-import requires the exact single fixture input directory')
         if not all((args.identity_approval, args.ui_approval, args.source_head,
                     args.candidate_manifest, args.candidate_artifact_id)):
             parser.error("native observation requires exact candidate provenance and both declarations")
@@ -955,6 +1046,11 @@ def main():
                                       limit=(APP_LIMIT if name == "app" else
                                              (64 * 1024 if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES or args.next_stage in NATIVE_SCOPES else None)))
                   for name, source in sources.items()}
+        if args.next_stage == 'assets-import':
+            if Path(args.input_dir) != root / 'scripts' / 'qa-fixtures':
+                raise ValueError('assets-import requires the checked-out fixed fixture directory')
+            copied['input_dir'], fixture_hashes = copy_assets_fixture(Path(args.input_dir), work)
+            result['input_fixture_sha256'] = fixture_hashes
         if args.next_stage == "workflow-observation":
             for name, (_filename, digest) in WORKFLOW_SCRIPTS.items():
                 if hashes[name] != digest:
