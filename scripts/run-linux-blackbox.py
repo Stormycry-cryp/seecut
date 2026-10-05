@@ -51,17 +51,17 @@ SENSITIVE = re.compile(rb"token|authorization|credential|password|secret|bearer"
 RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
 WORKFLOW_DIRECTORY = "independent-qa-workflow"
-WORKFLOW_HEAD = "11ebf203e1a78d3b6a21677c4b17e96223c74b0e"
-WORKFLOW_APP_SHA = "8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30"
-WORKFLOW_BUILD_RUN = 37328783317
-WORKFLOW_ARTIFACT = "11355501142"
-WORKFLOW_UI = ("reviewed-ui-11ebf20-workflow-r7.json", "f1522568a836931901308570484bff904ddea1771641c15c4652278b5edba2d1")
-WORKFLOW_IDENTITY_SHA = "2b94fc606a46d7d0df43ea2d07a29e5a3b5075253521a201e65d264ee5933574"
+WORKFLOW_HEAD = 'a6cf09ad935bbbc6cf792c4ac6a4b506a47aebd3'
+WORKFLOW_APP_SHA = 'b7ec5fc769d09e3685f212cd96484dfbb0858e9edb649d1314877a5f0a86f852'
+WORKFLOW_BUILD_RUN = 37340470010
+WORKFLOW_ARTIFACT = '11359607955'
+WORKFLOW_UI = ('style-workflow-ui.json', '0259955a83ece9bd0f1d8cac1bd184900c0db27e8837914d69131c049f9cad97')
+WORKFLOW_IDENTITY_SHA = 'bcf5c889a038166d7669d229c04cbf084ca7154ab3d83244042279f805fba7d3'
 WORKFLOW_SCRIPTS = {
-    "qa": ("workflow_ui_11ebf20_r7.py", "4852ede5e1f003dd73048574c35c1a8c85097c994e48f68fd275b4d08ba79a6c"),
-    "public_ui_probe": ("public_ui_probe.py", "d6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2"),
-    "workflow_checks": ("workflow_checks.py", "93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853"),
-    "native_ui_action": ("native_ui_action_11ebf20_r7.py", "d299b94c84122cd4d96812abfd250aabfb96840db727e3b8d95d4a88c1ba3e42"),
+    'qa': ('style-workflow-controller.py', '9a3e965fcf0d619efa62d6495773880333e1290454b94c02291801cf406a2d19'),
+    'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'),
+    'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'),
+    'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'),
 }
 WORKFLOW_PNG_NAMES = {
     name + ".png" for name in (
@@ -155,14 +155,14 @@ A2_ACTION_JSON_NAMES = {
 A2_ACTION_LIMIT = 8 * 1024
 
 # Only these additional native scopes use the new finite spec table.
-NATIVE_HEAD = WORKFLOW_HEAD
-NATIVE_APP_SHA = WORKFLOW_APP_SHA
-NATIVE_BUILD_RUN = WORKFLOW_BUILD_RUN
-NATIVE_ARTIFACT = WORKFLOW_ARTIFACT
-NATIVE_IDENTITY_SHA = WORKFLOW_IDENTITY_SHA
+NATIVE_HEAD = '11ebf203e1a78d3b6a21677c4b17e96223c74b0e'
+NATIVE_APP_SHA = '8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30'
+NATIVE_BUILD_RUN = 37328783317
+NATIVE_ARTIFACT = '11355501142'
+NATIVE_IDENTITY_SHA = '2b94fc606a46d7d0df43ea2d07a29e5a3b5075253521a201e65d264ee5933574'
 NATIVE_CONTROLLER_SECONDS = 120
 NATIVE_SCOPES = {'workspaces-observation': {'scripts': {'qa': ['workspaces-ui-11ebf20.py',
-                                               '272705c05da0df774f3c97380ec24a297d509595cad3952ed8e22009b86098e0'],
+                                               '3335bd6160a5fa38195430861e1065cd6e4b0d8b261747c455c6d9c2409b2b0a'],
                                         'native_public_probe': ['public_probe_11ebf20_ui4.py',
                                                                 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd']},
                             'ui': ['workspaces-reviewed-ui-11ebf20.json',

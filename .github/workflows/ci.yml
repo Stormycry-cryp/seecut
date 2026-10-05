@@ -91,7 +91,13 @@ jobs:
             [[ "$BLACKBOX_QA" == true && "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ &&
                "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
           fi
-          if [[ "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation ]]; then
+          if [[ "$NEXT_STAGE" == workflow-observation ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               "$SOURCE_RUN_ID" == 37340470010 && "$SOURCE_ARTIFACT_ID" == 11359607955 &&
+               "$SOURCE_HEAD" == a6cf09ad935bbbc6cf792c4ac6a4b506a47aebd3 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation ]]; then
             [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
                "$SOURCE_RUN_ID" == 37328783317 && "$SOURCE_ARTIFACT_ID" == 11355501142 &&
                "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
@@ -343,10 +349,10 @@ jobs:
           BUS_ARGS=()
           INPUT_ARGS=()
           if [[ "$NEXT_STAGE" == workflow-observation ]]; then
-            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37328783317 &&
-               "$SOURCE_ARTIFACT_ID" == 11355501142 && "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37340470010 &&
+               "$SOURCE_ARTIFACT_ID" == 11359607955 && "$SOURCE_HEAD" == a6cf09ad935bbbc6cf792c4ac6a4b506a47aebd3 &&
                -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
-            QA_SCRIPT="$PWD/scripts/workflow_ui_11ebf20_r7.py"
+            QA_SCRIPT="$PWD/scripts/style-workflow-controller.py"
             BUS_COMMAND=(dbus-run-session --)
             BUS_ARGS=(--private-accessibility-bus)
             INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")

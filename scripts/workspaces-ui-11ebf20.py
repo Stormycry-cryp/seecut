@@ -148,7 +148,10 @@ def main():
         try:
             return subprocess.run(argv, check=True, capture_output=True,
                                   text=not binary, timeout=min(8, left)).stdout
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+            report['failed_command'] = argv[0] if argv[0] in ('xdotool', 'import') else 'withheld'
+            report['failed_command_reason'] = ('deadline' if isinstance(exc, subprocess.TimeoutExpired)
+                                               else 'nonzero_exit')
             raise Stop('public_UI_command_unavailable_no_retry_raw_output_withheld') from None
 
     def pause():
@@ -196,7 +199,8 @@ def main():
 
     def pixels():
         ensure_focus()
-        raw = command(['import', '-window', str(window), '-alpha', 'off', '-depth', '8', 'rgb:-'], binary=True)
+        # import supports depth and the RGB output coder, but not convert's -alpha option.
+        raw = command(['import', '-window', str(window), '-depth', '8', 'rgb:-'], binary=True)
         if len(raw) != size[0] * size[1] * 3:
             raise Stop('current_RGB_capture_size_differs')
         return raw
