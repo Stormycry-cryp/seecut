@@ -757,12 +757,23 @@ mod tests {
             fs::create_dir(&directory).unwrap();
             let entrypoint = directory.join("fixture.py");
             fs::write(&entrypoint, script).unwrap();
-            let handle = start(LaunchSpec {
-                executable,
-                entrypoint,
-                environment: BTreeMap::new(),
-            })
-            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let handle = loop {
+                match start(LaunchSpec {
+                    executable: executable.clone(),
+                    entrypoint: entrypoint.clone(),
+                    environment: BTreeMap::new(),
+                }) {
+                    Ok(handle) => break handle,
+                    // QueueBusy from registration precedes worker spawn, so this fixture
+                    // can retry safely without starting or replaying a second runtime.
+                    Err(BridgeError::QueueBusy) => {
+                        assert!(Instant::now() < deadline, "fixture launch remained busy");
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("fixture launch failed: {error:?}"),
+                }
+            };
             Self {
                 directory,
                 handle: Some(handle),
@@ -1148,7 +1159,21 @@ time.sleep(20)
                 .env("SEECUT_AGENT_EXIT_FIXTURE_ROOT", &directory)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null());
+                .stderr(Stdio::from(
+                    fs::File::create(directory.join("helper-stderr.txt")).unwrap(),
+                ));
+            // This re-executes the Cargo test binary, which on Linux links the CI's
+            // FFmpeg/ONNX shared libraries outside the system loader directories.
+            // The managed runtime still receives only LaunchSpec's explicit environment.
+            for key in [
+                "LD_LIBRARY_PATH",
+                "DYLD_LIBRARY_PATH",
+                "DYLD_FALLBACK_LIBRARY_PATH",
+            ] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
+            }
             if explicit {
                 command.env("SEECUT_AGENT_EXIT_EXPLICIT", "1");
             }
@@ -1164,7 +1189,11 @@ time.sleep(20)
                 );
                 thread::sleep(Duration::from_millis(10));
             };
-            assert!(status.success());
+            assert!(
+                status.success(),
+                "exit helper failed ({status}): {}",
+                fs::read_to_string(directory.join("helper-stderr.txt")).unwrap()
+            );
             assert!(started.elapsed() < Duration::from_secs(5));
             let pids: Value =
                 serde_json::from_slice(&fs::read(directory.join("pids.json")).unwrap()).unwrap();

@@ -20,7 +20,7 @@ on:
       qa_next_stage:
         description: Reviewed independent script stage
         type: choice
-        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation']
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation', 'fresh-workbench-observation']
         default: 'navigation'
       qa_ui_approval:
         description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
@@ -81,6 +81,8 @@ jobs:
           BLACKBOX_QA: ${{ inputs.linux_blackbox_qa }}
           NEXT_STAGE: ${{ inputs.qa_next_stage }}
           QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
+          QA_IDENTITY_APPROVAL: ${{ inputs.qa_identity_approval }}
+          QA_UI_APPROVAL: ${{ inputs.qa_ui_approval }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
@@ -92,6 +94,12 @@ jobs:
           if [[ "$NEXT_STAGE" == workflow-observation ]]; then
             [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
                -n "$SOURCE_RUN_ID" && -n "$SOURCE_ARTIFACT_ID" && -n "$SOURCE_HEAD" ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == fresh-workbench-observation ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               "$SOURCE_RUN_ID" == 37312315509 && "$SOURCE_ARTIFACT_ID" == 11345919609 &&
+               "$SOURCE_HEAD" == cecc8fdf9578675051dae58bda25f0ff805ce235 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
           fi
           echo "Window candidate: $EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@stable
@@ -310,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
-          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation ]]
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation ]]
           CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST" --source-head "$SOURCE_HEAD")
           if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
             CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
@@ -320,7 +328,7 @@ jobs:
             CLIENT_ARGS=(--client-binary "$PWD/src/target/debug/seecut-editor-mcp")
           fi
           DISPLAY_CAPTURE_ARGS=()
-          if [[ "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation ]]; then
+          if [[ "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation ]]; then
             DISPLAY_CAPTURE_ARGS=(--isolated-display-capture)
           fi
           QA_SCRIPT="$PWD/scripts/independent-linux-blackbox.py"
@@ -333,6 +341,11 @@ jobs:
             BUS_COMMAND=(dbus-run-session --)
             BUS_ARGS=(--private-accessibility-bus)
             INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
+          elif [[ "$NEXT_STAGE" == fresh-workbench-observation ]]; then
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_ARTIFACT_ID" == 11345919609 &&
+               "$SOURCE_HEAD" == cecc8fdf9578675051dae58bda25f0ff805ce235 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+            QA_SCRIPT="$PWD/scripts/independent-next-ui.py"
           fi
           APPROVAL_ARGS=()
           if [[ -n "$QA_IDENTITY_APPROVAL" ]]; then

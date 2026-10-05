@@ -181,7 +181,7 @@ def main():
                                    'inside_private_display': x >= 0 and y >= 0 and x + width <= int(dims[0]) and y + height <= int(dims[1])})
         return sorted(result, key=lambda item: item['window'])
 
-    def await_native(phase):
+    def await_native(phase, allow_absence=False):
         until = min(deadline, time.monotonic() + 12)
         previous, stable_at = None, None
         while time.monotonic() < until:
@@ -206,6 +206,8 @@ def main():
         snapshot(phase + '-no-visible-native-after-wait', root=True)
         report['window_observations'].append({'phase': phase, 'mapped_visible': False,
                                                'owned_pids': sorted(descendants()), 'wait_limit_seconds': 12})
+        if allow_absence:
+            return None
         raise Stop('no_stable_visible_native_window_after_wait:' + phase)
 
     def public_metadata(pid, name):
@@ -440,7 +442,7 @@ def main():
         if (ui.get('schema') != 2 or ui.get('reviewed_by') != 'independent-qa'
                 or ui.get('observed_head') != HEAD or ui.get('observed_app_sha256') != APP_SHA
                 or ui.get('window') != {'width': 1280, 'height': 900}
-                or ui.get('workflow_revision') != 4):
+                or ui.get('workflow_revision') != 5):
             raise Stop('independent_UI_identity_mismatch')
         if ui.get('opened_document_contract', {}).get('expected_export_dimensions') != [256, 192]:
             raise Stop('reviewed_opened_document_contract_required')
@@ -542,7 +544,25 @@ def main():
                                       'verdict': 'pending_independent_image_review'}
         frame = edit_and_undo(frame, '09-edit')
         click('editor_save', frame, ['save-control', 'editor-tools'])
-        native = await_native('10-save')
+        native = await_native('10-save', allow_absence=True)
+        if native is None:
+            # Actual rev4 save removed the dirty label without a native picker.
+            # This is a UI transition, not proof of a persisted/reopenable file.
+            if visible_windows():
+                raise Stop('late_native_before_save_gallery_observation')
+            frame = snapshot('11-save-returned-App')
+            for context in ('saved-image-title', 'editor-tools', 'opened-image-properties', 'opened-image-zoom'):
+                guard(frame, context)
+            report['stages']['save'] = {'native_picker_observed': False,
+                'dirty_label_removed': True, 'actual_file_verified': False,
+                'reopen_verified': False, 'verdict': 'visible_transition_only'}
+            click('editor_back', frame, ['back-control', 'editor-tools', 'saved-image-title'])
+            snapshot('12-save-gallery-requires-review')
+            try:
+                public_metadata(args.app_pid, '12-save-gallery-public')
+            except Stop as exc:
+                report['save_gallery_metadata'] = str(exc)
+            raise Stop('save_gallery_requires_independent_review_before_file_reopen_and_export')
         frame = choose_owned_path(native, deliverables / 'qa-project', '11-save', {'Save', '保存'})
         until = min(deadline, time.monotonic() + 10)
         candidates = []

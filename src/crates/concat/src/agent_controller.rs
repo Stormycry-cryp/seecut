@@ -868,7 +868,30 @@ for line in sys.stdin:
                 document_session_id: "doc-1".into(),
             };
             let mut controller = Controller::default();
-            controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},document:identity.clone(),client_id:"client-1".into(),mcp_client_path:entry,mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),provider:json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"}),read_token:"read-secret".into(),write_token:Some("write-secret".into())}).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let result = controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},document:identity.clone(),client_id:"client-1".into(),mcp_client_path:entry.clone(),mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),provider:json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"}),read_token:"read-secret".into(),write_token:Some("write-secret".into())});
+                match result {
+                    Ok(()) => break,
+                    // Parallel fixtures can contend on the nonblocking registration/input
+                    // locks. Busy means initialize was not accepted; never retry a send.
+                    Err(UiError::Busy) => {
+                        controller.shutdown_now();
+                        while controller.process.is_some() {
+                            controller.tick(Some(&identity));
+                            assert!(Instant::now() < deadline, "busy fixture cleanup timed out");
+                            thread::yield_now();
+                        }
+                        controller = Controller::default();
+                        assert!(
+                            Instant::now() < deadline,
+                            "fixture connection remained busy"
+                        );
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("fixture connection failed: {error:?}"),
+                }
+            }
             Self {
                 controller,
                 identity,

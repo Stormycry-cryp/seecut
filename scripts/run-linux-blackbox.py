@@ -13,6 +13,8 @@ HEAD, build run/job and content hash before launch. Explicit source HEAD and
 artifact ID allow a reviewed test-only workflow revision to use the original App.
 The explicit workflow-observation stage instead uses its reviewed fixed script
 and helper, window ID, approvals and isolated-display flags without legacy args.
+The fresh-workbench-observation stage uses only its fixed script, exact candidate,
+window ID and approvals, with no client, fixture inputs or accessibility bus.
 QA receives the actual App source HEAD. This contract supports one App lifetime:
 QA must not launch another App,
 detach descendants, or move them into new process groups. This harness supplies
@@ -47,15 +49,16 @@ RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
 WORKFLOW_DIRECTORY = "independent-qa-workflow"
 WORKFLOW_SCRIPTS = {
-    "qa": ("independent-workflow-ui.py", "8271d32fed2d441c758c60e153ea124c920d125cca7ccacf7da25e09f1b50850"),
+    "qa": ("independent-workflow-ui.py", "9f2b1ecd7df04668d43c3150df6cb36312564c177cc20647bcb88ed17aabda0b"),
     "public_ui_probe": ("public_ui_probe.py", "d6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2"),
     "workflow_checks": ("workflow_checks.py", "93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853"),
-    "native_ui_action": ("native_ui_action.py", "5bf7afc27343062f41f66e374766da4457aec81b395d9dcf53561d886a8584eb"),
+    "native_ui_action": ("native_ui_action.py", "3946eedb0774863e88a44c8651ac2cde03c4327e4a5636bfb27faa5d491de82a"),
 }
 WORKFLOW_PNG_NAMES = {
     name + ".png" for name in (
         "01-current-initial", "02-after-quick", "03-gallery", "04-create-dialog", "05-editor", "06-open-menu",
         "12-left-saved-editor", "13-new-blank-dialog", "14-new-blank-editor", "15-reopen-menu", "19-export-destination",
+        "12-save-gallery-requires-review",
     )
 } | {
     phase + suffix + ".png"
@@ -73,7 +76,7 @@ WORKFLOW_PNG_NAMES = {
     for phase in ("08-import", "17-reopen")
     for suffix in ("-fixture-visible-stable", "-fixture-not-confirmed-after-wait")
 }
-WORKFLOW_JSON_NAMES = {"workflow.json", "public-accessibility.json"} | {
+WORKFLOW_JSON_NAMES = {"workflow.json", "public-accessibility.json", "12-save-gallery-public.json"} | {
     phase + suffix + ".json"
     for phase in ("08-import", "11-save", "17-reopen", "21-export")
     for suffix in ("-public-before", "-public-location", "-public-before-accept")
@@ -81,6 +84,18 @@ WORKFLOW_JSON_NAMES = {"workflow.json", "public-accessibility.json"} | {
 WORKFLOW_FILE_LIMIT = 2 * 1024 * 1024
 WORKFLOW_PNG_LIMIT = 14 * 1024 * 1024
 WORKFLOW_METADATA_LIMIT = 128 * 1024
+NEXT_UI_SCRIPT = ("independent-next-ui.py", "acb109b038afd214b1e8106250d23b19aadfb34a9f004b1313079b160a3df4d2")
+NEXT_UI_HEAD = "cecc8fdf9578675051dae58bda25f0ff805ce235"
+NEXT_UI_APP_SHA = "8859b10e7b8a58785d6a60454995f33d56efea554011825287917d06064aff55"
+NEXT_UI_BUILD_RUN = 37312315509
+NEXT_UI_ARTIFACT = "11345919609"
+NEXT_UI_DIRECTORY = "independent-qa-cecc8fd-ui1"
+NEXT_UI_PNG_NAMES = {
+    "01-before-quick.png", "02-after-quick-1280x900.png",
+    "03-workbench-1024x900.png", "03-workbench-1440x900.png",
+    "04-sidebar-hover-170.png", "05-sidebar-hover-227.png", "06-sidebar-hover-285.png",
+    "07-sidebar-hover-748.png", "08-sidebar-hover-805.png",
+}
 WORKFLOW_FIXTURE_MANIFEST = "8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7"
 WORKFLOW_FIXTURES = {
     "opaque-quadrants.png": (800, "0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63"),
@@ -264,7 +279,8 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
         raise ValueError("output root must remain a real directory")
     total = 0
     workflow = next_stage == "workflow-observation"
-    directories = {WORKFLOW_DIRECTORY} if workflow else QA_DIRECTORIES
+    fresh = next_stage == "fresh-workbench-observation"
+    directories = {NEXT_UI_DIRECTORY} if fresh else ({WORKFLOW_DIRECTORY} if workflow else QA_DIRECTORIES)
     png_count = png_bytes = project_count = 0
     pending = [output]
     while pending:
@@ -295,6 +311,20 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                             raise ValueError("workflow requires at most one bounded saved project")
                     else:
                         raise ValueError("unknown workflow artifact file")
+                elif fresh:
+                    if directory == output:
+                        if entry.name not in RESERVED:
+                            raise ValueError("fresh workbench artifacts require the known QA directory")
+                    elif entry.name in NEXT_UI_PNG_NAMES:
+                        png_count += 1
+                        png_bytes += info.st_size
+                        if png_count > 9 or info.st_size > WORKFLOW_FILE_LIMIT or png_bytes > WORKFLOW_PNG_LIMIT:
+                            raise ValueError("fresh workbench PNG count or byte budget exceeded")
+                    elif entry.name == "navigation.json":
+                        if info.st_size > WORKFLOW_METADATA_LIMIT:
+                            raise ValueError("fresh workbench metadata exceeds 128 KiB")
+                    else:
+                        raise ValueError("unknown fresh workbench artifact file")
                 total += info.st_size
                 if total > limit:
                     raise ValueError("output exceeds artifact budget")
@@ -347,6 +377,9 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
         command.extend(("--window-id", str(window_id), "--input-dir", str(copied["input_dir"])))
         if args.private_accessibility_bus:
             command.extend(("--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
+    elif args.next_stage == "fresh-workbench-observation":
+        command.extend(("--window-id", str(window_id), "--expected-sha", source_head,
+                        "--next-stage", "navigation"))
     else:
         command.extend(("--client-binary", str(copied["client"]),
                         "--expected-sha", source_head, "--next-stage", args.next_stage))
@@ -369,14 +402,14 @@ def arguments():
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
     parser.add_argument("--input-dir", help="workflow-observation only; exact owned fixture inputs")
-    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation"), default="navigation")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation", "fresh-workbench-observation"), default="navigation")
     parser.add_argument("--isolated-display-capture", action="store_true",
-                        help="Explicit isolated-display declaration for image-picker/workflow observation")
+                        help="Explicit isolated-display declaration for reviewed observation stages")
     parser.add_argument("--private-accessibility-bus", action="store_true",
                         help="workflow-observation only; requires a direct dedicated dbus-run-session parent")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     args = parser.parse_args()
-    capture_stages = {"image-picker-observation", "workflow-observation"}
+    capture_stages = {"image-picker-observation", "workflow-observation", "fresh-workbench-observation"}
     if args.next_stage in capture_stages and not args.isolated_display_capture:
         parser.error(args.next_stage + " requires --isolated-display-capture")
     if args.isolated_display_capture and args.next_stage not in capture_stages:
@@ -391,6 +424,13 @@ def arguments():
         if not all((args.identity_approval, args.ui_approval, args.source_head,
                     args.candidate_manifest, args.candidate_artifact_id, args.input_dir)):
             parser.error("workflow-observation requires exact candidate provenance, declarations and owned fixtures")
+    if args.next_stage == "fresh-workbench-observation":
+        if args.seconds != 300 or args.client_binary is not None:
+            parser.error("fresh-workbench-observation requires 300 seconds and no MCP client")
+        if not all((args.identity_approval, args.ui_approval, args.candidate_manifest)):
+            parser.error("fresh-workbench-observation requires candidate provenance and both declarations")
+        if args.source_head != NEXT_UI_HEAD or args.candidate_artifact_id != NEXT_UI_ARTIFACT:
+            parser.error("fresh-workbench-observation requires the exact reviewed candidate source and artifact")
     return args
 
 
@@ -488,6 +528,12 @@ def main():
             if candidate is None or not re.fullmatch(r"[1-9][0-9]*", args.candidate_artifact_id):
                 raise ValueError("candidate artifact ID requires a valid manifest")
             result["candidate"]["source_artifact_id"] = int(args.candidate_artifact_id)
+        if args.next_stage == "fresh-workbench-observation":
+            if (candidate is None or source_head != NEXT_UI_HEAD
+                    or args.candidate_artifact_id != NEXT_UI_ARTIFACT
+                    or candidate["app_sha256"] != NEXT_UI_APP_SHA
+                    or candidate["build_run_id"] != NEXT_UI_BUILD_RUN):
+                raise ValueError("fresh workbench candidate differs from its reviewed immutable provenance")
         sources = {"app": regular_input(args.binary), "qa": regular_input(args.qa_script)}
         if args.next_stage == "workflow-observation":
             if sources["qa"] != root / "scripts" / WORKFLOW_SCRIPTS["qa"][0]:
@@ -495,6 +541,9 @@ def main():
             for name, (filename, _digest) in WORKFLOW_SCRIPTS.items():
                 if name != "qa":
                     sources[name] = regular_input(root / "scripts" / filename)
+        elif args.next_stage == "fresh-workbench-observation":
+            if sources["qa"] != root / "scripts" / NEXT_UI_SCRIPT[0]:
+                raise ValueError("fresh-workbench-observation requires the fixed reviewed QA script")
         if args.client_binary is not None:
             if not Path(args.client_binary).is_absolute():
                 raise ValueError("--client-binary must be absolute")
@@ -530,6 +579,9 @@ def main():
                     raise ValueError("workflow script differs from its reviewed SHA256")
             copied["input_dir"], fixture_hashes = copy_workflow_fixtures(Path(args.input_dir), work)
             result["input_fixture_sha256"] = fixture_hashes
+        elif args.next_stage == "fresh-workbench-observation":
+            if hashes["qa"] != NEXT_UI_SCRIPT[1]:
+                raise ValueError("fresh workbench script differs from its reviewed SHA256")
         if candidate is not None:
             if (hashes["app"] != candidate["app_sha256"]
                     or copied["app"].stat().st_size != candidate["app_bytes"]):
