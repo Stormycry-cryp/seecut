@@ -371,9 +371,59 @@ WORKFLOW_FIXTURES = {
     "fully-transparent.png": (83, "ba04f531df0c7a12124750d521add77c55b16a6432d653c5559c16680dbd9f50"),
 }
 
+NATIVE_SCOPES.update({'clip-editor-entry': {'scripts': {'qa': ['clip-editor-controller.py',
+                                          'a6f32c5ee62f7d2549c90452bfd8ac917aa43e4285cd1ec5d7d0649ce46ac670'],
+                                   'clip_editor_controller': ['clip-editor-controller.py',
+                                                              'a6f32c5ee62f7d2549c90452bfd8ac917aa43e4285cd1ec5d7d0649ce46ac670'],
+                                   'native_public_probe': ['clip-editor-public-probe.py',
+                                                           '562612f3bf1d54da2f9011fdea0849b6ecdf0dc66d129b42546fb0bd21bc3cd8'],
+                                   'clip_editor_action': ['clip-editor-action.py',
+                                                          '7835d56f5352b4c174ac1c9ed2d7ee361ef64ee655e869dd4fb01b07e7b17bfd']},
+                       'ui': ['clip-editor-ui.json',
+                              '8c4bcdbb106bfe05ba7f2f9f5e06f8bf8cee0905f17b54e6b6ac084e8e35257b'],
+                       'next_stage': None,
+                       'artifacts': {'main-qa-clip-editor-entry': {'png': ['01-after-quick.png',
+                                                                           '02-page.png',
+                                                                           '03-current-new-clip-dialog.png',
+                                                                           '07-editor-1280x900.png',
+                                                                           '08-editor-1024x900.png',
+                                                                           '09-editor-1440x900.png',
+                                                                           '10-editor-1280x720.png',
+                                                                           '11-unknown-editor-result.png'],
+                                                                   'public': ['01-after-quick-prepixels-public.json',
+                                                                              '01-after-quick-public.json',
+                                                                              '02-before-navigation-public.json',
+                                                                              '02-page-public.json',
+                                                                              '02-page-target-public.json',
+                                                                              '02-target-recheck-public.json',
+                                                                              '03-current-new-clip-dialog-public.json',
+                                                                              '03-dialog-recheck-public.json',
+                                                                              '06-before-create-public.json',
+                                                                              '07-editor-sample-01-public.json',
+                                                                              '07-editor-sample-02-public.json',
+                                                                              '07-editor-sample-03-public.json',
+                                                                              '07-editor-sample-04-public.json',
+                                                                              '07-editor-sample-05-public.json',
+                                                                              '07-editor-sample-06-public.json',
+                                                                              '07-editor-sample-07-public.json',
+                                                                              '07-editor-sample-08-public.json',
+                                                                              '07-editor-prepixels-public.json',
+                                                                              '07-editor-1280x900-public.json',
+                                                                              '08-editor-prepixels-public.json',
+                                                                              '08-editor-1024x900-public.json',
+                                                                              '09-editor-prepixels-public.json',
+                                                                              '09-editor-1440x900-public.json',
+                                                                              '10-editor-prepixels-public.json',
+                                                                              '10-editor-1280x720-public.json',
+                                                                              '11-unknown-editor-result-public.json'],
+                                                                   'action': ['04-name-action.json',
+                                                                              '05-path-action.json',
+                                                                              '06-create-action.json'],
+                                                                   'other': ['clip-editor-report.json']}}}})
+
 PERSISTENCE_SCOPES = {'persistence-seed-observation', 'persistence-reopen-observation'}
 PERSISTENCE_LIMIT = 7 * 1024 * 1024
-PERSISTENCE_SCRIPTS = {'persistence-seed-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '76bd41d32d2029bb4d789c5a3c15695cfcc6fd48f68e0144bcc9f55d072626a9'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-seed-controller.py', 'cbf555ae349f7a6b083e01cf9a1f5d747020ceb4dc4ef82f0428efe4567e96fa']}, 'persistence-reopen-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '76bd41d32d2029bb4d789c5a3c15695cfcc6fd48f68e0144bcc9f55d072626a9'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-reopen-controller.py', '4ab90977b0e41e1c0b94aba1874ccceca4d46f2a36c598f5c340a2db1535f18c']}}
+PERSISTENCE_SCRIPTS = {'persistence-seed-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '790911ca4fbba61799555da16e2306151642b6c3a92613b73de324d6eb9ccff8'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-seed-controller.py', 'cbf555ae349f7a6b083e01cf9a1f5d747020ceb4dc4ef82f0428efe4567e96fa']}, 'persistence-reopen-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '790911ca4fbba61799555da16e2306151642b6c3a92613b73de324d6eb9ccff8'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-reopen-controller.py', '4ab90977b0e41e1c0b94aba1874ccceca4d46f2a36c598f5c340a2db1535f18c']}}
 PERSISTENCE_JSON_NAMES = {'persistence-seed.json', 'persistence-prelaunch.json', 'persistence-postrun.json', 'persistence-failure.json'}
 
 APPROVAL_LIMIT = 16 * 1024
@@ -1372,9 +1422,16 @@ def main():
                     result.setdefault('persistence', {})['failure_reason'] = reason
                     exit_code = 1
                     try:
+                        failure = {'schema': 1, 'phase': args.next_stage,
+                                   'batch': args.state_token, 'reason': reason}
+                        if reason == 'unexpected_portable_state_entry':
+                            try:
+                                failure['portable_entries'] = persistence_helpers()['portable_entry_diagnostic'](
+                                    Path(args.owned_state_root), args.state_token, deadline)
+                            except (OSError, ValueError, TypeError):
+                                failure['portable_entries_unavailable'] = True
                         write_owned(output / WORKFLOW_DIRECTORY, 'persistence-failure.json',
-                                    (json.dumps({'schema': 1, 'phase': args.next_stage,
-                                                 'batch': args.state_token, 'reason': reason}) + '\n').encode())
+                                    (json.dumps(failure, separators=(',', ':')) + '\n').encode())
                     except OSError:
                         result['persistence']['failure_record_unavailable'] = True
             result["process_exit_codes"] = [process.returncode for process in processes]

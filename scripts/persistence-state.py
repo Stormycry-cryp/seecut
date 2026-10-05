@@ -71,6 +71,47 @@ def validate_batch(root, token):
     return marker
 
 
+def portable_entry_diagnostic(root, token, deadline):
+    """Shallow metadata only, from the validated owned batch portable root.
+
+    At most 32 safe ASCII basenames; unsafe/overflow names are counts only.
+    Never reads file contents, resolves a link, or visits any child directory.
+    This is failure evidence and does not change the state acceptance policy.
+    """
+    validate_batch(root, token)
+    required = {'settings.json', 'canvas-projects.json', 'canvas-projects'}
+    present = set()
+    records = []
+    total = safe = 0
+    with os.scandir(root / 'portable') as entries:
+        for entry in entries:
+            if time.monotonic() >= deadline:
+                raise ValueError('portable_diagnostic_deadline')
+            total += 1
+            if entry.name in required:
+                present.add(entry.name)
+            if not 1 <= len(entry.name) <= 80 or not re.fullmatch('[A-Za-z0-9._-]+', entry.name):
+                continue
+            safe += 1
+            if len(records) >= 32:
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+                kind = ('directory' if stat.S_ISDIR(info.st_mode) else
+                        'regular_file' if stat.S_ISREG(info.st_mode) else
+                        'symlink' if stat.S_ISLNK(info.st_mode) else 'other')
+                size = info.st_size  # Directory lstat size, not recursive content size.
+            except OSError:
+                kind, size = 'stat_unavailable', None
+            records.append({'name': entry.name, 'type': kind, 'lstat_size_bytes': size})
+    return {'schema': 1, 'scope': 'owned_batch_portable_top_level',
+            'entry_count': total, 'safe_name_count': safe,
+            'omitted_name_count': total - len(records),
+            'required_present': {name: name in present for name in sorted(required)},
+            'entries': sorted(records, key=lambda item: item['name']),
+            'contents_read': False, 'directories_traversed': False}
+
+
 def png_record(path, expected_dimensions, deadline):
     """Decode only validated owned synthetic PNGs; no raw pixels enter output."""
     data = read_owned(path)
