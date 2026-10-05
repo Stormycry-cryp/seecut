@@ -202,12 +202,13 @@ export component AssistantPanel inherits Rectangle {
     }
     function submit() { if root.send-ready { root.send(root.draft); } }
 
-    width: 344px;
+    preferred-width: 344px;
     min-width: 300px;
     max-width: 480px;
     min-height: 0px;
     background: Theme.panel;
     clip: true;
+    accessible-role: groupbox;
     accessible-label: "助手";
     Rectangle { x: 0px; width: 1px; height: 100%; background: Theme.line; }
     VerticalLayout {
@@ -352,7 +353,6 @@ export component AssistantPanel inherits Rectangle {
         Rectangle {
             visible: !root.settings-open;
             height: root.settings-open ? 0px : composer-layout.preferred-height;
-            min-height: 0px;
             vertical-stretch: 0;
             clip: true;
             composer-layout := VerticalLayout {
@@ -377,7 +377,7 @@ export component AssistantPanel inherits Rectangle {
                 spacing: 8px;
                 AssistantText { text: "Ctrl/Cmd+Enter 发送"; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; }
                 AppButton {
-                    width: 72px; min-width: 72px;
+                    width: 72px;
                     label: root.busy ? "停止" : "发送";
                     primary: !root.busy;
                     enabled: !root.settings-open && (root.busy ? root.can-stop : root.send-ready);
