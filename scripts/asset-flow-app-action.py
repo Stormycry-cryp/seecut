@@ -263,6 +263,9 @@ def main():
     except Exception as exc:
         record['blocking_reason']='asset_app_input_unconfirmed_raw_withheld_no_retry'
         record['reason']=safe_reason(exc)
+        if 'probe' in locals():
+            diagnostic=probe.collector_failure(exc)
+            if diagnostic is not None:record['collector_failure']=diagnostic
     print(json.dumps(record,ensure_ascii=False,separators=(',',':')))
     return 0 if record['success'] else 2
 

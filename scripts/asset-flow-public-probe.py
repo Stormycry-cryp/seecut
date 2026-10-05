@@ -64,111 +64,188 @@ class ProbeInterfaceUnavailable(RuntimeError):
         super().__init__(code)
 
 
+
+COLLECTOR_STAGES = frozenset(('atspi_init', 'desktop_root', 'desktop_cache', 'desktop_child_count', 'desktop_child_lookup', 'desktop_child_pid', 'target_root_guard', 'app_root_lookup', 'app_toolkit', 'traversal_guard', 'node_cache', 'node_state_set', 'node_role', 'node_interfaces', 'node_metadata', 'node_action_iface', 'node_action_descriptors', 'node_bounds', 'node_child_count', 'node_child_lookup'))
+COLLECTOR_EXCEPTION_KINDS = frozenset((
+    'attribute_error','type_error','value_error','runtime_error',
+    'os_error','lookup_error','glib_error','other_exception'))
+
+
+def collector_exception_kind(exc):
+    # Only fixed classes are emitted; never inspect exception messages or args.
+    for cls, kind in ((AttributeError,'attribute_error'),(TypeError,'type_error'),
+                      (ValueError,'value_error'),(RuntimeError,'runtime_error'),
+                      (OSError,'os_error'),(LookupError,'lookup_error')):
+        if isinstance(exc,cls):return kind
+    cls=type(exc)
+    if cls.__module__ in ('gi.repository.GLib','gi.overrides.GLib') and cls.__name__=='Error':
+        return 'glib_error'
+    return 'other_exception'
+
+
+def collector_failure(exc):
+    # Do not serialize arbitrary exception attributes; accept one closed shape.
+    data=BaseException.__getattribute__(exc,'__dict__').get('_seecut_collector_failure')
+    if (type(data) is not dict or set(data)!={'stage','exception_kind','node_path','child_index'}
+            or type(data['stage']) is not str or data['stage'] not in COLLECTOR_STAGES
+            or type(data['exception_kind']) is not str or data['exception_kind'] not in COLLECTOR_EXCEPTION_KINDS
+            or type(data['node_path']) is not list or len(data['node_path'])>25
+            or any(type(i) is not int or not 0<=i<128 for i in data['node_path'])
+            or (data['child_index'] is not None and (type(data['child_index']) is not int
+                or not 0<=data['child_index']<128))):
+        return None
+    return dict(data,node_path=list(data['node_path']))
+
+
 def safe_label(value):
     return value if isinstance(value, str) and value in SAFE_LABELS else None
 
 
 def target_root(app_pid, deadline):
-    import gi
-    gi.require_version('Atspi', '2.0')
-    from gi.repository import Atspi
-    desktop = Atspi.get_desktop(0)
-    if desktop is None:
-        raise RuntimeError('public_accessibility_unavailable')
-    desktop.clear_cache_single()
-    root = None
-    for index in range(min(desktop.get_child_count(), 64)):
-        if time.monotonic() >= deadline:
-            raise RuntimeError('public_accessibility_deadline')
-        candidate = desktop.get_child_at_index(index)
-        # Do not read another App's names, values, or widget tree.
-        if candidate is not None and candidate.get_process_id() == app_pid:
-            if root is not None:
-                raise RuntimeError('ambiguous_public_app_root')
-            root = candidate
-    if root is None:
-        raise RuntimeError('target_not_exposed_by_public_accessibility')
-    return root, Atspi
+    stage='atspi_init';path=[];child_index=None
+    try:
+        import gi
+        gi.require_version('Atspi', '2.0')
+        from gi.repository import Atspi
+        stage='desktop_root'
+        desktop = Atspi.get_desktop(0)
+        if desktop is None:
+            raise RuntimeError('public_accessibility_unavailable')
+        stage='desktop_cache'
+        desktop.clear_cache_single()
+        root = None
+        stage='desktop_child_count'
+        for index in range(min(desktop.get_child_count(), 64)):
+            stage='target_root_guard'
+            if time.monotonic() >= deadline:
+                raise RuntimeError('public_accessibility_deadline')
+            stage='desktop_child_lookup'
+            child_index=index
+            candidate = desktop.get_child_at_index(index)
+            # Do not read another App's names, values, or widget tree.
+            stage='desktop_child_pid'
+            if candidate is not None and candidate.get_process_id() == app_pid:
+                stage='target_root_guard'
+                if root is not None:
+                    raise RuntimeError('ambiguous_public_app_root')
+                root = candidate
+        stage='target_root_guard'
+        if root is None:
+            raise RuntimeError('target_not_exposed_by_public_accessibility')
+        return root, Atspi
+
+    except Exception as exc:
+        attributes=BaseException.__getattribute__(exc,'__dict__')
+        if '_seecut_collector_failure' not in attributes:
+            attributes['_seecut_collector_failure']={'stage':stage,
+                'exception_kind':collector_exception_kind(exc),
+                'node_path':list(path),'child_index':child_index}
+        raise
 
 
 def collect(app_pid, deadline):
-    root, Atspi = target_root(app_pid, deadline)
-    toolkit = root.get_toolkit_name()
-    toolkit = 'GTK' if isinstance(toolkit, str) and toolkit.lower().startswith('gtk') else 'unknown'
-    pending = [(root, [], 0)]
-    nodes = []
-    complete = True
-    while pending:
-        if time.monotonic() >= deadline or len(nodes) >= 512:
-            complete = False
-            break
-        node, path, depth = pending.pop()
-        if depth > 24:
-            complete = False
-            continue
-        node.clear_cache_single()
-        states = node.get_state_set()
-        if states is None:
-            raise ProbeInterfaceUnavailable('probe_node_state_set_missing')
-        role = node.get_role()
-        skip_children = role in (Atspi.Role.TABLE, Atspi.Role.TREE, Atspi.Role.TREE_TABLE,
-                                 Atspi.Role.LIST, Atspi.Role.DIRECTORY_PANE)
-        current_interfaces = node.get_interfaces()
-        if current_interfaces is None:
-            raise ProbeInterfaceUnavailable('probe_node_interfaces_missing')
-        if (not isinstance(current_interfaces, (list, tuple))
-                or any(not isinstance(interface, str) for interface in current_interfaces)):
-            raise ValueError('probe_node_interfaces_invalid')
-        interfaces = set(current_interfaces)
-        editable = bool(states.contains(Atspi.StateType.EDITABLE))
-        no_name = (skip_children or role in (Atspi.Role.ENTRY, Atspi.Role.TEXT)
-                   or editable or 'EditableText' in interfaces)
-        record = {'path': path, 'role': int(role), 'label': None if no_name else safe_label(node.get_name()),
-                  'showing': bool(states.contains(Atspi.StateType.SHOWING)),
-                  'enabled': bool(states.contains(Atspi.StateType.ENABLED)),
-                  'sensitive': bool(states.contains(Atspi.StateType.SENSITIVE)),
-                  'focused': bool(states.contains(Atspi.StateType.FOCUSED)),
-                  'focusable': bool(states.contains(Atspi.StateType.FOCUSABLE)),
-                  'selected': bool(states.contains(Atspi.StateType.SELECTED)),
-                  'checked': bool(states.contains(Atspi.StateType.CHECKED)),
-                  'modal': bool(states.contains(Atspi.StateType.MODAL)),
-                  'file_chooser': role == Atspi.Role.FILE_CHOOSER,
-                  'dialog': role == Atspi.Role.DIALOG,
-                  'button': role == Atspi.Role.PUSH_BUTTON,
-                  'radio': role == Atspi.Role.RADIO_BUTTON,
-                  'panel': role == Atspi.Role.PANEL,
-                  'entry': role in (Atspi.Role.ENTRY, Atspi.Role.TEXT),
-                  'editable': editable}
-        record['editable_text_interface'] = 'EditableText' in interfaces
-        record['action_interface'] = 'Action' in interfaces
-        if (record['button'] or record['radio']) and record['action_interface']:
-            action = node.get_action_iface()
-            if action is None:
-                raise ProbeInterfaceUnavailable('probe_node_action_iface_missing')
-            record['allowed_actions'] = [action.get_action_name(index) for index in range(min(action.get_n_actions(), 8))
-                                         if action.get_action_name(index) in ('click', 'activate', 'press')]
-        try:
-            component = node.get_component_iface()
-            extent = component.get_extents(Atspi.CoordType.SCREEN) if component else None
-            if extent:
-                record['bounds'] = {'x': int(extent.x), 'y': int(extent.y),
-                                    'width': int(extent.width), 'height': int(extent.height)}
-        except Exception:
-            record['bounds_unavailable'] = True
-        # No get_text/get_value, action execution, clipboard read or raw screenshot.
-        nodes.append(record)
-        if skip_children:
-            # Never traverse native file lists or read their item names/values.
-            continue
-        count = node.get_child_count()
-        if count > 128:
-            complete = False
-        for index in reversed(range(min(count, 128))):
-            child = node.get_child_at_index(index)
-            if child is not None:
-                pending.append((child, path + [index], depth + 1))
-    return {'nodes': nodes, 'toolkit': toolkit, 'coverage_complete': complete,
-            'scope': 'one explicitly verified App or owned descendant; file-list children omitted'}
+    stage='app_root_lookup';path=[];child_index=None
+    try:
+        stage='app_root_lookup'
+        root, Atspi = target_root(app_pid, deadline)
+        stage='app_toolkit'
+        toolkit = root.get_toolkit_name()
+        toolkit = 'GTK' if isinstance(toolkit, str) and toolkit.lower().startswith('gtk') else 'unknown'
+        pending = [(root, [], 0)]
+        nodes = []
+        complete = True
+        while pending:
+            stage='traversal_guard'
+            if time.monotonic() >= deadline or len(nodes) >= 512:
+                complete = False
+                break
+            node, path, depth = pending.pop()
+            child_index=None
+            if depth > 24:
+                complete = False
+                continue
+            stage='node_cache'
+            node.clear_cache_single()
+            stage='node_state_set'
+            states = node.get_state_set()
+            if states is None:
+                raise ProbeInterfaceUnavailable('probe_node_state_set_missing')
+            stage='node_role'
+            role = node.get_role()
+            skip_children = role in (Atspi.Role.TABLE, Atspi.Role.TREE, Atspi.Role.TREE_TABLE,
+                                     Atspi.Role.LIST, Atspi.Role.DIRECTORY_PANE)
+            stage='node_interfaces'
+            current_interfaces = node.get_interfaces()
+            if current_interfaces is None:
+                raise ProbeInterfaceUnavailable('probe_node_interfaces_missing')
+            if (not isinstance(current_interfaces, (list, tuple))
+                    or any(not isinstance(interface, str) for interface in current_interfaces)):
+                raise ValueError('probe_node_interfaces_invalid')
+            interfaces = set(current_interfaces)
+            stage='node_metadata'
+            editable = bool(states.contains(Atspi.StateType.EDITABLE))
+            no_name = (skip_children or role in (Atspi.Role.ENTRY, Atspi.Role.TEXT)
+                       or editable or 'EditableText' in interfaces)
+            record = {'path': path, 'role': int(role), 'label': None if no_name else safe_label(node.get_name()),
+                      'showing': bool(states.contains(Atspi.StateType.SHOWING)),
+                      'enabled': bool(states.contains(Atspi.StateType.ENABLED)),
+                      'sensitive': bool(states.contains(Atspi.StateType.SENSITIVE)),
+                      'focused': bool(states.contains(Atspi.StateType.FOCUSED)),
+                      'focusable': bool(states.contains(Atspi.StateType.FOCUSABLE)),
+                      'selected': bool(states.contains(Atspi.StateType.SELECTED)),
+                      'checked': bool(states.contains(Atspi.StateType.CHECKED)),
+                      'modal': bool(states.contains(Atspi.StateType.MODAL)),
+                      'file_chooser': role == Atspi.Role.FILE_CHOOSER,
+                      'dialog': role == Atspi.Role.DIALOG,
+                      'button': role == Atspi.Role.PUSH_BUTTON,
+                      'radio': role == Atspi.Role.RADIO_BUTTON,
+                      'panel': role == Atspi.Role.PANEL,
+                      'entry': role in (Atspi.Role.ENTRY, Atspi.Role.TEXT),
+                      'editable': editable}
+            record['editable_text_interface'] = 'EditableText' in interfaces
+            record['action_interface'] = 'Action' in interfaces
+            if (record['button'] or record['radio']) and record['action_interface']:
+                stage='node_action_iface'
+                action = node.get_action_iface()
+                if action is None:
+                    raise ProbeInterfaceUnavailable('probe_node_action_iface_missing')
+                stage='node_action_descriptors'
+                record['allowed_actions'] = [action.get_action_name(index) for index in range(min(action.get_n_actions(), 8))
+                                             if action.get_action_name(index) in ('click', 'activate', 'press')]
+            try:
+                stage='node_bounds'
+                component = node.get_component_iface()
+                extent = component.get_extents(Atspi.CoordType.SCREEN) if component else None
+                if extent:
+                    record['bounds'] = {'x': int(extent.x), 'y': int(extent.y),
+                                        'width': int(extent.width), 'height': int(extent.height)}
+            except Exception:
+                record['bounds_unavailable'] = True
+            # No get_text/get_value, action execution, clipboard read or raw screenshot.
+            nodes.append(record)
+            if skip_children:
+                # Never traverse native file lists or read their item names/values.
+                continue
+            stage='node_child_count'
+            count = node.get_child_count()
+            if count > 128:
+                complete = False
+            for index in reversed(range(min(count, 128))):
+                stage='node_child_lookup'
+                child_index=index
+                child = node.get_child_at_index(index)
+                if child is not None:
+                    pending.append((child, path + [index], depth + 1))
+        return {'nodes': nodes, 'toolkit': toolkit, 'coverage_complete': complete,
+                'scope': 'one explicitly verified App or owned descendant; file-list children omitted'}
+
+    except Exception as exc:
+        attributes=BaseException.__getattribute__(exc,'__dict__')
+        if '_seecut_collector_failure' not in attributes:
+            attributes['_seecut_collector_failure']={'stage':stage,
+                'exception_kind':collector_exception_kind(exc),
+                'node_path':list(path),'child_index':child_index}
+        raise
 
 
 def owned_by_app(target, owner):
@@ -213,7 +290,9 @@ def main():
             raise RuntimeError('explicit_owned_output_directory_required')
         data = collect(args.app_pid, min(args.deadline_monotonic, started + 3))
         report.update(data, status='public_metadata_observed')
-    except Exception:
+    except Exception as exc:
+        diagnostic=collector_failure(exc)
+        if diagnostic is not None:report['collector_failure']=diagnostic
         # Suppress exception text: IPC errors may contain widget names or field values.
         report['status'] = 'public_accessibility_unavailable_or_input_blocked'
     report['elapsed_seconds'] = round(time.monotonic() - started, 3)

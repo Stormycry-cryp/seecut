@@ -90,8 +90,10 @@ component LibraryTab inherits Rectangle {
         visible: false;
     }
     out property <length> full-width: Math.max(13px, measure.preferred-width) + 12px;
-    min-width: root.compact ? 26px : root.full-width;
-    preferred-width: root.compact ? 26px : root.full-width;
+    // These layout constraints must not depend on the track's actual width.
+    // The track positions each tab explicitly after its own layout is solved.
+    min-width: 26px;
+    preferred-width: root.full-width;
     horizontal-stretch: 1;
 
     accessible-role: tab;
@@ -130,34 +132,28 @@ component LibraryTab inherits Rectangle {
 
     animate tint { duration: 140ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
-    // Two lines in the 32px a chip gets inside the strip: 13px of mark, 2px of
-    // air, then the label at fs-sm. The strip stays at 44px so the three pane
-    // headers keep one edge across the window (see PaneHeader), which is why
-    // the numbers are this tight and not looser.
-    VerticalLayout {
-        padding-top: 2px;
-        padding-bottom: 2px;
-        padding-left: 6px;
-        padding-right: 6px;
-        spacing: 2px;
-        alignment: center;
+    // Explicit geometry keeps compact mode out of layout-info. The 44px
+    // header still gives this chip 32px, and the narrow mark sits at its centre.
+    mark := Icon {
+        x: (root.width - self.width) / 2;
+        y: root.compact ? (root.height - self.height) / 2
+            : (root.height - self.height - 2px - caption.preferred-height) / 2;
+        glyph: root.glyph;
+        size: 13px;
+        tint: root.tint;
+    }
 
-        HorizontalLayout {
-            alignment: center;
-            Icon {
-                glyph: root.glyph;
-                size: 13px;
-                tint: root.tint;
-            }
-        }
-
-        if !root.compact: Text {
-            text: root.label;
-            color: root.tint;
-            font-size: Theme.fs-sm;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+    caption := Text {
+        x: 6px;
+        y: mark.y + mark.height + 2px;
+        width: root.width - 12px;
+        height: self.preferred-height;
+        text: root.label;
+        color: root.tint;
+        font-size: Theme.fs-sm;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        visible: !root.compact;
     }
 
     drag := DragArea {
@@ -1524,64 +1520,91 @@ export component MediaPane inherits Rectangle {
                 // row with nothing else to bound it.
                 library-track := Rectangle {
                     // Six measured labels, 4px track padding and five 2px gaps.
-                    // Explicit constraints keep the available width independent
-                    // of compact mode, so the breakpoint cannot oscillate.
+                    // The tabs below use geometry rather than a child layout:
+                    // compact only changes drawing/positions, never layout-info.
                     property <length> full-width: media-tab.full-width + text-tab.full-width
                         + transitions-tab.full-width + effects-tab.full-width
                         + filters-tab.full-width + templates-tab.full-width + 14px;
                     property <bool> compact: self.width < self.full-width;
+                    property <length> compact-tab-width: Math.max(0px, (self.width - 14px) / 6);
+                    property <length> extra-width: Math.max(0px, self.width - self.full-width) / 6;
                     min-width: 6 * 26px + 14px;
                     preferred-width: self.full-width;
                     horizontal-stretch: 1;
                     background: Theme.well;
                     border-radius: Theme.r;
 
-                    HorizontalLayout {
-                        padding: 2px;
-                        spacing: 2px;
-
-                        media-tab := LibraryTab {
-                            compact: library-track.compact;
-                            glyph: Glyph.film;
-                            label: I18n.t("Media");
-                            current: root.tab == 0;
-                            clicked => { root.tab = 0; }
-                        }
-                        text-tab := LibraryTab {
-                            compact: library-track.compact;
-                            glyph: Glyph.text-mark;
-                            label: I18n.t("Text");
-                            current: root.tab == 1;
-                            clicked => { root.tab = 1; }
-                        }
-                        transitions-tab := LibraryTab {
-                            compact: library-track.compact;
-                            glyph: Glyph.transition;
-                            label: I18n.t("Transitions");
-                            current: root.tab == 2;
-                            clicked => { root.tab = 2; }
-                        }
-                        effects-tab := LibraryTab {
-                            compact: library-track.compact;
-                            glyph: Glyph.sparkle;
-                            label: I18n.t("Effects");
-                            current: root.tab == 3;
-                            clicked => { root.tab = 3; }
-                        }
-                        filters-tab := LibraryTab {
-                            compact: library-track.compact;
-                            glyph: Glyph.filter;
-                            label: I18n.t("Filters");
-                            current: root.tab == 4;
-                            clicked => { root.tab = 4; }
-                        }
-                        templates-tab := LibraryTab {
-                            compact: library-track.compact;
-                            glyph: Glyph.slot;
-                            label: I18n.t("Templates");
-                            current: root.tab == 5;
-                            clicked => { root.tab = 5; }
-                        }
+                    media-tab := LibraryTab {
+                        x: 2px;
+                        y: 2px;
+                        width: library-track.compact ? library-track.compact-tab-width
+                            : self.full-width + library-track.extra-width;
+                        height: library-track.height - 4px;
+                        compact: library-track.compact;
+                        glyph: Glyph.film;
+                        label: I18n.t("Media");
+                        current: root.tab == 0;
+                        clicked => { root.tab = 0; }
+                    }
+                    text-tab := LibraryTab {
+                        x: media-tab.x + media-tab.width + 2px;
+                        y: 2px;
+                        width: library-track.compact ? library-track.compact-tab-width
+                            : self.full-width + library-track.extra-width;
+                        height: library-track.height - 4px;
+                        compact: library-track.compact;
+                        glyph: Glyph.text-mark;
+                        label: I18n.t("Text");
+                        current: root.tab == 1;
+                        clicked => { root.tab = 1; }
+                    }
+                    transitions-tab := LibraryTab {
+                        x: text-tab.x + text-tab.width + 2px;
+                        y: 2px;
+                        width: library-track.compact ? library-track.compact-tab-width
+                            : self.full-width + library-track.extra-width;
+                        height: library-track.height - 4px;
+                        compact: library-track.compact;
+                        glyph: Glyph.transition;
+                        label: I18n.t("Transitions");
+                        current: root.tab == 2;
+                        clicked => { root.tab = 2; }
+                    }
+                    effects-tab := LibraryTab {
+                        x: transitions-tab.x + transitions-tab.width + 2px;
+                        y: 2px;
+                        width: library-track.compact ? library-track.compact-tab-width
+                            : self.full-width + library-track.extra-width;
+                        height: library-track.height - 4px;
+                        compact: library-track.compact;
+                        glyph: Glyph.sparkle;
+                        label: I18n.t("Effects");
+                        current: root.tab == 3;
+                        clicked => { root.tab = 3; }
+                    }
+                    filters-tab := LibraryTab {
+                        x: effects-tab.x + effects-tab.width + 2px;
+                        y: 2px;
+                        width: library-track.compact ? library-track.compact-tab-width
+                            : self.full-width + library-track.extra-width;
+                        height: library-track.height - 4px;
+                        compact: library-track.compact;
+                        glyph: Glyph.filter;
+                        label: I18n.t("Filters");
+                        current: root.tab == 4;
+                        clicked => { root.tab = 4; }
+                    }
+                    templates-tab := LibraryTab {
+                        x: filters-tab.x + filters-tab.width + 2px;
+                        y: 2px;
+                        width: library-track.compact ? library-track.compact-tab-width
+                            : self.full-width + library-track.extra-width;
+                        height: library-track.height - 4px;
+                        compact: library-track.compact;
+                        glyph: Glyph.slot;
+                        label: I18n.t("Templates");
+                        current: root.tab == 5;
+                        clicked => { root.tab = 5; }
                     }
                 }
 
