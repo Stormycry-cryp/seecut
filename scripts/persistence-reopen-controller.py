@@ -54,7 +54,12 @@ def validate_export_destination(metadata, contract):
         bx, by, bw, bh = (bounds.get(key, -1) for key in ('x', 'y', 'width', 'height'))
         if (node.get('showing') and bw > 0 and bh > 0 and bx >= x and by >= y
                 and bx + bw <= x + width and by + bh <= y + height):
-            actual.append({key: node.get(key) for key in contract['node_keys']})
+            record = {key: node.get(key) for key in contract['node_keys']}
+            # ui4 exposes this reviewed close label; the older probe projected it to None.
+            # Canonicalize only the same complete close-button record, including path/health/bounds.
+            if record == dict(contract['nodes'][1], label='关闭'):
+                record['label'] = contract['nodes'][1]['label']
+            actual.append(record)
     if actual != contract['nodes']:
         raise Stop('export_destination_modal_nodes_or_health_changed')
     for label in ('导出至资产库', '导出至其他文件夹'):

@@ -111,7 +111,12 @@ def projection_sha(rows):
 
 def flow_surface(data,ui,pid,state):
     nodes=public_context(data,pid)
-    if projection_sha(asset_projection(nodes,25))!=ui['flow_toolbar_projection_sha256']:
+    # Nonempty search removes the source-known placeholder Text and shifts only
+    # the later toolbar indices. Bind the empty state to its actually observed
+    # complete variant; all other states retain the original exact projection.
+    toolbar_last=24 if state=='empty' else 25
+    toolbar_key='flow_empty_toolbar_projection_sha256' if state=='empty' else 'flow_toolbar_projection_sha256'
+    if projection_sha(asset_projection(nodes,toolbar_last))!=ui[toolbar_key]:
         raise Stop('complete_current_asset_toolbar_changed')
     if any(n.get('editable') and n['path']!=[0,16] and not (
             n.get('bounds',{}).get('width')==1 and n.get('bounds',{}).get('height')==1
@@ -133,7 +138,8 @@ def flow_surface(data,ui,pid,state):
         if projection_sha(asset_projection(nodes,30))!=ui['flow_import_projection_sha256'] or labels & {'已选 0 项','已选 1 项','没有找到相关素材'}:
             raise Stop('current_one_synthetic_asset_surface_changed')
     elif state=='empty':
-        if ('没有找到相关素材' not in labels or labels & {'已选 0 项','已选 1 项'}
+        if (projection_sha(asset_projection(nodes,25))!=ui['flow_empty_projection_sha256']
+                or '没有找到相关素材' not in labels or labels & {'已选 0 项','已选 1 项'}
                 or any(n.get('role')==27 and n.get('bounds')==ui['thumbnail_bounds'] for n in nodes)):
             raise Stop('actual_empty_search_result_unconfirmed')
     elif state in ('batch-zero','selected'):

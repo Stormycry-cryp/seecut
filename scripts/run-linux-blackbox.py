@@ -423,7 +423,7 @@ NATIVE_SCOPES.update({'clip-editor-entry': {'scripts': {'qa': ['clip-editor-cont
 
 PERSISTENCE_SCOPES = {'persistence-seed-observation', 'persistence-reopen-observation'}
 PERSISTENCE_LIMIT = 7 * 1024 * 1024
-PERSISTENCE_SCRIPTS = {'persistence-seed-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '87a436a01e0161c41afbdd71a9a16523a1b95af686f6f348efba983ba490a48e'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-seed-controller.py', 'cbf555ae349f7a6b083e01cf9a1f5d747020ceb4dc4ef82f0428efe4567e96fa']}, 'persistence-reopen-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '87a436a01e0161c41afbdd71a9a16523a1b95af686f6f348efba983ba490a48e'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-reopen-controller.py', 'aea697f333b152bc6385152ce7a35872deef02fc83c6f11b873b3a0436b508f7']}}
+PERSISTENCE_SCRIPTS = {'persistence-seed-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '87a436a01e0161c41afbdd71a9a16523a1b95af686f6f348efba983ba490a48e'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-seed-controller.py', 'cbf555ae349f7a6b083e01cf9a1f5d747020ceb4dc4ef82f0428efe4567e96fa']}, 'persistence-reopen-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '87a436a01e0161c41afbdd71a9a16523a1b95af686f6f348efba983ba490a48e'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-reopen-controller.py', 'dedc8f296714724a9d61fa4985f16ecb1b90b9a2daab84937575c7fc974fc034']}}
 PERSISTENCE_JSON_NAMES = {'persistence-seed.json', 'persistence-prelaunch.json', 'persistence-postrun.json', 'persistence-failure.json'}
 
 APPROVAL_LIMIT = 16 * 1024
@@ -556,7 +556,7 @@ def copy_workflow_fixtures(source, work):
 
 
 NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-controller.py',
-                                           'b726b246022078006c6ab6c59709b64be2c7d6cc28f3d84d8a3659a78088e391'],
+                                           '86a35201ab14aa27d7ad608818cb432e3b3d5ebd19992958293756e15495068f'],
                                     'native_public_probe': ['asset-flow-public-probe.py',
                                                             '552e156d2205ce083519936553b353e84568a3e1adef00f5fc4fea9fbba85b53'],
                                     'native_action': ['asset-flow-native-action.py',
@@ -564,7 +564,7 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                     'asset_app_action': ['asset-flow-app-action.py',
                                                          'd29e691150f0c130cd1c667e2662d85305ced7ec1812806544a02fbf1dcc2c64']},
                         'ui': ['asset-flow-ui.json',
-                               'cd338878e2f50da9ac854d19def302bb88bc86e7454f295c89882619f3c82d61'],
+                               'b29f32e6885d8792e97294ddcf2150af8d7348962c14bb1cfac33c8eb183b9ac'],
                         'next_stage': None,
                         'artifacts': {'main-qa-asset-library-flow': {'png': ['01-after-quick.png',
                                                                              '02-page.png',
