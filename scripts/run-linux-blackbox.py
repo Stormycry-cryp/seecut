@@ -16,6 +16,8 @@ and helper, window ID, approvals and isolated-display flags without legacy args.
 The fresh-workbench-observation stage uses its fixed script and metadata helper,
 exact candidate, window ID, approvals and private accessibility bus, with no client
 or fixture inputs. Settings entry permanently ends pixel capture.
+The two A2 observation stages each run one fixed, independently reviewed
+controller scope on a fresh App, with finite scope artifacts and a 120s controller.
 QA receives the actual App source HEAD. This contract supports one App lifetime:
 QA must not launch another App,
 detach descendants, or move them into new process groups. This harness supplies
@@ -103,6 +105,42 @@ NEXT_UI_JSON_NAMES = {
     "08-settings-public.json", "09-settings-tab-public.json", "10-settings-shifttab-public.json",
     "11-settings-after-escape-public.json",
 }
+A2_SCOPES = {
+    "settings-controls-observation": "settings-controls",
+    "canvas-entry-observation": "canvas-entry",
+}
+# Final independently delivered byte identities; controller/helpers are not adapters.
+A2_SCRIPTS = {
+    "qa": ("next_ui_cecc8fd_a2.py", "c26afa6ad02fcfb3627d78ca25abaf452fd710ee675f0ca41b7985cd27384d1c"),
+    "a2_probe": ("public_probe_cecc8fd_ui3.py", "a52b62daf9f13b1b21f881edcf34ebeb12596266212faf94d8cb0ef43415d2e2"),
+    "a2_action": ("public_action_cecc8fd_ui3.py", "e7122a9bf6d7b5bcba211c010c1939f000ce0000dc5513b1a22ece65a7d7bb0a"),
+}
+A2_UI = ("reviewed-ui-cecc8fd-a2.json", "0115fda3e041377af6589aaeacb8c8eed7d11da960947b227c07afb1ba0d1301")
+A2_IDENTITY_SHA = "2d0dc9ebda453814f8357fa16acdda99a87b8448cd0a9ff7757dc6c022f8dee3"
+A2_CONTROLLER_SECONDS = 120
+A2_DIRECTORIES = {stage: "independent-qa-cecc8fd-a2-" + scope for stage, scope in A2_SCOPES.items()}
+A2_PNG_NAMES = {
+    "settings-controls": {
+        "01-before-quick.png", "02-after-quick-1280x900.png", "07-after-close-workbench-1280x900.png",
+        "08-after-close-workbench-1024x900.png", "08-after-close-workbench-1440x900.png",
+    },
+    "canvas-entry": {
+        "01-before-quick.png", "02-after-quick-1280x900.png", "03-canvas-gallery-1280x900.png",
+        "04-canvas-gallery-1024x900.png", "04-canvas-gallery-1440x900.png", "05-canvas-gallery-return-1280x900.png",
+        "06-current-new-canvas-dialog.png", "07-current-create-result.png",
+        "08-current-blank-editor-1024x900.png", "08-current-blank-editor-1440x900.png",
+    },
+}
+A2_PUBLIC_JSON_NAMES = {
+    "settings-controls": {"03-settings-expanded-public.json", "04-professional-result-public.json",
+                          "05-dark-result-public.json", "06-after-close-public.json"},
+    "canvas-entry": {"06-current-new-canvas-dialog-public.json", "07-create-result-public.json"},
+}
+A2_ACTION_JSON_NAMES = {
+    "settings-controls": {"04-professional-action.json", "05-dark-action.json", "06-close-settings-action.json"},
+    "canvas-entry": {"07-create-blank-action.json"},
+}
+A2_ACTION_LIMIT = 8 * 1024
 WORKFLOW_FIXTURE_MANIFEST = "8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7"
 WORKFLOW_FIXTURES = {
     "opaque-quadrants.png": (800, "0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63"),
@@ -287,7 +325,9 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
     total = 0
     workflow = next_stage == "workflow-observation"
     fresh = next_stage == "fresh-workbench-observation"
-    directories = {NEXT_UI_DIRECTORY} if fresh else ({WORKFLOW_DIRECTORY} if workflow else QA_DIRECTORIES)
+    a2_scope = A2_SCOPES.get(next_stage)
+    directories = ({A2_DIRECTORIES[next_stage]} if a2_scope else
+                   ({NEXT_UI_DIRECTORY} if fresh else ({WORKFLOW_DIRECTORY} if workflow else QA_DIRECTORIES)))
     png_count = png_bytes = project_count = 0
     pending = [output]
     while pending:
@@ -300,7 +340,24 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                     continue
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise ValueError("output contains an unknown directory, link, or non-regular file")
-                if workflow:
+                if a2_scope:
+                    if directory == output:
+                        if entry.name not in RESERVED:
+                            raise ValueError("A2 artifacts require this scope's known QA directory")
+                    elif entry.name in A2_PNG_NAMES[a2_scope]:
+                        png_count += 1
+                        png_bytes += info.st_size
+                        if png_count > 10 or info.st_size > WORKFLOW_FILE_LIMIT or png_bytes > WORKFLOW_PNG_LIMIT:
+                            raise ValueError("A2 PNG count or byte budget exceeded")
+                    elif entry.name in A2_ACTION_JSON_NAMES[a2_scope]:
+                        if info.st_size > A2_ACTION_LIMIT:
+                            raise ValueError("A2 action record exceeds 8 KiB")
+                    elif entry.name == "a2.json" or entry.name in A2_PUBLIC_JSON_NAMES[a2_scope]:
+                        if info.st_size > WORKFLOW_METADATA_LIMIT:
+                            raise ValueError("A2 metadata exceeds 128 KiB")
+                    else:
+                        raise ValueError("unknown A2 scope artifact file")
+                elif workflow:
                     if directory == output:
                         if entry.name not in RESERVED:
                             raise ValueError("workflow artifacts require the known QA directory")
@@ -449,6 +506,12 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
         command.extend(("--window-id", str(window_id), "--expected-sha", source_head,
                         "--next-stage", "navigation", "--private-accessibility-bus",
                         "--probe-python", "/usr/bin/python3"))
+    elif args.next_stage in A2_SCOPES:
+        command[command.index("--deadline-monotonic") + 1] = str(
+            min(qa_deadline, time.monotonic() + A2_CONTROLLER_SECONDS + 15))
+        command.extend(("--window-id", str(window_id), "--expected-sha", source_head,
+                        "--next-stage", A2_SCOPES[args.next_stage], "--private-accessibility-bus",
+                        "--probe-python", "/usr/bin/python3"))
     else:
         command.extend(("--client-binary", str(copied["client"]),
                         "--expected-sha", source_head, "--next-stage", args.next_stage))
@@ -471,19 +534,19 @@ def arguments():
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
     parser.add_argument("--input-dir", help="workflow-observation only; exact owned fixture inputs")
-    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation", "fresh-workbench-observation"), default="navigation")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES), default="navigation")
     parser.add_argument("--isolated-display-capture", action="store_true",
                         help="Explicit isolated-display declaration for reviewed observation stages")
     parser.add_argument("--private-accessibility-bus", action="store_true",
-                        help="workflow/fresh observation only; requires a direct dedicated dbus-run-session parent")
+                        help="workflow/fresh/A2 observation only; requires a direct dedicated dbus-run-session parent")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     args = parser.parse_args()
-    capture_stages = {"image-picker-observation", "workflow-observation", "fresh-workbench-observation"}
+    capture_stages = {"image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES}
     if args.next_stage in capture_stages and not args.isolated_display_capture:
         parser.error(args.next_stage + " requires --isolated-display-capture")
     if args.isolated_display_capture and args.next_stage not in capture_stages:
         parser.error("--isolated-display-capture requires an authorized observation stage")
-    if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation"}:
+    if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES}:
         parser.error("--private-accessibility-bus is only valid for workflow/fresh observation")
     if args.input_dir is not None and args.next_stage != "workflow-observation":
         parser.error("--input-dir is only valid for workflow-observation")
@@ -502,6 +565,15 @@ def arguments():
             parser.error("fresh-workbench-observation requires candidate provenance and both declarations")
         if args.source_head != NEXT_UI_HEAD or args.candidate_artifact_id != NEXT_UI_ARTIFACT:
             parser.error("fresh-workbench-observation requires the exact reviewed candidate source and artifact")
+    if args.next_stage in A2_SCOPES:
+        if not args.private_accessibility_bus:
+            parser.error("A2 observation requires --private-accessibility-bus")
+        if args.seconds != 300 or args.client_binary is not None or args.input_dir is not None:
+            parser.error("A2 observation requires 300 seconds, no MCP client and no fixture inputs")
+        if not all((args.identity_approval, args.ui_approval, args.source_head, args.candidate_manifest)):
+            parser.error("A2 observation requires candidate provenance and both declarations")
+        if args.source_head != NEXT_UI_HEAD or args.candidate_artifact_id != NEXT_UI_ARTIFACT:
+            parser.error("A2 observation requires the exact reviewed candidate source and artifact")
     return args
 
 
@@ -599,7 +671,7 @@ def main():
             if candidate is None or not re.fullmatch(r"[1-9][0-9]*", args.candidate_artifact_id):
                 raise ValueError("candidate artifact ID requires a valid manifest")
             result["candidate"]["source_artifact_id"] = int(args.candidate_artifact_id)
-        if args.next_stage == "fresh-workbench-observation":
+        if args.next_stage == "fresh-workbench-observation" or args.next_stage in A2_SCOPES:
             if (candidate is None or source_head != NEXT_UI_HEAD
                     or args.candidate_artifact_id != NEXT_UI_ARTIFACT
                     or candidate["app_sha256"] != NEXT_UI_APP_SHA
@@ -616,6 +688,12 @@ def main():
             if sources["qa"] != root / "scripts" / NEXT_UI_SCRIPT[0]:
                 raise ValueError("fresh-workbench-observation requires the fixed reviewed QA script")
             sources["next_ui_probe"] = regular_input(root / "scripts" / NEXT_UI_PROBE[0])
+        elif args.next_stage in A2_SCOPES:
+            if sources["qa"] != root / "scripts" / A2_SCRIPTS["qa"][0]:
+                raise ValueError("A2 observation requires the fixed reviewed QA script")
+            for name, (filename, _digest) in A2_SCRIPTS.items():
+                if name != "qa":
+                    sources[name] = regular_input(root / "scripts" / filename)
         if args.client_binary is not None:
             if not Path(args.client_binary).is_absolute():
                 raise ValueError("--client-binary must be absolute")
@@ -644,8 +722,13 @@ def main():
                     copied[name] = work / filename
         elif args.next_stage == "fresh-workbench-observation":
             copied["next_ui_probe"] = work / NEXT_UI_PROBE[0]
+        elif args.next_stage in A2_SCOPES:
+            for name, (filename, _digest) in A2_SCRIPTS.items():
+                if name != "qa":
+                    copied[name] = work / filename
         hashes = {name: copy_and_hash(source, copied[name], executable=name in {"app", "client"},
-                                      limit=APP_LIMIT if name == "app" else None)
+                                      limit=(APP_LIMIT if name == "app" else
+                                             (64 * 1024 if args.next_stage in A2_SCOPES else None)))
                   for name, source in sources.items()}
         if args.next_stage == "workflow-observation":
             for name, (_filename, digest) in WORKFLOW_SCRIPTS.items():
@@ -658,6 +741,10 @@ def main():
                 raise ValueError("fresh workbench script differs from its reviewed SHA256")
             if hashes["next_ui_probe"] != NEXT_UI_PROBE[1]:
                 raise ValueError("fresh workbench helper differs from its reviewed SHA256")
+        elif args.next_stage in A2_SCOPES:
+            for name, (_filename, digest) in A2_SCRIPTS.items():
+                if hashes[name] != digest:
+                    raise ValueError("A2 script or helper differs from its reviewed SHA256")
         if candidate is not None:
             if (hashes["app"] != candidate["app_sha256"]
                     or copied["app"].stat().st_size != candidate["app_bytes"]):
@@ -670,6 +757,16 @@ def main():
             copied["ui_approval"] = work / "ui-approval.json"
             hashes["ui_approval"] = copy_and_hash(
                 ui_approval, copied["ui_approval"], limit=APPROVAL_LIMIT)
+        if args.next_stage in A2_SCOPES:
+            if hashes.get("identity_approval") != A2_IDENTITY_SHA:
+                raise ValueError("A2 runtime identity differs from its reviewed raw bytes")
+            if hashes.get("ui_approval") != A2_UI[1]:
+                raise ValueError("A2 UI declaration differs from its reviewed raw bytes")
+            identity = json.loads(copied["identity_approval"].read_bytes())
+            if (not isinstance(identity, dict) or identity.get("schema") != 2
+                    or identity.get("reviewed_by") != "main-reviewer" or identity.get("runtime_head") != NEXT_UI_HEAD
+                    or identity.get("runtime_app_sha256") != NEXT_UI_APP_SHA or identity.get("change_scope") != "product-candidate"):
+                raise ValueError("A2 main runtime identity differs from the reviewed App")
         portable = work / "portable"
         portable.mkdir(mode=0o700)
         prefs = {"locale": "en", "dark": False, "server": {"enabled": False}}
@@ -700,7 +797,9 @@ def main():
                       limits={"artifact_total_bytes": ARTIFACT_LIMIT,
                               "wall_seconds": args.seconds, "cleanup_reserve_seconds": 15,
                               "log_bytes_per_process": LOG_LIMIT})
-        if args.next_stage == "fresh-workbench-observation":
+        if args.next_stage in A2_SCOPES:
+            result["limits"]["controller_seconds"] = A2_CONTROLLER_SECONDS
+        if args.next_stage == "fresh-workbench-observation" or args.next_stage in A2_SCOPES:
             phase = "accessibility_preparation"
             enable_private_accessibility(env, qa_deadline, result)
         phase = "launch"

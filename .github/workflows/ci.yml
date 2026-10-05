@@ -20,7 +20,7 @@ on:
       qa_next_stage:
         description: Reviewed independent script stage
         type: choice
-        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation', 'fresh-workbench-observation']
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation', 'fresh-workbench-observation', 'settings-controls-observation', 'canvas-entry-observation']
         default: 'navigation'
       qa_ui_approval:
         description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
@@ -95,7 +95,7 @@ jobs:
             [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
                -n "$SOURCE_RUN_ID" && -n "$SOURCE_ARTIFACT_ID" && -n "$SOURCE_HEAD" ]] || exit 1
           fi
-          if [[ "$NEXT_STAGE" == fresh-workbench-observation ]]; then
+          if [[ "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation ]]; then
             [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
                "$SOURCE_RUN_ID" == 37312315509 && "$SOURCE_ARTIFACT_ID" == 11345919609 &&
                "$SOURCE_HEAD" == cecc8fdf9578675051dae58bda25f0ff805ce235 &&
@@ -128,7 +128,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get install -y xvfb xdotool imagemagick fonts-noto-cjk libxkbcommon-x11-0
-          if [[ "$BLACKBOX_QA" == true && ( "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation ) ]]; then
+          if [[ "$BLACKBOX_QA" == true && ( "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation ) ]]; then
             missing=()
             packages=(python3-gi gir1.2-atspi-2.0 dbus-x11 at-spi2-core)
             if [[ "$NEXT_STAGE" == workflow-observation ]]; then
@@ -322,7 +322,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
-          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation ]]
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation ]]
           CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST" --source-head "$SOURCE_HEAD")
           if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
             CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
@@ -332,7 +332,7 @@ jobs:
             CLIENT_ARGS=(--client-binary "$PWD/src/target/debug/seecut-editor-mcp")
           fi
           DISPLAY_CAPTURE_ARGS=()
-          if [[ "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation ]]; then
+          if [[ "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation ]]; then
             DISPLAY_CAPTURE_ARGS=(--isolated-display-capture)
           fi
           QA_SCRIPT="$PWD/scripts/independent-linux-blackbox.py"
@@ -350,6 +350,14 @@ jobs:
                "$SOURCE_HEAD" == cecc8fdf9578675051dae58bda25f0ff805ce235 &&
                -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
             QA_SCRIPT="$PWD/scripts/independent-next-ui.py"
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
+          elif [[ "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation ]]; then
+            # One invocation owns one fresh App and one independently reviewed A2 scope.
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_ARTIFACT_ID" == 11345919609 &&
+               "$SOURCE_HEAD" == cecc8fdf9578675051dae58bda25f0ff805ce235 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+            QA_SCRIPT="$PWD/scripts/next_ui_cecc8fd_a2.py"
             BUS_COMMAND=(dbus-run-session --)
             BUS_ARGS=(--private-accessibility-bus)
           fi
