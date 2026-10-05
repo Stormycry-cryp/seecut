@@ -372,15 +372,15 @@ WORKFLOW_FIXTURES = {
 }
 
 NATIVE_SCOPES.update({'clip-editor-entry': {'scripts': {'qa': ['clip-editor-controller.py',
-                                          'da4aa7b0194ea990f82942e6a5d83f849aaccf668b3f3df5574e132c9e005fed'],
+                                          'bf1a567dcce81bbb97d9f6dd7405d5c1dd10b31d667e256f12d4a91556fa0a73'],
                                    'clip_editor_controller': ['clip-editor-controller.py',
-                                                              'da4aa7b0194ea990f82942e6a5d83f849aaccf668b3f3df5574e132c9e005fed'],
+                                                              'bf1a567dcce81bbb97d9f6dd7405d5c1dd10b31d667e256f12d4a91556fa0a73'],
                                    'native_public_probe': ['clip-editor-public-probe.py',
                                                            '562612f3bf1d54da2f9011fdea0849b6ecdf0dc66d129b42546fb0bd21bc3cd8'],
                                    'clip_editor_action': ['clip-editor-action.py',
                                                           '01c3b609e0ba012616df3a99ab0a5ea98629b32124b28cdd49489b609c5546ce']},
                        'ui': ['clip-editor-ui.json',
-                              '0aaadb0681ab4cb5babf18c5057f38b8163664e2af08cf2bd222840d3bbe5750'],
+                              'dcba31cc2c22cfe95999094f62d16652b69fd3380f37a80667992cf164ffe8db'],
                        'next_stage': None,
                        'artifacts': {'main-qa-clip-editor-entry': {'png': ['01-after-quick.png',
                                                                            '02-page.png',
@@ -423,7 +423,7 @@ NATIVE_SCOPES.update({'clip-editor-entry': {'scripts': {'qa': ['clip-editor-cont
 
 PERSISTENCE_SCOPES = {'persistence-seed-observation', 'persistence-reopen-observation'}
 PERSISTENCE_LIMIT = 7 * 1024 * 1024
-PERSISTENCE_SCRIPTS = {'persistence-seed-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '87a436a01e0161c41afbdd71a9a16523a1b95af686f6f348efba983ba490a48e'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-seed-controller.py', 'cbf555ae349f7a6b083e01cf9a1f5d747020ceb4dc4ef82f0428efe4567e96fa']}, 'persistence-reopen-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '87a436a01e0161c41afbdd71a9a16523a1b95af686f6f348efba983ba490a48e'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-reopen-controller.py', '02240e29031f2e6c0a91530e0e466fbd7c203dc7947402b62e709700e95779e5']}}
+PERSISTENCE_SCRIPTS = {'persistence-seed-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '87a436a01e0161c41afbdd71a9a16523a1b95af686f6f348efba983ba490a48e'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-seed-controller.py', 'cbf555ae349f7a6b083e01cf9a1f5d747020ceb4dc4ef82f0428efe4567e96fa']}, 'persistence-reopen-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '87a436a01e0161c41afbdd71a9a16523a1b95af686f6f348efba983ba490a48e'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-reopen-controller.py', 'aea697f333b152bc6385152ce7a35872deef02fc83c6f11b873b3a0436b508f7']}}
 PERSISTENCE_JSON_NAMES = {'persistence-seed.json', 'persistence-prelaunch.json', 'persistence-postrun.json', 'persistence-failure.json'}
 
 APPROVAL_LIMIT = 16 * 1024
@@ -553,6 +553,80 @@ def copy_workflow_fixtures(source, work):
             raise ValueError("copied fixture differs from its reviewed identity")
         hashes[name] = digest
     return destination, hashes
+
+
+NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-controller.py',
+                                           'b726b246022078006c6ab6c59709b64be2c7d6cc28f3d84d8a3659a78088e391'],
+                                    'native_public_probe': ['asset-flow-public-probe.py',
+                                                            '552e156d2205ce083519936553b353e84568a3e1adef00f5fc4fea9fbba85b53'],
+                                    'native_action': ['asset-flow-native-action.py',
+                                                      '63704d9b66fa6e4bcb01cbe4e3a815b7129c61d31abea994a77124986d4cf125'],
+                                    'asset_app_action': ['asset-flow-app-action.py',
+                                                         'd29e691150f0c130cd1c667e2662d85305ced7ec1812806544a02fbf1dcc2c64']},
+                        'ui': ['asset-flow-ui.json',
+                               'cd338878e2f50da9ac854d19def302bb88bc86e7454f295c89882619f3c82d61'],
+                        'next_stage': None,
+                        'artifacts': {'main-qa-asset-library-flow': {'png': ['01-after-quick.png',
+                                                                             '02-page.png',
+                                                                             '03-native-observed.png',
+                                                                             '03-app-unknown-result.png',
+                                                                             '04-native-location.png',
+                                                                             '06-native-still-visible.png',
+                                                                             '06-assets-import-result.png',
+                                                                             '07-search-empty.png',
+                                                                             '08-search-restored.png',
+                                                                             '09-single-selected.png',
+                                                                             '10-canvas-flow-result.png',
+                                                                             '10-unknown-flow-result.png'],
+                                                                     'public': ['01-after-quick-prepixels-public.json',
+                                                                                '01-after-quick-public.json',
+                                                                                '02-before-navigation-public.json',
+                                                                                '02-page-public.json',
+                                                                                '02-page-target-public.json',
+                                                                                '02-target-recheck-public.json',
+                                                                                '03-native-observed-public.json',
+                                                                                '03-app-unknown-result-public.json',
+                                                                                '04-native-before-public.json',
+                                                                                '04-native-location-public.json',
+                                                                                '05-native-location-public.json',
+                                                                                '05-native-before-accept-public.json',
+                                                                                '06-native-still-visible-public.json',
+                                                                                '06-assets-import-result-public.json',
+                                                                                '07-before-search-public.json',
+                                                                                '07-search-empty-recheck-public.json',
+                                                                                '07-search-empty-public.json',
+                                                                                '08-before-clear-public.json',
+                                                                                '08-restored-recheck-public.json',
+                                                                                '08-search-restored-public.json',
+                                                                                '09-before-batch-public.json',
+                                                                                '09-batch-zero-public.json',
+                                                                                '09-selected-recheck-public.json',
+                                                                                '09-single-selected-public.json',
+                                                                                '10-before-canvas-public.json',
+                                                                                '10-canvas-flow-result-public.json',
+                                                                                '10-unknown-flow-result-public.json'],
+                                                                     'action': ['05-native-set-location-action.json',
+                                                                                '05-native-accept-action.json',
+                                                                                '07-search-miss-action.json',
+                                                                                '08-search-clear-action.json',
+                                                                                '09-batch-action.json',
+                                                                                '09-select-action.json',
+                                                                                '10-canvas-action.json'],
+                                                                     'other': ['asset-flow-report.json']}},
+                        'artifact_JSON_limits': {'public_metadata_each': 131072,
+                                                 'native_action_each': 8192,
+                                                 'report_each': 16384},
+                        'fixture': {'source': 'scripts/qa-fixtures/opaque-quadrants.png',
+                                    'destination_directory': 'asset-clip-inputs',
+                                    'basename': 'opaque-quadrants.png',
+                                    'bytes': 800,
+                                    'sha256': '0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63',
+                                    'launcher_argument': ['--input-dir', '<work>/asset-clip-inputs'],
+                                    'copy_policy': 'Register only asset-library-flow in addition to the '
+                                                   'existing assets-import scope; reuse exact one regular '
+                                                   '800B PNG copy0600 in owned0700 asset-clip-inputs; fixed '
+                                                   'checked-out scripts/qa-fixtures source. All other native '
+                                                   'scopes keep input-dir forbidden.'}}})
 
 
 def copy_assets_fixture(source, work):
@@ -694,7 +768,7 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                             raise ValueError("workflow PNG count or byte budget exceeded")
                     elif entry.name in WORKFLOW_JSON_NAMES or (persistence and (
                             entry.name in PERSISTENCE_JSON_NAMES
-                            or any(entry.name == prefix + name[:-4] + '.json'
+                            or any(entry.name == prefix + name[:-4].lower() + '.json'
                                    for prefix in ('capture-', 'native-proof-')
                                    for name in WORKFLOW_PNG_NAMES))):
                         if info.st_size > WORKFLOW_METADATA_LIMIT:
@@ -844,7 +918,7 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
                         "--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
         if native["next_stage"] is not None:
             command.extend(("--next-stage", native["next_stage"]))
-        if args.next_stage == 'assets-import':
+        if args.next_stage in ('assets-import', 'asset-library-flow'):
             command.extend(('--input-dir', str(copied['input_dir'])))
     elif args.next_stage in A2_SCOPES:
         command[command.index("--deadline-monotonic") + 1] = str(
@@ -1007,7 +1081,7 @@ def arguments():
         parser.error("--isolated-display-capture requires an authorized observation stage")
     if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}:
         parser.error("--private-accessibility-bus is only valid for workflow/fresh observation")
-    if args.input_dir is not None and args.next_stage not in ('workflow-observation', 'assets-import', *PERSISTENCE_SCOPES):
+    if args.input_dir is not None and args.next_stage not in ('workflow-observation', 'assets-import', 'asset-library-flow', *PERSISTENCE_SCOPES):
         parser.error('--input-dir is only valid for reviewed workflow, persistence or assets fixture scopes')
     if args.next_stage not in PERSISTENCE_SCOPES and any((args.owned_state_root, args.state_token, args.seed_record)):
         parser.error('persistence state options are forbidden for all original scopes')
@@ -1053,8 +1127,8 @@ def arguments():
             parser.error("native observation requires --private-accessibility-bus")
         if args.seconds != 300 or args.client_binary is not None:
             parser.error('native observation requires 300 seconds and no MCP client')
-        if (args.next_stage == 'assets-import') != (args.input_dir is not None):
-            parser.error('only assets-import requires the exact single fixture input directory')
+        if (args.next_stage in ('assets-import', 'asset-library-flow')) != (args.input_dir is not None):
+            parser.error('only asset scopes require the exact single fixture input directory')
         if not all((args.identity_approval, args.ui_approval, args.source_head,
                     args.candidate_manifest, args.candidate_artifact_id)):
             parser.error("native observation requires exact candidate provenance and both declarations")
@@ -1254,9 +1328,9 @@ def main():
                                       limit=(APP_LIMIT if name == "app" else
                                              (64 * 1024 if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES or args.next_stage in NATIVE_SCOPES or args.next_stage in PERSISTENCE_SCOPES else None))))
                   for name, source in sources.items()}
-        if args.next_stage == 'assets-import':
+        if args.next_stage in ('assets-import', 'asset-library-flow'):
             if Path(args.input_dir) != root / 'scripts' / 'qa-fixtures':
-                raise ValueError('assets-import requires the checked-out fixed fixture directory')
+                raise ValueError('asset scopes require the checked-out fixed fixture directory')
             copied['input_dir'], fixture_hashes = copy_assets_fixture(Path(args.input_dir), work)
             result['input_fixture_sha256'] = fixture_hashes
         if args.next_stage in PERSISTENCE_SCOPES:

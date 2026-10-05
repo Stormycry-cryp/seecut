@@ -300,7 +300,7 @@ def main():
         return data
 
     def safe_capture(name, root=False):
-        metadata_name = 'capture-' + name
+        metadata_name = 'capture-' + name.lower()
         completed = subprocess.run([args.probe_python, '-B', str(capture_helper),
             '--app-pid', str(args.app_pid), '--owned-root-pid', str(args.app_pid),
             '--output', str(evidence), '--output-name', metadata_name + '.json',
@@ -319,7 +319,7 @@ def main():
             if not root or len(native) != 1 or not native[0]['inside_private_display']:
                 raise Stop('unknown_native_context_metadata_only')
             n = native[0]
-            public = public_metadata(n['pid'], 'native-proof-' + name)
+            public = public_metadata(n['pid'], 'native-proof-' + name.lower())
             nodes = public['nodes']
             if (public.get('toolkit') != 'GTK' or not any(x.get('dialog') and x.get('showing') for x in nodes)
                     or not any(x.get('button') and x.get('showing') and x.get('action_interface')
@@ -352,7 +352,7 @@ def main():
                 if all(checks):
                     found.append(left)
             known = has('new-project') and len(found) == 1
-        elif ('export-destination' in name or name in ('19-export-destination', '20-export-no-visible-native-after-wait')):
+        elif ('export-destination' in name or name in ('19-export-destination', '20-export-no-visible-native-after-wait', '20-export-App-destination-requires-review')):
             validate_export_destination(data, ui['export_destination_public_contract'])
             known = has('export-destination-modal') and has('export-other-folder-control')
         elif name in ('15-gallery-reopen-fixture-visible-stable', '16-gallery-reopened-edit-dragged',

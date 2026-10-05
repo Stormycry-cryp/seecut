@@ -158,13 +158,17 @@ def dialog_projection(nodes):
                 raise Stop('actual_dialog_window_focusable_boolean_required')
             row[index] = True
     # The same observed toast moves down 12px while its animation settles.
-    # Normalize only the complete four-node group and these two exact positions.
+    # Normalize only this complete group within the source-defined 0..12px animation.
     toast = {(0, 27): (1004, 852, 188, 32), (0, 28): (1206, 858, 52, 20),
              (0, 28, 0): (1206, 858, 1, 1), (0, 28, 1): (1220, 863, 24, 10)}
     group = {tuple(row[0]): row for row in rows if tuple(row[0]) in toast}
     bounds_index = PUBLIC_KEYS.index('bounds')
-    if len(group) == 4 and all(group[path][bounds_index] ==
-            dict(zip(('x', 'y', 'width', 'height'), (x, y + 12, w, h)))
+    if len(group) == 4 and all(
+            isinstance(group[path][bounds_index], dict)
+            and type(group[path][bounds_index].get('y')) is int
+            and y <= group[path][bounds_index]['y'] <= y + 12
+            and group[path][bounds_index] == dict(zip(('x', 'y', 'width', 'height'),
+                (x, group[path][bounds_index]['y'], w, h)))
             for path, (x, y, w, h) in toast.items()):
         for path, bounds in toast.items():
             group[path][bounds_index] = dict(zip(('x', 'y', 'width', 'height'), bounds))
