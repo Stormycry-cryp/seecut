@@ -14,6 +14,7 @@ export component SegmentedControl inherits Rectangle {
     in-out property <int> current;
     in property <bool> enabled: true;
     in property <bool> workbench;
+    in property <bool> text-tabs;
     in property <bool> reduced-motion;
 
     callback changed(index: int);
@@ -29,14 +30,14 @@ export component SegmentedControl inherits Rectangle {
     height: root.workbench ? 36px : Theme.h;
     min-width: 120px;
     horizontal-stretch: 1;
-    background: root.workbench ? Colors.transparent : Theme.well;
-    border-width: root.workbench ? 0px : 1px;
+    background: root.workbench || root.text-tabs ? Colors.transparent : Theme.well;
+    border-width: root.workbench || root.text-tabs ? 0px : 1px;
     border-color: Theme.line;
     border-radius: root.workbench ? 8px : Theme.r;
     opacity: root.enabled ? 1.0 : 0.45;
 
     function select(index: int) {
-        if (index >= 0 && index < root.options.length) {
+        if (root.enabled && index >= 0 && index < root.options.length) {
             root.current = index;
             root.changed(index);
         }
@@ -52,6 +53,7 @@ export component SegmentedControl inherits Rectangle {
             root.ring = false;
         }
         key-pressed(event) => {
+            if root.options.length == 0 { return EventResult.reject; }
             if (event.text == Key.RightArrow || event.text == Key.DownArrow) {
                 root.select(Math.mod(root.current + 1, root.options.length));
                 return EventResult.accept;
@@ -65,12 +67,13 @@ export component SegmentedControl inherits Rectangle {
     }
 
     thumb := Rectangle {
-        x: root.inset + root.current * root.seg-w;
-        y: root.inset;
-        width: root.seg-w;
-        height: root.height - 2 * root.inset;
-        border-radius: root.workbench ? 8px : Theme.r-sm;
-        background: Theme.accent-soft;
+        x: root.inset + root.current * root.seg-w + (root.text-tabs ? (root.seg-w - self.width) / 2 : 0px);
+        y: root.text-tabs ? root.height - 3px : root.inset;
+        width: root.text-tabs ? Math.min(18px, root.seg-w) : root.seg-w;
+        height: root.text-tabs ? 2px : root.height - 2 * root.inset;
+        border-radius: root.text-tabs ? 1px : root.workbench ? 8px : Theme.r-sm;
+        background: root.text-tabs ? Theme.accent : Theme.accent-soft;
+        visible: root.current >= 0 && root.current < root.options.length;
 
         animate x, width { duration: root.reduced-motion ? 0ms : 180ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
     }
@@ -80,6 +83,12 @@ export component SegmentedControl inherits Rectangle {
         y: root.inset;
         width: root.seg-w;
         height: root.height - 2 * root.inset;
+        accessible-role: tab;
+        accessible-label: option;
+        accessible-enabled: root.enabled;
+        accessible-item-selectable: true;
+        accessible-item-selected: index == root.current;
+        accessible-action-default => { if root.enabled { fs.focus(); root.select(index); } }
 
         // The segment's whole box, so the label can centre in it; see the
         // note on IconButton's text in panel.slint for why a Text needs to
@@ -90,7 +99,7 @@ export component SegmentedControl inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: option;
-            color: index == root.current ? Theme.accent : segment.has-hover ? Theme.fg : Theme.fg-muted;
+            color: segment.pressed ? Theme.accent : index == root.current ? (root.text-tabs ? Theme.fg : Theme.accent) : segment.has-hover ? Theme.fg : Theme.fg-muted;
             font-size: root.text-size;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -109,8 +118,18 @@ export component SegmentedControl inherits Rectangle {
         }
     }
 
-    FocusRing {
+    if !root.text-tabs: FocusRing {
         active: root.ring;
         radius: root.workbench ? 8px : Theme.r;
+    }
+    if root.text-tabs && root.ring: Rectangle {
+        x: thumb.x;
+        y: root.height - 7px;
+        width: thumb.width;
+        height: 1px;
+        for dash[index] in [0, 1, 2]: Rectangle {
+            x: index * 6px; width: 4px; height: 1px;
+            background: Theme.focus-control;
+        }
     }
 }

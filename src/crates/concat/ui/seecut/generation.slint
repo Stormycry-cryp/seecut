@@ -28,7 +28,7 @@ component GenerationForm inherits Rectangle {
             height: 44px;
             spacing: 8px;
             SegmentedControl {
-                width: 176px; height: 36px; text-size: 14px; workbench: true; reduced-motion: SeeCut.reduced-motion;
+                width: 176px; height: 36px; text-size: 14px; workbench: true; text-tabs: true; reduced-motion: SeeCut.reduced-motion;
                 options: ["图片", "视频"];
                 current: SeeCut.mode;
                 changed(index) => { SeeCut.mode = index; SeeCut.changed("mode", index); }
@@ -673,7 +673,7 @@ export component GenerationPage inherits Rectangle {
     VerticalLayout {
         if root.narrow: HorizontalLayout {
             padding: 12px;
-            SegmentedControl { text-size: 14px; height: 36px; workbench: true; reduced-motion: SeeCut.reduced-motion; options: ["创建", "生成结果"]; current <=> root.step; }
+            SegmentedControl { text-size: 14px; height: 36px; workbench: true; text-tabs: true; reduced-motion: SeeCut.reduced-motion; options: ["创建", "生成结果"]; current <=> root.step; }
         }
         HorizontalLayout {
             vertical-stretch: 1;
