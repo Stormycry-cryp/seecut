@@ -1,0 +1,390 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Glyph, IconButton } from "../primitives/primitives.slint";
+import { Switch } from "../inspector/controls.slint";
+import { AppButton } from "components.slint";
+
+// Text is content only. Operation state always comes from the host separately.
+export struct AssistantMessage { role: string, text: string, state: string }
+
+component AssistantText inherits Text {
+    font-family: Theme.font;
+    font-size: Theme.workbench-font;
+    color: Theme.fg;
+    min-width: 0px;
+    wrap: word-wrap;
+    accessible-role: text;
+    accessible-label: self.text;
+}
+
+// CloudField's 128px minimum and text-only key-event cannot satisfy the
+// compact composer. Reuse its native TextInput/Flickable technique instead.
+component AssistantInput inherits Rectangle {
+    in-out property <string> value;
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> multiline;
+    in property <bool> password;
+    in property <bool> enabled: true;
+    in property <bool> send-enabled;
+    callback submit();
+    public function take-focus() { input.focus(); }
+    forward-focus: input;
+    min-width: 0px;
+    min-height: root.multiline ? 64px : 40px;
+    max-height: root.multiline ? 112px : 40px;
+    preferred-height: root.multiline ? min(112px, max(64px, input.preferred-height + 24px)) : 40px;
+    vertical-stretch: 0;
+    border-radius: 8px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.focus-control : Theme.workbench-control-border;
+    clip: true;
+    TouchArea { enabled: root.enabled; mouse-cursor: text; clicked => { input.focus(); } }
+    area := Flickable {
+        x: 12px; y: 12px;
+        width: max(0px, parent.width - 24px);
+        height: max(0px, parent.height - 24px);
+        viewport-width: root.multiline ? self.width : max(self.width, input.preferred-width);
+        viewport-height: max(self.height, input.preferred-height);
+        input := TextInput {
+            width: parent.width;
+            height: max(parent.height, self.preferred-height);
+            page-height: area.height;
+            text <=> root.value;
+            enabled: root.enabled;
+            single-line: !root.multiline;
+            wrap: root.multiline ? word-wrap : no-wrap;
+            input-type: root.password ? InputType.password : InputType.text;
+            font-family: Theme.font;
+            font-size: Theme.workbench-font;
+            color: root.enabled ? Theme.fg : Theme.fg-muted;
+            selection-background-color: Theme.accent-soft;
+            selection-foreground-color: Theme.workbench-selection-ink;
+            accessible-role: text-input;
+            accessible-label: root.label;
+            accessible-value: root.password ? (root.value == "" ? "" : "已填写") : self.text;
+            accessible-enabled: root.enabled;
+            accessible-placeholder-text: root.placeholder;
+            key-pressed(event) => {
+                // TextInput has no composition-state property. Ordinary Enter
+                // remains native text editing; only the explicit chord sends.
+                if root.multiline && event.text == "\n" && (event.modifiers.control || event.modifiers.meta) {
+                    if root.enabled && root.send-enabled { root.submit(); }
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+            cursor-position-changed(position) => {
+                if position.x + area.viewport-x < 0px {
+                    area.viewport-x = min(0px, max(area.width - self.width, -position.x));
+                } else if position.x + area.viewport-x > area.width {
+                    area.viewport-x = min(0px, max(area.width - self.width, area.width - position.x));
+                }
+                if position.y + area.viewport-y < 0px {
+                    area.viewport-y = min(0px, max(area.height - self.height, -position.y));
+                } else if position.y + area.viewport-y > area.height - 20px {
+                    area.viewport-y = min(0px, max(area.height - self.height, area.height - position.y - 20px));
+                }
+            }
+        }
+    }
+    if root.value == "": AssistantText {
+        x: 12px; y: 12px; width: max(0px, parent.width - 24px);
+        text: root.placeholder; color: Theme.fg-muted;
+        accessible-role: none;
+    }
+}
+
+component AssistantPathRow inherits VerticalLayout {
+    in property <string> label;
+    in property <string> filename;
+    in property <bool> enabled: true;
+    callback choose();
+    spacing: 4px;
+    AssistantText { text: root.label; color: Theme.fg-muted; }
+    HorizontalLayout {
+        spacing: 8px;
+        AssistantText { text: root.filename == "" ? "尚未选择" : root.filename; vertical-alignment: center; horizontal-stretch: 1; }
+        AppButton { label: "选择"; accessible-name: "选择" + root.label; height: 36px; enabled: root.enabled; clicked => { root.choose(); } }
+    }
+}
+
+export component AssistantPanel inherits Rectangle {
+    // These are facts supplied by the host, never inferred from model output.
+    in property <string> current-project;
+    in property <string> provider-label;
+    in property <string> connection;
+    in property <string> status;
+    in property <string> details;
+    in property <bool> busy;
+    in property <bool> unknown;
+    in property <bool> can-send;
+    in property <bool> can-stop;
+    in property <bool> can-connect;
+    in property <bool> connected;
+    in property <bool> can-disconnect;
+    in property <string> connect-label: "连接";
+    in property <bool> connecting;
+    in property <string> send-disabled-reason;
+    in property <string> connect-disabled-reason;
+    in property <[AssistantMessage]> messages;
+
+    in property <bool> read-granted;
+    in property <bool> write-granted;
+    in property <bool> can-grant-read;
+    in property <bool> can-revoke-read;
+    in property <bool> can-grant-write;
+    in property <bool> can-renew-write;
+    in property <bool> can-revoke-write;
+    in property <string> read-permission-status;
+    in property <string> write-permission-status;
+    in property <bool> approval-visible;
+    in property <string> approval-title;
+    in property <string> approval-description;
+    in property <bool> can-allow;
+    in property <bool> can-reject;
+
+    in property <string> initial-service-url;
+    in property <string> initial-model;
+    in property <bool> initial-images;
+    // Host provides display basenames after picking and validating the files.
+    in property <string> runtime-filename;
+    in property <string> entrypoint-filename;
+    in property <string> mcp-client-filename;
+    in property <bool> can-select-files: true;
+    in property <bool> reduced-motion;
+    in-out property <bool> settings-open;
+    in-out property <string> draft;
+
+    callback close-requested();
+    callback send(text: string);
+    callback stop();
+    callback connect(service-url: string, model-name: string, api-key: string, images: bool);
+    callback disconnect();
+    callback grant-read();
+    callback revoke-read();
+    callback grant-write();
+    callback renew-write();
+    callback revoke-write();
+    callback allow();
+    callback reject();
+    callback choose-runtime();
+    callback choose-entrypoint();
+    callback choose-mcp-client();
+
+    // Configuration drafts are local: host refreshes do not interrupt editing.
+    property <string> service-url;
+    property <string> model-name;
+    property <string> session-api-key;
+    property <bool> images;
+    property <bool> advanced-open;
+    property <bool> details-open;
+    property <bool> send-ready: !root.settings-open && root.can-send && !root.busy && !root.unknown && root.draft != "";
+    property <bool> connect-ready: root.can-connect && !root.connecting && !root.busy
+        && root.service-url != "" && root.model-name != "" && root.session-api-key != "";
+    init => {
+        root.service-url = root.initial-service-url;
+        root.model-name = root.initial-model;
+        root.images = root.initial-images;
+    }
+    // Call explicitly after asynchronous config load, never on a status tick.
+    public function load-configuration(url: string, model: string, supports-images: bool) {
+        root.service-url = url;
+        root.model-name = model;
+        root.images = supports-images;
+    }
+    public function clear-session-secret() { root.session-api-key = ""; }
+    public function focus-composer() {
+        if !root.settings-open && !root.unknown && (root.can-send || root.busy) { composer.take-focus(); }
+        else { settings-button.take-focus(); }
+    }
+    function submit() { if root.send-ready { root.send(root.draft); } }
+
+    width: 344px;
+    min-width: 300px;
+    max-width: 480px;
+    min-height: 0px;
+    background: Theme.panel;
+    clip: true;
+    accessible-label: "助手";
+    Rectangle { x: 0px; width: 1px; height: 100%; background: Theme.line; }
+    VerticalLayout {
+        spacing: 0px;
+        HorizontalLayout {
+            height: 40px;
+            padding-left: 12px; padding-right: 4px;
+            spacing: 4px;
+            AssistantText { text: "助手"; font-weight: Theme.weight-title; vertical-alignment: center; horizontal-stretch: 1; }
+            settings-button := IconButton {
+                side: 36px; icon-size: 20px; glyph: root.settings-open ? Glyph.chevron-left : Glyph.sliders;
+                label: root.settings-open ? "返回对话" : "助手设置";
+                clicked => { root.settings-open = !root.settings-open; }
+            }
+            IconButton {
+                side: 36px; icon-size: 20px; glyph: Glyph.close; label: "关闭助手";
+                clicked => { root.clear-session-secret(); root.close-requested(); }
+            }
+        }
+        VerticalLayout {
+            padding-left: 12px; padding-right: 12px; padding-bottom: 8px;
+            spacing: 4px;
+            AssistantText { text: root.current-project == "" ? "未打开工程" : root.current-project; overflow: elide; wrap: no-wrap; }
+            if root.provider-label != "": AssistantText { text: root.provider-label; color: Theme.fg-muted; }
+        }
+        Rectangle { height: 1px; background: Theme.line; }
+        body := ScrollView {
+            min-height: 0px;
+            vertical-stretch: 1;
+            viewport-width: self.width;
+            horizontal-scrollbar-policy: always-off;
+            VerticalLayout {
+                width: body.visible-width;
+                padding: 12px;
+                spacing: 12px;
+                alignment: start;
+                if root.connection != "": AssistantText { text: root.connection; color: Theme.fg-muted; }
+                if root.status != "": AssistantText { text: root.status; color: root.unknown ? Theme.danger : Theme.fg; }
+                if root.unknown && root.status == "": AssistantText { text: "操作结果待核实"; color: Theme.danger; }
+                if root.details != "": VerticalLayout {
+                    spacing: 4px;
+                    AppButton { label: root.details-open ? "收起详情" : "查看详情"; subtle: true; height: 36px; clicked => { root.details-open = !root.details-open; } }
+                    if root.details-open: AssistantText { text: root.details; color: Theme.fg-muted; }
+                }
+                if !root.settings-open: VerticalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        spacing: 4px;
+                        if root.read-permission-status != "": AssistantText { text: root.read-permission-status; color: Theme.fg-muted; }
+                        AppButton {
+                            label: root.read-granted ? "撤销读取与预览" : "允许读取与预览";
+                            enabled: root.read-granted ? root.can-revoke-read : root.can-grant-read;
+                            height: 36px;
+                            clicked => { if root.read-granted { root.revoke-read(); } else { root.grant-read(); } }
+                        }
+                        if root.write-permission-status != "": AssistantText { text: root.write-permission-status; color: Theme.fg-muted; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            AppButton {
+                                label: root.can-renew-write ? "续期 · 5分钟" : "允许移动 · 5分钟";
+                                enabled: root.can-renew-write || root.can-grant-write;
+                                height: 36px;
+                                clicked => { if root.can-renew-write { root.renew-write(); } else { root.grant-write(); } }
+                            }
+                            if root.can-revoke-write: AppButton { label: "撤销"; accessible-name: "撤销移动权限"; enabled: root.can-revoke-write; height: 36px; clicked => { root.revoke-write(); } }
+                        }
+                    }
+                    if root.approval-visible: VerticalLayout {
+                        spacing: 8px;
+                        Rectangle { height: 1px; background: Theme.line; }
+                        AssistantText { text: root.approval-title; font-weight: Theme.weight-title; }
+                        AssistantText { text: root.approval-description; color: Theme.fg-muted; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            AppButton { label: "拒绝"; enabled: root.can-reject; clicked => { root.reject(); } }
+                            AppButton { label: "允许"; primary: true; enabled: root.can-allow; clicked => { root.allow(); } }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.line; }
+                    if root.messages.length == 0: AssistantText { text: "描述你想了解或调整的内容"; color: Theme.fg-muted; }
+                    for message in root.messages: VerticalLayout {
+                        spacing: 4px;
+                        AssistantText { text: message.role; color: Theme.fg-muted; font-weight: Theme.weight-title; }
+                        AssistantText { text: message.text; }
+                        if message.state != "": AssistantText { text: message.state; color: Theme.fg-muted; }
+                    }
+                }
+                if root.settings-open: VerticalLayout {
+                    spacing: 12px;
+                    AssistantText { text: "发送后，当前问题和已允许的画布内容会交给此服务。"; color: Theme.fg-muted; }
+                    VerticalLayout {
+                        spacing: 4px;
+                        AssistantText { text: "服务地址"; color: Theme.fg-muted; }
+                        AssistantInput { value <=> root.service-url; label: "服务地址"; placeholder: "兼容 OpenAI 的接口地址"; enabled: !root.connecting && !root.busy; }
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        AssistantText { text: "模型"; color: Theme.fg-muted; }
+                        AssistantInput { value <=> root.model-name; label: "模型"; placeholder: "输入模型名称"; enabled: !root.connecting && !root.busy; }
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        AssistantText { text: "API 密钥"; color: Theme.fg-muted; }
+                        AssistantInput { value <=> root.session-api-key; label: "API 密钥"; placeholder: "仅用于本次会话"; password: true; enabled: !root.connecting && !root.busy; }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        AssistantText { text: "图片支持"; vertical-alignment: center; horizontal-stretch: 1; }
+                        Rectangle {
+                            width: 48px; height: 36px;
+                            Switch { x: 4px; y: 6px; width: 40px; height: 24px; checked <=> root.images; enabled: !root.connecting && !root.busy; reduced-motion: root.reduced-motion; accessible-label: "服务支持图片"; }
+                        }
+                    }
+                    AssistantText { text: "连接只初始化助手，不发送问题。"; color: Theme.fg-muted; }
+                    if !root.connected && !root.connect-ready: AssistantText {
+                        text: root.connecting ? "正在连接…" : root.service-url == "" ? "请填写服务地址" : root.model-name == "" ? "请填写模型名称" : root.session-api-key == "" ? "请填写本次会话的 API 密钥" : root.connect-disabled-reason == "" ? "当前无法连接" : root.connect-disabled-reason;
+                        color: Theme.fg-muted;
+                    }
+                    AppButton {
+                        label: root.connect-label;
+                        primary: !root.connected;
+                        enabled: root.connected ? root.can-disconnect && !root.connecting : root.connect-ready;
+                        horizontal-stretch: 1; elide-label: true;
+                        clicked => {
+                            if root.connected { root.disconnect(); }
+                            else if root.connect-ready { root.connect(root.service-url, root.model-name, root.session-api-key, root.images); }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.line; }
+                    AppButton { label: root.advanced-open ? "收起本地助手组件" : "本地助手组件"; subtle: true; height: 36px; clicked => { root.advanced-open = !root.advanced-open; } }
+                    if root.advanced-open: VerticalLayout {
+                        spacing: 12px;
+                        AssistantPathRow { label: "运行环境"; filename: root.runtime-filename; enabled: root.can-select-files; choose => { root.choose-runtime(); } }
+                        AssistantPathRow { label: "助手入口"; filename: root.entrypoint-filename; enabled: root.can-select-files; choose => { root.choose-entrypoint(); } }
+                        AssistantPathRow { label: "MCP 客户端"; filename: root.mcp-client-filename; enabled: root.can-select-files; choose => { root.choose-mcp-client(); } }
+                    }
+                }
+            }
+        }
+        // Keep the native input alive across settings to preserve its draft,
+        // composition/selection and scroll state. Settings only hides it.
+        Rectangle {
+            visible: !root.settings-open;
+            height: root.settings-open ? 0px : composer-layout.preferred-height;
+            min-height: 0px;
+            vertical-stretch: 0;
+            clip: true;
+            composer-layout := VerticalLayout {
+            height: self.preferred-height;
+            padding: 12px;
+            spacing: 8px;
+            Rectangle { height: 1px; background: Theme.line; }
+            composer := AssistantInput {
+                value <=> root.draft;
+                label: "给助手的问题"; placeholder: "输入问题…";
+                multiline: true;
+                // Busy blocks submission but preserves editable draft.
+                enabled: !root.settings-open && !root.unknown && (root.can-send || root.busy);
+                send-enabled: root.send-ready;
+                submit => { root.submit(); }
+            }
+            if !root.can-send || root.unknown: AssistantText {
+                text: root.unknown ? "本次助手会话已暂停，请核实操作结果" : root.send-disabled-reason == "" ? "当前无法发送" : root.send-disabled-reason;
+                color: Theme.fg-muted;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                AssistantText { text: "Ctrl/Cmd+Enter 发送"; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; }
+                AppButton {
+                    width: 72px; min-width: 72px;
+                    label: root.busy ? "停止" : "发送";
+                    primary: !root.busy;
+                    enabled: !root.settings-open && (root.busy ? root.can-stop : root.send-ready);
+                    clicked => { if root.busy { root.stop(); } else { root.submit(); } }
+                }
+            }
+            }
+        }
+    }
+}

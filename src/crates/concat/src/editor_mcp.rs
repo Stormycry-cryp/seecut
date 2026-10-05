@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Local Agent reads and one scoped move from the UI-owned Studio. Grants live
-//! only in this App process and are issued or revoked by the trusted Settings UI.
+//! only in this App process and are issued or revoked by the trusted native UI.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,6 +50,237 @@ struct Grant {
     token: String,
     project: String,
     media: bool,
+}
+
+pub const ASSISTANT_CLIENT_ID: &str = "seecut-assistant";
+
+// Legacy Settings exposes external-client credentials for manual setup. The
+// fixed assistant is configured through the trusted Rust host, never Slint.
+fn settings_visible_token(client: &str, token: &str) -> String {
+    if client == ASSISTANT_CLIENT_ID {
+        String::new()
+    } else {
+        token.to_owned()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum AssistantPermission {
+    GrantRead,
+    RevokeRead,
+    GrantWrite,
+    RenewWrite,
+    RevokeWrite,
+}
+
+/// Ephemeral credentials for the trusted host only. Deliberately not Debug or
+/// serializable; never publish either token to Slint, logs, or disk.
+pub struct AssistantSnapshot {
+    pub document: Option<crate::agent_controller::DocumentIdentity>,
+    pub project_name: String,
+    pub read_token: Option<String>,
+    pub write_token: Option<String>,
+    pub read_status: String,
+    pub write_status: String,
+    pub can_grant_read: bool,
+    pub can_revoke_read: bool,
+    pub can_grant_write: bool,
+    pub can_renew_write: bool,
+    pub can_revoke_write: bool,
+}
+
+// Pure registry policy shared by rendering and the trusted action preflight.
+// In particular WriteRegistry allows replacing an expired foreign lease, but
+// this fixed-client UI must not take it over, even after its deadline.
+#[derive(Clone, Copy)]
+struct AssistantPermissionContext<'a> {
+    scope: Option<&'a Scope>,
+    canvas: bool,
+    write_ready: bool,
+    now: Instant,
+}
+
+fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
+    context: AssistantPermissionContext<'_>,
+    project_name: String,
+    grants: &HashMap<String, Grant>,
+    writes: &WriteRegistry<P, R>,
+    write_token: &str,
+) -> AssistantSnapshot {
+    let AssistantPermissionContext {
+        scope,
+        canvas,
+        write_ready,
+        now,
+    } = context;
+    let grant = scope.and_then(|scope| {
+        grants
+            .get(ASSISTANT_CLIENT_ID)
+            .filter(|grant| grant.project == scope.project)
+    });
+    let read_ready = grant.is_some_and(|grant| grant.media);
+    let mut active = false;
+    let mut expired = false;
+    let mut conflict = false;
+    let mut minutes = 0;
+    match writes.lease_status(now) {
+        LeaseStatus::Active {
+            scope: lease_scope,
+            client,
+            remaining_minutes,
+        } if Some(lease_scope) == scope => {
+            active = client == ASSISTANT_CLIENT_ID;
+            conflict = !active;
+            minutes = remaining_minutes;
+        }
+        LeaseStatus::Expired {
+            scope: lease_scope,
+            client,
+        } if Some(lease_scope) == scope => {
+            expired = client == ASSISTANT_CLIENT_ID;
+            conflict = !expired;
+        }
+        _ => {}
+    }
+    let writable = scope.is_some() && canvas && read_ready && write_ready;
+    AssistantSnapshot {
+        document: scope.map(|scope| crate::agent_controller::DocumentIdentity {
+            instance_id: scope.instance.clone(),
+            project_id: scope.project.clone(),
+            document_session_id: scope.session.clone(),
+        }),
+        project_name: if scope.is_some() {
+            project_name
+        } else {
+            String::new()
+        },
+        read_token: grant
+            .filter(|grant| grant.media)
+            .map(|grant| grant.token.clone()),
+        write_token: if canvas && read_ready && active && !write_token.is_empty() {
+            Some(write_token.to_owned())
+        } else {
+            None
+        },
+        read_status: if scope.is_none() {
+            "请打开工程"
+        } else if read_ready {
+            "已允许读取与预览"
+        } else {
+            "未允许读取与预览"
+        }
+        .into(),
+        write_status: if scope.is_none() {
+            "请打开画布工程".into()
+        } else if !canvas {
+            "当前工程不支持移动".into()
+        } else if conflict {
+            "移动权限由其他客户端持有".into()
+        } else if !read_ready {
+            "请先允许读取与预览".into()
+        } else if active {
+            format!("已允许移动 · 剩余{minutes}分钟")
+        } else if expired {
+            "移动权限已到期，请续期".into()
+        } else if !write_ready {
+            "当前画布暂不可移动".into()
+        } else {
+            "未允许移动".into()
+        },
+        can_grant_read: scope.is_some(),
+        can_revoke_read: grant.is_some(),
+        can_grant_write: writable && !active && !expired && !conflict,
+        can_renew_write: writable && (active || expired),
+        can_revoke_write: canvas && (active || expired),
+    }
+}
+
+enum AssistantWriteChange {
+    None,
+    Issued,
+    Revoked,
+}
+
+// No App, Settings client draft, file system, or logging access. The caller
+// supplies freshly synchronized identity/readiness and generates a token only
+// after preflight. Return None when a stale/forged action is not permitted.
+fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
+    context: AssistantPermissionContext<'_>,
+    grants: &mut HashMap<String, Grant>,
+    writes: &mut WriteRegistry<P, R>,
+    write_token: &mut String,
+    action: AssistantPermission,
+    fresh_token: impl FnOnce() -> String,
+) -> Option<AssistantWriteChange> {
+    let AssistantPermissionContext {
+        scope,
+        canvas,
+        write_ready,
+        now,
+    } = context;
+    let snapshot = assistant_registry_snapshot(
+        AssistantPermissionContext {
+            scope,
+            canvas,
+            write_ready,
+            now,
+        },
+        String::new(),
+        grants,
+        writes,
+        write_token,
+    );
+    let allowed = match action {
+        AssistantPermission::GrantRead => snapshot.can_grant_read,
+        AssistantPermission::RevokeRead => snapshot.can_revoke_read,
+        AssistantPermission::GrantWrite => snapshot.can_grant_write,
+        AssistantPermission::RenewWrite => snapshot.can_renew_write,
+        AssistantPermission::RevokeWrite => snapshot.can_revoke_write,
+    };
+    if !allowed {
+        return None;
+    }
+    let scope = scope?;
+    match action {
+        AssistantPermission::GrantRead => {
+            grants.insert(
+                ASSISTANT_CLIENT_ID.into(),
+                Grant {
+                    token: fresh_token(),
+                    project: scope.project.clone(),
+                    media: true,
+                },
+            );
+            Some(AssistantWriteChange::None)
+        }
+        AssistantPermission::RevokeRead => {
+            grants.remove(ASSISTANT_CLIENT_ID);
+            if snapshot.can_revoke_write {
+                writes.revoke();
+                write_token.clear();
+                Some(AssistantWriteChange::Revoked)
+            } else {
+                Some(AssistantWriteChange::None)
+            }
+        }
+        AssistantPermission::GrantWrite | AssistantPermission::RenewWrite => {
+            let token = fresh_token();
+            let result = match action {
+                AssistantPermission::GrantWrite => {
+                    writes.trusted_grant(scope, ASSISTANT_CLIENT_ID, token.clone(), now)
+                }
+                _ => writes.trusted_renew(scope, ASSISTANT_CLIENT_ID, token.clone(), now),
+            };
+            result.ok()?;
+            *write_token = token;
+            Some(AssistantWriteChange::Issued)
+        }
+        AssistantPermission::RevokeWrite => {
+            writes.revoke();
+            write_token.clear();
+            Some(AssistantWriteChange::Revoked)
+        }
+    }
 }
 
 fn active_document_kind(
@@ -260,6 +491,70 @@ pub(crate) struct BridgeUi {
 }
 
 impl BridgeUi {
+    pub(crate) fn assistant_snapshot(&mut self, studio: &Studio, app: &App) -> AssistantSnapshot {
+        let active = self.active_ids(studio, app);
+        let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
+        let canvas = active.as_ref().is_some_and(|(kind, _)| kind == "canvas");
+        let project_name = match active.as_ref().map(|(kind, _)| kind.as_str()) {
+            Some("canvas") => studio.canvas.name.clone(),
+            Some("clip") => studio.project_name.clone(),
+            _ => String::new(),
+        };
+        let ready = canvas && self.grant_ready(studio, app).is_ok();
+        assistant_registry_snapshot(
+            AssistantPermissionContext {
+                scope: scope.as_ref(),
+                canvas,
+                write_ready: ready,
+                now: Instant::now(),
+            },
+            project_name,
+            &self.grants,
+            &self.writes,
+            &self.write_token,
+        )
+    }
+
+    /// Called only by explicit trusted native assistant permission callbacks.
+    /// Recheck the live document, modal/owner readiness and fixed-client policy;
+    /// neither a model request nor a Settings client draft can authorize this.
+    pub(crate) fn assistant_permission(
+        &mut self,
+        studio: &Studio,
+        app: &App,
+        action: AssistantPermission,
+    ) {
+        let active = self.active_ids(studio, app);
+        let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
+        let canvas = active.as_ref().is_some_and(|(kind, _)| kind == "canvas");
+        let ready = canvas && self.grant_ready(studio, app).is_ok();
+        match assistant_registry_permission(
+            AssistantPermissionContext {
+                scope: scope.as_ref(),
+                canvas,
+                write_ready: ready,
+                now: Instant::now(),
+            },
+            &mut self.grants,
+            &mut self.writes,
+            &mut self.write_token,
+            action,
+            || uuid::Uuid::new_v4().to_string(),
+        ) {
+            Some(AssistantWriteChange::Issued) => {
+                self.write_revoked = false;
+                self.write_message.clear();
+                self.refresh_write_minutes();
+            }
+            Some(AssistantWriteChange::Revoked) => {
+                self.write_revoked = true;
+                self.write_message.clear();
+                self.write_timer.stop();
+            }
+            _ => {}
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             instance_id: uuid::Uuid::new_v4().to_string(),
@@ -525,7 +820,7 @@ impl BridgeUi {
                     false,
                     true,
                     true,
-                    self.write_token.clone(),
+                    settings_visible_token(client, &self.write_token),
                 ),
                 LeaseStatus::Expired { client, .. } => (
                     client.to_owned(),
@@ -616,7 +911,7 @@ impl BridgeUi {
                 } else {
                     t("Read structure (R)")
                 },
-                grant.token.clone(),
+                settings_visible_token(self.client_draft.trim(), &grant.token),
             ),
             None => (t("No grant"), String::new()),
         }
@@ -1269,6 +1564,371 @@ pub fn remove_endpoint(_instance: &str) {
         let _ = thread.join();
     }
     remove_bound_endpoint();
+}
+
+#[cfg(test)]
+mod assistant_permission_tests {
+    use super::*;
+    use write_registry::LEASE_DURATION;
+
+    type Registry = WriteRegistry<(), ()>;
+
+    fn scope() -> Scope {
+        Scope {
+            instance: "app".into(),
+            project: "canvas".into(),
+            session: "session".into(),
+        }
+    }
+
+    fn reader(scope: &Scope, media: bool) -> HashMap<String, Grant> {
+        HashMap::from([(
+            ASSISTANT_CLIENT_ID.into(),
+            Grant {
+                token: "assistant-read".into(),
+                project: scope.project.clone(),
+                media,
+            },
+        )])
+    }
+
+    fn snapshot(
+        scope: &Scope,
+        grants: &HashMap<String, Grant>,
+        writes: &Registry,
+        token: &str,
+        now: Instant,
+    ) -> AssistantSnapshot {
+        assistant_registry_snapshot(
+            AssistantPermissionContext {
+                scope: Some(scope),
+                canvas: true,
+                write_ready: true,
+                now,
+            },
+            "画布工程".into(),
+            grants,
+            writes,
+            token,
+        )
+    }
+
+    #[test]
+    fn settings_redacts_assistant_credentials_and_preserves_external_setup() {
+        assert!(settings_visible_token(ASSISTANT_CLIENT_ID, "private-assistant-token").is_empty());
+        assert!(settings_visible_token("external", "external-token") == "external-token");
+    }
+
+    #[test]
+    fn foreign_active_and_expired_leases_cannot_be_exposed_or_changed() {
+        let scope = scope();
+        let now = Instant::now();
+        for at in [now, now + LEASE_DURATION] {
+            let mut writes = Registry::new();
+            writes.bind_scope(Some(scope.clone()));
+            writes
+                .trusted_grant(&scope, "external", "external-write".into(), now)
+                .unwrap();
+            let mut grants = reader(&scope, true);
+            grants.insert(
+                "external".into(),
+                Grant {
+                    token: "external-read".into(),
+                    project: scope.project.clone(),
+                    media: true,
+                },
+            );
+            let mut token = "external-write".to_owned();
+            let view = snapshot(&scope, &grants, &writes, &token, at);
+            assert!(view.write_token.is_none());
+            assert!(!view.can_grant_write && !view.can_renew_write && !view.can_revoke_write);
+            assert!(view.write_status == "移动权限由其他客户端持有");
+            for action in [
+                AssistantPermission::GrantWrite,
+                AssistantPermission::RenewWrite,
+                AssistantPermission::RevokeWrite,
+            ] {
+                assert!(
+                    assistant_registry_permission(
+                        AssistantPermissionContext {
+                            scope: Some(&scope),
+                            canvas: true,
+                            write_ready: true,
+                            now: at
+                        },
+                        &mut grants,
+                        &mut writes,
+                        &mut token,
+                        action,
+                        || panic!("denied actions must not issue credentials")
+                    )
+                    .is_none()
+                );
+            }
+            assert!(
+                assistant_registry_permission(
+                    AssistantPermissionContext {
+                        scope: Some(&scope),
+                        canvas: true,
+                        write_ready: true,
+                        now: at
+                    },
+                    &mut grants,
+                    &mut writes,
+                    &mut token,
+                    AssistantPermission::RevokeRead,
+                    || panic!("revoke must not issue credentials")
+                )
+                .is_some()
+            );
+            assert!(!grants.contains_key(ASSISTANT_CLIENT_ID));
+            assert!(
+                grants
+                    .get("external")
+                    .is_some_and(|grant| grant.token == "external-read")
+            );
+            assert!(token == "external-write");
+            assert!(matches!(
+                writes.lease_status(at),
+                LeaseStatus::Active {
+                    client: "external",
+                    ..
+                } | LeaseStatus::Expired {
+                    client: "external",
+                    ..
+                }
+            ));
+            assert!(
+                writes.authorize(&scope, &scope, "external", &token, at)
+                    == if at == now {
+                        Ok(())
+                    } else {
+                        Err(RegistryError::LeaseExpired)
+                    }
+            );
+        }
+    }
+
+    #[test]
+    fn assistant_expiry_withholds_token_and_explicit_renew_rotates_it() {
+        let scope = scope();
+        let now = Instant::now();
+        let mut writes = Registry::new();
+        writes.bind_scope(Some(scope.clone()));
+        writes
+            .trusted_grant(&scope, ASSISTANT_CLIENT_ID, "old-write".into(), now)
+            .unwrap();
+        let mut grants = reader(&scope, true);
+        let mut token = "old-write".to_owned();
+        let at = now + LEASE_DURATION;
+        let view = snapshot(&scope, &grants, &writes, &token, at);
+        assert!(view.write_token.is_none());
+        assert!(!view.can_grant_write && view.can_renew_write && view.can_revoke_write);
+        assert!(view.write_status == "移动权限已到期，请续期");
+        assert!(
+            assistant_registry_permission(
+                AssistantPermissionContext {
+                    scope: Some(&scope),
+                    canvas: true,
+                    write_ready: true,
+                    now: at
+                },
+                &mut grants,
+                &mut writes,
+                &mut token,
+                AssistantPermission::RenewWrite,
+                || "new-write".into()
+            )
+            .is_some()
+        );
+        assert!(
+            writes.authorize(&scope, &scope, ASSISTANT_CLIENT_ID, "old-write", at)
+                == Err(RegistryError::Unauthorized)
+        );
+        assert!(
+            writes
+                .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, &token, at)
+                .is_ok()
+        );
+        assert!(
+            snapshot(&scope, &grants, &writes, &token, at)
+                .write_token
+                .as_deref()
+                == Some("new-write")
+        );
+        assert!(
+            assistant_registry_permission(
+                AssistantPermissionContext {
+                    scope: Some(&scope),
+                    canvas: true,
+                    write_ready: false,
+                    now: at
+                },
+                &mut grants,
+                &mut writes,
+                &mut token,
+                AssistantPermission::RevokeRead,
+                || panic!("revoke must not issue credentials")
+            )
+            .is_some()
+        );
+        assert!(token.is_empty());
+        assert!(matches!(writes.lease_status(at), LeaseStatus::Unauthorized));
+    }
+
+    #[test]
+    fn read_only_is_not_preview_or_editing_and_grants_are_separate() {
+        let scope = scope();
+        let now = Instant::now();
+        let mut writes = Registry::new();
+        writes.bind_scope(Some(scope.clone()));
+        let mut grants = reader(&scope, false);
+        let mut token = String::new();
+        let view = snapshot(&scope, &grants, &writes, &token, now);
+        assert!(view.read_token.is_none() && !view.can_grant_write && view.can_revoke_read);
+        assert!(
+            assistant_registry_permission(
+                AssistantPermissionContext {
+                    scope: Some(&scope),
+                    canvas: true,
+                    write_ready: true,
+                    now
+                },
+                &mut grants,
+                &mut writes,
+                &mut token,
+                AssistantPermission::GrantWrite,
+                || panic!("R alone must not obtain E")
+            )
+            .is_none()
+        );
+        assert!(
+            assistant_registry_permission(
+                AssistantPermissionContext {
+                    scope: Some(&scope),
+                    canvas: true,
+                    write_ready: true,
+                    now
+                },
+                &mut grants,
+                &mut writes,
+                &mut token,
+                AssistantPermission::GrantRead,
+                || "full-read".into()
+            )
+            .is_some()
+        );
+        assert!(matches!(
+            writes.lease_status(now),
+            LeaseStatus::Unauthorized
+        ));
+        assert!(token.is_empty());
+        assert!(
+            assistant_registry_permission(
+                AssistantPermissionContext {
+                    scope: Some(&scope),
+                    canvas: true,
+                    write_ready: false,
+                    now
+                },
+                &mut grants,
+                &mut writes,
+                &mut token,
+                AssistantPermission::GrantWrite,
+                || panic!("busy or owner failure must deny E")
+            )
+            .is_none()
+        );
+        assert!(
+            assistant_registry_permission(
+                AssistantPermissionContext {
+                    scope: Some(&scope),
+                    canvas: true,
+                    write_ready: true,
+                    now
+                },
+                &mut grants,
+                &mut writes,
+                &mut token,
+                AssistantPermission::GrantWrite,
+                || "first-write".into()
+            )
+            .is_some()
+        );
+        assert!(
+            writes
+                .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, &token, now)
+                .is_ok()
+        );
+        assert!(
+            grants
+                .get(ASSISTANT_CLIENT_ID)
+                .is_some_and(|grant| grant.token == "full-read")
+        );
+    }
+
+    #[test]
+    fn no_active_document_and_changed_identity_never_reveal_background_credentials() {
+        let scope = scope();
+        let now = Instant::now();
+        let grants = reader(&scope, true);
+        let mut writes = Registry::new();
+        writes.bind_scope(Some(scope.clone()));
+        writes
+            .trusted_grant(&scope, ASSISTANT_CLIENT_ID, "write".into(), now)
+            .unwrap();
+        let view = assistant_registry_snapshot(
+            AssistantPermissionContext {
+                scope: None,
+                canvas: false,
+                write_ready: true,
+                now,
+            },
+            "后台画布".into(),
+            &grants,
+            &writes,
+            "write",
+        );
+        assert!(view.document.is_none() && view.project_name.is_empty());
+        assert!(view.read_token.is_none() && view.write_token.is_none());
+        assert!(
+            !view.can_grant_read
+                && !view.can_revoke_read
+                && !view.can_grant_write
+                && !view.can_renew_write
+                && !view.can_revoke_write
+        );
+        let next = Scope {
+            instance: "next-app".into(),
+            project: "next-project".into(),
+            session: "next-session".into(),
+        };
+        writes.bind_scope(Some(next.clone()));
+        let view = snapshot(&next, &grants, &writes, "write", now);
+        assert!(view.read_token.is_none() && view.write_token.is_none());
+        assert!(
+            view.document
+                .as_ref()
+                .is_some_and(|id| id.instance_id == next.instance
+                    && id.project_id == next.project
+                    && id.document_session_id == next.session)
+        );
+        let clip = assistant_registry_snapshot(
+            AssistantPermissionContext {
+                scope: Some(&scope),
+                canvas: false,
+                write_ready: true,
+                now,
+            },
+            "剪辑工程".into(),
+            &grants,
+            &writes,
+            "write",
+        );
+        assert!(clip.read_token.is_some() && clip.write_token.is_none());
+        assert!(!clip.can_grant_write && !clip.can_renew_write && !clip.can_revoke_write);
+        assert!(clip.project_name == "剪辑工程" && clip.write_status == "当前工程不支持移动");
+    }
 }
 
 #[cfg(test)]

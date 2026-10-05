@@ -7574,7 +7574,7 @@ mod project_open_tests {
         let (info, target) = scratch.project("unreadable");
         drop(target);
         let manifest = std::path::Path::new(&info.path).join("concat.json");
-        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
         // Superuser test runners cannot establish permission denial.
         let denies_read = std::fs::read(&manifest).is_err();
         if denies_read {

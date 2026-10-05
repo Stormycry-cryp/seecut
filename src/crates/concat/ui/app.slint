@@ -49,6 +49,8 @@ import { AuthDialog, EditorBridgeBar, WorkflowFeedback, WorkflowToast } from "se
 import { CanvasProjectsPage } from "seecut/project-gallery.slint";
 import { AssetPicker } from "seecut/asset-picker.slint";
 import { MediaPreview } from "seecut/media-preview.slint";
+import { Assistant, AssistantMessage } from "seecut/assistant_state.slint";
+import { AssistantDock } from "seecut/assistant_dock.slint";
 import {
     ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
     SelectedClipData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
@@ -57,7 +59,7 @@ import {
 
 // Re-exported so main.rs can reach the globals and the struct.
 export {
-    Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, CanvasControls, CanvasThumbs, I18n,
+    Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, CanvasControls, CanvasThumbs, I18n, Assistant, AssistantMessage,
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData, ParamFormat,
     DockDivider, DockSide, PaneKind, SeatBox,
     EffectData, MediaFilter, MediaItemData, MediaKind, TextPresetData,
@@ -101,6 +103,36 @@ export component App inherits Window {
             root.clip-create-open = false;
             keys.focus();
         }
+    }
+    property <bool> assistant-context: (SeeCut.page == 6 && !SeeCut.canvas-gallery-open && Editor.canvas-has-document)
+        || (SeeCut.page == 0 && !root.on-start);
+    property <bool> assistant-show: Assistant.enabled && Assistant.open && root.assistant-context;
+    property <length> assistant-width: root.width < 1100px ? 300px : 344px;
+    property <bool> assistant-replaces-sidebar: root.assistant-show && root.width < 1440px;
+    property <bool> assistant-was-open: Assistant.open;
+    property <bool> assistant-focus-pending;
+    changed assistant-context => {
+        if !root.assistant-context && Assistant.open { Assistant.close-requested(); }
+    }
+    changed assistant-was-open => {
+        if Assistant.open { root.assistant-focus-pending = true; }
+        else {
+            assistant-panel.clear-session-secret();
+            if Assistant.enabled && root.assistant-context { rail.focus-assistant(); }
+            else { keys.focus(); }
+        }
+    }
+    Timer {
+        interval: 1ms;
+        running: root.assistant-focus-pending;
+        triggered => {
+            root.assistant-focus-pending = false;
+            if root.assistant-show { assistant-panel.focus-composer(); }
+        }
+    }
+    function toggle-assistant() {
+        if Assistant.open { Assistant.close-requested(); }
+        else if Assistant.enabled && root.assistant-context { Assistant.open = true; }
     }
     property <bool> sheet-open: root.export.open || root.settings.open
         || root.project-sheet.open || root.captions.open || root.speech.open;
@@ -610,13 +642,17 @@ export component App inherits Window {
                 vertical-stretch: 1;
                 min-width: 0px;
                 min-height: 0px;
-                // Future Agent mounts beside the shared workspace and uses the same project/asset commands.
-                // Reserve the integration boundary without exposing an empty panel.
+                // Keep the editor toolbar full width; the assistant shares only the body.
+                property <length> assistant-top: SeeCut.page == 6 ? 56px : 54px + (root.project-open-busy ? 40px : 0px);
                 rail := AppRail {
                     x: 0; y: 0; height: parent.height;
                     begin-drag => { root.titlebar-begin-drag(); }
                     toggle-maximize => { root.titlebar-toggle-maximize(); }
                     open-settings => { root.focus-return = 5; root.open-settings(); }
+                    assistant-available: Assistant.enabled;
+                    assistant-enabled: root.assistant-context;
+                    assistant-active: root.assistant-show;
+                    toggle-assistant => { root.toggle-assistant(); }
                 }
                 if SeeCut.page != 0 && SeeCut.page != 6: CloudWorkbench { compact-height: root.height < 800px; x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%; }
                 if SeeCut.page == 6 && SeeCut.canvas-gallery-open: CanvasProjectsPage {
@@ -681,11 +717,26 @@ export component App inherits Window {
                                     height: 32px; label: "导出"; enabled: Editor.canvas-has-document;
                                     clicked => { root.focus-return = 2; SeeCut.canvas-export-open = true; }
                                 }
-                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.sliders; label: Editor.canvas-sidebar-open ? "收起图层与属性" : "展开图层与属性"; checkable: true; checked: Editor.canvas-sidebar-open; clicked => { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; } }
+                                WorkspaceIcon {
+                                    width: 32px; height: 32px; side: 32px; glyph: Glyph.sliders;
+                                    label: Editor.canvas-sidebar-open && !root.assistant-replaces-sidebar ? "收起图层与属性" : "展开图层与属性";
+                                    checkable: true; checked: Editor.canvas-sidebar-open && !root.assistant-replaces-sidebar;
+                                    clicked => {
+                                        if root.assistant-replaces-sidebar { Assistant.close-requested(); Editor.canvas-sidebar-open = true; }
+                                        else { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; }
+                                    }
+                                }
                             }
                         }
-                        WorkflowFeedback { }
-                        Seat { kind: PaneKind.canvas; standalone: true; vertical-stretch: 1; }
+                        HorizontalLayout {
+                            vertical-stretch: 1; min-height: 0px; spacing: 0px;
+                            VerticalLayout {
+                                horizontal-stretch: 1; min-width: 0px;
+                                WorkflowFeedback { }
+                                Seat { kind: PaneKind.canvas; standalone: true; hide-sidebar: root.assistant-replaces-sidebar; vertical-stretch: 1; min-width: 0px; }
+                            }
+                            Rectangle { width: root.assistant-show ? root.assistant-width : 0px; }
+                        }
                     }
                 }
                 if SeeCut.page == 0: Rectangle {
@@ -713,29 +764,48 @@ export component App inherits Window {
                             AppButton { label: I18n.t("Cancel"); height: 28px; clicked => { root.project-open-cancel(); } }
                         }
                     }
-                    WorkflowFeedback { }
-                    if root.on-start: StartScreen {
-                        vertical-stretch: 1;
-                        create-open <=> root.clip-create-open;
-                        data: root.start;
-                        resolutions: root.start-resolutions;
-                        rates: root.start-rates;
-                        recents: root.recents;
+                    HorizontalLayout {
+                        vertical-stretch: 1; min-height: 0px; spacing: 0px;
+                        VerticalLayout {
+                            horizontal-stretch: 1; min-width: 0px;
+                            WorkflowFeedback { }
+                            if root.on-start: StartScreen {
+                                vertical-stretch: 1;
+                                create-open <=> root.clip-create-open;
+                                data: root.start;
+                                resolutions: root.start-resolutions;
+                                rates: root.start-rates;
+                                recents: root.recents;
 
-                        name-edited(name) => { root.start-name-edited(name); }
-                        location-edited(path) => { root.start-location-edited(path); }
-                        browse => { root.start-browse(); }
-                        resolution-changed(index) => { root.start-resolution-changed(index); }
-                        rate-changed(index) => { root.start-rate-changed(index); }
-                        create => { root.start-create(); }
-                        create-cancelled => { root.project-open-cancel(); SeeCut.action("handoff-create-cancel", ""); }
-                        open-recent(path) => { root.start-open-recent(path); }
-                        forget-recent(path) => { root.start-forget-recent(path); }
-                        dismiss-error => { root.start-dismiss-error(); }
+                                name-edited(name) => { root.start-name-edited(name); }
+                                location-edited(path) => { root.start-location-edited(path); }
+                                browse => { root.start-browse(); }
+                                resolution-changed(index) => { root.start-resolution-changed(index); }
+                                rate-changed(index) => { root.start-rate-changed(index); }
+                                create => { root.start-create(); }
+                                create-cancelled => { root.project-open-cancel(); SeeCut.action("handoff-create-cancel", ""); }
+                                open-recent(path) => { root.start-open-recent(path); }
+                                forget-recent(path) => { root.start-forget-recent(path); }
+                                dismiss-error => { root.start-dismiss-error(); }
+                            }
+                            if !root.on-start: Workspace { vertical-stretch: 1; min-width: 0px; }
+                        }
+                        Rectangle { width: root.assistant-show ? root.assistant-width : 0px; }
                     }
-
-                    if !root.on-start: Workspace { vertical-stretch: 1; }
                     }
+                }
+                assistant-keys := FocusScope {
+                    x: parent.width - root.assistant-width;
+                    y: workspace-area.assistant-top;
+                    width: root.assistant-width;
+                    height: Math.max(0px, parent.height - self.y);
+                    visible: root.assistant-show;
+                    enabled: root.assistant-show;
+                    focus-on-tab-navigation: false;
+                    // Child inputs consume editing keys first; remaining keys must not edit the canvas.
+                    key-pressed(event) => { return event.text == "\t" ? EventResult.reject : EventResult.accept; }
+                    key-released(event) => { return EventResult.accept; }
+                    assistant-panel := AssistantDock { width: 100%; height: 100%; }
                 }
             }
         }

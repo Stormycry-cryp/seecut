@@ -33,6 +33,12 @@ mod ui {
     slint::include_modules!();
 }
 
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_controller;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_process;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_ui;
 mod chips;
 mod cloud;
 mod cloud_files;
@@ -2236,9 +2242,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // The timer is the animation's only owner; the event loop outlives it.
     std::mem::forget(ants);
 
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    let assistant = agent_ui::bind(&app);
     let result = app.run();
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     {
+        assistant.shutdown();
+        // Normal UI callbacks stay nonblocking. Only process exit waits for owned children.
+        if !agent_process::shutdown_all_at_exit() {
+            log::warn!("assistant shutdown did not finish before the exit deadline");
+        }
         let instance = shell
             .studio
             .borrow()

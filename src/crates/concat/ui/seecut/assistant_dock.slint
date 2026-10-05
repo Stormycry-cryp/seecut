@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { AssistantPanel } from "assistant.slint";
+import { Assistant } from "assistant_state.slint";
+import { SeeCut } from "state.slint";
+
+// One persistent view; only the host supplies connection and operation facts.
+export component AssistantDock inherits AssistantPanel {
+    current-project: Assistant.current-project;
+    provider-label: Assistant.provider-label;
+    connection: Assistant.connection;
+    status: Assistant.status;
+    details: Assistant.details;
+    busy: Assistant.busy;
+    unknown: Assistant.unknown;
+    can-send: Assistant.can-send;
+    can-stop: Assistant.can-stop;
+    can-connect: Assistant.can-connect;
+    connected: Assistant.connected;
+    can-disconnect: Assistant.can-disconnect;
+    connect-label: Assistant.connect-label;
+    connecting: Assistant.connecting;
+    send-disabled-reason: Assistant.send-disabled-reason;
+    connect-disabled-reason: Assistant.connect-disabled-reason;
+    messages: Assistant.messages;
+    read-granted: Assistant.read-granted;
+    write-granted: Assistant.write-granted;
+    can-grant-read: Assistant.can-grant-read;
+    can-revoke-read: Assistant.can-revoke-read;
+    can-grant-write: Assistant.can-grant-write;
+    can-renew-write: Assistant.can-renew-write;
+    can-revoke-write: Assistant.can-revoke-write;
+    read-permission-status: Assistant.read-permission-status;
+    write-permission-status: Assistant.write-permission-status;
+    approval-visible: Assistant.approval-visible;
+    approval-title: Assistant.approval-title;
+    approval-description: Assistant.approval-description;
+    can-allow: Assistant.can-allow;
+    can-reject: Assistant.can-reject;
+    initial-service-url: Assistant.initial-service-url;
+    initial-model: Assistant.initial-model;
+    initial-images: Assistant.initial-images;
+    runtime-filename: Assistant.runtime-filename;
+    entrypoint-filename: Assistant.entrypoint-filename;
+    mcp-client-filename: Assistant.mcp-client-filename;
+    can-select-files: Assistant.can-select-files;
+    reduced-motion: SeeCut.reduced-motion;
+    settings-open <=> Assistant.settings-open;
+    draft <=> Assistant.draft;
+    property <int> clear-token: Assistant.secret-clear-token;
+    changed clear-token => { root.clear-session-secret(); }
+    close-requested() => { Assistant.close-requested(); }
+    send(text) => { Assistant.send(text); }
+    stop() => { Assistant.stop(); }
+    connect(service-url, model-name, api-key, images) => { Assistant.connect(service-url, model-name, api-key, images); }
+    disconnect() => { Assistant.disconnect(); }
+    grant-read() => { Assistant.grant-read(); }
+    revoke-read() => { Assistant.revoke-read(); }
+    grant-write() => { Assistant.grant-write(); }
+    renew-write() => { Assistant.renew-write(); }
+    revoke-write() => { Assistant.revoke-write(); }
+    allow() => { Assistant.allow(); }
+    reject() => { Assistant.reject(); }
+    choose-runtime() => { Assistant.choose-runtime(); }
+    choose-entrypoint() => { Assistant.choose-entrypoint(); }
+    choose-mcp-client() => { Assistant.choose-mcp-client(); }
+}

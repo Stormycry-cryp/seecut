@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { AssistantMessage } from "assistant.slint";
+export { AssistantMessage };
+
+// Host facts and explicit actions. Credentials and lease tokens never live here.
+export global Assistant {
+    in-out property <bool> open;
+    in-out property <bool> enabled;
+    in-out property <string> current-project;
+    in-out property <string> provider-label;
+    in-out property <string> connection;
+    in-out property <string> status;
+    in-out property <string> details;
+    in-out property <bool> busy;
+    in-out property <bool> unknown;
+    in-out property <bool> can-send;
+    in-out property <bool> can-stop;
+    in-out property <bool> can-connect;
+    in-out property <bool> connected;
+    in-out property <bool> can-disconnect;
+    in-out property <string> connect-label: "连接";
+    in-out property <bool> connecting;
+    in-out property <string> send-disabled-reason;
+    in-out property <string> connect-disabled-reason;
+    in-out property <[AssistantMessage]> messages;
+    in-out property <bool> read-granted;
+    in-out property <bool> write-granted;
+    in-out property <bool> can-grant-read;
+    in-out property <bool> can-revoke-read;
+    in-out property <bool> can-grant-write;
+    in-out property <bool> can-renew-write;
+    in-out property <bool> can-revoke-write;
+    in-out property <string> read-permission-status;
+    in-out property <string> write-permission-status;
+    in-out property <bool> approval-visible;
+    in-out property <string> approval-title;
+    in-out property <string> approval-description;
+    in-out property <bool> can-allow;
+    in-out property <bool> can-reject;
+    in-out property <string> initial-service-url;
+    in-out property <string> initial-model;
+    in-out property <bool> initial-images;
+    in-out property <string> runtime-filename;
+    in-out property <string> entrypoint-filename;
+    in-out property <string> mcp-client-filename;
+    in-out property <bool> can-select-files;
+    in-out property <bool> reduced-motion;
+    in-out property <bool> settings-open;
+    in-out property <string> draft;
+    callback close-requested();
+    // App observes this revision and clears the mounted panel's private password.
+    in-out property <int> secret-clear-token;
+    callback send(string);
+    callback stop();
+    callback connect(string, string, string, bool);
+    callback disconnect();
+    callback grant-read();
+    callback revoke-read();
+    callback grant-write();
+    callback renew-write();
+    callback revoke-write();
+    callback allow();
+    callback reject();
+    callback choose-runtime();
+    callback choose-entrypoint();
+    callback choose-mcp-client();
+}
