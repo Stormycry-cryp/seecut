@@ -326,11 +326,13 @@ jobs:
           QA_SCRIPT="$PWD/scripts/independent-linux-blackbox.py"
           BUS_COMMAND=()
           BUS_ARGS=()
+          INPUT_ARGS=()
           if [[ "$NEXT_STAGE" == workflow-observation ]]; then
             [[ "$QA_SECONDS" == 300 && -n "$SOURCE_ARTIFACT_ID" ]]
             QA_SCRIPT="$PWD/scripts/independent-workflow-ui.py"
             BUS_COMMAND=(dbus-run-session --)
             BUS_ARGS=(--private-accessibility-bus)
+            INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
           fi
           APPROVAL_ARGS=()
           if [[ -n "$QA_IDENTITY_APPROVAL" ]]; then
@@ -368,7 +370,7 @@ jobs:
             --qa-script "$QA_SCRIPT" \
             --output "$RUNNER_TEMP/seecut-window-evidence" \
             --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" \
-            --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}" "${DISPLAY_CAPTURE_ARGS[@]}" "${BUS_ARGS[@]}"
+            --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}" "${DISPLAY_CAPTURE_ARGS[@]}" "${BUS_ARGS[@]}" "${INPUT_ARGS[@]}"
 
       - name: Seal private QA evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa

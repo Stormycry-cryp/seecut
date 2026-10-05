@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Finite public UI observation, with current-frame guards before every click.
+"""Finite UI workflow using reviewed pixels and live public native-dialog roles.
 
-No application internals, file dialog typing, grants, clipboard, or MCP calls.
+Only exact owned fixture/output paths may be entered in a proven GTK chooser.
+No application internals, grants, clipboard, generation or MCP calls.
 The launcher owns the one private App instance and its cleanup within 300s.
 """
 import argparse
@@ -13,6 +14,7 @@ import re
 import shutil
 import subprocess
 import time
+from workflow_checks import locate_fixture, translated
 
 HEAD = 'ef1831769d52daceb1f38bcd15679c61f595408d'
 APP_SHA = 'a734649f619c317e5d051b0d98b5d590f8ee7db8cddfaa437d19fe4143b8db67'
@@ -43,6 +45,8 @@ def main():
     parser.add_argument('--isolated-display-capture', action='store_true')
     parser.add_argument('--private-accessibility-bus', action='store_true')
     parser.add_argument('--probe-python', default='/usr/bin/python3')
+    parser.add_argument('--input-dir', type=Path, required=True,
+                        help='Owned directory containing the exact three QA fixtures and manifest')
     args = parser.parse_args()
     start = time.monotonic()
     deadline = min(start + 270, args.deadline_monotonic - 15)
@@ -52,11 +56,12 @@ def main():
               'file_input_attempted': False, 'file_selected': False,
               'permissions_granted': False, 'client_started': False,
               'paid_action_requested': False, 'settings_pixels_captured': False,
+              'stages': {}, 'window_observations': [],
               'cleanup_owner': 'launcher; whole App run including cleanup <=300s'}
     evidence = None
     settings_entered = False
 
-    def command(argv, timeout=6, binary=False):
+    def command(argv, timeout=6, binary=False, allow_empty=False):
         left = deadline - time.monotonic()
         if left < 0.25:
             raise Stop('deadline_no_further_input')
@@ -65,7 +70,9 @@ def main():
                                   text=not binary, timeout=min(timeout, left)).stdout
         except subprocess.TimeoutExpired:
             raise Stop('command_timeout_no_retry') from None
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as exc:
+            if allow_empty and exc.returncode == 1:
+                return b'' if binary else ''
             raise Stop('public_UI_command_failed_raw_output_withheld') from None
 
     def pause():
@@ -90,7 +97,7 @@ def main():
                                   'surface': 'dedicated-private-Xvfb' if root else 'App-window'})
         return path
 
-    def guard(frame, name):
+    def matched(frame, name):
         spec = ui['guards'][name]
         x, y, width, height = spec['region']
         raw = command(['convert', str(frame), '-crop', f'{width}x{height}+{x}+{y}',
@@ -99,7 +106,10 @@ def main():
         matched = len(raw) == width * height * 3 and digest == spec['rgb_sha256']
         report['guards'].append({'frame': frame.name, 'control_context': name,
                                  'rgb_sha256': digest, 'matched': matched})
-        if not matched:
+        return matched
+
+    def guard(frame, name):
+        if not matched(frame, name):
             raise Stop('current_control_context_differs:' + name)
 
     def click(key, frame, contexts, direct=False):
@@ -118,40 +128,241 @@ def main():
 
     def owned_focus(pid):
         visited = set()
-        while pid >= 2 and pid not in visited and len(visited) < 16:
-            visited.add(pid)
-            proc = Path('/proc') / str(pid)
-            if proc.stat().st_uid != os.getuid():
-                return False
-            if pid == args.app_pid:
-                return True
-            lines = (proc / 'status').read_text().splitlines()
-            parent = next((line for line in lines if line.startswith('PPid:')), None)
-            if parent is None:
-                return False
-            pid = int(parent.split()[1])
+        try:
+            while pid >= 2 and pid not in visited and len(visited) < 16:
+                visited.add(pid)
+                proc = Path('/proc') / str(pid)
+                if not proc.exists() or proc.stat().st_uid != os.getuid():
+                    return False
+                if pid == args.app_pid:
+                    return True
+                lines = (proc / 'status').read_text().splitlines()
+                parent = next((line for line in lines if line.startswith('PPid:')), None)
+                if parent is None:
+                    return False
+                pid = int(parent.split()[1])
+        except (OSError, ValueError):
+            return False
         return False
 
-    def cancel_to_editor(name):
-        focused = int(command(['xdotool', 'getwindowfocus']).strip())
-        pid = int(command(['xdotool', 'getwindowpid', str(focused)]).strip())
-        if not owned_focus(pid):
-            raise Stop('unknown_focus_owner_no_Escape')
-        command(['xdotool', 'key', '--clearmodifiers', 'Escape'])
-        report['actions'].append({'kind': 'key', 'key': 'Escape',
-                                  'focused_window': focused, 'owned_pid': pid})
+    def descendants():
+        pids, pending = {args.app_pid}, [args.app_pid]
+        while pending and len(pids) < 24:
+            pid = pending.pop()
+            proc = Path('/proc') / str(pid)
+            if not proc.exists() or not owned_focus(pid):
+                continue
+            for task in list((proc / 'task').iterdir())[:64]:
+                child_file = task / 'children'
+                if not child_file.exists():
+                    continue
+                try:
+                    children = list(map(int, child_file.read_text().split()))
+                except FileNotFoundError:
+                    continue
+                for child in children:
+                    if child not in pids and len(pids) < 24 and owned_focus(child):
+                        pids.add(child)
+                        pending.append(child)
+        return pids
+
+    def visible_windows():
+        result = []
+        for pid in descendants():
+            ids = command(['xdotool', 'search', '--onlyvisible', '--pid', str(pid)], allow_empty=True).split()
+            for wid in set(map(int, ids)):
+                if wid == window:
+                    continue
+                fields = dict(line.split('=', 1) for line in command(['xdotool', 'getwindowgeometry', '--shell', str(wid)]).splitlines() if '=' in line)
+                bounds = [int(fields[key]) for key in ('X', 'Y', 'WIDTH', 'HEIGHT')]
+                x, y, width, height = bounds
+                if width >= 160 and height >= 100:
+                    result.append({'window': wid, 'pid': pid, 'bounds': bounds, 'mapped_visible': True,
+                                   'inside_private_display': x >= 0 and y >= 0 and x + width <= int(dims[0]) and y + height <= int(dims[1])})
+        return sorted(result, key=lambda item: item['window'])
+
+    def await_native(phase):
+        until = min(deadline, time.monotonic() + 12)
+        previous, stable_at = None, None
+        while time.monotonic() < until:
+            found = visible_windows()
+            if len(found) > 1:
+                snapshot(phase + '-ambiguous-native', root=True)
+                raise Stop('multiple_visible_native_windows_no_input:' + phase)
+            if found:
+                current = found[0]
+                if not current['inside_private_display']:
+                    snapshot(phase + '-native-outside-display', root=True)
+                    raise Stop('mapped_native_not_inside_private_display:' + phase)
+                if current == previous and time.monotonic() - stable_at >= 0.8:
+                    report['window_observations'].append(dict(current, phase=phase))
+                    snapshot(phase + '-native-visible', root=True)
+                    return current
+                if current != previous:
+                    previous, stable_at = current, time.monotonic()
+            else:
+                previous, stable_at = None, None
+            time.sleep(0.25)
+        snapshot(phase + '-no-visible-native-after-wait', root=True)
+        report['window_observations'].append({'phase': phase, 'mapped_visible': False,
+                                               'owned_pids': sorted(descendants()), 'wait_limit_seconds': 12})
+        raise Stop('no_stable_visible_native_window_after_wait:' + phase)
+
+    def public_metadata(pid, name):
+        if not args.private_accessibility_bus:
+            raise Stop('private_public_accessibility_required_for_native_input')
+        completed = subprocess.run([args.probe_python, '-B', str(helper), '--app-pid', str(pid),
+                                    '--owned-root-pid', str(args.app_pid), '--output', str(evidence),
+                                    '--output-name', name + '.json', '--deadline-monotonic', str(min(deadline, time.monotonic() + 3)),
+                                    '--private-accessibility-bus'], capture_output=True,
+                                   timeout=min(5, max(0.25, deadline - time.monotonic())))
+        path = evidence / (name + '.json')
+        if completed.returncode != 0 or not path.is_file() or path.stat().st_size > 128 * 1024:
+            raise Stop('public_accessibility_unavailable:' + name)
+        data = json.loads(path.read_text())
+        if not data.get('coverage_complete'):
+            raise Stop('public_metadata_incomplete_no_unique_control_inference:' + name)
+        return data
+
+    def inside(node, native):
+        bounds = node.get('bounds')
+        if not bounds:
+            return False
+        x, y, width, height = native['bounds']
+        return (bounds['width'] > 0 and bounds['height'] > 0 and bounds['x'] >= x and bounds['y'] >= y
+                and bounds['x'] + bounds['width'] <= x + width and bounds['y'] + bounds['height'] <= y + height)
+
+    def focus_visible(native):
+        if native not in visible_windows():
+            raise Stop('native_window_disappeared_no_input')
+        command(['xdotool', 'windowfocus', '--sync', str(native['window'])])
+        if int(command(['xdotool', 'getwindowfocus']).strip()) != native['window']:
+            raise Stop('visible_native_focus_not_confirmed')
+
+    def await_native_gone(native, phase):
+        until = min(deadline, time.monotonic() + 12)
+        while time.monotonic() < until:
+            if not visible_windows():
+                main_ids = command(['xdotool', 'search', '--onlyvisible', '--pid', str(args.app_pid)], allow_empty=True).split()
+                if str(window) not in main_ids:
+                    raise Stop('main_window_not_mapped_after_native_return')
+                command(['xdotool', 'windowfocus', '--sync', str(window)])
+                pause()
+                frame = snapshot(phase + '-returned-App')
+                # Close only a visually proven App menu, never a guessed native window.
+                if matched(frame, 'open-menu'):
+                    command(['xdotool', 'key', '--clearmodifiers', 'Escape'])
+                    report['actions'].append({'kind': 'key', 'key': 'Escape', 'target': 'visibly-matched-App-open-menu'})
+                    pause()
+                    frame = snapshot(phase + '-menu-closed')
+                if visible_windows() or matched(frame, 'open-menu'):
+                    raise Stop('return_still_has_native_or_App_menu:' + phase)
+                guard(frame, 'editor-tools')
+                guard(frame, 'save-control')
+                report['window_observations'].append({'phase': phase, 'native_gone': True,
+                                                       'main_window_visible': True, 'main_window': window})
+                return frame
+            time.sleep(0.25)
+        snapshot(phase + '-native-not-gone', root=True)
+        raise Stop('native_window_not_visibly_gone:' + phase)
+
+    def choose_owned_path(native, path, phase, accept_labels):
+        metadata = public_metadata(native['pid'], phase + '-public-before')
+        nodes = metadata['nodes']
+        if (metadata.get('toolkit') != 'GTK'
+                or not any(n.get('file_chooser') and n.get('showing') and inside(n, native) for n in nodes)
+                or not any(n.get('button') and n.get('showing') and n.get('enabled')
+                           and n.get('label') in accept_labels and inside(n, native) for n in nodes)):
+            raise Stop('native_file_chooser_semantics_not_confirmed:' + phase)
+        focus_visible(native)
+        # GTK's documented location-popup binding, after actual role/toolkit/action proof.
+        command(['xdotool', 'key', '--clearmodifiers', 'ctrl+l'])
         pause()
-        frame = snapshot(name)
-        if int(command(['xdotool', 'getwindowfocus']).strip()) != window:
-            raise Stop('dialog_not_proven_closed_no_next_input')
-        for context in ('editor-toolbar', 'editor-tools', 'blank-canvas'):
-            guard(frame, context)
+        metadata = public_metadata(native['pid'], phase + '-public-location')
+        entries = [n for n in metadata['nodes'] if n.get('entry') and n.get('editable')
+                   and n.get('showing') and n.get('enabled') and n.get('focused') and inside(n, native)]
+        if len(entries) != 1:
+            raise Stop('GTK_location_entry_not_unique_focused_no_typing:' + phase)
+        focus_visible(native)
+        command(['xdotool', 'key', '--clearmodifiers', 'ctrl+a'])
+        command(['xdotool', 'type', '--clearmodifiers', '--delay', '1', '--', str(path)])
+        report['file_input_attempted'] = True
+        report['actions'].append({'kind': 'owned-path-input', 'purpose': phase, 'basename': path.name,
+                                  'native_window': native['window'], 'entry_role_verified': True})
+        pause()
+        metadata = public_metadata(native['pid'], phase + '-public-before-accept')
+        buttons = [n for n in metadata['nodes'] if n.get('button') and n.get('showing') and n.get('enabled')
+                   and n.get('label') in accept_labels and inside(n, native)]
+        if len(buttons) != 1:
+            raise Stop('native_accept_action_not_unique:' + phase)
+        focus_visible(native)
+        bounds = buttons[0]['bounds']
+        command(['xdotool', 'mousemove', str(bounds['x'] + bounds['width'] // 2), str(bounds['y'] + bounds['height'] // 2)])
+        command(['xdotool', 'click', '1'])
+        report['actions'].append({'kind': 'public-semantic-click', 'label': buttons[0]['label'],
+                                  'purpose': phase, 'native_window': native['window']})
+        return await_native_gone(native, phase)
+
+    def image_info(frame):
+        raw = command(['convert', str(frame), '-alpha', 'off', '-depth', '8', 'rgb:-'], binary=True)
+        try:
+            return locate_fixture(raw, 1280, 900, (128, 88, 960, 870))
+        except ValueError as exc:
+            raise Stop(str(exc)) from None
+
+    def edit_and_undo(frame, phase):
+        before = image_info(frame)
+        guard(frame, 'editor-tools')
+        if visible_windows():
+            raise Stop('native_still_visible_before_edit')
+        command(['xdotool', 'windowfocus', '--sync', str(window)])
+        x, y = map(round, before['centroids'][0])
+        dx, dy = 26, 17
+        command(['xdotool', 'mousemove', '--window', str(window), str(x), str(y)])
+        command(['xdotool', 'mousedown', '1'])
+        try:
+            for mx, my in ((13, 8), (26, 17)):
+                command(['xdotool', 'mousemove', '--window', str(window), str(x + mx), str(y + my)])
+                time.sleep(0.15)
+        finally:
+            command(['xdotool', 'mouseup', '1'])
+        command(['xdotool', 'mousemove', '--window', str(window), '100', '700'])
+        pause()
+        moved_frame = snapshot(phase + '-dragged')
+        after = image_info(moved_frame)
+        if not translated(before, after, dx, dy):
+            raise Stop('actual_two_axis_drag_not_visibly_confirmed:' + phase)
+        # One conventional Linux Undo; the real result decides whether it worked.
+        command(['xdotool', 'key', '--clearmodifiers', 'ctrl+z'])
+        pause()
+        frame = snapshot(phase + '-one-Undo')
+        restored = image_info(frame)
+        if not translated(before, restored, 0, 0):
+            raise Stop('one_native_Undo_did_not_restore_fixture:' + phase)
+        report['stages'][phase] = {'visible_drag_pixels': [dx, dy], 'before': before,
+                                    'after': after, 'one_Undo_restored': restored,
+                                    'verdict': 'pending_independent_image_review'}
         return frame
+
+    def stable_file(path):
+        until = min(deadline, time.monotonic() + 10)
+        previous, stable_at = None, None
+        while time.monotonic() < until:
+            if path.is_file() and not path.is_symlink() and path.stat().st_uid == os.getuid():
+                current = (path.stat().st_size, path.stat().st_mtime_ns)
+                if current[0] > 2 * 1024 * 1024:
+                    raise Stop('owned_output_exceeds_2MiB_no_copy')
+                if current[0] and current == previous and time.monotonic() - stable_at > 0.8:
+                    return {'file': path.name, 'bytes': current[0], 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                if current != previous:
+                    previous, stable_at = current, time.monotonic()
+            time.sleep(0.25)
+        raise Stop('owned_output_not_present_and_stable')
 
     try:
         if args.app_pid < 2 or deadline <= start or not args.isolated_display_capture or not os.environ.get('DISPLAY'):
             raise Stop('live_private_Xvfb_and_deadline_required')
-        for directory in (args.work_dir, args.output):
+        for directory in (args.work_dir, args.output, args.input_dir):
             if not directory.is_absolute() or directory.is_symlink() or not directory.is_dir() or directory.stat().st_uid != os.getuid():
                 raise Stop('explicit_owned_isolated_directory_required')
         runtime, runtime_sha = read_json(args.identity_approval)
@@ -162,8 +373,25 @@ def main():
             raise Stop('main_runtime_identity_mismatch')
         if (ui.get('schema') != 2 or ui.get('reviewed_by') != 'independent-qa'
                 or ui.get('observed_head') != HEAD or ui.get('observed_app_sha256') != APP_SHA
-                or ui.get('window') != {'width': 1280, 'height': 900}):
+                or ui.get('window') != {'width': 1280, 'height': 900}
+                or ui.get('workflow_revision') != 2):
             raise Stop('independent_UI_identity_mismatch')
+        helper = Path(__file__).with_name('public_ui_probe.py')
+        checks = Path(__file__).with_name('workflow_checks.py')
+        if (hashlib.sha256(helper.read_bytes()).hexdigest() != ui.get('public_probe_sha256')
+                or hashlib.sha256(checks.read_bytes()).hexdigest() != ui.get('workflow_checks_sha256')):
+            raise Stop('reviewed_helpers_changed_no_UI_input')
+        manifest, manifest_sha = read_json(args.input_dir / 'manifest.json')
+        if manifest_sha != '8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7':
+            raise Stop('exact_owned_fixture_manifest_required')
+        for item in manifest['files']:
+            path = args.input_dir / item['file']
+            if (path.is_symlink() or not path.is_file() or path.stat().st_uid != os.getuid()
+                    or path.stat().st_size != item['bytes']
+                    or hashlib.sha256(path.read_bytes()).hexdigest() != item['sha256']):
+                raise Stop('owned_fixture_identity_mismatch')
+        fixture = args.input_dir / 'opaque-quadrants.png'
+        report['input_manifest_sha256'] = manifest_sha
         for spec in ui['guards'].values():
             if (len(spec['region']) != 4 or any(type(n) is not int for n in spec['region'])
                     or not re.fullmatch('[0-9a-f]{64}', spec['rgb_sha256'])):
@@ -175,7 +403,7 @@ def main():
             for xy in ui[mapping].values():
                 if len(xy) != 2 or any(type(n) is not int for n in xy) or not (0 <= xy[0] < 1280 and 32 <= xy[1] < 900):
                     raise Stop('invalid_UI_coordinate')
-        for tool in ('xdotool', 'import', 'convert'):
+        for tool in ('xdotool', 'import', 'convert', 'identify'):
             if not shutil.which(tool):
                 raise Stop('missing_visible_UI_dependency:' + tool)
         proc = Path('/proc') / str(args.app_pid)
@@ -215,6 +443,8 @@ def main():
             raise Stop('actual_window_size_mismatch')
         evidence = args.output / 'independent-qa-workflow'
         evidence.mkdir(mode=0o700)
+        deliverables = args.work_dir / 'qa-deliverables'
+        deliverables.mkdir(mode=0o700)
         report['window_id'] = window
         command(['xdotool', 'mousemove', '--window', str(window), '100', '700'])
         pause()
@@ -230,20 +460,118 @@ def main():
         click('editor_folder', frame, ['editor-toolbar', 'editor-tools', 'blank-canvas'])
         frame = snapshot('06-open-menu')
         click('open_local_image', frame, ['open-menu'])
-        snapshot('07-local-picker-private-display', root=True)
-        frame = cancel_to_editor('08-after-picker-Escape')
-        click('editor_save', frame, ['editor-toolbar', 'editor-tools', 'blank-canvas'])
-        snapshot('09-save-private-display', root=True)
-        frame = cancel_to_editor('10-after-save-Escape')
-        click('editor_export', frame, ['editor-toolbar', 'editor-tools', 'blank-canvas'])
-        snapshot('11-export-private-display', root=True)
-        frame = cancel_to_editor('12-after-export-Escape')
+        native = await_native('07-import')
+        frame = choose_owned_path(native, fixture, '08-import', {'Open', '打开'})
+        report['file_selected'] = True
+        imported = image_info(frame)
+        report['stages']['import'] = {'visible_fixture': imported, 'source_sha256': manifest['files'][0]['sha256'],
+                                      'verdict': 'pending_independent_image_review'}
+        frame = edit_and_undo(frame, '09-edit')
+        click('editor_save', frame, ['save-control', 'editor-tools'])
+        native = await_native('10-save')
+        frame = choose_owned_path(native, deliverables / 'qa-project', '11-save', {'Save', '保存'})
+        until = min(deadline, time.monotonic() + 10)
+        candidates = []
+        while time.monotonic() < until:
+            candidates = [p for p in deliverables.iterdir() if re.fullmatch(r'qa-project(?:\.[A-Za-z0-9_-]{1,16})?', p.name)]
+            if candidates:
+                break
+            time.sleep(0.25)
+        if len(candidates) != 1:
+            raise Stop('one_exact_new_project_output_not_found')
+        project = candidates[0]
+        report['stages']['save'] = stable_file(project)
+        # Leave the saved editor, create a visibly blank document, then reopen the exact saved file.
+        click('editor_back', frame, ['back-control', 'editor-tools'])
+        frame = snapshot('12-left-saved-editor')
+        click('new_project', frame, ['new-project'])
+        frame = snapshot('13-new-blank-dialog')
+        click('new_create', frame, ['create-dialog'])
+        frame = snapshot('14-new-blank-editor')
+        guard(frame, 'blank-canvas')
+        click('editor_folder', frame, ['folder-control', 'editor-tools'])
+        frame = snapshot('15-reopen-menu')
+        click('open_project', frame, ['open-menu'])
+        native = await_native('16-reopen')
+        frame = choose_owned_path(native, project, '17-reopen', {'Open', '打开'})
+        reopened = image_info(frame)
+        if not translated(imported, reopened, 0, 0):
+            raise Stop('reopened_fixture_geometry_not_preserved')
+        frame = edit_and_undo(frame, '18-reopened-edit')
+        report['stages']['reopen'] = {'visible_fixture': reopened, 'reopened_layer_editable': True,
+                                      'verdict': 'pending_independent_image_review'}
+        click('editor_export', frame, ['export-control', 'editor-tools'])
+        snapshot('19-export-destination', root=True)
+        # A normal export chooser may open directly, or the confirmed product destination appears first.
+        export_until = min(deadline, time.monotonic() + 12)
+        probes = 0
+        while not visible_windows() and time.monotonic() < export_until:
+            options = []
+            if probes < 3:
+                probes += 1
+                try:
+                    metadata = public_metadata(args.app_pid, '19-export-public-' + str(probes))
+                    options = [n for n in metadata['nodes'] if n.get('showing') and n.get('enabled')
+                               and n.get('label') in {'导出至其他文件夹', '导出到其他文件夹'}
+                               and n.get('button') and n.get('bounds')]
+                except Stop as exc:
+                    if not str(exc).startswith('public_accessibility_unavailable:'):
+                        raise
+            if len(options) > 1:
+                raise Stop('export_destination_semantics_ambiguous_no_blind_click')
+            if len(options) == 1:
+                bounds = options[0]['bounds']
+                wx, wy = int(fields['X']), int(fields['Y'])
+                if not (wx <= bounds['x'] < wx + 1280 and wy <= bounds['y'] < wy + 900
+                        and bounds['x'] + bounds['width'] <= wx + 1280 and bounds['y'] + bounds['height'] <= wy + 900):
+                    raise Stop('export_destination_outside_visible_App')
+                command(['xdotool', 'mousemove', str(bounds['x'] + bounds['width'] // 2), str(bounds['y'] + bounds['height'] // 2)])
+                command(['xdotool', 'click', '1'])
+                report['actions'].append({'kind': 'public-semantic-click', 'label': options[0]['label']})
+                break
+            time.sleep(0.5)
+        native = await_native('20-export')
+        export = deliverables / 'qa-export.png'
+        frame = choose_owned_path(native, export, '21-export', {'Save', '保存', 'Export', '导出'})
+        info = stable_file(export)
+        dimensions = command(['identify', '-format', '%w %h', str(export)]).split()
+        if dimensions != ['1920', '1080'] or export.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n':
+            raise Stop('export_actual_PNG_or_current_canvas_dimensions_differ')
+        rgba = command(['convert', str(export), '-alpha', 'on', '-depth', '8', 'rgba:-'], binary=True)
+        if len(rgba) != 1920 * 1080 * 4:
+            raise Stop('export_decoded_RGBA_size_mismatch')
+        rgb = bytes(value for index, value in enumerate(rgba) if index % 4 != 3)
+        try:
+            pixels = locate_fixture(rgb, 1920, 1080)
+        except ValueError as exc:
+            raise Stop('export_pixels:' + str(exc)) from None
+        info.update(width=1920, height=1080, visible_fixture=pixels,
+                    RGBA_sha256=hashlib.sha256(rgba).hexdigest(),
+                    nontransparent_pixels=sum(value != 0 for value in rgba[3::4]),
+                    verdict='actual_file_checks_recorded_pending_independent_review')
+        x0, y0, x1, y1 = pixels['bounds']
+        if (x1 - x0, y1 - y0) == (256, 192):
+            crop = b''.join(rgba[(y * 1920 + x0) * 4:(y * 1920 + x1) * 4] for y in range(y0, y1))
+            info['fixture_RGBA_crop_sha256'] = hashlib.sha256(crop).hexdigest()
+            info['exact_fixture_pixels_preserved'] = info['fixture_RGBA_crop_sha256'] == manifest['files'][0]['rgba_sha256']
+        else:
+            info['exact_fixture_pixels_preserved'] = 'unverified: exported image has another actual scale'
+        report['stages']['export'] = info
+        if hashlib.sha256(fixture.read_bytes()).hexdigest() != manifest['files'][0]['sha256']:
+            raise Stop('fixture_source_changed_during_workflow')
+        report['fixture_source_unchanged'] = True
+        # Keep only bounded explicit outputs. App project data is not parsed as implementation evidence.
+        for source, name in ((project, 'saved-project' + project.suffix), (export, 'exported-qa.png')):
+            before = stable_file(source)
+            target = evidence / name
+            with target.open('xb') as stream:
+                os.chmod(target, 0o600)
+                stream.write(source.read_bytes())
+            if hashlib.sha256(target.read_bytes()).hexdigest() != before['sha256']:
+                raise Stop('owned_output_copy_not_stable')
         # Secrets may already be present when Settings opens. Never capture it.
         if args.private_accessibility_bus:
-            helper = Path(__file__).with_name('public_ui_probe.py')
-            if hashlib.sha256(helper.read_bytes()).hexdigest() != 'b0f3724aabe7782f9b19dd166140a273929d5a29b01fa4d3317121d8c6e10460':
-                raise Stop('reviewed_public_metadata_helper_changed_no_settings_input')
-            click('settings', frame, ['settings-icon', 'editor-toolbar', 'editor-tools'])
+            click('settings', frame, ['settings-icon', 'save-control', 'editor-tools'])
             settings_entered = True
             completed = subprocess.run([args.probe_python, '-B', str(helper), '--app-pid', str(args.app_pid),
                                         '--output', str(evidence), '--deadline-monotonic', str(min(deadline, time.monotonic() + 3)),

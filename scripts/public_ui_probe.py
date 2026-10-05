@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Read bounded public AT-SPI metadata; never reads field values or captures pixels.
 
-Only the explicitly supplied same-user App is queried on a launcher-attested
-private accessibility bus. Unknown widget names are omitted, not printed.
+Only the App or its verified same-user descendant is queried on a launcher-attested
+private accessibility bus. Unknown widget names and file-list children are omitted.
 This is a capability probe, not a product test or a UI action executor.
 """
 import argparse
@@ -21,6 +21,8 @@ SAFE_LABELS = frozenset({
     '从资产库选择图片', '导出', '取消', '确定', '保存', '打开', '复制',
     'Open', 'Save', 'Cancel', 'Copy', 'Location', 'Name', 'File name',
     'Filename', '文件名', '路径', '位置',
+    'Open Image', 'Open File', 'Select a File', 'Save As', 'Export',
+    '导出至资产库', '导出至其他文件夹', '导出到其他文件夹', '撤销', 'Undo',
 })
 
 
@@ -47,6 +49,8 @@ def collect(app_pid, deadline):
             root = candidate
     if root is None:
         raise RuntimeError('target_not_exposed_by_public_accessibility')
+    toolkit = root.get_toolkit_name()
+    toolkit = 'GTK' if isinstance(toolkit, str) and toolkit.lower().startswith('gtk') else 'unknown'
     pending = [(root, [], 0)]
     nodes = []
     complete = True
@@ -60,13 +64,19 @@ def collect(app_pid, deadline):
             continue
         states = node.get_state_set()
         role = node.get_role()
-        record = {'path': path, 'role': int(role), 'label': safe_label(node.get_name()),
+        skip_children = role in (Atspi.Role.TABLE, Atspi.Role.TREE, Atspi.Role.TREE_TABLE,
+                                 Atspi.Role.LIST, Atspi.Role.DIRECTORY_PANE)
+        no_name = skip_children or role in (Atspi.Role.ENTRY, Atspi.Role.TEXT)
+        record = {'path': path, 'role': int(role), 'label': None if no_name else safe_label(node.get_name()),
                   'showing': bool(states.contains(Atspi.StateType.SHOWING)),
                   'enabled': bool(states.contains(Atspi.StateType.ENABLED)),
                   'focused': bool(states.contains(Atspi.StateType.FOCUSED)),
                   'modal': bool(states.contains(Atspi.StateType.MODAL)),
                   'file_chooser': role == Atspi.Role.FILE_CHOOSER,
-                  'dialog': role == Atspi.Role.DIALOG}
+                  'dialog': role == Atspi.Role.DIALOG,
+                  'button': role == Atspi.Role.PUSH_BUTTON,
+                  'entry': role in (Atspi.Role.ENTRY, Atspi.Role.TEXT),
+                  'editable': bool(states.contains(Atspi.StateType.EDITABLE))}
         try:
             component = node.get_component_iface()
             extent = component.get_extents(Atspi.CoordType.SCREEN) if component else None
@@ -77,6 +87,9 @@ def collect(app_pid, deadline):
             record['bounds_unavailable'] = True
         # No get_text/get_value, action execution, clipboard read or raw screenshot.
         nodes.append(record)
+        if skip_children:
+            # Never traverse native file lists or read their item names/values.
+            continue
         count = node.get_child_count()
         if count > 128:
             complete = False
@@ -84,8 +97,24 @@ def collect(app_pid, deadline):
             child = node.get_child_at_index(index)
             if child is not None:
                 pending.append((child, path + [index], depth + 1))
-    return {'nodes': nodes, 'coverage_complete': complete,
-            'scope': 'target-App-only; native picker in another process is not covered'}
+    return {'nodes': nodes, 'toolkit': toolkit, 'coverage_complete': complete,
+            'scope': 'one explicitly verified App or owned descendant; file-list children omitted'}
+
+
+def owned_by_app(target, owner):
+    visited = set()
+    while target >= 2 and target not in visited and len(visited) < 16:
+        visited.add(target)
+        proc = Path('/proc') / str(target)
+        if proc.stat().st_uid != os.getuid():
+            return False
+        if target == owner:
+            return True
+        parent = next((line for line in (proc / 'status').read_text().splitlines() if line.startswith('PPid:')), None)
+        if parent is None:
+            return False
+        target = int(parent.split()[1])
+    return False
 
 
 def main():
@@ -94,6 +123,9 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--deadline-monotonic', type=float, required=True)
     parser.add_argument('--private-accessibility-bus', action='store_true')
+    parser.add_argument('--owned-root-pid', type=int, help='App parent PID; target must be this App or its verified descendant')
+    parser.add_argument('--output-name', default='public-accessibility.json',
+                        help='One bounded flat metadata filename, never a path')
     args = parser.parse_args()
     started = time.monotonic()
     report = {'status': 'blocked', 'app_pid': args.app_pid,
@@ -104,6 +136,8 @@ def main():
             raise RuntimeError('private_accessibility_bus_attestation_required')
         if args.app_pid < 2 or (Path('/proc') / str(args.app_pid)).stat().st_uid != os.getuid():
             raise RuntimeError('target_App_not_same_user')
+        if args.owned_root_pid is not None and not owned_by_app(args.app_pid, args.owned_root_pid):
+            raise RuntimeError('target_not_owned_by_App')
         if (not args.output.is_absolute() or args.output.is_symlink()
                 or not args.output.is_dir() or args.output.stat().st_uid != os.getuid()):
             raise RuntimeError('explicit_owned_output_directory_required')
@@ -120,7 +154,11 @@ def main():
         raw = (json.dumps(report, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
     if (args.output.is_absolute() and args.output.is_dir() and not args.output.is_symlink()
             and args.output.stat().st_uid == os.getuid()):
-        path = args.output / 'public-accessibility.json'
+        if (not args.output_name.endswith('.json') or len(args.output_name) > 80
+                or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-.' for c in args.output_name)
+                or '..' in args.output_name):
+            raise RuntimeError('flat_metadata_filename_required')
+        path = args.output / args.output_name
         with path.open('xb') as stream:
             os.chmod(path, 0o600)
             stream.write(raw)

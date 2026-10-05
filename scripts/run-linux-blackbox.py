@@ -47,8 +47,40 @@ RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
 WORKFLOW_DIRECTORY = "independent-qa-workflow"
 WORKFLOW_SCRIPTS = {
-    "qa": ("independent-workflow-ui.py", "75434ba58d06303437466ba61354ce36817b072ced6aa87e1c1f0f17f71087c4"),
-    "public_ui_probe": ("public_ui_probe.py", "b0f3724aabe7782f9b19dd166140a273929d5a29b01fa4d3317121d8c6e10460"),
+    "qa": ("independent-workflow-ui.py", "e4c16c49450019164c70f6cf4f96bafaaec95224e3341ac263d4f42fbb4c7aca"),
+    "public_ui_probe": ("public_ui_probe.py", "347f78240b81af991947d0f343648ae1aeffa132589fd20da1a4dfe8c99d1f79"),
+    "workflow_checks": ("workflow_checks.py", "de496988f07b0846c5055c3884948233f1a885c40dc88b7aa721825359fcf65f"),
+}
+WORKFLOW_PNG_NAMES = {
+    name + ".png" for name in (
+        "01-current-initial", "02-after-quick", "03-gallery", "04-create-dialog", "05-editor", "06-open-menu",
+        "12-left-saved-editor", "13-new-blank-dialog", "14-new-blank-editor", "15-reopen-menu", "19-export-destination",
+    )
+} | {
+    phase + suffix + ".png"
+    for phase in ("07-import", "10-save", "16-reopen", "20-export")
+    for suffix in ("-ambiguous-native", "-native-outside-display", "-native-visible", "-no-visible-native-after-wait")
+} | {
+    phase + suffix + ".png"
+    for phase in ("08-import", "11-save", "17-reopen", "21-export")
+    for suffix in ("-returned-App", "-menu-closed", "-native-not-gone")
+} | {
+    phase + suffix + ".png"
+    for phase in ("09-edit", "18-reopened-edit") for suffix in ("-dragged", "-one-Undo")
+}
+WORKFLOW_JSON_NAMES = {"workflow.json", "public-accessibility.json"} | {
+    phase + suffix + ".json"
+    for phase in ("08-import", "11-save", "17-reopen", "21-export")
+    for suffix in ("-public-before", "-public-location", "-public-before-accept")
+} | {"19-export-public-" + str(index) + ".json" for index in range(1, 4)}
+WORKFLOW_FILE_LIMIT = 2 * 1024 * 1024
+WORKFLOW_PNG_LIMIT = 14 * 1024 * 1024
+WORKFLOW_METADATA_LIMIT = 128 * 1024
+WORKFLOW_FIXTURE_MANIFEST = "8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7"
+WORKFLOW_FIXTURES = {
+    "opaque-quadrants.png": (800, "0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63"),
+    "transparent-markers.png": (849, "8201fa2b0c7c94de97433462d40ae97aa43b77e395921769d967c7f168875b75"),
+    "fully-transparent.png": (83, "ba04f531df0c7a12124750d521add77c55b16a6432d653c5559c16680dbd9f50"),
 }
 APPROVAL_LIMIT = 16 * 1024
 APP_LIMIT = 512 * 1024 * 1024
@@ -151,6 +183,34 @@ def copy_and_hash(source, destination, executable=False, limit=None):
     return digest.hexdigest()
 
 
+def copy_workflow_fixtures(source, work):
+    """Copy only the reviewed owned fixture inputs, never an arbitrary tree."""
+    if not source.is_absolute() or ".." in source.parts:
+        raise ValueError("--input-dir must be an absolute owned fixture directory")
+    for path in (source, *source.parents):
+        if not stat.S_ISDIR(path.lstat().st_mode):
+            raise ValueError("fixture directory ancestors must be real directories")
+    if source.stat().st_uid != os.getuid():
+        raise ValueError("fixture directory must be owned by this runner")
+    if {item.name for item in source.iterdir()} != {"manifest.json", *WORKFLOW_FIXTURES}:
+        raise ValueError("fixture directory must contain exactly the reviewed four inputs")
+    destination = work / "qa-input"
+    destination.mkdir(mode=0o700)
+    hashes = {}
+    for name in ("manifest.json", *WORKFLOW_FIXTURES):
+        incoming = regular_input(source / name)
+        info = incoming.lstat()
+        if info.st_uid != os.getuid() or info.st_nlink != 1:
+            raise ValueError("fixture inputs must be owned regular files with one link")
+        maximum = APPROVAL_LIMIT if name == "manifest.json" else WORKFLOW_FIXTURES[name][0]
+        digest = copy_and_hash(incoming, destination / name, limit=maximum)
+        expected = WORKFLOW_FIXTURE_MANIFEST if name == "manifest.json" else WORKFLOW_FIXTURES[name][1]
+        if digest != expected or (name != "manifest.json" and (destination / name).stat().st_size != maximum):
+            raise ValueError("copied fixture differs from its reviewed identity")
+        hashes[name] = digest
+    return destination, hashes
+
+
 def spawn(command, work, env):
     return subprocess.Popen(command, cwd=work, env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -200,7 +260,7 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
     total = 0
     workflow = next_stage == "workflow-observation"
     directories = {WORKFLOW_DIRECTORY} if workflow else QA_DIRECTORIES
-    png_count = 0
+    png_count = png_bytes = project_count = 0
     pending = [output]
     while pending:
         directory = pending.pop()
@@ -216,11 +276,19 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                     if directory == output:
                         if entry.name not in RESERVED:
                             raise ValueError("workflow artifacts require the known QA directory")
-                    elif entry.name.endswith(".png"):
-                        png_count += 1
-                        if png_count > 12:
-                            raise ValueError("workflow artifacts exceed twelve PNGs")
-                    elif entry.name not in {"workflow.json", "public-accessibility.json"}:
+                    elif entry.name in WORKFLOW_PNG_NAMES or entry.name == "exported-qa.png":
+                        png_count += entry.name != "exported-qa.png"
+                        png_bytes += info.st_size
+                        if png_count > 40 or info.st_size > WORKFLOW_FILE_LIMIT or png_bytes > WORKFLOW_PNG_LIMIT:
+                            raise ValueError("workflow PNG count or byte budget exceeded")
+                    elif entry.name in WORKFLOW_JSON_NAMES:
+                        if info.st_size > WORKFLOW_METADATA_LIMIT:
+                            raise ValueError("workflow metadata exceeds 128 KiB")
+                    elif re.fullmatch(r"saved-project(?:\.[A-Za-z0-9_-]{1,16})?", entry.name):
+                        project_count += 1
+                        if project_count > 1 or info.st_size > WORKFLOW_FILE_LIMIT:
+                            raise ValueError("workflow requires at most one bounded saved project")
+                    else:
                         raise ValueError("unknown workflow artifact file")
                 total += info.st_size
                 if total > limit:
@@ -271,7 +339,7 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
                "--work-dir", str(work), "--output", str(output),
                "--deadline-monotonic", str(qa_deadline)]
     if args.next_stage == "workflow-observation":
-        command.extend(("--window-id", str(window_id)))
+        command.extend(("--window-id", str(window_id), "--input-dir", str(copied["input_dir"])))
         if args.private_accessibility_bus:
             command.extend(("--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
     else:
@@ -295,6 +363,7 @@ def arguments():
     parser.add_argument("--source-head", help="Exact immutable App source HEAD; defaults to workflow HEAD")
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
+    parser.add_argument("--input-dir", help="workflow-observation only; exact owned fixture inputs")
     parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation"), default="navigation")
     parser.add_argument("--isolated-display-capture", action="store_true",
                         help="Explicit isolated-display declaration for image-picker/workflow observation")
@@ -309,12 +378,14 @@ def arguments():
         parser.error("--isolated-display-capture requires an authorized observation stage")
     if args.private_accessibility_bus and args.next_stage != "workflow-observation":
         parser.error("--private-accessibility-bus is only valid for workflow-observation")
+    if args.input_dir is not None and args.next_stage != "workflow-observation":
+        parser.error("--input-dir is only valid for workflow-observation")
     if args.next_stage == "workflow-observation":
         if args.seconds != 300 or args.client_binary is not None:
             parser.error("workflow-observation requires 300 seconds and no MCP client")
         if not all((args.identity_approval, args.ui_approval, args.source_head,
-                    args.candidate_manifest, args.candidate_artifact_id)):
-            parser.error("workflow-observation requires exact candidate provenance and both declarations")
+                    args.candidate_manifest, args.candidate_artifact_id, args.input_dir)):
+            parser.error("workflow-observation requires exact candidate provenance, declarations and owned fixtures")
     return args
 
 
@@ -416,7 +487,9 @@ def main():
         if args.next_stage == "workflow-observation":
             if sources["qa"] != root / "scripts" / WORKFLOW_SCRIPTS["qa"][0]:
                 raise ValueError("workflow-observation requires the fixed reviewed QA script")
-            sources["public_ui_probe"] = regular_input(root / "scripts" / WORKFLOW_SCRIPTS["public_ui_probe"][0])
+            for name, (filename, _digest) in WORKFLOW_SCRIPTS.items():
+                if name != "qa":
+                    sources[name] = regular_input(root / "scripts" / filename)
         if args.client_binary is not None:
             if not Path(args.client_binary).is_absolute():
                 raise ValueError("--client-binary must be absolute")
@@ -440,7 +513,9 @@ def main():
         copied = {"app": work / "concat", "client": work / "concat-editor-mcp",
                   "qa": work / "independent-qa.py"}
         if args.next_stage == "workflow-observation":
-            copied["public_ui_probe"] = work / "public_ui_probe.py"
+            for name, (filename, _digest) in WORKFLOW_SCRIPTS.items():
+                if name != "qa":
+                    copied[name] = work / filename
         hashes = {name: copy_and_hash(source, copied[name], executable=name in {"app", "client"},
                                       limit=APP_LIMIT if name == "app" else None)
                   for name, source in sources.items()}
@@ -448,6 +523,8 @@ def main():
             for name, (_filename, digest) in WORKFLOW_SCRIPTS.items():
                 if hashes[name] != digest:
                     raise ValueError("workflow script differs from its reviewed SHA256")
+            copied["input_dir"], fixture_hashes = copy_workflow_fixtures(Path(args.input_dir), work)
+            result["input_fixture_sha256"] = fixture_hashes
         if candidate is not None:
             if (hashes["app"] != candidate["app_sha256"]
                     or copied["app"].stat().st_size != candidate["app_bytes"]):

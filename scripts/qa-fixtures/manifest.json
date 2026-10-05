@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "owner": "independent-qa",
+  "format": "PNG RGBA8",
+  "usage": "Copy only these owned files into each isolated QA work directory; no App injection",
+  "files": [
+    {
+      "file": "opaque-quadrants.png",
+      "width": 256,
+      "height": 192,
+      "bytes": 800,
+      "sha256": "0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63",
+      "rgba_sha256": "26eedbcf118b1e9f52dc410a543a05cb867467b51a046224f86f119ec8dd56d5",
+      "visible_pixels": 49152,
+      "transparent_pixels": 0
+    },
+    {
+      "file": "transparent-markers.png",
+      "width": 256,
+      "height": 192,
+      "bytes": 849,
+      "sha256": "8201fa2b0c7c94de97433462d40ae97aa43b77e395921769d967c7f168875b75",
+      "rgba_sha256": "9321b2244ee4bd74dcdaaf52601784addc2245123278c0e604d6291cc5dccd31",
+      "visible_pixels": 29376,
+      "transparent_pixels": 19776
+    },
+    {
+      "file": "fully-transparent.png",
+      "width": 32,
+      "height": 32,
+      "bytes": 83,
+      "sha256": "ba04f531df0c7a12124750d521add77c55b16a6432d653c5559c16680dbd9f50",
+      "rgba_sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7",
+      "visible_pixels": 0,
+      "transparent_pixels": 1024
+    }
+  ]
+}
