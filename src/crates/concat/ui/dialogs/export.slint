@@ -195,6 +195,19 @@ export component ExportDialog inherits Modal {
     surface-width: Math.min(470px, root.width - 32px);
     surface-height: Math.min(export-options.preferred-height + export-footer.preferred-height + 43px, root.height - 32px);
     dismissable: !root.running;
+    trap-focus: true;
+    property <int> cancel-focus-request;
+    property <bool> restore-phase-focus;
+    changed running => { root.restore-phase-focus = true; }
+    Timer {
+        interval: 1ms;
+        running: root.restore-phase-focus;
+        triggered => {
+            root.restore-phase-focus = false;
+            root.focus-default();
+        }
+    }
+    focus-fallback => { if root.running { root.cancel-focus-request += 1; } }
 
     // The sheet's own header carries the fact it is acting on.
     note: root.data.format;
@@ -418,6 +431,7 @@ export component ExportDialog inherits Modal {
                 alignment: start;
                 Button {
                     label: I18n.t("Cancel export");
+                    focus-request: root.cancel-focus-request;
                     glyph: Glyph.close;
                     ghost: true;
                     clicked => { root.cancel(); }

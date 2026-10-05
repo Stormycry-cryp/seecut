@@ -432,10 +432,9 @@ component FactRow inherits HorizontalLayout {
 }
 
 // Permission actions retain the dialog button's tones, with a caption that
-// can wrap inside a narrow settings page and its own keyboard focus stop.
+// can wrap inside a narrow settings page. Button owns the single focus stop.
 component PermissionButton inherits Button {
     in property <string> caption;
-    property <bool> ring;
     label: "";
     min-width: 0px;
     min-height: Math.max(28px, caption-text.preferred-height + 12px);
@@ -458,22 +457,6 @@ component PermissionButton inherits Button {
         horizontal-alignment: center;
         wrap: word-wrap;
     }
-    action-focus := FocusScope {
-        enabled: root.enabled;
-        focus-on-click: false;
-        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
-        focus-lost => { root.ring = false; }
-        key-pressed(event) => {
-            if event.text == " " || event.text == "\n" {
-                root.clicked();
-                return EventResult.accept;
-            }
-            return EventResult.reject;
-        }
-    }
-    // Mouse activation stays with Button's inherited TouchArea; keyboard
-    // activation is handled only by this focus scope.
-    FocusRing { active: root.ring; radius: Theme.r; }
 }
 
 export component SettingsDialog inherits Rectangle {

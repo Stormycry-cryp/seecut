@@ -37,6 +37,16 @@ export component Modal inherits Rectangle {
     in property <length> surface-height: 0px;
 
     callback closed();
+    // A non-dismissable sheet has no close button. Its owner supplies a
+    // visible focus destination, such as Cancel export, for forward wrap.
+    callback focus-fallback();
+    public function focus-default() {
+        if root.open && root.trap-focus {
+            if root.dismissable && (!root.title-at-start || root.show-close-for-start-title) {
+                root.close-focus-request += 1;
+            } else { root.focus-fallback(); }
+        }
+    }
 
     // Keep the layer mounted until the exit finishes. Its TouchArea still
     // blocks the app underneath, and a quick reopen cancels the old exit.
@@ -221,7 +231,9 @@ export component Modal inherits Rectangle {
                 enabled: root.open && root.trap-focus;
                 focus-on-click: false;
                 focus-gained(reason) => {
-                    if reason == FocusReason.tab-navigation { root.close-focus-request += 1; }
+                    if reason == FocusReason.tab-navigation {
+                        root.focus-default();
+                    }
                 }
             }
         }
@@ -247,6 +259,8 @@ export component Button inherits Rectangle {
     /// bare until hovered, for a secondary action beside a real one
     in property <bool> ghost;
     in property <bool> enabled: true;
+    in property <int> focus-request;
+    changed focus-request => { if root.enabled { focus.focus(); } }
     /// fill the width it is given, for a footer's single action
     in property <bool> block;
     /// 34px instead of 28px, for the action a sheet is built around
