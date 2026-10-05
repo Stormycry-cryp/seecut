@@ -238,6 +238,64 @@ NATIVE_SCOPES = {'workspaces-observation': {'scripts': {'qa': ['workspaces-ui-11
                                                                                          'agent-native-entry.json'],
                                                                               'action': ['04-entry-action.json']}}}}
 
+NATIVE_SCOPES.update({'assistant-config-observation': {'scripts': {'qa': ['agent-config-controller.py',
+                                                     '9c431bf1b9fc788ac3f57e46df28d4570a2e1592e047f7fa8422ac9a12d84178'],
+                                              'native_agent_config_controller': ['agent-config-controller.py',
+                                                                                 '9c431bf1b9fc788ac3f57e46df28d4570a2e1592e047f7fa8422ac9a12d84178'],
+                                              'native_agent_config_action': ['agent-config-action.py',
+                                                                             '125c29c64416311a7d4b09008423308a15c69bf20f188df70d5d7c8045c4fb4f'],
+                                              'native_agent_config_probe': ['agent-config-probe.py',
+                                                                            'badabc801a8fa2fb6a9340489ad2c99972e6b011e6c972bec757990ae032608e'],
+                                              'native_agent_config_ui': ['agent-config-ui.json',
+                                                                         'cd2d8f9265e9758a3ba0d49828f82a8eb35a12de722252660a9a17e8dc992236'],
+                                              'native_agent_native_entry_controller': ['agent-native-entry-controller.py',
+                                                                                       '739940c925145f49136d7cc618a01f3b7775b4ae84cbb1d2647221032270f3e4'],
+                                              'native_agent_native_bootstrap': ['agent-native-bootstrap.py',
+                                                                                '4dfd9d275a5639e85a3ebce71fbaa620e1e3ca3f9982199887d04a65f6933439'],
+                                              'native_agent_native_entry_action': ['agent-native-entry-action.py',
+                                                                                   '3545a09ce95f583c6e738c3e18040cc0a671662304c366807d617af51f437617'],
+                                              'native_agent_native_public_probe': ['agent-native-public-probe.py',
+                                                                                   'c0d9f9e0fe477e9e1592c765c49d197aaf841da0e4ca92114f63f32d417ecfa2'],
+                                              'native_public_probe_11ebf20_ui4': ['public_probe_11ebf20_ui4.py',
+                                                                                  'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'],
+                                              'native_public_action_11ebf20_ui4': ['public_action_11ebf20_ui4.py',
+                                                                                   '8aafd63bc2653c1099003edbf5808c1c4550471d31f619cf1851a0e7ea063518']},
+                                  'ui': ['reviewed-ui-11ebf20-a3.json',
+                                         '3770f759f4479904651f3e3404e0ff23b6bea08c3a007320bf2d915ff7c93852'],
+                                  'next_stage': 'canvas-entry',
+                                  'artifacts': {'main-qa-agent-native-bootstrap': {'png': ['01-before-quick.png',
+                                                                                           '02-after-quick-1280x900.png',
+                                                                                           '03-canvas-gallery-1280x900.png',
+                                                                                           '06-current-new-canvas-dialog.png',
+                                                                                           '07-current-create-result.png'],
+                                                                                   'public': ['06-current-new-canvas-dialog-public.json',
+                                                                                              '07-create-result-public.json'],
+                                                                                   'action': [],
+                                                                                   'other': ['bootstrap.json']},
+                                                'main-qa-agent-native-entry': {'png': ['01-before-hover.png',
+                                                                                       '03-assistant-tooltip-review.png',
+                                                                                       '04-assistant-panel-1280x900.png',
+                                                                                       '05-assistant-panel-1024x900.png',
+                                                                                       '06-assistant-panel-1440x900.png',
+                                                                                       '07-assistant-panel-1280x720.png'],
+                                                                               'public': ['01-before-hover-public.json',
+                                                                                          '02-recheck-public.json',
+                                                                                          '03-after-hover-public.json',
+                                                                                          '03-before-open-public.json',
+                                                                                          '04-panel-public.json',
+                                                                                          '05-panel-1024x900-public.json',
+                                                                                          '06-panel-1440x900-public.json',
+                                                                                          '07-panel-1280x720-public.json'],
+                                                                               'action': ['04-entry-action.json'],
+                                                                               'other': ['agent-native-entry.json']},
+                                                'main-qa-agent-config': {'png': [],
+                                                                         'public': ['01-restored-panel-public.json',
+                                                                                    '03-config-public.json',
+                                                                                    '05-after-close-public.json'],
+                                                                         'action': ['02-open-settings-action.json',
+                                                                                    '04-close-assistant-action.json'],
+                                                                         'other': ['agent-config.json']}}}})
+
 WORKFLOW_FIXTURE_MANIFEST = "8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7"
 WORKFLOW_FIXTURES = {
     "opaque-quadrants.png": (800, "0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63"),
@@ -457,6 +515,9 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                         elif entry.name in allowed["public"]:
                             if info.st_size > WORKFLOW_METADATA_LIMIT:
                                 raise ValueError("native metadata exceeds 128 KiB")
+                        elif entry.name in allowed.get("other", []):
+                            if info.st_size > APPROVAL_LIMIT:
+                                raise ValueError("native report exceeds 16 KiB")
                         else:
                             raise ValueError("unknown native scope artifact file")
                 elif a2_scope:
