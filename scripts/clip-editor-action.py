@@ -27,6 +27,7 @@ def field_sequence(intent, value, target, focus, observe, command, guard, record
     """Current exact metadata + chrome -> focus -> fresh proof -> select -> fresh proof -> type."""
     if intent not in ('name', 'path'):
         raise ValueError('exact_field_intent_required')
+    record['phase'] = 'field_before_focus_click'
     focus(); guard()
     bounds = target['bounds']
     xy = [bounds['x'] + bounds['width'] // 2, bounds['y'] + bounds['height'] // 2]
@@ -34,19 +35,23 @@ def field_sequence(intent, value, target, focus, observe, command, guard, record
     focus()
     record['field_focus_click_attempted'] = True
     command(['xdotool', 'click', '1'])
+    record['phase'] = 'field_focused_before_select'
     observe(intent, focused=True)
     focus(); guard()
     record['select_all_attempted'] = True
     command(['xdotool', 'key', '--clearmodifiers', 'ctrl+a'])
+    record['phase'] = 'field_focused_before_type'
     observe(intent, focused=True)
     focus(); guard()
     record['typed_owned_value_attempted'] = True
     command(['xdotool', 'type', '--clearmodifiers', '--delay', '1', '--', value])
+    record['phase'] = 'field_focused_after_type'
     observe(intent, focused=True)
 
 
 def create_once(target, resolve, focus, guard, record, deadline):
     """No loop/retry: one advertised create Action after final target/state/focus guards."""
+    record['phase'] = 'create_final_target_guard'
     focus(); guard()
     node, Atspi = resolve(target)
     states = node.get_state_set()
@@ -68,6 +73,7 @@ def create_once(target, resolve, focus, guard, record, deadline):
     focus(); guard()
     if time.monotonic() >= deadline:
         raise ValueError('deadline_before_create')
+    record['phase'] = 'create_Action_once'
     record['create_Action_attempted'] = True
     if not action.do_action(allowed[0]):
         raise ValueError('create_Action_returned_false_no_retry')
@@ -86,6 +92,7 @@ def main():
     end = min(args.deadline_monotonic, time.monotonic() + 10)
     record = {'scope': 'clip-editor-entry', 'intent': args.intent, 'success': False,
               'field_values_read': False, 'window': args.window_id, 'screenshots': [],
+              'phase': 'private_context_and_dependencies',
               'field_focus_click_attempted': False, 'select_all_attempted': False,
               'typed_owned_value_attempted': False, 'create_Action_attempted': False}
 
@@ -166,12 +173,14 @@ def main():
         project_output = controller.owned_project_output(args.work_dir)
         if list(project_output.iterdir()):
             raise ValueError('fresh_empty_owned_project_destination_required')
+        record['phase'] = 'initial_target_observation'
         target = observe(args.intent)
         if args.intent in ('name', 'path'):
             value = 'qa-clip-project' if args.intent == 'name' else str(project_output)
             field_sequence(args.intent, value, target, focus, observe, command, guard, record)
         else:
             create_once(target, resolve, focus, guard, record, end)
+        record['phase'] = 'completed'
         record['success'] = True
     except Exception:
         record['blocking_reason'] = 'clip_dialog_input_unconfirmed_raw_withheld_no_retry'

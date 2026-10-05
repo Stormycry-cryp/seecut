@@ -147,9 +147,22 @@ def owned_project_output(work, fresh=False):
     return path
 
 
+def dialog_projection(nodes):
+    # Observed root WINDOW drops FOCUSABLE when an entry takes focus. Only this
+    # boolean may vary; field focusability and every other public column stay exact.
+    rows = projection(nodes)
+    for row in rows:
+        if row[0] == [0] and row[1] == 23:
+            index = PUBLIC_KEYS.index('focusable')
+            if type(row[index]) is not bool:
+                raise Stop('actual_dialog_window_focusable_boolean_required')
+            row[index] = True
+    return rows
+
+
 def dialog_target(data, ui, pid, intent, focused=False):
     showing = public_context(data, pid, allow_dialog=True)
-    if projection(showing) != ui['dialog_public_nodes']:
+    if dialog_projection(showing) != ui['dialog_public_nodes']:
         raise Stop('complete_current_clip_dialog_metadata_changed')
     if intent not in ('name', 'path', 'create'):
         raise Stop('exact_clip_dialog_intent_required')

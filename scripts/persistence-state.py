@@ -168,12 +168,13 @@ def snapshot_state(root, token, deadline):
     portable = root / 'portable'
     entries = set(p.name for p in portable.iterdir())
     required = {'settings.json', 'canvas-projects.json', 'canvas-projects'}
-    if not required <= entries or not entries <= required | {'seecut.json', 'logs'}:
+    startup_directories = {'logs', 'whisper-models', 'tts-models'}
+    if not required <= entries or not entries <= required | {'seecut.json'} | startup_directories:
         raise ValueError('unexpected_portable_state_entry')
-    # The desktop logger creates this directory on each launch. Its changing
-    # contents are unrelated to the saved canvas and are never read or uploaded.
-    if 'logs' in entries:
-        real_directory(portable / 'logs')
+    # Desktop logging and Settings Restore create these observed directories.
+    # Their contents are unrelated to the saved canvas and never read or uploaded.
+    for name in startup_directories & entries:
+        real_directory(portable / name)
     files = []
     def file_record(path, maximum=MAX_FILE):
         raw = read_owned(path, maximum)
