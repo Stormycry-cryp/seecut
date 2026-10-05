@@ -751,5 +751,16 @@
   "Local Agent access is unavailable on this platform": "Yerel Agent erişimi bu platformda kullanılamıyor",
   "Read structure (R)": "Yapıyı oku (R)",
   "Read structure and preview (R + M)": "Yapıyı oku ve önizle (R + M)",
-  "Write token (SEECUT_MCP_WRITE_TOKEN)": "Yazma belirteci (SEECUT_MCP_WRITE_TOKEN)"
+  "Write token (SEECUT_MCP_WRITE_TOKEN)": "Yazma belirteci (SEECUT_MCP_WRITE_TOKEN)",
+  "Opening “{0}”…": "“{0}” açılıyor…",
+  "Project opening cancelled": "Açma iptal edildi",
+  "Opening timed out. Please try again.": "Açma zaman aşımına uğradı. Yeniden deneyin.",
+  "The current project changed. Please open it again.": "Geçerli proje değişti. Yeniden açın.",
+  "The project save changed. Please open it again.": "Kayıt durumu değişti. Projeyi yeniden açın.",
+  "Finish the current edit before opening a project.": "Bir proje açmadan önce geçerli düzenlemeyi tamamlayın.",
+  "Another project operation is still running. Please try again.": "Başka bir proje işlemi sürüyor. Daha sonra yeniden deneyin.",
+  "Could not start opening: {0}": "Açma başlatılamadı: {0}",
+  "Could not update recent projects: {0}": "Son projeler güncellenemedi: {0}",
+  "Dismiss error": "Hatayı kapat",
+  "Could not prepare project media.": "Proje medyası hazırlanamadı."
 }

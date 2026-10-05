@@ -524,6 +524,119 @@ struct RecentProjectMeta {
     duration: String,
 }
 
+enum OpenTarget {
+    Existing(String),
+    Create {
+        location: String,
+        name: String,
+        width: u32,
+        height: u32,
+        num: i64,
+        den: i64,
+    },
+}
+impl OpenTarget {
+    fn label(&self) -> String {
+        match self {
+            Self::Existing(path) => path.clone(),
+            Self::Create { name, .. } => name.clone(),
+        }
+    }
+}
+struct OpenSave {
+    path: String,
+    document: Value,
+    owner: Option<concat_host::ownership::WriterGuard>,
+    lane: Arc<projects::SaveLane>,
+    ticket: u64,
+}
+struct PreparedOpen {
+    session: Option<(ProjectInfo, Session, Vec<model::MissingMedia>)>,
+    save: Option<(Arc<projects::SaveLane>, u64)>,
+}
+fn prepare_project_open(
+    target: OpenTarget,
+    old: Option<OpenSave>,
+    request: &crate::project_open::Request,
+) -> Result<PreparedOpen, String> {
+    request.check()?;
+    if let OpenTarget::Existing(path) = &target
+        && let Some(old) = &old
+    {
+        let same = if let Some(owner) = &old.owner {
+            owner
+                .matches_project(path)
+                .map_err(|error| error.to_string())?
+        } else {
+            std::fs::canonicalize(path)
+                .ok()
+                .zip(std::fs::canonicalize(&old.path).ok())
+                .is_some_and(|(a, b)| a == b)
+        };
+        if same {
+            return Ok(PreparedOpen {
+                session: None,
+                save: None,
+            });
+        }
+    }
+    request.check()?;
+    let (info, session) = match target {
+        OpenTarget::Existing(path) => {
+            let info = projects::open(&path)?;
+            let session = Session::open_info_owned(&info).map_err(|error| error.to_string())?;
+            (info, session)
+        }
+        OpenTarget::Create {
+            location,
+            name,
+            width,
+            height,
+            num,
+            den,
+        } => {
+            let created = projects::create_owned(&location, &name, width, height, num, den)
+                .map_err(|error| error.to_string())?;
+            let info = created.info().clone();
+            (
+                info,
+                created.into_session().map_err(|error| error.to_string())?,
+            )
+        }
+    };
+    request.check()?;
+    let missing = session.project().missing_media();
+    if !missing.is_empty() {
+        use std::io::Write;
+        if let Ok(mut file) =
+            std::fs::File::create(std::path::Path::new(&info.path).join("cache/missing_media.log"))
+        {
+            let _ = writeln!(file, "{} media files missing:", missing.len());
+            for media in &missing {
+                let _ = writeln!(file, "  - {} ({})", media.name, media.path);
+            }
+        }
+    }
+    request.check()?;
+    let save = if let Some(old) = old {
+        let written = old
+            .lane
+            .write_owned(old.ticket, &old.path, &old.document, old.owner.as_ref())
+            .map_err(|error| tf("Could not save: {0}", &[&error]))?;
+        if !written {
+            return Err(t("The project save changed. Please open it again."));
+        }
+        Some((old.lane, old.ticket))
+    } else {
+        None
+    };
+    request.check()?;
+    Ok(PreparedOpen {
+        session: Some((info, session, missing)),
+        save,
+    })
+}
+
 /// Identity captured by media workers before they leave the UI thread.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MediaImportSession {
@@ -590,6 +703,17 @@ pub struct Studio {
     dirty: bool,
     autosave: slint::Timer,
     save_lane: Option<Arc<projects::SaveLane>>,
+    open_request: Option<crate::project_open::Request>,
+    open_sequence: u64,
+    open_timeout: slint::Timer,
+    open_error: String,
+    pending_recent: Option<(u64, ProjectInfo)>,
+    recent_retry: slint::Timer,
+    cache_retry: slint::Timer,
+    mask_epoch: u64,
+    cache_probe: Option<(u64, u64)>,
+    cutout_blank: RefCell<HashMap<String, bool>>,
+    cutout_blank_pending: RefCell<HashSet<String>>,
 
     // ── the bin ──
     pub media: crate::panes::media_bin::MediaBin,
@@ -1354,6 +1478,17 @@ impl Studio {
             editor_mcp: RefCell::new(crate::editor_mcp::BridgeUi::new()),
             autosave: slint::Timer::default(),
             save_lane: None,
+            open_request: None,
+            open_sequence: 0,
+            open_timeout: slint::Timer::default(),
+            open_error: String::new(),
+            pending_recent: None,
+            recent_retry: slint::Timer::default(),
+            cache_retry: slint::Timer::default(),
+            mask_epoch: 0,
+            cache_probe: None,
+            cutout_blank: RefCell::new(HashMap::new()),
+            cutout_blank_pending: RefCell::new(HashSet::new()),
             media: crate::panes::media_bin::MediaBin::default(),
             peaks: HashMap::new(),
             strips: HashMap::new(),
@@ -4144,24 +4279,14 @@ impl Studio {
     /// that are not there, unless one is running. Called after every
     /// change; the finished job calls it again for whatever is next.
     pub fn ensure_cutouts(&mut self) {
+        self.request_cache_probe();
+    }
+
+    fn start_cutout_analysis(&mut self, id: String, request: AnalyseRequest) {
         if !self.cutout_jobs.is_empty() || self.host.cutouts.is_busy() {
             return;
         }
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
-        let project = std::path::PathBuf::from(session.path());
-        // One analysis per media and subject, keyed the way the job map is.
-        let wanted: Vec<(String, AnalyseRequest)> = Cutouts::requests(self.project(), &project)
-            .into_iter()
-            .map(|(media_id, request)| (Self::analysis_key(&media_id, request.subject), request))
-            .collect();
-        let Some((id, request)) = wanted
-            .into_iter()
-            .find(|(_, request)| Cutouts::outstanding(request) > 0)
-        else {
-            return;
-        };
+        let generation = self.session_generation;
         self.cutout_jobs.insert(id.clone(), (false, 0.0));
         let cutouts = Arc::clone(&self.host.cutouts);
         spawn(
@@ -4181,6 +4306,9 @@ impl Studio {
                         last = now;
                         let id = reporting.clone();
                         on_ui(move |studio, _, _| {
+                            if studio.session_generation != generation {
+                                return;
+                            }
                             if let Some(held) = studio.cutout_jobs.get_mut(&id) {
                                 *held = now;
                             }
@@ -4189,8 +4317,13 @@ impl Studio {
                 });
                 (id, result)
             },
-            |studio, _, _, (id, result)| {
+            move |studio, _, _, (id, result)| {
+                if studio.session_generation != generation {
+                    studio.request_cache_probe();
+                    return;
+                }
                 studio.cutout_jobs.remove(&id);
+                studio.invalidate_blank_masks();
                 match result {
                     Ok(_) => {
                         // The monitor shows the cut, and whatever else is
@@ -4687,38 +4820,194 @@ impl Studio {
 
     // ── projects ──
 
-    /// Opens a project as the session and leaves the launch screen, or
-    /// says why it could not.
-    pub fn open_project(&mut self, info: ProjectInfo) -> Result<(), String> {
-        if let Some(session) = &self.session
-            && session
-                .matches_project(&info.path)
-                .map_err(|error| error.to_string())?
-        {
-            self.on_start = false;
-            return Ok(());
-        }
-        let session = Session::open_info_owned(&info).map_err(|error| error.to_string())?;
-        self.adopt_project_session(info, session)
+    /// Starts a bounded background open. State lives on Studio, including while
+    /// StartPane is temporarily moved out by handle().
+    pub(crate) fn request_project_open(&mut self, path: String) -> u64 {
+        self.begin_project_open(OpenTarget::Existing(path))
     }
 
-    /// Adopts a newly created project without releasing its writer ownership.
-    pub fn open_created_project(
+    pub(crate) fn request_project_create(
         &mut self,
-        created: projects::CreatedProject,
-    ) -> Result<(), String> {
-        let info = created.info().clone();
-        let session = created.into_session().map_err(|error| error.to_string())?;
-        self.adopt_project_session(info, session)
+        location: String,
+        name: String,
+        width: u32,
+        height: u32,
+        num: i64,
+        den: i64,
+    ) -> u64 {
+        self.begin_project_open(OpenTarget::Create {
+            location,
+            name,
+            width,
+            height,
+            num,
+            den,
+        })
     }
 
-    fn adopt_project_session(&mut self, info: ProjectInfo, session: Session) -> Result<(), String> {
-        if self.session.is_some() {
-            self.close_project()?;
+    fn begin_project_open(&mut self, target: OpenTarget) -> u64 {
+        self.cancel_project_open(&t("Project opening cancelled"));
+        self.flush_commit();
+        self.open_error.clear();
+        self.open_sequence = self.open_sequence.wrapping_add(1).max(1);
+        let id = self.open_sequence;
+        let created = matches!(&target, OpenTarget::Create { .. });
+        let request = crate::project_open::Request::new(
+            id,
+            self.session_generation,
+            self.revision,
+            target.label(),
+        );
+        if self.echo.is_some() || !matches!(self.gesture, Gesture::None) {
+            self.open_error = t("Finish the current edit before opening a project.");
+            self.notify(&self.open_error.clone(), true);
+            crate::cloud::clip_open_started(id, &request.target, created);
+            crate::cloud::clip_open_failed(id);
+            return id;
         }
-        if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
-            log::warn!("{error}");
+        self.autosave.stop();
+        let old = self.session.as_mut().map(|session| {
+            let (path, document) = session.prepare_save(None);
+            let owner = session.writer_guard();
+            let lane = self
+                .save_lane
+                .get_or_insert_with(|| Arc::new(projects::SaveLane::default()))
+                .clone();
+            let ticket = lane.next();
+            OpenSave {
+                path,
+                document,
+                owner,
+                lane,
+                ticket,
+            }
+        });
+        let worker_request = request.clone();
+        crate::cloud::clip_open_started(id, &request.target, created);
+        self.open_request = Some(request);
+        let dispatched = crate::project_open::dispatch(false, move || {
+            let result = prepare_project_open(target, old, &worker_request);
+            on_ui(move |studio, app, _| studio.finish_project_open(id, result, app));
+        });
+        if let Err(error) = dispatched {
+            let error = match error {
+                crate::project_open::DispatchError::Busy => {
+                    t("Another project operation is still running. Please try again.")
+                }
+                crate::project_open::DispatchError::Spawn(error) => {
+                    tf("Could not start opening: {0}", &[&error.to_string()])
+                }
+            };
+            self.cancel_project_open(&error);
+            self.open_error = error.clone();
+            self.notify(&error, true);
+            return id;
         }
+
+        self.open_timeout.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_secs(30),
+            move || {
+                crate::host::Shell::with(|shell, app| {
+                    let mut studio = shell.studio.borrow_mut();
+                    if studio
+                        .open_request
+                        .as_ref()
+                        .is_some_and(|request| request.id == id)
+                    {
+                        studio.cancel_project_open(&t("Opening timed out. Please try again."));
+                        studio.publish(&app, &shell.models);
+                    }
+                });
+            },
+        );
+        id
+    }
+
+    pub(crate) fn cancel_project_open(&mut self, reason: &str) {
+        if let Some(request) = self.open_request.take() {
+            request.cancel();
+            self.open_timeout.stop();
+            crate::cloud::clip_open_failed(request.id);
+            self.notify(reason, false);
+            self.open_error = reason.into();
+            if self.dirty {
+                self.schedule_autosave();
+            }
+        }
+    }
+
+    fn finish_project_open(&mut self, id: u64, result: Result<PreparedOpen, String>, app: &App) {
+        let save_latest = result.as_ref().ok().is_none_or(|prepared| {
+            prepared
+                .save
+                .as_ref()
+                .is_none_or(|(lane, ticket)| lane.is_latest(*ticket))
+        });
+        let completion = crate::project_open::complete(
+            &mut self.open_request,
+            id,
+            self.session_generation,
+            self.revision,
+            save_latest,
+            self.echo.is_some() || !matches!(self.gesture, Gesture::None) || self.commit_pending,
+            result,
+        );
+        let prepared = match completion {
+            crate::project_open::Completion::Obsolete => return,
+            crate::project_open::Completion::Ready(prepared) => prepared,
+            rejected => {
+                self.open_timeout.stop();
+                self.open_error = match rejected {
+                    crate::project_open::Completion::Changed => {
+                        t("The current project changed. Please open it again.")
+                    }
+                    crate::project_open::Completion::SaveSuperseded => {
+                        t("The project save changed. Please open it again.")
+                    }
+                    crate::project_open::Completion::Failed(error) => error,
+                    _ => unreachable!(),
+                };
+                self.notify(&self.open_error.clone(), true);
+                crate::cloud::clip_open_failed(id);
+                if self.dirty {
+                    self.schedule_autosave();
+                }
+                return;
+            }
+        };
+        self.open_timeout.stop();
+        self.open_error.clear();
+        if let Some((info, session, missing)) = prepared.session {
+            self.adopt_project_session(info, session);
+            if !missing.is_empty() {
+                self.handle(crate::panes::Msg::Relink(
+                    crate::panes::relink::RelinkMsg::Show(missing),
+                ));
+            }
+        } else {
+            // Same OS resource, including aliases: keep history and the save lane.
+            self.on_start = false;
+            if self.dirty {
+                self.schedule_autosave();
+            }
+        }
+        app.set_clip_create_open(false);
+
+        crate::cloud::clip_open_completed(self, app, id);
+    }
+
+    fn adopt_project_session(&mut self, info: ProjectInfo, session: Session) {
+        // The worker saved the previous Session and UI rechecked its revision.
+        // No disk I/O or synchronous close is allowed in adoption.
+        self.host.cutouts.cancel();
+        self.cutout_jobs.clear();
+        self.region_job = None;
+        self.cache_probe = None;
+        self.cutout_blank.borrow_mut().clear();
+        self.cutout_blank_pending.borrow_mut().clear();
+        self.autosave.stop();
+        self.gesture = Gesture::None;
         self.pause();
         self.session = Some(session);
         self.session_generation = self.session_generation.wrapping_add(1).max(1);
@@ -4736,8 +5025,8 @@ impl Studio {
         self.handle(crate::panes::Msg::Monitor(
             crate::panes::monitor::MonitorMsg::Opened,
         ));
-        self.recents = projects::list(&self.host.dirs.config);
-        self.invalidate_recent_gallery();
+        self.pending_recent = Some((self.session_generation, info));
+        self.update_opened_recent();
         self.host.monitor.clear();
         self.audition = None;
         self.revision += 1;
@@ -4747,28 +5036,87 @@ impl Studio {
         self.request_preview();
         self.ensure_cutouts();
         self.ensure_regions();
+    }
 
-        // Log missing media to file for debugging
-        if let Some(session) = &self.session {
-            let missing = session.project().missing_media();
-            if !missing.is_empty() {
-                let log_path = std::path::Path::new(&info.path)
-                    .join("cache")
-                    .join("missing_media.log");
-                if let Ok(mut file) = std::fs::File::create(&log_path) {
-                    use std::io::Write;
-                    let _ = writeln!(file, "{} media files missing:", missing.len());
-                    for m in &missing {
-                        let _ = writeln!(file, "  - {} ({})", m.name, m.path);
-                    }
+    pub(crate) fn dismiss_project_open_error(&mut self) {
+        self.open_error.clear();
+    }
+
+    fn mask_cache_stamp(&self) -> crate::project_open::CacheStamp {
+        crate::project_open::CacheStamp {
+            generation: self.session_generation,
+            revision: self.revision,
+            mask_epoch: self.mask_epoch,
+        }
+    }
+
+    fn invalidate_blank_masks(&mut self) {
+        self.mask_epoch = self.mask_epoch.wrapping_add(1);
+        self.cutout_blank.borrow_mut().clear();
+    }
+
+    fn retry_cache_probe(&mut self) {
+        if self.cache_retry.running() || self.session.is_none() {
+            return;
+        }
+        self.cache_retry.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(250),
+            || {
+                on_ui(|studio, _, _| studio.request_cache_probe());
+            },
+        );
+    }
+
+    fn update_opened_recent(&mut self) {
+        let Some((generation, info)) = self.pending_recent.take() else {
+            return;
+        };
+        if generation != self.session_generation {
+            return;
+        }
+        let config = self.host.dirs.config.clone();
+        let retained = info.clone();
+        let result = crate::project_open::dispatch_recent(move || {
+            let remembered = projects::remember(&config, &info);
+            let recents = projects::list(&config);
+            on_ui(move |studio, _, _| {
+                if studio.session_generation != generation {
+                    return;
                 }
-
-                self.handle(crate::panes::Msg::Relink(
-                    crate::panes::relink::RelinkMsg::Show(missing),
-                ));
+                studio.recents = recents;
+                studio.invalidate_recent_gallery();
+                if let Err(error) = remembered {
+                    studio.notify(
+                        &tf("Could not update recent projects: {0}", &[&error]),
+                        true,
+                    );
+                }
+            });
+        });
+        match result {
+            Ok(()) => self.recent_retry.stop(),
+            Err(crate::project_open::DispatchError::Busy) => {
+                self.pending_recent = Some((generation, retained));
+                self.recent_retry.start(
+                    slint::TimerMode::SingleShot,
+                    std::time::Duration::from_millis(250),
+                    || {
+                        on_ui(|studio, _, _| studio.update_opened_recent());
+                    },
+                );
+            }
+            Err(crate::project_open::DispatchError::Spawn(error)) => {
+                self.recent_retry.stop();
+                self.notify(
+                    &tf(
+                        "Could not update recent projects: {0}",
+                        &[&error.to_string()],
+                    ),
+                    true,
+                );
             }
         }
-        Ok(())
     }
 
     /// Clears all cached artwork and waveforms from the current project.
@@ -4781,7 +5129,12 @@ impl Studio {
             return;
         };
         match concat_host::projects::clear_cache(&path) {
-            Ok(count) => self.notify(&format!("Cleared {count} cache files"), false),
+            Ok(count) => {
+                self.invalidate_blank_masks();
+                self.ensure_cutouts();
+                self.ensure_regions();
+                self.notify(&format!("Cleared {count} cache files"), false);
+            }
             Err(error) => self.notify(&format!("Cache clear failed: {error}"), true),
         }
         self.request_media_art();
@@ -4792,6 +5145,7 @@ impl Studio {
     /// The canvas is deliberately independent: closing the clip project must
     /// not discard an open canvas document.
     pub fn close_project(&mut self) -> Result<(), String> {
+        self.cancel_project_open(&t("Project opening cancelled"));
         self.pause();
         if let Some(session) = self.session.as_mut() {
             let (path, document) = session.prepare_save(None);
@@ -5810,63 +6164,152 @@ impl Studio {
         ) else {
             return false;
         };
-        let project = std::path::Path::new(session.path());
-        let store = concat_vision::MaskStore::open(&concat_vision::mask_dir(
-            project,
-            &media.path,
-            cutout.subject,
-        ));
-        store
-            .mask_at(self.source_at_playhead(clip))
-            .is_some_and(|mask| mask.is_blank())
+        let stamp = self.mask_cache_stamp();
+        let instant = self.source_at_playhead(clip);
+        let key = format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            stamp.generation,
+            stamp.revision,
+            stamp.mask_epoch,
+            clip.media_id,
+            media.path,
+            cutout.subject.key(),
+            instant.to_bits()
+        );
+        if let Some(blank) = self.cutout_blank.borrow().get(&key) {
+            return *blank;
+        }
+        if self.cutout_blank_pending.borrow().contains(&key) {
+            return false;
+        }
+        let path = std::path::PathBuf::from(session.path());
+        let media_path = media.path.clone();
+        let subject = cutout.subject;
+        self.cutout_blank_pending.borrow_mut().insert(key.clone());
+        let worker_key = key.clone();
+        let dispatched = crate::project_open::dispatch(true, move || {
+            let store = concat_vision::MaskStore::open(&concat_vision::mask_dir(
+                &path,
+                &media_path,
+                subject,
+            ));
+            let blank = store.mask_at(instant).is_some_and(|mask| mask.is_blank());
+            on_ui(move |studio, _, _| {
+                studio.cutout_blank_pending.borrow_mut().remove(&worker_key);
+                let current = studio.mask_cache_stamp();
+                stamp.store(
+                    current,
+                    &mut studio.cutout_blank.borrow_mut(),
+                    worker_key,
+                    blank,
+                );
+            });
+        });
+        if dispatched.is_err() {
+            self.cutout_blank_pending.borrow_mut().remove(&key);
+        }
+        false
     }
 
     /// Starts reading the first smart stroke whose region is not there
     /// yet, unless one is being read. Called after every change, and by
     /// the finished job for whatever is next.
     pub fn ensure_regions(&mut self) {
-        if self.region_job.is_some() || self.host.brushes.is_busy() {
+        self.request_cache_probe();
+    }
+
+    fn request_cache_probe(&mut self) {
+        if self.cache_probe.is_some() {
             return;
         }
+        let want_cutout = self.cutout_jobs.is_empty() && !self.host.cutouts.is_busy();
+        let want_region = self.region_job.is_none() && !self.host.brushes.is_busy();
+        if !want_cutout && !want_region {
+            return;
+        }
+        let Some(permit) = crate::project_open::reserve_cache() else {
+            self.retry_cache_probe();
+            return;
+        };
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let project = std::path::PathBuf::from(session.path());
-        let mut next: Option<(String, RegionRequest)> = None;
-        'clips: for clip in &self.timeline().clips {
-            let Some(cutout) = clip.cutout.as_ref() else {
-                continue;
+        let path = std::path::PathBuf::from(session.path());
+        let project = self.project().clone();
+        let stamp = (self.session_generation, self.revision);
+        self.cache_probe = Some(stamp);
+        let dispatched = crate::project_open::dispatch_cache(permit, move || {
+            let cutout = if want_cutout {
+                Cutouts::requests(&project, &path)
+                    .into_iter()
+                    .find(|(_, request)| Cutouts::outstanding(request) > 0)
+                    .map(|(id, request)| (Studio::analysis_key(&id, request.subject), request))
+            } else {
+                None
             };
-            if cutout.mode != model::CutoutMode::Custom || !clip.kind.is_visual() {
-                continue;
-            }
-            let Some(media) = self.project().media_by_id(&clip.media_id) else {
-                continue;
-            };
-            // The source the clip shows, as the mask analysis reckons it.
-            let range = (
-                clip.source_start,
-                clip.source_start + clip.duration * clip.speed.max(0.0625),
-            );
-            for stroke in &cutout.strokes {
-                let request = RegionRequest {
-                    project: project.clone(),
-                    media_path: media.path.clone(),
-                    media_size: (media.width.unwrap_or(0), media.height.unwrap_or(0)),
-                    still: media.kind == model::MediaKind::Image,
-                    subject: cutout.subject,
-                    ranges: vec![range],
-                    stroke: stroke.clone(),
+            let mut region = None;
+            'clips: for clip in project.active().clips.iter().filter(|_| want_region) {
+                let Some(cutout) = clip.cutout.as_ref() else {
+                    continue;
                 };
-                if request.outstanding() {
-                    next = Some((Self::analysis_key(&media.id, cutout.subject), request));
-                    break 'clips;
+                if cutout.mode != model::CutoutMode::Custom || !clip.kind.is_visual() {
+                    continue;
+                }
+                let Some(media) = project.media_by_id(&clip.media_id) else {
+                    continue;
+                };
+                for stroke in &cutout.strokes {
+                    let request = RegionRequest {
+                        project: path.clone(),
+                        media_path: media.path.clone(),
+                        media_size: (media.width.unwrap_or(0), media.height.unwrap_or(0)),
+                        still: media.kind == model::MediaKind::Image,
+                        subject: cutout.subject,
+                        ranges: vec![(
+                            clip.source_start,
+                            clip.source_start + clip.duration * clip.speed.max(0.0625),
+                        )],
+                        stroke: stroke.clone(),
+                    };
+                    if request.outstanding() {
+                        region = Some((Studio::analysis_key(&media.id, cutout.subject), request));
+                        break 'clips;
+                    }
                 }
             }
+            on_ui(move |studio, _, _| {
+                if studio.cache_probe != Some(stamp) {
+                    return;
+                }
+                studio.cache_probe = None;
+                if studio.session_generation != stamp.0 {
+                    return;
+                }
+                if studio.revision != stamp.1 {
+                    studio.request_cache_probe();
+                    return;
+                }
+                if let Some((id, request)) = cutout {
+                    studio.start_cutout_analysis(id, request);
+                }
+                if let Some((key, request)) = region {
+                    studio.start_region_analysis(key, request);
+                }
+            });
+        });
+        if dispatched.is_err() {
+            self.cache_probe = None;
+            // Spawn failures do not become an implicit retry loop.
+        } else {
+            self.cache_retry.stop();
         }
-        let Some((key, request)) = next else {
+    }
+
+    fn start_region_analysis(&mut self, key: String, request: RegionRequest) {
+        if self.region_job.is_some() || self.host.brushes.is_busy() {
             return;
-        };
+        }
+        let generation = self.session_generation;
         self.region_job = Some(key.clone());
         self.cutout_jobs.entry(key.clone()).or_insert((false, 0.0));
         let brushes = Arc::clone(&self.host.brushes);
@@ -5882,6 +6325,9 @@ impl Studio {
                     };
                     let key = reporting.clone();
                     on_ui(move |studio, _, _| {
+                        if studio.session_generation != generation {
+                            return;
+                        }
                         if let Some(held) = studio.cutout_jobs.get_mut(&key) {
                             *held = now;
                         }
@@ -5889,10 +6335,15 @@ impl Studio {
                 });
                 (key, result)
             },
-            |studio, _, _, (key, result)| {
+            move |studio, _, _, (key, result)| {
+                if studio.session_generation != generation {
+                    studio.request_cache_probe();
+                    return;
+                }
                 studio.region_job = None;
                 studio.cutout_jobs.remove(&key);
                 studio.pending_stroke = None;
+                studio.invalidate_blank_masks();
                 match result {
                     Ok(()) => {
                         studio.request_preview();
@@ -6165,7 +6616,31 @@ impl Studio {
             detail: self.toast.detail.as_str().into(),
             failed: self.toast.failed,
         });
-        app.set_start(self.start.data());
+        let mut start = self.start.data();
+        start.busy = self.open_request.is_some();
+        if !self.open_error.is_empty() {
+            start.error = self.open_error.as_str().into();
+        }
+        app.set_start(start);
+        app.set_project_open_busy(self.open_request.is_some());
+        app.set_project_open_target(
+            self.open_request
+                .as_ref()
+                .map(|request| {
+                    self.recents
+                        .iter()
+                        .find(|info| info.path == request.target)
+                        .map(|info| info.name.as_str())
+                        .unwrap_or_else(|| {
+                            std::path::Path::new(&request.target)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or(request.target.as_str())
+                        })
+                })
+                .unwrap_or("")
+                .into(),
+        );
         let gallery = app.global::<SeeCut>();
         let query = gallery.get_clip_project_search().trim().to_lowercase();
         let sort = gallery.get_clip_project_sort();
@@ -6897,6 +7372,225 @@ impl Studio {
             timeline_id: id,
             index,
         });
+    }
+}
+
+#[cfg(test)]
+mod project_open_tests {
+    use super::*;
+    struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("seecut-open-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn project(&self, name: &str) -> (ProjectInfo, Session) {
+            let created =
+                projects::create_owned(self.0.to_str().unwrap(), name, 320, 180, 30, 1).unwrap();
+            let info = created.info().clone();
+            (info, created.into_session().unwrap())
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn snapshot(session: &mut Session, lane: Arc<projects::SaveLane>) -> OpenSave {
+        let (path, document) = session.prepare_save(None);
+        OpenSave {
+            path,
+            document,
+            owner: session.writer_guard(),
+            ticket: lane.next(),
+            lane,
+        }
+    }
+    fn request() -> crate::project_open::Request {
+        crate::project_open::Request::new(1, 1, 1, "synthetic".into())
+    }
+
+    #[test]
+    fn background_prepare_keeps_both_owners_and_persists_old_edit() {
+        let scratch = Scratch::new();
+        let (old_info, mut old) = scratch.project("old");
+        old.apply(Command::AddTrack).unwrap();
+        let tracks = old.project().active().tracks.len();
+        let (target_info, target) = scratch.project("target");
+        drop(target);
+        let lane = Arc::new(projects::SaveLane::default());
+        let prepared = prepare_project_open(
+            OpenTarget::Existing(target_info.path.clone()),
+            Some(snapshot(&mut old, lane)),
+            &request(),
+        )
+        .unwrap();
+        let (_, prepared_session, _) = prepared.session.unwrap();
+        #[cfg(any(
+            target_os = "macos",
+            all(target_os = "linux", not(target_os = "android")),
+            target_os = "windows"
+        ))]
+        {
+            assert!(Session::open_info_owned(&old_info).is_err());
+            assert!(Session::open_info_owned(&target_info).is_err());
+        }
+        assert!(old.can_undo()); // Preparing never replaces old history.
+        drop(prepared_session);
+        assert!(Session::open_info_owned(&target_info).is_ok());
+        drop(old);
+        let reopened = Session::open_info_owned(&old_info).unwrap();
+        assert_eq!(reopened.project().active().tracks.len(), tracks);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alias_reuses_current_session_without_a_second_writer_or_history_reset() {
+        let scratch = Scratch::new();
+        let (info, mut session) = scratch.project("original");
+        session.apply(Command::AddTrack).unwrap();
+        let alias = scratch.0.join("alias");
+        std::os::unix::fs::symlink(&info.path, &alias).unwrap();
+        let lane = Arc::new(projects::SaveLane::default());
+        let prepared = prepare_project_open(
+            OpenTarget::Existing(alias.to_str().unwrap().into()),
+            Some(snapshot(&mut session, lane.clone())),
+            &request(),
+        )
+        .unwrap();
+        assert!(prepared.session.is_none() && prepared.save.is_none());
+        assert!(session.can_undo());
+        assert!(session.matches_project(alias.to_str().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn failed_or_superseded_save_releases_target_and_preserves_old_session() {
+        let scratch = Scratch::new();
+        let (old_info, mut old) = scratch.project("old");
+        old.apply(Command::AddTrack).unwrap();
+        let (target_info, target) = scratch.project("target");
+        drop(target);
+        let lane = Arc::new(projects::SaveLane::default());
+        let stale = snapshot(&mut old, lane.clone());
+        lane.next();
+        assert!(
+            prepare_project_open(
+                OpenTarget::Existing(target_info.path.clone()),
+                Some(stale),
+                &request()
+            )
+            .is_err()
+        );
+        assert!(Session::open_info_owned(&target_info).is_ok());
+        let mut bad_save = snapshot(&mut old, lane);
+        bad_save.path = scratch
+            .0
+            .join("missing-parent/old")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            prepare_project_open(
+                OpenTarget::Existing(target_info.path.clone()),
+                Some(bad_save),
+                &request()
+            )
+            .is_err()
+        );
+        assert!(Session::open_info_owned(&target_info).is_ok());
+        assert!(old.can_undo() && old.path() == old_info.path);
+    }
+
+    #[test]
+    fn new_project_preparation_moves_creator_owner_without_reopening() {
+        let scratch = Scratch::new();
+        let prepared = prepare_project_open(
+            OpenTarget::Create {
+                location: scratch.0.to_str().unwrap().into(),
+                name: "created".into(),
+                width: 320,
+                height: 180,
+                num: 30,
+                den: 1,
+            },
+            None,
+            &request(),
+        )
+        .unwrap();
+        let (info, session, _) = prepared.session.unwrap();
+        #[cfg(any(
+            target_os = "macos",
+            all(target_os = "linux", not(target_os = "android")),
+            target_os = "windows"
+        ))]
+        assert!(Session::open_info_owned(&info).is_err());
+        drop(session);
+        assert!(Session::open_info_owned(&info).is_ok());
+    }
+
+    #[test]
+    fn legacy_manifest_opens_but_corrupt_target_does_not_save_or_replace_old() {
+        let scratch = Scratch::new();
+        let (old_info, mut old) = scratch.project("old");
+        old.apply(Command::AddTrack).unwrap();
+        let (target_info, target) = scratch.project("legacy");
+        drop(target);
+        let root = std::path::Path::new(&target_info.path);
+        std::fs::rename(root.join("concat.json"), root.join("wolfcut.json")).unwrap();
+        let opened = prepare_project_open(
+            OpenTarget::Existing(target_info.path.clone()),
+            None,
+            &request(),
+        )
+        .unwrap();
+        drop(opened);
+        std::fs::write(root.join("wolfcut.json"), b"not a project").unwrap();
+        let before =
+            std::fs::read(std::path::Path::new(&old_info.path).join("concat.json")).unwrap();
+        let lane = Arc::new(projects::SaveLane::default());
+        assert!(
+            prepare_project_open(
+                OpenTarget::Existing(target_info.path),
+                Some(snapshot(&mut old, lane)),
+                &request()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(std::path::Path::new(&old_info.path).join("concat.json")).unwrap(),
+            before
+        );
+        assert!(old.can_undo());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_target_returns_failure_and_keeps_old_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let (_, mut old) = scratch.project("old");
+        old.apply(Command::AddTrack).unwrap();
+        let (info, target) = scratch.project("unreadable");
+        drop(target);
+        let manifest = std::path::Path::new(&info.path).join("concat.json");
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0)).unwrap();
+        // Superuser test runners cannot establish permission denial.
+        let denies_read = std::fs::read(&manifest).is_err();
+        if denies_read {
+            let lane = Arc::new(projects::SaveLane::default());
+            assert!(
+                prepare_project_open(
+                    OpenTarget::Existing(info.path.clone()),
+                    Some(snapshot(&mut old, lane)),
+                    &request()
+                )
+                .is_err()
+            );
+            assert!(old.can_undo());
+        }
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(Session::open_info_owned(&info).is_ok());
     }
 }
 

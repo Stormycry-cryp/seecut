@@ -751,5 +751,16 @@
   "Local Agent access is unavailable on this platform": "L’accès des agents locaux est indisponible sur cette plateforme",
   "Read structure (R)": "Lire la structure (R)",
   "Read structure and preview (R + M)": "Lire la structure et l’aperçu (R + M)",
-  "Write token (SEECUT_MCP_WRITE_TOKEN)": "Jeton de modification (SEECUT_MCP_WRITE_TOKEN)"
+  "Write token (SEECUT_MCP_WRITE_TOKEN)": "Jeton de modification (SEECUT_MCP_WRITE_TOKEN)",
+  "Opening “{0}”…": "Ouverture de « {0} »…",
+  "Project opening cancelled": "Ouverture annulée",
+  "Opening timed out. Please try again.": "Le délai d’ouverture est dépassé. Veuillez réessayer.",
+  "The current project changed. Please open it again.": "Le projet actuel a changé. Veuillez le rouvrir.",
+  "The project save changed. Please open it again.": "L’état de sauvegarde a changé. Veuillez rouvrir le projet.",
+  "Finish the current edit before opening a project.": "Terminez la modification en cours avant d’ouvrir un projet.",
+  "Another project operation is still running. Please try again.": "Une autre opération de projet est en cours. Réessayez plus tard.",
+  "Could not start opening: {0}": "Impossible de lancer l’ouverture : {0}",
+  "Could not update recent projects: {0}": "Impossible de mettre à jour les projets récents : {0}",
+  "Dismiss error": "Fermer l’erreur",
+  "Could not prepare project media.": "Impossible de préparer les médias du projet."
 }

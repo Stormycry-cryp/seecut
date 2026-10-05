@@ -751,5 +751,16 @@
   "Local Agent access is unavailable on this platform": "此平台无法使用本地 Agent 权限",
   "Read structure (R)": "读取结构（R）",
   "Read structure and preview (R + M)": "读取结构与预览（R + M）",
-  "Write token (SEECUT_MCP_WRITE_TOKEN)": "编辑令牌（SEECUT_MCP_WRITE_TOKEN）"
+  "Write token (SEECUT_MCP_WRITE_TOKEN)": "编辑令牌（SEECUT_MCP_WRITE_TOKEN）",
+  "Opening “{0}”…": "正在打开“{0}”…",
+  "Project opening cancelled": "已取消打开",
+  "Opening timed out. Please try again.": "打开超时，请稍后重试。",
+  "The current project changed. Please open it again.": "当前项目已变化，请重新打开。",
+  "The project save changed. Please open it again.": "保存状态已变化，请重新打开。",
+  "Finish the current edit before opening a project.": "请完成当前编辑后再打开项目。",
+  "Another project operation is still running. Please try again.": "其他项目操作尚未结束，请稍后重试。",
+  "Could not start opening: {0}": "无法打开：{0}",
+  "Could not update recent projects: {0}": "无法更新最近项目：{0}",
+  "Dismiss error": "关闭提示",
+  "Could not prepare project media.": "无法准备项目素材。"
 }

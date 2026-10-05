@@ -32,7 +32,7 @@ import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { Editor, CanvasControls, CanvasThumbs } from "editor.slint";
 import { PaneKind } from "workspace/pane-switcher.slint";
-import { RecentProjectData, StartData, StartScreen } from "start.slint";
+import { RecentProjectData, StartData, StartScreen, ProjectCreateDialog } from "start.slint";
 import { TitleBar } from "title-bar.slint";
 import {
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData,
@@ -99,7 +99,6 @@ export component App inherits Window {
         SeeCut.project-open = !root.on-start;
         if (!root.on-start) {
             root.clip-create-open = false;
-            SeeCut.action("project-ready", "");
             keys.focus();
         }
     }
@@ -109,6 +108,7 @@ export component App inherits Window {
     property <bool> canvas-space-hand: false;
     property <int> canvas-tool-before-space: 0;
     in-out property <bool> clip-create-open;
+    changed clip-create-open => { if !root.clip-create-open { root.focus-restore-pending = true; } }
     callback canvas-export-library();
     callback export-destination-selected(to-library: bool);
     callback canvas-new-with-paths(payload: string);
@@ -125,7 +125,7 @@ export component App inherits Window {
         SeeCut.personal-dialog = 0;
         SeeCut.template-delete-id = "";
     }
-    property <bool> workflow-modal-open: SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
+    property <bool> workflow-modal-open: root.clip-create-open || SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
     // A small set of stable opening controls can receive focus again after
     // their sheet closes. Other workflows use the window keyboard scope.
     // 1 canvas open, 2 canvas export, 3 clip assets, 4 clip export, 5 settings.
@@ -214,6 +214,13 @@ export component App inherits Window {
     callback start-open-recent(path: string);
     callback start-forget-recent(path: string);
     callback start-dismiss-error();
+    in property <bool> project-open-busy;
+    in property <string> project-open-target;
+    callback project-open-cancel();
+    // Native bridge callbacks, never used to infer completion from on-start.
+    callback clip-open-started(request-id: string, target: string, created: bool);
+    callback clip-open-failed(request-id: string);
+    callback clip-open-completed(request-id: string) -> string;
 
     // Title bar. The drag/maximize pair must be handled in main.rs — a window
     // cannot drag itself from inside the scene graph; the rest are seams like
@@ -423,6 +430,10 @@ export component App inherits Window {
         key-pressed(event) => {
             if event.text == Key.Escape && Editor.canvas-transform-confirm { Editor.canvas-transform-resolve(0); return accept; }
             if event.text == Key.Escape && Editor.canvas-exit-confirm { Editor.canvas-exit-cancel(); return accept; }
+            if event.text == Key.Escape && root.clip-create-open {
+                root.clip-create-open = false; root.project-open-cancel();
+                SeeCut.action("handoff-create-cancel", ""); return accept;
+            }
             if event.text == Key.Escape && root.canvas-open-menu { root.canvas-open-menu = false; return accept; }
             if event.text == Key.Escape && Editor.canvas-open-confirm { Editor.canvas-open-cancel(); return accept; }
             if event.text == Key.Escape && SeeCut.export-copy-open { if !SeeCut.export-copy-running { SeeCut.action("export-copy-close", ""); } return accept; }
@@ -691,6 +702,17 @@ export component App inherits Window {
                         assets-clicked => { root.focus-return = 3; SeeCut.action("project-assets", ""); }
                         export-clicked => { root.focus-return = 4; root.export-clicked(); }
                     }
+                    if root.project-open-busy: Rectangle {
+                        height: 40px; background: Theme.panel;
+                        HorizontalLayout {
+                            padding-left: 16px; padding-right: 12px; spacing: 8px;
+                            Text { horizontal-stretch: 1; min-width: 0px;
+                                text: I18n.t1("Opening “{0}”…", root.project-open-target);
+                                color: Theme.fg-muted; vertical-alignment: center; overflow: elide;
+                            }
+                            AppButton { label: I18n.t("Cancel"); height: 28px; clicked => { root.project-open-cancel(); } }
+                        }
+                    }
                     WorkflowFeedback { }
                     if root.on-start: StartScreen {
                         vertical-stretch: 1;
@@ -706,7 +728,7 @@ export component App inherits Window {
                         resolution-changed(index) => { root.start-resolution-changed(index); }
                         rate-changed(index) => { root.start-rate-changed(index); }
                         create => { root.start-create(); }
-                        create-cancelled => { SeeCut.action("handoff-create-cancel", ""); }
+                        create-cancelled => { root.project-open-cancel(); SeeCut.action("handoff-create-cancel", ""); }
                         open-recent(path) => { root.start-open-recent(path); }
                         forget-recent(path) => { root.start-forget-recent(path); }
                         dismiss-error => { root.start-dismiss-error(); }
@@ -716,6 +738,23 @@ export component App inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    if !root.on-start: ProjectCreateDialog {
+        width: root.width; height: root.height;
+        open: root.clip-create-open;
+        data: root.start; resolutions: root.start-resolutions; rates: root.start-rates;
+        name-edited(name) => { root.start-name-edited(name); }
+        location-edited(path) => { root.start-location-edited(path); }
+        browse => { root.start-browse(); }
+        resolution-changed(index) => { root.start-resolution-changed(index); }
+        rate-changed(index) => { root.start-rate-changed(index); }
+        create => { root.start-create(); }
+        dismiss-error => { root.start-dismiss-error(); }
+        closed => {
+            root.clip-create-open = false; root.project-open-cancel();
+            SeeCut.action("handoff-create-cancel", "");
         }
     }
 

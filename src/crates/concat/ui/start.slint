@@ -102,13 +102,8 @@ export component StartScreen inherits Rectangle {
                 }
             }
         }
-        if root.data.error != "": Rectangle {
-            height: 44px; background: Theme.danger-soft; border-radius: Theme.r;
-            HorizontalLayout {
-                padding-left: 12px; padding-right: 8px;
-                Text { text: root.data.error; color: Theme.danger; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
-                WorkspaceIcon { glyph: Glyph.close; label: "关闭提示"; clicked => { root.dismiss-error(); } }
-            }
+        if root.data.error != "" && !root.create-open: ProjectOpenError {
+            message: root.data.error; dismissed => { root.dismiss-error(); }
         }
         ScrollView {
             viewport-width: self.visible-width; viewport-height: grid.height;
@@ -153,31 +148,88 @@ export component StartScreen inherits Rectangle {
             }
         }
     }
-    Modal {
+    ProjectCreateDialog {
         open: root.create-open;
-        title: "新建剪辑项目";
-        glyph: Glyph.plus;
-        surface-width: Math.min(500px, root.width - 32px);
+        width: root.width; height: root.height;
+        data: root.data; resolutions: root.resolutions; rates: root.rates;
+        name-edited(name) => { root.name-edited(name); }
+        location-edited(path) => { root.location-edited(path); }
+        browse => { root.browse(); }
+        resolution-changed(index) => { root.resolution-changed(index); }
+        rate-changed(index) => { root.rate-changed(index); }
+        create => { root.create(); }
+        dismiss-error => { root.dismiss-error(); }
         closed => { root.create-open = false; root.create-cancelled(); }
-        VerticalLayout {
-            padding: 24px; spacing: 12px;
-            Text { text: "项目名称"; color: Theme.fg-muted; }
-            CloudField { value: root.data.name; placeholder: "新建项目"; edited(value) => { root.name-edited(value); } }
-            Text { text: "保存位置"; color: Theme.fg-muted; }
-            HorizontalLayout {
-                spacing: 8px;
-                CloudField { value: root.data.location; horizontal-stretch: 1; edited(value) => { root.location-edited(value); } }
-                WorkspaceIcon { glyph: Glyph.folder; label: "选择位置"; clicked => { root.browse(); } }
+    }
+}
+
+/// A long loader/path error may scroll, while its dismiss control stays fixed.
+component ProjectOpenError inherits Rectangle {
+    in property <string> message;
+    callback dismissed();
+    height: Math.min(112px, Math.max(44px, error-text.preferred-height + 24px));
+    background: Theme.danger-soft; border-radius: Theme.r;
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 8px; padding-top: 8px; padding-bottom: 8px; spacing: 8px;
+        ScrollView {
+            horizontal-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            viewport-width: self.visible-width;
+            viewport-height: error-text.preferred-height;
+            error-text := Text {
+                width: parent.width; height: self.preferred-height;
+                text: root.message; color: Theme.danger; wrap: word-wrap;
             }
-            Text { text: "画面尺寸"; color: Theme.fg-muted; }
-            WorkspaceSelect { options: root.resolutions; current: root.data.resolution; changed(index) => { root.resolution-changed(index); } }
-            Text { text: "帧率"; color: Theme.fg-muted; }
-            WorkspaceSelect { options: root.rates; current: root.data.rate; changed(index) => { root.rate-changed(index); } }
-            HorizontalLayout {
-                alignment: end; spacing: 8px;
-                AppButton { label: "取消"; clicked => { root.create-open = false; root.create-cancelled(); } }
-                AppButton { label: "创建"; primary: true; enabled: !root.data.busy && root.data.location != ""; clicked => { root.create(); } }
+        }
+        WorkspaceIcon { glyph: Glyph.close; label: I18n.t("Dismiss error"); clicked => { root.dismissed(); } }
+    }
+}
+
+/// Also overlays an existing editor; the old Session stays alive until adoption.
+export component ProjectCreateDialog inherits Modal {
+    in property <StartData> data;
+    in property <[string]> resolutions;
+    in property <[string]> rates;
+    callback name-edited(name: string);
+    callback location-edited(path: string);
+    callback browse();
+    callback resolution-changed(index: int);
+    callback rate-changed(index: int);
+    callback create();
+    callback dismiss-error();
+    title: "新建剪辑项目"; glyph: Glyph.plus; trap-focus: true;
+    surface-width: Math.min(500px, root.width - 32px);
+    surface-height: Math.min(root.data.error == "" ? 440px : 530px, Math.max(0px, root.height - 32px));
+    VerticalLayout {
+        ScrollView {
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            viewport-width: self.visible-width;
+            viewport-height: fields.preferred-height;
+            fields := VerticalLayout {
+                width: parent.width; padding: 24px; spacing: 12px;
+                if root.data.error != "": ProjectOpenError {
+                    message: root.data.error; dismissed => { root.dismiss-error(); }
+                }
+                Text { text: "项目名称"; color: Theme.fg-muted; }
+                CloudField { enabled: !root.data.busy; value: root.data.name; placeholder: "新建项目"; edited(value) => { root.name-edited(value); } }
+                Text { text: "保存位置"; color: Theme.fg-muted; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    CloudField { enabled: !root.data.busy; value: root.data.location; horizontal-stretch: 1; edited(value) => { root.location-edited(value); } }
+                    WorkspaceIcon { enabled: !root.data.busy; glyph: Glyph.folder; label: "选择位置"; clicked => { root.browse(); } }
+                }
+                Text { text: "画面尺寸"; color: Theme.fg-muted; }
+                WorkspaceSelect { enabled: !root.data.busy; options: root.resolutions; current: root.data.resolution; changed(index) => { root.resolution-changed(index); } }
+                Text { text: "帧率"; color: Theme.fg-muted; }
+                WorkspaceSelect { enabled: !root.data.busy; options: root.rates; current: root.data.rate; changed(index) => { root.rate-changed(index); } }
             }
+        }
+        HorizontalLayout {
+            height: 56px; padding-left: 24px; padding-right: 24px; padding-bottom: 16px;
+            alignment: end; spacing: 8px;
+            AppButton { label: I18n.t("Cancel"); clicked => { root.closed(); } }
+            AppButton { label: "创建"; primary: true; enabled: !root.data.busy && root.data.location != ""; clicked => { root.create(); } }
         }
     }
 }

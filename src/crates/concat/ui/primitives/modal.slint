@@ -257,6 +257,7 @@ export component Button inherits Rectangle {
     property <length> gap: root.glyph == Glyph.none ? 0px : 6px;
     property <length> mark: root.glyph == Glyph.none ? 0px : 14px;
     property <bool> lit: touch.has-hover && root.enabled;
+    property <bool> ring;
     /// the red the danger tone hovers into — a dark wash, not a fill
     property <color> danger-wash: Theme.danger-wash;
     property <color> danger-edge: Theme.danger-edge;
@@ -282,11 +283,28 @@ export component Button inherits Rectangle {
         : root.lit ? Theme.field-hover
         : Theme.field;
 
-    animate background, border-color { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background, border-color { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     property <brush> ink: !root.enabled ? Theme.fg-dim : root.primary ? Theme.on-accent
         : root.ghost ? (root.lit ? Theme.fg : Theme.fg-muted)
         : Theme.fg;
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
 
     HorizontalLayout {
         alignment: center;
@@ -313,8 +331,9 @@ export component Button inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => { focus.focus(); root.clicked(); }
     }
+    FocusRing { active: root.ring; radius: Theme.r; }
 }
 
 // A chip that puts a line of text on the clipboard.
@@ -327,6 +346,28 @@ export component CopyChip inherits Rectangle {
     in property <string> text;
     /// Said for a moment after a press, so the press is seen to have worked.
     property <bool> done;
+    property <bool> ring;
+
+    function copy-message() {
+        hidden.select-all();
+        hidden.copy();
+        root.done = true;
+    }
+
+    accessible-role: button;
+    accessible-label: I18n.t("Copy");
+    accessible-action-default => { root.copy-message(); }
+    focus := FocusScope {
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.copy-message();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
 
     width: 52px;
     height: 20px;
@@ -335,7 +376,7 @@ export component CopyChip inherits Rectangle {
     border-width: 1px;
     border-color: touch.has-hover ? Theme.line-strong : Theme.line;
 
-    animate background, border-color { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background, border-color { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     hidden := TextInput {
         x: 0;
@@ -345,6 +386,7 @@ export component CopyChip inherits Rectangle {
         opacity: 0;
         text: root.text;
         read-only: true;
+        enabled: false;
     }
 
     Text {
@@ -358,11 +400,11 @@ export component CopyChip inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => {
-            hidden.select-all();
-            hidden.copy();
-            root.done = true;
+            focus.focus();
+            root.copy-message();
         }
     }
+    FocusRing { active: root.ring; radius: Theme.r-xs; }
 
     Timer {
         interval: 1500ms;

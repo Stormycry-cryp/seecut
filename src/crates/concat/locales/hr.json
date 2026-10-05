@@ -751,5 +751,16 @@
   "Local Agent access is unavailable on this platform": "Pristup lokalnih agenata nije dostupan na ovoj platformi",
   "Read structure (R)": "Čitanje strukture (R)",
   "Read structure and preview (R + M)": "Čitanje strukture i pregled (R + M)",
-  "Write token (SEECUT_MCP_WRITE_TOKEN)": "Token za pisanje (SEECUT_MCP_WRITE_TOKEN)"
+  "Write token (SEECUT_MCP_WRITE_TOKEN)": "Token za pisanje (SEECUT_MCP_WRITE_TOKEN)",
+  "Opening “{0}”…": "Otvaranje „{0}”…",
+  "Project opening cancelled": "Otvaranje otkazano",
+  "Opening timed out. Please try again.": "Vrijeme otvaranja je isteklo. Pokušajte ponovno.",
+  "The current project changed. Please open it again.": "Trenutačni projekt je promijenjen. Ponovno ga otvorite.",
+  "The project save changed. Please open it again.": "Stanje spremanja je promijenjeno. Ponovno otvorite projekt.",
+  "Finish the current edit before opening a project.": "Dovršite trenutačno uređivanje prije otvaranja projekta.",
+  "Another project operation is still running. Please try again.": "Druga radnja s projektom još traje. Pokušajte kasnije.",
+  "Could not start opening: {0}": "Nije moguće pokrenuti otvaranje: {0}",
+  "Could not update recent projects: {0}": "Nije moguće ažurirati nedavne projekte: {0}",
+  "Dismiss error": "Zatvori pogrešku",
+  "Could not prepare project media.": "Nije moguće pripremiti medije projekta."
 }

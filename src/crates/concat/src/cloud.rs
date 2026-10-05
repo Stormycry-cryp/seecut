@@ -28,6 +28,10 @@ pub(crate) fn validate_preview_state(app: &App, directory: &std::path::Path) -> 
     preview_validation::run(app, directory)
 }
 
+fn project_media_error() -> String {
+    crate::i18n::t("Could not prepare project media.")
+}
+
 const DEFAULT_API_URL: &str = "https://seecut.stormycry.cloud";
 
 struct ClientError {
@@ -166,6 +170,7 @@ struct PendingHandoff {
     kind: String,
     imports: Vec<crate::panes::canvas::CanvasImport>,
     awaiting_new_project: bool,
+    clip_open: Option<crate::project_open::HandoffBinding>,
 }
 
 #[derive(Clone)]
@@ -2292,6 +2297,9 @@ fn begin_handoff_with_imports(
             });
         }
     }
+    if kind == "clip" {
+        app.invoke_project_open_cancel();
+    }
     ui.set_handoff_source_page(ui.get_page());
     ui.set_handoff_kind(kind.into());
     ui.set_handoff_count(imports.len() as i32);
@@ -2301,6 +2309,7 @@ fn begin_handoff_with_imports(
         kind: kind.to_owned(),
         imports,
         awaiting_new_project: false,
+        clip_open: None,
     });
     ui.set_handoff_open(true);
 }
@@ -2348,34 +2357,36 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
         }
         return;
     } else {
-        if id != "current" && !app.get_on_start() {
-            app.invoke_close_clip_project();
-            if !app.get_on_start() {
-                ui.set_error("当前剪辑项目未能保存，请重试".into());
-                return;
-            }
-        }
         if id == "new" {
             if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
                 handoff.awaiting_new_project = true;
+                handoff.clip_open = Some(crate::project_open::HandoffBinding::create());
             }
             ui.set_pending_import_count(
                 (state.borrow().pending_imports.len() + pending.imports.len()) as i32,
             );
+            app.invoke_project_open_cancel();
             ui.set_page(0);
             app.set_clip_create_open(true);
             ui.set_handoff_open(false);
             return;
         } else if id == "current" {
-            import_named_paths(app, clip_imports(&pending.imports));
-        } else if let Some(path) = id.strip_prefix("recent:") {
-            app.invoke_start_open_recent(path.into());
-            if app.get_on_start() {
-                ui.set_error("剪辑项目未能打开，请重新选择".into());
-                ui.set_page(ui.get_handoff_source_page());
-                return;
+            if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
+                handoff.clip_open = None;
             }
-            import_named_paths(app, clip_imports(&pending.imports));
+            app.invoke_project_open_cancel();
+            import_current_clip_paths(app, clip_imports(&pending.imports));
+        } else if let Some(path) = id.strip_prefix("recent:") {
+            if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
+                handoff.awaiting_new_project = false;
+                handoff.clip_open = Some(crate::project_open::HandoffBinding::existing(
+                    path.to_owned(),
+                ));
+            }
+            ui.set_handoff_open(false);
+            ui.set_page(0);
+            app.invoke_start_open_recent(path.into());
+            return;
         }
     }
     state.borrow_mut().pending_handoff = None;
@@ -5987,41 +5998,91 @@ fn import_or_queue_named(
     ui.set_notice("".into());
 }
 
-fn project_ready(app: &App, state: &Rc<RefCell<Cloud>>) {
-    let imports = {
-        let mut cloud = state.borrow_mut();
-        let display_names = std::mem::take(&mut cloud.pending_import_display_names);
-        let mut imports = resume_pending_imports(&mut cloud.pending_imports)
-            .into_iter()
-            .map(|path| crate::panes::media_bin::MediaImport {
-                display_name: display_names.get(&path).cloned(),
-                path,
-            })
-            .collect::<Vec<_>>();
-        if cloud
-            .pending_handoff
-            .as_ref()
-            .is_some_and(|handoff| handoff.kind == "clip" && handoff.awaiting_new_project)
-        {
-            imports.extend(
-                cloud
-                    .pending_handoff
-                    .take()
-                    .expect("checked")
-                    .imports
-                    .into_iter()
-                    .map(|item| crate::panes::media_bin::MediaImport {
-                        path: item.path,
-                        display_name: item.display_name,
-                    }),
-            );
-        }
-        imports
+/// Start/finish callbacks only borrow Cloud; Studio owns the actual adoption.
+pub(crate) fn clip_open_started(id: u64, target: &str, created: bool) {
+    crate::host::Shell::with(|_, app| {
+        app.invoke_clip_open_started(id.to_string().into(), target.into(), created);
+    });
+}
+
+pub(crate) fn clip_open_failed(id: u64) {
+    crate::host::Shell::with(|_, app| app.invoke_clip_open_failed(id.to_string().into()));
+}
+
+pub(crate) fn clip_open_completed(studio: &mut crate::studio::Studio, app: &App, id: u64) {
+    let Some(session) = studio.media_import_session() else {
+        return;
     };
-    let ui = app.global::<SeeCut>();
-    ui.set_project_open(true);
-    ui.set_pending_import_count(0);
-    import_named_paths(app, imports);
+    // Capture and import within this same UI turn. No deferred get_on_start()
+    // or selection of whatever project happens to be open in a later callback.
+    let payload = app.invoke_clip_open_completed(id.to_string().into());
+    let Ok(imports) =
+        serde_json::from_str::<Vec<crate::panes::canvas::CanvasImport>>(payload.as_str())
+    else {
+        return;
+    };
+    if imports.is_empty() {
+        return;
+    }
+    studio.handle(crate::panes::Msg::Media(
+        crate::panes::media_bin::MediaMsg::ImportNamed {
+            imports: clip_imports(&imports),
+            session,
+        },
+    ));
+    app.global::<SeeCut>().set_page(0);
+}
+
+fn import_current_clip_paths(app: &App, imports: Vec<crate::panes::media_bin::MediaImport>) {
+    crate::host::Shell::with(|shell, app| {
+        {
+            let mut studio = shell.studio.borrow_mut();
+            let Some(session) = studio.media_import_session() else {
+                return;
+            };
+            studio.handle(crate::panes::Msg::Media(
+                crate::panes::media_bin::MediaMsg::ImportNamed { imports, session },
+            ));
+        }
+        shell.studio.borrow().publish(&app, &shell.models);
+    });
+    app.global::<SeeCut>().set_page(0);
+}
+
+fn completed_clip_imports(cloud: &mut Cloud, id: u64) -> Result<String, serde_json::Error> {
+    let bound = cloud.pending_handoff.as_ref().is_some_and(|handoff| {
+        handoff.kind == "clip"
+            && handoff
+                .clip_open
+                .as_ref()
+                .is_some_and(|binding| binding.completed(id))
+    });
+    let mut imports: Vec<crate::panes::canvas::CanvasImport> = cloud
+        .pending_imports
+        .iter()
+        .map(|path| crate::panes::canvas::CanvasImport {
+            path: path.clone(),
+            display_name: cloud.pending_import_display_names.get(path).cloned(),
+        })
+        .collect();
+    if bound {
+        imports.extend(
+            cloud
+                .pending_handoff
+                .as_ref()
+                .expect("checked")
+                .imports
+                .clone(),
+        );
+    }
+    // Serialize before consuming; an invalid UTF-8 path must not lose a batch.
+    let encoded = serde_json::to_string(&imports)?;
+    cloud.pending_imports.clear();
+    cloud.pending_import_display_names.clear();
+    if bound {
+        cloud.pending_handoff = None;
+    }
+    Ok(encoded)
 }
 
 fn cancel_project_import(app: &App, state: &Rc<RefCell<Cloud>>) {
@@ -6696,6 +6757,80 @@ pub fn bind(app: &App) {
         folder,
         ..Cloud::default()
     }));
+    let started_state = state.clone();
+    app.on_clip_open_started(move |id, target, created| {
+        let Ok(id) = id.as_str().parse::<u64>() else {
+            return;
+        };
+        if let Some(handoff) = started_state.borrow_mut().pending_handoff.as_mut()
+            && handoff.kind == "clip"
+            && let Some(binding) = handoff.clip_open.as_mut()
+        {
+            binding.started(id, target.as_str(), created);
+        }
+    });
+    let failed_state = state.clone();
+    let failed_app = app.as_weak();
+    app.on_clip_open_failed(move |id| {
+        let Ok(id) = id.as_str().parse::<u64>() else {
+            return;
+        };
+        let matched = failed_state
+            .borrow_mut()
+            .pending_handoff
+            .as_mut()
+            .is_some_and(|handoff| {
+                handoff
+                    .clip_open
+                    .as_mut()
+                    .is_some_and(|binding| binding.failed(id))
+            });
+        let Some(app) = failed_app.upgrade() else {
+            return;
+        };
+        if matched && !app.get_clip_create_open() {
+            let ui = app.global::<SeeCut>();
+            ui.set_page(ui.get_handoff_source_page());
+            ui.set_handoff_open(true);
+        }
+    });
+    let completed_state = state.clone();
+    let completed_app = app.as_weak();
+    app.on_clip_open_completed(move |id| {
+        let Ok(id) = id.as_str().parse::<u64>() else {
+            return "[]".into();
+        };
+        let Some(app) = completed_app.upgrade() else {
+            return "[]".into();
+        };
+        let bound = completed_state
+            .borrow()
+            .pending_handoff
+            .as_ref()
+            .is_some_and(|handoff| {
+                handoff
+                    .clip_open
+                    .as_ref()
+                    .is_some_and(|binding| binding.completed(id))
+            });
+        let result = completed_clip_imports(&mut completed_state.borrow_mut(), id);
+        match result {
+            Ok(encoded) => {
+                let ui = app.global::<SeeCut>();
+                ui.set_project_open(true);
+                ui.set_pending_import_count(0);
+                if bound {
+                    ui.set_handoff_open(false);
+                }
+                encoded.into()
+            }
+            Err(_) => {
+                app.global::<SeeCut>()
+                    .set_error(project_media_error().into());
+                "[]".into()
+            }
+        }
+    });
     let drop_state = state.clone();
     let drop_app = app.as_weak();
     app.global::<SeeCut>()
@@ -6733,7 +6868,7 @@ pub fn bind(app: &App) {
             let restore = {
                 let mut cloud = shared.borrow_mut();
                 if let Some(handoff) = cloud.pending_handoff.as_mut() {
-                    if handoff.awaiting_new_project { handoff.awaiting_new_project = false; true } else { false }
+                    if handoff.awaiting_new_project { handoff.awaiting_new_project = false; handoff.clip_open = None; true } else { false }
                 } else { false }
             };
             if restore {
@@ -6910,7 +7045,7 @@ pub fn bind(app: &App) {
             render_personal(&app,&shared);
             render_assets(&app,&shared);
         },
-        "project-ready"=>project_ready(&app,&shared),
+
         "cancel-project-import"=>cancel_project_import(&app,&shared),
         "generate"=>{
             if !ui.get_signed_in(){show_auth(&app,&shared,Some(1));return;}
@@ -7994,5 +8129,96 @@ mod reference_tests {
             current
         ));
         assert_eq!(cloud.assets[0]["id"], "new-asset");
+    }
+}
+
+#[cfg(test)]
+mod clip_open_handoff_tests {
+    use super::*;
+    fn batch(path: &str, id: u64) -> Cloud {
+        let mut binding = crate::project_open::HandoffBinding::existing(path.into());
+        binding.started(id, path, false);
+        Cloud {
+            pending_handoff: Some(PendingHandoff {
+                kind: "clip".into(),
+                imports: vec![crate::panes::canvas::CanvasImport {
+                    path: PathBuf::from("synthetic.png"),
+                    display_name: Some("fixture".into()),
+                }],
+                awaiting_new_project: false,
+                clip_open: Some(binding),
+            }),
+            ..Cloud::default()
+        }
+    }
+    #[test]
+    fn actual_batch_consumer_ignores_a_and_consumes_b_once() {
+        let mut cloud = batch("B", 2);
+        assert_eq!(completed_clip_imports(&mut cloud, 1).unwrap(), "[]");
+        assert!(cloud.pending_handoff.is_some());
+        let payload = completed_clip_imports(&mut cloud, 2).unwrap();
+        let imports: Vec<crate::panes::canvas::CanvasImport> =
+            serde_json::from_str(&payload).unwrap();
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].path, PathBuf::from("synthetic.png"));
+        assert!(cloud.pending_handoff.is_none());
+        assert_eq!(completed_clip_imports(&mut cloud, 2).unwrap(), "[]");
+    }
+    #[test]
+    fn cancelled_or_failed_open_preserves_assets_for_an_explicit_retry() {
+        let mut cloud = batch("target", 1);
+        let binding = cloud
+            .pending_handoff
+            .as_mut()
+            .unwrap()
+            .clip_open
+            .as_mut()
+            .unwrap();
+        assert!(binding.failed(1));
+        assert_eq!(completed_clip_imports(&mut cloud, 1).unwrap(), "[]");
+        assert_eq!(cloud.pending_handoff.as_ref().unwrap().imports.len(), 1);
+        cloud
+            .pending_handoff
+            .as_mut()
+            .unwrap()
+            .clip_open
+            .as_mut()
+            .unwrap()
+            .started(2, "target", false);
+        assert_ne!(completed_clip_imports(&mut cloud, 2).unwrap(), "[]");
+    }
+    #[test]
+    fn new_project_batch_needs_its_explicit_created_request() {
+        let mut cloud = batch("old target", 1);
+        let handoff = cloud.pending_handoff.as_mut().unwrap();
+        handoff.awaiting_new_project = true;
+        handoff.clip_open = Some(crate::project_open::HandoffBinding::create());
+        handoff
+            .clip_open
+            .as_mut()
+            .unwrap()
+            .started(2, "another existing project", false);
+        assert_eq!(completed_clip_imports(&mut cloud, 2).unwrap(), "[]");
+        assert!(cloud.pending_handoff.is_some());
+        cloud
+            .pending_handoff
+            .as_mut()
+            .unwrap()
+            .clip_open
+            .as_mut()
+            .unwrap()
+            .started(3, "new project", true);
+        assert_ne!(completed_clip_imports(&mut cloud, 3).unwrap(), "[]");
+        assert!(cloud.pending_handoff.is_none());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn invalid_path_serialization_never_consumes_the_pending_batch() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut cloud = batch("target", 1);
+        cloud.pending_handoff.as_mut().unwrap().imports[0].path =
+            PathBuf::from(std::ffi::OsString::from_vec(vec![0xff]));
+        assert!(completed_clip_imports(&mut cloud, 1).is_err());
+        assert_eq!(cloud.pending_handoff.as_ref().unwrap().imports.len(), 1);
     }
 }

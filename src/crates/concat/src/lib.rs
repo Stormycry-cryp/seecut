@@ -53,6 +53,7 @@ pub use platform::{FilePicker, install_file_picker};
 mod panes;
 mod prefs;
 mod presets;
+mod project_open;
 mod studio;
 mod sysinfo;
 mod ui_preview;
@@ -589,6 +590,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     app.on_start_create(on_window!(|state| {
         state.handle(Msg::Start(StartMsg::Create));
+    }));
+    app.on_project_open_cancel(on_window!(|state| {
+        state.cancel_project_open(&i18n::t("Project opening cancelled"));
     }));
     app.on_start_open_recent(on_window!(|state, path: SharedString| {
         state.handle(Msg::Start(StartMsg::OpenRecent(path.to_string())));
@@ -1941,14 +1945,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
                         "open" => {
                             if let Some(path) = platform::pick_folder(&i18n::t("Open project"), "")
                             {
-                                let concat_json = path.join("concat.json");
-                                if concat_json.exists() {
-                                    state.handle(Msg::Start(StartMsg::OpenRecent(
-                                        path.to_string_lossy().into_owned(),
-                                    )));
-                                } else {
-                                    state.notify("Not a valid project folder", true);
-                                }
+                                state.handle(Msg::Start(StartMsg::OpenRecent(
+                                    path.to_string_lossy().into_owned(),
+                                )));
                             }
                         }
                         "import" => {

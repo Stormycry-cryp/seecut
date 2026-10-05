@@ -55,7 +55,7 @@ export component WorkflowToast inherits Rectangle {
     ToastLayer {
         width: parent.width; height: parent.height;
         bottom-offset: 58px;
-        data: { token: root.token, message: root.message, failed: root.failed };
+        data: { token: root.token, message: root.message, detail: root.message, failed: root.failed };
     }
 }
 
