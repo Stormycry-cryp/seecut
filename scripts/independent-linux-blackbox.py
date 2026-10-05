@@ -58,8 +58,10 @@ def main():
                    required=True, help="Schema 2 main-reviewed exact runtime HEAD and App SHA256")
     p.add_argument("--ui-approval", type=Path,
                    help="Independent-QA reviewed UI actions and coordinates bound to observed App SHA256")
-    p.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation"), default="navigation",
+    p.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation"), default="navigation",
                    help="project-entry additionally clicks the independently observed new-project card and observes Escape")
+    p.add_argument("--isolated-display-capture", action="store_true",
+                   help="Launcher attests this DISPLAY is a dedicated private QA Xvfb with no unrelated user surfaces; only permits the finite picker-stage root snapshot")
     args = p.parse_args()
     start = time.monotonic()
     deadline = min(args.deadline_monotonic, start + 45)
@@ -92,14 +94,14 @@ def main():
             raise Blocked("Insufficient time for next capture; stop input.")
         time.sleep(seconds)
 
-    def capture(name, meaning):
+    def capture(name, meaning, display=False):
         # Replay already reviewed navigation without duplicating its five snapshots.
         # Keep the actual gallery plus five new observations within six PNGs total.
         if args.next_stage == "canvas-create-observation" and name in {
             "01-before-mode-choice.png", "02-after-quick-choice.png", "03-canvas-hover.png", "05-settings-hover.png"
         }:
             return
-        if args.next_stage == "editor-entry-observation" and name in {
+        if args.next_stage in ("editor-entry-observation", "image-picker-observation") and name in {
             "01-before-mode-choice.png", "02-after-quick-choice.png", "03-canvas-hover.png",
             "04-after-canvas-navigation.png", "05-settings-hover.png", "06-after-new-project-click.png"
         }:
@@ -109,7 +111,11 @@ def main():
         }:
             return
         path = evidence / name
-        command(["import", "-window", str(window), "-strip", str(path)], timeout=8)
+        if display and (args.next_stage != "image-picker-observation"
+                        or name != "15-picker-isolated-display.png" or not args.isolated_display_capture):
+            raise Blocked("Display capture is restricted to the explicitly attested finite picker observation.")
+        target = "root" if display else str(window)
+        command(["import", "-window", target, "-strip", str(path)], timeout=8)
         os.chmod(path, 0o600)
         size = path.stat().st_size
         if size > 2 * 1024 * 1024:
@@ -118,7 +124,7 @@ def main():
             raise Blocked("Aggregate screenshots exceeded 14 MiB; stop before artifact publication.")
         report["captures"].append({"file": name, "bytes": size,
                                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                                   "meaning": meaning})
+                                   "meaning": meaning, "surface": "isolated-qa-display" if display else "app-window"})
 
     def pointer(x, y, intent, click=False):
         command(["xdotool", "mousemove", "--window", str(window), str(x), str(y)])
@@ -160,6 +166,8 @@ def main():
                 required.update({"canvas-create-observation", "editor-entry-observation"})
             if args.next_stage == "canvas-create-entry":
                 required.add("canvas-create-entry")
+            if args.next_stage == "image-picker-observation":
+                required.update({"canvas-create-observation", "editor-entry-observation", "image-picker-observation", "isolated-display-observation"})
             report["ui_approval"] = dict(ui, declaration_sha256=ui_digest)
             report["coordinate_baseline_head"] = ui["observed_head"]
             report["coordinate_baseline_app_sha256"] = ui["observed_app_sha256"]
@@ -171,6 +179,8 @@ def main():
                 coordinate_keys.extend(["new_create", "editor_save_hover", "editor_folder_entry"])
             if args.next_stage == "canvas-create-entry":
                 coordinate_keys.extend(["new_cancel", "new_create"])
+            if args.next_stage == "image-picker-observation":
+                coordinate_keys.extend(["new_create", "editor_folder_entry", "open_local_image"])
             for key in coordinate_keys:
                 xy = ui["coordinates"].get(key)
                 if (not isinstance(xy, list) or len(xy) != 2
@@ -237,6 +247,16 @@ def main():
         fields = dict(line.split("=", 1) for line in geometry.splitlines() if "=" in line)
         if fields.get("WIDTH") != "1280" or fields.get("HEIGHT") != "900":
             raise Blocked("Actual window geometry is not the independently reviewed 1280x900.")
+        if may_navigate and args.next_stage == "image-picker-observation":
+            if not args.isolated_display_capture:
+                raise Blocked("Picker stage requires launcher attestation of a dedicated private QA Xvfb display; no input.")
+            dimensions = command(["xdotool", "getdisplaygeometry"]).split()
+            if (len(dimensions) != 2 or any(not n.isdigit() for n in dimensions)
+                    or not (1280 <= int(dimensions[0]) <= 1920 and 900 <= int(dimensions[1]) <= 1200)):
+                raise Blocked("Private QA display dimensions outside finite capture bounds; no input.")
+            report["isolated_display_capture"] = {"launcher_attested": True,
+                                                   "width": int(dimensions[0]), "height": int(dimensions[1]),
+                                                   "scope": "dedicated private QA Xvfb only; no desktop capture"}
         if not may_navigate:
             # No pointer, click or key actions without matching independent UI review.
             for width in (1280, 1024, 1440):
@@ -264,7 +284,7 @@ def main():
         pointer(*coords["settings_hover"], "bottom settings icon independently observed at left")
         pause(0.7)
         capture("05-settings-hover.png", "Only hover: settings and permission UI not opened")
-        if args.next_stage in ("project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation"):
+        if args.next_stage in ("project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation"):
             report["project_creation_requested"] = True
             pointer(*coords["new_project"], "new-project card plus independently observed in the empty canvas gallery", click=True)
             pointer(800, 650, "neutral content area")
@@ -286,12 +306,26 @@ def main():
                 capture("10-after-visible-create.png", "Actual editor or result after Create; content and persistence need independent review")
                 report["status"] = "bounded_actions_completed_review_pending"
                 return 0
-            if args.next_stage == "editor-entry-observation":
+            if args.next_stage in ("editor-entry-observation", "image-picker-observation"):
                 report["visible_create_requested"] = True
                 pointer(*coords["new_create"], "independently observed Create button using displayed values on own empty portable", click=True)
                 pointer(800, 650, "neutral area; no painting gesture")
                 pause(0.8)
                 capture("10-after-visible-create.png", "Actual editor baseline; creation and content need independent image review")
+                if args.next_stage == "image-picker-observation":
+                    report["editor_folder_entry_clicked"] = True
+                    pointer(*coords["editor_folder_entry"], "observed Open canvas toolbar entry to expose the reviewed menu", click=True)
+                    pause(0.6)
+                    capture("13-after-editor-folder-click.png", "Actual menu before choosing the independently observed Open local image row")
+                    report["image_picker_entry_clicked"] = True
+                    pointer(*coords["open_local_image"], "Open local image menu row independently observed on this candidate; no file selected", click=True)
+                    pause(1.0)
+                    capture("14-after-local-image-entry.png", "App-window result after one Open local image click; no further input")
+                    capture("15-picker-isolated-display.png", "Dedicated private QA Xvfb result, including any visible native picker; no path or file input", display=True)
+                    report["file_input_attempted"] = False
+                    report["file_selected"] = False
+                    report["status"] = "bounded_actions_completed_review_pending"
+                    return 0
                 pointer(*coords["editor_save_hover"], "save-shaped toolbar icon visible in independently reviewed editor; hover only")
                 pause(0.8)
                 capture("11-editor-save-hover.png", "Actual tooltip for observed save-shaped icon; no save requested")

@@ -20,7 +20,7 @@ on:
       qa_next_stage:
         description: Reviewed independent script stage
         type: choice
-        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation']
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation']
         default: 'navigation'
       qa_ui_approval:
         description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
@@ -247,7 +247,7 @@ jobs:
           name: seecut-linux-candidate-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/seecut-normal-candidate/candidate.tar
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
           compression-level: 0
 
       - name: Build the public stdio client
@@ -289,7 +289,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
-          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation ]]
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation ]]
           CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST" --source-head "$SOURCE_HEAD")
           if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
             CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
@@ -297,6 +297,10 @@ jobs:
           CLIENT_ARGS=()
           if [[ "$NEXT_STAGE" == project-entry ]]; then
             CLIENT_ARGS=(--client-binary "$PWD/src/target/debug/seecut-editor-mcp")
+          fi
+          DISPLAY_CAPTURE_ARGS=()
+          if [[ "$NEXT_STAGE" == image-picker-observation ]]; then
+            DISPLAY_CAPTURE_ARGS=(--isolated-display-capture)
           fi
           APPROVAL_ARGS=()
           if [[ -n "$QA_IDENTITY_APPROVAL" ]]; then
@@ -333,7 +337,7 @@ jobs:
             --qa-script "$PWD/scripts/independent-linux-blackbox.py" \
             --output "$RUNNER_TEMP/seecut-window-evidence" \
             --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" \
-            --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}"
+            --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}" "${DISPLAY_CAPTURE_ARGS[@]}"
 
       - name: Seal private QA evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa

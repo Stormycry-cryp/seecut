@@ -245,9 +245,16 @@ def arguments():
     parser.add_argument("--source-head", help="Exact immutable App source HEAD; defaults to workflow HEAD")
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
-    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation"), default="navigation")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation"), default="navigation")
+    parser.add_argument("--isolated-display-capture", action="store_true",
+                        help="Explicit isolated-display declaration required only for image-picker-observation")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.next_stage == "image-picker-observation" and not args.isolated_display_capture:
+        parser.error("image-picker-observation requires --isolated-display-capture")
+    if args.isolated_display_capture and args.next_stage != "image-picker-observation":
+        parser.error("--isolated-display-capture is only valid for image-picker-observation")
+    return args
 
 
 def main():
@@ -260,6 +267,9 @@ def main():
     phase = "setup"
     result = {"schema": 1, "status": "incomplete", "seconds": args.seconds,
               "next_stage": args.next_stage,
+              "isolated_display_capture": args.isolated_display_capture,
+              "isolated_display_capture_source": ("explicit CLI option --isolated-display-capture"
+                                                  if args.isolated_display_capture else None),
               "qa_contract": "one App lifetime; no detached children; known QA directory; secret-free artifacts",
               "product_acceptance": "not established by this harness"}
     exit_code = 1
@@ -417,6 +427,8 @@ def main():
                       "--expected-sha", source_head,
                       "--deadline-monotonic", str(qa_deadline),
                       "--next-stage", args.next_stage]
+        if args.isolated_display_capture:
+            qa_command.append("--isolated-display-capture")
         if approval is not None:
             qa_command.extend(("--identity-approval", str(copied["identity_approval"])))
         if ui_approval is not None:
