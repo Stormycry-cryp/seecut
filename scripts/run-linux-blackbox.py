@@ -121,14 +121,14 @@ A2_APP_SHA = "8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30"
 A2_BUILD_RUN = 37328783317
 A2_ARTIFACT = "11355501142"
 A2_SCRIPTS = {
-    "qa": ("next_ui_11ebf20_a2.py", "e246852d4ac98d1bb8f14e0f4fcb3a2f58bb4399b77c1365a26548c828087338"),
-    "a2_probe": ("public_probe_cecc8fd_ui3.py", "a52b62daf9f13b1b21f881edcf34ebeb12596266212faf94d8cb0ef43415d2e2"),
-    "a2_action": ("public_action_11ebf20_ui3.py", "e60362bc4af029d47b1b631fa918b0be714cfc15834311ae914940776afd621a"),
+    "qa": ("next_ui_11ebf20_a3.py", "6a9b01710b0fda386a133cf57c93a650d183378ee366621327fcc1013c464f4f"),
+    "a2_probe": ("public_probe_11ebf20_ui4.py", "ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd"),
+    "a2_action": ("public_action_11ebf20_ui4.py", "8aafd63bc2653c1099003edbf5808c1c4550471d31f619cf1851a0e7ea063518"),
 }
-A2_UI = ("reviewed-ui-11ebf20-a2.json", "bc21ccbf31917abefca4bd213f33aceb962ec68c7965ab743824686b9dde4375")
+A2_UI = ("reviewed-ui-11ebf20-a3.json", "3770f759f4479904651f3e3404e0ff23b6bea08c3a007320bf2d915ff7c93852")
 A2_IDENTITY_SHA = "2b94fc606a46d7d0df43ea2d07a29e5a3b5075253521a201e65d264ee5933574"
 A2_CONTROLLER_SECONDS = 120
-A2_DIRECTORIES = {stage: "independent-qa-11ebf20-a2-" + scope for stage, scope in A2_SCOPES.items()}
+A2_DIRECTORIES = {stage: "main-qa-11ebf20-a3-" + scope for stage, scope in A2_SCOPES.items()}
 A2_PNG_NAMES = {
     "settings-controls": {
         "01-before-quick.png", "02-after-quick-1280x900.png", "07-after-close-workbench-1280x900.png",
@@ -148,7 +148,7 @@ A2_PUBLIC_JSON_NAMES = {
 }
 A2_ACTION_JSON_NAMES = {
     "settings-controls": {"04-professional-action.json", "05-dark-action.json", "06-close-settings-action.json"},
-    "canvas-entry": {"07-create-blank-action.json"},
+    "canvas-entry": set(),
 }
 A2_ACTION_LIMIT = 8 * 1024
 WORKFLOW_FIXTURE_MANIFEST = "8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7"
@@ -362,7 +362,7 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                     elif entry.name in A2_ACTION_JSON_NAMES[a2_scope]:
                         if info.st_size > A2_ACTION_LIMIT:
                             raise ValueError("A2 action record exceeds 8 KiB")
-                    elif entry.name == "a2.json" or entry.name in A2_PUBLIC_JSON_NAMES[a2_scope]:
+                    elif entry.name == "a3.json" or entry.name in A2_PUBLIC_JSON_NAMES[a2_scope]:
                         if info.st_size > WORKFLOW_METADATA_LIMIT:
                             raise ValueError("A2 metadata exceeds 128 KiB")
                     else:

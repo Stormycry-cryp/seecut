@@ -362,7 +362,7 @@ jobs:
             [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37328783317 &&
                "$SOURCE_ARTIFACT_ID" == 11355501142 && "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
                -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
-            QA_SCRIPT="$PWD/scripts/next_ui_11ebf20_a2.py"
+            QA_SCRIPT="$PWD/scripts/next_ui_11ebf20_a3.py"
             BUS_COMMAND=(dbus-run-session --)
             BUS_ARGS=(--private-accessibility-bus)
           fi
