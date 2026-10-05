@@ -55,13 +55,13 @@ WORKFLOW_HEAD = "11ebf203e1a78d3b6a21677c4b17e96223c74b0e"
 WORKFLOW_APP_SHA = "8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30"
 WORKFLOW_BUILD_RUN = 37328783317
 WORKFLOW_ARTIFACT = "11355501142"
-WORKFLOW_UI = ("reviewed-ui-11ebf20-workflow.json", "a3cc14171f1c4a0f62806d1333a2fc19e47707f05ef4a42814b5dc01870dddaa")
+WORKFLOW_UI = ("reviewed-ui-11ebf20-workflow-r7.json", "f1522568a836931901308570484bff904ddea1771641c15c4652278b5edba2d1")
 WORKFLOW_IDENTITY_SHA = "2b94fc606a46d7d0df43ea2d07a29e5a3b5075253521a201e65d264ee5933574"
 WORKFLOW_SCRIPTS = {
-    "qa": ("workflow_ui_11ebf20.py", "2b208fe3de01e5bc1b1a65506fe2acf2855cfc764f752dc4b09cff837df5f9d5"),
+    "qa": ("workflow_ui_11ebf20_r7.py", "4852ede5e1f003dd73048574c35c1a8c85097c994e48f68fd275b4d08ba79a6c"),
     "public_ui_probe": ("public_ui_probe.py", "d6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2"),
     "workflow_checks": ("workflow_checks.py", "93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853"),
-    "native_ui_action": ("native_ui_action_11ebf20.py", "5284f9da2cb5cb73d0a4cb042b443d60dc8f558b65460fdfbbc9e6250e484b42"),
+    "native_ui_action": ("native_ui_action_11ebf20_r7.py", "d299b94c84122cd4d96812abfd250aabfb96840db727e3b8d95d4a88c1ba3e42"),
 }
 WORKFLOW_PNG_NAMES = {
     name + ".png" for name in (
@@ -69,6 +69,8 @@ WORKFLOW_PNG_NAMES = {
         "12-left-saved-editor", "13-new-blank-dialog", "14-new-blank-editor", "15-reopen-menu", "19-export-destination",
         "12-save-gallery", "13-gallery-other-blank", "14-gallery-after-other-document",
         "17-secondary-project-control-hover", "20-export-App-destination-requires-review",
+        "21-export-native-visible", "21-export-ambiguous-native", "21-export-native-outside-display",
+        "21-export-no-visible-native-after-wait", "21-export-unreviewed-destination",
     )
 } | {
     phase + suffix + ".png"
