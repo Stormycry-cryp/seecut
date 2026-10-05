@@ -20,7 +20,7 @@ on:
       qa_next_stage:
         description: Reviewed independent script stage
         type: choice
-        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation', 'fresh-workbench-observation', 'settings-controls-observation', 'canvas-entry-observation', 'workspaces-observation', 'assistant-entry-observation', 'assistant-config-observation', 'assets-import', 'clip-create-observation']
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation', 'fresh-workbench-observation', 'settings-controls-observation', 'canvas-entry-observation', 'workspaces-observation', 'assistant-entry-observation', 'assistant-config-observation', 'assets-import', 'clip-create-observation', 'persistence-pair-observation']
         default: 'navigation'
       qa_ui_approval:
         description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
@@ -91,7 +91,7 @@ jobs:
             [[ "$BLACKBOX_QA" == true && "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ &&
                "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
           fi
-          if [[ "$NEXT_STAGE" == workflow-observation ]]; then
+          if [[ "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == persistence-pair-observation ]]; then
             [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
                "$SOURCE_RUN_ID" == 37340470010 && "$SOURCE_ARTIFACT_ID" == 11359607955 &&
                "$SOURCE_HEAD" == a6cf09ad935bbbc6cf792c4ac6a4b506a47aebd3 &&
@@ -136,10 +136,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get install -y xvfb xdotool imagemagick fonts-noto-cjk libxkbcommon-x11-0
-          if [[ "$BLACKBOX_QA" == true && ( "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == clip-create-observation ) ]]; then
+          if [[ "$BLACKBOX_QA" == true && ( "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == persistence-pair-observation ) ]]; then
             missing=()
             packages=(python3-gi gir1.2-atspi-2.0 dbus-x11 at-spi2-core)
-            if [[ "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == assets-import ]]; then
+            if [[ "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == persistence-pair-observation ]]; then
               packages+=(zenity)
             fi
             for package in "${packages[@]}"; do
@@ -315,7 +315,7 @@ jobs:
             --expected-sha "$EXPECTED_SHA"
 
       - name: Run the independent black-box script
-        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa && inputs.qa_next_stage != 'persistence-pair-observation'
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           APP_BINARY: ${{ steps.candidate.outputs.binary }}
@@ -427,6 +427,48 @@ jobs:
             --output "$RUNNER_TEMP/seecut-window-evidence" \
             --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" \
             --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}" "${DISPLAY_CAPTURE_ARGS[@]}" "${BUS_ARGS[@]}" "${INPUT_ARGS[@]}"
+
+      - name: Run two finite App lifetimes on the original portable state
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa && inputs.qa_next_stage == 'persistence-pair-observation'
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          APP_BINARY: ${{ steps.candidate.outputs.binary }}
+          CANDIDATE_MANIFEST: ${{ steps.candidate.outputs.manifest }}
+          SOURCE_HEAD: ${{ steps.candidate.outputs.source_head }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
+          QA_IDENTITY_APPROVAL: ${{ inputs.qa_identity_approval }}
+          QA_UI_APPROVAL: ${{ inputs.qa_ui_approval }}
+          SLINT_WGPU_CPU: '1'
+        run: |
+          set -euo pipefail
+          [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37340470010 &&
+             "$SOURCE_ARTIFACT_ID" == 11359607955 && "$SOURCE_HEAD" == a6cf09ad935bbbc6cf792c4ac6a4b506a47aebd3 &&
+             -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+          python3 -B - <<'PYAPPROVAL'
+          import os
+          from pathlib import Path
+          for variable, name in (('QA_IDENTITY_APPROVAL', 'persistence-identity.json'), ('QA_UI_APPROVAL', 'persistence-ui.json')):
+              data = os.environ[variable].encode('utf-8')
+              assert len(data) <= 16384
+              path = Path(os.environ['RUNNER_TEMP']) / name
+              with path.open('xb') as stream:
+                  os.fchmod(stream.fileno(), 0o600)
+                  stream.write(data)
+          PYAPPROVAL
+          # One dedicated display; pair launches two dedicated dbus-run-session parents serially.
+          xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
+            timeout --signal=TERM --kill-after=10s 620s \
+            python3 -B scripts/persistence-pair.py \
+            --binary "$APP_BINARY" --candidate-manifest "$CANDIDATE_MANIFEST" \
+            --expected-sha "$EXPECTED_SHA" \
+            --identity-approval "$RUNNER_TEMP/persistence-identity.json" \
+            --ui-approval "$RUNNER_TEMP/persistence-ui.json" \
+            --input-dir "$PWD/scripts/qa-fixtures" \
+            --output "$RUNNER_TEMP/seecut-window-evidence"
+          # Existing private evidence sealing consumes only this bounded evidence tree.
+          # The separate random state root and executable are never uploaded.
 
       - name: Seal private QA evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa

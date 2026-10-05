@@ -303,7 +303,7 @@ NATIVE_SCOPES.update({'assets-import': {'scripts': {'qa': ['asset-clip-assets-co
                                'native_action': ['asset-clip-native-action.py',
                                                  'd06bfe6d3df84bb7d2145f69ff8c1180bb1a27875f694e0934816c26ee2abd46']},
                    'ui': ['asset-clip-assets-import-ui.json',
-                          'd461489d9bb723b4aed85722f26eaad235a972a2fab80ee8f273ce6cdcf51329'],
+                          'ebc50ec52969e7e854c39e224810c574fd4c8576e8e41265576032e0ba428850'],
                    'next_stage': None,
                    'artifacts': {'main-qa-asset-clip-assets-import': {'png': ['01-after-quick.png',
                                                                               '02-page.png',
@@ -370,6 +370,12 @@ WORKFLOW_FIXTURES = {
     "transparent-markers.png": (849, "8201fa2b0c7c94de97433462d40ae97aa43b77e395921769d967c7f168875b75"),
     "fully-transparent.png": (83, "ba04f531df0c7a12124750d521add77c55b16a6432d653c5559c16680dbd9f50"),
 }
+
+PERSISTENCE_SCOPES = {'persistence-seed-observation', 'persistence-reopen-observation'}
+PERSISTENCE_LIMIT = 7 * 1024 * 1024
+PERSISTENCE_SCRIPTS = {'persistence-seed-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '76bd41d32d2029bb4d789c5a3c15695cfcc6fd48f68e0144bcc9f55d072626a9'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-seed-controller.py', 'cbf555ae349f7a6b083e01cf9a1f5d747020ceb4dc4ef82f0428efe4567e96fa']}, 'persistence-reopen-observation': {'public_ui_probe': ('public_ui_probe.py', 'd6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2'), 'workflow_checks': ('workflow_checks.py', '93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853'), 'native_ui_action': ('style-native-ui-action.py', 'a89dcf2431a5a38a5b94fa9ffc537785ef54849623e66b6ae981c97ff441a45f'), 'persistence_state': ['persistence-state.py', '76bd41d32d2029bb4d789c5a3c15695cfcc6fd48f68e0144bcc9f55d072626a9'], 'capture_probe': ['public_probe_11ebf20_ui4.py', 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'], 'qa': ['persistence-reopen-controller.py', '4ab90977b0e41e1c0b94aba1874ccceca4d46f2a36c598f5c340a2db1535f18c']}}
+PERSISTENCE_JSON_NAMES = {'persistence-seed.json', 'persistence-prelaunch.json', 'persistence-postrun.json', 'persistence-failure.json'}
+
 APPROVAL_LIMIT = 16 * 1024
 APP_LIMIT = 512 * 1024 * 1024
 HARNESS_RESERVE = 2 * LOG_LIMIT + 32 * 1024
@@ -564,8 +570,11 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
     """Traverse only the QA contract's known directory, never links."""
     if not stat.S_ISDIR(output.lstat().st_mode):
         raise ValueError("output root must remain a real directory")
+    persistence = next_stage in PERSISTENCE_SCOPES
+    if persistence:
+        limit = min(limit, PERSISTENCE_LIMIT)
     total = 0
-    workflow = next_stage == "workflow-observation"
+    workflow = next_stage == "workflow-observation" or persistence
     fresh = next_stage == "fresh-workbench-observation"
     native = NATIVE_SCOPES.get(next_stage)
     a2_scope = A2_SCOPES.get(next_stage)
@@ -633,7 +642,11 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                         png_bytes += info.st_size
                         if png_count > 40 or info.st_size > WORKFLOW_FILE_LIMIT or png_bytes > WORKFLOW_PNG_LIMIT:
                             raise ValueError("workflow PNG count or byte budget exceeded")
-                    elif entry.name in WORKFLOW_JSON_NAMES:
+                    elif entry.name in WORKFLOW_JSON_NAMES or (persistence and (
+                            entry.name in PERSISTENCE_JSON_NAMES
+                            or any(entry.name == prefix + name[:-4] + '.json'
+                                   for prefix in ('capture-', 'native-proof-')
+                                   for name in WORKFLOW_PNG_NAMES))):
                         if info.st_size > WORKFLOW_METADATA_LIMIT:
                             raise ValueError("workflow metadata exceeds 128 KiB")
                     elif re.fullmatch(r"saved-project(?:\.[A-Za-z0-9_-]{1,16})?", entry.name):
@@ -765,7 +778,7 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
     command = [sys.executable, str(copied["qa"]), "--app-pid", str(app_pid),
                "--work-dir", str(work), "--output", str(output),
                "--deadline-monotonic", str(qa_deadline)]
-    if args.next_stage == "workflow-observation":
+    if args.next_stage == "workflow-observation" or args.next_stage in PERSISTENCE_SCOPES:
         command.extend(("--window-id", str(window_id), "--input-dir", str(copied["input_dir"])))
         if args.private_accessibility_bus:
             command.extend(("--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
@@ -792,12 +805,128 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
     else:
         command.extend(("--client-binary", str(copied["client"]),
                         "--expected-sha", source_head, "--next-stage", args.next_stage))
+    if args.next_stage in PERSISTENCE_SCOPES:
+        command.extend(('--owned-state-root', args.owned_state_root, '--state-token', args.state_token))
+        if args.next_stage == 'persistence-reopen-observation':
+            command.extend(('--seed-record', args.seed_record))
     if args.isolated_display_capture:
         command.append("--isolated-display-capture")
     for name in ("identity_approval", "ui_approval"):
         if name in copied:
             command.extend(("--" + name.replace("_", "-"), str(copied[name])))
     return command
+
+
+def persistence_helpers():
+    import runpy
+    source = Path(__file__).with_name('persistence-state.py')
+    if hashlib.sha256(source.read_bytes()).hexdigest() != PERSISTENCE_SCRIPTS['persistence-seed-observation']['persistence_state'][1]:
+        raise ValueError('persistence state verifier raw identity changed')
+    return runpy.run_path(str(source))
+
+
+def prepare_persistence_state(args, deadline):
+    helpers = persistence_helpers()
+    state = Path(args.owned_state_root)
+    if (not state.is_absolute() or '..' in state.parts
+            or state.name != 'seecut-persistence-' + args.state_token):
+        raise ValueError('exact_random_batch_state_root_required')
+    if args.next_stage == 'persistence-seed-observation':
+        helpers['real_directory'](state.parent)
+        state.mkdir(mode=0o700)  # Exclusive; existing directory or any link fails.
+        info = helpers['real_directory'](state, private=True)
+        marker = {'schema': 1, 'batch': args.state_token, 'uid': os.getuid(),
+                  'source_head': WORKFLOW_HEAD, 'app_sha256': WORKFLOW_APP_SHA,
+                  'root_device': info.st_dev, 'root_inode': info.st_ino}
+        write_owned(state, 'persistence-batch.json', (json.dumps(marker) + '\n').encode())
+    else:
+        helpers['validate_batch'](state, args.state_token)
+        # Already verify the previous process before reading binary or starting App.
+        helpers['real_directory'](Path(args.seed_record).parent, private=True)
+        record = json.loads(helpers['read_owned'](Path(args.seed_record), 32768))
+        helpers['assert_process_gone'](record.get('app_pid'))
+        if record.get('batch') != args.state_token or record.get('root') != str(state):
+            raise ValueError('seed_record_batch_or_original_path_changed')
+    return state
+
+
+def hash_persistence_app(path, deadline):
+    # B reuses the original inode and reads it only. No second executable copy.
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or info.st_size > APP_LIMIT or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError('original_owned_App_identity_changed')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    digest = hashlib.sha256()
+    with os.fdopen(fd, 'rb') as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError('original_App_changed_before_read')
+        while True:
+            if time.monotonic() >= deadline:
+                raise ValueError('original_App_hash_deadline')
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    after = path.lstat()
+    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns):
+        raise ValueError('original_App_changed_during_read')
+    return digest.hexdigest()
+
+
+def persistence_prelaunch(args, deadline):
+    helpers = persistence_helpers()
+    seed = json.loads(helpers['read_owned'](Path(args.seed_record), 32768))
+    if (seed.get('schema') != 1 or seed.get('phase') != 'seed'
+            or seed.get('batch') != args.state_token or seed.get('root') != args.owned_state_root
+            or seed.get('app_sha256') != WORKFLOW_APP_SHA or seed.get('groups_gone') is not True):
+        raise ValueError('complete_exact_seed_exit_record_required')
+    helpers['assert_process_gone'](seed.get('app_pid'))
+    app_info = (Path(args.owned_state_root) / 'concat').lstat()
+    if seed.get('app_inode') != [app_info.st_dev, app_info.st_ino]:
+        raise ValueError('original_App_inode_changed')
+    state = helpers['snapshot_state'](Path(args.owned_state_root), args.state_token, deadline)
+    if state != seed.get('state'):
+        raise ValueError('saved_state_changed_between_A_exit_and_B_launch')
+    second = helpers['snapshot_state'](Path(args.owned_state_root), args.state_token, deadline)
+    if second != state:
+        raise ValueError('saved_state_not_stable_before_B_launch')
+    return {'schema': 1, 'batch': args.state_token, 'root': args.owned_state_root,
+            'seed_app_pid': seed['app_pid'], 'seed_group_gone': True,
+            'same_App_inode': True, 'unchanged_seed_state': True,
+            'state_sha256': hashlib.sha256(json.dumps(state, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
+
+
+def persistence_after_exit(args, result, processes, output, deadline):
+    helpers = persistence_helpers()
+    for process in processes:
+        helpers['assert_process_gone'](process.pid)
+    data = json.loads(helpers['read_owned'](output / WORKFLOW_DIRECTORY / 'workflow.json', 128 * 1024))
+    export = data.get('stages', {}).get('export', {})
+    if (data.get('status') != 'bounded_UI_observation_completed_review_pending'
+            or export.get('exact_fixture_pixels_preserved') is not True
+            or data.get('fixture_source_unchanged') is not True
+            or data.get('settings_entered') is not False
+            or data.get('app_pid') != result.get('app_pid')):
+        raise ValueError('complete_UI_export_and_source_checks_required')
+    scope = 'seed' if args.next_stage == 'persistence-seed-observation' else 'reopen'
+    if data.get('persistence_scope') != scope or not data.get('stages', {}).get('16-gallery-reopened-edit', {}).get('one_Undo_restored'):
+        raise ValueError('real_reopened_drag_and_one_Undo_required')
+    state = helpers['snapshot_state'](Path(args.owned_state_root), args.state_token, deadline)
+    if helpers['snapshot_state'](Path(args.owned_state_root), args.state_token, deadline) != state:
+        raise ValueError('saved_state_not_stable_after_process_exit')
+    if scope == 'reopen':
+        seed = json.loads(helpers['read_owned'](Path(args.seed_record), 32768))
+        if result['app_pid'] == seed['app_pid'] or data.get('seed_app_pid') != seed['app_pid']:
+            raise ValueError('distinct_real_App_processes_required')
+        if state != seed['state']:
+            raise ValueError('final_saved_content_changed_after_strict_Undo')
+    info = (Path(args.owned_state_root) / 'concat').lstat()
+    return {'schema': 1, 'phase': scope, 'batch': args.state_token, 'root': args.owned_state_root,
+            'app_pid': result['app_pid'], 'groups_gone': True,
+            'app_sha256': WORKFLOW_APP_SHA, 'app_inode': [info.st_dev, info.st_ino],
+            'strict_UI_export_pixel_check': True, 'state': state}
 
 
 def arguments():
@@ -810,24 +939,38 @@ def arguments():
     parser.add_argument("--source-head", help="Exact immutable App source HEAD; defaults to workflow HEAD")
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
+    parser.add_argument('--owned-state-root', help='Only the two persistence scopes; fresh batch root for A, same original root for B')
+    parser.add_argument('--state-token', help='32 lowercase random hex characters for this batch')
+    parser.add_argument('--seed-record', help='B only; A launcher record written after its App/group exited')
     parser.add_argument("--input-dir", help="workflow-observation only; exact owned fixture inputs")
-    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES), default="navigation")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES), default="navigation")
     parser.add_argument("--isolated-display-capture", action="store_true",
                         help="Explicit isolated-display declaration for reviewed observation stages")
     parser.add_argument("--private-accessibility-bus", action="store_true",
                         help="workflow/fresh/A2 observation only; requires a direct dedicated dbus-run-session parent")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     args = parser.parse_args()
-    capture_stages = {"image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES}
+    capture_stages = {"image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}
     if args.next_stage in capture_stages and not args.isolated_display_capture:
         parser.error(args.next_stage + " requires --isolated-display-capture")
     if args.isolated_display_capture and args.next_stage not in capture_stages:
         parser.error("--isolated-display-capture requires an authorized observation stage")
-    if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES}:
+    if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}:
         parser.error("--private-accessibility-bus is only valid for workflow/fresh observation")
-    if args.input_dir is not None and args.next_stage not in ('workflow-observation', 'assets-import'):
-        parser.error('--input-dir is only valid for reviewed workflow or assets fixture scopes')
-    if args.next_stage == "workflow-observation":
+    if args.input_dir is not None and args.next_stage not in ('workflow-observation', 'assets-import', *PERSISTENCE_SCOPES):
+        parser.error('--input-dir is only valid for reviewed workflow, persistence or assets fixture scopes')
+    if args.next_stage not in PERSISTENCE_SCOPES and any((args.owned_state_root, args.state_token, args.seed_record)):
+        parser.error('persistence state options are forbidden for all original scopes')
+    if args.next_stage in PERSISTENCE_SCOPES:
+        if (not args.owned_state_root or not args.state_token or not re.fullmatch('[0-9a-f]{32}', args.state_token)
+                or (args.next_stage == 'persistence-reopen-observation') != bool(args.seed_record)):
+            parser.error('finite persistence stage requires its exact state/batch/seed arguments')
+        expected_output_name = 'seed' if args.next_stage == 'persistence-seed-observation' else 'reopen'
+        if Path(args.output).name != expected_output_name or Path(args.output).parent.parent != Path(args.owned_state_root).parent:
+            parser.error('persistence scopes require sibling batch state and pair evidence paths')
+        if args.seed_record and Path(args.seed_record) != Path(args.output).parent / 'seed' / WORKFLOW_DIRECTORY / 'persistence-seed.json':
+            parser.error('B requires exactly this pair evidence root seed record')
+    if args.next_stage == "workflow-observation" or args.next_stage in PERSISTENCE_SCOPES:
         if not args.private_accessibility_bus:
             parser.error("workflow-observation requires --private-accessibility-bus")
         if args.seconds != 300 or args.client_binary is not None:
@@ -970,8 +1113,8 @@ def main():
                     or candidate["app_sha256"] != NEXT_UI_APP_SHA
                     or candidate["build_run_id"] != NEXT_UI_BUILD_RUN):
                 raise ValueError("fresh workbench candidate differs from its reviewed immutable provenance")
-        if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES:
-            workflow = args.next_stage == "workflow-observation"
+        if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES or args.next_stage in PERSISTENCE_SCOPES:
+            workflow = args.next_stage == "workflow-observation" or args.next_stage in PERSISTENCE_SCOPES
             reviewed_head, app_sha, build_run, artifact = (
                 (WORKFLOW_HEAD, WORKFLOW_APP_SHA, WORKFLOW_BUILD_RUN, WORKFLOW_ARTIFACT) if workflow else
                 (A2_HEAD, A2_APP_SHA, A2_BUILD_RUN, A2_ARTIFACT))
@@ -990,6 +1133,13 @@ def main():
             for name, (filename, _digest) in scripts.items():
                 if name != "qa":
                     sources[name] = regular_input(root / "scripts" / filename)
+        if args.next_stage in PERSISTENCE_SCOPES:
+            scripts = PERSISTENCE_SCRIPTS[args.next_stage]
+            if sources['qa'] != root / 'scripts' / scripts['qa'][0]:
+                raise ValueError('persistence requires its fixed reviewed controller')
+            for name, (filename, _digest) in scripts.items():
+                if name != 'qa':
+                    sources[name] = regular_input(root / 'scripts' / filename)
         if args.next_stage == "workflow-observation":
             if sources["qa"] != root / "scripts" / WORKFLOW_SCRIPTS["qa"][0]:
                 raise ValueError("workflow-observation requires the fixed reviewed QA script")
@@ -1042,14 +1192,28 @@ def main():
             for name, (filename, _digest) in NATIVE_SCOPES[args.next_stage]["scripts"].items():
                 if name != "qa":
                     copied[name] = work / filename
-        hashes = {name: copy_and_hash(source, copied[name], executable=name in {"app", "client"},
+        if args.next_stage in PERSISTENCE_SCOPES:
+            for name, (filename, _digest) in PERSISTENCE_SCRIPTS[args.next_stage].items():
+                if name != 'qa':
+                    copied[name] = work / ('persistence_state.py' if name == 'persistence_state' else filename)
+            state = prepare_persistence_state(args, qa_deadline)
+            copied['app'] = state / 'concat'
+        hashes = {name: (hash_persistence_app(copied['app'], qa_deadline) if
+                        args.next_stage == 'persistence-reopen-observation' and name == 'app' else
+                        copy_and_hash(source, copied[name], executable=name in {"app", "client"},
                                       limit=(APP_LIMIT if name == "app" else
-                                             (64 * 1024 if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES or args.next_stage in NATIVE_SCOPES else None)))
+                                             (64 * 1024 if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES or args.next_stage in NATIVE_SCOPES or args.next_stage in PERSISTENCE_SCOPES else None))))
                   for name, source in sources.items()}
         if args.next_stage == 'assets-import':
             if Path(args.input_dir) != root / 'scripts' / 'qa-fixtures':
                 raise ValueError('assets-import requires the checked-out fixed fixture directory')
             copied['input_dir'], fixture_hashes = copy_assets_fixture(Path(args.input_dir), work)
+            result['input_fixture_sha256'] = fixture_hashes
+        if args.next_stage in PERSISTENCE_SCOPES:
+            for name, (_filename, digest) in PERSISTENCE_SCRIPTS[args.next_stage].items():
+                if hashes[name] != digest:
+                    raise ValueError('persistence controller/helper raw identity changed')
+            copied['input_dir'], fixture_hashes = copy_workflow_fixtures(Path(args.input_dir), work)
             result['input_fixture_sha256'] = fixture_hashes
         if args.next_stage == "workflow-observation":
             for name, (_filename, digest) in WORKFLOW_SCRIPTS.items():
@@ -1082,8 +1246,8 @@ def main():
             copied["ui_approval"] = work / "ui-approval.json"
             hashes["ui_approval"] = copy_and_hash(
                 ui_approval, copied["ui_approval"], limit=APPROVAL_LIMIT)
-        if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES:
-            workflow = args.next_stage == "workflow-observation"
+        if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES or args.next_stage in PERSISTENCE_SCOPES:
+            workflow = args.next_stage == "workflow-observation" or args.next_stage in PERSISTENCE_SCOPES
             identity_sha, ui_sha, reviewed_head, app_sha = (
                 (WORKFLOW_IDENTITY_SHA, WORKFLOW_UI[1], WORKFLOW_HEAD, WORKFLOW_APP_SHA) if workflow else
                 (A2_IDENTITY_SHA, A2_UI[1], A2_HEAD, A2_APP_SHA))
@@ -1106,10 +1270,19 @@ def main():
                     or identity.get("reviewed_by") != "main-reviewer" or identity.get("runtime_head") != NATIVE_HEAD
                     or identity.get("runtime_app_sha256") != NATIVE_APP_SHA or identity.get("change_scope") != "product-candidate"):
                 raise ValueError("main native runtime identity differs from the reviewed App")
-        portable = work / "portable"
-        portable.mkdir(mode=0o700)
+        portable = (Path(args.owned_state_root) if args.next_stage in PERSISTENCE_SCOPES else work) / 'portable'
         prefs = {"locale": "en", "dark": False, "server": {"enabled": False}}
-        (portable / "settings.json").write_text(json.dumps(prefs), encoding="utf-8")
+        if args.next_stage != 'persistence-reopen-observation':
+            portable.mkdir(mode=0o700)
+            (portable / 'settings.json').write_text(json.dumps(prefs), encoding='utf-8')
+        if args.next_stage in PERSISTENCE_SCOPES:
+            result['persistence'] = {'batch': args.state_token, 'root': args.owned_state_root,
+                                     'phase': args.next_stage, 'original_path_reused': True}
+            if args.next_stage == 'persistence-reopen-observation':
+                result['persistence']['prelaunch_state'] = persistence_prelaunch(args, qa_deadline)
+                (output / WORKFLOW_DIRECTORY).mkdir(mode=0o700)
+                write_owned(output / WORKFLOW_DIRECTORY, 'persistence-prelaunch.json',
+                            (json.dumps(result['persistence']['prelaunch_state'], separators=(',', ':')) + '\n').encode())
         env = os.environ.copy()
         if args.private_accessibility_bus:
             for key in ("AT_SPI_BUS_ADDRESS", "DBUS_STARTER_ADDRESS", "DBUS_STARTER_BUS_TYPE"):
@@ -1140,7 +1313,7 @@ def main():
             result["limits"]["controller_seconds"] = NATIVE_CONTROLLER_SECONDS
         if args.next_stage in A2_SCOPES:
             result["limits"]["controller_seconds"] = A2_CONTROLLER_SECONDS
-        if args.next_stage in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES}:
+        if args.next_stage in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}:
             phase = "accessibility_preparation"
             enable_private_accessibility(env, qa_deadline, result)
         phase = "launch"
@@ -1184,6 +1357,26 @@ def main():
             stop_processes(processes, deadline)
             for log in logs:
                 log.thread.join(timeout=min(0.5, max(0, deadline - time.monotonic())))
+            if args.next_stage in PERSISTENCE_SCOPES and output is not None and result.get('qa_exit_code') == 0:
+                try:
+                    record = persistence_after_exit(args, result, processes, output, deadline)
+                    record_name = 'persistence-seed.json' if args.next_stage == 'persistence-seed-observation' else 'persistence-postrun.json'
+                    write_owned(output / WORKFLOW_DIRECTORY, record_name,
+                                (json.dumps(record, separators=(',', ':')) + '\n').encode())
+                    result['persistence']['all_owned_process_groups_gone'] = True
+                except Exception as error:
+                    # Verification failure must not skip work removal or harness/log output.
+                    detail = str(error)
+                    reason = detail if re.fullmatch('[A-Za-z0-9_]{1,96}', detail) else 'state_verification_io_or_parse_failed'
+                    result['status'] = 'persistence_state_failed'
+                    result.setdefault('persistence', {})['failure_reason'] = reason
+                    exit_code = 1
+                    try:
+                        write_owned(output / WORKFLOW_DIRECTORY, 'persistence-failure.json',
+                                    (json.dumps({'schema': 1, 'phase': args.next_stage,
+                                                 'batch': args.state_token, 'reason': reason}) + '\n').encode())
+                    except OSError:
+                        result['persistence']['failure_record_unavailable'] = True
             result["process_exit_codes"] = [process.returncode for process in processes]
             result["log_truncated"] = [log.truncated for log in logs]
             for process in processes:
