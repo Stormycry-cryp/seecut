@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
 import { I18n } from "../i18n.slint";
-import { Theme, Fmt, Glyph, Icon, Payload } from "../primitives/primitives.slint";
+import { Theme, Fmt, Glyph, Icon, Payload, Tip, FocusRing } from "../primitives/primitives.slint";
 import { Pane, PaneScroll } from "pane.slint";
 import { HairlineSplitter } from "splitter.slint";
 import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
@@ -76,14 +76,44 @@ component LibraryTab inherits Rectangle {
     /// lines and only ever needed one, so the second is where the mark goes.
     in property <Glyph> glyph;
     in property <bool> current;
+    in property <bool> compact;
 
     callback clicked();
 
-    // flex-auto, not flex-1: the label is the basis and only the surplus is
-    // shared, so "Transitions" is never crammed to make room for padding
-    // around "Text". A Slint layout distributes spare width on top of each
-    // child's own preferred width, which is the same rule.
+    // Measure independently of the visible label so hiding it cannot change
+    // the strip's breakpoint. This also follows the current language/font.
+    measure := Text {
+        width: 0px;
+        height: 0px;
+        text: root.label;
+        font-size: Theme.fs-sm;
+        visible: false;
+    }
+    out property <length> full-width: Math.max(13px, measure.preferred-width) + 12px;
+    min-width: root.compact ? 26px : root.full-width;
+    preferred-width: root.compact ? 26px : root.full-width;
     horizontal-stretch: 1;
+
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.current;
+    accessible-action-default => { focus.focus(); root.clicked(); }
+    forward-focus: focus;
+    property <bool> ring;
+
+    // Keep focus beneath the existing DragArea/TouchArea pointer target.
+    focus := FocusScope {
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
     border-radius: Theme.r-sm;
     // The current page is a chip lifted out of the track. Slint has no
     // box-shadow, so the value step carries the lift alone — which is why this
@@ -121,13 +151,12 @@ component LibraryTab inherits Rectangle {
             }
         }
 
-        Text {
+        if !root.compact: Text {
             text: root.label;
             color: root.tint;
             font-size: Theme.fs-sm;
             horizontal-alignment: center;
             vertical-alignment: center;
-            overflow: elide;
         }
     }
 
@@ -143,10 +172,14 @@ component LibraryTab inherits Rectangle {
         touch := TouchArea {
             mouse-cursor: pointer;
             clicked => {
+                focus.focus();
                 root.clicked();
             }
         }
     }
+
+    Tip { text: root.label; active: touch.has-hover; }
+    FocusRing { active: root.ring; radius: Theme.r-sm; }
 }
 
 // ── the category sidebar ─────────────────────────────────────────────────────
@@ -1489,7 +1522,17 @@ export component MediaPane inherits Rectangle {
                 // separates it from `SegmentedControl`, where the border is
                 // doing real work because that control sits loose in a form
                 // row with nothing else to bound it.
-                Rectangle {
+                library-track := Rectangle {
+                    // Six measured labels, 4px track padding and five 2px gaps.
+                    // Explicit constraints keep the available width independent
+                    // of compact mode, so the breakpoint cannot oscillate.
+                    property <length> full-width: media-tab.full-width + text-tab.full-width
+                        + transitions-tab.full-width + effects-tab.full-width
+                        + filters-tab.full-width + templates-tab.full-width + 14px;
+                    property <bool> compact: self.width < self.full-width;
+                    min-width: 6 * 26px + 14px;
+                    preferred-width: self.full-width;
+                    horizontal-stretch: 1;
                     background: Theme.well;
                     border-radius: Theme.r;
 
@@ -1497,37 +1540,43 @@ export component MediaPane inherits Rectangle {
                         padding: 2px;
                         spacing: 2px;
 
-                        LibraryTab {
+                        media-tab := LibraryTab {
+                            compact: library-track.compact;
                             glyph: Glyph.film;
                             label: I18n.t("Media");
                             current: root.tab == 0;
                             clicked => { root.tab = 0; }
                         }
-                        LibraryTab {
+                        text-tab := LibraryTab {
+                            compact: library-track.compact;
                             glyph: Glyph.text-mark;
                             label: I18n.t("Text");
                             current: root.tab == 1;
                             clicked => { root.tab = 1; }
                         }
-                        LibraryTab {
+                        transitions-tab := LibraryTab {
+                            compact: library-track.compact;
                             glyph: Glyph.transition;
                             label: I18n.t("Transitions");
                             current: root.tab == 2;
                             clicked => { root.tab = 2; }
                         }
-                        LibraryTab {
+                        effects-tab := LibraryTab {
+                            compact: library-track.compact;
                             glyph: Glyph.sparkle;
                             label: I18n.t("Effects");
                             current: root.tab == 3;
                             clicked => { root.tab = 3; }
                         }
-                        LibraryTab {
+                        filters-tab := LibraryTab {
+                            compact: library-track.compact;
                             glyph: Glyph.filter;
                             label: I18n.t("Filters");
                             current: root.tab == 4;
                             clicked => { root.tab = 4; }
                         }
-                        LibraryTab {
+                        templates-tab := LibraryTab {
+                            compact: library-track.compact;
                             glyph: Glyph.slot;
                             label: I18n.t("Templates");
                             current: root.tab == 5;

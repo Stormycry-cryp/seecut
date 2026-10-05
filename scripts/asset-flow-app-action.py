@@ -32,13 +32,59 @@ SAFE_REASONS = frozenset((
     'exact_private_owned_context_required','exact_scope_action_SHA_required',
     'no_file_list_path_required','visible_target_missing',
     'public_accessibility_unavailable','public_accessibility_deadline',
-    'ambiguous_public_app_root','target_not_exposed_by_public_accessibility'))
+    'ambiguous_public_app_root','target_not_exposed_by_public_accessibility',
+    'probe_node_state_set_missing','probe_node_interfaces_missing','probe_node_action_iface_missing',
+    'probe_node_interfaces_invalid','post_edit_probe_transient_exhausted',
+    'post_edit_probe_deadline','unknown_probe_transient_code'))
 
 
 def safe_reason(exc):
     if isinstance(exc,subprocess.TimeoutExpired):return 'owned_command_timeout'
     reason=str(exc)
     return reason if isinstance(exc,(ValueError,RuntimeError)) and reason in SAFE_REASONS else 'unknown_runtime_failure_raw_withheld'
+
+
+
+POST_EDIT_TRANSIENT_CODES = frozenset((
+    'probe_node_state_set_missing','probe_node_interfaces_missing',
+    'probe_node_action_iface_missing'))
+
+
+def stable_post_edit(probe, pid, end, focus, validate, record,
+                     now=time.monotonic, wait=time.sleep):
+    """At most three READ-ONLY samples, only mandatory interface None is recoverable.
+
+    Every collect takes a new current App root; no input/click/Action or cached
+    snapshot is replayed. Unknown errors, incomplete coverage and failed target
+    assertions are terminal. Deadline and focus checks remain mandatory.
+    """
+    record['post_edit_probe_samples']=0
+    record['post_edit_probe_codes']=[]
+    for attempt in range(3):
+        if end-now()<.1:raise ValueError('post_edit_probe_deadline')
+        record['phase']='post_edit_focus'
+        focus()
+        record['phase']='post_edit_probe'
+        record['post_edit_probe_samples']=attempt+1
+        try:
+            data=probe.collect(pid,min(end,now()+2))
+        except probe.ProbeInterfaceUnavailable as exc:
+            code=str(exc)
+            if code not in POST_EDIT_TRANSIENT_CODES:
+                raise ValueError('unknown_probe_transient_code') from None
+            record['post_edit_probe_codes'].append(code)
+            if attempt==2:raise ValueError('post_edit_probe_transient_exhausted') from None
+            delay=.05*(attempt+1)
+            if end-now()<delay+.1:raise ValueError('post_edit_probe_deadline') from None
+            record['phase']='post_edit_probe_backoff'
+            wait(delay)
+            continue
+        record['post_edit_probe_completed']=True
+        record['phase']='post_edit_focus_after_probe'
+        focus()
+        record['phase']='post_edit_target_check'
+        return validate(data)
+    raise ValueError('post_edit_probe_transient_exhausted')
 
 
 def load_probe(digest):
@@ -153,7 +199,8 @@ def main():
     record={'scope':'asset-library-flow','mode':a.mode,'success':False,'phase':'dependencies',
             'window':a.window_id,'field_values_read':False,'file_lists_read':False,
             'focus_click_attempted':False,'select_all_attempted':False,'edit_attempted':False,'Action_attempted':False,
-            'post_edit_probe_completed':False,'post_edit_target_verified':False}
+            'post_edit_probe_completed':False,'post_edit_target_verified':False,
+            'post_edit_probe_samples':0,'post_edit_probe_codes':[]}
     def command(argv,search=False):
         left=end-time.monotonic()
         if left<0.1:raise ValueError('deadline_no_input')
@@ -179,15 +226,17 @@ def main():
                         if command(['xdotool','search','--onlyvisible','--pid',str(child)],True).strip():
                             raise ValueError('extra_owned_window_forbidden')
     def observe(focused=False):
-        post_edit=record['phase']=='post_edit_observation'
-        record['phase']='post_edit_focus' if post_edit else 'target_focus'
+        def validate(data):
+            data.update(app_pid=a.app_pid,field_values_read=False)
+            return target_current(data,a.app_pid,expected,a.mode,focused)
+        if record['phase']=='post_edit_observation':
+            return stable_post_edit(probe,a.app_pid,end,focus,validate,record)
+        record['phase']='target_focus'
         focus()
-        record['phase']='post_edit_probe' if post_edit else 'target_probe'
+        record['phase']='target_probe'
         data=probe.collect(a.app_pid,min(end,time.monotonic()+2))
-        if post_edit:record['post_edit_probe_completed']=True
-        data.update(app_pid=a.app_pid,field_values_read=False)
-        record['phase']='post_edit_target_check' if post_edit else 'target_check'
-        return target_current(data,a.app_pid,expected,a.mode,focused)
+        record['phase']='target_check'
+        return validate(data)
     try:
         path=a.ui_approval
         if (not a.private_accessibility_bus or not os.environ.get('DISPLAY') or a.app_pid<2

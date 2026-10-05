@@ -51,6 +51,19 @@ SAFE_LABELS = SAFE_LABELS | frozenset(
     for option in options)
 
 
+
+TRANSIENT_INTERFACE_CODES = frozenset((
+    'probe_node_state_set_missing', 'probe_node_interfaces_missing',
+    'probe_node_action_iface_missing'))
+
+
+class ProbeInterfaceUnavailable(RuntimeError):
+    def __init__(self, code):
+        if code not in TRANSIENT_INTERFACE_CODES:
+            raise ValueError('exact_probe_transient_code_required')
+        super().__init__(code)
+
+
 def safe_label(value):
     return value if isinstance(value, str) and value in SAFE_LABELS else None
 
@@ -62,6 +75,7 @@ def target_root(app_pid, deadline):
     desktop = Atspi.get_desktop(0)
     if desktop is None:
         raise RuntimeError('public_accessibility_unavailable')
+    desktop.clear_cache_single()
     root = None
     for index in range(min(desktop.get_child_count(), 64)):
         if time.monotonic() >= deadline:
@@ -94,10 +108,18 @@ def collect(app_pid, deadline):
             continue
         node.clear_cache_single()
         states = node.get_state_set()
+        if states is None:
+            raise ProbeInterfaceUnavailable('probe_node_state_set_missing')
         role = node.get_role()
         skip_children = role in (Atspi.Role.TABLE, Atspi.Role.TREE, Atspi.Role.TREE_TABLE,
                                  Atspi.Role.LIST, Atspi.Role.DIRECTORY_PANE)
-        interfaces = set(node.get_interfaces())
+        current_interfaces = node.get_interfaces()
+        if current_interfaces is None:
+            raise ProbeInterfaceUnavailable('probe_node_interfaces_missing')
+        if (not isinstance(current_interfaces, (list, tuple))
+                or any(not isinstance(interface, str) for interface in current_interfaces)):
+            raise ValueError('probe_node_interfaces_invalid')
+        interfaces = set(current_interfaces)
         editable = bool(states.contains(Atspi.StateType.EDITABLE))
         no_name = (skip_children or role in (Atspi.Role.ENTRY, Atspi.Role.TEXT)
                    or editable or 'EditableText' in interfaces)
@@ -121,6 +143,8 @@ def collect(app_pid, deadline):
         record['action_interface'] = 'Action' in interfaces
         if (record['button'] or record['radio']) and record['action_interface']:
             action = node.get_action_iface()
+            if action is None:
+                raise ProbeInterfaceUnavailable('probe_node_action_iface_missing')
             record['allowed_actions'] = [action.get_action_name(index) for index in range(min(action.get_n_actions(), 8))
                                          if action.get_action_name(index) in ('click', 'activate', 'press')]
         try:
