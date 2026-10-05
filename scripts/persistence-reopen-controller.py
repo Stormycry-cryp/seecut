@@ -728,6 +728,8 @@ def main():
         guard(frame, 'opened-image-properties')
         guard(frame, 'opened-image-zoom')
         expected = ui['opened_document_contract']['selection_screen_edges']
+        # Exact palette pixels exclude the one-pixel selection stroke on all sides.
+        expected = [expected[0] + 1, expected[1] + 1, expected[2] - 1, expected[3] - 1]
         if reopened['bounds'] != expected:
             raise Stop('restart_fixture_initial_geometry_changed')
         frame = edit_and_undo(frame, '16-gallery-reopened-edit')
