@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run one normal Linux App and an independent, trusted black-box QA script.
 
-QA receives --app-pid, --client-binary, --work-dir, --output, --expected-sha,
+Legacy QA receives --app-pid, --client-binary, --work-dir, --output, --expected-sha,
 --deadline-monotonic, and --next-stage. An absent optional client is passed as a nonexistent
 absolute work path. QA records /proc binary identity and the unique visible X11
 window ID itself. It must finish before the monotonic deadline, leave regular
@@ -11,7 +11,10 @@ copied verbatim and forwarded; this harness never creates or interprets a declar
 An optional candidate manifest binds the copied executable to its actual source
 HEAD, build run/job and content hash before launch. Explicit source HEAD and
 artifact ID allow a reviewed test-only workflow revision to use the original App.
-QA receives the actual App source HEAD. This contract supports one App lifetime: QA must not launch another App,
+The explicit workflow-observation stage instead uses its reviewed fixed script
+and helper, window ID, approvals and isolated-display flags without legacy args.
+QA receives the actual App source HEAD. This contract supports one App lifetime:
+QA must not launch another App,
 detach descendants, or move them into new process groups. This harness supplies
 no UI navigation, authorization, product assertions, or product test results.
 It is resource isolation for trusted QA, not a security sandbox: HOME and X11
@@ -42,6 +45,11 @@ LINE_LIMIT = 16 * 1024
 SENSITIVE = re.compile(rb"token|authorization|credential|password|secret|bearer", re.I)
 RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
+WORKFLOW_DIRECTORY = "independent-qa-workflow"
+WORKFLOW_SCRIPTS = {
+    "qa": ("independent-workflow-ui.py", "75434ba58d06303437466ba61354ce36817b072ced6aa87e1c1f0f17f71087c4"),
+    "public_ui_probe": ("public_ui_probe.py", "b0f3724aabe7782f9b19dd166140a273929d5a29b01fa4d3317121d8c6e10460"),
+}
 APPROVAL_LIMIT = 16 * 1024
 APP_LIMIT = 512 * 1024 * 1024
 HARNESS_RESERVE = 2 * LOG_LIMIT + 32 * 1024
@@ -185,22 +193,35 @@ def stop_processes(processes, deadline):
         process.wait(timeout=max(0.01, deadline - time.monotonic()))
 
 
-def inspect_artifacts(output, limit=ARTIFACT_LIMIT):
+def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
     """Traverse only the QA contract's known directory, never links."""
     if not stat.S_ISDIR(output.lstat().st_mode):
         raise ValueError("output root must remain a real directory")
     total = 0
+    workflow = next_stage == "workflow-observation"
+    directories = {WORKFLOW_DIRECTORY} if workflow else QA_DIRECTORIES
+    png_count = 0
     pending = [output]
     while pending:
         directory = pending.pop()
         with os.scandir(directory) as entries:
             for entry in entries:
                 info = entry.stat(follow_symlinks=False)
-                if stat.S_ISDIR(info.st_mode) and directory == output and entry.name in QA_DIRECTORIES:
+                if stat.S_ISDIR(info.st_mode) and directory == output and entry.name in directories:
                     pending.append(Path(entry.path))
                     continue
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise ValueError("output contains an unknown directory, link, or non-regular file")
+                if workflow:
+                    if directory == output:
+                        if entry.name not in RESERVED:
+                            raise ValueError("workflow artifacts require the known QA directory")
+                    elif entry.name.endswith(".png"):
+                        png_count += 1
+                        if png_count > 12:
+                            raise ValueError("workflow artifacts exceed twelve PNGs")
+                    elif entry.name not in {"workflow.json", "public-accessibility.json"}:
+                        raise ValueError("unknown workflow artifact file")
                 total += info.st_size
                 if total > limit:
                     raise ValueError("output exceeds artifact budget")
@@ -235,6 +256,35 @@ def write_owned(output, name, payload):
         handle.write(payload)
 
 
+def verify_private_accessibility_bus(env):
+    """Only the workflow's direct dbus-run-session child can attest this bus."""
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        raise ValueError("private accessibility bus requires DBUS_SESSION_BUS_ADDRESS")
+    parent = Path("/proc") / str(os.getppid())
+    if (parent.stat().st_uid != os.getuid()
+            or (parent / "exe").resolve(strict=True).name != "dbus-run-session"):
+        raise ValueError("private accessibility bus requires a direct dbus-run-session parent")
+
+
+def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_deadline):
+    command = [sys.executable, str(copied["qa"]), "--app-pid", str(app_pid),
+               "--work-dir", str(work), "--output", str(output),
+               "--deadline-monotonic", str(qa_deadline)]
+    if args.next_stage == "workflow-observation":
+        command.extend(("--window-id", str(window_id)))
+        if args.private_accessibility_bus:
+            command.extend(("--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
+    else:
+        command.extend(("--client-binary", str(copied["client"]),
+                        "--expected-sha", source_head, "--next-stage", args.next_stage))
+    if args.isolated_display_capture:
+        command.append("--isolated-display-capture")
+    for name in ("identity_approval", "ui_approval"):
+        if name in copied:
+            command.extend(("--" + name.replace("_", "-"), str(copied[name])))
+    return command
+
+
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("binary", "qa-script", "output", "expected-sha"):
@@ -245,15 +295,26 @@ def arguments():
     parser.add_argument("--source-head", help="Exact immutable App source HEAD; defaults to workflow HEAD")
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
-    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation"), default="navigation")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation"), default="navigation")
     parser.add_argument("--isolated-display-capture", action="store_true",
-                        help="Explicit isolated-display declaration required only for image-picker-observation")
+                        help="Explicit isolated-display declaration for image-picker/workflow observation")
+    parser.add_argument("--private-accessibility-bus", action="store_true",
+                        help="workflow-observation only; requires a direct dedicated dbus-run-session parent")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     args = parser.parse_args()
-    if args.next_stage == "image-picker-observation" and not args.isolated_display_capture:
-        parser.error("image-picker-observation requires --isolated-display-capture")
-    if args.isolated_display_capture and args.next_stage != "image-picker-observation":
-        parser.error("--isolated-display-capture is only valid for image-picker-observation")
+    capture_stages = {"image-picker-observation", "workflow-observation"}
+    if args.next_stage in capture_stages and not args.isolated_display_capture:
+        parser.error(args.next_stage + " requires --isolated-display-capture")
+    if args.isolated_display_capture and args.next_stage not in capture_stages:
+        parser.error("--isolated-display-capture requires an authorized observation stage")
+    if args.private_accessibility_bus and args.next_stage != "workflow-observation":
+        parser.error("--private-accessibility-bus is only valid for workflow-observation")
+    if args.next_stage == "workflow-observation":
+        if args.seconds != 300 or args.client_binary is not None:
+            parser.error("workflow-observation requires 300 seconds and no MCP client")
+        if not all((args.identity_approval, args.ui_approval, args.source_head,
+                    args.candidate_manifest, args.candidate_artifact_id)):
+            parser.error("workflow-observation requires exact candidate provenance and both declarations")
     return args
 
 
@@ -268,6 +329,7 @@ def main():
     result = {"schema": 1, "status": "incomplete", "seconds": args.seconds,
               "next_stage": args.next_stage,
               "isolated_display_capture": args.isolated_display_capture,
+              "private_accessibility_bus": args.private_accessibility_bus,
               "isolated_display_capture_source": ("explicit CLI option --isolated-display-capture"
                                                   if args.isolated_display_capture else None),
               "qa_contract": "one App lifetime; no detached children; known QA directory; secret-free artifacts",
@@ -295,6 +357,8 @@ def main():
             raise ValueError("--expected-sha must be 40 lowercase hex characters")
         if not os.environ.get("DISPLAY"):
             raise ValueError("DISPLAY is required")
+        if args.private_accessibility_bus:
+            verify_private_accessibility_bus(os.environ)
         if "SEECUT_UI_PREVIEW_DIR" in os.environ:
             raise ValueError("SEECUT_UI_PREVIEW_DIR must be absent")
         root = Path(__file__).resolve().parents[1]
@@ -349,6 +413,10 @@ def main():
                 raise ValueError("candidate artifact ID requires a valid manifest")
             result["candidate"]["source_artifact_id"] = int(args.candidate_artifact_id)
         sources = {"app": regular_input(args.binary), "qa": regular_input(args.qa_script)}
+        if args.next_stage == "workflow-observation":
+            if sources["qa"] != root / "scripts" / WORKFLOW_SCRIPTS["qa"][0]:
+                raise ValueError("workflow-observation requires the fixed reviewed QA script")
+            sources["public_ui_probe"] = regular_input(root / "scripts" / WORKFLOW_SCRIPTS["public_ui_probe"][0])
         if args.client_binary is not None:
             if not Path(args.client_binary).is_absolute():
                 raise ValueError("--client-binary must be absolute")
@@ -371,9 +439,15 @@ def main():
         work = Path(tempfile.mkdtemp(prefix="seecut-blackbox-"))
         copied = {"app": work / "concat", "client": work / "concat-editor-mcp",
                   "qa": work / "independent-qa.py"}
-        hashes = {name: copy_and_hash(source, copied[name], executable=name != "qa",
+        if args.next_stage == "workflow-observation":
+            copied["public_ui_probe"] = work / "public_ui_probe.py"
+        hashes = {name: copy_and_hash(source, copied[name], executable=name in {"app", "client"},
                                       limit=APP_LIMIT if name == "app" else None)
                   for name, source in sources.items()}
+        if args.next_stage == "workflow-observation":
+            for name, (_filename, digest) in WORKFLOW_SCRIPTS.items():
+                if hashes[name] != digest:
+                    raise ValueError("workflow script differs from its reviewed SHA256")
         if candidate is not None:
             if (hashes["app"] != candidate["app_sha256"]
                     or copied["app"].stat().st_size != candidate["app_bytes"]):
@@ -391,6 +465,9 @@ def main():
         prefs = {"locale": "en", "dark": False, "server": {"enabled": False}}
         (portable / "settings.json").write_text(json.dumps(prefs), encoding="utf-8")
         env = os.environ.copy()
+        if args.private_accessibility_bus:
+            for key in ("AT_SPI_BUS_ADDRESS", "DBUS_STARTER_ADDRESS", "DBUS_STARTER_BUS_TYPE"):
+                env.pop(key, None)
         env["SLINT_SCALE_FACTOR"] = "1"
         for key in ("TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
             isolated = work / key.lower()
@@ -421,25 +498,15 @@ def main():
         phase = "visible_window_readiness"
         result["app_window_id"] = wait_for_window(app, work, env, qa_deadline)
         result["client_binary_available"] = args.client_binary is not None
-        qa_command = [sys.executable, str(copied["qa"]), "--app-pid", str(app.pid),
-                      "--client-binary", str(copied["client"]),
-                      "--work-dir", str(work), "--output", str(output),
-                      "--expected-sha", source_head,
-                      "--deadline-monotonic", str(qa_deadline),
-                      "--next-stage", args.next_stage]
-        if args.isolated_display_capture:
-            qa_command.append("--isolated-display-capture")
-        if approval is not None:
-            qa_command.extend(("--identity-approval", str(copied["identity_approval"])))
-        if ui_approval is not None:
-            qa_command.extend(("--ui-approval", str(copied["ui_approval"])))
-        qa = spawn(qa_command, work, env)
+        command = qa_command(args, copied, app.pid, result["app_window_id"],
+                             work, output, source_head, qa_deadline)
+        qa = spawn(command, work, env)
         processes.append(qa)
         logs.append(BoundedLog(qa.stdout))
         result["qa_pid"] = qa.pid
         phase = "qa"
         while qa.poll() is None:
-            inspect_artifacts(output, ARTIFACT_LIMIT - HARNESS_RESERVE)
+            inspect_artifacts(output, ARTIFACT_LIMIT - HARNESS_RESERVE, args.next_stage)
             if time.monotonic() >= qa_deadline:
                 interrupted(signal.SIGALRM, None)
             time.sleep(min(0.25, max(0, qa_deadline - time.monotonic())))
@@ -473,7 +540,7 @@ def main():
                 shutil.rmtree(work)  # Only this invocation's mkdtemp directory.
             result["owned_work_removed"] = work is None or not work.exists()
             if output is not None:
-                qa_bytes = inspect_artifacts(output)
+                qa_bytes = inspect_artifacts(output, next_stage=args.next_stage)
                 if any((output / name).exists() or (output / name).is_symlink() for name in RESERVED):
                     raise ValueError("QA used a reserved harness output name")
                 payloads = {name: log.snapshot() for name, log in zip(("app.log", "qa.log"), logs)}
@@ -483,7 +550,7 @@ def main():
                     raise ValueError("combined output exceeds 15 MiB")
                 for name, payload in payloads.items():
                     write_owned(output, name, payload)
-                inspect_artifacts(output)
+                inspect_artifacts(output, next_stage=args.next_stage)
         except (OSError, ValueError, subprocess.SubprocessError):
             result["status"] = "cleanup_or_artifact_error"
             exit_code = 1

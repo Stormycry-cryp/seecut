@@ -20,7 +20,7 @@ on:
       qa_next_stage:
         description: Reviewed independent script stage
         type: choice
-        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation']
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation']
         default: 'navigation'
       qa_ui_approval:
         description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
@@ -79,6 +79,8 @@ jobs:
           SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
           SOURCE_HEAD: ${{ inputs.qa_source_head }}
           BLACKBOX_QA: ${{ inputs.linux_blackbox_qa }}
+          NEXT_STAGE: ${{ inputs.qa_next_stage }}
+          QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
@@ -86,6 +88,10 @@ jobs:
           if [[ -n "$SOURCE_RUN_ID" || -n "$SOURCE_ARTIFACT_ID" || -n "$SOURCE_HEAD" ]]; then
             [[ "$BLACKBOX_QA" == true && "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ &&
                "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == workflow-observation ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               -n "$SOURCE_RUN_ID" && -n "$SOURCE_ARTIFACT_ID" && -n "$SOURCE_HEAD" ]] || exit 1
           fi
           echo "Window candidate: $EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@stable
@@ -108,8 +114,23 @@ jobs:
 
       - name: Window diagnostic tools
         if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        env:
+          NEXT_STAGE: ${{ inputs.qa_next_stage }}
+          BLACKBOX_QA: ${{ inputs.linux_blackbox_qa }}
         run: |
+          set -euo pipefail
           sudo apt-get install -y xvfb xdotool imagemagick fonts-noto-cjk libxkbcommon-x11-0
+          if [[ "$BLACKBOX_QA" == true && "$NEXT_STAGE" == workflow-observation ]]; then
+            missing=()
+            for package in python3-gi gir1.2-atspi-2.0 dbus-x11 at-spi2-core zenity; do
+              if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+                missing+=("$package")
+              fi
+            done
+            if (( ${#missing[@]} )); then
+              sudo apt-get install -y "${missing[@]}"
+            fi
+          fi
 
       - name: Software Vulkan adapter
         run: |
@@ -289,7 +310,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
-          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation ]]
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation ]]
           CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST" --source-head "$SOURCE_HEAD")
           if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
             CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
@@ -299,8 +320,17 @@ jobs:
             CLIENT_ARGS=(--client-binary "$PWD/src/target/debug/seecut-editor-mcp")
           fi
           DISPLAY_CAPTURE_ARGS=()
-          if [[ "$NEXT_STAGE" == image-picker-observation ]]; then
+          if [[ "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation ]]; then
             DISPLAY_CAPTURE_ARGS=(--isolated-display-capture)
+          fi
+          QA_SCRIPT="$PWD/scripts/independent-linux-blackbox.py"
+          BUS_COMMAND=()
+          BUS_ARGS=()
+          if [[ "$NEXT_STAGE" == workflow-observation ]]; then
+            [[ "$QA_SECONDS" == 300 && -n "$SOURCE_ARTIFACT_ID" ]]
+            QA_SCRIPT="$PWD/scripts/independent-workflow-ui.py"
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
           fi
           APPROVAL_ARGS=()
           if [[ -n "$QA_IDENTITY_APPROVAL" ]]; then
@@ -332,12 +362,13 @@ jobs:
           fi
           xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
             timeout --signal=TERM --kill-after=10s "$((QA_SECONDS - 10))s" \
+            "${BUS_COMMAND[@]}" \
             python3 scripts/run-linux-blackbox.py \
             --binary "$APP_BINARY" \
-            --qa-script "$PWD/scripts/independent-linux-blackbox.py" \
+            --qa-script "$QA_SCRIPT" \
             --output "$RUNNER_TEMP/seecut-window-evidence" \
             --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" \
-            --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}" "${DISPLAY_CAPTURE_ARGS[@]}"
+            --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}" "${DISPLAY_CAPTURE_ARGS[@]}" "${BUS_ARGS[@]}"
 
       - name: Seal private QA evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
