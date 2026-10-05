@@ -47,10 +47,10 @@ RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
 WORKFLOW_DIRECTORY = "independent-qa-workflow"
 WORKFLOW_SCRIPTS = {
-    "qa": ("independent-workflow-ui.py", "2a58bd3baf36de4a7a700d656a68dffc23bb0dff19611e9f271475df0db0c146"),
+    "qa": ("independent-workflow-ui.py", "8271d32fed2d441c758c60e153ea124c920d125cca7ccacf7da25e09f1b50850"),
     "public_ui_probe": ("public_ui_probe.py", "d6e74b62eaaca096ec75f55fd0326942dbece24dfb0e32397062c1248a3c23e2"),
-    "workflow_checks": ("workflow_checks.py", "de496988f07b0846c5055c3884948233f1a885c40dc88b7aa721825359fcf65f"),
-    "native_ui_action": ("native_ui_action.py", "459ae6acf351dcf4cb2dd4029566ee11c13ef0a555fbf3c8d9a6d941452b8ebd"),
+    "workflow_checks": ("workflow_checks.py", "93b6246ec2f0bb450753812bc0eacc0493480ab1bee9acccf88cd19210bfe853"),
+    "native_ui_action": ("native_ui_action.py", "5bf7afc27343062f41f66e374766da4457aec81b395d9dcf53561d886a8584eb"),
 }
 WORKFLOW_PNG_NAMES = {
     name + ".png" for name in (

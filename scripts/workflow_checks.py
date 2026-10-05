@@ -37,6 +37,8 @@ def locate_fixture(rgb, width, height, region=None):
     if not (8 <= w <= width and 6 <= h <= height and abs(w / h - 4 / 3) < 0.08):
         raise ValueError('fixture_bounds_or_aspect_not_identified')
     return {'bounds': bounds, 'centroids': centroids, 'color_pixels': [len(group) for group in groups],
+            'color_bounds': [[min(x for x, _ in g), min(y for _, y in g),
+                              max(x for x, _ in g) + 1, max(y for _, y in g) + 1] for g in groups],
             'RGB_sha256': hashlib.sha256(rgb).hexdigest()}
 
 
@@ -44,3 +46,30 @@ def translated(before, after, dx, dy):
     b, a = before['bounds'], after['bounds']
     return (all(a[index] - b[index] == (dx if index % 2 == 0 else dy) for index in range(4))
             and before['color_pixels'] == after['color_pixels'])
+
+
+def translated_with_canvas_clip(before, after, dx, dy):
+    """Current reviewed full-canvas fixture: clipping and fractional raster phase allowed.
+
+    The canvas stays fixed. Both inner markers must move with the pointer; all
+    six color rectangles must equal their translated, canvas-clipped rectangles
+    within three display pixels. This tolerates edge interpolation, not a fixed
+    image or changed scale. Zero-shift/restoration continues to use translated().
+    """
+    canvas = before['bounds']
+    source, target = before['color_bounds'], after['color_bounds']
+    if dx == 0 or dy == 0:
+        return False
+    for index in (4, 5):
+        for axis, delta in ((0, dx), (1, dy)):
+            shift = after['centroids'][index][axis] - before['centroids'][index][axis]
+            if abs(shift - delta) > 2:
+                return False
+    for b, a in zip(source, target):
+        expected = [max(canvas[0], b[0] + dx), max(canvas[1], b[1] + dy),
+                    min(canvas[2], b[2] + dx), min(canvas[3], b[3] + dy)]
+        if expected[0] >= expected[2] or expected[1] >= expected[3]:
+            return False
+        if any(abs(actual - wanted) > 3 for actual, wanted in zip(a, expected)):
+            return False
+    return True

@@ -45,7 +45,7 @@ pub enum BridgeError {
 /// No raw stderr, initialization parameters or error strings are retained.
 pub enum Event {
     Response(Value),
-    RuntimeEvent(Value),
+    Runtime(Value),
     Result(Value),
     RuntimeDiagnostic {
         code: String,
@@ -151,11 +151,11 @@ impl Handle {
             queue.bytes -= bytes;
             return Some(event);
         }
-        if !queue.failure_delivered {
-            if let Some(error) = queue.failure {
-                queue.failure_delivered = true;
-                return Some(Event::ProtocolFailure(error));
-            }
+        if !queue.failure_delivered
+            && let Some(error) = queue.failure
+        {
+            queue.failure_delivered = true;
+            return Some(Event::ProtocolFailure(error));
         }
         queue.exit.take()
     }
@@ -389,7 +389,7 @@ fn protocol_frame(line: &[u8]) -> Result<Event, BridgeError> {
             {
                 return Err(BridgeError::ProtocolFailed);
             }
-            Event::RuntimeEvent(value)
+            Event::Runtime(value)
         }
         Some("result") => {
             let result = &value["result"];
@@ -809,7 +809,7 @@ for line in sys.stdin:
             .handle()
             .try_send("one", "status", json!({}))
             .unwrap();
-        let events = fixture.until(|event| matches!(event, Event::RuntimeEvent(_)));
+        let events = fixture.until(|event| matches!(event, Event::Runtime(_)));
         assert!(matches!(events[0], Event::Response(_)));
         fixture.handle().request_shutdown();
         let events = fixture.until(|event| matches!(event, Event::Exit { .. }));

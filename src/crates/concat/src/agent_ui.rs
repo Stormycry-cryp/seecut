@@ -98,7 +98,7 @@ mod desktop {
         },
         Prepared {
             epoch: u64,
-            config: Result<ConnectionConfig, &'static str>,
+            config: Result<Box<ConnectionConfig>, &'static str>,
         },
     }
 
@@ -222,7 +222,7 @@ mod desktop {
                                     && snapshot.write_token == config.write_token =>
                             {
                                 state.notice.clear();
-                                if let Err(error) = state.controller.connect(config) {
+                                if let Err(error) = state.controller.connect(*config) {
                                     state.notice = error.message().into();
                                 }
                             }
@@ -239,26 +239,26 @@ mod desktop {
             let next = Lease::from_snapshot(snapshot);
             let mut state = self.state.borrow_mut();
             let mut clear_draft = false;
-            if let Some(previous) = &state.lease {
-                if previous != &next {
-                    let document_changed = previous.document != next.document;
-                    state.controller.disconnect();
-                    state.preparing = false;
-                    state.selecting = false;
-                    state.epoch = state.epoch.wrapping_add(1);
-                    state.approval = None;
-                    state.notice = if document_changed {
-                        "工程已变化，请重新连接"
-                    } else {
-                        "权限已变化，请重新连接"
-                    }
-                    .into();
-                    if document_changed {
-                        clear_draft = true;
-                        state.assistant_row = None;
-                        while self.messages.row_count() != 0 {
-                            self.messages.remove(0);
-                        }
+            if let Some(previous) = &state.lease
+                && previous != &next
+            {
+                let document_changed = previous.document != next.document;
+                state.controller.disconnect();
+                state.preparing = false;
+                state.selecting = false;
+                state.epoch = state.epoch.wrapping_add(1);
+                state.approval = None;
+                state.notice = if document_changed {
+                    "工程已变化，请重新连接"
+                } else {
+                    "权限已变化，请重新连接"
+                }
+                .into();
+                if document_changed {
+                    clear_draft = true;
+                    state.assistant_row = None;
+                    while self.messages.row_count() != 0 {
+                        self.messages.remove(0);
                     }
                 }
             }
@@ -557,10 +557,10 @@ mod desktop {
             let mut state = self.state.borrow_mut();
             if frozen != state.approval {
                 state.notice = "待确认操作已变化，请检查当前对象和位移".into();
-            } else if let Some(approval) = frozen {
-                if let Err(error) = state.controller.approve(&approval.id, allowed) {
-                    state.notice = error.message().into();
-                }
+            } else if let Some(approval) = frozen
+                && let Err(error) = state.controller.approve(&approval.id, allowed)
+            {
+                state.notice = error.message().into();
             }
             drop(state);
             self.refresh(app);
@@ -680,7 +680,10 @@ mod desktop {
                         write_token: snapshot.write_token,
                     })
                 })();
-                let _ = sender.send(WorkerResult::Prepared { epoch, config });
+                let _ = sender.send(WorkerResult::Prepared {
+                    epoch,
+                    config: config.map(Box::new),
+                });
             });
             self.refresh(app);
         }

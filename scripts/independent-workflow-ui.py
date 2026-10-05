@@ -14,7 +14,7 @@ import re
 import shutil
 import subprocess
 import time
-from workflow_checks import locate_fixture, translated
+from workflow_checks import locate_fixture, translated, translated_with_canvas_clip
 
 HEAD = 'ef1831769d52daceb1f38bcd15679c61f595408d'
 APP_SHA = 'a734649f619c317e5d051b0d98b5d590f8ee7db8cddfaa437d19fe4143b8db67'
@@ -382,7 +382,9 @@ def main():
         pause()
         moved_frame = snapshot(phase + '-dragged')
         after = image_info(moved_frame)
-        if not translated(before, after, dx, dy):
+        report['stages'][phase] = {'visible_drag_pixels': [dx, dy], 'before': before, 'after': after,
+                                  'check': 'inner_markers_and_all_color_rectangles_with_fixed_canvas_clip'}
+        if not translated_with_canvas_clip(before, after, dx, dy):
             raise Stop('actual_two_axis_drag_not_visibly_confirmed:' + phase)
         # One conventional Linux Undo; the real result decides whether it worked.
         command(['xdotool', 'key', '--clearmodifiers', 'ctrl+z'])
@@ -411,6 +413,18 @@ def main():
             time.sleep(0.25)
         raise Stop('owned_output_not_present_and_stable')
 
+    def copy_owned_output(source, name):
+        # Preserve the real bounded file before format/pixel checks, including failures.
+        before = stable_file(source)
+        target = evidence / name
+        if sum(p.stat().st_size for p in evidence.iterdir() if p.is_file()) + before['bytes'] > 15 * 1024 * 1024 - 65536:
+            raise Stop('owned_output_copy_exceeds_total_budget')
+        with target.open('xb') as stream:
+            os.chmod(target, 0o600)
+            stream.write(source.read_bytes())
+        if hashlib.sha256(target.read_bytes()).hexdigest() != before['sha256']:
+            raise Stop('owned_output_copy_not_stable')
+
     try:
         if args.app_pid < 2 or deadline <= start or not args.isolated_display_capture or not os.environ.get('DISPLAY'):
             raise Stop('live_private_Xvfb_and_deadline_required')
@@ -426,8 +440,10 @@ def main():
         if (ui.get('schema') != 2 or ui.get('reviewed_by') != 'independent-qa'
                 or ui.get('observed_head') != HEAD or ui.get('observed_app_sha256') != APP_SHA
                 or ui.get('window') != {'width': 1280, 'height': 900}
-                or ui.get('workflow_revision') != 3):
+                or ui.get('workflow_revision') != 4):
             raise Stop('independent_UI_identity_mismatch')
+        if ui.get('opened_document_contract', {}).get('expected_export_dimensions') != [256, 192]:
+            raise Stop('reviewed_opened_document_contract_required')
         helper = Path(__file__).with_name('public_ui_probe.py')
         checks = Path(__file__).with_name('workflow_checks.py')
         action_helper = Path(__file__).with_name('native_ui_action.py')
@@ -518,6 +534,9 @@ def main():
         frame = choose_owned_path(native, fixture, '08-import', {'Open', '打开'})
         frame = await_fixture(frame, '08-import')
         imported = image_info(frame)
+        guard(frame, 'opened-image-properties')
+        guard(frame, 'opened-image-zoom')
+        report['opened_document_contract'] = ui['opened_document_contract']
         report['file_selected'] = True
         report['stages']['import'] = {'visible_fixture': imported, 'source_sha256': manifest['files'][0]['sha256'],
                                       'verdict': 'pending_independent_image_review'}
@@ -536,6 +555,7 @@ def main():
             raise Stop('one_exact_new_project_output_not_found')
         project = candidates[0]
         report['stages']['save'] = stable_file(project)
+        copy_owned_output(project, 'saved-project' + project.suffix)
         # Leave the saved editor, create a visibly blank document, then reopen the exact saved file.
         click('editor_back', frame, ['back-control', 'editor-tools'])
         frame = snapshot('12-left-saved-editor')
@@ -551,12 +571,14 @@ def main():
         frame = choose_owned_path(native, project, '17-reopen', {'Open', '打开'})
         frame = await_fixture(frame, '17-reopen')
         reopened = image_info(frame)
+        guard(frame, 'opened-image-properties')
+        guard(frame, 'opened-image-zoom')
         if not translated(imported, reopened, 0, 0):
             raise Stop('reopened_fixture_geometry_not_preserved')
         frame = edit_and_undo(frame, '18-reopened-edit')
         report['stages']['reopen'] = {'visible_fixture': reopened, 'reopened_layer_editable': True,
                                       'verdict': 'pending_independent_image_review'}
-        click('editor_export', frame, ['export-control', 'editor-tools'])
+        click('editor_export', frame, ['export-control', 'editor-tools', 'opened-image-properties', 'opened-image-zoom'])
         snapshot('19-export-destination', root=True)
         # A normal export chooser may open directly, or the confirmed product destination appears first.
         export_until = min(deadline, time.monotonic() + 12)
@@ -590,41 +612,39 @@ def main():
         export = deliverables / 'qa-export.png'
         frame = choose_owned_path(native, export, '21-export', {'Save', '保存', 'Export', '导出'})
         info = stable_file(export)
+        copy_owned_output(export, 'exported-qa.png')
+        report['stages']['export'] = info
         dimensions = command(['identify', '-format', '%w %h', str(export)]).split()
-        if dimensions != ['1920', '1080'] or export.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n':
+        info['actual_dimensions'] = dimensions
+        expected_dimensions = ui['opened_document_contract']['expected_export_dimensions']
+        if dimensions != [str(v) for v in expected_dimensions] or export.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n':
             raise Stop('export_actual_PNG_or_current_canvas_dimensions_differ')
         rgba = command(['convert', str(export), '-alpha', 'on', '-depth', '8', 'rgba:-'], binary=True)
-        if len(rgba) != 1920 * 1080 * 4:
+        export_width, export_height = expected_dimensions
+        if len(rgba) != export_width * export_height * 4:
             raise Stop('export_decoded_RGBA_size_mismatch')
         rgb = bytes(value for index, value in enumerate(rgba) if index % 4 != 3)
         try:
-            pixels = locate_fixture(rgb, 1920, 1080)
+            pixels = locate_fixture(rgb, export_width, export_height)
         except ValueError as exc:
             raise Stop('export_pixels:' + str(exc)) from None
-        info.update(width=1920, height=1080, visible_fixture=pixels,
+        info.update(width=export_width, height=export_height, visible_fixture=pixels,
                     RGBA_sha256=hashlib.sha256(rgba).hexdigest(),
                     nontransparent_pixels=sum(value != 0 for value in rgba[3::4]),
                     verdict='actual_file_checks_recorded_pending_independent_review')
         x0, y0, x1, y1 = pixels['bounds']
         if (x1 - x0, y1 - y0) == (256, 192):
-            crop = b''.join(rgba[(y * 1920 + x0) * 4:(y * 1920 + x1) * 4] for y in range(y0, y1))
+            crop = b''.join(rgba[(y * export_width + x0) * 4:(y * export_width + x1) * 4] for y in range(y0, y1))
             info['fixture_RGBA_crop_sha256'] = hashlib.sha256(crop).hexdigest()
             info['exact_fixture_pixels_preserved'] = info['fixture_RGBA_crop_sha256'] == manifest['files'][0]['rgba_sha256']
         else:
-            info['exact_fixture_pixels_preserved'] = 'unverified: exported image has another actual scale'
+            info['exact_fixture_pixels_preserved'] = False
         report['stages']['export'] = info
+        if not info['exact_fixture_pixels_preserved']:
+            raise Stop('export_original_fixture_RGBA_not_preserved')
         if hashlib.sha256(fixture.read_bytes()).hexdigest() != manifest['files'][0]['sha256']:
             raise Stop('fixture_source_changed_during_workflow')
         report['fixture_source_unchanged'] = True
-        # Keep only bounded explicit outputs. App project data is not parsed as implementation evidence.
-        for source, name in ((project, 'saved-project' + project.suffix), (export, 'exported-qa.png')):
-            before = stable_file(source)
-            target = evidence / name
-            with target.open('xb') as stream:
-                os.chmod(target, 0o600)
-                stream.write(source.read_bytes())
-            if hashlib.sha256(target.read_bytes()).hexdigest() != before['sha256']:
-                raise Stop('owned_output_copy_not_stable')
         # Secrets may already be present when Settings opens. Never capture it.
         if args.private_accessibility_bus:
             click('settings', frame, ['settings-icon', 'save-control', 'editor-tools'])

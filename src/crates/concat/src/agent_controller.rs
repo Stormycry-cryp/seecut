@@ -329,10 +329,9 @@ impl Controller {
             if self
                 .enqueue("session.close", params, Request::Close)
                 .is_err()
+                && let Some(process) = &self.process
             {
-                if let Some(process) = &self.process {
-                    process.request_shutdown();
-                }
+                process.request_shutdown();
             }
         } else {
             self.phase = Phase::Disconnected;
@@ -430,7 +429,7 @@ impl Controller {
     fn handle_event(&mut self, event: Event) {
         match event {
             Event::Response(value) => self.response(value),
-            Event::RuntimeEvent(value) if !self.ignore_runtime_events => {
+            Event::Runtime(value) if !self.ignore_runtime_events => {
                 self.runtime_event(&value["event"])
             }
             Event::Result(value) if !self.ignore_runtime_events => self.result(&value),
@@ -1058,8 +1057,10 @@ for line in sys.stdin:
     }
     #[test]
     fn transcript_is_bounded_on_utf8_boundaries() {
-        let mut controller = Controller::default();
-        controller.secrets = vec!["secret".into()];
+        let mut controller = Controller {
+            secrets: vec!["secret".into()],
+            ..Controller::default()
+        };
         controller.text(&("界".repeat(30_000) + "secret"), false);
         assert!(controller.view().text.len() <= TEXT_LIMIT);
         assert!(!controller.view().text.contains("secret"));
