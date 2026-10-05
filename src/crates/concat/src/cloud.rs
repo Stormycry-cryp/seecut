@@ -2356,38 +2356,36 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
             app.invoke_canvas_open_with_paths(path.into(), payload.into());
         }
         return;
-    } else {
-        if id == "new" {
-            if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
-                handoff.awaiting_new_project = true;
-                handoff.clip_open = Some(crate::project_open::HandoffBinding::create());
-            }
-            ui.set_pending_import_count(
-                (state.borrow().pending_imports.len() + pending.imports.len()) as i32,
-            );
-            app.invoke_project_open_cancel();
-            ui.set_page(0);
-            app.set_clip_create_open(true);
-            ui.set_handoff_open(false);
-            return;
-        } else if id == "current" {
-            if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
-                handoff.clip_open = None;
-            }
-            app.invoke_project_open_cancel();
-            import_current_clip_paths(app, clip_imports(&pending.imports));
-        } else if let Some(path) = id.strip_prefix("recent:") {
-            if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
-                handoff.awaiting_new_project = false;
-                handoff.clip_open = Some(crate::project_open::HandoffBinding::existing(
-                    path.to_owned(),
-                ));
-            }
-            ui.set_handoff_open(false);
-            ui.set_page(0);
-            app.invoke_start_open_recent(path.into());
-            return;
+    } else if id == "new" {
+        if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
+            handoff.awaiting_new_project = true;
+            handoff.clip_open = Some(crate::project_open::HandoffBinding::create());
         }
+        ui.set_pending_import_count(
+            (state.borrow().pending_imports.len() + pending.imports.len()) as i32,
+        );
+        app.invoke_project_open_cancel();
+        ui.set_page(0);
+        app.set_clip_create_open(true);
+        ui.set_handoff_open(false);
+        return;
+    } else if id == "current" {
+        if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
+            handoff.clip_open = None;
+        }
+        app.invoke_project_open_cancel();
+        import_current_clip_paths(app, clip_imports(&pending.imports));
+    } else if let Some(path) = id.strip_prefix("recent:") {
+        if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
+            handoff.awaiting_new_project = false;
+            handoff.clip_open = Some(crate::project_open::HandoffBinding::existing(
+                path.to_owned(),
+            ));
+        }
+        ui.set_handoff_open(false);
+        ui.set_page(0);
+        app.invoke_start_open_recent(path.into());
+        return;
     }
     state.borrow_mut().pending_handoff = None;
     ui.set_handoff_open(false);
@@ -5922,10 +5920,6 @@ fn enqueue_pending_import(queue: &mut Vec<PathBuf>, path: PathBuf) -> bool {
     }
 }
 
-fn resume_pending_imports(queue: &mut Vec<PathBuf>) -> Vec<PathBuf> {
-    std::mem::take(queue)
-}
-
 fn cancel_pending_imports(queue: &mut Vec<PathBuf>) -> usize {
     let count = queue.len();
     queue.clear();
@@ -7317,10 +7311,10 @@ mod reference_tests {
         invalid_reference_prompt, is_background_job, is_cloud_identity_error, mention_start,
         navigation_decision, option_index, parameter_default_index, parameter_label,
         parameter_value, personal_drop_plan, picker_download_request, reference_number, request,
-        request_requires_auth, resume_pending_imports, rewrite_mentions, selected_task_id,
-        selected_task_index, server_task_snapshot, set_picker_batch_path,
-        should_clear_identity_error_for_target, should_surface_job_error, stable_model_index,
-        task_item, task_reference_source, validate_configuration_references,
+        request_requires_auth, rewrite_mentions, selected_task_id, selected_task_index,
+        server_task_snapshot, set_picker_batch_path, should_clear_identity_error_for_target,
+        should_surface_job_error, stable_model_index, task_item, task_reference_source,
+        validate_configuration_references,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -7764,7 +7758,7 @@ mod reference_tests {
     }
 
     #[test]
-    fn pending_project_imports_dedupe_cancel_and_resume_once() {
+    fn pending_project_imports_dedupe_and_cancel() {
         let first = std::path::PathBuf::from("/tmp/first.png");
         let second = std::path::PathBuf::from("/tmp/second.mp4");
         let mut pending = Vec::new();
@@ -7773,13 +7767,6 @@ mod reference_tests {
         assert!(enqueue_pending_import(&mut pending, second.clone()));
         assert_eq!(pending.len(), 2);
 
-        let resumed = resume_pending_imports(&mut pending);
-        assert_eq!(resumed, vec![first.clone(), second.clone()]);
-        assert!(pending.is_empty());
-        assert!(resume_pending_imports(&mut pending).is_empty());
-
-        assert!(enqueue_pending_import(&mut pending, first));
-        assert!(enqueue_pending_import(&mut pending, second));
         assert_eq!(cancel_pending_imports(&mut pending), 2);
         assert!(pending.is_empty());
     }
