@@ -153,6 +153,89 @@ A2_ACTION_JSON_NAMES = {
     "canvas-entry": set(),
 }
 A2_ACTION_LIMIT = 8 * 1024
+
+# Only these additional native scopes use the new finite spec table.
+NATIVE_HEAD = WORKFLOW_HEAD
+NATIVE_APP_SHA = WORKFLOW_APP_SHA
+NATIVE_BUILD_RUN = WORKFLOW_BUILD_RUN
+NATIVE_ARTIFACT = WORKFLOW_ARTIFACT
+NATIVE_IDENTITY_SHA = WORKFLOW_IDENTITY_SHA
+NATIVE_CONTROLLER_SECONDS = 120
+NATIVE_SCOPES = {'workspaces-observation': {'scripts': {'qa': ['workspaces-ui-11ebf20.py',
+                                               '272705c05da0df774f3c97380ec24a297d509595cad3952ed8e22009b86098e0'],
+                                        'native_public_probe': ['public_probe_11ebf20_ui4.py',
+                                                                'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd']},
+                            'ui': ['workspaces-reviewed-ui-11ebf20.json',
+                                   'b50fd9ca0b7624473793b554b3bbae9cda94fc61b0757156b72a8eb8619716fe'],
+                            'next_stage': None,
+                            'artifacts': {'main-qa-11ebf20-workspaces': {'png': ['01-after-quick-1280x900.png',
+                                                                                 '02-clip-1280x900.png',
+                                                                                 '03-clip-1024x900.png',
+                                                                                 '04-clip-1440x900.png',
+                                                                                 '05-clip-1280x720.png',
+                                                                                 '06-assets-1280x900.png',
+                                                                                 '07-assets-1024x900.png',
+                                                                                 '08-assets-1440x900.png',
+                                                                                 '09-assets-1280x720.png',
+                                                                                 '10-return-generation-1280x900.png'],
+                                                                         'public': ['workspaces.json',
+                                                                                    '01-after-quick-1280x900-public.json',
+                                                                                    '02-clip-1280x900-public.json',
+                                                                                    '03-clip-1024x900-public.json',
+                                                                                    '04-clip-1440x900-public.json',
+                                                                                    '05-clip-1280x720-public.json',
+                                                                                    '06-assets-1280x900-public.json',
+                                                                                    '07-assets-1024x900-public.json',
+                                                                                    '08-assets-1440x900-public.json',
+                                                                                    '09-assets-1280x720-public.json',
+                                                                                    '10-return-generation-1280x900-public.json',
+                                                                                    '01-after-quick-prepixels-public.json',
+                                                                                    '02-before-clip-public.json',
+                                                                                    '06-before-assets-public.json',
+                                                                                    '10-before-generate-public.json',
+                                                                                    '10-return-generation-prepixels-public.json'],
+                                                                         'action': []}}},
+ 'assistant-entry-observation': {'scripts': {'qa': ['agent-native-entry-controller.py',
+                                                    '739940c925145f49136d7cc618a01f3b7775b4ae84cbb1d2647221032270f3e4'],
+                                             'native_agent_native_bootstrap': ['agent-native-bootstrap.py',
+                                                                               '4dfd9d275a5639e85a3ebce71fbaa620e1e3ca3f9982199887d04a65f6933439'],
+                                             'native_agent_native_entry_action': ['agent-native-entry-action.py',
+                                                                                  '52eddfa545b498defc3b34052f3c916b7abb536d346dedc0b576f5a741b85465'],
+                                             'native_agent_native_public_probe': ['agent-native-public-probe.py',
+                                                                                  'c0d9f9e0fe477e9e1592c765c49d197aaf841da0e4ca92114f63f32d417ecfa2'],
+                                             'native_public_probe_11ebf20_ui4': ['public_probe_11ebf20_ui4.py',
+                                                                                 'ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd'],
+                                             'native_public_action_11ebf20_ui4': ['public_action_11ebf20_ui4.py',
+                                                                                  '8aafd63bc2653c1099003edbf5808c1c4550471d31f619cf1851a0e7ea063518']},
+                                 'ui': ['reviewed-ui-11ebf20-a3.json',
+                                        '3770f759f4479904651f3e3404e0ff23b6bea08c3a007320bf2d915ff7c93852'],
+                                 'next_stage': 'canvas-entry',
+                                 'artifacts': {'main-qa-agent-native-bootstrap': {'png': ['01-before-quick.png',
+                                                                                          '02-after-quick-1280x900.png',
+                                                                                          '03-canvas-gallery-1280x900.png',
+                                                                                          '06-current-new-canvas-dialog.png',
+                                                                                          '07-current-create-result.png'],
+                                                                                  'public': ['06-current-new-canvas-dialog-public.json',
+                                                                                             '07-create-result-public.json',
+                                                                                             'bootstrap.json'],
+                                                                                  'action': []},
+                                               'main-qa-agent-native-entry': {'png': ['01-before-hover.png',
+                                                                                      '03-assistant-tooltip-review.png',
+                                                                                      '04-assistant-panel-1280x900.png',
+                                                                                      '05-assistant-panel-1024x900.png',
+                                                                                      '06-assistant-panel-1440x900.png',
+                                                                                      '07-assistant-panel-1280x720.png'],
+                                                                              'public': ['01-before-hover-public.json',
+                                                                                         '02-recheck-public.json',
+                                                                                         '03-after-hover-public.json',
+                                                                                         '03-before-open-public.json',
+                                                                                         '04-panel-public.json',
+                                                                                         '05-panel-1024x900-public.json',
+                                                                                         '06-panel-1440x900-public.json',
+                                                                                         '07-panel-1280x720-public.json',
+                                                                                         'agent-native-entry.json'],
+                                                                              'action': ['04-entry-action.json']}}}}
+
 WORKFLOW_FIXTURE_MANIFEST = "8926b97d3370005fa008bcac6cf21fc287d3717448968591b1d705df76a290a7"
 WORKFLOW_FIXTURES = {
     "opaque-quadrants.png": (800, "0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63"),
@@ -337,9 +420,12 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
     total = 0
     workflow = next_stage == "workflow-observation"
     fresh = next_stage == "fresh-workbench-observation"
+    native = NATIVE_SCOPES.get(next_stage)
     a2_scope = A2_SCOPES.get(next_stage)
     directories = ({A2_DIRECTORIES[next_stage]} if a2_scope else
                    ({NEXT_UI_DIRECTORY} if fresh else ({WORKFLOW_DIRECTORY} if workflow else QA_DIRECTORIES)))
+    if native:
+        directories = set(native["artifacts"])
     png_count = png_bytes = project_count = 0
     pending = [output]
     while pending:
@@ -352,7 +438,26 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                     continue
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise ValueError("output contains an unknown directory, link, or non-regular file")
-                if a2_scope:
+                if native:
+                    if directory == output:
+                        if entry.name not in RESERVED:
+                            raise ValueError("native artifacts require this scope's known QA directory")
+                    else:
+                        allowed = native["artifacts"][directory.name]
+                        if entry.name in allowed["png"]:
+                            png_count += 1
+                            png_bytes += info.st_size
+                            if png_count > 10 or info.st_size > WORKFLOW_FILE_LIMIT or png_bytes > WORKFLOW_PNG_LIMIT:
+                                raise ValueError("native PNG count or byte budget exceeded")
+                        elif entry.name in allowed["action"]:
+                            if info.st_size > A2_ACTION_LIMIT:
+                                raise ValueError("native action record exceeds 8 KiB")
+                        elif entry.name in allowed["public"]:
+                            if info.st_size > WORKFLOW_METADATA_LIMIT:
+                                raise ValueError("native metadata exceeds 128 KiB")
+                        else:
+                            raise ValueError("unknown native scope artifact file")
+                elif a2_scope:
                     if directory == output:
                         if entry.name not in RESERVED:
                             raise ValueError("A2 artifacts require this scope's known QA directory")
@@ -518,6 +623,14 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
         command.extend(("--window-id", str(window_id), "--expected-sha", source_head,
                         "--next-stage", "navigation", "--private-accessibility-bus",
                         "--probe-python", "/usr/bin/python3"))
+    elif args.next_stage in NATIVE_SCOPES:
+        native = NATIVE_SCOPES[args.next_stage]
+        command[command.index("--deadline-monotonic") + 1] = str(
+            min(qa_deadline, time.monotonic() + NATIVE_CONTROLLER_SECONDS + 15))
+        command.extend(("--window-id", str(window_id), "--expected-sha", source_head,
+                        "--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
+        if native["next_stage"] is not None:
+            command.extend(("--next-stage", native["next_stage"]))
     elif args.next_stage in A2_SCOPES:
         command[command.index("--deadline-monotonic") + 1] = str(
             min(qa_deadline, time.monotonic() + A2_CONTROLLER_SECONDS + 15))
@@ -546,19 +659,19 @@ def arguments():
     parser.add_argument("--identity-approval")
     parser.add_argument("--ui-approval")
     parser.add_argument("--input-dir", help="workflow-observation only; exact owned fixture inputs")
-    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES), default="navigation")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES), default="navigation")
     parser.add_argument("--isolated-display-capture", action="store_true",
                         help="Explicit isolated-display declaration for reviewed observation stages")
     parser.add_argument("--private-accessibility-bus", action="store_true",
                         help="workflow/fresh/A2 observation only; requires a direct dedicated dbus-run-session parent")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     args = parser.parse_args()
-    capture_stages = {"image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES}
+    capture_stages = {"image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES}
     if args.next_stage in capture_stages and not args.isolated_display_capture:
         parser.error(args.next_stage + " requires --isolated-display-capture")
     if args.isolated_display_capture and args.next_stage not in capture_stages:
         parser.error("--isolated-display-capture requires an authorized observation stage")
-    if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES}:
+    if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES}:
         parser.error("--private-accessibility-bus is only valid for workflow/fresh observation")
     if args.input_dir is not None and args.next_stage != "workflow-observation":
         parser.error("--input-dir is only valid for workflow-observation")
@@ -590,6 +703,16 @@ def arguments():
             parser.error("A2 observation requires candidate provenance and both declarations")
         if args.source_head != A2_HEAD or args.candidate_artifact_id != A2_ARTIFACT:
             parser.error("A2 observation requires the exact reviewed candidate source and artifact")
+    if args.next_stage in NATIVE_SCOPES:
+        if not args.private_accessibility_bus:
+            parser.error("native observation requires --private-accessibility-bus")
+        if args.seconds != 300 or args.client_binary is not None or args.input_dir is not None:
+            parser.error("native observation requires 300 seconds, no MCP client and no fixture inputs")
+        if not all((args.identity_approval, args.ui_approval, args.source_head,
+                    args.candidate_manifest, args.candidate_artifact_id)):
+            parser.error("native observation requires exact candidate provenance and both declarations")
+        if args.source_head != NATIVE_HEAD or args.candidate_artifact_id != NATIVE_ARTIFACT:
+            parser.error("native observation requires the exact reviewed candidate source and artifact")
     return args
 
 
@@ -701,7 +824,18 @@ def main():
             if (candidate is None or source_head != reviewed_head or args.candidate_artifact_id != artifact
                     or candidate["app_sha256"] != app_sha or candidate["build_run_id"] != build_run):
                 raise ValueError("reviewed candidate differs from its immutable provenance")
+        if args.next_stage in NATIVE_SCOPES:
+            if (candidate is None or source_head != NATIVE_HEAD or args.candidate_artifact_id != NATIVE_ARTIFACT
+                    or candidate["app_sha256"] != NATIVE_APP_SHA or candidate["build_run_id"] != NATIVE_BUILD_RUN):
+                raise ValueError("native candidate differs from its reviewed immutable provenance")
         sources = {"app": regular_input(args.binary), "qa": regular_input(args.qa_script)}
+        if args.next_stage in NATIVE_SCOPES:
+            scripts = NATIVE_SCOPES[args.next_stage]["scripts"]
+            if sources["qa"] != root / "scripts" / scripts["qa"][0]:
+                raise ValueError("native observation requires the fixed reviewed QA script")
+            for name, (filename, _digest) in scripts.items():
+                if name != "qa":
+                    sources[name] = regular_input(root / "scripts" / filename)
         if args.next_stage == "workflow-observation":
             if sources["qa"] != root / "scripts" / WORKFLOW_SCRIPTS["qa"][0]:
                 raise ValueError("workflow-observation requires the fixed reviewed QA script")
@@ -750,9 +884,13 @@ def main():
             for name, (filename, _digest) in A2_SCRIPTS.items():
                 if name != "qa":
                     copied[name] = work / filename
+        if args.next_stage in NATIVE_SCOPES:
+            for name, (filename, _digest) in NATIVE_SCOPES[args.next_stage]["scripts"].items():
+                if name != "qa":
+                    copied[name] = work / filename
         hashes = {name: copy_and_hash(source, copied[name], executable=name in {"app", "client"},
                                       limit=(APP_LIMIT if name == "app" else
-                                             (64 * 1024 if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES else None)))
+                                             (64 * 1024 if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES or args.next_stage in NATIVE_SCOPES else None)))
                   for name, source in sources.items()}
         if args.next_stage == "workflow-observation":
             for name, (_filename, digest) in WORKFLOW_SCRIPTS.items():
@@ -769,6 +907,10 @@ def main():
             for name, (_filename, digest) in A2_SCRIPTS.items():
                 if hashes[name] != digest:
                     raise ValueError("A2 script or helper differs from its reviewed SHA256")
+        if args.next_stage in NATIVE_SCOPES:
+            for name, (_filename, digest) in NATIVE_SCOPES[args.next_stage]["scripts"].items():
+                if hashes[name] != digest:
+                    raise ValueError("native script or helper differs from its reviewed SHA256")
         if candidate is not None:
             if (hashes["app"] != candidate["app_sha256"]
                     or copied["app"].stat().st_size != candidate["app_bytes"]):
@@ -795,6 +937,16 @@ def main():
                     or identity.get("reviewed_by") != "main-reviewer" or identity.get("runtime_head") != reviewed_head
                     or identity.get("runtime_app_sha256") != app_sha or identity.get("change_scope") != "product-candidate"):
                 raise ValueError("main runtime identity differs from the reviewed App")
+        if args.next_stage in NATIVE_SCOPES:
+            if hashes.get("identity_approval") != NATIVE_IDENTITY_SHA:
+                raise ValueError("native runtime identity differs from its reviewed raw bytes")
+            if hashes.get("ui_approval") != NATIVE_SCOPES[args.next_stage]["ui"][1]:
+                raise ValueError("native UI declaration differs from its reviewed raw bytes")
+            identity = json.loads(copied["identity_approval"].read_bytes())
+            if (not isinstance(identity, dict) or identity.get("schema") != 2
+                    or identity.get("reviewed_by") != "main-reviewer" or identity.get("runtime_head") != NATIVE_HEAD
+                    or identity.get("runtime_app_sha256") != NATIVE_APP_SHA or identity.get("change_scope") != "product-candidate"):
+                raise ValueError("main native runtime identity differs from the reviewed App")
         portable = work / "portable"
         portable.mkdir(mode=0o700)
         prefs = {"locale": "en", "dark": False, "server": {"enabled": False}}
@@ -825,9 +977,11 @@ def main():
                       limits={"artifact_total_bytes": ARTIFACT_LIMIT,
                               "wall_seconds": args.seconds, "cleanup_reserve_seconds": 15,
                               "log_bytes_per_process": LOG_LIMIT})
+        if args.next_stage in NATIVE_SCOPES:
+            result["limits"]["controller_seconds"] = NATIVE_CONTROLLER_SECONDS
         if args.next_stage in A2_SCOPES:
             result["limits"]["controller_seconds"] = A2_CONTROLLER_SECONDS
-        if args.next_stage in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES}:
+        if args.next_stage in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES}:
             phase = "accessibility_preparation"
             enable_private_accessibility(env, qa_deadline, result)
         phase = "launch"
