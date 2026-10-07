@@ -16,7 +16,6 @@ import time
 
 HEAD = '0aa9406247e53f073c0b4df686adc68b40e2f8f6'
 APP_SHA = '03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2'
-# The new App must still satisfy every old reviewed entry guard.
 GUARD_HEAD = '11ebf203e1a78d3b6a21677c4b17e96223c74b0e'
 GUARD_APP_SHA = '8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30'
 FIXTURE_SHA = '0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63'
@@ -57,8 +56,6 @@ def bounded_report_bytes(report):
     raw = (json.dumps(report, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
     if len(raw) <= 16384:
         return raw
-    # Explicit incomplete failure only; cannot stand in for full evidence.
-    # Do not save partial actions/samples/SHA as though they were complete.
     original_status, original_reason = report['status'], report.get('blocking_reason')
     report['status'] = 'blocked'
     report['blocking_reason'] = 'report_16KiB_exceeded_incomplete_evidence'
@@ -191,8 +188,6 @@ def owned_project_output(work, fresh=False):
 
 
 def dialog_projection(nodes):
-    # Observed root WINDOW drops FOCUSABLE when an entry takes focus. Only this
-    # boolean may vary; field focusability and every other public column stay exact.
     rows = projection(nodes)
     for row in rows:
         if row[0] == [0] and row[1] == 23:
@@ -200,8 +195,6 @@ def dialog_projection(nodes):
             if type(row[index]) is not bool:
                 raise Stop('actual_dialog_window_focusable_boolean_required')
             row[index] = True
-    # The same observed toast moves down 12px while its animation settles.
-    # Normalize only this complete group within the source-defined 0..12px animation.
     toast = {(0, 27): (1004, 852, 188, 32), (0, 28): (1206, 858, 52, 20),
              (0, 28, 0): (1206, 858, 1, 1), (0, 28, 1): (1220, 863, 24, 10)}
     group = {tuple(row[0]): row for row in rows if tuple(row[0]) in toast}
@@ -315,10 +308,6 @@ TIMELINE_COLUMNS = ('action_interface', 'allowed_actions', 'bounds', 'button', '
 
 
 def timeline_rows(nodes):
-    # Every observed column, including hidden nodes, panel and missing properties.
-    # Canonical JSON comparison distinguishes bool/int and absent/null exactly.
-    # Pending observations still require the fixed public-probe schema. No field
-    # names/values, extra columns, malformed coordinates or truthy numeric states.
     required = set(TIMELINE_COLUMNS) - {'bounds', 'allowed_actions'}
     booleans = required - {'path', 'role', 'label'}
     if not isinstance(nodes, list) or not 1 <= len(nodes) <= 512:
@@ -357,9 +346,6 @@ def timeline_canonical(rows):
 
 def imported_projection(nodes, ui):
     rows = timeline_rows(nodes)
-    # The reviewed success toast is inert Text at the complete template's end.
-    # Its source animates only y from 852 to 864. Retain raw metadata and every
-    # other column/node; unknown trees still cannot authorize input.
     if len(rows) == 114 and nodes[-1]['path'] == [0, 108]:
         bounds = nodes[-1].get('bounds')
         if bounds is not None and type(bounds['y']) is int and 852 <= bounds['y'] <= 864:
@@ -392,8 +378,6 @@ def validate_timeline_ui(ui):
 def imported_state(data, ui, pid):
     public_context(data, pid)
     current = timeline_canonical(imported_projection(data['nodes'], ui))
-    # This additional observed 113-node tree omits only the thumbnail. It can
-    # continue bounded observation, never authorize a timeline gesture.
     if (current == timeline_canonical(ui['transient_read_only_rows'])
             or (len(data['nodes']) == 113 and
                 hashlib.sha256(current.encode()).hexdigest() == ui['observed_113_read_only_sha256'])):
@@ -413,13 +397,9 @@ def imported_state(data, ui, pid):
 
 
 def full_projection(nodes):
-    # Include hidden/nonshowing metadata as well. Older probe has no pressed
-    # column; its contract excludes pressed input and canonical false is exact.
     return [[n.get(k, False if k == 'pressed' else None) for k in IMPORT_COLUMNS] for n in nodes]
 
 
-# Only these five reviewed, zero-width, noninteractive before containers have
-# variable observed heights. Raw metadata and diagnostic heights stay intact.
 BEFORE_HEIGHT_PATHS = frozenset((
     (0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 1),
     (0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2),
