@@ -184,7 +184,7 @@ def native_runtime_identity(stage):
         return (*CLIP_EDITOR_RUNTIME[:4], '93d8545ed799bda4abf55c7612f5c94904749f36011cf993efa8668f5fd99ae8')
     if stage == 'assistant-config-observation':
         return (*CLIP_EDITOR_RUNTIME[:4], '5a1d5b1630db3bc097a8ed0f201938d53371270af0599879ef76bb98208d969e')
-    if stage in ('clip-editor-entry', 'clip-media-import'):
+    if stage in ('clip-editor-entry', 'clip-media-import', 'visual-settings-entry-observation'):
         return CLIP_EDITOR_RUNTIME
     return (NATIVE_HEAD, NATIVE_APP_SHA, NATIVE_BUILD_RUN, NATIVE_ARTIFACT, NATIVE_IDENTITY_SHA)
 
@@ -723,9 +723,9 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
 
 # Exact reviewed clip import controller and pinned nonfield templates.
 NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-controller.py',
-                                          '44f06fd15b69608b59bddfc41c7ce0a58e28db253125178ef4426aeb4ffb8245'],
+                                          '60599d33e691887ec3e7d20983f9776142837ed6d2f554654e0f1d9a94cf9178'],
                                    'clip_import_controller': ['clip-import-controller.py',
-                                                              '44f06fd15b69608b59bddfc41c7ce0a58e28db253125178ef4426aeb4ffb8245'],
+                                                              '60599d33e691887ec3e7d20983f9776142837ed6d2f554654e0f1d9a94cf9178'],
                                    'native_public_probe': ['clip-editor-public-probe.py',
                                                            '562612f3bf1d54da2f9011fdea0849b6ecdf0dc66d129b42546fb0bd21bc3cd8'],
                                    'clip_editor_action': ['clip-editor-action.py',
@@ -737,9 +737,9 @@ NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-cont
                                    'clip_timeline_guard': ['clip-timeline-guard.json',
                                                            'fac01c381f3a4fdadfbf2131ad89853c8885fa67d676bccf998c4ffed248ad10'],
                                    'clip_post_insert': ['clip-post-insert.py',
-                                                        '2992a8aafbd8140c40c89235af3e480e3b6f5eb9374be00a59fdb2b4a8443e3e']},
+                                                        'd7ff71136067eeeb2d6f24b78b85521413669ebde9b744976bf66639d7ffda2e']},
                        'ui': ['clip-import-ui.json',
-                              '631cae61d13a31c773d232bc450bdfc5eaa25d800ae0aecee2bef35cb7d0c4aa'],
+                              '0129a97fbcaea7ba0bd21429f40d538de57c9dcb4267e8d3e3e579374f47c6fe'],
                        'next_stage': None,
                        'artifacts': {'main-qa-clip-media-import': {'png': ['01-after-quick.png',
                                                                            '02-page.png',
@@ -847,6 +847,9 @@ NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-cont
                                                   'directory and0600 file; exactly one file; controller '
                                                   'checks work-dir/asset-clip-inputs.'}}})
 
+
+# Global Settings entry records safe metadata only; no theme Action or Settings pixels.
+NATIVE_SCOPES.update({'visual-settings-entry-observation': {'scripts': {'qa': ['visual-settings-entry-controller.py', '2b947959d1845a89d3d78a0d981ff1a353aa91b38d22a25040127b20d37cf707'], 'visual_settings_public': ['visual-settings-entry-public.py', '828295197852fbd4528ac23a2adadebf93d8d71f2d4a1eeaa394918b7479d1cb']}, 'ui': ['visual-settings-entry-ui.json', '4bd74047a66cc8930733b122053b3950f0ddb8b27f8305333bf650497d9ca0bd'], 'next_stage': None, 'artifacts': {'main-qa-visual-settings-entry': {'png': [], 'public': ['00-before-quick-public.json', '01-after-quick-public.json', '02-before-settings-public.json', '03-settings-entry-public.json'], 'action': ['02-settings-action.json'], 'other': ['visual-settings-report.json']}}, 'artifact_JSON_limits': {'public_metadata_each': 131072, 'native_action_each': 8192, 'report_each': 16384}}})
 
 def copy_assets_fixture(source, work):
     """Only assets-import receives one copied synthetic PNG."""
@@ -1494,7 +1497,7 @@ def main():
             if (candidate is None or source_head != native_head or args.candidate_artifact_id != native_artifact
                     or candidate["app_sha256"] != native_app_sha or candidate["build_run_id"] != native_build_run):
                 raise ValueError("native candidate differs from its reviewed immutable provenance")
-            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation', 'asset-library-flow', 'clip-media-import') and (
+            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation', 'asset-library-flow', 'clip-media-import', 'visual-settings-entry-observation') and (
                     candidate["build_job_id"] != 112019086814 or candidate["app_bytes"] != 467641344
                     or result["candidate"]["manifest_sha256"] != 'd666628e2499a26ef5f541898a4b5f0c8a69bba98bc6a3a28a2725d37c426d73'):
                 raise ValueError("current candidate job, size or manifest differs from its immutable provenance")

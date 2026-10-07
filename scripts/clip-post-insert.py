@@ -13,6 +13,8 @@ BASE_ROWS = [[False, {'absent': True}, {'absent': True}, False, False, False, Fa
 GUARDS = {'select-tool': {'region': [139, 616, 26, 26], 'rgb_sha256': '854d3221f53b108129e894d91810138a371237ee00a774aa67296d59f383f0ae'}, 'unlocked-track': {'region': [160, 863, 26, 26], 'rgb_sha256': '396a9ef60b9033e01e8d4a1f19aafe2837f9cd51dd891adce2176010c1a076f9'}, 'ruler': {'region': [245, 649, 200, 21], 'rgb_sha256': '5308bb802e6a20cac061846600e9122ba07e6d1c2c1f0e68084e1122d1b1a88c'}, 'file-label': {'region': [74, 10, 19, 12], 'rgb_sha256': '1fc53c50b5dec07c703c5307387689f79ffe8ce0a88e73fca0dbb00ededd585e'}, 'clip-inner': {'region': [247, 861, 96, 31], 'rgb_sha256': '945dfdf207d2eed1318a604259b84e1ca3e32ca865f36e0d0c7b595e8155d645'}, 'preview': {'region': [476, 185, 515, 289], 'rgb_sha256': 'a4ce6891fd6e8e80dfa1220fef983d3b76567ff5c03cdc6bf4ea11081eeba7a8'}, 'moved-gap': {'region': [247, 878, 16, 12], 'rgb_sha256': 'f2f977bc947f6128081fe2eb6b0c0053503271493e6f497b771385b5ed10868a'}}
 PROBE_SHA = '562612f3bf1d54da2f9011fdea0849b6ecdf0dc66d129b42546fb0bd21bc3cd8'
 CAPTIONS = frozenset({'File', 'Open project…', 'Close project'})
+# Main-reviewed complete v2 sample01 public popup; no menu inputs.
+FILE_POPUP_ROWS = [[False, {'absent': True}, {'x': 66, 'y': 32, 'width': 220, 'height': 316}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123], False, 23, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 38, 'width': 166, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 0], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 64, 'width': 138, 'height': 26}, False, False, False, False, False, True, False, False, False, False, 'Open project…', False, False, [0, 123, 1], False, 29, False, True, True], [False, {'absent': True}, {'x': 250, 'y': 64, 'width': 20, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 2], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 90, 'width': 144, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 3], False, 29, False, True, True], [False, {'absent': True}, {'x': 256, 'y': 90, 'width': 14, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 4], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 116, 'width': 139, 'height': 26}, False, False, False, False, False, True, False, False, False, False, 'Save', False, False, [0, 123, 5], False, 29, False, True, True], [False, {'absent': True}, {'x': 251, 'y': 116, 'width': 19, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 6], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 142, 'width': 166, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 7], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 168, 'width': 166, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 8], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 194, 'width': 166, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 9], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 220, 'width': 166, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 10], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 255, 'width': 143, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 11], False, 29, False, True, True], [False, {'absent': True}, {'x': 255, 'y': 255, 'width': 15, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 12], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 290, 'width': 166, 'height': 26}, False, False, False, False, False, True, False, False, False, False, 'Close project', False, False, [0, 123, 13], False, 29, False, True, True], [False, {'absent': True}, {'x': 104, 'y': 316, 'width': 136, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 14], False, 29, False, True, True], [False, {'absent': True}, {'x': 248, 'y': 316, 'width': 22, 'height': 26}, False, False, False, False, False, True, False, False, False, False, None, False, False, [0, 123, 15], False, 29, False, True, True]]
 
 
 def extended_probe():
@@ -97,11 +99,34 @@ def semantic_clip_matches(nodes, delta, saved=False):
     return len(anchors) == 4 and all(sum(signature(n) == signature(a) for n in nodes) == 1 for a in anchors)
 
 
+def file_menu_context(data, pid, context, rows, stop):
+    """Only the exact observed popup plus unchanged complete owned main tree."""
+    nodes = data.get('nodes')
+    rows(nodes)  # Full original schema, including hidden nodes and field privacy.
+    popup = [n for n in nodes if n['path'][:2] == [0, 123]]
+    main = [n for n in nodes if n['path'][:2] != [0, 123]]
+    if (len(nodes) != 150 or len(main) != 133
+            or canonical(rows(popup)) != canonical(FILE_POPUP_ROWS)
+            or not inert_success_toast(main, resized=True)):
+        raise stop('exact_observed_File_popup_required_no_input_or_pixels')
+    normalized = rows(main)
+    normalized[-1][COLUMNS.index('bounds')] = dict(base_nodes()[-1]['bounds'])
+    if canonical(normalized) != canonical(BASE_ROWS):
+        raise stop('File_popup_main_tree_changed_no_input_or_pixels')
+    # Exact matched noninteractive popup is removed only for the original
+    # one-window/main/privacy check. No generic multi-window gate changes.
+    context(dict(data, nodes=main), pid)
+    return [n for n in nodes if n.get('showing')]
+
+
 def run(*, context, rows, stop, probe, pixels, guard, focus, command, pause, snapshot,
         report, args, remaining, fixture, manifest, release=None):
     def checked(name, allow_dialog=False):
         data = probe(name, allow_dialog=allow_dialog)
-        context(data, args.app_pid, allow_dialog=allow_dialog)
+        if allow_dialog:
+            file_menu_context(data, args.app_pid, context, rows, stop)
+        else:
+            context(data, args.app_pid)
         rows(data['nodes'])
         if not allow_dialog and any(n['focused'] and n['role'] != 23 for n in data['nodes']):
             raise stop('post_insert_nonwindow_focus_no_input')

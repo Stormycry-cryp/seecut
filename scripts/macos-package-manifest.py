@@ -14,6 +14,8 @@ import zipfile
 
 TARGET = 'aarch64-apple-darwin'
 LICENSES = ('LICENSE', 'LICENSE-EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.md')
+FONT_LICENSE_SOURCE = 'src/crates/concat/ui/fonts/LICENSE-Synonym.txt'
+FONT_LICENSE_BUNDLE = 'Contents/Resources/licenses/LICENSE-Synonym.txt'
 MAX_BUNDLE_BYTES = 4 * 1024**3
 MAX_ZIP_BYTES = 2 * 1024**3
 MAX_MANIFEST_BYTES = 8 * 1024**2
@@ -70,6 +72,29 @@ def regular(path, maximum=MAX_BUNDLE_BYTES):
     if not 0 < path.stat().st_size <= maximum:
         raise ValueError('file_size_out_of_bounds')
     return path
+
+
+def copy_bundled_font_license(root, app):
+    """Preserve the repository's existing full text; no license/legal inference."""
+    source = regular(root / FONT_LICENSE_SOURCE, 2 * 1024**2)
+    target = app / FONT_LICENSE_BUNDLE
+    if target.exists() or target.is_symlink():
+        raise ValueError('fresh_font_license_destination_required')
+    expected = digest(source)
+    shutil.copyfile(source, target)
+    actual = digest(regular(target, 2 * 1024**2))
+    if actual != expected or digest(source) != expected:
+        raise ValueError('complete_font_license_bytes_must_match_source')
+    return {**actual, 'source_path': FONT_LICENSE_SOURCE,
+            'bundle_path': FONT_LICENSE_BUNDLE,
+            'distribution': 'inside_Seecut_macos_zip'}
+
+
+def verify_bundled_font_license(root, app, record):
+    expected = {key: record[key] for key in ('sha256', 'bytes')}
+    if (digest(regular(root / FONT_LICENSE_SOURCE, 2 * 1024**2)) != expected
+            or digest(regular(app / FONT_LICENSE_BUNDLE, 2 * 1024**2)) != expected):
+        raise ValueError('complete_font_license_bytes_must_match_source')
 
 
 def version(value):
@@ -294,6 +319,7 @@ def finalize(args):
         source = regular(root / name, 2 * 1024**2)
         shutil.copyfile(source, licensedir / name)
         shutil.copyfile(source, out / name)
+    font_license = copy_bundled_font_license(root, app)
     command(['plutil', '-lint', str(plist_path)])
     for image in images[1:]:
         command(['codesign', '--force', '--sign', '-', str(image)])
@@ -310,6 +336,7 @@ def finalize(args):
     archive.unlink()
     command(['ditto', '-c', '-k', '--keepParent', '--norsrc', '--noextattr', str(app), str(archive)])
     zip_check = verify_zip(archive, app)
+    verify_bundled_font_license(root, app, font_license)
     logs = regular(out / 'build.log', 32 * 1024**2)
     sherpa = regular(args.sherpa_archive, MAX_ZIP_BYTES)
     if (not sherpa.is_absolute() or not sherpa.resolve().is_relative_to(runner_temp.resolve())
@@ -319,7 +346,7 @@ def finalize(args):
         raise ValueError('explicit_existing_sherpa_source_required')
     source_files = ['scripts/make-app.sh', 'scripts/generate-seecut-logo.sh',
                     '.github/workflows/ci.yml', '.github/workflows/build-app.yml',
-                    'src/Cargo.lock', 'src/rust-toolchain.toml', *LICENSES]
+                    'src/Cargo.lock', 'src/rust-toolchain.toml', *LICENSES, FONT_LICENSE_SOURCE]
     manifest = {
         'schema': 1, 'scope': 'macos-package-candidate', 'product': 'Seecut',
         'source_head': actual, 'expected_head': args.expected_sha,
@@ -347,6 +374,7 @@ def finalize(args):
         'bundle_symlinks': [], 'zip': {**digest(archive), **zip_check},
         'signing': {'kind': 'ad-hoc', 'strict_verified': True, 'notarized': False},
         'license_material': {n: digest(out / n) for n in LICENSES},
+        'bundled_font_license_material': {'LICENSE-Synonym.txt': font_license},
         'license_completeness_review': 'pending_main_distribution_review',
         'build_log': digest(logs),
         'github': {'repository': os.environ.get('GITHUB_REPOSITORY'),

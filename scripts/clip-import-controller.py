@@ -36,6 +36,44 @@ class Stop(Exception):
     pass
 
 
+def compact_guard_records(records):
+    """Lossless success-only exact-dictionary grouping; failures stay separate."""
+    result, seen = [], {}
+    for index, record in enumerate(records):
+        key = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        if record.get('matched') is True and key in seen:
+            target = result[seen[key]]
+            target['count'] += 1
+            target['occurrence_indices'].append(index)
+        else:
+            if record.get('matched') is True:
+                seen[key] = len(result)
+            result.append(dict(record, count=1, occurrence_indices=[index]))
+    return result
+
+
+def bounded_report_bytes(report):
+    report['guards'] = compact_guard_records(report['guards'])
+    raw = (json.dumps(report, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+    if len(raw) <= 16384:
+        return raw
+    # Explicit incomplete failure only; cannot stand in for full evidence.
+    # Do not save partial actions/samples/SHA as though they were complete.
+    original_status, original_reason = report['status'], report.get('blocking_reason')
+    report['status'] = 'blocked'
+    report['blocking_reason'] = 'report_16KiB_exceeded_incomplete_evidence'
+    return (json.dumps({'schema': report['schema'], 'scope': report['scope'],
+        'status': 'blocked', 'blocking_reason': 'report_16KiB_exceeded_incomplete_evidence',
+        'complete_report_saved': False, 'original_status': original_status,
+        'original_blocking_reason': original_reason, 'source_head': report['source_head'],
+        'action_count': len(report['actions']), 'capture_count': len(report['captures']),
+        'public_metadata_count': len(report['public_metadata']),
+        'guard_count': sum(g['count'] for g in report['guards']),
+        'field_values_read': report['field_values_read'],
+        'settings_pixels_captured': report['settings_pixels_captured']},
+        ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+
+
 def declaration(path):
     if not path.is_absolute() or path.is_symlink() or not path.is_file() or path.stat().st_size > 16384:
         raise Stop('explicit_bounded_regular_declaration_required')
@@ -914,7 +952,12 @@ def main():
             path.unlink()
             raise Stop('metadata_total_budget_exceeded_no_further_capture')
         data = json.loads(path.read_bytes())
-        public_context(data, pid, allow_dialog=allow_dialog, native=native is not None, width=size[0], height=size[1])
+        if (native is None and allow_dialog and report['scope'] == 'clip-media-import'
+                and tuple(size) == (1280, 900) and helper == dependencies['post_insert']
+                and re.fullmatch(r'20-file-menu-observed(?:-sample-0[1-4])?-public', name)):
+            post.file_menu_context(data, pid, public_context, timeline_rows, Stop)
+        else:
+            public_context(data, pid, allow_dialog=allow_dialog, native=native is not None, width=size[0], height=size[1])
         report['public_metadata'].append(path.name)
         return data
 
@@ -1126,12 +1169,15 @@ def main():
         report['blocking_reason'] = 'unexpected_owned_runtime_error_raw_withheld'
     finally:
         report['elapsed_seconds'] = round(time.monotonic() - started, 3)
-        raw = (json.dumps(report, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+        raw = bounded_report_bytes(report)
         if directory is not None:
             files = list(directory.iterdir())
             if any(p.is_symlink() or not p.is_file() for p in files) or sum(p.stat().st_size for p in files) + len(raw) > 15728640:
                 report['status'] = 'artifact_budget_exceeded_do_not_publish'
-                raw = (json.dumps(report, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+                raw = (json.dumps({'schema': report['schema'], 'scope': report['scope'],
+                    'status': 'artifact_budget_exceeded_do_not_publish',
+                    'blocking_reason': report.get('blocking_reason'),
+                    'complete_report_saved': False}, separators=(',', ':')) + '\n').encode()
             if len(raw) <= 16384:
                 path = directory / 'clip-import-report.json'
                 with path.open('xb') as stream:
