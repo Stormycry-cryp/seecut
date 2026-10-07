@@ -277,8 +277,37 @@ TIMELINE_COLUMNS = ('action_interface', 'allowed_actions', 'bounds', 'button', '
 def timeline_rows(nodes):
     # Every observed column, including hidden nodes, panel and missing properties.
     # Canonical JSON comparison distinguishes bool/int and absent/null exactly.
-    if any(set(n) - set(TIMELINE_COLUMNS) for n in nodes):
-        raise Stop('unknown_imported_node_attribute_no_input')
+    # Pending observations still require the fixed public-probe schema. No field
+    # names/values, extra columns, malformed coordinates or truthy numeric states.
+    required = set(TIMELINE_COLUMNS) - {'bounds', 'allowed_actions'}
+    booleans = required - {'path', 'role', 'label'}
+    if not isinstance(nodes, list) or not 1 <= len(nodes) <= 512:
+        raise Stop('invalid_timeline_public_node_schema_no_input')
+    for node in nodes:
+        if (not isinstance(node, dict) or set(node) - set(TIMELINE_COLUMNS)
+                or not required.issubset(node)
+                or any(type(node[k]) is not bool for k in booleans)
+                or type(node['role']) is not int or node['role'] < 0
+                or not isinstance(node['path'], list) or len(node['path']) > 24
+                or any(type(i) is not int or not 0 <= i < 128 for i in node['path'])
+                or (node['label'] is not None and not isinstance(node['label'], str))
+                or (any(node[k] for k in ('entry', 'editable', 'editable_text_interface'))
+                    and node['label'] is not None)):
+            raise Stop('invalid_timeline_public_node_schema_no_input')
+        if 'bounds' in node:
+            bounds = node['bounds']
+            if (not isinstance(bounds, dict) or set(bounds) != {'x', 'y', 'width', 'height'}
+                    or any(type(v) is not int for v in bounds.values())
+                    or bounds['width'] < 0 or bounds['height'] < 0):
+                raise Stop('invalid_timeline_public_node_schema_no_input')
+        if ('allowed_actions' in node) != ((node['button'] or node['radio']) and node['action_interface']):
+            raise Stop('invalid_timeline_public_node_schema_no_input')
+        if 'allowed_actions' in node:
+            actions = node['allowed_actions']
+            if (not isinstance(actions, list) or len(actions) > 8
+                    or any(a not in ('click', 'activate', 'press') for a in actions)
+                    or not (node['button'] or node['radio']) or not node['action_interface']):
+                raise Stop('invalid_timeline_public_node_schema_no_input')
     return [[n[k] if k in n else {'absent': True} for k in TIMELINE_COLUMNS] for n in nodes]
 
 
@@ -776,10 +805,13 @@ def main():
             data = probe(f'15-import-result-sample-{sample:02d}-public', allow_dialog=True)
             try:
                 state = imported_state(data, timeline_ui, args.app_pid)
-            except Stop:
-                snapshot('15-import-result', allow_dialog=True)
-                raise
+            except Stop as error:
+                if str(error) != 'unknown_import_result_main_review_required':
+                    raise
+                state = 'observed_transient_read_only'
             if state == 'observed_transient_read_only':
+                report.setdefault('import_readonly_pending', []).append(
+                    {'sample': sample, 'status': 'readonly_import_pending'})
                 prior = None
                 pause()
                 continue
