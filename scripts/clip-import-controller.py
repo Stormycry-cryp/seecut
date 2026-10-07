@@ -6,6 +6,7 @@ This standalone controller remains loadable when copied as independent-qa.py.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -244,7 +245,8 @@ def project_manifest_record(work):
 def runtime_dependencies(ui):
     specs = {'probe': ('clip-editor-public-probe.py', ui.get('public_probe_sha256')),
              'action': ('clip-editor-action.py', ui.get('action_sha256')),
-             'controller_alias': ('clip-editor-controller.py', ui.get('controller_sha256'))}
+             'controller_alias': ('clip-editor-controller.py', ui.get('controller_sha256')),
+             'post_insert': ('clip-post-insert.py', ui.get('post_insert_sha256'))}
     if ui.get('public_probe_filename') != 'clip-editor-public-probe.py':
         raise Stop('exact_clip_editor_probe_basename_required')
     result = {}
@@ -1069,7 +1071,7 @@ def main():
         click([558, 500], 'quick-mode')
         probe('01-after-quick-prepixels-public')
         guard(pixels(), 'quick-sidebar')
-        snapshot('01-after-quick')
+        probe('01-after-quick-public')
         before = probe('02-before-navigation-public')
         for name, expected in ui['navigation'].items():
             matches = [n for n in before['nodes'] if n.get('showing') and n.get('label') == expected['label'] and n.get('role') == 43]
@@ -1077,7 +1079,7 @@ def main():
                 raise Stop('current_navigation_metadata_changed')
         guard(pixels(), 'nav-target')
         click(ui['navigation_xy'], ui['page'])
-        snapshot('02-page')
+        probe('02-page-public')
         page_target(probe('02-page-target-public'), ui, args.app_pid)
         frame = pixels()
         for name in ui['page_guard_names']:
@@ -1088,7 +1090,7 @@ def main():
         for name in ui['page_guard_names']:
             guard(frame, name)
         click(ui['target_xy'], 'assets-import' if SCOPE == 'assets-import' else 'new-clip-card')
-        snapshot('03-current-new-clip-dialog', allow_dialog=True)
+        probe('03-current-new-clip-dialog-public', allow_dialog=True)
         initial = probe('03-dialog-recheck-public', allow_dialog=True)
         dialog_target(initial, ui, args.app_pid, 'name')
         guard(pixels(), 'initial-dialog', ui['dialog_guard'])
@@ -1105,6 +1107,15 @@ def main():
         # Four empty-editor sizes already have actual acceptance evidence.
         import_flow()
         timeline_flow()
+        post_spec = importlib.util.spec_from_file_location('clip_post_insert', dependencies['post_insert'])
+        post = importlib.util.module_from_spec(post_spec)
+        post_spec.loader.exec_module(post)
+        helper = dependencies['post_insert']
+        report['post_insert_sha256'] = ui['post_insert_sha256']
+        post.run(context=public_context, rows=timeline_rows, stop=Stop, probe=probe,
+                 pixels=pixels, guard=guard, focus=focus_main, command=command, pause=pause,
+                 snapshot=snapshot, report=report, args=args, remaining=lambda: end - time.monotonic(),
+                 fixture=exact_fixture, manifest=project_manifest_record)
 
     except Stop as exc:
         report['blocking_reason'] = str(exc)
