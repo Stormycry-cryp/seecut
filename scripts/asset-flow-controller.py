@@ -6,6 +6,7 @@ This standalone controller remains loadable when copied as independent-qa.py.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -307,6 +308,7 @@ def runtime_dependencies(ui):
     if SCOPE == 'asset-library-flow':
         specs['action'] = ('asset-flow-native-action.py', ui.get('native_action_sha256'))
         specs['app_action'] = ('asset-flow-app-action.py', ui.get('app_action_sha256'))
+        specs['existing_entry'] = ('asset-existing-target-entry.py', ui.get('existing_target_entry_sha256'))
     result = {}
     for key, (basename, digest) in specs.items():
         path = Path(__file__).with_name(basename)
@@ -529,9 +531,16 @@ def main():
 
     def snapshot(name, native=None, allow_dialog=False):
         # A fresh complete nonfield metadata proof precedes every saved image.
-        probe(name + '-public', native=native, allow_dialog=allow_dialog)
+        data = probe(name + '-public', native=native, allow_dialog=allow_dialog)
+        if name == '14-existing-target-modal':
+            existing_entry.safe_observation(data, args.app_pid, public_context, Stop)
         if len(report['captures']) >= 10:
             raise Stop('PNG_count_limit_before_capture')
+        if name in ('02-page', '07-search-empty'):
+            raw = pixels()
+            report.setdefault('unsaved_RGB_samples', []).append({'name': name,
+                'bytes': len(raw), 'rgb_sha256': hashlib.sha256(raw).hexdigest()})
+            return
         path = directory / (name + '.png')
         if path.exists():
             raise Stop('fresh_flat_capture_path_required')
@@ -630,7 +639,7 @@ def main():
         with path.open('xb') as stream:path.chmod(0o600);stream.write(raw)
         enforce_budget(path)
         if completed.returncode or data.get('success') is not True or data.get('field_values_read') is not False:
-            snapshot('12-canvas-result' if mode=='handoff-open' else '11-handoff-new-result' if mode=='handoff-new' else '10-unknown-flow-result',allow_dialog=True)
+            snapshot('14-existing-target-modal' if mode=='canvas' and ordinal==14 else '12-canvas-result' if mode=='handoff-open' else '11-handoff-new-result' if mode=='handoff-new' else '10-unknown-flow-result',allow_dialog=True)
             raise Stop('asset_app_action_unconfirmed_no_retry')
         command(['xdotool','mousemove','--window',str(args.window_id),'100','650']);pause()
 
@@ -759,6 +768,9 @@ def main():
         report['sourcecopy_post_return_verified'] = True
         report['status'] = 'asset_return_result_observed_main_review_required'
         report['flow_result'] = 'after_one_return_navigation_current_surface_unreviewed'
+        existing_entry.observe({'report': report, 'Stop': Stop, 'pid': args.app_pid,
+            'probe': probe, 'public_context': public_context, 'guard': guard,
+            'pixels': pixels, 'app_action': app_action, 'snapshot': snapshot})
 
     def imported_files():
         for path in (args.work_dir / 'portable', args.work_dir / 'portable' / 'personal-library',
@@ -809,6 +821,9 @@ def main():
             raise Stop('actual_App_SHA_differs')
         report.update(app_sha256=digest.hexdigest(), identity_sha256=runtime_sha, ui_sha256=ui_sha)
         dependencies = runtime_dependencies(ui)
+        entry_spec = importlib.util.spec_from_file_location('asset_existing_entry', dependencies['existing_entry'])
+        existing_entry = importlib.util.module_from_spec(entry_spec)
+        entry_spec.loader.exec_module(existing_entry)
         helper = dependencies['probe']
         dims = list(map(int, command(['xdotool', 'getdisplaygeometry']).split()))
         if len(dims) != 2 or not (1440 <= dims[0] <= 1920 and 900 <= dims[1] <= 1200):
@@ -962,7 +977,8 @@ def main():
                                     'single_asset_flow_result_observed_main_review_required',
                                     'handoff_new_selection_result_observed_main_review_required',
                                     'asset_canvas_final_result_observed_main_review_required',
-                                    'asset_return_result_observed_main_review_required') else 2
+                                    'asset_return_result_observed_main_review_required',
+                                    'asset_existing_target_entry_result_observed_main_review_required') else 2
 
 
 if __name__ == '__main__':
