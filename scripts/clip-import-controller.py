@@ -315,6 +315,22 @@ def timeline_canonical(rows):
     return json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
 
+def imported_projection(nodes, ui):
+    rows = timeline_rows(nodes)
+    # The reviewed success toast is inert Text at the complete template's end.
+    # Its source animates only y from 852 to 864. Retain raw metadata and every
+    # other column/node; unknown trees still cannot authorize input.
+    if len(rows) == 114 and nodes[-1]['path'] == [0, 108]:
+        bounds = nodes[-1].get('bounds')
+        if bounds is not None and type(bounds['y']) is int and 852 <= bounds['y'] <= 864:
+            adjusted = list(rows)
+            adjusted[-1] = list(rows[-1])
+            adjusted[-1][TIMELINE_COLUMNS.index('bounds')] = dict(bounds, y=852)
+            if timeline_canonical(adjusted) == timeline_canonical(ui['imported_rows']):
+                return adjusted
+    return rows
+
+
 def validate_timeline_ui(ui):
     if (set(ui) != {'schema', 'scope', 'source_head', 'columns', 'transient_read_only_rows',
                    'imported_rows', 'thumbnail_guard', 'caption_guard', 'target_path',
@@ -335,7 +351,7 @@ def validate_timeline_ui(ui):
 
 def imported_state(data, ui, pid):
     public_context(data, pid)
-    current = timeline_canonical(timeline_rows(data['nodes']))
+    current = timeline_canonical(imported_projection(data['nodes'], ui))
     # This additional observed 113-node tree omits only the thumbnail. It can
     # continue bounded observation, never authorize a timeline gesture.
     if (current == timeline_canonical(ui['transient_read_only_rows'])
@@ -818,7 +834,7 @@ def main():
             frame = pixels()
             guard(frame, 'imported-thumbnail', timeline_ui['thumbnail_guard'])
             guard(frame, 'imported-caption', timeline_ui['caption_guard'])
-            current = (timeline_canonical(timeline_rows(data['nodes'])), hashlib.sha256(frame).hexdigest())
+            current = (timeline_canonical(imported_projection(data['nodes'], timeline_ui)), hashlib.sha256(frame).hexdigest())
             if current == prior:
                 report['import_result_stable_observed'] = True
                 break
