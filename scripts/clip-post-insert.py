@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -237,3 +238,51 @@ def run(*, context, rows, stop, probe, pixels, guard, focus, command, pause, sna
 
 if __name__ == '__main__':
     raise SystemExit(extended_probe().main())
+
+
+def import_error_envelope(data, pid):
+    expected = {'status': 'public_accessibility_unavailable_or_input_blocked',
+        'app_pid': pid, 'field_values_read': False, 'ui_actions': [],
+        'screenshots': [], 'product_verdict': 'not_tested'}
+    return (isinstance(data, dict) and set(data) == set(expected) | {'elapsed_seconds'}
+        and all(type(data[k]) is type(v) and data[k] == v for k, v in expected.items())
+        and type(data['elapsed_seconds']) in (int, float)
+        and math.isfinite(data['elapsed_seconds']) and 0 <= data['elapsed_seconds'] <= 2)
+
+
+def import_root_scope(name, native, allow_dialog, helper, expected_helper, record, stop):
+    if (native is not None or not allow_dialog or helper != expected_helper
+            or name not in {f'15-import-result-sample-{i:02d}-public' for i in range(1, 5)}
+            or record.get('accept_succeeded') is not True or record.get('native_gone') is not True):
+        raise stop('readonly_import_root_scope_required')
+
+
+def import_root_error(data, pid, code, record, now, stop):
+    if code != 2 or not import_error_envelope(data, pid):
+        raise stop('bounded_public_metadata_unavailable_no_retry')
+    record['recovery_used'] = True
+    record['samples'][-1]['error_envelope'] = True
+    if len(record['samples']) >= 3 or now >= record['deadline']:
+        raise stop('readonly_import_root_recovery_exhausted_no_input')
+
+
+def import_root_before(record, sample, now, stop):
+    if record['recovery_used'] and (sample > 3 or now >= record['deadline']):
+        raise stop('readonly_import_root_recovery_exhausted_no_input')
+
+
+def import_root_pause(record, clock, sleep, healthy_pause, stop):
+    if not record['recovery_used']:
+        return healthy_pause()
+    left = record['deadline'] - clock()
+    if left <= 0:
+        raise stop('readonly_import_root_recovery_exhausted_no_input')
+    sleep(min(0.7, left))
+
+
+def import_root_finish(record, now):
+    if 'started' not in record:
+        return
+    record['elapsed_seconds'] = round(now - record.pop('started'), 3)
+    record.pop('deadline')
+    record['snapshot_in_recovery_samples'] = False

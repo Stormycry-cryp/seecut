@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Finite synthetic clip project creation and media-import observation; launcher owns cleanup <=300s.
 
 No field reads, Settings pixels, external/model calls, retries or arbitrary files.
@@ -13,7 +12,6 @@ from pathlib import Path
 import re
 import subprocess
 import time
-
 HEAD = '0aa9406247e53f073c0b4df686adc68b40e2f8f6'
 APP_SHA = '03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2'
 GUARD_HEAD = '11ebf203e1a78d3b6a21677c4b17e96223c74b0e'
@@ -29,12 +27,8 @@ SETTINGS_BOUNDS = ({'x': 596, 'y': 147, 'width': 188, 'height': 36},
                    {'x': 596, 'y': 222, 'width': 188, 'height': 36},
                    {'x': 144, 'y': 68, 'width': 48, 'height': 24},
                    {'x': 1216, 'y': 68, 'width': 26, 'height': 128})
-
-
 class Stop(Exception):
     pass
-
-
 def compact_guard_records(records):
     """Lossless success-only exact-dictionary grouping; failures stay separate."""
     result, seen = [], {}
@@ -49,8 +43,6 @@ def compact_guard_records(records):
                 seen[key] = len(result)
             result.append(dict(record, count=1, occurrence_indices=[index]))
     return result
-
-
 def bounded_report_bytes(report):
     report['guards'] = compact_guard_records(report['guards'])
     raw = (json.dumps(report, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
@@ -69,15 +61,11 @@ def bounded_report_bytes(report):
         'field_values_read': report['field_values_read'],
         'settings_pixels_captured': report['settings_pixels_captured']},
         ensure_ascii=False, separators=(',', ':')) + '\n').encode()
-
-
 def declaration(path):
     if not path.is_absolute() or path.is_symlink() or not path.is_file() or path.stat().st_size > 16384:
         raise Stop('explicit_bounded_regular_declaration_required')
     raw = path.read_bytes()
     return json.loads(raw), hashlib.sha256(raw).hexdigest()
-
-
 def public_context(data, pid, allow_dialog=False, native=False, width=1280, height=900):
     nodes = data.get('nodes')
     if (data.get('status') != 'public_metadata_observed' or data.get('app_pid') != pid
@@ -104,12 +92,8 @@ def public_context(data, pid, allow_dialog=False, native=False, width=1280, heig
                 or not all(windows[0].get(k) is True for k in ('enabled', 'sensitive'))):
             raise Stop('current_public_App_window_changed')
     return showing
-
-
 def projection(nodes):
     return [[n.get(k) for k in PUBLIC_KEYS] for n in nodes if n.get('showing')]
-
-
 def page_target(data, ui, pid):
     showing = public_context(data, pid)
     if projection(showing) != ui['page_public_nodes']:
@@ -124,8 +108,6 @@ def page_target(data, ui, pid):
     if len(titles) != 1 or len(headings) != 1 or titles[0]['path'] != [0, 13]:
         raise Stop('current_clip_heading_or_card_title_unknown')
     return titles[0]
-
-
 def rgb_matches(raw, guard, width=1280, height=900):
     if len(raw) != width * height * 3:
         return False
@@ -134,8 +116,6 @@ def rgb_matches(raw, guard, width=1280, height=900):
         return False
     crop = b''.join(raw[(row * width + x) * 3:(row * width + x + w) * 3] for row in range(y, y + h))
     return hashlib.sha256(crop).hexdigest() == guard['rgb_sha256']
-
-
 def owned_descendant(pid, owner):
     seen = set()
     while pid >= 2 and pid not in seen and len(seen) < 16:
@@ -150,8 +130,6 @@ def owned_descendant(pid, owner):
             return False
         pid = int(line.split()[1])
     return False
-
-
 def validate_ui(ui):
     if (ui.get('schema') != 1 or ui.get('reviewed_by') != 'main-reviewer' or ui.get('scope') != SCOPE
             or ui.get('observed_head') != GUARD_HEAD or ui.get('observed_app_sha256') != GUARD_APP_SHA
@@ -166,8 +144,6 @@ def validate_ui(ui):
     expected = ('assets', [40, 286], [1180, 86]) if SCOPE == 'assets-import' else ('clip', [40, 228], [290, 251])
     if (ui.get('page'), ui.get('navigation_xy'), ui.get('target_xy')) != expected:
         raise Stop('exact_scope_action_points_required')
-
-
 def owned_project_output(work, fresh=False):
     if not work.is_absolute() or '..' in work.parts:
         raise Stop('absolute_launcher_work_directory_required')
@@ -185,8 +161,6 @@ def owned_project_output(work, fresh=False):
             or path.stat().st_mode & 0o777 != 0o700):
         raise Stop('exact_owned_0700_clip_output_required')
     return path
-
-
 def dialog_projection(nodes):
     rows = projection(nodes)
     for row in rows:
@@ -209,8 +183,6 @@ def dialog_projection(nodes):
         for path, bounds in toast.items():
             group[path][bounds_index] = dict(zip(('x', 'y', 'width', 'height'), bounds))
     return rows
-
-
 def dialog_target(data, ui, pid, intent, focused=False):
     showing = public_context(data, pid, allow_dialog=True)
     if dialog_projection(showing) != ui['dialog_public_nodes']:
@@ -233,8 +205,6 @@ def dialog_target(data, ui, pid, intent, focused=False):
     elif (node.get('label') != '创建' or not node.get('button') or node.get('allowed_actions') != ['click']):
         raise Stop('one_current_create_Action_required')
     return node
-
-
 def masked_dialog_matches(raw, ui):
     if len(raw) != 1280 * 900 * 3:
         return False
@@ -243,16 +213,12 @@ def masked_dialog_matches(raw, ui):
         for row in range(y, y + h):
             masked[(row * 1280 + x) * 3:(row * 1280 + x + w) * 3] = bytes(w * 3)
     return rgb_matches(bytes(masked), ui['dialog_chrome_guard'])
-
-
 def editor_context(data, pid, width=1280, height=900):
     showing = public_context(data, pid, allow_dialog=True, width=width, height=height)
     labels = {n.get('label') for n in showing}
     return ({'Media', 'Preview', 'Nothing under the playhead'}.issubset(labels)
             and not labels & {'新建剪辑项目', '项目名称', '保存位置', '创建', '取消', 'Cancel'}
             and not any(n.get('dialog') or n.get('modal') or n.get('file_chooser') for n in showing))
-
-
 def project_manifest_record(work):
     base = owned_project_output(work)
     project = base / 'qa-clip-project'
@@ -271,8 +237,6 @@ def project_manifest_record(work):
     return {'status': 'owned_manifest_bytes_observed', 'relative_path': 'qa-clip-project/concat.json',
             'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(), 'contents_parsed': False,
             'product_success': False}
-
-
 def runtime_dependencies(ui):
     specs = {'probe': ('clip-editor-public-probe.py', ui.get('public_probe_sha256')),
              'action': ('clip-editor-action.py', ui.get('action_sha256')),
@@ -299,14 +263,8 @@ def runtime_dependencies(ui):
             raise Stop('reviewed_import_dependency_required:' + key)
         result[key] = path
     return result
-
-
 IMPORT_COLUMNS = PUBLIC_KEYS + ('focused', 'selected', 'checked', 'pressed')
-
-
 TIMELINE_COLUMNS = ('action_interface', 'allowed_actions', 'bounds', 'button', 'checked', 'dialog', 'editable', 'editable_text_interface', 'enabled', 'entry', 'file_chooser', 'focusable', 'focused', 'label', 'modal', 'panel', 'path', 'radio', 'role', 'selected', 'sensitive', 'showing')
-
-
 def timeline_rows(nodes):
     required = set(TIMELINE_COLUMNS) - {'bounds', 'allowed_actions'}
     booleans = required - {'path', 'role', 'label'}
@@ -338,12 +296,8 @@ def timeline_rows(nodes):
                     or not (node['button'] or node['radio']) or not node['action_interface']):
                 raise Stop('invalid_timeline_public_node_schema_no_input')
     return [[n[k] if k in n else {'absent': True} for k in TIMELINE_COLUMNS] for n in nodes]
-
-
 def timeline_canonical(rows):
     return json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
-
-
 def imported_projection(nodes, ui):
     rows = timeline_rows(nodes)
     if len(rows) == 114 and nodes[-1]['path'] == [0, 108]:
@@ -355,8 +309,6 @@ def imported_projection(nodes, ui):
             if timeline_canonical(adjusted) == timeline_canonical(ui['imported_rows']):
                 return adjusted
     return rows
-
-
 def validate_timeline_ui(ui):
     if (set(ui) != {'schema', 'scope', 'source_head', 'columns', 'transient_read_only_rows',
                    'imported_rows', 'thumbnail_guard', 'caption_guard', 'target_path',
@@ -373,8 +325,6 @@ def validate_timeline_ui(ui):
             or ui['caption_guard'] != {'region': [201, 252, 117, 14],
                 'rgb_sha256': '9fd1cbfa63a215843fbea2d163e84900ef08af0d73c143b9a1383a219fc85bf6'}):
         raise Stop('exact_observed_timeline_declaration_required')
-
-
 def imported_state(data, ui, pid):
     public_context(data, pid)
     current = timeline_canonical(imported_projection(data['nodes'], ui))
@@ -394,12 +344,8 @@ def imported_state(data, ui, pid):
                 'editable', 'editable_text_interface', 'action_interface', 'button', 'dialog', 'modal'))):
         raise Stop('exact_unique_observed_thumbnail_required')
     return 'observed_imported'
-
-
 def full_projection(nodes):
     return [[n.get(k, False if k == 'pressed' else None) for k in IMPORT_COLUMNS] for n in nodes]
-
-
 BEFORE_HEIGHT_PATHS = frozenset((
     (0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 1),
     (0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2),
@@ -407,8 +353,6 @@ BEFORE_HEIGHT_PATHS = frozenset((
     (0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 2),
     (0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0),
 ))
-
-
 def before_rows_projection(rows):
     result, seen = [], set()
     bounds_column = IMPORT_COLUMNS.index('bounds')
@@ -428,8 +372,6 @@ def before_rows_projection(rows):
     if seen != BEFORE_HEIGHT_PATHS:
         raise Stop('all_five_fixed_before_containers_required')
     return result
-
-
 def before_projection(nodes):
     for node in nodes:
         if tuple(node['path']) not in BEFORE_HEIGHT_PATHS:
@@ -443,17 +385,11 @@ def before_projection(nodes):
                     'editable', 'editable_text_interface', 'action_interface'))):
             raise Stop('exact_noninteractive_before_container_required')
     return before_rows_projection(full_projection(nodes))
-
-
-# Only these three reviewed location containers remain zero-width and inert.
-# The two earlier before-only paths now have exact heights 34/0 and are excluded.
 LOCATION_HEIGHT_PATHS = frozenset((
     (0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 1),
     (0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 2),
     (0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0),
 ))
-
-
 def location_rows_projection(rows):
     result, seen = [], set()
     bounds_column = IMPORT_COLUMNS.index('bounds')
@@ -473,8 +409,6 @@ def location_rows_projection(rows):
     if seen != LOCATION_HEIGHT_PATHS:
         raise Stop('all_three_fixed_location_containers_required')
     return result
-
-
 def location_projection(nodes):
     for node in nodes:
         bounds = node.get('bounds')
@@ -493,8 +427,6 @@ def location_projection(nodes):
                     'editable', 'editable_text_interface', 'action_interface'))):
             raise Stop('exact_noninteractive_location_container_required')
     return location_rows_projection(full_projection(nodes))
-
-
 def validate_import_ui(ui):
     if (ui.get('schema') != 1 or ui.get('reviewed_by') != 'main-reviewer'
             or ui.get('scope') != 'clip-media-import' or ui.get('observed_head') != HEAD
@@ -516,8 +448,6 @@ def validate_import_ui(ui):
             or target.get('bounds') != {'x': 241, 'y': 146, 'width': 36, 'height': 28}
             or target.get('action_interface') is not False or target.get('button') is not False):
         raise Stop('exact_observed_nonAction_Import_label_required')
-
-
 def exact_fixture(inputs):
     if not inputs.is_absolute() or inputs.name != 'asset-clip-inputs' or '..' in inputs.parts:
         raise Stop('exact_owned_fixture_directory_required')
@@ -534,8 +464,6 @@ def exact_fixture(inputs):
             or hashlib.sha256(path.read_bytes()).hexdigest() != FIXTURE_SHA):
         raise Stop('exact_owned_800B_fixture_required')
     return path
-
-
 def import_target(data, ui, pid):
     public_context(data, pid)
     if full_projection(data['nodes']) != ui['editor_public_nodes']:
@@ -544,8 +472,6 @@ def import_target(data, ui, pid):
     if len(targets) != 1 or targets[0] != ui['import_target']:
         raise Stop('exact_current_visible_Import_label_required')
     return targets[0]
-
-
 def native_template(data, ui, pid, phase):
     showing = public_context(data, pid, allow_dialog=True, native=True)
     if phase not in ('before', 'location'):
@@ -564,8 +490,6 @@ def native_template(data, ui, pid, phase):
     if len(roots) != 1 or len(accept) != 1 or len(cancel) != 1:
         raise Stop('exact_current_GTK_dialog_accept_cancel_required')
     return showing, accept[0]
-
-
 def bounded_native_metadata_observation(native, expected, read_sample, check_window, deadline, record,
                                         clock=time.monotonic, sleep=time.sleep):
     """Read at most three trees in <=2s; stability alone never grants input authority."""
@@ -585,7 +509,6 @@ def bounded_native_metadata_observation(native, expected, read_sample, check_win
             check_window()
             if clock() >= until:
                 raise Stop('native_metadata_observation_deadline_no_input')
-            # The existing probe supplies complete, same-PID, nonfield trees.
             public_context(data, native['pid'], allow_dialog=True, native=True)
             nodes = data['nodes']
             current = before_projection(nodes)
@@ -618,8 +541,6 @@ def bounded_native_metadata_observation(native, expected, read_sample, check_win
     finally:
         record['elapsed_seconds'] = round(clock() - started, 3)
     record['verdict'] = 'stable_metadata_no_file_input' if record['stable'] else 'metadata_not_stable_no_input'
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('app-pid', 'window-id'):
@@ -645,7 +566,6 @@ def main():
               'settings_pixels_captured': False, 'login_attempted': False, 'model_started': False,
               'external_upload_requested': False, 'sourcecopy_verified': False,
               'product_verdict': 'pending_main_actual_image_review', 'cleanup_owner': 'launcher <=300s'}
-
     def command(argv, binary=False, search=False):
         left = min(end, read_only_until or end) - time.monotonic()
         if left < 0.25:
@@ -657,12 +577,10 @@ def main():
         if result.returncode and not (search and result.returncode == 1):
             raise Stop('owned_UI_command_failed_no_retry_raw_withheld')
         return result.stdout
-
     def pause():
         if end - time.monotonic() < 1:
             raise Stop('insufficient_observation_time')
         time.sleep(0.7)
-
     def descendants():
         found, pending = {args.app_pid}, [args.app_pid]
         while pending:
@@ -683,7 +601,6 @@ def main():
                         found.add(child)
                         pending.append(child)
         return found
-
     def native_windows():
         result = []
         for pid in descendants():
@@ -694,32 +611,26 @@ def main():
                 fields = dict(line.split('=', 1) for line in command(
                     ['xdotool', 'getwindowgeometry', '--shell', str(wid)]).splitlines() if '=' in line)
                 bounds = [int(fields[k]) for k in ('X', 'Y', 'WIDTH', 'HEIGHT')]
-                # No visible owned extra is ignored, even if it is smaller than a chooser.
                 if not (pid != args.app_pid and bounds[0] >= 0 and bounds[1] >= 0
                         and bounds[2] >= 1 and bounds[3] >= 1
                         and bounds[0] + bounds[2] <= dims[0] and bounds[1] + bounds[3] <= dims[1]):
                     raise Stop('unknown_owned_extra_window_no_input_or_pixels')
                 result.append({'pid': pid, 'window': wid, 'bounds': bounds})
         return sorted(result, key=lambda n: n['window'])
-
     def focus_main():
         if (not owned_descendant(args.app_pid, args.app_pid) or native_windows()
                 or set(command(['xdotool', 'search', '--onlyvisible', '--pid', str(args.app_pid)], search=True).split()) != {str(args.window_id)}
                 or int(command(['xdotool', 'getwindowpid', str(args.window_id)]).strip()) != args.app_pid
                 or int(command(['xdotool', 'getwindowfocus']).strip()) != args.window_id):
             raise Stop('same_owned_App_window_and_focus_required')
-
-
     def focus_native(native):
         if native_windows() != [native] or not owned_descendant(native['pid'], args.app_pid):
             raise Stop('exact_current_owned_native_window_required')
         if (int(command(['xdotool', 'getwindowpid', str(native['window'])]).strip()) != native['pid']
                 or int(command(['xdotool', 'getwindowfocus']).strip()) != native['window']):
             raise Stop('same_owned_native_PID_and_focus_required')
-
     def observe_import_native_metadata(native):
         nonlocal read_only_until
-        # Exact 0aa filtered chooser; historical disabled/zero bounds stay raw.
         if native['bounds'] != [0, 0, 825, 384]:
             raise Stop('unknown_import_GTK_geometry_observed_no_input')
         record = {}
@@ -733,7 +644,6 @@ def main():
             read_only_until = None
         if not record['stable'] or not all(n['before_matched'] for n in record['samples']):
             raise Stop('filtered_import_GTK_before_unstable_or_changed_no_input')
-
     def collect_import_native():
         until = min(end, time.monotonic() + 12)
         previous, stable = None, None
@@ -760,11 +670,8 @@ def main():
         command(['xdotool', 'windowfocus', '--sync', str(args.window_id)])
         snapshot('12-import-app-unknown-result', allow_dialog=True)
         raise Stop('no_unique_stable_owned_import_native_main_review_required')
-
     def native_action(native, node, mode):
         focus_native(native)
-        # Fresh complete phase match immediately before spawning the independently
-        # guarded helper. No target reindexing, synthetic keyboard accept or replay.
         native_template(probe('14-before-' + mode + '-public', native=native, allow_dialog=True),
                         import_ui, native['pid'], 'location')
         report['actions'].append({'kind': 'one_owned_public_native_attempt', 'mode': mode,
@@ -790,8 +697,8 @@ def main():
         if (completed.returncode or data.get('success') is not True or data.get('field_values_read') is not False
                 or data.get('file_lists_read') is not False):
             raise Stop('native_import_UI_action_unconfirmed_no_retry')
-
     def import_flow():
+        nonlocal read_only_until
         report['project_manifest_before_import'] = report['project_manifest']
         focus_main()
         command(['xdotool', 'windowsize', '--sync', str(args.window_id), '1280', '900'])
@@ -837,8 +744,20 @@ def main():
         command(['xdotool', 'windowfocus', '--sync', str(args.window_id)])
         focus_main()
         prior = None
+        started_root = time.monotonic()
+        record = {'accept_succeeded': True, 'native_gone': True, 'recovery_used': False,
+            'healthy_max_samples': 4, 'recovery_max_samples': 3, 'recovery_seconds': 2.0,
+            'started': started_root, 'deadline': min(end, started_root + 2.0), 'samples': []}
+        report['import_result_root_observation'] = record
         for sample in range(1, 5):
-            data = probe(f'15-import-result-sample-{sample:02d}-public', allow_dialog=True)
+            post.import_root_before(record, sample, time.monotonic(), Stop)
+            if record['recovery_used']:
+                read_only_until = record['deadline']
+            data = probe(f'15-import-result-sample-{sample:02d}-public', allow_dialog=True, readonly_record=record)
+            if data is None:
+                prior = None
+                post.import_root_pause(record, time.monotonic, time.sleep, pause, Stop)
+                continue
             try:
                 state = imported_state(data, timeline_ui, args.app_pid)
             except Stop as error:
@@ -849,7 +768,7 @@ def main():
                 report.setdefault('import_readonly_pending', []).append(
                     {'sample': sample, 'status': 'readonly_import_pending'})
                 prior = None
-                pause()
+                post.import_root_pause(record, time.monotonic, time.sleep, pause, Stop)
                 continue
             frame = pixels()
             guard(frame, 'imported-thumbnail', timeline_ui['thumbnail_guard'])
@@ -859,23 +778,21 @@ def main():
                 report['import_result_stable_observed'] = True
                 break
             prior = current
-            pause()
+            post.import_root_pause(record, time.monotonic, time.sleep, pause, Stop)
+        read_only_until = None
+        post.import_root_finish(record, time.monotonic())
         if not report.get('import_result_stable_observed'):
             snapshot('15-import-result', allow_dialog=True)
             raise Stop('import_result_stability_unconfirmed_main_review_required')
         exact_fixture(args.input_dir)
         report['fixture_source_unchanged'] = True
-        # Native clip import references the input; do not claim or scan a personal-
-        # library copy. Only the already authorized owned concat.json bytes/SHA.
         report['project_manifest_after_import'] = project_manifest_record(args.work_dir)
         report['project_manifest_changed'] = (report['project_manifest_after_import'].get('sha256')
                 != report['project_manifest_before_import'].get('sha256'))
         snapshot('15-import-result', allow_dialog=True)
         report['status'] = 'clip_import_result_observed_main_review_required'
-
     def timeline_flow():
         report['status'] = 'blocked'
-        # Only the exact imported tree can authorize the one declared gesture.
         data = probe('16-before-insert-public')
         if imported_state(data, timeline_ui, args.app_pid) != 'observed_imported':
             raise Stop('transient_import_tree_cannot_authorize_input')
@@ -895,7 +812,6 @@ def main():
         pause()
         prior = None
         for sample in range(1, 5):
-            # New timeline state is observation only; no semantic success gate or input.
             data = probe(f'16-timeline-result-sample-{sample:02d}-public')
             current = (timeline_canonical(timeline_rows(data['nodes'])), hashlib.sha256(pixels()).hexdigest())
             if current == prior:
@@ -910,14 +826,17 @@ def main():
         if not report.get('timeline_result_stable_observed'):
             raise Stop('timeline_result_stability_unconfirmed_main_review_required')
         report['status'] = 'clip_timeline_result_observed_main_review_required'
-
-    def probe(name, native=None, allow_dialog=False):
+    def probe(name, native=None, allow_dialog=False, readonly_record=None):
         if native is None:
             focus_main()
         else:
             focus_native(native)
         pid = native['pid'] if native else args.app_pid
         io_end = min(end, read_only_until or end)
+        if readonly_record is not None:
+            post.import_root_scope(name, native, allow_dialog, helper, dependencies['probe'], readonly_record, Stop)
+            if readonly_record['recovery_used'] or not readonly_record['samples']:
+                io_end = min(io_end, readonly_record['deadline'])
         left = io_end - time.monotonic()
         if left < 0.25:
             raise Stop('public_metadata_observation_deadline_no_input')
@@ -926,21 +845,30 @@ def main():
             '--deadline-monotonic', str(min(io_end, time.monotonic() + 3)), '--private-accessibility-bus'],
             capture_output=True, timeout=min(5, left))
         path = directory / (name + '.json')
-        if completed.returncode or path.is_symlink() or not path.is_file() or path.stat().st_size > 131072:
+        if (completed.returncode and readonly_record is None) or path.is_symlink() or not path.is_file() or path.stat().st_size > 131072:
             raise Stop('bounded_public_metadata_unavailable_no_retry')
         if sum(p.stat().st_size for p in directory.iterdir() if p.is_file()) + 16384 > 15728640:
             path.unlink()
             raise Stop('metadata_total_budget_exceeded_no_further_capture')
         data = json.loads(path.read_bytes())
+        if readonly_record is not None:
+            report['public_metadata'].append(path.name)
+            readonly_record['samples'].append({'file': path.name, 'error_envelope': False, 'context_verified': False})
+            if completed.returncode:
+                post.import_root_error(data, pid, completed.returncode, readonly_record, time.monotonic(), Stop)
+                return None
+            post.import_root_before(readonly_record, len(readonly_record['samples']), time.monotonic(), Stop)
         if (native is None and allow_dialog and report['scope'] == 'clip-media-import'
                 and tuple(size) == (1280, 900) and helper == dependencies['post_insert']
                 and re.fullmatch(r'20-file-menu-observed(?:-sample-0[1-4])?-public', name)):
             post.file_menu_context(data, pid, public_context, timeline_rows, Stop)
         else:
             public_context(data, pid, allow_dialog=allow_dialog, native=native is not None, width=size[0], height=size[1])
-        report['public_metadata'].append(path.name)
+        if readonly_record is None:
+            report['public_metadata'].append(path.name)
+        else:
+            readonly_record['samples'][-1]['context_verified'] = True
         return data
-
     def pixels(native=None):
         focus_native(native) if native else focus_main()
         width, height = native['bounds'][2:] if native else size
@@ -949,7 +877,6 @@ def main():
         if len(raw) != width * height * 3:
             raise Stop('actual_RGB_size_changed')
         return raw
-
     def guard(raw, name, spec=None, width=1280, height=900):
         spec = spec or ui['guards'][name]
         matched = rgb_matches(raw, spec, width, height)
@@ -957,9 +884,7 @@ def main():
                                  'expected_rgb_sha256': spec['rgb_sha256']})
         if not matched:
             raise Stop('current_RGB_guard_changed_no_input:' + name)
-
     def snapshot(name, native=None, allow_dialog=False):
-        # A fresh complete nonfield metadata proof precedes every saved image.
         probe(name + '-public', native=native, allow_dialog=allow_dialog)
         if len(report['captures']) >= 10:
             raise Stop('PNG_count_limit_before_capture')
@@ -976,21 +901,14 @@ def main():
             raise Stop('PNG_budget_exceeded_do_not_publish')
         report['captures'].append({'file': path.name, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
                                   'surface': 'owned-native-window' if native else 'owned-App-window'})
-
     def click(xy, name):
         focus_main()
         report['actions'].append({'kind': 'one_guarded_click_attempt', 'target': name, 'xy': xy})
         command(['xdotool', 'mousemove', '--window', str(args.window_id), *map(str, xy)])
         focus_main()
         command(['xdotool', 'click', '1'])
-        # This moves only the pointer; it cannot send another click to a late native.
         command(['xdotool', 'mousemove', '--window', str(args.window_id), '100', '650'])
         pause()
-
-
-
-
-
     def action_attempt(intent, filename):
         focus_main()
         report['actions'].append({'kind': 'one_clip_dialog_input_attempt', 'intent': intent})
@@ -1010,7 +928,6 @@ def main():
             snapshot('11-unknown-editor-result', allow_dialog=True)
             raise Stop('clip_dialog_input_unconfirmed_no_retry')
         pause()
-
     def await_editor():
         until = min(end, time.monotonic() + 12)
         prior = None
@@ -1033,7 +950,6 @@ def main():
             pause()
         snapshot('11-unknown-editor-result', allow_dialog=True)
         raise Stop('editor_stability_not_established_main_review_required')
-
     try:
         if (args.expected_sha != HEAD or args.app_pid < 2 or args.window_id < 1 or end <= started
                 or not args.isolated_display_capture or not args.private_accessibility_bus or not os.environ.get('DISPLAY')):
@@ -1107,7 +1023,6 @@ def main():
         frame = pixels()
         for name in ui['page_guard_names']:
             guard(frame, name)
-        # Fresh complete metadata and same current RGB immediately before the single target click.
         page_target(probe('02-target-recheck-public'), ui, args.app_pid)
         frame = pixels()
         for name in ui['page_guard_names']:
@@ -1127,12 +1042,11 @@ def main():
         report['project_create_attempted'] = True
         await_editor()
         report['project_manifest'] = project_manifest_record(args.work_dir)
-        # Four empty-editor sizes already have actual acceptance evidence.
-        import_flow()
-        timeline_flow()
         post_spec = importlib.util.spec_from_file_location('clip_post_insert', dependencies['post_insert'])
         post = importlib.util.module_from_spec(post_spec)
         post_spec.loader.exec_module(post)
+        import_flow()
+        timeline_flow()
         helper = dependencies['post_insert']
         report['post_insert_sha256'] = ui['post_insert_sha256']
         report['status'] = 'blocked'
@@ -1140,7 +1054,6 @@ def main():
                  pixels=pixels, guard=guard, focus=focus_main, command=command, pause=pause,
                  snapshot=snapshot, report=report, args=args, remaining=lambda: end - time.monotonic(),
                  fixture=exact_fixture, manifest=project_manifest_record)
-
     except Stop as exc:
         report['blocking_reason'] = str(exc)
     except subprocess.TimeoutExpired:
@@ -1148,6 +1061,8 @@ def main():
     except Exception:
         report['blocking_reason'] = 'unexpected_owned_runtime_error_raw_withheld'
     finally:
+        if 'import_result_root_observation' in report:
+            post.import_root_finish(report['import_result_root_observation'], time.monotonic())
         report['elapsed_seconds'] = round(time.monotonic() - started, 3)
         raw = bounded_report_bytes(report)
         if directory is not None:
@@ -1165,7 +1080,5 @@ def main():
                     stream.write(raw)
         print(json.dumps({k: report[k] for k in ('scope', 'status', 'blocking_reason', 'sourcecopy_verified') if k in report}))
     return 0 if report['status'] == 'clip_timeline_result_observed_main_review_required' else 2
-
-
 if __name__ == '__main__':
     raise SystemExit(main())
