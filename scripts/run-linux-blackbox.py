@@ -186,7 +186,7 @@ def native_runtime_identity(stage):
         return ASSET_RUNTIME
     if stage == 'assistant-config-observation':
         return (*CLIP_EDITOR_RUNTIME[:4], '5a1d5b1630db3bc097a8ed0f201938d53371270af0599879ef76bb98208d969e')
-    if stage in ('clip-editor-entry', 'clip-media-import', 'visual-settings-entry-observation'):
+    if stage in ('clip-editor-entry', 'clip-media-import', 'visual-settings-entry-observation', 'visual-theme-matrix-observation'):
         return CLIP_EDITOR_RUNTIME
     return (NATIVE_HEAD, NATIVE_APP_SHA, NATIVE_BUILD_RUN, NATIVE_ARTIFACT, NATIVE_IDENTITY_SHA)
 
@@ -853,6 +853,9 @@ NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-cont
 # Global Settings entry records safe metadata only; no theme Action or Settings pixels.
 NATIVE_SCOPES.update({'visual-settings-entry-observation': {'scripts': {'qa': ['visual-settings-entry-controller.py', '2b947959d1845a89d3d78a0d981ff1a353aa91b38d22a25040127b20d37cf707'], 'visual_settings_public': ['visual-settings-entry-public.py', '828295197852fbd4528ac23a2adadebf93d8d71f2d4a1eeaa394918b7479d1cb']}, 'ui': ['visual-settings-entry-ui.json', '4bd74047a66cc8930733b122053b3950f0ddb8b27f8305333bf650497d9ca0bd'], 'next_stage': None, 'artifacts': {'main-qa-visual-settings-entry': {'png': [], 'public': ['00-before-quick-public.json', '01-after-quick-public.json', '02-before-settings-public.json', '03-settings-entry-public.json'], 'action': ['02-settings-action.json'], 'other': ['visual-settings-report.json']}}, 'artifact_JSON_limits': {'public_metadata_each': 131072, 'native_action_each': 8192, 'report_each': 16384}}})
 
+# Source-bound dark/close Actions and metadata-only Settings; eight page images await main review.
+NATIVE_SCOPES.update({'visual-theme-matrix-observation': {'scripts': {'qa': ['visual-theme-matrix-controller.py', '4c1d02a01a787b8269f5780a85ae98796192793f710ecc766745d50fe07b4c41'], 'visual_theme_public': ['visual-theme-matrix-public.py', '1d6eb811f7e0e5d4ef04c92c6885a0e7bb232590a2e9286c905f08117b238105'], 'visual_theme_guard': ['visual-theme-matrix-guard.json', 'ebd2e734c402bd285df53a0f849be595a12d6e28e10c230174169a9210913ced']}, 'ui': ['visual-theme-matrix-ui.json', 'eac9b5d16364eb57ec57d0e088ac65347941761eece31f7d4cdd676fc93009ba'], 'next_stage': None, 'artifacts': {'main-qa-visual-theme-matrix': {'png': ['light-1024x900.png', 'light-1280x900.png', 'light-1440x900.png', 'light-1280x720.png', 'dark-1024x900.png', 'dark-1280x900.png', 'dark-1440x900.png', 'dark-1280x720.png'], 'public': ['00-before-quick-public.json', '01-after-quick-public.json', '02-before-settings-public.json', '03-settings-entry-public.json', '04-dark-settings-public.json', '05-after-close-public.json', 'dark-1024x900-public.json', 'dark-1280x720-public.json', 'dark-1280x900-public.json', 'dark-1440x900-public.json', 'light-1024x900-public.json', 'light-1280x720-public.json', 'light-1280x900-public.json', 'light-1440x900-public.json'], 'action': ['02-settings-action.json', '04-dark-theme-action.json', '05-close-settings-action.json'], 'other': ['visual-theme-report.json']}}, 'artifact_JSON_limits': {'public_metadata_each': 131072, 'native_action_each': 8192, 'report_each': 16384}}})
+
 def copy_assets_fixture(source, work):
     """Only assets-import receives one copied synthetic PNG."""
     if (not source.is_absolute() or source.is_symlink() or not source.is_dir()
@@ -1503,7 +1506,7 @@ def main():
                     candidate["build_job_id"] != 112783809153 or candidate["app_bytes"] != 467559920
                     or result["candidate"]["manifest_sha256"] != '5073c8a6bf6895c7d58547e12f361dd329a9c11498c8eb8b792fa5548c9be054'):
                 raise ValueError("asset candidate job, size or manifest differs from its immutable provenance")
-            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation', 'clip-media-import', 'visual-settings-entry-observation') and (
+            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation', 'clip-media-import', 'visual-settings-entry-observation', 'visual-theme-matrix-observation') and (
                     candidate["build_job_id"] != 112019086814 or candidate["app_bytes"] != 467641344
                     or result["candidate"]["manifest_sha256"] != 'd666628e2499a26ef5f541898a4b5f0c8a69bba98bc6a3a28a2725d37c426d73'):
                 raise ValueError("current candidate job, size or manifest differs from its immutable provenance")

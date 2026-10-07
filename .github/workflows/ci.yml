@@ -24,7 +24,7 @@ on:
       qa_next_stage:
         description: Reviewed independent script stage
         type: choice
-        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation', 'alpha-workflow-observation', 'fresh-workbench-observation', 'settings-controls-observation', 'canvas-entry-observation', 'workspaces-observation', 'assistant-entry-observation', 'assistant-config-observation', 'assets-import', 'asset-library-flow', 'clip-create-observation', 'clip-editor-entry', 'clip-media-import', 'visual-settings-entry-observation', 'persistence-pair-observation']
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation', 'alpha-workflow-observation', 'fresh-workbench-observation', 'settings-controls-observation', 'canvas-entry-observation', 'workspaces-observation', 'assistant-entry-observation', 'assistant-config-observation', 'assets-import', 'asset-library-flow', 'clip-create-observation', 'clip-editor-entry', 'clip-media-import', 'visual-settings-entry-observation', 'visual-theme-matrix-observation', 'persistence-pair-observation']
         default: 'navigation'
       qa_ui_approval:
         description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
@@ -120,7 +120,7 @@ jobs:
                "$SOURCE_HEAD" == 7be354a92315a6dd5128f0da59e84db7434be918 &&
                -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
           fi
-          if [[ "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == clip-media-import ]]; then
+          if [[ "$NEXT_STAGE" == visual-theme-matrix-observation || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == clip-media-import ]]; then
             [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
                "$SOURCE_RUN_ID" == 37385930165 && "$SOURCE_ARTIFACT_ID" == 11380395799 &&
                "$SOURCE_HEAD" == 0aa9406247e53f073c0b4df686adc68b40e2f8f6 &&
@@ -159,7 +159,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get install -y xvfb xdotool imagemagick fonts-noto-cjk libxkbcommon-x11-0
-          if [[ "$BLACKBOX_QA" == true && ( "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == persistence-pair-observation ) ]]; then
+          if [[ "$BLACKBOX_QA" == true && ( "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == visual-theme-matrix-observation || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == persistence-pair-observation ) ]]; then
             missing=()
             packages=(python3-gi gir1.2-atspi-2.0 dbus-x11 at-spi2-core)
             if [[ "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == persistence-pair-observation ]]; then
@@ -354,7 +354,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
-          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == visual-settings-entry-observation ]]
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == visual-theme-matrix-observation ]]
           CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST" --source-head "$SOURCE_HEAD")
           if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
             CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
@@ -364,7 +364,7 @@ jobs:
             CLIENT_ARGS=(--client-binary "$PWD/src/target/debug/seecut-editor-mcp")
           fi
           DISPLAY_CAPTURE_ARGS=()
-          if [[ "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == visual-settings-entry-observation ]]; then
+          if [[ "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == visual-theme-matrix-observation ]]; then
             DISPLAY_CAPTURE_ARGS=(--isolated-display-capture)
           fi
           QA_SCRIPT="$PWD/scripts/independent-linux-blackbox.py"
@@ -410,13 +410,15 @@ jobs:
             INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
             BUS_COMMAND=(dbus-run-session --)
             BUS_ARGS=(--private-accessibility-bus)
-          elif [[ "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == clip-media-import ]]; then
+          elif [[ "$NEXT_STAGE" == visual-theme-matrix-observation || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == clip-media-import ]]; then
             [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37385930165 &&
                "$SOURCE_ARTIFACT_ID" == 11380395799 && "$SOURCE_HEAD" == 0aa9406247e53f073c0b4df686adc68b40e2f8f6 &&
                -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
             if [[ "$NEXT_STAGE" == clip-media-import ]]; then
               QA_SCRIPT="$PWD/scripts/clip-import-controller.py"
               INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
+            elif [[ "$NEXT_STAGE" == visual-theme-matrix-observation ]]; then
+              QA_SCRIPT="$PWD/scripts/visual-theme-matrix-controller.py"
             elif [[ "$NEXT_STAGE" == visual-settings-entry-observation ]]; then
               QA_SCRIPT="$PWD/scripts/visual-settings-entry-controller.py"
             elif [[ "$NEXT_STAGE" == assistant-config-observation ]]; then
