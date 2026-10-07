@@ -1112,6 +1112,7 @@ def main():
         post_spec.loader.exec_module(post)
         helper = dependencies['post_insert']
         report['post_insert_sha256'] = ui['post_insert_sha256']
+        report['status'] = 'blocked'
         post.run(context=public_context, rows=timeline_rows, stop=Stop, probe=probe,
                  pixels=pixels, guard=guard, focus=focus_main, command=command, pause=pause,
                  snapshot=snapshot, report=report, args=args, remaining=lambda: end - time.monotonic(),

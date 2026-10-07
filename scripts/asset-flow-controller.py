@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Finite assets import on one fresh frozen App; launcher owns cleanup <=300s.
 
-No field reads, Settings pixels, external/model calls, retries or arbitrary files.
+No field reads, Settings pixels, external/model calls, input retries or arbitrary files.
 This standalone controller remains loadable when copied as independent-qa.py.
 """
 import argparse
@@ -220,6 +220,23 @@ def rgb_matches(raw, guard, width=1280, height=900):
     return hashlib.sha256(crop).hexdigest() == guard['rgb_sha256']
 
 
+def reviewed_canvas_probe_failure(data, pid):
+    """One observed post-handoff failure shape; never label it DEFUNCT."""
+    return (type(data) is dict and set(data) == {'status', 'app_pid', 'field_values_read',
+            'ui_actions', 'screenshots', 'product_verdict', 'collector_failure', 'elapsed_seconds'}
+            and data['status'] == 'public_accessibility_unavailable_or_input_blocked'
+            and type(data['app_pid']) is int and data['app_pid'] == pid and pid >= 2
+            and data['field_values_read'] is False and data['ui_actions'] == []
+            and data['screenshots'] == [] and data['product_verdict'] == 'not_tested'
+            and type(data['collector_failure']) is dict
+            and type(data['collector_failure'].get('node_path')) is list
+            and all(type(i) is int for i in data['collector_failure']['node_path'])
+            and data['collector_failure'] == {'stage': 'node_state_set',
+                'exception_kind': 'runtime_error', 'node_path': [0, 15], 'child_index': None}
+            and type(data['elapsed_seconds']) in (int, float)
+            and 0 <= data['elapsed_seconds'] <= 2.0)
+
+
 def canvas_return_target(data, ui, pid):
     """Exact complete main-reviewed canvas tree before one return navigation."""
     showing = public_context(data, pid)
@@ -409,18 +426,89 @@ def main():
         else:
             focus_native(native)
         pid = native['pid'] if native else args.app_pid
+        began = time.monotonic()
         completed = subprocess.run([args.probe_python, '-B', str(helper), '--app-pid', str(pid),
             '--owned-root-pid', str(args.app_pid), '--output', str(directory), '--output-name', name + '.json',
             '--deadline-monotonic', str(min(end, time.monotonic() + 3)), '--private-accessibility-bus'],
             capture_output=True, timeout=min(5, max(0.25, end - time.monotonic())))
         path = directory / (name + '.json')
         if completed.returncode or path.is_symlink() or not path.is_file() or path.stat().st_size > 131072:
-            raise Stop('bounded_public_metadata_unavailable_no_retry')
-        enforce_budget(path)
-        data = json.loads(path.read_bytes())
+            if (completed.returncode == 2 and name == '12-canvas-result-public'
+                    and native is None and allow_dialog is True
+                    and report.get('add_open_Action_success') is True
+                    and not path.is_symlink() and path.is_file()
+                    and path.stat().st_uid == os.getuid() and path.stat().st_size <= 131072):
+                data, path = recover_canvas_metadata(path, began)
+            else:
+                raise Stop('bounded_public_metadata_unavailable_no_retry')
+        else:
+            enforce_budget(path)
+            data = json.loads(path.read_bytes())
         public_context(data, pid, allow_dialog=allow_dialog, native=native is not None)
         report['public_metadata'].append(path.name)
         return data
+
+    def recover_canvas_metadata(first_path, began):
+        nonlocal end
+        previous_end = end
+        end = min(end, began + 2.0)
+        try:
+            # Count the original failed sample: never exceed three total or two seconds.
+            first = json.loads(first_path.read_bytes())
+            if not reviewed_canvas_probe_failure(first, args.app_pid):
+                raise Stop('canvas_probe_first_failure_unreviewed_no_retry')
+            enforce_budget(first_path)
+            report['public_metadata'].append(first_path.name)
+            report['canvas_probe_recovery_started'] = True
+            record = {'max_samples': 3, 'limit_seconds': 2.0, 'samples': 1,
+                      'first_failure': 'observed_node_state_set_runtime_error_path_0_15',
+                      'completed': False, 'successful_metadata': None}
+            report['canvas_probe_recovery'] = record
+            until = end
+            for sample in (2, 3):
+                delay = .05 * (sample - 1)
+                if until - time.monotonic() < delay + .1:
+                    raise Stop('canvas_probe_recovery_deadline_no_input')
+                time.sleep(delay)
+                focus_main()
+                name = f'12-canvas-recovery-{sample:02d}-public.json'
+                path = directory / name
+                if path.exists() or path.is_symlink():
+                    raise Stop('canvas_probe_fresh_recovery_path_required')
+                remaining = until - time.monotonic()
+                if remaining < .1:
+                    raise Stop('canvas_probe_recovery_deadline_no_input')
+                record['samples'] = sample
+                completed = subprocess.run([args.probe_python, '-B', str(helper),
+                    '--app-pid', str(args.app_pid), '--owned-root-pid', str(args.app_pid),
+                    '--output', str(directory), '--output-name', name,
+                    '--deadline-monotonic', str(until), '--private-accessibility-bus'],
+                    capture_output=True, timeout=remaining)
+                if (path.is_symlink() or not path.is_file() or path.stat().st_uid != os.getuid()
+                        or path.stat().st_size > 131072):
+                    raise Stop('canvas_probe_bounded_recovery_file_required')
+                enforce_budget(path)
+                data = json.loads(path.read_bytes())
+                focus_main()
+                if time.monotonic() >= until:
+                    raise Stop('canvas_probe_recovery_deadline_no_input')
+                if completed.returncode:
+                    report['public_metadata'].append(path.name)
+                    if completed.returncode != 2 or not reviewed_canvas_probe_failure(data, args.app_pid):
+                        raise Stop('canvas_probe_recovery_unknown_failure_no_input')
+                    continue
+                # No cached/fabricated tree: the actual new complete tree must match.
+                canvas_return_target(data, ui, args.app_pid)
+                raw = pixels()
+                guard(raw, 'reviewed-canvas-after-recovery', ui['current_return_observation']['canvas_guard'])
+                guard(raw, 'nav-target')
+                if time.monotonic() >= until:
+                    raise Stop('canvas_probe_recovery_deadline_no_input')
+                record.update(completed=True, successful_metadata=path.name)
+                return data, path
+            raise Stop('canvas_probe_recovery_exhausted_no_input')
+        finally:
+            end = previous_end
 
     def pixels(native=None):
         focus_native(native) if native else focus_main()
@@ -844,6 +932,7 @@ def main():
         report['status']='blocked'
         report['blocking_reason'] = str(exc)
         if (directory is not None and not report.get('return_assets_observation_started')
+                and not report.get('canvas_probe_recovery_started')
                 and str(exc).startswith(('current_','actual_empty_','complete_current_','unique_current_','one_current_','unknown_modal_','unknown_asset_'))):
             try:
                 if not (directory/'10-unknown-flow-result.png').exists():snapshot('10-unknown-flow-result',allow_dialog=True)

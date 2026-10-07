@@ -644,7 +644,7 @@ def copy_workflow_fixtures(source, work):
 
 
 NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-controller.py',
-                                           '76c0d482d4e56f800c21119ee1edb4c6be66b0b57d777ad843969ba12197537c'],
+                                           '1db3ac5c4fe547a9adc192e63cb9d4709b96d1a74b87dbd9c0053db45d1417a7'],
                                     'native_public_probe': ['asset-flow-public-probe.py',
                                                             '2f965552da7b5fe4c5fd002e010a2c712091c441d87bef2e8cabb2f0fe52c17d'],
                                     'native_action': ['asset-flow-native-action.py',
@@ -695,7 +695,7 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                                                                 '10-canvas-flow-result-public.json',
                                                                                 '10-unknown-flow-result-public.json',
                                                                                 '11-before-handoff-new-public.json',
-                                                                                '11-handoff-new-result-public.json', '11-handoff-open-recheck-public.json', '12-canvas-result-public.json', '13-before-return-assets-public.json', '13-return-assets-recheck-public.json', '13-before-return-assets-requires-review-public.json', '13-assets-return-result-public.json'],
+                                                                                '11-handoff-new-result-public.json', '11-handoff-open-recheck-public.json', '12-canvas-result-public.json', '13-before-return-assets-public.json', '13-return-assets-recheck-public.json', '13-before-return-assets-requires-review-public.json', '13-assets-return-result-public.json', '12-canvas-recovery-02-public.json', '12-canvas-recovery-03-public.json'],
                                                                      'action': ['05-native-set-location-action.json',
                                                                                 '05-native-accept-action.json',
                                                                                 '07-search-miss-action.json',
@@ -723,9 +723,9 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
 
 # Exact reviewed clip import controller and pinned nonfield templates.
 NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-controller.py',
-                                          'eb00c397adb4e9372d3d0d609f9dca3a13b0c4ce8209ad48daecb324536180c0'],
+                                          '44f06fd15b69608b59bddfc41c7ce0a58e28db253125178ef4426aeb4ffb8245'],
                                    'clip_import_controller': ['clip-import-controller.py',
-                                                              'eb00c397adb4e9372d3d0d609f9dca3a13b0c4ce8209ad48daecb324536180c0'],
+                                                              '44f06fd15b69608b59bddfc41c7ce0a58e28db253125178ef4426aeb4ffb8245'],
                                    'native_public_probe': ['clip-editor-public-probe.py',
                                                            '562612f3bf1d54da2f9011fdea0849b6ecdf0dc66d129b42546fb0bd21bc3cd8'],
                                    'clip_editor_action': ['clip-editor-action.py',
@@ -737,9 +737,9 @@ NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-cont
                                    'clip_timeline_guard': ['clip-timeline-guard.json',
                                                            'fac01c381f3a4fdadfbf2131ad89853c8885fa67d676bccf998c4ffed248ad10'],
                                    'clip_post_insert': ['clip-post-insert.py',
-                                                        '2db0ba8c66f238353ec8ad2177f7ea19f2be08a3913f730cdb8e1b0f972f498f']},
+                                                        '2992a8aafbd8140c40c89235af3e480e3b6f5eb9374be00a59fdb2b4a8443e3e']},
                        'ui': ['clip-import-ui.json',
-                              'c6fb4d06e05ec2e941e951096ecc149fee59c11b1a629fd35417ce5c0cb320d5'],
+                              '631cae61d13a31c773d232bc450bdfc5eaa25d800ae0aecee2bef35cb7d0c4aa'],
                        'next_stage': None,
                        'artifacts': {'main-qa-clip-media-import': {'png': ['01-after-quick.png',
                                                                            '02-page.png',
