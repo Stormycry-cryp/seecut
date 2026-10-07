@@ -220,6 +220,30 @@ def rgb_matches(raw, guard, width=1280, height=900):
     return hashlib.sha256(crop).hexdigest() == guard['rgb_sha256']
 
 
+def canvas_return_target(data, ui, pid):
+    """Exact complete main-reviewed canvas tree before one return navigation."""
+    showing = public_context(data, pid)
+    spec = ui['current_return_observation']
+    nodes = data['nodes']
+    digest = hashlib.sha256(json.dumps(nodes, ensure_ascii=False, sort_keys=True,
+                                      separators=(',', ':')).encode()).hexdigest()
+    if len(nodes) != spec['node_count'] or digest != spec['nodes_sha256']:
+        raise Stop('reviewed_canvas_return_complete_tree_changed_no_input')
+    expected = ui['navigation']['assets']
+    targets = [n for n in showing if n.get('label') == '资产库' and n.get('role') == 43]
+    if (len(targets) != 1 or any(targets[0].get(k) != expected.get(k) for k in PUBLIC_KEYS)
+            or not all(targets[0].get(k) is True for k in ('enabled', 'sensitive', 'focusable', 'button'))
+            or any(targets[0].get(k) is not False for k in ('entry', 'editable', 'editable_text_interface',
+                                                         'action_interface', 'modal', 'dialog', 'file_chooser'))):
+        raise Stop('reviewed_canvas_return_navigation_changed_no_input')
+    xy = ui['navigation_xy']
+    bounds = targets[0]['bounds']
+    if xy != [40, 286] or not (bounds['x'] < xy[0] < bounds['x'] + bounds['width']
+                              and bounds['y'] < xy[1] < bounds['y'] + bounds['height']):
+        raise Stop('reviewed_canvas_return_point_changed_no_input')
+    return targets[0]
+
+
 def owned_descendant(pid, owner):
     seen = set()
     while pid >= 2 and pid not in seen and len(seen) < 16:
@@ -251,6 +275,8 @@ def validate_ui(ui):
         raise Stop('exact_reviewed_handoff_new_policy_required')
     if ui.get('handoff_open') != {'mode': 'handoff-open', 'target_path': [0, 43], 'target_bounds': {'x': 872, 'y': 631, 'width': 104, 'height': 40}, 'label': '加入并打开', 'full_public_sha256': '2275157cef623af860380d69f504f896e1e07be270a54a5a4f22a97c115763e8', 'modal_guard': {'region': [280, 205, 720, 490], 'rgb_sha256': '60c491346af6b71b8e3808200b1acad2732f1e5512e3d65b592fbbc50d0caa36'}, 'observed_head': '0aa9406247e53f073c0b4df686adc68b40e2f8f6', 'observed_app_sha256': '03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2', 'Action_attempts': 1, 'next': 'bounded_metadata_PNG_and_owned_imported_fixture_check_only'}:
         raise Stop('exact_reviewed_handoff_open_policy_required')
+    if ui.get('current_return_observation') != {'nodes_sha256': 'ee7508f2e0c27f5d2a86a2e9990ea96b771aa574d24ad09f810a99f890d5c062', 'node_count': 78, 'canvas_guard': {'region': [176, 273, 736, 414], 'rgb_sha256': 'c56d74bf7390b59cd8b3b788900e4464bed0a98fe273a1d8a05b29d4e6e2ddd9'}, 'source_metadata_sha256': '6a4466ca04587d8b9ac8cbf0ebc516ea67340e09dd9febbaf0a37c22ecaa9f06', 'source_png_sha256': '4ae54c0b9fc800360481be25b57a36b04d93a8a70cf5cac412ee1177da487097', 'next': 'one_return_navigation_then_safe_observe_only'}:
+        raise Stop('exact_reviewed_canvas_return_policy_required')
     expected = ('assets', [40, 286], [1180, 86]) if SCOPE == 'asset-library-flow' else ('clip', [40, 228], [290, 251])
     if (ui.get('page'), ui.get('navigation_xy'), ui.get('target_xy')) != expected:
         raise Stop('exact_scope_action_points_required')
@@ -611,6 +637,40 @@ def main():
         report['sourcecopy_post_handoff_verified']=True
         report['status']='asset_canvas_final_result_observed_main_review_required'
         report['flow_result']='after_one_add_open_Action_actual_surface_unreviewed'
+        return_to_assets_observe()
+
+    def return_to_assets_observe():
+        # This checkpoint does not establish recycle/current-target acceptance.
+        report.update(return_assets_observation_started=True, return_assets_attempted=False,
+                      restore_attempted=False, current_handoff_attempted=False)
+        try:
+            canvas_return_target(probe('13-before-return-assets-public'), ui, args.app_pid)
+            raw = pixels()
+            guard(raw, 'reviewed-canvas-before-return', ui['current_return_observation']['canvas_guard'])
+            guard(raw, 'nav-target')
+            canvas_return_target(probe('13-return-assets-recheck-public'), ui, args.app_pid)
+            raw = pixels()
+            guard(raw, 'reviewed-canvas-before-return', ui['current_return_observation']['canvas_guard'])
+            guard(raw, 'nav-target')
+        except Stop:
+            # Original gates still refuse Settings/unknown modal/extra windows.
+            snapshot('13-before-return-assets-requires-review')
+            raise
+        report['return_assets_attempted'] = True
+        # Actual navigation has no Action interface: use its reviewed slot.
+        click(ui['navigation_xy'], 'return-assets-navigation')
+        snapshot('13-assets-return-result')
+        files=imported_files()
+        if (len(files)!=1 or args.input_dir.is_symlink() or not args.input_dir.is_dir()
+                or args.input_dir.stat().st_uid!=os.getuid()
+                or fixture.is_symlink() or not fixture.is_file() or fixture.stat().st_size!=800
+                or fixture.stat().st_uid!=os.getuid()
+                or hashlib.sha256(fixture.read_bytes()).hexdigest()!=FIXTURE_SHA
+                or hashlib.sha256(files[0].read_bytes()).hexdigest()!=FIXTURE_SHA):
+            raise Stop('owned_fixture_or_managed_sourcecopy_changed_after_return')
+        report['sourcecopy_post_return_verified'] = True
+        report['status'] = 'asset_return_result_observed_main_review_required'
+        report['flow_result'] = 'after_one_return_navigation_current_surface_unreviewed'
 
     def imported_files():
         for path in (args.work_dir / 'portable', args.work_dir / 'portable' / 'personal-library',
@@ -700,7 +760,9 @@ def main():
         click([558, 500], 'quick-mode')
         probe('01-after-quick-prepixels-public')
         guard(pixels(), 'quick-sidebar')
-        snapshot('01-after-quick')
+        # Keep full metadata and the preceding fresh quick-sidebar RGB guard.
+        # Omit only this reviewed historical PNG, reserving PNG10 for return.
+        probe('01-after-quick-public')
         before = probe('02-before-navigation-public')
         for name, expected in ui['navigation'].items():
             matches = [n for n in before['nodes'] if n.get('showing') and n.get('label') == expected['label'] and n.get('role') == 43]
@@ -781,7 +843,8 @@ def main():
     except Stop as exc:
         report['status']='blocked'
         report['blocking_reason'] = str(exc)
-        if directory is not None and str(exc).startswith(('current_','actual_empty_','complete_current_','unique_current_','one_current_','unknown_modal_','unknown_asset_')):
+        if (directory is not None and not report.get('return_assets_observation_started')
+                and str(exc).startswith(('current_','actual_empty_','complete_current_','unique_current_','one_current_','unknown_modal_','unknown_asset_'))):
             try:
                 if not (directory/'10-unknown-flow-result.png').exists():snapshot('10-unknown-flow-result',allow_dialog=True)
             except Exception:pass
@@ -809,7 +872,8 @@ def main():
                                     'single_asset_selected_observed_main_review_required',
                                     'single_asset_flow_result_observed_main_review_required',
                                     'handoff_new_selection_result_observed_main_review_required',
-                                    'asset_canvas_final_result_observed_main_review_required') else 2
+                                    'asset_canvas_final_result_observed_main_review_required',
+                                    'asset_return_result_observed_main_review_required') else 2
 
 
 if __name__ == '__main__':

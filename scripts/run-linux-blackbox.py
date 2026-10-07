@@ -644,7 +644,7 @@ def copy_workflow_fixtures(source, work):
 
 
 NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-controller.py',
-                                           '6179790b267c8ababa8381011853cd4a539dfea93c4fd7e3b8481046b5e8bd8f'],
+                                           '76c0d482d4e56f800c21119ee1edb4c6be66b0b57d777ad843969ba12197537c'],
                                     'native_public_probe': ['asset-flow-public-probe.py',
                                                             '2f965552da7b5fe4c5fd002e010a2c712091c441d87bef2e8cabb2f0fe52c17d'],
                                     'native_action': ['asset-flow-native-action.py',
@@ -652,9 +652,9 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                     'asset_app_action': ['asset-flow-app-action.py',
                                                          '557ff54d7285d4d5bd10db4cccfe4412fab6561f3088316a0e9c64d33b28f757']},
                         'ui': ['asset-flow-ui.json',
-                               'f73ac2800e496ace246458beb4eed192781e60bcf536ec0a760861816d7ee1c4'],
+                               '0967ff7b555e50a51e476ec5105600b0472fa9cfe36e522bb1a5f8500b4e8d84'],
                         'next_stage': None,
-                        'artifacts': {'main-qa-asset-library-flow': {'png': ['01-after-quick.png',
+                        'artifacts': {'main-qa-asset-library-flow': {'png': [
                                                                              '02-page.png',
                                                                              '03-native-observed.png',
                                                                              '03-app-unknown-result.png',
@@ -666,7 +666,7 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                                                              '09-single-selected.png',
                                                                              '10-canvas-flow-result.png',
                                                                              '10-unknown-flow-result.png',
-                                                                             '11-handoff-new-result.png', '12-canvas-result.png'],
+                                                                             '11-handoff-new-result.png', '12-canvas-result.png', '13-before-return-assets-requires-review.png', '13-assets-return-result.png'],
                                                                      'public': ['01-after-quick-prepixels-public.json',
                                                                                 '01-after-quick-public.json',
                                                                                 '02-before-navigation-public.json',
@@ -695,7 +695,7 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                                                                 '10-canvas-flow-result-public.json',
                                                                                 '10-unknown-flow-result-public.json',
                                                                                 '11-before-handoff-new-public.json',
-                                                                                '11-handoff-new-result-public.json', '11-handoff-open-recheck-public.json', '12-canvas-result-public.json'],
+                                                                                '11-handoff-new-result-public.json', '11-handoff-open-recheck-public.json', '12-canvas-result-public.json', '13-before-return-assets-public.json', '13-return-assets-recheck-public.json', '13-before-return-assets-requires-review-public.json', '13-assets-return-result-public.json'],
                                                                      'action': ['05-native-set-location-action.json',
                                                                                 '05-native-accept-action.json',
                                                                                 '07-search-miss-action.json',
