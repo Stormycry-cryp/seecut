@@ -708,9 +708,9 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
 
 # Exact reviewed clip import controller and pinned nonfield templates.
 NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-controller.py',
-                                          '29873e5cd16bff262ce999ae7e3d65ab79ab53294c03877db78702d1c0535dbd'],
+                                          '3b7369851931b5402c766fa5bf07376a909cec86f4557ce0e8c4d3a64a9522cc'],
                                    'clip_import_controller': ['clip-import-controller.py',
-                                                              '29873e5cd16bff262ce999ae7e3d65ab79ab53294c03877db78702d1c0535dbd'],
+                                                              '3b7369851931b5402c766fa5bf07376a909cec86f4557ce0e8c4d3a64a9522cc'],
                                    'native_public_probe': ['clip-editor-public-probe.py',
                                                            '562612f3bf1d54da2f9011fdea0849b6ecdf0dc66d129b42546fb0bd21bc3cd8'],
                                    'clip_editor_action': ['clip-editor-action.py',
@@ -720,7 +720,7 @@ NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-cont
                                    'clip_import_guard': ['clip-import-guard.json',
                                                          '8278311357e9befbabcfafd1ba975fa25ef7ac6159e13a5a80c3650a1acce60a']},
                        'ui': ['clip-import-ui.json',
-                              'deb9e4a89eed7650231662b64a50736b6ac438125850d539334c916ddbe499e0'],
+                              '62efb6aebf36a898556af26dd48c837cdd0eaee5b182eef08e3ff4f7ffa552ff'],
                        'next_stage': None,
                        'artifacts': {'main-qa-clip-media-import': {'png': ['01-after-quick.png',
                                                                            '02-page.png',

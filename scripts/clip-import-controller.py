@@ -276,6 +276,53 @@ def full_projection(nodes):
     return [[n.get(k, False if k == 'pressed' else None) for k in IMPORT_COLUMNS] for n in nodes]
 
 
+# Only these five reviewed, zero-width, noninteractive before containers have
+# variable observed heights. Raw metadata and diagnostic heights stay intact.
+BEFORE_HEIGHT_PATHS = frozenset((
+    (0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 1),
+    (0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2),
+    (0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 1),
+    (0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 2),
+    (0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+))
+
+
+def before_rows_projection(rows):
+    result, seen = [], set()
+    bounds_column = IMPORT_COLUMNS.index('bounds')
+    for row in rows:
+        projected = list(row)
+        path = tuple(row[0])
+        if path in BEFORE_HEIGHT_PATHS:
+            bounds = row[bounds_column]
+            if (path in seen or not isinstance(bounds, dict)
+                    or set(bounds) != {'x', 'y', 'width', 'height'}
+                    or any(type(bounds[k]) is not int or bounds[k] != 0 for k in ('x', 'y', 'width'))
+                    or type(bounds['height']) is not int or not 0 <= bounds['height'] <= 65535):
+                raise Stop('exact_bounded_before_container_bounds_required')
+            seen.add(path)
+            projected[bounds_column] = dict(bounds, height=0)
+        result.append(projected)
+    if seen != BEFORE_HEIGHT_PATHS:
+        raise Stop('all_five_fixed_before_containers_required')
+    return result
+
+
+def before_projection(nodes):
+    for node in nodes:
+        if tuple(node['path']) not in BEFORE_HEIGHT_PATHS:
+            continue
+        if (type(node.get('role')) is not int or node['role'] != 39
+                or node.get('panel') is not True or 'label' not in node or node['label'] is not None
+                or node.get('showing') is not True or node.get('sensitive') is not True
+                or any(node.get(k, False if k == 'pressed' else None) is not False for k in (
+                    'enabled', 'focused', 'focusable', 'selected', 'checked', 'pressed',
+                    'modal', 'file_chooser', 'dialog', 'button', 'radio', 'entry',
+                    'editable', 'editable_text_interface', 'action_interface'))):
+            raise Stop('exact_noninteractive_before_container_required')
+    return before_rows_projection(full_projection(nodes))
+
+
 def validate_import_ui(ui):
     if (ui.get('schema') != 1 or ui.get('reviewed_by') != 'main-reviewer'
             or ui.get('scope') != 'clip-media-import' or ui.get('observed_head') != HEAD
@@ -329,7 +376,11 @@ def import_target(data, ui, pid):
 
 def native_template(data, ui, pid, phase):
     showing = public_context(data, pid, allow_dialog=True, native=True)
-    if phase not in ('before', 'location') or full_projection(data['nodes']) != ui['native_' + phase + '_public_nodes']:
+    if phase not in ('before', 'location'):
+        raise Stop('known_GTK_template_phase_required')
+    current = before_projection(data['nodes']) if phase == 'before' else full_projection(data['nodes'])
+    expected = before_rows_projection(ui['native_before_public_nodes']) if phase == 'before' else ui['native_location_public_nodes']
+    if current != expected:
         raise Stop('complete_current_GTK_' + phase + '_template_changed_no_input')
     roots = [n for n in showing if n.get('dialog') and n.get('path') == [0]]
     accept = [n for n in showing if n.get('button') and n.get('label') in ('OK', 'Ok', 'Open', '打开')
@@ -365,7 +416,7 @@ def bounded_native_metadata_observation(native, expected, read_sample, check_win
             # The existing probe supplies complete, same-PID, nonfield trees.
             public_context(data, native['pid'], allow_dialog=True, native=True)
             nodes = data['nodes']
-            current = full_projection(nodes)
+            current = before_projection(nodes)
             digest = hashlib.sha256(json.dumps(current, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             showing = [n for n in nodes if n.get('showing')]
             x, y, width, height = native['bounds']
@@ -379,7 +430,9 @@ def bounded_native_metadata_observation(native, expected, read_sample, check_win
                         or b['y'] + b['height'] > y + height):
                     invalid_bounds += 1
             record['samples'].append({'sample': sample, 'nodes': len(nodes), 'projection_sha256': digest,
-                'before_matched': current == expected,
+                'before_matched': current == before_rows_projection(expected),
+                'diagnostic_container_heights': [{'path': n['path'], 'height': n['bounds']['height']}
+                    for n in nodes if tuple(n['path']) in BEFORE_HEIGHT_PATHS],
                 'showing_enabled_count': sum(n.get('enabled') is True for n in showing),
                 'showing_sensitive_count': sum(n.get('sensitive') is True for n in showing),
                 'showing_bounds_outside_window_count': invalid_bounds,
