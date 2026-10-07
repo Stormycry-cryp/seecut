@@ -323,6 +323,56 @@ def before_projection(nodes):
     return before_rows_projection(full_projection(nodes))
 
 
+# Only these three reviewed location containers remain zero-width and inert.
+# The two earlier before-only paths now have exact heights 34/0 and are excluded.
+LOCATION_HEIGHT_PATHS = frozenset((
+    (0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 1),
+    (0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 2),
+    (0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+))
+
+
+def location_rows_projection(rows):
+    result, seen = [], set()
+    bounds_column = IMPORT_COLUMNS.index('bounds')
+    for row in rows:
+        projected = list(row)
+        path = tuple(row[0])
+        if path in LOCATION_HEIGHT_PATHS:
+            bounds = row[bounds_column]
+            if (path in seen or not isinstance(bounds, dict)
+                    or set(bounds) != {'x', 'y', 'width', 'height'}
+                    or any(type(bounds[k]) is not int or bounds[k] != 0 for k in ('x', 'y', 'width'))
+                    or type(bounds['height']) is not int or not 0 <= bounds['height'] <= 65535):
+                raise Stop('exact_bounded_location_container_bounds_required')
+            seen.add(path)
+            projected[bounds_column] = dict(bounds, height=0)
+        result.append(projected)
+    if seen != LOCATION_HEIGHT_PATHS:
+        raise Stop('all_three_fixed_location_containers_required')
+    return result
+
+
+def location_projection(nodes):
+    for node in nodes:
+        bounds = node.get('bounds')
+        if bounds is not None and (not isinstance(bounds, dict)
+                or set(bounds) != {'x', 'y', 'width', 'height'}
+                or any(type(bounds[k]) is not int for k in ('x', 'y', 'width', 'height'))):
+            raise Stop('integer_location_bounds_required')
+        if tuple(node['path']) not in LOCATION_HEIGHT_PATHS:
+            continue
+        if (type(node.get('role')) is not int or node['role'] != 39
+                or node.get('panel') is not True or 'label' not in node or node['label'] is not None
+                or node.get('showing') is not True or node.get('sensitive') is not True
+                or any(node.get(k, False if k == 'pressed' else None) is not False for k in (
+                    'enabled', 'focused', 'focusable', 'selected', 'checked', 'pressed',
+                    'modal', 'file_chooser', 'dialog', 'button', 'radio', 'entry',
+                    'editable', 'editable_text_interface', 'action_interface'))):
+            raise Stop('exact_noninteractive_location_container_required')
+    return location_rows_projection(full_projection(nodes))
+
+
 def validate_import_ui(ui):
     if (ui.get('schema') != 1 or ui.get('reviewed_by') != 'main-reviewer'
             or ui.get('scope') != 'clip-media-import' or ui.get('observed_head') != HEAD
@@ -378,8 +428,8 @@ def native_template(data, ui, pid, phase):
     showing = public_context(data, pid, allow_dialog=True, native=True)
     if phase not in ('before', 'location'):
         raise Stop('known_GTK_template_phase_required')
-    current = before_projection(data['nodes']) if phase == 'before' else full_projection(data['nodes'])
-    expected = before_rows_projection(ui['native_before_public_nodes']) if phase == 'before' else ui['native_location_public_nodes']
+    current = before_projection(data['nodes']) if phase == 'before' else location_projection(data['nodes'])
+    expected = before_rows_projection(ui['native_before_public_nodes']) if phase == 'before' else location_rows_projection(ui['native_location_public_nodes'])
     if current != expected:
         raise Stop('complete_current_GTK_' + phase + '_template_changed_no_input')
     roots = [n for n in showing if n.get('dialog') and n.get('path') == [0]]
@@ -645,7 +695,49 @@ def main():
         command(['xdotool', 'key', '--clearmodifiers', 'ctrl+l'])
         pause()
         snapshot('13-import-native-location', native=native, allow_dialog=True)
-        raise Stop('filtered_import_GTK_location_observed_main_review_no_file_input')
+        data = probe('13-import-native-location-recheck-public', native=native, allow_dialog=True)
+        nodes, _accept = native_template(data, import_ui, native['pid'], 'location')
+        entries = [n for n in nodes if n.get('entry') and n.get('editable_text_interface')
+                   and (n.get('enabled') or n.get('sensitive')) and n.get('focused')]
+        if len(entries) != 1:
+            raise Stop('exact_unique_focused_GTK_location_required')
+        report['file_input_attempted'] = True
+        native_action(native, entries[0], 'set-location')
+        pause()
+        data = probe('14-native-before-accept-public', native=native, allow_dialog=True)
+        _nodes, accept = native_template(data, import_ui, native['pid'], 'location')
+        native_action(native, accept, 'accept')
+        until = min(end, time.monotonic() + 12)
+        while native_windows() and time.monotonic() < until:
+            time.sleep(0.25)
+        if native_windows():
+            raise Stop('native_import_not_gone_main_review_no_retry')
+        command(['xdotool', 'windowfocus', '--sync', str(args.window_id)])
+        focus_main()
+        prior = None
+        for sample in range(1, 5):
+            data = probe(f'15-import-result-sample-{sample:02d}-public', allow_dialog=True)
+            if not editor_context(data, args.app_pid):
+                snapshot('15-import-result', allow_dialog=True)
+                raise Stop('unknown_import_result_main_review_required')
+            current = (full_projection(data['nodes']), hashlib.sha256(pixels()).hexdigest())
+            if current == prior:
+                report['import_result_stable_observed'] = True
+                break
+            prior = current
+            pause()
+        if not report.get('import_result_stable_observed'):
+            snapshot('15-import-result', allow_dialog=True)
+            raise Stop('import_result_stability_unconfirmed_main_review_required')
+        exact_fixture(args.input_dir)
+        report['fixture_source_unchanged'] = True
+        # Native clip import references the input; do not claim or scan a personal-
+        # library copy. Only the already authorized owned concat.json bytes/SHA.
+        report['project_manifest_after_import'] = project_manifest_record(args.work_dir)
+        report['project_manifest_changed'] = (report['project_manifest_after_import'].get('sha256')
+                != report['project_manifest_before_import'].get('sha256'))
+        snapshot('15-import-result', allow_dialog=True)
+        report['status'] = 'clip_import_result_observed_main_review_required'
 
     def probe(name, native=None, allow_dialog=False):
         if native is None:

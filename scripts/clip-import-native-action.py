@@ -35,6 +35,63 @@ def load_probe(ui):
     return probe
 
 
+IMPORT_COLUMNS = ('path', 'role', 'label', 'showing', 'enabled', 'sensitive', 'focusable', 'button', 'radio', 'entry', 'editable', 'editable_text_interface', 'action_interface', 'modal', 'dialog', 'file_chooser', 'bounds', 'allowed_actions', 'focused', 'selected', 'checked', 'pressed')
+
+
+def full_projection(nodes):
+    return [[n.get(k, False if k == 'pressed' else None) for k in IMPORT_COLUMNS] for n in nodes]
+
+
+# Only these three reviewed location containers remain zero-width and inert.
+# The two earlier before-only paths now have exact heights 34/0 and are excluded.
+LOCATION_HEIGHT_PATHS = frozenset((
+    (0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 1),
+    (0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 2),
+    (0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+))
+
+
+def location_rows_projection(rows):
+    result, seen = [], set()
+    bounds_column = IMPORT_COLUMNS.index('bounds')
+    for row in rows:
+        projected = list(row)
+        path = tuple(row[0])
+        if path in LOCATION_HEIGHT_PATHS:
+            bounds = row[bounds_column]
+            if (path in seen or not isinstance(bounds, dict)
+                    or set(bounds) != {'x', 'y', 'width', 'height'}
+                    or any(type(bounds[k]) is not int or bounds[k] != 0 for k in ('x', 'y', 'width'))
+                    or type(bounds['height']) is not int or not 0 <= bounds['height'] <= 65535):
+                raise ValueError('exact_bounded_location_container_bounds_required')
+            seen.add(path)
+            projected[bounds_column] = dict(bounds, height=0)
+        result.append(projected)
+    if seen != LOCATION_HEIGHT_PATHS:
+        raise ValueError('all_three_fixed_location_containers_required')
+    return result
+
+
+def location_projection(nodes):
+    for node in nodes:
+        bounds = node.get('bounds')
+        if bounds is not None and (not isinstance(bounds, dict)
+                or set(bounds) != {'x', 'y', 'width', 'height'}
+                or any(type(bounds[k]) is not int for k in ('x', 'y', 'width', 'height'))):
+            raise ValueError('integer_location_bounds_required')
+        if tuple(node['path']) not in LOCATION_HEIGHT_PATHS:
+            continue
+        if (type(node.get('role')) is not int or node['role'] != 39
+                or node.get('panel') is not True or 'label' not in node or node['label'] is not None
+                or node.get('showing') is not True or node.get('sensitive') is not True
+                or any(node.get(k, False if k == 'pressed' else None) is not False for k in (
+                    'enabled', 'focused', 'focusable', 'selected', 'checked', 'pressed',
+                    'modal', 'file_chooser', 'dialog', 'button', 'radio', 'entry',
+                    'editable', 'editable_text_interface', 'action_interface'))):
+            raise ValueError('exact_noninteractive_location_container_required')
+    return location_rows_projection(full_projection(nodes))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('target-pid', 'owned-root-pid', 'window-id'):
@@ -95,9 +152,7 @@ def main():
             raise ValueError('complete_GTK_required')
         if len([n for n in nodes if n.get('showing') and n.get('dialog') and n.get('path') == [0]]) != 1:
             raise ValueError('current_GTK_dialog_required')
-        columns = ui['public_node_columns']
-        full = [[n.get(k, False if k == 'pressed' else None) for k in columns] for n in nodes]
-        if full != ui['native_location_public_nodes']:
+        if ui['public_node_columns'] != list(IMPORT_COLUMNS) or location_projection(nodes) != location_rows_projection(ui['native_location_public_nodes']):
             raise ValueError('complete_current_location_template_changed')
         expected = json.loads(args.node_public)
         current = [n for n in nodes if n.get('path') == expected.get('path')]
