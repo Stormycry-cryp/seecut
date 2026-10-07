@@ -147,7 +147,7 @@ def flow_surface(data,ui,pid,state):
         forbidden='已选 1 项' if state=='batch-zero' else '已选 0 项'
         batch=[n for n in nodes if n['path']==[0,19]]
         if (wanted not in labels or forbidden in labels or '完成批量管理' not in labels
-                or len(batch)!=1 or batch[0].get('checked') is not True):
+                or len(batch)!=1 or batch[0].get('role')!=62 or batch[0].get('pressed') is not True):
             raise Stop('current_single_selection_state_unconfirmed')
     else:raise Stop('closed_asset_state_required')
     return nodes,search[0]
@@ -503,7 +503,7 @@ def main():
         current=probe('09-before-batch-public')
         nodes,_search=flow_surface(current,ui,args.app_pid,'restored');thumbnail_guard()
         targets=[n for n in nodes if n['path']==[0,19] and n.get('label')=='批量管理'
-                 and n.get('role')==62 and not n.get('checked') and n.get('action_interface')
+                 and n.get('role')==62 and n.get('pressed') is False and n.get('action_interface')
                  and all(n.get(k) is True for k in ('enabled','sensitive','focusable'))]
         if len(targets)!=1:raise Stop('current_seen_batch_entry_unconfirmed')
         app_action(targets[0],'batch',9)

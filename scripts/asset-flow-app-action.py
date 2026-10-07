@@ -12,7 +12,7 @@ import time
 MODES = ('search-miss', 'search-clear', 'batch', 'select', 'canvas')
 MATCH_WORD = 'qa-no-match-8f7c2d1b'
 TARGET_KEYS = ('path','role','label','showing','enabled','sensitive','focusable','button',
-               'entry','editable','editable_text_interface','action_interface','bounds','allowed_actions')
+               'entry','editable','editable_text_interface','action_interface','bounds','allowed_actions','pressed')
 
 
 
@@ -23,10 +23,11 @@ SAFE_REASONS = frozenset((
     'healthy_focusable_target_required','fixed_nonreadable_search_entry_required',
     'unique_current_search_focus_required','closed_visible_nonfield_Action_required',
     'one_current_owned_asset_required','fresh_exact_single_selection_count_required',
-    'one_current_selected_preview_required','observed_unchecked_batch_control_required',
+    'one_current_selected_preview_required','observed_unpressed_batch_control_required',
     'unique_preview_select_button_required','closed_search_mode_required',
     'final_nonfield_closed_Action_state_required','final_Action_bounds_changed',
     'one_advertised_click_required','deadline_before_Action','Action_false_no_retry',
+    'final_toggle_pressed_changed',
     'deadline_no_input','owned_command_failed','owned_App_focus_required',
     'task_limit','descendant_limit','extra_owned_window_forbidden',
     'exact_private_owned_context_required','exact_scope_action_SHA_required',
@@ -148,8 +149,8 @@ def target_current(data,pid,expected,mode,focused=False):
                           and n.get('button') and n.get('action_interface') and n.get('allowed_actions')==['click']]
                 if len(previews)!=1:raise ValueError('one_current_selected_preview_required')
         if mode=='batch' and (node['path']!=[0,19] or node['role']!=62
-                or node['bounds']!={'x':1208,'y':66,'width':40,'height':40} or node.get('checked')):
-            raise ValueError('observed_unchecked_batch_control_required')
+                or node['bounds']!={'x':1208,'y':66,'width':40,'height':40} or node.get('pressed') is not False or expected.get('pressed') is not False):
+            raise ValueError('observed_unpressed_batch_control_required')
         if mode=='select' and (node['role']!=43 or node.get('allowed_actions')!=['click']):
             raise ValueError('unique_preview_select_button_required')
     return node
@@ -183,6 +184,11 @@ def once_action(node,Atspi,target,focus,record,end):
     action=node.get_action_iface();count=action.get_n_actions()
     if count!=1 or action.get_action_name(0)!='click':raise ValueError('one_advertised_click_required')
     focus()
+    if target['role']==62:
+        current_state=node.get_state_set()
+        if (current_state is None or type(target.get('pressed')) is not bool
+                or bool(current_state.contains(Atspi.StateType.PRESSED)) is not target['pressed']):
+            raise ValueError('final_toggle_pressed_changed')
     if time.monotonic()>=end:raise ValueError('deadline_before_Action')
     record['phase']='Action_once';record['Action_attempted']=True
     if not action.do_action(0):raise ValueError('Action_false_no_retry')

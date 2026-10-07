@@ -211,6 +211,7 @@ def collect(app_pid, deadline):
                       'focusable': bool(states.contains(Atspi.StateType.FOCUSABLE)),
                       'selected': bool(states.contains(Atspi.StateType.SELECTED)),
                       'checked': bool(states.contains(Atspi.StateType.CHECKED)),
+                      'pressed': bool(states.contains(Atspi.StateType.PRESSED)),
                       'modal': bool(states.contains(Atspi.StateType.MODAL)),
                       'file_chooser': role == Atspi.Role.FILE_CHOOSER,
                       'dialog': role == Atspi.Role.DIALOG,
