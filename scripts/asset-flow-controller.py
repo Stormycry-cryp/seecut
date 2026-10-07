@@ -13,8 +13,10 @@ import re
 import subprocess
 import time
 
-HEAD = '11ebf203e1a78d3b6a21677c4b17e96223c74b0e'
-APP_SHA = '8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30'
+HEAD = '0aa9406247e53f073c0b4df686adc68b40e2f8f6'
+APP_SHA = '03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2'
+GUARD_HEAD = '11ebf203e1a78d3b6a21677c4b17e96223c74b0e'
+GUARD_APP_SHA = '8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30'
 FIXTURE_SHA = '0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63'
 SCOPE = 'asset-library-flow'
 PUBLIC_KEYS = ('path', 'role', 'label', 'showing', 'enabled', 'sensitive', 'focusable',
@@ -168,6 +170,31 @@ def unique_selection_target(nodes,selected=False):
     return targets[0]
 
 
+HANDOFF_KEYS = ('path','role','label','showing','enabled','sensitive','focusable','button','radio',
+    'entry','editable','editable_text_interface','action_interface','modal','dialog','file_chooser',
+    'bounds','allowed_actions','pressed','checked','selected')
+
+
+def handoff_projection_sha(nodes):
+    return hashlib.sha256(json.dumps([[n.get(k) for k in HANDOFF_KEYS] for n in nodes if n.get('showing')],
+        ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+
+
+def handoff_new_target(data,ui,pid):
+    nodes=public_context(data,pid)
+    spec=ui.get('handoff_new')
+    if (not isinstance(spec,dict) or handoff_projection_sha(nodes)!=spec.get('full_public_sha256')):
+        raise Stop('current_complete_handoff_new_surface_changed')
+    targets=[n for n in nodes if n.get('path')==[0,41] and n.get('label')=='新建画布项目'
+        and n.get('role')==43 and n.get('button') and n.get('action_interface')
+        and not n.get('entry') and not n.get('editable') and not n.get('editable_text_interface')
+        and n.get('allowed_actions')==['click']
+        and n.get('bounds')=={'x':304,'y':532,'width':180,'height':40}
+        and all(n.get(k) is True for k in ('enabled','sensitive','focusable'))]
+    if len(targets)!=1:raise Stop('unique_current_reviewed_handoff_new_required')
+    return targets[0]
+
+
 def rgb_matches(raw, guard, width=1280, height=900):
     if len(raw) != width * height * 3:
         return False
@@ -196,7 +223,8 @@ def owned_descendant(pid, owner):
 
 def validate_ui(ui):
     if (ui.get('schema') != 1 or ui.get('reviewed_by') != 'main-reviewer' or ui.get('scope') != SCOPE
-            or ui.get('observed_head') != HEAD or ui.get('observed_app_sha256') != APP_SHA
+            or ui.get('observed_head') != GUARD_HEAD or ui.get('observed_app_sha256') != GUARD_APP_SHA
+            or ui.get('runtime_head') != HEAD or ui.get('runtime_app_sha256') != APP_SHA
             or ui.get('window') != [1280, 900] or ui.get('quick_xy') != [558, 500]
             or ui.get('runtime_limits') != {'controller': 120, 'App_and_cleanup': 300, 'reserve': 15}
             or ui.get('artifact_limits') != {'PNG_count': 10, 'PNG_each': 2097152,
@@ -204,6 +232,8 @@ def validate_ui(ui):
             or ui.get('mode_guard') != {'region': [420, 388, 520, 155],
                 'rgb_sha256': '2e513f04d1897fef7c6e6a0710c7afae9b7d6d592ddf1e316cb7e3fa89eb1b97'}):
         raise Stop('exact_main_scope_declaration_required')
+    if ui.get('handoff_new') != {'mode': 'handoff-new', 'target_path': [0, 41], 'target_bounds': {'x': 304, 'y': 532, 'width': 180, 'height': 40}, 'label': '新建画布项目', 'full_public_sha256': '2275157cef623af860380d69f504f896e1e07be270a54a5a4f22a97c115763e8', 'modal_guard': {'region': [280, 205, 720, 490], 'rgb_sha256': '6927daaa75078c3d0c317b35b3553197c3712ecf87113421b19256f5158a92ed'}, 'next': 'one_Action_then_observe_stop', 'project_created': False, 'add_open_attempts': 0}:
+        raise Stop('exact_reviewed_handoff_new_policy_required')
     expected = ('assets', [40, 286], [1180, 86]) if SCOPE == 'asset-library-flow' else ('clip', [40, 228], [290, 251])
     if (ui.get('page'), ui.get('navigation_xy'), ui.get('target_xy')) != expected:
         raise Stop('exact_scope_action_points_required')
@@ -469,7 +499,7 @@ def main():
         with path.open('xb') as stream:path.chmod(0o600);stream.write(raw)
         enforce_budget(path)
         if completed.returncode or data.get('success') is not True or data.get('field_values_read') is not False:
-            snapshot('10-unknown-flow-result',allow_dialog=True)
+            snapshot('11-handoff-new-result' if mode=='handoff-new' else '10-unknown-flow-result',allow_dialog=True)
             raise Stop('asset_app_action_unconfirmed_no_retry')
         command(['xdotool','mousemove','--window',str(args.window_id),'100','650']);pause()
 
@@ -530,8 +560,17 @@ def main():
         app_action(canvas[0],'canvas',10)
         report['flow_attempted']=True
         snapshot('10-canvas-flow-result',allow_dialog=True)
-        report['status']='single_asset_flow_result_observed_main_review_required'
-        report['flow_result']='unreviewed_actual_surface_no_destination_inputs'
+        # The reviewed button selects the synthetic 'new' target only. Do not
+        # infer the next enabled footer pixels or execute its Action.
+        current=probe('11-before-handoff-new-public')
+        target=handoff_new_target(current,ui,args.app_pid)
+        guard(pixels(),'reviewed-handoff-new',ui['handoff_new']['modal_guard'])
+        app_action(target,'handoff-new',11)
+        report['handoff_new_selection_Action_success']=True
+        report['add_open_attempted']=False
+        snapshot('11-handoff-new-result',allow_dialog=True)
+        report['status']='handoff_new_selection_result_observed_main_review_required'
+        report['flow_result']='new_target_selected_by_Action_only_next_actual_surface_unreviewed'
 
     def imported_files():
         for path in (args.work_dir / 'portable', args.work_dir / 'portable' / 'personal-library',
@@ -728,7 +767,8 @@ def main():
         print(json.dumps({k: report[k] for k in ('scope', 'status', 'blocking_reason', 'sourcecopy_verified') if k in report}))
     return 0 if report['status'] in ('new_clip_dialog_observed_main_review_required',
                                     'single_asset_selected_observed_main_review_required',
-                                    'single_asset_flow_result_observed_main_review_required') else 2
+                                    'single_asset_flow_result_observed_main_review_required',
+                                    'handoff_new_selection_result_observed_main_review_required') else 2
 
 
 if __name__ == '__main__':

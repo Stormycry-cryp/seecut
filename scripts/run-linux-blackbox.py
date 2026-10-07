@@ -165,6 +165,8 @@ CLIP_EDITOR_RUNTIME = ('0aa9406247e53f073c0b4df686adc68b40e2f8f6', '03fb1752c34a
 
 
 def native_runtime_identity(stage):
+    if stage == 'asset-library-flow':
+        return (*CLIP_EDITOR_RUNTIME[:4], '93d8545ed799bda4abf55c7612f5c94904749f36011cf993efa8668f5fd99ae8')
     if stage == 'assistant-config-observation':
         return (*CLIP_EDITOR_RUNTIME[:4], '5a1d5b1630db3bc097a8ed0f201938d53371270af0599879ef76bb98208d969e')
     if stage == 'clip-editor-entry':
@@ -627,15 +629,15 @@ def copy_workflow_fixtures(source, work):
 
 
 NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-controller.py',
-                                           '2d7295bce4f9bccd142b7b26a5aa469e1a1679ad7b0f01c0eca785daccdc25a2'],
+                                           '9ad94314d458322a3fcdd04f7e1c491be520687155e4363258b8175250a026d7'],
                                     'native_public_probe': ['asset-flow-public-probe.py',
-                                                            '88722ee77b038ce5e9c847d9b1d3ad4d65d91eabbd79feb8324c941244d79b74'],
+                                                            '2f965552da7b5fe4c5fd002e010a2c712091c441d87bef2e8cabb2f0fe52c17d'],
                                     'native_action': ['asset-flow-native-action.py',
                                                       '63704d9b66fa6e4bcb01cbe4e3a815b7129c61d31abea994a77124986d4cf125'],
                                     'asset_app_action': ['asset-flow-app-action.py',
-                                                         'c6e73be68e603c3b3d9a082768cdd5e99e5bdb4e38b2d66e5fab835ee4b13c14']},
+                                                         'ce68e0ec72a546be71a8a08e3adc3e21bd2abc05a61895ba1836ada867355293']},
                         'ui': ['asset-flow-ui.json',
-                               '477bce8ed784fcf56271b618004bcf00a85a1a1eebced7585bc073fc36647939'],
+                               '87e46157d21d4ae2c900799889b4c4a63818ee6163a24764f75eb745021c5d12'],
                         'next_stage': None,
                         'artifacts': {'main-qa-asset-library-flow': {'png': ['01-after-quick.png',
                                                                              '02-page.png',
@@ -648,7 +650,8 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                                                              '08-search-restored.png',
                                                                              '09-single-selected.png',
                                                                              '10-canvas-flow-result.png',
-                                                                             '10-unknown-flow-result.png'],
+                                                                             '10-unknown-flow-result.png',
+                                                                             '11-handoff-new-result.png'],
                                                                      'public': ['01-after-quick-prepixels-public.json',
                                                                                 '01-after-quick-public.json',
                                                                                 '02-before-navigation-public.json',
@@ -675,14 +678,17 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                                                                 '09-single-selected-public.json',
                                                                                 '10-before-canvas-public.json',
                                                                                 '10-canvas-flow-result-public.json',
-                                                                                '10-unknown-flow-result-public.json'],
+                                                                                '10-unknown-flow-result-public.json',
+                                                                                '11-before-handoff-new-public.json',
+                                                                                '11-handoff-new-result-public.json'],
                                                                      'action': ['05-native-set-location-action.json',
                                                                                 '05-native-accept-action.json',
                                                                                 '07-search-miss-action.json',
                                                                                 '08-search-clear-action.json',
                                                                                 '09-batch-action.json',
                                                                                 '09-select-action.json',
-                                                                                '10-canvas-action.json'],
+                                                                                '10-canvas-action.json',
+                                                                                '11-handoff-new-action.json'],
                                                                      'other': ['asset-flow-report.json']}},
                         'artifact_JSON_limits': {'public_metadata_each': 131072,
                                                  'native_action_each': 8192,
@@ -1322,7 +1328,7 @@ def main():
             if (candidate is None or source_head != native_head or args.candidate_artifact_id != native_artifact
                     or candidate["app_sha256"] != native_app_sha or candidate["build_run_id"] != native_build_run):
                 raise ValueError("native candidate differs from its reviewed immutable provenance")
-            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation') and (
+            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation', 'asset-library-flow') and (
                     candidate["build_job_id"] != 112019086814 or candidate["app_bytes"] != 467641344
                     or result["candidate"]["manifest_sha256"] != 'd666628e2499a26ef5f541898a4b5f0c8a69bba98bc6a3a28a2725d37c426d73'):
                 raise ValueError("current candidate job, size or manifest differs from its immutable provenance")

@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import time
 
-MODES = ('search-miss', 'search-clear', 'batch', 'select', 'canvas')
+MODES = ('search-miss', 'search-clear', 'batch', 'select', 'canvas', 'handoff-new')
 MATCH_WORD = 'qa-no-match-8f7c2d1b'
 TARGET_KEYS = ('path','role','label','showing','enabled','sensitive','focusable','button',
                'entry','editable','editable_text_interface','action_interface','bounds','allowed_actions','pressed')
@@ -27,7 +27,7 @@ SAFE_REASONS = frozenset((
     'unique_preview_select_button_required','closed_search_mode_required',
     'final_nonfield_closed_Action_state_required','final_Action_bounds_changed',
     'one_advertised_click_required','deadline_before_Action','Action_false_no_retry',
-    'final_toggle_pressed_changed',
+    'final_toggle_pressed_changed','exact_reviewed_handoff_new_surface_required',
     'deadline_no_input','owned_command_failed','owned_App_focus_required',
     'task_limit','descendant_limit','extra_owned_window_forbidden',
     'exact_private_owned_context_required','exact_scope_action_SHA_required',
@@ -98,7 +98,17 @@ def load_probe(digest):
     return module
 
 
-def target_current(data,pid,expected,mode,focused=False):
+HANDOFF_KEYS = ('path','role','label','showing','enabled','sensitive','focusable','button','radio',
+    'entry','editable','editable_text_interface','action_interface','modal','dialog','file_chooser',
+    'bounds','allowed_actions','pressed','checked','selected')
+
+
+def handoff_projection_sha(nodes):
+    return hashlib.sha256(json.dumps([[n.get(k) for k in HANDOFF_KEYS] for n in nodes if n.get('showing')],
+        ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+
+
+def target_current(data,pid,expected,mode,focused=False,ui=None):
     if (mode not in MODES or data.get('coverage_complete') is not True
             or data.get('app_pid')!=pid or data.get('field_values_read') is not False):
         raise ValueError('complete_current_nonfield_metadata_required')
@@ -122,6 +132,16 @@ def target_current(data,pid,expected,mode,focused=False):
     node=found[0]
     if not all(node.get(k) is True for k in ('enabled','sensitive','focusable')):
         raise ValueError('healthy_focusable_target_required')
+    if mode=='handoff-new':
+        spec=ui.get('handoff_new') if isinstance(ui,dict) else None
+        if (not isinstance(spec,dict) or handoff_projection_sha(showing)!=spec.get('full_public_sha256')
+                or node.get('path')!=[0,41] or node.get('label')!='新建画布项目'
+                or node.get('bounds')!={'x':304,'y':532,'width':180,'height':40}
+                or node.get('role')!=43 or not node.get('button')
+                or node.get('entry') or node.get('editable') or node.get('editable_text_interface')
+                or not node.get('action_interface') or node.get('allowed_actions')!=['click']):
+            raise ValueError('exact_reviewed_handoff_new_surface_required')
+        return node
     if mode.startswith('search-'):
         if (node['path']!=[0,16] or node.get('role')!=79 or node.get('label') is not None
                 or node.get('bounds')!={'x':930,'y':79,'width':212,'height':14}
@@ -234,7 +254,7 @@ def main():
     def observe(focused=False):
         def validate(data):
             data.update(app_pid=a.app_pid,field_values_read=False)
-            return target_current(data,a.app_pid,expected,a.mode,focused)
+            return target_current(data,a.app_pid,expected,a.mode,focused,ui)
         if record['phase']=='post_edit_observation':
             return stable_post_edit(probe,a.app_pid,end,focus,validate,record)
         record['phase']='target_focus'
