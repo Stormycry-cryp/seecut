@@ -68,6 +68,27 @@ def _profile(groups,origin,scale,tolerance=3):
             'color_bounds':boxes,'color_pixels':[len(g) for g in groups], 'profile':'fixed-transparent-six-markers'}
 
 
+
+# Main-reviewed 0aa run37601730240 09-edit-dragged.png, after one 26/17 drag.
+# This branch does not widen source-ideal/initial/Undo/export tolerances.
+OBSERVED_DRAG_BOUNDS = ((275,292,568,493),(574,292,867,493),(275,499,568,700),
+                        (574,499,867,700),(321,338,338,355),(781,619,804,643))
+OBSERVED_DRAG_COUNTS = (56874,57678,57737,56519,289,552)
+OBSERVED_DRAG_CROP_SHA = 'bec892087e069d4a7881ec636bc3945f4f125d3847195352b392d31cdefaba5b'
+
+
+def _observed_drag_profile(groups,rgb):
+    boxes = [[min(x for x,y in g),min(y for x,y in g),max(x for x,y in g)+1,max(y for x,y in g)+1] for g in groups]
+    counts = [len(g) for g in groups]
+    if (tuple(tuple(b) for b in boxes) != OBSERVED_DRAG_BOUNDS
+            or tuple(counts) != OBSERVED_DRAG_COUNTS or crop_sha(rgb) != OBSERVED_DRAG_CROP_SHA):
+        raise ValueError('unknown_alpha_canvas_layout_no_input')
+    points = [p for g in groups for p in g]
+    return {'bounds':[min(x for x,y in points),min(y for x,y in points),max(x for x,y in points)+1,max(y for x,y in points)+1],
+            'centroids':[[sum(x for x,y in g)/len(g),sum(y for x,y in g)/len(g)] for g in groups],
+            'color_bounds':boxes,'color_pixels':counts,'profile':'fixed-transparent-six-markers'}
+
+
 def locate_fixture(rgb,width,height,region=None):
     groups=_groups(rgb,width,height,region or (0,0,width,height))
     if (width,height)==(256,192):
@@ -80,7 +101,7 @@ def locate_fixture(rgb,width,height,region=None):
                 break
             except ValueError:
                 pass
-        else: raise ValueError('unknown_alpha_canvas_layout_no_input')
+        else: result=_observed_drag_profile(groups,rgb)
     else: raise ValueError('unknown_alpha_profile_dimensions')
     result['RGB_sha256']=hashlib.sha256(rgb).hexdigest()
     return result

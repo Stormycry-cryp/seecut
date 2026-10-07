@@ -258,7 +258,8 @@ def runtime_dependencies(ui):
     if hashlib.sha256(Path(__file__).read_bytes()).hexdigest() != ui.get('controller_sha256'):
         raise Stop('QA_and_named_controller_alias_must_have_identical_SHA')
     for key, basename, pin in (('import_guard', 'clip-import-guard.json', 'import_guard_sha256'),
-                               ('native_action', 'clip-import-native-action.py', 'native_action_sha256')):
+                               ('native_action', 'clip-import-native-action.py', 'native_action_sha256'),
+                               ('timeline_guard', 'clip-timeline-guard.json', 'timeline_guard_sha256')):
         path = Path(__file__).with_name(basename)
         if (path.is_symlink() or not path.is_file() or path.stat().st_size > 65536
                 or path.stat().st_uid != os.getuid() or hashlib.sha256(path.read_bytes()).hexdigest() != ui.get(pin)):
@@ -268,6 +269,57 @@ def runtime_dependencies(ui):
 
 
 IMPORT_COLUMNS = PUBLIC_KEYS + ('focused', 'selected', 'checked', 'pressed')
+
+
+TIMELINE_COLUMNS = ('action_interface', 'allowed_actions', 'bounds', 'button', 'checked', 'dialog', 'editable', 'editable_text_interface', 'enabled', 'entry', 'file_chooser', 'focusable', 'focused', 'label', 'modal', 'panel', 'path', 'radio', 'role', 'selected', 'sensitive', 'showing')
+
+
+def timeline_rows(nodes):
+    # Every observed column, including hidden nodes, panel and missing properties.
+    # Canonical JSON comparison distinguishes bool/int and absent/null exactly.
+    if any(set(n) - set(TIMELINE_COLUMNS) for n in nodes):
+        raise Stop('unknown_imported_node_attribute_no_input')
+    return [[n[k] if k in n else {'absent': True} for k in TIMELINE_COLUMNS] for n in nodes]
+
+
+def timeline_canonical(rows):
+    return json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+
+def validate_timeline_ui(ui):
+    if (set(ui) != {'schema', 'scope', 'source_head', 'columns', 'transient_read_only_rows',
+                   'imported_rows', 'thumbnail_guard', 'caption_guard', 'target_path',
+                   'target_bounds', 'double_click_xy'} or ui['schema'] != 1
+            or ui['scope'] != 'clip-media-import' or ui['source_head'] != HEAD
+            or ui['columns'] != list(TIMELINE_COLUMNS)
+            or len(ui['transient_read_only_rows']) != 111 or len(ui['imported_rows']) != 114
+            or ui['target_path'] != [0, 28]
+            or ui['target_bounds'] != {'x': 201, 'y': 182, 'width': 117, 'height': 66}
+            or ui['double_click_xy'] != [259, 215]
+            or ui['thumbnail_guard'] != {'region': [201, 182, 117, 66],
+                'rgb_sha256': '93e23aef4022c4a98d310cbf1d3600d9912a757ab9acc9c397d279362cf00701'}
+            or ui['caption_guard'] != {'region': [201, 252, 117, 14],
+                'rgb_sha256': '9fd1cbfa63a215843fbea2d163e84900ef08af0d73c143b9a1383a219fc85bf6'}):
+        raise Stop('exact_observed_timeline_declaration_required')
+
+
+def imported_state(data, ui, pid):
+    public_context(data, pid)
+    current = timeline_canonical(timeline_rows(data['nodes']))
+    if current == timeline_canonical(ui['transient_read_only_rows']):
+        return 'observed_transient_read_only'
+    if current != timeline_canonical(ui['imported_rows']):
+        raise Stop('unknown_import_result_main_review_required')
+    target = [n for n in data['nodes'] if n['path'] == ui['target_path']]
+    images = [n for n in data['nodes'] if n.get('role') == 27 and n.get('showing')
+              and n.get('bounds') == ui['target_bounds']]
+    if (len(target) != 1 or len(images) != 1 or images[0] != target[0]
+            or target[0].get('bounds') != ui['target_bounds']
+            or not all(target[0].get(k) is True for k in ('showing', 'enabled', 'sensitive'))
+            or any(target[0].get(k) is not False for k in ('focused', 'focusable', 'entry',
+                'editable', 'editable_text_interface', 'action_interface', 'button', 'dialog', 'modal'))):
+        raise Stop('exact_unique_observed_thumbnail_required')
+    return 'observed_imported'
 
 
 def full_projection(nodes):
@@ -717,10 +769,19 @@ def main():
         prior = None
         for sample in range(1, 5):
             data = probe(f'15-import-result-sample-{sample:02d}-public', allow_dialog=True)
-            if not editor_context(data, args.app_pid):
+            try:
+                state = imported_state(data, timeline_ui, args.app_pid)
+            except Stop:
                 snapshot('15-import-result', allow_dialog=True)
-                raise Stop('unknown_import_result_main_review_required')
-            current = (full_projection(data['nodes']), hashlib.sha256(pixels()).hexdigest())
+                raise
+            if state == 'observed_transient_read_only':
+                prior = None
+                pause()
+                continue
+            frame = pixels()
+            guard(frame, 'imported-thumbnail', timeline_ui['thumbnail_guard'])
+            guard(frame, 'imported-caption', timeline_ui['caption_guard'])
+            current = (timeline_canonical(timeline_rows(data['nodes'])), hashlib.sha256(frame).hexdigest())
             if current == prior:
                 report['import_result_stable_observed'] = True
                 break
@@ -738,6 +799,44 @@ def main():
                 != report['project_manifest_before_import'].get('sha256'))
         snapshot('15-import-result', allow_dialog=True)
         report['status'] = 'clip_import_result_observed_main_review_required'
+
+    def timeline_flow():
+        report['status'] = 'blocked'
+        # Only the exact imported tree can authorize the one declared gesture.
+        data = probe('16-before-insert-public')
+        if imported_state(data, timeline_ui, args.app_pid) != 'observed_imported':
+            raise Stop('transient_import_tree_cannot_authorize_input')
+        frame = pixels()
+        guard(frame, 'fresh-imported-thumbnail', timeline_ui['thumbnail_guard'])
+        guard(frame, 'fresh-imported-caption', timeline_ui['caption_guard'])
+        focus_main()
+        report['timeline_insert_attempted'] = True
+        report['actions'].append({'kind': 'one_guarded_double_click_attempt',
+            'node_path': timeline_ui['target_path'], 'xy': timeline_ui['double_click_xy'],
+            'clicks': 2, 'delay_ms': 120})
+        command(['xdotool', 'mousemove', '--window', str(args.window_id),
+                 *map(str, timeline_ui['double_click_xy'])])
+        focus_main()
+        command(['xdotool', 'click', '--repeat', '2', '--delay', '120', '1'])
+        command(['xdotool', 'mousemove', '--window', str(args.window_id), '100', '650'])
+        pause()
+        prior = None
+        for sample in range(1, 5):
+            # New timeline state is observation only; no semantic success gate or input.
+            data = probe(f'16-timeline-result-sample-{sample:02d}-public')
+            current = (timeline_canonical(timeline_rows(data['nodes'])), hashlib.sha256(pixels()).hexdigest())
+            if current == prior:
+                report['timeline_result_stable_observed'] = True
+                break
+            prior = current
+            pause()
+        exact_fixture(args.input_dir)
+        report['fixture_source_unchanged_after_insert'] = True
+        report['project_manifest_after_insert'] = project_manifest_record(args.work_dir)
+        snapshot('16-timeline-result')
+        if not report.get('timeline_result_stable_observed'):
+            raise Stop('timeline_result_stability_unconfirmed_main_review_required')
+        report['status'] = 'clip_timeline_result_observed_main_review_required'
 
     def probe(name, native=None, allow_dialog=False):
         if native is None:
@@ -889,6 +988,9 @@ def main():
         dependencies = runtime_dependencies(ui)
         import_ui = json.loads(dependencies['import_guard'].read_bytes())
         validate_import_ui(import_ui)
+        timeline_ui = json.loads(dependencies['timeline_guard'].read_bytes())
+        validate_timeline_ui(timeline_ui)
+        report['timeline_guard_sha256'] = ui['timeline_guard_sha256']
         if args.input_dir != args.work_dir / 'asset-clip-inputs':
             raise Stop('launcher_owned_fixture_subdirectory_required')
         fixture = exact_fixture(args.input_dir)
@@ -947,22 +1049,9 @@ def main():
         report['project_create_attempted'] = True
         await_editor()
         report['project_manifest'] = project_manifest_record(args.work_dir)
-        for ordinal, (width, height) in enumerate(((1280, 900), (1024, 900), (1440, 900), (1280, 720)), 7):
-            if size != [width, height]:
-                focus_main()
-                command(['xdotool', 'windowsize', '--sync', str(args.window_id), str(width), str(height)])
-                pause()
-                fields = dict(line.split('=', 1) for line in command(
-                    ['xdotool', 'getwindowgeometry', '--shell', str(args.window_id)]).splitlines() if '=' in line)
-                if [int(fields[k]) for k in ('X', 'Y', 'WIDTH', 'HEIGHT')] != [0, 0, width, height]:
-                    raise Stop('actual_editor_resize_geometry_changed')
-                size[:] = [width, height]
-            data = probe(f'{ordinal:02d}-editor-prepixels-public', allow_dialog=True)
-            if not editor_context(data, args.app_pid, *size):
-                snapshot('11-unknown-editor-result', allow_dialog=True)
-                raise Stop('unknown_editor_or_dialog_main_image_review_required')
-            snapshot(f'{ordinal:02d}-editor-{width}x{height}', allow_dialog=True)
+        # Four empty-editor sizes already have actual acceptance evidence.
         import_flow()
+        timeline_flow()
 
     except Stop as exc:
         report['blocking_reason'] = str(exc)
@@ -984,7 +1073,7 @@ def main():
                     path.chmod(0o600)
                     stream.write(raw)
         print(json.dumps({k: report[k] for k in ('scope', 'status', 'blocking_reason', 'sourcecopy_verified') if k in report}))
-    return 0 if report['status'] == 'clip_import_result_observed_main_review_required' else 2
+    return 0 if report['status'] == 'clip_timeline_result_observed_main_review_required' else 2
 
 
 if __name__ == '__main__':
