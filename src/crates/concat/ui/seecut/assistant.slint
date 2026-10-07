@@ -6,7 +6,7 @@ import { Switch } from "../inspector/controls.slint";
 import { AppButton } from "components.slint";
 
 // Text is content only. Operation state always comes from the host separately.
-export struct AssistantMessage { role: string, text: string, state: string }
+export struct AssistantMessage { role: string, text: string, state: string, progress: string }
 
 component AssistantText inherits Text {
     font-family: Theme.font;
@@ -130,6 +130,7 @@ export component AssistantPanel inherits Rectangle {
     in property <string> send-disabled-reason;
     in property <string> connect-disabled-reason;
     in property <[AssistantMessage]> messages;
+    in property <int> scroll-token;
 
     in property <bool> read-granted;
     in property <bool> write-granted;
@@ -180,7 +181,16 @@ export component AssistantPanel inherits Rectangle {
     property <string> session-api-key;
     property <bool> images;
     property <bool> advanced-open;
-    property <bool> details-open;
+    property <bool> follow-tail: true;
+    property <length> conversation-y;
+    changed scroll-token => {
+        root.follow-tail = true;
+        if !root.settings-open { body.viewport-y = min(0px, body.visible-height - body.viewport-height); }
+    }
+    changed settings-open => {
+        if root.settings-open { root.conversation-y = body.viewport-y; body.viewport-y = 0px; }
+        else { body.viewport-y = root.follow-tail ? min(0px, body.visible-height - body.viewport-height) : root.conversation-y; }
+    }
     property <bool> send-ready: !root.settings-open && root.can-send && !root.busy && !root.unknown && root.draft != "";
     property <bool> connect-ready: root.can-connect && !root.connecting && !root.busy
         && root.service-url != "" && root.model-name != "" && root.session-api-key != "";
@@ -228,32 +238,70 @@ export component AssistantPanel inherits Rectangle {
                 clicked => { root.clear-session-secret(); root.close-requested(); }
             }
         }
-        VerticalLayout {
-            padding-left: 12px; padding-right: 12px; padding-bottom: 8px;
-            spacing: 4px;
-            AssistantText { text: root.current-project == "" ? "未打开工程" : root.current-project; overflow: elide; wrap: no-wrap; }
-            if root.provider-label != "": AssistantText { text: root.provider-label; color: Theme.fg-muted; }
-        }
         Rectangle { height: 1px; background: Theme.line; }
         body := ScrollView {
             min-height: 0px;
             vertical-stretch: 1;
             viewport-width: self.width;
             horizontal-scrollbar-policy: always-off;
+            scrolled => {
+                if !root.settings-open {
+                    root.follow-tail = self.viewport-height + self.viewport-y - self.visible-height <= 32px;
+                }
+            }
+            changed viewport-height => {
+                if !root.settings-open && root.follow-tail {
+                    self.viewport-y = min(0px, self.visible-height - self.viewport-height);
+                }
+            }
+            changed visible-height => {
+                if !root.settings-open && root.follow-tail {
+                    self.viewport-y = min(0px, self.visible-height - self.viewport-height);
+                }
+            }
             VerticalLayout {
                 width: body.visible-width;
                 padding: 12px;
                 spacing: 12px;
                 alignment: start;
-                if !root.settings-open && root.connection != "": AssistantText { text: root.connection; color: Theme.fg-muted; }
-                if !root.settings-open && root.status != "": AssistantText { text: root.status; color: root.unknown ? Theme.danger : Theme.fg; }
-                if !root.settings-open && root.unknown && root.status == "": AssistantText { text: "操作结果待核实"; color: Theme.danger; }
-                if !root.settings-open && root.details != "": VerticalLayout {
-                    spacing: 4px;
-                    AppButton { label: root.details-open ? "收起详情" : "查看详情"; subtle: true; height: 36px; clicked => { root.details-open = !root.details-open; } }
-                    if root.details-open: AssistantText { text: root.details; color: Theme.fg-muted; }
-                }
                 if !root.settings-open: VerticalLayout {
+                    spacing: 16px;
+                    if root.messages.length == 0: AssistantText { text: "描述你想了解或调整的内容"; color: Theme.fg-muted; }
+                    for message in root.messages: VerticalLayout {
+                        spacing: 6px;
+                        if message.role == "你": HorizontalLayout {
+                            spacing: 0px;
+                            Rectangle { min-width: 20px; horizontal-stretch: 1; }
+                            Rectangle {
+                                width: min(parent.width - 20px, max(80px, user-text.preferred-width + 24px));
+                                height: user-text.preferred-height + 20px;
+                                border-radius: 10px;
+                                background: Theme.field;
+                                user-text := AssistantText { x: 12px; y: 10px; width: max(0px, parent.width - 24px); text: message.text; }
+                            }
+                        }
+                        if message.role != "你": VerticalLayout {
+                            spacing: 6px;
+                            if message.progress != "": AssistantText { text: message.progress; font-size: 12px; color: Theme.fg-muted; }
+                            if message.text != "": AssistantText { text: message.text; }
+                            if message.state != "" && message.state != "已完成" && message.state != "操作结果待核实": AssistantText { text: message.state; font-size: 12px; color: Theme.fg-muted; }
+                        }
+                    }
+                    if root.approval-visible: VerticalLayout {
+                        spacing: 8px;
+                        AssistantText { text: root.approval-description; font-size: 12px; color: Theme.fg-muted; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            AppButton { label: "拒绝"; enabled: root.can-reject; clicked => { root.reject(); } }
+                            AppButton { label: "允许"; primary: true; enabled: root.can-allow; clicked => { root.allow(); } }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+                    if !root.busy && root.can-send && root.status != "" && root.status != "可以发送问题" && root.status != "已完成" && root.status != "已提交，待验证" && root.status != "处理失败" && root.status != "已停止": AssistantText {
+                        text: root.status; font-size: 12px; color: Theme.fg-muted;
+                    }
+                }
+                if root.settings-open: VerticalLayout {
                     spacing: 12px;
                     VerticalLayout {
                         spacing: 4px;
@@ -276,28 +324,6 @@ export component AssistantPanel inherits Rectangle {
                             if root.can-revoke-write: AppButton { label: "撤销"; accessible-name: "撤销移动权限"; enabled: root.can-revoke-write; height: 36px; clicked => { root.revoke-write(); } }
                         }
                     }
-                    if root.approval-visible: VerticalLayout {
-                        spacing: 8px;
-                        Rectangle { height: 1px; background: Theme.line; }
-                        AssistantText { text: root.approval-title; font-weight: Theme.weight-title; }
-                        AssistantText { text: root.approval-description; color: Theme.fg-muted; }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            AppButton { label: "拒绝"; enabled: root.can-reject; clicked => { root.reject(); } }
-                            AppButton { label: "允许"; primary: true; enabled: root.can-allow; clicked => { root.allow(); } }
-                        }
-                    }
-                    Rectangle { height: 1px; background: Theme.line; }
-                    if root.messages.length == 0: AssistantText { text: "描述你想了解或调整的内容"; color: Theme.fg-muted; }
-                    for message in root.messages: VerticalLayout {
-                        spacing: 4px;
-                        AssistantText { text: message.role; color: Theme.fg-muted; font-weight: Theme.weight-title; }
-                        AssistantText { text: message.text; }
-                        if message.state != "": AssistantText { text: message.state; color: Theme.fg-muted; }
-                    }
-                }
-                if root.settings-open: VerticalLayout {
-                    spacing: 12px;
                     AssistantText { text: "发送后，当前问题和已允许的画布内容会交给此服务。"; color: Theme.fg-muted; }
                     VerticalLayout {
                         spacing: 4px;
@@ -342,11 +368,6 @@ export component AssistantPanel inherits Rectangle {
                     if root.connection != "": AssistantText { text: root.connection; color: Theme.fg-muted; }
                     if root.status != "": AssistantText { text: root.status; color: root.unknown ? Theme.danger : Theme.fg; }
                     if root.unknown && root.status == "": AssistantText { text: "操作结果待核实"; color: Theme.danger; }
-                    if root.details != "": VerticalLayout {
-                        spacing: 4px;
-                        AppButton { label: root.details-open ? "收起详情" : "查看详情"; subtle: true; height: 36px; clicked => { root.details-open = !root.details-open; } }
-                        if root.details-open: AssistantText { text: root.details; color: Theme.fg-muted; }
-                    }
                     Rectangle { height: 1px; background: Theme.line; }
                     AppButton { label: root.advanced-open ? "收起本地助手组件" : "本地助手组件"; subtle: true; height: 36px; clicked => { root.advanced-open = !root.advanced-open; } }
                     if root.advanced-open: VerticalLayout {
@@ -379,13 +400,13 @@ export component AssistantPanel inherits Rectangle {
                 send-enabled: root.send-ready;
                 submit => { root.submit(); }
             }
-            if !root.can-send || root.unknown: AssistantText {
-                text: root.unknown ? "本次助手会话已暂停，请核实操作结果" : root.send-disabled-reason == "" ? "当前无法发送" : root.send-disabled-reason;
+            if root.unknown || (!root.busy && !root.can-send): AssistantText {
+                text: root.unknown ? "本次助手会话已暂停，请核实操作结果" : root.send-disabled-reason == "" ? "请在助手设置中连接服务" : root.send-disabled-reason + "，请打开助手设置";
                 color: Theme.fg-muted;
             }
             HorizontalLayout {
                 spacing: 8px;
-                AssistantText { text: "Ctrl/Cmd+Enter 发送"; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; }
+                Rectangle { horizontal-stretch: 1; }
                 AppButton {
                     width: 72px;
                     label: root.busy ? "停止" : "发送";

@@ -415,6 +415,7 @@ mod desktop {
                 phase,
                 view.outcome,
                 view.text,
+                view.progress,
             );
             state.assistant_row = next_row;
             state.approval = frozen_approval;
@@ -424,7 +425,9 @@ mod desktop {
             let bytes = || {
                 self.messages
                     .iter()
-                    .map(|row| row.role.len() + row.text.len() + row.state.len())
+                    .map(|row| {
+                        row.role.len() + row.text.len() + row.state.len() + row.progress.len()
+                    })
                     .sum::<usize>()
             };
             while self.messages.row_count() > MAX_ROWS || bytes() > MAX_HISTORY_BYTES {
@@ -456,11 +459,13 @@ mod desktop {
                         role: "你".into(),
                         text: visible.into(),
                         state: "".into(),
+                        progress: "".into(),
                     });
                     self.messages.push(AssistantMessage {
                         role: "助手".into(),
                         text: "".into(),
                         state: "".into(),
+                        progress: "".into(),
                     });
                     state.assistant_row = Some(self.messages.row_count() - 1);
                     state.notice.clear();
@@ -468,6 +473,7 @@ mod desktop {
                     // Enqueue acceptance immediately locks submission, before any timer tick.
                     let ui = app.global::<Assistant>();
                     ui.set_draft("".into());
+                    ui.set_scroll_token(ui.get_scroll_token().wrapping_add(1));
                     ui.set_busy(true);
                     ui.set_can_send(false);
                 }
@@ -809,7 +815,14 @@ mod desktop {
         text: &str,
     ) -> (Option<&str>, &'static str, bool) {
         if outcome.is_some() {
-            return (Some(text), outcome_label(outcome), true);
+            // A tool receipt can establish pending verification before the
+            // model finishes speaking. Keep the same row live until turn end.
+            let terminal = outcome != Some(TaskOutcome::SubmittedPendingVerification)
+                || !matches!(
+                    phase,
+                    Phase::Running | Phase::AwaitingApproval | Phase::Stopping
+                );
+            return (Some(text), outcome_label(outcome), terminal);
         }
         match phase {
             Phase::Failed => (None, "连接失败", true),
@@ -825,17 +838,30 @@ mod desktop {
         phase: Phase,
         outcome: Option<TaskOutcome>,
         text: &str,
+        progress: &str,
     ) -> Option<usize> {
         let index = index?;
         let mut row = messages.row_data(index)?;
         let (reply_text, reply_state, terminal) = reply_row_update(phase, outcome, text);
+        let progress = if !terminal && progress.is_empty() {
+            match phase {
+                Phase::Running => "正在处理…",
+                Phase::Stopping => "正在停止，等待结果",
+                Phase::Ready => "等待助手回应…",
+                _ => progress,
+            }
+        } else {
+            progress
+        };
         if reply_text.is_some_and(|text| row.text.as_str() != text)
             || row.state.as_str() != reply_state
+            || row.progress.as_str() != progress
         {
             if let Some(text) = reply_text {
                 row.text = text.into();
             }
             row.state = reply_state.into();
+            row.progress = progress.into();
             messages.set_row_data(index, row);
         }
         if terminal { None } else { Some(index) }
@@ -1036,14 +1062,75 @@ mod desktop {
         }
 
         #[test]
+        fn pending_tool_receipt_does_not_detach_streaming_body() {
+            let messages = VecModel::from(vec![AssistantMessage {
+                role: "助手".into(),
+                text: "".into(),
+                state: "".into(),
+                progress: "".into(),
+            }]);
+            let pending = Some(TaskOutcome::SubmittedPendingVerification);
+            let mut index = update_streaming_reply(
+                &messages,
+                Some(0),
+                Phase::Running,
+                pending,
+                "",
+                "移动请求已返回",
+            );
+            assert_eq!(index, Some(0));
+            index = update_streaming_reply(
+                &messages,
+                index,
+                Phase::Running,
+                pending,
+                "仍需核对画布",
+                "移动请求已返回",
+            );
+            assert_eq!(messages.row_data(0).unwrap().text.as_str(), "仍需核对画布");
+            assert_eq!(
+                messages.row_data(0).unwrap().state.as_str(),
+                "已提交，待验证"
+            );
+            assert_eq!(index, Some(0));
+            index = update_streaming_reply(
+                &messages,
+                index,
+                Phase::Ready,
+                pending,
+                "最终回复，待验证",
+                "移动请求已返回",
+            );
+            assert!(index.is_none());
+            assert_eq!(
+                messages.row_data(0).unwrap().text.as_str(),
+                "最终回复，待验证"
+            );
+            assert_eq!(
+                messages.row_data(0).unwrap().progress.as_str(),
+                "移动请求已返回"
+            );
+            assert_eq!(
+                messages.row_data(0).unwrap().state.as_str(),
+                "已提交，待验证"
+            );
+        }
+        #[test]
         fn completed_reply_survives_new_connection_buffer_reset() {
             let messages = VecModel::from(vec![AssistantMessage {
                 role: "助手".into(),
                 text: "".into(),
                 state: "".into(),
+                progress: "".into(),
             }]);
-            let mut index =
-                update_streaming_reply(&messages, Some(0), Phase::Running, None, "流式回复");
+            let mut index = update_streaming_reply(
+                &messages,
+                Some(0),
+                Phase::Running,
+                None,
+                "流式回复",
+                "读取当前画布…",
+            );
             assert_eq!(messages.row_data(0).unwrap().text.as_str(), "流式回复");
             index = update_streaming_reply(
                 &messages,
@@ -1051,15 +1138,17 @@ mod desktop {
                 Phase::Ready,
                 Some(TaskOutcome::Completed),
                 "最终回复",
+                "读取当前画布 · 已返回",
             );
             assert!(index.is_none());
             // Controller.connect resets text/outcome before initialize/create.
-            index = update_streaming_reply(&messages, index, Phase::Initializing, None, "");
-            index = update_streaming_reply(&messages, index, Phase::Ready, None, "");
+            index = update_streaming_reply(&messages, index, Phase::Initializing, None, "", "");
+            index = update_streaming_reply(&messages, index, Phase::Ready, None, "", "");
             assert!(index.is_none());
             let retained = messages.row_data(0).unwrap();
             assert_eq!(retained.text.as_str(), "最终回复");
             assert_eq!(retained.state.as_str(), "已完成");
+            assert_eq!(retained.progress.as_str(), "读取当前画布 · 已返回");
         }
 
         struct Fixture(PathBuf);

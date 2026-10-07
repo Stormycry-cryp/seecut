@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TEXT_LIMIT: usize = 64 * 1024;
+const MAX_TOOL_PROGRESS: usize = 12;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, PartialEq, Eq)]
@@ -85,6 +86,7 @@ pub struct Approval {
 pub struct View<'a> {
     pub phase: Phase,
     pub text: &'a str,
+    pub progress: &'a str,
     pub approval: Option<&'a Approval>,
     pub outcome: Option<TaskOutcome>,
     pub error: Option<UiError>,
@@ -92,6 +94,64 @@ pub struct View<'a> {
     pub can_stop: bool,
     pub can_approve: bool,
     pub can_connect: bool,
+}
+#[derive(Clone, Copy)]
+enum ToolAction {
+    Context,
+    Project,
+    Preview,
+    Capabilities,
+    Move,
+}
+impl ToolAction {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "context" => Some(Self::Context),
+            "project" => Some(Self::Project),
+            "preview" => Some(Self::Preview),
+            "capabilities" => Some(Self::Capabilities),
+            "move_selected_image" => Some(Self::Move),
+            _ => None,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Context => "读取当前画布",
+            Self::Project => "读取工程信息",
+            Self::Preview => "查看画布预览",
+            Self::Capabilities => "检查可用操作",
+            Self::Move => "发送移动请求",
+        }
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolProgressState {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+struct ToolProgress {
+    id: String,
+    action: ToolAction,
+    state: ToolProgressState,
+}
+impl ToolProgress {
+    fn label(&self) -> String {
+        if matches!(self.action, ToolAction::Move) && self.state == ToolProgressState::Completed {
+            return "移动请求已返回".into();
+        }
+        format!(
+            "{}{}",
+            self.action.label(),
+            match self.state {
+                ToolProgressState::Running => "…",
+                ToolProgressState::Completed => " · 已返回",
+                ToolProgressState::Failed => " · 失败",
+                ToolProgressState::Cancelled => " · 已取消",
+            }
+        )
+    }
 }
 enum Request {
     Initialize,
@@ -118,6 +178,8 @@ pub struct Controller {
     last_result_turn: Option<String>,
     last_seq: u64,
     text: String,
+    tool_progress: Vec<ToolProgress>,
+    progress: String,
     approval: Option<Approval>,
     outcome: Option<TaskOutcome>,
     error: Option<UiError>,
@@ -139,6 +201,8 @@ impl Default for Controller {
             last_result_turn: None,
             last_seq: 0,
             text: String::new(),
+            tool_progress: Vec::new(),
+            progress: String::new(),
             approval: None,
             outcome: None,
             error: None,
@@ -211,6 +275,8 @@ impl Controller {
         self.last_seq = 0;
         self.write_in_flight = false;
         self.text.clear();
+        self.tool_progress.clear();
+        self.progress.clear();
         self.approval = None;
         self.outcome = None;
         self.error = None;
@@ -245,6 +311,7 @@ impl Controller {
             can_connect: self.process.is_none() && !self.unknown_latched,
             phase: self.phase,
             text: &self.text,
+            progress: &self.progress,
             approval: self.approval.as_ref(),
             outcome: self.outcome,
             error: self.error,
@@ -279,6 +346,8 @@ impl Controller {
         let input_id = format!("input-{}-{}", self.session_id, self.counter + 1);
         self.enqueue("send",json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":[{"type":"text","text":text}]}),Request::Send{input_id})?;
         self.text.clear();
+        self.tool_progress.clear();
+        self.progress.clear();
         self.outcome = None;
         self.error = None;
         self.last_result_turn = None;
@@ -629,6 +698,18 @@ impl Controller {
         if turn.is_some() && turn != self.turn_id.as_deref() {
             return;
         }
+        // Display only events scoped to the live turn. Security/recovery branches
+        // above retain their original handling; model text never creates a step.
+        if turn.is_some()
+            && turn == self.turn_id.as_deref()
+            && !self.unknown_latched
+            && matches!(
+                self.phase,
+                Phase::Running | Phase::AwaitingApproval | Phase::Stopping
+            )
+        {
+            self.track_tool_progress(kind, data);
+        }
         match kind {
             "tool.started" => {
                 if data["call"]["name"].as_str() == Some("move_selected_image") {
@@ -703,6 +784,52 @@ impl Controller {
             }
             _ => {}
         }
+    }
+    fn track_tool_progress(&mut self, kind: &str, data: &Value) {
+        let state = match kind {
+            "tool.started" | "tool.progress" => ToolProgressState::Running,
+            "tool.completed" => ToolProgressState::Completed,
+            "tool.failed" => ToolProgressState::Failed,
+            "tool.cancelled" => ToolProgressState::Cancelled,
+            _ => return,
+        };
+        let Some(id) = data["invocationId"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 128)
+        else {
+            return;
+        };
+        if let Some(step) = self.tool_progress.iter_mut().find(|step| step.id == id) {
+            // A repeated start/progress or a delayed terminal cannot reopen or
+            // replace a settled invocation. Never read progress's free text.
+            if step.state != ToolProgressState::Running {
+                return;
+            }
+            step.state = state;
+        } else {
+            if kind == "tool.progress" || self.tool_progress.len() == MAX_TOOL_PROGRESS {
+                return;
+            }
+            let name = if kind == "tool.started" {
+                data["call"]["name"].as_str()
+            } else {
+                data["message"]["toolName"].as_str()
+            };
+            let Some(action) = name.and_then(ToolAction::from_name) else {
+                return;
+            };
+            self.tool_progress.push(ToolProgress {
+                id: id.to_owned(),
+                action,
+                state,
+            });
+        }
+        self.progress = self
+            .tool_progress
+            .iter()
+            .map(ToolProgress::label)
+            .collect::<Vec<_>>()
+            .join("\n");
     }
     fn result(&mut self, value: &Value) {
         if value["sessionId"].as_str() != Some(self.session_id.as_str()) {
@@ -927,6 +1054,191 @@ for line in sys.stdin:
             assert!(self.controller.process.is_none());
             fs::remove_dir_all(&self.directory).unwrap();
         }
+    }
+    fn display_controller() -> Controller {
+        let mut controller = Controller::default();
+        controller.session_id = "display-session".into();
+        controller.turn_id = Some("display-turn".into());
+        controller.phase = Phase::Running;
+        controller
+    }
+    fn display_event(controller: &mut Controller, seq: u64, kind: &str, data: Value) {
+        controller.runtime_event(&json!({"sessionId":"display-session", "turnId":"display-turn", "seq":seq, "type":kind, "data":data}));
+    }
+    #[test]
+    fn tool_progress_uses_fixed_labels_and_settled_invocations_do_not_reopen() {
+        let mut c = display_controller();
+        display_event(
+            &mut c,
+            1,
+            "tool.started",
+            json!({"invocationId":"one", "call":{"name":"context", "arguments":{"private":"do-not-display"}}}),
+        );
+        display_event(
+            &mut c,
+            2,
+            "tool.progress",
+            json!({"invocationId":"one", "progress":{"message":"secret-path /private/token"}}),
+        );
+        display_event(
+            &mut c,
+            3,
+            "tool.started",
+            json!({"invocationId":"one", "call":{"name":"context"}}),
+        );
+        assert_eq!(c.view().progress, "读取当前画布…");
+        display_event(
+            &mut c,
+            4,
+            "tool.completed",
+            json!({"invocationId":"one", "message":{"toolName":"context", "content":"private-result"}}),
+        );
+        display_event(
+            &mut c,
+            5,
+            "tool.progress",
+            json!({"invocationId":"one", "progress":"private"}),
+        );
+        display_event(
+            &mut c,
+            6,
+            "tool.failed",
+            json!({"invocationId":"one", "message":{"toolName":"context"}}),
+        );
+        assert_eq!(c.view().progress, "读取当前画布 · 已返回");
+        assert_eq!(c.tool_progress.len(), 1);
+        display_event(
+            &mut c,
+            7,
+            "text.delta",
+            json!({"text":"tool.started fake model text"}),
+        );
+        assert_eq!(c.view().progress, "读取当前画布 · 已返回");
+        assert_eq!(c.view().text, "tool.started fake model text");
+    }
+    #[test]
+    fn tool_progress_ignores_unscoped_old_duplicate_and_post_terminal_events() {
+        let mut c = display_controller();
+        let data = json!({"invocationId":"one", "call":{"name":"preview"}});
+        c.runtime_event(
+            &json!({"sessionId":"display-session", "seq":1, "type":"tool.started", "data":data}),
+        );
+        c.runtime_event(&json!({"sessionId":"display-session", "turnId":"old", "seq":2, "type":"tool.started", "data":data}));
+        assert!(c.view().progress.is_empty());
+        display_event(&mut c, 3, "tool.started", data);
+        display_event(
+            &mut c,
+            3,
+            "tool.failed",
+            json!({"invocationId":"one", "message":{"toolName":"preview"}}),
+        );
+        assert_eq!(c.view().progress, "查看画布预览…");
+        c.result(&json!({"sessionId":"display-session", "result":{"turnId":"display-turn", "status":"completed", "text":"final"}, "toolState":{"observed":[]}}));
+        let retained = c.view().progress.to_owned();
+        display_event(
+            &mut c,
+            4,
+            "tool.failed",
+            json!({"invocationId":"one", "message":{"toolName":"preview"}}),
+        );
+        assert_eq!(c.view().progress, retained);
+        c.runtime_event(&json!({"sessionId":"other-session", "turnId":"display-turn", "seq":5, "type":"tool.started", "data":{"invocationId":"other", "call":{"name":"project"}}}));
+        assert_eq!(c.view().progress, retained);
+        assert_eq!(c.view().error, Some(UiError::Protocol));
+    }
+    #[test]
+    fn tool_progress_caps_steps_ignores_unknown_names_and_retains_failure() {
+        let mut c = display_controller();
+        display_event(
+            &mut c,
+            1,
+            "tool.started",
+            json!({"invocationId":"unknown", "call":{"name":"/private/secret"}}),
+        );
+        display_event(
+            &mut c,
+            2,
+            "tool.progress",
+            json!({"invocationId":"unknown", "progress":"arbitrary"}),
+        );
+        assert!(c.view().progress.is_empty());
+        display_event(
+            &mut c,
+            3,
+            "tool.failed",
+            json!({"invocationId":"denied", "message":{"toolName":"move_selected_image"}}),
+        );
+        assert_eq!(c.view().progress, "发送移动请求 · 失败");
+        for index in 0..MAX_TOOL_PROGRESS + 8 {
+            display_event(
+                &mut c,
+                index as u64 + 4,
+                "tool.started",
+                json!({"invocationId":format!("step-{index}"), "call":{"name":"capabilities"}}),
+            );
+        }
+        assert_eq!(c.tool_progress.len(), MAX_TOOL_PROGRESS);
+        assert_eq!(c.view().progress.lines().count(), MAX_TOOL_PROGRESS);
+        assert!(c.view().progress.len() < 1024);
+        display_event(
+            &mut c,
+            100,
+            "tool.cancelled",
+            json!({"invocationId":"step-0", "executed":false, "message":{"toolName":"capabilities"}}),
+        );
+        assert!(c.view().progress.contains("检查可用操作 · 已取消"));
+    }
+    #[test]
+    fn pending_move_receipt_keeps_text_streaming_until_final_result() {
+        let mut c = display_controller();
+        display_event(
+            &mut c,
+            1,
+            "tool.started",
+            json!({"invocationId":"display-turn_move", "call":{"name":"move_selected_image"}}),
+        );
+        display_event(
+            &mut c,
+            2,
+            "tool.completed",
+            json!({"invocationId":"display-turn_move", "message":{"toolName":"move_selected_image"}, "metadata":{"postVerification":"pending"}}),
+        );
+        assert_eq!(c.view().phase, Phase::Running);
+        assert_eq!(
+            c.view().outcome,
+            Some(TaskOutcome::SubmittedPendingVerification)
+        );
+        assert_eq!(c.view().progress, "移动请求已返回");
+        display_event(&mut c, 3, "text.delta", json!({"text":"仍需核对画布"}));
+        assert_eq!(c.view().text, "仍需核对画布");
+        assert_eq!(
+            c.view().outcome,
+            Some(TaskOutcome::SubmittedPendingVerification)
+        );
+        c.result(&json!({"sessionId":"display-session", "result":{"turnId":"display-turn", "status":"completed", "text":"最终回复，待验证"}, "toolState":{"observed":[{"invocationId":"display-turn_move", "postVerification":"pending", "state":"completed"}]}}));
+        assert_eq!(c.view().text, "最终回复，待验证");
+        assert_eq!(c.view().phase, Phase::Ready);
+        assert_eq!(
+            c.view().outcome,
+            Some(TaskOutcome::SubmittedPendingVerification)
+        );
+        assert_eq!(c.view().progress, "移动请求已返回");
+        assert!(!c.write_in_flight);
+    }
+    #[test]
+    fn next_accepted_question_resets_only_current_progress() {
+        let mut fixture = Fixture::new("finish");
+        fixture.ready();
+        fixture.controller.tool_progress.push(ToolProgress {
+            id: "old".into(),
+            action: ToolAction::Context,
+            state: ToolProgressState::Completed,
+        });
+        fixture.controller.progress = "读取当前画布 · 已返回".into();
+        fixture.controller.send_text("new question").unwrap();
+        assert!(fixture.controller.tool_progress.is_empty());
+        assert!(fixture.controller.view().progress.is_empty());
+        fixture.until(|c| c.view().outcome.is_some());
     }
     #[test]
     fn connection_waits_for_both_real_responses_and_never_replays() {
