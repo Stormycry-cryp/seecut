@@ -281,7 +281,7 @@ def validate_import_ui(ui):
             or ui.get('scope') != 'clip-media-import' or ui.get('observed_head') != HEAD
             or ui.get('observed_app_sha256') != APP_SHA
             or ui.get('public_node_columns') != list(IMPORT_COLUMNS)
-            or ui.get('native_window_bounds') != [0, 0, 825, 338]
+            or ui.get('native_window_bounds') != [0, 0, 825, 384]
             or ui.get('import_xy') != [248, 160]
             or ui.get('import_guard', {}).get('region') != [201, 146, 94, 28]
             or ui.get('fixture') != {'basename': 'opaque-quadrants.png', 'bytes': 800,
@@ -343,6 +343,58 @@ def native_template(data, ui, pid, phase):
     return showing, accept[0]
 
 
+def bounded_native_metadata_observation(native, expected, read_sample, check_window, deadline, record,
+                                        clock=time.monotonic, sleep=time.sleep):
+    """Read at most three trees in <=2s; stability alone never grants input authority."""
+    started = clock()
+    until = min(deadline, started + 2.0)
+    record.update(window=dict(native), max_samples=3, wait_limit_seconds=2.0,
+                  samples=[], stable=False, file_input_authorized=False)
+    previous = None
+    try:
+        for sample in range(1, 4):
+            if until - clock() < 0.25:
+                break
+            check_window()
+            if until - clock() < 0.25:
+                break
+            data = read_sample(sample)
+            check_window()
+            if clock() >= until:
+                raise Stop('native_metadata_observation_deadline_no_input')
+            # The existing probe supplies complete, same-PID, nonfield trees.
+            public_context(data, native['pid'], allow_dialog=True, native=True)
+            nodes = data['nodes']
+            current = full_projection(nodes)
+            digest = hashlib.sha256(json.dumps(current, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            showing = [n for n in nodes if n.get('showing')]
+            x, y, width, height = native['bounds']
+            invalid_bounds = 0
+            for node in showing:
+                b = node.get('bounds', {})
+                if (any(type(b.get(k)) is not int for k in ('x', 'y', 'width', 'height'))
+                        or b['width'] < 0 or b['height'] < 0
+                        or b['x'] < x or b['y'] < y
+                        or b['x'] + b['width'] > x + width
+                        or b['y'] + b['height'] > y + height):
+                    invalid_bounds += 1
+            record['samples'].append({'sample': sample, 'nodes': len(nodes), 'projection_sha256': digest,
+                'before_matched': current == expected,
+                'showing_enabled_count': sum(n.get('enabled') is True for n in showing),
+                'showing_sensitive_count': sum(n.get('sensitive') is True for n in showing),
+                'showing_bounds_outside_window_count': invalid_bounds,
+                'Media_label_count': sum(n.get('label') == 'Media' for n in showing)})
+            if digest == previous:
+                record['stable'] = True
+                break
+            previous = digest
+            if sample < 3 and until - clock() >= 0.35:
+                sleep(min(0.1, until - clock() - 0.25))
+    finally:
+        record['elapsed_seconds'] = round(clock() - started, 3)
+    record['verdict'] = 'stable_metadata_no_file_input' if record['stable'] else 'metadata_not_stable_no_input'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('app-pid', 'window-id'):
@@ -360,6 +412,7 @@ def main():
     end = min(args.deadline_monotonic - 15, started + 120)
     directory = None
     size = [1280, 900]
+    read_only_until = None
     report = {'schema': 'seecut-clip-media-import-v1', 'scope': 'clip-media-import', 'status': 'blocked',
               'source_head': HEAD, 'actions': [], 'captures': [], 'guards': [], 'public_metadata': [],
               'window_observations': [], 'project_created': False, 'project_create_attempted': False,
@@ -369,7 +422,7 @@ def main():
               'product_verdict': 'pending_main_actual_image_review', 'cleanup_owner': 'launcher <=300s'}
 
     def command(argv, binary=False, search=False):
-        left = end - time.monotonic()
+        left = min(end, read_only_until or end) - time.monotonic()
         if left < 0.25:
             raise Stop('deadline_no_further_input')
         try:
@@ -439,6 +492,23 @@ def main():
                 or int(command(['xdotool', 'getwindowfocus']).strip()) != native['window']):
             raise Stop('same_owned_native_PID_and_focus_required')
 
+    def observe_import_native_metadata(native):
+        nonlocal read_only_until
+        # Exact 0aa filtered chooser; historical disabled/zero bounds stay raw.
+        if native['bounds'] != [0, 0, 825, 384]:
+            raise Stop('unknown_import_GTK_geometry_observed_no_input')
+        record = {}
+        report['native_metadata_observation'] = record
+        read_only_until = min(end, time.monotonic() + 2.0)
+        try:
+            bounded_native_metadata_observation(native, import_ui['native_before_public_nodes'],
+                lambda sample: probe(f'12-import-native-sample-{sample:02d}-public', native=native, allow_dialog=True),
+                lambda: focus_native(native), read_only_until, record)
+        finally:
+            read_only_until = None
+        if not record['stable'] or not all(n['before_matched'] for n in record['samples']):
+            raise Stop('filtered_import_GTK_before_unstable_or_changed_no_input')
+
     def collect_import_native():
         until = min(end, time.monotonic() + 12)
         previous, stable = None, None
@@ -455,6 +525,7 @@ def main():
                     snapshot('12-import-native-observed', native=now, allow_dialog=True)
                     if now['bounds'] != import_ui['native_window_bounds']:
                         raise Stop('unknown_import_GTK_geometry_observed_no_input')
+                    observe_import_native_metadata(now)
                     return now
                 if now != previous:
                     previous, stable = now, time.monotonic()
@@ -515,55 +586,13 @@ def main():
         native = collect_import_native()
         data = probe('12-import-native-before-public', native=native, allow_dialog=True)
         native_template(data, import_ui, native['pid'], 'before')
-        guard(pixels(native), 'native-footer-before-location', import_ui['native_footer_guard'], 825, 338)
+        guard(pixels(native), 'native-footer-before-location', import_ui['native_footer_guard'], 825, 384)
         focus_native(native)
         report['actions'].append({'kind': 'one_location_popup_attempt', 'key': 'ctrl+l'})
         command(['xdotool', 'key', '--clearmodifiers', 'ctrl+l'])
         pause()
         snapshot('13-import-native-location', native=native, allow_dialog=True)
-        data = probe('13-import-native-location-recheck-public', native=native, allow_dialog=True)
-        nodes, _accept = native_template(data, import_ui, native['pid'], 'location')
-        entries = [n for n in nodes if n.get('entry') and n.get('editable_text_interface')
-                   and (n.get('enabled') or n.get('sensitive')) and n.get('focused')]
-        if len(entries) != 1:
-            raise Stop('exact_unique_focused_GTK_location_required')
-        report['file_input_attempted'] = True
-        native_action(native, entries[0], 'set-location')
-        pause()
-        data = probe('14-native-before-accept-public', native=native, allow_dialog=True)
-        _nodes, accept = native_template(data, import_ui, native['pid'], 'location')
-        native_action(native, accept, 'accept')
-        until = min(end, time.monotonic() + 12)
-        while native_windows() and time.monotonic() < until:
-            time.sleep(0.25)
-        if native_windows():
-            raise Stop('native_import_not_gone_main_review_no_retry')
-        command(['xdotool', 'windowfocus', '--sync', str(args.window_id)])
-        focus_main()
-        prior = None
-        for sample in range(1, 5):
-            data = probe(f'15-import-result-sample-{sample:02d}-public', allow_dialog=True)
-            if not editor_context(data, args.app_pid):
-                snapshot('15-import-result', allow_dialog=True)
-                raise Stop('unknown_import_result_main_review_required')
-            current = (full_projection(data['nodes']), hashlib.sha256(pixels()).hexdigest())
-            if current == prior:
-                report['import_result_stable_observed'] = True
-                break
-            prior = current
-            pause()
-        if not report.get('import_result_stable_observed'):
-            snapshot('15-import-result', allow_dialog=True)
-            raise Stop('import_result_stability_unconfirmed_main_review_required')
-        exact_fixture(args.input_dir)
-        report['fixture_source_unchanged'] = True
-        # Native clip import references the input; do not claim or scan a personal-
-        # library copy. Only the already authorized owned concat.json bytes/SHA.
-        report['project_manifest_after_import'] = project_manifest_record(args.work_dir)
-        report['project_manifest_changed'] = (report['project_manifest_after_import'].get('sha256')
-                != report['project_manifest_before_import'].get('sha256'))
-        snapshot('15-import-result', allow_dialog=True)
-        report['status'] = 'clip_import_result_observed_main_review_required'
+        raise Stop('filtered_import_GTK_location_observed_main_review_no_file_input')
 
     def probe(name, native=None, allow_dialog=False):
         if native is None:
@@ -571,10 +600,14 @@ def main():
         else:
             focus_native(native)
         pid = native['pid'] if native else args.app_pid
+        io_end = min(end, read_only_until or end)
+        left = io_end - time.monotonic()
+        if left < 0.25:
+            raise Stop('public_metadata_observation_deadline_no_input')
         completed = subprocess.run([args.probe_python, '-B', str(helper), '--app-pid', str(pid),
             '--owned-root-pid', str(args.app_pid), '--output', str(directory), '--output-name', name + '.json',
-            '--deadline-monotonic', str(min(end, time.monotonic() + 3)), '--private-accessibility-bus'],
-            capture_output=True, timeout=min(5, max(0.25, end - time.monotonic())))
+            '--deadline-monotonic', str(min(io_end, time.monotonic() + 3)), '--private-accessibility-bus'],
+            capture_output=True, timeout=min(5, left))
         path = directory / (name + '.json')
         if completed.returncode or path.is_symlink() or not path.is_file() or path.stat().st_size > 131072:
             raise Stop('bounded_public_metadata_unavailable_no_retry')
