@@ -860,7 +860,7 @@ def main():
             post.import_root_before(readonly_record, len(readonly_record['samples']), time.monotonic(), Stop)
         if (native is None and allow_dialog and report['scope'] == 'clip-media-import'
                 and tuple(size) == (1280, 900) and helper == dependencies['post_insert']
-                and re.fullmatch(r'20-file-menu-observed(?:-sample-0[1-4])?-public', name)):
+                and re.fullmatch(r'20-file-menu-observed(?:-sample-0[1-4]|-recheck)?-public', name)):
             post.file_menu_context(data, pid, public_context, timeline_rows, Stop)
         else:
             public_context(data, pid, allow_dialog=allow_dialog, native=native is not None, width=size[0], height=size[1])
@@ -885,7 +885,9 @@ def main():
         if not matched:
             raise Stop('current_RGB_guard_changed_no_input:' + name)
     def snapshot(name, native=None, allow_dialog=False):
-        probe(name + '-public', native=native, allow_dialog=allow_dialog)
+        data = probe(name + '-public', native=native, allow_dialog=allow_dialog)
+        if name == '21-close-return':
+            post.close_return_pixels_context(data, args.app_pid, public_context, timeline_rows, Stop)
         if len(report['captures']) >= 10:
             raise Stop('PNG_count_limit_before_capture')
         path = directory / (name + '.png')

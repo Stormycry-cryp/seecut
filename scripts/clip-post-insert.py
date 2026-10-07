@@ -120,6 +120,84 @@ def file_menu_context(data, pid, context, rows, stop):
     return [n for n in nodes if n.get('showing')]
 
 
+# run37629060987 original PNG, decoded RGB; complete atomic rows, no crop relaxation.
+CLOSE_GUARDS = {
+    'full-popup': {'region': [66, 32, 220, 316], 'rgb_sha256': '9fa0518df40bc219ec7077a2b2f131b2bf23cee6036a72740d964bb3e8da205d'},
+    'close-row': {'region': [74, 290, 204, 26], 'rgb_sha256': '066973f74668d504de753102ecbbe287d9475c822903e974745fa92b0064df61'},
+}
+# This run's 02-page public prefix, including the untouched, unfocused Search pair.
+RETURN_PAGE_PREFIX = [{'path': [], 'role': 75, 'label': None, 'showing': False, 'enabled': False, 'sensitive': False, 'focused': False, 'focusable': False, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False}, {'path': [0], 'role': 23, 'label': None, 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': False, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 0, 'y': 0, 'width': 1280, 'height': 900}}, {'path': [0, 0], 'role': 29, 'label': None, 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': False, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 14, 'y': 9, 'width': 44, 'height': 13}}, {'path': [0, 1], 'role': 43, 'label': '生成', 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': True, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 18, 'y': 90, 'width': 44, 'height': 44}}, {'path': [0, 2], 'role': 43, 'label': '画布', 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': True, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 18, 'y': 148, 'width': 44, 'height': 44}}, {'path': [0, 3], 'role': 43, 'label': '剪辑', 'showing': True, 'enabled': True, 'sensitive': True, 'focused': True, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': True, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 18, 'y': 206, 'width': 44, 'height': 44}}, {'path': [0, 4], 'role': 43, 'label': '资产库', 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': True, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 18, 'y': 264, 'width': 44, 'height': 44}}, {'path': [0, 5], 'role': 62, 'label': None, 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': True, 'bounds': {'x': 18, 'y': 726, 'width': 44, 'height': 44}}, {'path': [0, 6], 'role': 43, 'label': '设置', 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': True, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': True, 'allowed_actions': ['click'], 'bounds': {'x': 18, 'y': 784, 'width': 44, 'height': 44}}, {'path': [0, 7], 'role': 43, 'label': None, 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': True, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 18, 'y': 842, 'width': 44, 'height': 44}}, {'path': [0, 7, 0], 'role': 27, 'label': None, 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': False, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 22, 'y': 846, 'width': 36, 'height': 36}}, {'path': [0, 8], 'role': 29, 'label': '剪辑', 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': False, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 112, 'y': 72, 'width': 792, 'height': 40}}, {'path': [0, 9], 'role': 79, 'label': None, 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': True, 'editable': True, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 914, 'y': 85, 'width': 228, 'height': 14}}, {'path': [0, 10], 'role': 29, 'label': None, 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': False, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 914, 'y': 85, 'width': 228, 'height': 14}}, {'path': [0, 11], 'role': 62, 'label': None, 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': True, 'bounds': {'x': 1152, 'y': 72, 'width': 40, 'height': 40}}, {'path': [0, 12], 'role': 62, 'label': None, 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': True, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': True, 'bounds': {'x': 1192, 'y': 72, 'width': 40, 'height': 40}}, {'path': [0, 13], 'role': 29, 'label': '新建项目', 'showing': True, 'enabled': True, 'sensitive': True, 'focused': False, 'focusable': False, 'selected': False, 'checked': False, 'modal': False, 'file_chooser': False, 'dialog': False, 'button': False, 'radio': False, 'panel': False, 'entry': False, 'editable': False, 'editable_text_interface': False, 'action_interface': False, 'bounds': {'x': 112, 'y': 368, 'width': 56, 'height': 14}}]
+
+
+def close_return_pixels_context(data, pid, context, rows, stop):
+    """Observation only: known launch chrome/Search, inert unknown cards; no input gate."""
+    context(data, pid)
+    nodes = data['nodes']
+    rows(nodes)  # Whole-tree schema/privacy, including hidden nodes.
+    if len(nodes) < len(RETURN_PAGE_PREFIX):
+        raise stop('Close_return_page_chrome_unknown_metadata_only')
+    for current, expected in zip(nodes, RETURN_PAGE_PREFIX):
+        # Nonfield focus is recorded rather than inventing a returned focus template.
+        if {k: v for k, v in current.items() if k != 'focused'} != {
+                k: v for k, v in expected.items() if k != 'focused'}:
+            raise stop('Close_return_page_chrome_unknown_metadata_only')
+        if current['focused'] and not expected['focusable'] and expected['role'] != 23:
+            raise stop('Close_return_unknown_focus_metadata_only')
+        if current.get('entry') and current['focused']:
+            raise stop('Close_return_Search_focus_metadata_only')
+    fields = [n for n in nodes if any(n[k] for k in ('entry', 'editable', 'editable_text_interface'))]
+    if fields != [RETURN_PAGE_PREFIX[12]]:
+        raise stop('Close_return_unknown_field_metadata_only')
+    # A later Copy group has not been observed on this return page. Reject even
+    # disabled/hidden entries rather than widening the original known Search.
+    for node in nodes[len(RETURN_PAGE_PREFIX):]:
+        bounds = node.get('bounds')
+        if (node['role'] not in (27, 29) or node['label'] is not None
+                or any(node[k] for k in ('action_interface', 'focusable', 'focused',
+                    'entry', 'editable', 'editable_text_interface', 'modal', 'dialog',
+                    'file_chooser', 'button', 'radio', 'panel', 'selected', 'checked'))
+                or not node['showing'] or not isinstance(bounds, dict)
+                or bounds['x'] < 0 or bounds['y'] < 0
+                or bounds['x'] + bounds['width'] > 1280
+                or bounds['y'] + bounds['height'] > 900):
+            raise stop('Close_return_unknown_interaction_metadata_only')
+    return nodes
+
+
+def close_and_observe(*, context, rows, stop, probe, pixels, guard, focus,
+                      command, pause, snapshot, report, args, remaining):
+    if remaining() < 18:
+        raise stop('Close_return_observation_reserve_required_no_input')
+    data = probe('20-file-menu-observed-recheck-public', allow_dialog=True)
+    file_menu_context(data, args.app_pid, context, rows, stop)
+    if any(n['focused'] and n['role'] != 23 for n in data['nodes']):
+        raise stop('Close_menu_nonwindow_focus_no_input')
+    frame = pixels()
+    for name, spec in CLOSE_GUARDS.items():
+        guard(frame, 'close-' + name, spec)
+    command(['xdotool', 'mousemove', '--window', str(args.window_id), '176', '303'])
+    focus()
+    if remaining() < 18:
+        raise stop('Close_return_observation_reserve_required_no_input')
+    report['actions'].append({'kind': 'one_guarded_Close_project_attempt', 'xy': [176, 303]})
+    report['status'] = 'clip_Close_return_main_review_required'
+    report['close_open_export_attempted'] = True
+    report['close_return_observation'] = {'reopen_attempted': False, 'export_attempted': False,
+                                         'product_success': False, 'PNG_saved': False}
+    command(['xdotool', 'click', '1'])
+    pause()
+    data = probe('21-close-return-observed-public')
+    try:
+        close_return_pixels_context(data, args.app_pid, context, rows, stop)
+    except stop as error:
+        report['close_return_observation']['pixel_gate_stop'] = str(error)
+        raise stop('unknown_Close_return_main_review_required_metadata_only')
+    # Controller snapshot probes again and repeats this exact safety gate before pixels.
+    snapshot('21-close-return')
+    report['close_return_observation']['PNG_saved'] = True
+    raise stop('unknown_Close_return_main_review_required_no_Open_Recent_input')
+
+
 def run(*, context, rows, stop, probe, pixels, guard, focus, command, pause, snapshot,
         report, args, remaining, fixture, manifest, release=None):
     def checked(name, allow_dialog=False):
@@ -231,9 +309,9 @@ def run(*, context, rows, stop, probe, pixels, guard, focus, command, pause, sna
     command(['xdotool', 'mousemove', '--window', str(args.window_id), '100', '650'])
     pause()
     observe('20-file-menu-observed', menu=True)
-    report['status'] = 'clip_post_insert_File_observed_main_review_required'
-    report['close_open_export_attempted'] = False
-    raise stop('unknown_File_menu_review_required_no_Close_Open_input')
+    close_and_observe(context=context, rows=rows, stop=stop, probe=probe, pixels=pixels,
+                      guard=guard, focus=focus, command=command, pause=pause,
+                      snapshot=snapshot, report=report, args=args, remaining=remaining)
 
 
 if __name__ == '__main__':
