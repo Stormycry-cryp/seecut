@@ -169,7 +169,7 @@ def native_runtime_identity(stage):
         return (*CLIP_EDITOR_RUNTIME[:4], '93d8545ed799bda4abf55c7612f5c94904749f36011cf993efa8668f5fd99ae8')
     if stage == 'assistant-config-observation':
         return (*CLIP_EDITOR_RUNTIME[:4], '5a1d5b1630db3bc097a8ed0f201938d53371270af0599879ef76bb98208d969e')
-    if stage == 'clip-editor-entry':
+    if stage in ('clip-editor-entry', 'clip-media-import'):
         return CLIP_EDITOR_RUNTIME
     return (NATIVE_HEAD, NATIVE_APP_SHA, NATIVE_BUILD_RUN, NATIVE_ARTIFACT, NATIVE_IDENTITY_SHA)
 
@@ -629,15 +629,15 @@ def copy_workflow_fixtures(source, work):
 
 
 NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-controller.py',
-                                           '9ad94314d458322a3fcdd04f7e1c491be520687155e4363258b8175250a026d7'],
+                                           '6179790b267c8ababa8381011853cd4a539dfea93c4fd7e3b8481046b5e8bd8f'],
                                     'native_public_probe': ['asset-flow-public-probe.py',
                                                             '2f965552da7b5fe4c5fd002e010a2c712091c441d87bef2e8cabb2f0fe52c17d'],
                                     'native_action': ['asset-flow-native-action.py',
                                                       '63704d9b66fa6e4bcb01cbe4e3a815b7129c61d31abea994a77124986d4cf125'],
                                     'asset_app_action': ['asset-flow-app-action.py',
-                                                         'ce68e0ec72a546be71a8a08e3adc3e21bd2abc05a61895ba1836ada867355293']},
+                                                         '557ff54d7285d4d5bd10db4cccfe4412fab6561f3088316a0e9c64d33b28f757']},
                         'ui': ['asset-flow-ui.json',
-                               '87e46157d21d4ae2c900799889b4c4a63818ee6163a24764f75eb745021c5d12'],
+                               'f73ac2800e496ace246458beb4eed192781e60bcf536ec0a760861816d7ee1c4'],
                         'next_stage': None,
                         'artifacts': {'main-qa-asset-library-flow': {'png': ['01-after-quick.png',
                                                                              '02-page.png',
@@ -651,7 +651,7 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                                                              '09-single-selected.png',
                                                                              '10-canvas-flow-result.png',
                                                                              '10-unknown-flow-result.png',
-                                                                             '11-handoff-new-result.png'],
+                                                                             '11-handoff-new-result.png', '12-canvas-result.png'],
                                                                      'public': ['01-after-quick-prepixels-public.json',
                                                                                 '01-after-quick-public.json',
                                                                                 '02-before-navigation-public.json',
@@ -680,7 +680,7 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                                                                 '10-canvas-flow-result-public.json',
                                                                                 '10-unknown-flow-result-public.json',
                                                                                 '11-before-handoff-new-public.json',
-                                                                                '11-handoff-new-result-public.json'],
+                                                                                '11-handoff-new-result-public.json', '11-handoff-open-recheck-public.json', '12-canvas-result-public.json'],
                                                                      'action': ['05-native-set-location-action.json',
                                                                                 '05-native-accept-action.json',
                                                                                 '07-search-miss-action.json',
@@ -688,7 +688,7 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                                                                 '09-batch-action.json',
                                                                                 '09-select-action.json',
                                                                                 '10-canvas-action.json',
-                                                                                '11-handoff-new-action.json'],
+                                                                                '11-handoff-new-action.json', '12-handoff-open-action.json'],
                                                                      'other': ['asset-flow-report.json']}},
                         'artifact_JSON_limits': {'public_metadata_each': 131072,
                                                  'native_action_each': 8192,
@@ -704,6 +704,91 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                                    '800B PNG copy0600 in owned0700 asset-clip-inputs; fixed '
                                                    'checked-out scripts/qa-fixtures source. All other native '
                                                    'scopes keep input-dir forbidden.'}}})
+
+
+# Exact reviewed clip import controller and pinned nonfield templates.
+NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-controller.py',
+                                          '28ec838900067834f0d01f628e42abbcb8db8aa0703160dcdc9c7d7a38a8783f'],
+                                   'clip_import_controller': ['clip-import-controller.py',
+                                                              '28ec838900067834f0d01f628e42abbcb8db8aa0703160dcdc9c7d7a38a8783f'],
+                                   'native_public_probe': ['clip-editor-public-probe.py',
+                                                           '562612f3bf1d54da2f9011fdea0849b6ecdf0dc66d129b42546fb0bd21bc3cd8'],
+                                   'clip_editor_action': ['clip-editor-action.py',
+                                                          '01c3b609e0ba012616df3a99ab0a5ea98629b32124b28cdd49489b609c5546ce'],
+                                   'native_action': ['clip-import-native-action.py',
+                                                     'ea8c118476fc0d2c36959781b6a0e9d8a3d3ce57d09f2a20a92eaf364e3f479e'],
+                                   'clip_import_guard': ['clip-import-guard.json',
+                                                         'a938246d6b667f3ccc43b969381bf93ba697365bb05bb020d4ce1182999fee3c']},
+                       'ui': ['clip-import-ui.json',
+                              '18f727974252d3c5f951da7ce865c3a091d1c0f96ec80e732b48f577a30df52f'],
+                       'next_stage': None,
+                       'artifacts': {'main-qa-clip-media-import': {'png': ['01-after-quick.png',
+                                                                           '02-page.png',
+                                                                           '03-current-new-clip-dialog.png',
+                                                                           '07-editor-1280x900.png',
+                                                                           '08-editor-1024x900.png',
+                                                                           '09-editor-1440x900.png',
+                                                                           '10-editor-1280x720.png',
+                                                                           '11-unknown-editor-result.png',
+                                                                           '12-import-native-observed.png',
+                                                                           '12-import-app-unknown-result.png',
+                                                                           '13-import-native-location.png',
+                                                                           '15-import-result.png'],
+                                                                   'public': ['01-after-quick-prepixels-public.json',
+                                                                              '01-after-quick-public.json',
+                                                                              '02-before-navigation-public.json',
+                                                                              '02-page-public.json',
+                                                                              '02-page-target-public.json',
+                                                                              '02-target-recheck-public.json',
+                                                                              '03-current-new-clip-dialog-public.json',
+                                                                              '03-dialog-recheck-public.json',
+                                                                              '06-before-create-public.json',
+                                                                              '07-editor-sample-01-public.json',
+                                                                              '07-editor-sample-02-public.json',
+                                                                              '07-editor-sample-03-public.json',
+                                                                              '07-editor-sample-04-public.json',
+                                                                              '07-editor-sample-05-public.json',
+                                                                              '07-editor-sample-06-public.json',
+                                                                              '07-editor-sample-07-public.json',
+                                                                              '07-editor-sample-08-public.json',
+                                                                              '07-editor-prepixels-public.json',
+                                                                              '07-editor-1280x900-public.json',
+                                                                              '08-editor-prepixels-public.json',
+                                                                              '08-editor-1024x900-public.json',
+                                                                              '09-editor-prepixels-public.json',
+                                                                              '09-editor-1440x900-public.json',
+                                                                              '10-editor-prepixels-public.json',
+                                                                              '10-editor-1280x720-public.json',
+                                                                              '11-unknown-editor-result-public.json',
+                                                                              '11-before-import-public.json',
+                                                                              '11-import-target-recheck-public.json',
+                                                                              '12-import-native-observed-public.json',
+                                                                              '12-import-native-before-public.json',
+                                                                              '12-import-app-unknown-result-public.json',
+                                                                              '13-import-native-location-public.json',
+                                                                              '13-import-native-location-recheck-public.json',
+                                                                              '14-before-set-location-public.json',
+                                                                              '14-native-before-accept-public.json',
+                                                                              '14-before-accept-public.json',
+                                                                              '15-import-result-public.json',
+                                                                              '15-import-result-sample-01-public.json',
+                                                                              '15-import-result-sample-02-public.json',
+                                                                              '15-import-result-sample-03-public.json',
+                                                                              '15-import-result-sample-04-public.json'],
+                                                                   'action': ['04-name-action.json',
+                                                                              '05-path-action.json',
+                                                                              '06-create-action.json',
+                                                                              '14-native-set-location-action.json',
+                                                                              '14-native-accept-action.json'],
+                                                                   'other': ['clip-import-report.json']}},
+                       'fixture': {'source': 'scripts/qa-fixtures/opaque-quadrants.png',
+                                   'bytes': 800,
+                                   'sha256': '0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63',
+                                   'destination_directory': 'asset-clip-inputs',
+                                   'copy_policy': 'Reuse copy_assets_fixture only for this explicit scope; '
+                                                  'source must be checked-out scripts/qa-fixtures; copy0700 '
+                                                  'directory and0600 file; exactly one file; controller '
+                                                  'checks work-dir/asset-clip-inputs.'}}})
 
 
 def copy_assets_fixture(source, work):
@@ -995,7 +1080,7 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
                         "--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
         if native["next_stage"] is not None:
             command.extend(("--next-stage", native["next_stage"]))
-        if args.next_stage in ('assets-import', 'asset-library-flow'):
+        if args.next_stage in ('assets-import', 'asset-library-flow', 'clip-media-import'):
             command.extend(('--input-dir', str(copied['input_dir'])))
     elif args.next_stage in A2_SCOPES:
         command[command.index("--deadline-monotonic") + 1] = str(
@@ -1158,7 +1243,7 @@ def arguments():
         parser.error("--isolated-display-capture requires an authorized observation stage")
     if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}:
         parser.error("--private-accessibility-bus is only valid for workflow/fresh observation")
-    if args.input_dir is not None and args.next_stage not in ('workflow-observation', 'assets-import', 'asset-library-flow', *PERSISTENCE_SCOPES):
+    if args.input_dir is not None and args.next_stage not in ('workflow-observation', 'assets-import', 'asset-library-flow', 'clip-media-import', *PERSISTENCE_SCOPES):
         parser.error('--input-dir is only valid for reviewed workflow, persistence or assets fixture scopes')
     if args.next_stage not in PERSISTENCE_SCOPES and any((args.owned_state_root, args.state_token, args.seed_record)):
         parser.error('persistence state options are forbidden for all original scopes')
@@ -1204,7 +1289,7 @@ def arguments():
             parser.error("native observation requires --private-accessibility-bus")
         if args.seconds != 300 or args.client_binary is not None:
             parser.error('native observation requires 300 seconds and no MCP client')
-        if (args.next_stage in ('assets-import', 'asset-library-flow')) != (args.input_dir is not None):
+        if (args.next_stage in ('assets-import', 'asset-library-flow', 'clip-media-import')) != (args.input_dir is not None):
             parser.error('only asset scopes require the exact single fixture input directory')
         if not all((args.identity_approval, args.ui_approval, args.source_head,
                     args.candidate_manifest, args.candidate_artifact_id)):
@@ -1328,7 +1413,7 @@ def main():
             if (candidate is None or source_head != native_head or args.candidate_artifact_id != native_artifact
                     or candidate["app_sha256"] != native_app_sha or candidate["build_run_id"] != native_build_run):
                 raise ValueError("native candidate differs from its reviewed immutable provenance")
-            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation', 'asset-library-flow') and (
+            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation', 'asset-library-flow', 'clip-media-import') and (
                     candidate["build_job_id"] != 112019086814 or candidate["app_bytes"] != 467641344
                     or result["candidate"]["manifest_sha256"] != 'd666628e2499a26ef5f541898a4b5f0c8a69bba98bc6a3a28a2725d37c426d73'):
                 raise ValueError("current candidate job, size or manifest differs from its immutable provenance")
@@ -1421,7 +1506,7 @@ def main():
                                       limit=(APP_LIMIT if name == "app" else
                                              (64 * 1024 if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES or args.next_stage in NATIVE_SCOPES or args.next_stage in PERSISTENCE_SCOPES else None))))
                   for name, source in sources.items()}
-        if args.next_stage in ('assets-import', 'asset-library-flow'):
+        if args.next_stage in ('assets-import', 'asset-library-flow', 'clip-media-import'):
             if Path(args.input_dir) != root / 'scripts' / 'qa-fixtures':
                 raise ValueError('asset scopes require the checked-out fixed fixture directory')
             copied['input_dir'], fixture_hashes = copy_assets_fixture(Path(args.input_dir), work)

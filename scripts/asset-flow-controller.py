@@ -195,6 +195,21 @@ def handoff_new_target(data,ui,pid):
     return targets[0]
 
 
+def handoff_open_target(data,ui,pid):
+    nodes=public_context(data,pid)
+    spec=ui.get('handoff_open')
+    if (not isinstance(spec,dict) or handoff_projection_sha(nodes)!=spec.get('full_public_sha256')):
+        raise Stop('current_complete_handoff_open_surface_changed')
+    targets=[n for n in nodes if n.get('path')==[0,43] and n.get('label')=='加入并打开'
+        and n.get('role')==43 and n.get('button') and n.get('action_interface')
+        and not n.get('entry') and not n.get('editable') and not n.get('editable_text_interface')
+        and n.get('allowed_actions')==['click']
+        and n.get('bounds')=={'x':872,'y':631,'width':104,'height':40}
+        and all(n.get(k) is True for k in ('enabled','sensitive','focusable'))]
+    if len(targets)!=1:raise Stop('unique_current_reviewed_handoff_open_required')
+    return targets[0]
+
+
 def rgb_matches(raw, guard, width=1280, height=900):
     if len(raw) != width * height * 3:
         return False
@@ -232,8 +247,10 @@ def validate_ui(ui):
             or ui.get('mode_guard') != {'region': [420, 388, 520, 155],
                 'rgb_sha256': '2e513f04d1897fef7c6e6a0710c7afae9b7d6d592ddf1e316cb7e3fa89eb1b97'}):
         raise Stop('exact_main_scope_declaration_required')
-    if ui.get('handoff_new') != {'mode': 'handoff-new', 'target_path': [0, 41], 'target_bounds': {'x': 304, 'y': 532, 'width': 180, 'height': 40}, 'label': '新建画布项目', 'full_public_sha256': '2275157cef623af860380d69f504f896e1e07be270a54a5a4f22a97c115763e8', 'modal_guard': {'region': [280, 205, 720, 490], 'rgb_sha256': '6927daaa75078c3d0c317b35b3553197c3712ecf87113421b19256f5158a92ed'}, 'next': 'one_Action_then_observe_stop', 'project_created': False, 'add_open_attempts': 0}:
+    if ui.get('handoff_new') != {'mode': 'handoff-new', 'target_path': [0, 41], 'target_bounds': {'x': 304, 'y': 532, 'width': 180, 'height': 40}, 'label': '新建画布项目', 'full_public_sha256': '2275157cef623af860380d69f504f896e1e07be270a54a5a4f22a97c115763e8', 'modal_guard': {'region': [280, 205, 720, 490], 'rgb_sha256': '6927daaa75078c3d0c317b35b3553197c3712ecf87113421b19256f5158a92ed'}, 'next': 'one_Action_then_guarded_open_step', 'project_created': False, 'add_open_attempts': 0}:
         raise Stop('exact_reviewed_handoff_new_policy_required')
+    if ui.get('handoff_open') != {'mode': 'handoff-open', 'target_path': [0, 43], 'target_bounds': {'x': 872, 'y': 631, 'width': 104, 'height': 40}, 'label': '加入并打开', 'full_public_sha256': '2275157cef623af860380d69f504f896e1e07be270a54a5a4f22a97c115763e8', 'modal_guard': {'region': [280, 205, 720, 490], 'rgb_sha256': '60c491346af6b71b8e3808200b1acad2732f1e5512e3d65b592fbbc50d0caa36'}, 'observed_head': '0aa9406247e53f073c0b4df686adc68b40e2f8f6', 'observed_app_sha256': '03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2', 'Action_attempts': 1, 'next': 'bounded_metadata_PNG_and_owned_imported_fixture_check_only'}:
+        raise Stop('exact_reviewed_handoff_open_policy_required')
     expected = ('assets', [40, 286], [1180, 86]) if SCOPE == 'asset-library-flow' else ('clip', [40, 228], [290, 251])
     if (ui.get('page'), ui.get('navigation_xy'), ui.get('target_xy')) != expected:
         raise Stop('exact_scope_action_points_required')
@@ -499,7 +516,7 @@ def main():
         with path.open('xb') as stream:path.chmod(0o600);stream.write(raw)
         enforce_budget(path)
         if completed.returncode or data.get('success') is not True or data.get('field_values_read') is not False:
-            snapshot('11-handoff-new-result' if mode=='handoff-new' else '10-unknown-flow-result',allow_dialog=True)
+            snapshot('12-canvas-result' if mode=='handoff-open' else '11-handoff-new-result' if mode=='handoff-new' else '10-unknown-flow-result',allow_dialog=True)
             raise Stop('asset_app_action_unconfirmed_no_retry')
         command(['xdotool','mousemove','--window',str(args.window_id),'100','650']);pause()
 
@@ -560,17 +577,40 @@ def main():
         app_action(canvas[0],'canvas',10)
         report['flow_attempted']=True
         snapshot('10-canvas-flow-result',allow_dialog=True)
-        # The reviewed button selects the synthetic 'new' target only. Do not
-        # infer the next enabled footer pixels or execute its Action.
+        # One reviewed new-target selection; the next full pixels gate binds its enabled footer.
         current=probe('11-before-handoff-new-public')
         target=handoff_new_target(current,ui,args.app_pid)
         guard(pixels(),'reviewed-handoff-new',ui['handoff_new']['modal_guard'])
         app_action(target,'handoff-new',11)
         report['handoff_new_selection_Action_success']=True
         report['add_open_attempted']=False
-        snapshot('11-handoff-new-result',allow_dialog=True)
-        report['status']='handoff_new_selection_result_observed_main_review_required'
-        report['flow_result']='new_target_selected_by_Action_only_next_actual_surface_unreviewed'
+        # Keep the successful intermediate step as complete metadata plus exact
+        # full modal RGB. An unknown step consumes PNG10 and stops before Action.
+        try:
+            current=probe('11-handoff-open-recheck-public',allow_dialog=True)
+            target=handoff_open_target(current,ui,args.app_pid)
+            guard(pixels(),'reviewed-handoff-open',ui['handoff_open']['modal_guard'])
+        except Stop:
+            snapshot('11-handoff-new-result',allow_dialog=True)
+            raise Stop('handoff_new_result_unknown_no_open_Action') from None
+        report['handoff_open_surface_verified']=True
+        report['add_open_attempted']=True
+        app_action(target,'handoff-open',12)
+        report['add_open_Action_success']=True
+        # The first post-Action result is observation only. No layer assertions,
+        # field reads, additional destination input or output-path discovery.
+        snapshot('12-canvas-result',allow_dialog=True)
+        files=imported_files()
+        if (len(files)!=1 or args.input_dir.is_symlink() or not args.input_dir.is_dir()
+                or args.input_dir.stat().st_uid!=os.getuid()
+                or fixture.is_symlink() or not fixture.is_file() or fixture.stat().st_size!=800
+                or fixture.stat().st_uid!=os.getuid()
+                or hashlib.sha256(fixture.read_bytes()).hexdigest()!=FIXTURE_SHA
+                or hashlib.sha256(files[0].read_bytes()).hexdigest()!=FIXTURE_SHA):
+            raise Stop('owned_fixture_or_managed_sourcecopy_changed_after_handoff')
+        report['sourcecopy_post_handoff_verified']=True
+        report['status']='asset_canvas_final_result_observed_main_review_required'
+        report['flow_result']='after_one_add_open_Action_actual_surface_unreviewed'
 
     def imported_files():
         for path in (args.work_dir / 'portable', args.work_dir / 'portable' / 'personal-library',
@@ -768,7 +808,8 @@ def main():
     return 0 if report['status'] in ('new_clip_dialog_observed_main_review_required',
                                     'single_asset_selected_observed_main_review_required',
                                     'single_asset_flow_result_observed_main_review_required',
-                                    'handoff_new_selection_result_observed_main_review_required') else 2
+                                    'handoff_new_selection_result_observed_main_review_required',
+                                    'asset_canvas_final_result_observed_main_review_required') else 2
 
 
 if __name__ == '__main__':

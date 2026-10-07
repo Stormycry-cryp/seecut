@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import time
 
-MODES = ('search-miss', 'search-clear', 'batch', 'select', 'canvas', 'handoff-new')
+MODES = ('search-miss', 'search-clear', 'batch', 'select', 'canvas', 'handoff-new', 'handoff-open')
 MATCH_WORD = 'qa-no-match-8f7c2d1b'
 TARGET_KEYS = ('path','role','label','showing','enabled','sensitive','focusable','button',
                'entry','editable','editable_text_interface','action_interface','bounds','allowed_actions','pressed')
@@ -27,7 +27,7 @@ SAFE_REASONS = frozenset((
     'unique_preview_select_button_required','closed_search_mode_required',
     'final_nonfield_closed_Action_state_required','final_Action_bounds_changed',
     'one_advertised_click_required','deadline_before_Action','Action_false_no_retry',
-    'final_toggle_pressed_changed','exact_reviewed_handoff_new_surface_required',
+    'final_toggle_pressed_changed','exact_reviewed_handoff_new_surface_required','exact_reviewed_handoff_open_surface_required',
     'deadline_no_input','owned_command_failed','owned_App_focus_required',
     'task_limit','descendant_limit','extra_owned_window_forbidden',
     'exact_private_owned_context_required','exact_scope_action_SHA_required',
@@ -141,6 +141,16 @@ def target_current(data,pid,expected,mode,focused=False,ui=None):
                 or node.get('entry') or node.get('editable') or node.get('editable_text_interface')
                 or not node.get('action_interface') or node.get('allowed_actions')!=['click']):
             raise ValueError('exact_reviewed_handoff_new_surface_required')
+        return node
+    if mode=='handoff-open':
+        spec=ui.get('handoff_open') if isinstance(ui,dict) else None
+        if (not isinstance(spec,dict) or handoff_projection_sha(showing)!=spec.get('full_public_sha256')
+                or node.get('path')!=[0,43] or node.get('label')!='加入并打开'
+                or node.get('bounds')!={'x':872,'y':631,'width':104,'height':40}
+                or node.get('role')!=43 or not node.get('button')
+                or node.get('entry') or node.get('editable') or node.get('editable_text_interface')
+                or not node.get('action_interface') or node.get('allowed_actions')!=['click']):
+            raise ValueError('exact_reviewed_handoff_open_surface_required')
         return node
     if mode.startswith('search-'):
         if (node['path']!=[0,16] or node.get('role')!=79 or node.get('label') is not None
