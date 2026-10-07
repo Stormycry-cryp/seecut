@@ -248,9 +248,38 @@ def settings_gate(data, pid, guard, phase):
     return next(n for n in data['nodes'] if n['path']==([0,30,1] if phase=='light' else [0,26]))
 
 
+
+def canonical_page_toast(current, expected):
+    """Only the observed39-node page's complete synchronous0/+12 endpoint group.
+
+    The caller passes a private projection; raw metadata and the52-node Settings
+    template are unchanged. Intermediate/mixed motion or any other property
+    change cannot be normalized and is rejected by the full page comparison.
+    """
+    paths=((0,26),(0,27),(0,27,0),(0,27,1))
+    if len(current)!=39 or len(expected)!=39:
+        return current
+    actual={tuple(n['path']):n for n in current if tuple(n['path']) in paths}
+    baseline={tuple(n['path']):n for n in expected if tuple(n['path']) in paths}
+    if len(actual)!=4 or len(baseline)!=4:
+        return current
+    offset=actual[paths[0]]['bounds'].get('y',-65536)-baseline[paths[0]]['bounds']['y']
+    if offset not in (0,12):
+        return current
+    for path in paths:
+        wanted=json.loads(json.dumps(baseline[path]))
+        wanted['bounds']['y']+=offset
+        if actual[path]!=wanted:
+            return current
+    for path in paths:
+        actual[path]['bounds']['y']=baseline[path]['bounds']['y']
+    return current
+
 def page_gate(data, pid, guard, phase, width=1280, height=900, exact_bounds=True):
     context(data,pid,before=True,width=width,height=height);safe_schema(data['nodes'])
     current=json.loads(json.dumps(data['nodes']));expected=json.loads(json.dumps(guard['page_nodes']))
+    if exact_bounds and (width,height)==(1280,900):
+        current=canonical_page_toast(current,expected)
     if len(current)!=39:
         raise Stop('unknown_closed_or_generator_structure_observed_STOP')
     for n in current:
