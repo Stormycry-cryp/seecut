@@ -708,9 +708,9 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
 
 # Exact reviewed clip import controller and pinned nonfield templates.
 NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-controller.py',
-                                          '28ec838900067834f0d01f628e42abbcb8db8aa0703160dcdc9c7d7a38a8783f'],
+                                          'c9d793e2c22300ec9ef8dd31eaa89737c96fa1ba357299c5257601abbc7469d7'],
                                    'clip_import_controller': ['clip-import-controller.py',
-                                                              '28ec838900067834f0d01f628e42abbcb8db8aa0703160dcdc9c7d7a38a8783f'],
+                                                              'c9d793e2c22300ec9ef8dd31eaa89737c96fa1ba357299c5257601abbc7469d7'],
                                    'native_public_probe': ['clip-editor-public-probe.py',
                                                            '562612f3bf1d54da2f9011fdea0849b6ecdf0dc66d129b42546fb0bd21bc3cd8'],
                                    'clip_editor_action': ['clip-editor-action.py',
@@ -720,7 +720,7 @@ NATIVE_SCOPES.update({'clip-media-import': {'scripts': {'qa': ['clip-import-cont
                                    'clip_import_guard': ['clip-import-guard.json',
                                                          'a938246d6b667f3ccc43b969381bf93ba697365bb05bb020d4ce1182999fee3c']},
                        'ui': ['clip-import-ui.json',
-                              '18f727974252d3c5f951da7ce865c3a091d1c0f96ec80e732b48f577a30df52f'],
+                              'fc31e1deb77619f6c6c097819d8cfe9fdf395cd4b24330e80125ff8832f1c2be'],
                        'next_stage': None,
                        'artifacts': {'main-qa-clip-media-import': {'png': ['01-after-quick.png',
                                                                            '02-page.png',
@@ -1493,7 +1493,11 @@ def main():
         if args.next_stage in NATIVE_SCOPES:
             for name, (filename, _digest) in NATIVE_SCOPES[args.next_stage]["scripts"].items():
                 if name != "qa":
-                    copied[name] = work / (Path(filename).name if args.next_stage == 'assistant-config-observation' else filename)
+                    if args.next_stage == 'clip-media-import' and name == 'clip_import_controller':
+                        # Shared clip-editor-action loads this fixed public interface basename.
+                        copied[name] = work / 'clip-editor-controller.py'
+                    else:
+                        copied[name] = work / (Path(filename).name if args.next_stage == 'assistant-config-observation' else filename)
         if args.next_stage in PERSISTENCE_SCOPES:
             for name, (filename, _digest) in PERSISTENCE_SCRIPTS[args.next_stage].items():
                 if name != 'qa':

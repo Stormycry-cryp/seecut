@@ -244,7 +244,7 @@ def project_manifest_record(work):
 def runtime_dependencies(ui):
     specs = {'probe': ('clip-editor-public-probe.py', ui.get('public_probe_sha256')),
              'action': ('clip-editor-action.py', ui.get('action_sha256')),
-             'controller_alias': ('clip-import-controller.py', ui.get('controller_sha256'))}
+             'controller_alias': ('clip-editor-controller.py', ui.get('controller_sha256'))}
     if ui.get('public_probe_filename') != 'clip-editor-public-probe.py':
         raise Stop('exact_clip_editor_probe_basename_required')
     result = {}
