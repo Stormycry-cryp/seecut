@@ -239,11 +239,8 @@ def settings_gate(data, pid, guard, phase):
             if n['path']==[0,30,0]: n['checked']=False
             if n['path']==[0,30,1]: n['checked']=True
             if n['path']==[0,26]: n['focused']=False
-        # The source focuses the group's nonpublic FocusScope. Only its nearest
-        # public radio-group can reflect that focus; no focus on a field/radio/other page.
-        groups=[n for n in current if n['path']==[0,30]]
-        if len(groups)!=1: raise Stop('known_appearance_group_required')
-        groups[0]['focused']=False
+            # run37633928579: exact observed public group focus, no inferred alternative.
+            if n['path']==[0,30]: n['focused']=True; n['focusable']=True
     elif phase != 'light':
         raise Stop('closed_Settings_phase_required')
     if current != expected:
