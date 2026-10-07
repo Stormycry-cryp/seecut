@@ -114,7 +114,13 @@ jobs:
                "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
                -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
           fi
-          if [[ "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import ]]; then
+          if [[ "$NEXT_STAGE" == asset-library-flow ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               "$SOURCE_RUN_ID" == 37618873449 && "$SOURCE_ARTIFACT_ID" == 11482882493 &&
+               "$SOURCE_HEAD" == 7be354a92315a6dd5128f0da59e84db7434be918 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == clip-media-import ]]; then
             [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
                "$SOURCE_RUN_ID" == 37385930165 && "$SOURCE_ARTIFACT_ID" == 11380395799 &&
                "$SOURCE_HEAD" == 0aa9406247e53f073c0b4df686adc68b40e2f8f6 &&
@@ -396,14 +402,19 @@ jobs:
             QA_SCRIPT="$PWD/scripts/next_ui_11ebf20_a3.py"
             BUS_COMMAND=(dbus-run-session --)
             BUS_ARGS=(--private-accessibility-bus)
-          elif [[ "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import ]]; then
+          elif [[ "$NEXT_STAGE" == asset-library-flow ]]; then
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37618873449 &&
+               "$SOURCE_ARTIFACT_ID" == 11482882493 && "$SOURCE_HEAD" == 7be354a92315a6dd5128f0da59e84db7434be918 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+            QA_SCRIPT="$PWD/scripts/asset-flow-controller.py"
+            INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
+          elif [[ "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == clip-media-import ]]; then
             [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37385930165 &&
                "$SOURCE_ARTIFACT_ID" == 11380395799 && "$SOURCE_HEAD" == 0aa9406247e53f073c0b4df686adc68b40e2f8f6 &&
                -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
-            if [[ "$NEXT_STAGE" == asset-library-flow ]]; then
-              QA_SCRIPT="$PWD/scripts/asset-flow-controller.py"
-              INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
-            elif [[ "$NEXT_STAGE" == clip-media-import ]]; then
+            if [[ "$NEXT_STAGE" == clip-media-import ]]; then
               QA_SCRIPT="$PWD/scripts/clip-import-controller.py"
               INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
             elif [[ "$NEXT_STAGE" == visual-settings-entry-observation ]]; then

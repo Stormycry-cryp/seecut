@@ -178,10 +178,12 @@ NATIVE_IDENTITY_SHA = '2b94fc606a46d7d0df43ea2d07a29e5a3b5075253521a201e65d264ee
 # These scopes observe the new App against unchanged source11 entry guards.
 CLIP_EDITOR_RUNTIME = ('0aa9406247e53f073c0b4df686adc68b40e2f8f6', '03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2', 37385930165, '11380395799', '9248168645ce9324be4cfab71e8e9d851c14e0a784050a6fc84dad68599d0a7e')
 
+ASSET_RUNTIME = ('7be354a92315a6dd5128f0da59e84db7434be918', 'ff4eaf2eb92fa3214f1d2d84eabe29c627f73c8cd620c367a310e398947eb0a2', 37618873449, '11482882493', 'ccbfc7f25b1a7c206c7f74fb81635f7692f5bb4331940fff158b2620175808f5')
+
 
 def native_runtime_identity(stage):
     if stage == 'asset-library-flow':
-        return (*CLIP_EDITOR_RUNTIME[:4], '93d8545ed799bda4abf55c7612f5c94904749f36011cf993efa8668f5fd99ae8')
+        return ASSET_RUNTIME
     if stage == 'assistant-config-observation':
         return (*CLIP_EDITOR_RUNTIME[:4], '5a1d5b1630db3bc097a8ed0f201938d53371270af0599879ef76bb98208d969e')
     if stage in ('clip-editor-entry', 'clip-media-import', 'visual-settings-entry-observation'):
@@ -644,7 +646,7 @@ def copy_workflow_fixtures(source, work):
 
 
 NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-controller.py',
-                                           '1db3ac5c4fe547a9adc192e63cb9d4709b96d1a74b87dbd9c0053db45d1417a7'],
+                                           '34e8169e0679b9caaccedd119a22e15b2c68bf1907dcb807776d42dfb3696553'],
                                     'native_public_probe': ['asset-flow-public-probe.py',
                                                             '2f965552da7b5fe4c5fd002e010a2c712091c441d87bef2e8cabb2f0fe52c17d'],
                                     'native_action': ['asset-flow-native-action.py',
@@ -652,7 +654,7 @@ NATIVE_SCOPES.update({'asset-library-flow': {'scripts': {'qa': ['asset-flow-cont
                                     'asset_app_action': ['asset-flow-app-action.py',
                                                          '557ff54d7285d4d5bd10db4cccfe4412fab6561f3088316a0e9c64d33b28f757']},
                         'ui': ['asset-flow-ui.json',
-                               '0967ff7b555e50a51e476ec5105600b0472fa9cfe36e522bb1a5f8500b4e8d84'],
+                               'bff100e4cf5ef7da5c73705ce8615b0ccdf542fa809ab6ce76abdfb6c0380d55'],
                         'next_stage': None,
                         'artifacts': {'main-qa-asset-library-flow': {'png': [
                                                                              '02-page.png',
@@ -1497,7 +1499,11 @@ def main():
             if (candidate is None or source_head != native_head or args.candidate_artifact_id != native_artifact
                     or candidate["app_sha256"] != native_app_sha or candidate["build_run_id"] != native_build_run):
                 raise ValueError("native candidate differs from its reviewed immutable provenance")
-            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation', 'asset-library-flow', 'clip-media-import', 'visual-settings-entry-observation') and (
+            if args.next_stage == 'asset-library-flow' and (
+                    candidate["build_job_id"] != 112783809153 or candidate["app_bytes"] != 467559920
+                    or result["candidate"]["manifest_sha256"] != '5073c8a6bf6895c7d58547e12f361dd329a9c11498c8eb8b792fa5548c9be054'):
+                raise ValueError("asset candidate job, size or manifest differs from its immutable provenance")
+            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation', 'clip-media-import', 'visual-settings-entry-observation') and (
                     candidate["build_job_id"] != 112019086814 or candidate["app_bytes"] != 467641344
                     or result["candidate"]["manifest_sha256"] != 'd666628e2499a26ef5f541898a4b5f0c8a69bba98bc6a3a28a2725d37c426d73'):
                 raise ValueError("current candidate job, size or manifest differs from its immutable provenance")
