@@ -289,10 +289,11 @@ def timeline_canonical(rows):
 def validate_timeline_ui(ui):
     if (set(ui) != {'schema', 'scope', 'source_head', 'columns', 'transient_read_only_rows',
                    'imported_rows', 'thumbnail_guard', 'caption_guard', 'target_path',
-                   'target_bounds', 'double_click_xy'} or ui['schema'] != 1
+                   'target_bounds', 'double_click_xy', 'observed_113_read_only_sha256'} or ui['schema'] != 1
             or ui['scope'] != 'clip-media-import' or ui['source_head'] != HEAD
             or ui['columns'] != list(TIMELINE_COLUMNS)
             or len(ui['transient_read_only_rows']) != 111 or len(ui['imported_rows']) != 114
+            or ui['observed_113_read_only_sha256'] != 'e9c8a432771528099e10dc644959cbabb61c7146c9f9785a429a527bb009ba0e'
             or ui['target_path'] != [0, 28]
             or ui['target_bounds'] != {'x': 201, 'y': 182, 'width': 117, 'height': 66}
             or ui['double_click_xy'] != [259, 215]
@@ -306,7 +307,11 @@ def validate_timeline_ui(ui):
 def imported_state(data, ui, pid):
     public_context(data, pid)
     current = timeline_canonical(timeline_rows(data['nodes']))
-    if current == timeline_canonical(ui['transient_read_only_rows']):
+    # This additional observed 113-node tree omits only the thumbnail. It can
+    # continue bounded observation, never authorize a timeline gesture.
+    if (current == timeline_canonical(ui['transient_read_only_rows'])
+            or (len(data['nodes']) == 113 and
+                hashlib.sha256(current.encode()).hexdigest() == ui['observed_113_read_only_sha256'])):
         return 'observed_transient_read_only'
     if current != timeline_canonical(ui['imported_rows']):
         raise Stop('unknown_import_result_main_review_required')
