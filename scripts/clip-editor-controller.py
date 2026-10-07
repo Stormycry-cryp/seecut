@@ -13,8 +13,11 @@ import re
 import subprocess
 import time
 
-HEAD = '11ebf203e1a78d3b6a21677c4b17e96223c74b0e'
-APP_SHA = '8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30'
+HEAD = '0aa9406247e53f073c0b4df686adc68b40e2f8f6'
+APP_SHA = '03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2'
+# The new App must still satisfy every old reviewed entry guard.
+GUARD_HEAD = '11ebf203e1a78d3b6a21677c4b17e96223c74b0e'
+GUARD_APP_SHA = '8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30'
 FIXTURE_SHA = '0928c47fa44250879270def6198e04fd939dd8250864179760203f0d334a6d63'
 SCOPE = 'clip-editor-entry'
 PUBLIC_KEYS = ('path', 'role', 'label', 'showing', 'enabled', 'sensitive', 'focusable',
@@ -115,7 +118,8 @@ def owned_descendant(pid, owner):
 
 def validate_ui(ui):
     if (ui.get('schema') != 1 or ui.get('reviewed_by') != 'main-reviewer' or ui.get('scope') != SCOPE
-            or ui.get('observed_head') != HEAD or ui.get('observed_app_sha256') != APP_SHA
+            or ui.get('observed_head') != GUARD_HEAD or ui.get('observed_app_sha256') != GUARD_APP_SHA
+            or ui.get('runtime_head') != HEAD or ui.get('runtime_app_sha256') != APP_SHA
             or ui.get('window') != [1280, 900] or ui.get('quick_xy') != [558, 500]
             or ui.get('runtime_limits') != {'controller': 120, 'App_and_cleanup': 300, 'reserve': 15}
             or ui.get('artifact_limits') != {'PNG_count': 10, 'PNG_each': 2097152,

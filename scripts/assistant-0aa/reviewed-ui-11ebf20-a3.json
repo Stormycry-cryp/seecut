@@ -1,0 +1,259 @@
+{
+  "schema": 1,
+  "reviewed_by": "main-reviewer",
+  "observed_head": "0aa9406247e53f073c0b4df686adc68b40e2f8f6",
+  "observed_app_sha256": "03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2",
+  "stage": "0aa-initial-mode-reviewed-conditional-exact-guards",
+  "window": {
+    "width": 1280,
+    "height": 900
+  },
+  "evidence_id": "0aa initial three raw images reviewed by main; only initial mode ROI approved; all later surfaces unknown until guarded fresh observations and main review",
+  "quick_mode": [
+    558,
+    500
+  ],
+  "mode_guard": {
+    "region": [
+      420,
+      388,
+      520,
+      155
+    ],
+    "rgb_sha256": "2e513f04d1897fef7c6e6a0710c7afae9b7d6d592ddf1e316cb7e3fa89eb1b97",
+    "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-07/0aa-fresh-observe-review/independent-qa-navigation/00-observe-only-1280x900.png",
+    "source_sha256": "a9787954fb94d609bd41ee35df86fb66b7f44741d5ebc413167caaef4231df4c"
+  },
+  "navigation_targets": {
+    "canvas": [
+      40,
+      170
+    ],
+    "clip": [
+      40,
+      227
+    ],
+    "assets": [
+      40,
+      285
+    ],
+    "settings": [
+      40,
+      805
+    ]
+  },
+  "guards": {
+    "nav-canvas": {
+      "region": [
+        28,
+        158,
+        24,
+        24
+      ],
+      "rgb_sha256": "a8bc6a4d92bdc71bc120e1bc0c82e39813249500926245b6631645d6d61d3427",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-fresh-review/independent-qa-navigation/00-observe-only-1280x900.png",
+      "source_sha256": "a9787954fb94d609bd41ee35df86fb66b7f44741d5ebc413167caaef4231df4c",
+      "hover_label_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/cecc8fd-ui1-05e3136-review/independent-qa-cecc8fd-ui1/04-sidebar-hover-170.png",
+      "hover_label_source_sha256": "e925397e6472bc74122d7b676458f11de8f8f4ee77c665e5fe557597277bdb90",
+      "actual_label": "画布",
+      "use": "Current new initial unselected nav icon independently seen and RGB matches old template; live1280 frame must stillmatch before click; oldhover identifies purpose."
+    },
+    "nav-clip": {
+      "region": [
+        28,
+        215,
+        24,
+        24
+      ],
+      "rgb_sha256": "861f21b361c5b0ec150d6a0469a43ab6febf38310f6c41c24b731d3d731971cb",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-fresh-review/independent-qa-navigation/00-observe-only-1280x900.png",
+      "source_sha256": "a9787954fb94d609bd41ee35df86fb66b7f44741d5ebc413167caaef4231df4c",
+      "hover_label_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/cecc8fd-ui1-05e3136-review/independent-qa-cecc8fd-ui1/05-sidebar-hover-227.png",
+      "hover_label_source_sha256": "c118ed164b6bfed1a898832f74330e005b1ef9ae9e7f5dd050c34bb2ae878d1b",
+      "actual_label": "剪辑",
+      "use": "Current new initial unselected nav icon independently seen and RGB matches old template; live1280 frame must stillmatch before click; oldhover identifies purpose."
+    },
+    "nav-assets": {
+      "region": [
+        28,
+        273,
+        24,
+        24
+      ],
+      "rgb_sha256": "21975888c073a40862d7ab19a8d526d5b15fd938b6fb5599d5ef939e069d7d57",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-fresh-review/independent-qa-navigation/00-observe-only-1280x900.png",
+      "source_sha256": "a9787954fb94d609bd41ee35df86fb66b7f44741d5ebc413167caaef4231df4c",
+      "hover_label_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/cecc8fd-ui1-05e3136-review/independent-qa-cecc8fd-ui1/06-sidebar-hover-285.png",
+      "hover_label_source_sha256": "4446c31c0698ea110aad18d150af76eeee8b14ad407cb65ee21244de5565a975",
+      "actual_label": "资产库",
+      "use": "Current new initial unselected nav icon independently seen and RGB matches old template; live1280 frame must stillmatch before click; oldhover identifies purpose."
+    },
+    "nav-settings": {
+      "region": [
+        28,
+        793,
+        24,
+        24
+      ],
+      "rgb_sha256": "88dc2baa20d7e502b5575aee6df5181f11d8b51636993d1e0221e592ccfb66d5",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-fresh-review/independent-qa-navigation/00-observe-only-1280x900.png",
+      "source_sha256": "a9787954fb94d609bd41ee35df86fb66b7f44741d5ebc413167caaef4231df4c",
+      "hover_label_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/cecc8fd-ui1-05e3136-review/independent-qa-cecc8fd-ui1/08-sidebar-hover-805.png",
+      "hover_label_source_sha256": "38a187a79edd6038859890f5753c2b80e2b4cfe53e036b0906f332598bc9763c",
+      "actual_label": "设置",
+      "use": "Current new initial unselected nav icon independently seen and RGB matches old template; live1280 frame must stillmatch before click; oldhover identifies purpose."
+    },
+    "new-project": {
+      "region": [
+        112,
+        144,
+        358,
+        242
+      ],
+      "rgb_sha256": "94fe28a5ec72255b3775cde2a95f62989f2020f30359f7c22ea1634561cfcef0",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/cecc8fd-a1-063e75b-review/independent-qa-cecc8fd-ui2/05-after-canvas-navigation.png",
+      "source_sha256": "6e5b856147dd18980f9ac630d56a487fea5de19db06b20db2ef76b85fdd76dc2",
+      "actual_label": "新建项目",
+      "use": "guard whole actual card/label at1280x900 beforeclick; no newdialog coordinate assumptions"
+    },
+    "current-create-dialog": {
+      "region": [
+        500,
+        369,
+        360,
+        194
+      ],
+      "rgb_sha256": "aa6ee06bc42043fafacdfb725d31e990e46ab2432731fa651d6374c8192fd106",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-canvas-entry-review/independent-qa-11ebf20-a2-canvas-entry/06-current-new-canvas-dialog.png",
+      "source_sha256": "6953501e7ea8cece9d55dfc648a5a583427b823eeafbf648a4336a365576d11c"
+    }
+  },
+  "public_probe_sha256": "93352469c112f8ab9144d2390a43fd282e746d37b3193c13ce90bd9e9d3c04f0",
+  "settings_scope": "No pixels before or inside Settings. No fields/entry names/Text/value/clipboard/grants/copy/server/MCP. Only fresh actual named professional/dark/close with own containers and unique actual alternatives. Preflight all3 beforeanychange. Pixels afterclose only complete public absence of known Settings elements and normal workbench context.",
+  "artifact_limits": {
+    "PNG_each": 2097152,
+    "PNG_total": 14680064,
+    "all": 15728640,
+    "PNG_count_max": 10,
+    "metadata_each": 131072,
+    "private_review_then_encrypted_transfer": true,
+    "Action_metadata_each": 8192
+  },
+  "runtime_limits": {
+    "script_seconds": 120,
+    "whole_App_including_cleanup_seconds": 300,
+    "global_deadline_reserve_seconds": 15,
+    "one_owned_fresh_portable_App": true,
+    "same_OS_user": true,
+    "private_Xvfb_and_accessibility_bus": true,
+    "launcher_owns_cleanup": true
+  },
+  "stops": [
+    "Exactcandidate/source/App/UI/helperhash mismatch",
+    "Currentinitial/sidebar/cardRGBdiffers",
+    "Currentfocus/ownedwindow/dimensions/privatebus invalid",
+    "Publicmetadata unavailable/incomplete",
+    "Anyactual targetlabel/context/state/bounds unknown or ambiguous",
+    "Action failure/timeout/stateunconfirmed: never retry",
+    "Settings closeproof missing: no screenshots",
+    "Newcanvascontext or editor unknown: stopforrawreview",
+    "Expireddeadline or artifactbudget"
+  ],
+  "status": "prepared_for_main_integration_not_executed",
+  "public_action_sha256": "8aafd63bc2653c1099003edbf5808c1c4550471d31f619cf1851a0e7ea063518",
+  "public_action_intents": [
+    "professional",
+    "dark",
+    "close-settings"
+  ],
+  "new_project": [
+    290,
+    251
+  ],
+  "settings_controls_unknown": {
+    "A1_mode_radio_paths": [
+      [
+        0,
+        31,
+        0
+      ],
+      [
+        0,
+        31,
+        1
+      ]
+    ],
+    "A1_theme_radio_paths": [
+      [
+        0,
+        33,
+        0
+      ],
+      [
+        0,
+        33,
+        1
+      ]
+    ],
+    "A1_button_path": [
+      0,
+      29
+    ],
+    "all_labels": null,
+    "button_bounds": {
+      "x": 1216,
+      "y": 68,
+      "width": 26,
+      "height": 128
+    },
+    "rule": "Historical paths are descriptive only. Discover targets afresh; known group-prefixed labels are accepted only as exact full allowlisted names. Unknown labels still stop."
+  },
+  "approved_actions": [
+    "Conditional inherited bootstrap: fresh mode/nav/card/full-create-modal guards; no input; current complete public create context required",
+    "Conditional named native assistant Action after fresh full tree/window/PID/focus and exact icon ROI",
+    "Conditional named open-settings once; metadata only; zero config PNG, input, connection, grants, provider or MCP",
+    "Conditional known close-from-settings once and collect complete closed/focus context; launcher cleanup"
+  ],
+  "scope_variants": [
+    "assistant-config-observation"
+  ],
+  "missing_after_this_batch": [
+    "0aa post-mode/workbench/editor/assistant/configuration actual main review",
+    "0aa editable field signatures and stable focus; initialization and text are not authorized by this observation candidate"
+  ],
+  "public_action_final_recheck": "Fresh full collect+select immediately before final node access; parent healthy/current role-label-bounds, mutually exclusive checked pair, target fields stable; final node denies EDITABLE/EditableText and checks radio checked state again. Controller timeout unchanged, never retry.",
+  "creation_local_context_required": "Full current modal RGB plus fresh complete public metadata: unique exact named title/cancel/create, exact observed bounds and shared actual App window. The flattened public tree alone never authorizes creation.",
+  "probe_field_name_exclusion": "Before get_name, omit ENTRY/TEXT plus any EDITABLE state or EditableText interface, regardless of role; no values read.",
+  "conditional_settings_container_templates": [
+    {
+      "role": 39,
+      "label": "工作模式",
+      "bounds": {
+        "x": 596,
+        "y": 147,
+        "width": 188,
+        "height": 36
+      }
+    },
+    {
+      "role": 39,
+      "label": "外观",
+      "bounds": {
+        "x": 596,
+        "y": 222,
+        "width": 188,
+        "height": 36
+      }
+    }
+  ],
+  "migration_from": "0aa exact runtime; source11 filenames denote inherited helper basenames only. Only mode ROI is reviewed on 0aa. Later guard templates remain source11 provenance; current full ROI/tree/window/focus must match or stop, then main review remains required.",
+  "new_create": [
+    814,
+    523
+  ],
+  "review_scope": {
+    "initial_mode": "verified current raw ROI by main",
+    "later_guards": "inherited exact-match templates; not 0aa observed acceptance",
+    "field_geometry": "UNKNOWN; never used by this candidate"
+  }
+}

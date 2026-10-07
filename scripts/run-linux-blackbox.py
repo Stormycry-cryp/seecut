@@ -160,6 +160,18 @@ NATIVE_APP_SHA = '8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf
 NATIVE_BUILD_RUN = 37328783317
 NATIVE_ARTIFACT = '11355501142'
 NATIVE_IDENTITY_SHA = '2b94fc606a46d7d0df43ea2d07a29e5a3b5075253521a201e65d264ee5933574'
+# These scopes observe the new App against unchanged source11 entry guards.
+CLIP_EDITOR_RUNTIME = ('0aa9406247e53f073c0b4df686adc68b40e2f8f6', '03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2', 37385930165, '11380395799', '9248168645ce9324be4cfab71e8e9d851c14e0a784050a6fc84dad68599d0a7e')
+
+
+def native_runtime_identity(stage):
+    if stage == 'assistant-config-observation':
+        return (*CLIP_EDITOR_RUNTIME[:4], '5a1d5b1630db3bc097a8ed0f201938d53371270af0599879ef76bb98208d969e')
+    if stage == 'clip-editor-entry':
+        return CLIP_EDITOR_RUNTIME
+    return (NATIVE_HEAD, NATIVE_APP_SHA, NATIVE_BUILD_RUN, NATIVE_ARTIFACT, NATIVE_IDENTITY_SHA)
+
+
 NATIVE_CONTROLLER_SECONDS = 120
 NATIVE_SCOPES = {'workspaces-observation': {'scripts': {'qa': ['workspaces-ui-11ebf20.py',
                                                '3335bd6160a5fa38195430861e1065cd6e4b0d8b261747c455c6d9c2409b2b0a'],
@@ -372,15 +384,15 @@ WORKFLOW_FIXTURES = {
 }
 
 NATIVE_SCOPES.update({'clip-editor-entry': {'scripts': {'qa': ['clip-editor-controller.py',
-                                          'bf1a567dcce81bbb97d9f6dd7405d5c1dd10b31d667e256f12d4a91556fa0a73'],
+                                          'd2309208c6be02feeaa618e3e80b31ac49bc3bd4a33e87b68ce2d8a1d68c48d2'],
                                    'clip_editor_controller': ['clip-editor-controller.py',
-                                                              'bf1a567dcce81bbb97d9f6dd7405d5c1dd10b31d667e256f12d4a91556fa0a73'],
+                                                              'd2309208c6be02feeaa618e3e80b31ac49bc3bd4a33e87b68ce2d8a1d68c48d2'],
                                    'native_public_probe': ['clip-editor-public-probe.py',
                                                            '562612f3bf1d54da2f9011fdea0849b6ecdf0dc66d129b42546fb0bd21bc3cd8'],
                                    'clip_editor_action': ['clip-editor-action.py',
                                                           '01c3b609e0ba012616df3a99ab0a5ea98629b32124b28cdd49489b609c5546ce']},
                        'ui': ['clip-editor-ui.json',
-                              'dcba31cc2c22cfe95999094f62d16652b69fd3380f37a80667992cf164ffe8db'],
+                              'bae028e170225c532126ff7cb62dd4e766ea763716e8871615b8d909fd019a90'],
                        'next_stage': None,
                        'artifacts': {'main-qa-clip-editor-entry': {'png': ['01-after-quick.png',
                                                                            '02-page.png',
@@ -420,6 +432,65 @@ NATIVE_SCOPES.update({'clip-editor-entry': {'scripts': {'qa': ['clip-editor-cont
                                                                               '05-path-action.json',
                                                                               '06-create-action.json'],
                                                                    'other': ['clip-editor-report.json']}}}})
+
+NATIVE_SCOPES.update({'assistant-config-observation': {'scripts': {'qa': ['assistant-0aa/agent-config-controller.py',
+                                                     '7c18962bbe13f8658eb0d36abcc198ec527ef645cf332d2c1fc21f2df411e69f'],
+                                              'native_agent_config_controller': ['assistant-0aa/agent-config-controller.py',
+                                                                                 '7c18962bbe13f8658eb0d36abcc198ec527ef645cf332d2c1fc21f2df411e69f'],
+                                              'native_agent_config_action': ['assistant-0aa/agent-config-action.py',
+                                                                             '125c29c64416311a7d4b09008423308a15c69bf20f188df70d5d7c8045c4fb4f'],
+                                              'native_agent_config_probe': ['assistant-0aa/agent-config-probe.py',
+                                                                            '6eefb42a02a7fdc2eee6febd4f47929ce5c15516d78a5bd405b49a205f4f9549'],
+                                              'native_agent_config_ui': ['assistant-0aa/agent-config-ui.json',
+                                                                         '601189cc0a6bdbe8481e4a1854147a6c96b37b33616cb37e9104ef608e060bd3'],
+                                              'native_agent_native_entry_controller': ['assistant-0aa/agent-native-entry-controller.py',
+                                                                                       '59cbed35f6b3d7748933030f633a12d23f80ae25bbb044fa1c7e024bd3d3bfaf'],
+                                              'native_agent_native_bootstrap': ['assistant-0aa/agent-native-bootstrap.py',
+                                                                                '6195749a38f4b1ccac0d17c9d413ea7e69e92af939916be25195b202a38e4529'],
+                                              'native_agent_native_entry_action': ['assistant-0aa/agent-native-entry-action.py',
+                                                                                   '3545a09ce95f583c6e738c3e18040cc0a671662304c366807d617af51f437617'],
+                                              'native_agent_native_public_probe': ['assistant-0aa/agent-native-public-probe.py',
+                                                                                   '20456d60ce8ca14f72941026e0b56e97eebbf552267d991d61bf3be7b867702f'],
+                                              'native_public_probe_11ebf20_ui4': ['assistant-0aa/public_probe_11ebf20_ui4.py',
+                                                                                  '93352469c112f8ab9144d2390a43fd282e746d37b3193c13ce90bd9e9d3c04f0'],
+                                              'native_public_action_11ebf20_ui4': ['assistant-0aa/public_action_11ebf20_ui4.py',
+                                                                                   '8aafd63bc2653c1099003edbf5808c1c4550471d31f619cf1851a0e7ea063518']},
+                                  'ui': ['assistant-0aa/reviewed-ui-11ebf20-a3.json',
+                                         '034c156538dba7ffd3aabf8bde0b25c3369d896490fbc88ac11b144a14e1f448'],
+                                  'next_stage': 'canvas-entry',
+                                  'artifacts': {'main-qa-agent-native-bootstrap': {'png': ['01-before-quick.png',
+                                                                                           '02-after-quick-1280x900.png',
+                                                                                           '03-canvas-gallery-1280x900.png',
+                                                                                           '06-current-new-canvas-dialog.png',
+                                                                                           '07-current-create-result.png'],
+                                                                                   'public': ['06-current-new-canvas-dialog-public.json',
+                                                                                              '07-create-result-public.json'],
+                                                                                   'action': [],
+                                                                                   'other': ['bootstrap.json']},
+                                                'main-qa-agent-native-entry': {'png': ['01-before-hover.png',
+                                                                                       '03-assistant-tooltip-review.png',
+                                                                                       '04-assistant-panel-1280x900.png',
+                                                                                       '05-assistant-panel-1024x900.png',
+                                                                                       '06-assistant-panel-1440x900.png',
+                                                                                       '07-assistant-panel-1280x720.png'],
+                                                                               'public': ['01-before-hover-public.json',
+                                                                                          '02-recheck-public.json',
+                                                                                          '03-after-hover-public.json',
+                                                                                          '03-before-open-public.json',
+                                                                                          '04-panel-public.json',
+                                                                                          '05-panel-1024x900-public.json',
+                                                                                          '06-panel-1440x900-public.json',
+                                                                                          '07-panel-1280x720-public.json'],
+                                                                               'action': ['04-entry-action.json'],
+                                                                               'other': ['agent-native-entry.json']},
+                                                'main-qa-agent-config': {'png': [],
+                                                                         'public': ['01-restored-panel-public.json',
+                                                                                    '03-config-public.json',
+                                                                                    '05-after-close-public.json'],
+                                                                         'action': ['02-open-settings-action.json',
+                                                                                    '04-close-assistant-action.json'],
+                                                                         'other': ['agent-config.json']}}}})
+
 
 PERSISTENCE_SCOPES = {'persistence-seed-observation', 'persistence-reopen-observation'}
 PERSISTENCE_LIMIT = 7 * 1024 * 1024
@@ -1132,7 +1203,8 @@ def arguments():
         if not all((args.identity_approval, args.ui_approval, args.source_head,
                     args.candidate_manifest, args.candidate_artifact_id)):
             parser.error("native observation requires exact candidate provenance and both declarations")
-        if args.source_head != NATIVE_HEAD or args.candidate_artifact_id != NATIVE_ARTIFACT:
+        native_head, _app_sha, _build_run, native_artifact, _identity_sha = native_runtime_identity(args.next_stage)
+        if args.source_head != native_head or args.candidate_artifact_id != native_artifact:
             parser.error("native observation requires the exact reviewed candidate source and artifact")
     return args
 
@@ -1246,12 +1318,27 @@ def main():
                     or candidate["app_sha256"] != app_sha or candidate["build_run_id"] != build_run):
                 raise ValueError("reviewed candidate differs from its immutable provenance")
         if args.next_stage in NATIVE_SCOPES:
-            if (candidate is None or source_head != NATIVE_HEAD or args.candidate_artifact_id != NATIVE_ARTIFACT
-                    or candidate["app_sha256"] != NATIVE_APP_SHA or candidate["build_run_id"] != NATIVE_BUILD_RUN):
+            native_head, native_app_sha, native_build_run, native_artifact, _identity_sha = native_runtime_identity(args.next_stage)
+            if (candidate is None or source_head != native_head or args.candidate_artifact_id != native_artifact
+                    or candidate["app_sha256"] != native_app_sha or candidate["build_run_id"] != native_build_run):
                 raise ValueError("native candidate differs from its reviewed immutable provenance")
+            if args.next_stage in ('clip-editor-entry', 'assistant-config-observation') and (
+                    candidate["build_job_id"] != 112019086814 or candidate["app_bytes"] != 467641344
+                    or result["candidate"]["manifest_sha256"] != 'd666628e2499a26ef5f541898a4b5f0c8a69bba98bc6a3a28a2725d37c426d73'):
+                raise ValueError("current candidate job, size or manifest differs from its immutable provenance")
         sources = {"app": regular_input(args.binary), "qa": regular_input(args.qa_script)}
         if args.next_stage in NATIVE_SCOPES:
             scripts = NATIVE_SCOPES[args.next_stage]["scripts"]
+            if args.next_stage == 'assistant-config-observation':
+                destinations = ['independent-qa.py']
+                for key, (filename, _digest) in scripts.items():
+                    parts = Path(filename).parts
+                    if len(parts) != 2 or parts[0] != 'assistant-0aa' or parts[1] in ('.', '..'):
+                        raise ValueError('assistant source path outside its dedicated directory')
+                    if key != 'qa':
+                        destinations.append(parts[1])
+                if len(set(destinations)) != len(destinations):
+                    raise ValueError('assistant dependency destination basename collision')
             if sources["qa"] != root / "scripts" / scripts["qa"][0]:
                 raise ValueError("native observation requires the fixed reviewed QA script")
             for name, (filename, _digest) in scripts.items():
@@ -1315,7 +1402,7 @@ def main():
         if args.next_stage in NATIVE_SCOPES:
             for name, (filename, _digest) in NATIVE_SCOPES[args.next_stage]["scripts"].items():
                 if name != "qa":
-                    copied[name] = work / filename
+                    copied[name] = work / (Path(filename).name if args.next_stage == 'assistant-config-observation' else filename)
         if args.next_stage in PERSISTENCE_SCOPES:
             for name, (filename, _digest) in PERSISTENCE_SCRIPTS[args.next_stage].items():
                 if name != 'qa':
@@ -1385,14 +1472,15 @@ def main():
                     or identity.get("runtime_app_sha256") != app_sha or identity.get("change_scope") != "product-candidate"):
                 raise ValueError("main runtime identity differs from the reviewed App")
         if args.next_stage in NATIVE_SCOPES:
-            if hashes.get("identity_approval") != NATIVE_IDENTITY_SHA:
+            native_head, native_app_sha, _build_run, _artifact, native_identity_sha = native_runtime_identity(args.next_stage)
+            if hashes.get("identity_approval") != native_identity_sha:
                 raise ValueError("native runtime identity differs from its reviewed raw bytes")
             if hashes.get("ui_approval") != NATIVE_SCOPES[args.next_stage]["ui"][1]:
                 raise ValueError("native UI declaration differs from its reviewed raw bytes")
             identity = json.loads(copied["identity_approval"].read_bytes())
             if (not isinstance(identity, dict) or identity.get("schema") != 2
-                    or identity.get("reviewed_by") != "main-reviewer" or identity.get("runtime_head") != NATIVE_HEAD
-                    or identity.get("runtime_app_sha256") != NATIVE_APP_SHA or identity.get("change_scope") != "product-candidate"):
+                    or identity.get("reviewed_by") != "main-reviewer" or identity.get("runtime_head") != native_head
+                    or identity.get("runtime_app_sha256") != native_app_sha or identity.get("change_scope") != "product-candidate"):
                 raise ValueError("main native runtime identity differs from the reviewed App")
         portable = (Path(args.owned_state_root) if args.next_stage in PERSISTENCE_SCOPES else work) / 'portable'
         prefs = {"locale": "en", "dark": False, "server": {"enabled": False}}
