@@ -1227,7 +1227,7 @@ fn modal_busy(studio: &Studio, app: &App, include_settings: bool) -> bool {
         || studio.project_sheet.open
         || studio.captions.open
         || studio.speech.open
-        || studio.open_menu != 0
+        || studio.open_menu >= 0
         || app.get_canvas_open_menu()
         || app.get_clip_create_open()
         || cloud.get_auth_open()
