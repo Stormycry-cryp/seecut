@@ -211,7 +211,7 @@ def read_guard(ui):
             or hashlib.sha256(path.read_bytes()).hexdigest() != ui.get('guard_sha256')):
         raise Stop('exact_observed_guard_copy_SHA_required')
     data = json.loads(path.read_bytes())
-    if len(data.get('page_nodes',[])) != 39 or len(data.get('settings_nodes',[])) != 52:
+    if len(data.get('page_nodes',[])) != 39 or len(data.get('settings_nodes',[])) != 52 or len(data.get('closed_page_1280x900',{}).get('nodes',[])) != 38:
         raise Stop('complete_actual_guard_rows_required')
     return data
 
@@ -278,6 +278,14 @@ def canonical_page_toast(current, expected, settings=False):
 
 def page_gate(data, pid, guard, phase, width=1280, height=900, exact_bounds=True):
     context(data,pid,before=True,width=width,height=height);safe_schema(data['nodes'])
+    # The closed endpoint is a complete observed envelope, not a projection
+    # of current nodes. Even capture(exact_bounds=False) stays exact here.
+    if phase=='closed':
+        expected=json.loads(json.dumps(guard['closed_page_1280x900']))
+        expected['app_pid']=pid
+        if (width,height)!=(1280,900) or data!=expected:
+            raise Stop('unknown_closed_or_generator_structure_observed_STOP')
+        return data['nodes']
     current=json.loads(json.dumps(data['nodes']));expected=json.loads(json.dumps(guard['page_nodes']))
     if exact_bounds and (width,height)==(1280,900):
         current=canonical_page_toast(current,expected)

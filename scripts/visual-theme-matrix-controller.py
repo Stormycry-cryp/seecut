@@ -109,7 +109,10 @@ def main():
         report['captures'].append({'file':name+'.png','bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),
             'size':[width,height],'theme_checked_provenance':theme,'product_verdict':'pending_main_image_review'})
     def matrix(theme,phase):
-        for width,height in ((1024,900),(1280,900),(1440,900),(1280,720)):
+        # Capture the one observed closed endpoint first. All later sizes
+        # retain metadata-before-pixels and STOP on their unknown closed tree.
+        sizes=((1280,900),(1024,900),(1440,900),(1280,720)) if theme=='dark' else ((1024,900),(1280,900),(1440,900),(1280,720))
+        for width,height in sizes:
             resize(width,height);capture(theme,width,height,phase)
     try:
         if (args.expected_sha != HEAD or args.app_pid < 2 or args.window_id < 1 or end <= started
