@@ -50,6 +50,21 @@ LINE_LIMIT = 16 * 1024
 SENSITIVE = re.compile(rb"token|authorization|credential|password|secret|bearer", re.I)
 RESERVED = {"harness.json", "app.log", "qa.log"}
 QA_DIRECTORIES = {"independent-qa-observation", "independent-qa-navigation"}
+ALPHA_STAGE = 'alpha-workflow-observation'
+ALPHA_HEAD = '0aa9406247e53f073c0b4df686adc68b40e2f8f6'
+ALPHA_APP_SHA = '03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2'
+ALPHA_BUILD_RUN = 37385930165
+ALPHA_BUILD_JOB = 112019086814
+ALPHA_ARTIFACT = '11380395799'
+ALPHA_APP_BYTES = 467641344
+ALPHA_MANIFEST_SHA = 'd666628e2499a26ef5f541898a4b5f0c8a69bba98bc6a3a28a2725d37c426d73'
+ALPHA_DIRECTORY = 'main-qa-alpha-workflow'
+ALPHA_SCRIPTS = {'qa': ('alpha-workflow-controller.py', 'c72370a11ba53582bb4963b6275ec4837f296b5930bcb4aa689845544ef341ad'), 'public_ui_probe': ('alpha_public_probe.py', 'adcb9d18a3020f2fd4e7661d8822680b1fc1fdf76f5878ea7f5ef3849b1e1a66'), 'workflow_checks': ('alpha_checks.py', 'e535201da5a41109ce5b5edd8cae3e99111b75b2249dc15b828c48a4fe660032'), 'native_ui_action': ('alpha_native_action.py', '99eed0c32e42edfcad9bce12fde6b1dd36b2247a09479378f3429c8b24fea098')}
+ALPHA_UI_SHA = '6151d8e6fbaff8478c4c8ed40650b25795b964792a6d3c61d16a9d823106779b'
+ALPHA_IDENTITY_SHA = '0eb6fcacf68a3c1028eafa1f29f0e1435c7347103509a82421dd0f43d3df7d41'
+ALPHA_PNG_NAMES = frozenset(['01-current-initial.png', '02-after-quick.png', '03-gallery.png', '04-create-dialog.png', '05-editor.png', '06-open-menu.png', '07-import-ambiguous-native.png', '07-import-native-outside-display.png', '07-import-native-visible.png', '07-import-no-visible-native-after-wait.png', '08-import-fixture-not-confirmed-after-wait.png', '08-import-fixture-visible-stable.png', '08-import-location-visible.png', '08-import-menu-closed.png', '08-import-native-chrome.png', '08-import-native-not-gone.png', '08-import-returned-App.png', '09-edit-dragged.png', '09-edit-one-Undo.png', '10-save-ambiguous-native.png', '10-save-native-outside-display.png', '10-save-native-visible.png', '10-save-no-visible-native-after-wait.png', '11-save-returned-App.png', '12-save-gallery.png', '13-gallery-other-blank.png', '14-gallery-after-other-document.png', '15-gallery-reopen-fixture-not-confirmed-after-wait.png', '15-gallery-reopen-fixture-visible-stable.png', '19-export-destination.png', '20-export-App-destination-requires-review.png', '20-export-ambiguous-native.png', '20-export-native-outside-display.png', '20-export-native-visible.png', '20-export-no-visible-native-after-wait.png', '21-export-ambiguous-native.png', '21-export-location-visible.png', '21-export-menu-closed.png', '21-export-native-chrome.png', '21-export-native-not-gone.png', '21-export-native-outside-display.png', '21-export-native-visible.png', '21-export-no-visible-native-after-wait.png', '21-export-returned-App.png', '21-export-unreviewed-destination.png', 'exported-qa.png'])
+ALPHA_JSON_NAMES = frozenset(['08-import-public-before-accept.json', '08-import-public-before.json', '08-import-public-location.json', '20-export-public.json', '21-export-public-before-accept.json', '21-export-public-before.json', '21-export-public-location.json', 'capture-01-current-initial.json', 'capture-02-after-quick.json', 'capture-03-gallery.json', 'capture-04-create-dialog.json', 'capture-05-editor.json', 'capture-06-open-menu.json', 'capture-07-import-ambiguous-native.json', 'capture-07-import-native-outside-display.json', 'capture-07-import-native-visible.json', 'capture-07-import-no-visible-native-after-wait.json', 'capture-08-import-fixture-not-confirmed-after-wait.json', 'capture-08-import-fixture-visible-stable.json', 'capture-08-import-location-visible.json', 'capture-08-import-menu-closed.json', 'capture-08-import-native-chrome.json', 'capture-08-import-native-not-gone.json', 'capture-08-import-returned-app.json', 'capture-09-edit-dragged.json', 'capture-09-edit-one-undo.json', 'capture-10-save-ambiguous-native.json', 'capture-10-save-native-outside-display.json', 'capture-10-save-native-visible.json', 'capture-10-save-no-visible-native-after-wait.json', 'capture-11-save-returned-app.json', 'capture-12-save-gallery.json', 'capture-13-gallery-other-blank.json', 'capture-14-gallery-after-other-document.json', 'capture-15-gallery-reopen-fixture-not-confirmed-after-wait.json', 'capture-15-gallery-reopen-fixture-visible-stable.json', 'capture-19-export-destination.json', 'capture-20-export-ambiguous-native.json', 'capture-20-export-app-destination-requires-review.json', 'capture-20-export-native-outside-display.json', 'capture-20-export-native-visible.json', 'capture-20-export-no-visible-native-after-wait.json', 'capture-21-export-ambiguous-native.json', 'capture-21-export-location-visible.json', 'capture-21-export-menu-closed.json', 'capture-21-export-native-chrome.json', 'capture-21-export-native-not-gone.json', 'capture-21-export-native-outside-display.json', 'capture-21-export-native-visible.json', 'capture-21-export-no-visible-native-after-wait.json', 'capture-21-export-returned-app.json', 'capture-21-export-unreviewed-destination.json', 'gallery-public-blank.json', 'gallery-public-image.json', 'native-proof-01-current-initial.json', 'native-proof-02-after-quick.json', 'native-proof-03-gallery.json', 'native-proof-04-create-dialog.json', 'native-proof-05-editor.json', 'native-proof-06-open-menu.json', 'native-proof-07-import-ambiguous-native.json', 'native-proof-07-import-native-outside-display.json', 'native-proof-07-import-native-visible.json', 'native-proof-07-import-no-visible-native-after-wait.json', 'native-proof-08-import-fixture-not-confirmed-after-wait.json', 'native-proof-08-import-fixture-visible-stable.json', 'native-proof-08-import-location-visible.json', 'native-proof-08-import-menu-closed.json', 'native-proof-08-import-native-chrome.json', 'native-proof-08-import-native-not-gone.json', 'native-proof-08-import-returned-app.json', 'native-proof-09-edit-dragged.json', 'native-proof-09-edit-one-undo.json', 'native-proof-10-save-ambiguous-native.json', 'native-proof-10-save-native-outside-display.json', 'native-proof-10-save-native-visible.json', 'native-proof-10-save-no-visible-native-after-wait.json', 'native-proof-11-save-returned-app.json', 'native-proof-12-save-gallery.json', 'native-proof-13-gallery-other-blank.json', 'native-proof-14-gallery-after-other-document.json', 'native-proof-15-gallery-reopen-fixture-not-confirmed-after-wait.json', 'native-proof-15-gallery-reopen-fixture-visible-stable.json', 'native-proof-19-export-destination.json', 'native-proof-20-export-ambiguous-native.json', 'native-proof-20-export-app-destination-requires-review.json', 'native-proof-20-export-native-outside-display.json', 'native-proof-20-export-native-visible.json', 'native-proof-20-export-no-visible-native-after-wait.json', 'native-proof-21-export-ambiguous-native.json', 'native-proof-21-export-location-visible.json', 'native-proof-21-export-menu-closed.json', 'native-proof-21-export-native-chrome.json', 'native-proof-21-export-native-not-gone.json', 'native-proof-21-export-native-outside-display.json', 'native-proof-21-export-native-visible.json', 'native-proof-21-export-no-visible-native-after-wait.json', 'native-proof-21-export-returned-app.json', 'native-proof-21-export-unreviewed-destination.json', 'saved-title-public-0.json', 'saved-title-public-1.json', 'saved-title-public-2.json', 'workflow.json'])
+
 WORKFLOW_DIRECTORY = "independent-qa-workflow"
 WORKFLOW_HEAD = 'a6cf09ad935bbbc6cf792c4ac6a4b506a47aebd3'
 WORKFLOW_APP_SHA = 'b7ec5fc769d09e3685f212cd96484dfbb0858e9edb649d1314877a5f0a86f852'
@@ -863,15 +878,18 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
     if persistence:
         limit = min(limit, PERSISTENCE_LIMIT)
     total = 0
+    alpha = next_stage == ALPHA_STAGE
     workflow = next_stage == "workflow-observation" or persistence
     fresh = next_stage == "fresh-workbench-observation"
     native = NATIVE_SCOPES.get(next_stage)
     a2_scope = A2_SCOPES.get(next_stage)
     directories = ({A2_DIRECTORIES[next_stage]} if a2_scope else
                    ({NEXT_UI_DIRECTORY} if fresh else ({WORKFLOW_DIRECTORY} if workflow else QA_DIRECTORIES)))
+    if alpha:
+        directories = {ALPHA_DIRECTORY}
     if native:
         directories = set(native["artifacts"])
-    png_count = png_bytes = project_count = 0
+    png_count = png_bytes = project_count = alpha_json_count = 0
     pending = [output]
     while pending:
         directory = pending.pop()
@@ -922,6 +940,21 @@ def inspect_artifacts(output, limit=ARTIFACT_LIMIT, next_stage=None):
                             raise ValueError("A2 metadata exceeds 128 KiB")
                     else:
                         raise ValueError("unknown A2 scope artifact file")
+                elif alpha:
+                    if directory == output:
+                        if entry.name not in RESERVED:
+                            raise ValueError('alpha artifacts require the dedicated workflow directory')
+                    elif entry.name in ALPHA_PNG_NAMES:
+                        png_count += 1
+                        png_bytes += info.st_size
+                        if png_count > 40 or info.st_size > WORKFLOW_FILE_LIMIT or png_bytes > WORKFLOW_PNG_LIMIT:
+                            raise ValueError('alpha workflow PNG count or byte budget exceeded')
+                    elif entry.name in ALPHA_JSON_NAMES:
+                        alpha_json_count += 1
+                        if alpha_json_count > 128 or info.st_size > WORKFLOW_METADATA_LIMIT:
+                            raise ValueError('alpha workflow JSON count or byte budget exceeded')
+                    else:
+                        raise ValueError('unknown alpha workflow artifact filename')
                 elif workflow:
                     if directory == output:
                         if entry.name not in RESERVED:
@@ -1067,7 +1100,7 @@ def qa_command(args, copied, app_pid, window_id, work, output, source_head, qa_d
     command = [sys.executable, str(copied["qa"]), "--app-pid", str(app_pid),
                "--work-dir", str(work), "--output", str(output),
                "--deadline-monotonic", str(qa_deadline)]
-    if args.next_stage == "workflow-observation" or args.next_stage in PERSISTENCE_SCOPES:
+    if args.next_stage in ("workflow-observation", ALPHA_STAGE) or args.next_stage in PERSISTENCE_SCOPES:
         command.extend(("--window-id", str(window_id), "--input-dir", str(copied["input_dir"])))
         if args.private_accessibility_bus:
             command.extend(("--private-accessibility-bus", "--probe-python", "/usr/bin/python3"))
@@ -1232,21 +1265,21 @@ def arguments():
     parser.add_argument('--state-token', help='32 lowercase random hex characters for this batch')
     parser.add_argument('--seed-record', help='B only; A launcher record written after its App/group exited')
     parser.add_argument("--input-dir", help="workflow-observation only; exact owned fixture inputs")
-    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES), default="navigation")
+    parser.add_argument("--next-stage", choices=("observe-only", "navigation", "project-entry", "canvas-create-observation", "canvas-create-entry", "editor-entry-observation", "image-picker-observation", "workflow-observation", ALPHA_STAGE, "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES), default="navigation")
     parser.add_argument("--isolated-display-capture", action="store_true",
                         help="Explicit isolated-display declaration for reviewed observation stages")
     parser.add_argument("--private-accessibility-bus", action="store_true",
                         help="workflow/fresh/A2 observation only; requires a direct dedicated dbus-run-session parent")
     parser.add_argument("--seconds", type=int, choices=(300, 420), default=300)
     args = parser.parse_args()
-    capture_stages = {"image-picker-observation", "workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}
+    capture_stages = {"image-picker-observation", "workflow-observation", ALPHA_STAGE, "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}
     if args.next_stage in capture_stages and not args.isolated_display_capture:
         parser.error(args.next_stage + " requires --isolated-display-capture")
     if args.isolated_display_capture and args.next_stage not in capture_stages:
         parser.error("--isolated-display-capture requires an authorized observation stage")
-    if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}:
+    if args.private_accessibility_bus and args.next_stage not in {"workflow-observation", ALPHA_STAGE, "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}:
         parser.error("--private-accessibility-bus is only valid for workflow/fresh observation")
-    if args.input_dir is not None and args.next_stage not in ('workflow-observation', 'assets-import', 'asset-library-flow', 'clip-media-import', *PERSISTENCE_SCOPES):
+    if args.input_dir is not None and args.next_stage not in ('workflow-observation', ALPHA_STAGE, 'assets-import', 'asset-library-flow', 'clip-media-import', *PERSISTENCE_SCOPES):
         parser.error('--input-dir is only valid for reviewed workflow, persistence or assets fixture scopes')
     if args.next_stage not in PERSISTENCE_SCOPES and any((args.owned_state_root, args.state_token, args.seed_record)):
         parser.error('persistence state options are forbidden for all original scopes')
@@ -1269,6 +1302,12 @@ def arguments():
             parser.error("workflow-observation requires exact candidate provenance, declarations and owned fixtures")
         if args.source_head != WORKFLOW_HEAD or args.candidate_artifact_id != WORKFLOW_ARTIFACT:
             parser.error("workflow-observation requires the exact reviewed candidate source and artifact")
+    if args.next_stage == ALPHA_STAGE:
+        if (not args.private_accessibility_bus or args.seconds != 300 or args.client_binary is not None
+                or not all((args.identity_approval, args.ui_approval, args.source_head,
+                            args.candidate_manifest, args.candidate_artifact_id, args.input_dir))
+                or args.source_head != ALPHA_HEAD or args.candidate_artifact_id != ALPHA_ARTIFACT):
+            parser.error('alpha workflow requires its exact source, declarations, fixtures, private bus and300s')
     if args.next_stage == "fresh-workbench-observation":
         if not args.private_accessibility_bus:
             parser.error("fresh-workbench-observation requires --private-accessibility-bus")
@@ -1420,7 +1459,19 @@ def main():
                     candidate["build_job_id"] != 112019086814 or candidate["app_bytes"] != 467641344
                     or result["candidate"]["manifest_sha256"] != 'd666628e2499a26ef5f541898a4b5f0c8a69bba98bc6a3a28a2725d37c426d73'):
                 raise ValueError("current candidate job, size or manifest differs from its immutable provenance")
+        if args.next_stage == ALPHA_STAGE:
+            if (candidate is None or source_head != ALPHA_HEAD or args.candidate_artifact_id != ALPHA_ARTIFACT
+                    or candidate['app_sha256'] != ALPHA_APP_SHA or candidate['build_run_id'] != ALPHA_BUILD_RUN
+                    or candidate['build_job_id'] != ALPHA_BUILD_JOB or candidate['app_bytes'] != ALPHA_APP_BYTES
+                    or result['candidate']['manifest_sha256'] != ALPHA_MANIFEST_SHA):
+                raise ValueError('alpha candidate differs from the immutable0aa source')
         sources = {"app": regular_input(args.binary), "qa": regular_input(args.qa_script)}
+        if args.next_stage == ALPHA_STAGE:
+            if sources['qa'] != root / 'scripts' / ALPHA_SCRIPTS['qa'][0]:
+                raise ValueError('alpha workflow requires its fixed scope controller')
+            for name, (filename, _digest) in ALPHA_SCRIPTS.items():
+                if name != 'qa':
+                    sources[name] = regular_input(root / 'scripts' / filename)
         if args.next_stage in NATIVE_SCOPES:
             scripts = NATIVE_SCOPES[args.next_stage]["scripts"]
             if args.next_stage == 'assistant-config-observation':
@@ -1483,6 +1534,11 @@ def main():
         work = Path(tempfile.mkdtemp(prefix="seecut-blackbox-"))
         copied = {"app": work / "concat", "client": work / "concat-editor-mcp",
                   "qa": work / "independent-qa.py"}
+        if args.next_stage == ALPHA_STAGE:
+            copied['qa'] = work / ALPHA_SCRIPTS['qa'][0]
+            for name, (filename, _digest) in ALPHA_SCRIPTS.items():
+                if name != 'qa':
+                    copied[name] = work / filename
         if args.next_stage == "workflow-observation":
             for name, (filename, _digest) in WORKFLOW_SCRIPTS.items():
                 if name != "qa":
@@ -1511,8 +1567,16 @@ def main():
                         args.next_stage == 'persistence-reopen-observation' and name == 'app' else
                         copy_and_hash(source, copied[name], executable=name in {"app", "client"},
                                       limit=(APP_LIMIT if name == "app" else
-                                             (64 * 1024 if args.next_stage == "workflow-observation" or args.next_stage in A2_SCOPES or args.next_stage in NATIVE_SCOPES or args.next_stage in PERSISTENCE_SCOPES else None))))
+                                             (64 * 1024 if args.next_stage in ("workflow-observation", ALPHA_STAGE) or args.next_stage in A2_SCOPES or args.next_stage in NATIVE_SCOPES or args.next_stage in PERSISTENCE_SCOPES else None))))
                   for name, source in sources.items()}
+        if args.next_stage == ALPHA_STAGE:
+            for name, (_filename, digest) in ALPHA_SCRIPTS.items():
+                if hashes[name] != digest:
+                    raise ValueError('alpha scope script/helper SHA changed')
+            if Path(args.input_dir) != root / 'scripts' / 'qa-fixtures':
+                raise ValueError('alpha requires the fixed checked-out QA fixture directory')
+            copied['input_dir'], fixture_hashes = copy_workflow_fixtures(Path(args.input_dir), work)
+            result['input_fixture_sha256'] = fixture_hashes
         if args.next_stage in ('assets-import', 'asset-library-flow', 'clip-media-import'):
             if Path(args.input_dir) != root / 'scripts' / 'qa-fixtures':
                 raise ValueError('asset scopes require the checked-out fixed fixture directory')
@@ -1580,6 +1644,14 @@ def main():
                     or identity.get("reviewed_by") != "main-reviewer" or identity.get("runtime_head") != native_head
                     or identity.get("runtime_app_sha256") != native_app_sha or identity.get("change_scope") != "product-candidate"):
                 raise ValueError("main native runtime identity differs from the reviewed App")
+        if args.next_stage == ALPHA_STAGE:
+            if hashes.get('identity_approval') != ALPHA_IDENTITY_SHA or hashes.get('ui_approval') != ALPHA_UI_SHA:
+                raise ValueError('alpha declaration raw identity changed')
+            identity = json.loads(copied['identity_approval'].read_bytes())
+            if (identity.get('schema') != 2 or identity.get('reviewed_by') != 'main-reviewer'
+                    or identity.get('runtime_head') != ALPHA_HEAD or identity.get('runtime_app_sha256') != ALPHA_APP_SHA
+                    or identity.get('change_scope') != 'product-candidate'):
+                raise ValueError('alpha runtime declaration differs from0aa App')
         portable = (Path(args.owned_state_root) if args.next_stage in PERSISTENCE_SCOPES else work) / 'portable'
         prefs = {"locale": "en", "dark": False, "server": {"enabled": False}}
         if args.next_stage != 'persistence-reopen-observation':
@@ -1623,7 +1695,7 @@ def main():
             result["limits"]["controller_seconds"] = NATIVE_CONTROLLER_SECONDS
         if args.next_stage in A2_SCOPES:
             result["limits"]["controller_seconds"] = A2_CONTROLLER_SECONDS
-        if args.next_stage in {"workflow-observation", "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}:
+        if args.next_stage in {"workflow-observation", ALPHA_STAGE, "fresh-workbench-observation", *A2_SCOPES, *NATIVE_SCOPES, *PERSISTENCE_SCOPES}:
             phase = "accessibility_preparation"
             enable_private_accessibility(env, qa_deadline, result)
         phase = "launch"
