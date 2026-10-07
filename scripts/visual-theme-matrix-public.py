@@ -177,6 +177,8 @@ def context(data, pid, before=False, width=1280, height=900):
     nodes = data.get('nodes')
     if (data.get('status') != 'public_metadata_observed' or data.get('app_pid') != pid
             or data.get('coverage_complete') is not True or data.get('field_values_read') is not False
+            or data.get('editable_or_descendant_names_read') is not False
+            or data.get('text_or_value_interfaces_read') is not False
             or data.get('ui_actions') != [] or data.get('screenshots') != [] or not isinstance(nodes, list)
             or not 1 <= len(nodes) <= 512 or len({tuple(n['path']) for n in nodes}) != len(nodes)):
         raise Stop('complete_owned_nonfield_metadata_required')
@@ -231,6 +233,7 @@ def settings_gate(data, pid, guard, phase):
     context(data,pid);safe_schema(data['nodes'])
     expected = json.loads(json.dumps(guard['settings_nodes']))
     current = json.loads(json.dumps(data['nodes']))
+    current = canonical_page_toast(current, expected, settings=True)
     if phase == 'dark':
         for n in expected:
             if n['path']==[0,30,0]: n['checked']=False
@@ -249,15 +252,16 @@ def settings_gate(data, pid, guard, phase):
 
 
 
-def canonical_page_toast(current, expected):
-    """Only the observed39-node page's complete synchronous0/+12 endpoint group.
+def canonical_page_toast(current, expected, settings=False):
+    """Only complete observed39-page or52-Settings synchronous0/+12 endpoints.
 
-    The caller passes a private projection; raw metadata and the52-node Settings
-    template are unchanged. Intermediate/mixed motion or any other property
-    change cannot be normalized and is rejected by the full page comparison.
+    Settings +12 is bound to run37630729355's complete public metadata.
+    The caller passes a private projection; raw metadata stays unchanged.
+    Intermediate/mixed motion or other property changes are rejected.
     """
-    paths=((0,26),(0,27),(0,27,0),(0,27,1))
-    if len(current)!=39 or len(expected)!=39:
+    count = 52 if settings else 39
+    paths = ((0,34),(0,35),(0,35,0),(0,35,1)) if settings else ((0,26),(0,27),(0,27,0),(0,27,1))
+    if len(current)!=count or len(expected)!=count:
         return current
     actual={tuple(n['path']):n for n in current if tuple(n['path']) in paths}
     baseline={tuple(n['path']):n for n in expected if tuple(n['path']) in paths}
