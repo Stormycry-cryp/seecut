@@ -1056,11 +1056,12 @@ for line in sys.stdin:
         }
     }
     fn display_controller() -> Controller {
-        let mut controller = Controller::default();
-        controller.session_id = "display-session".into();
-        controller.turn_id = Some("display-turn".into());
-        controller.phase = Phase::Running;
-        controller
+        Controller {
+            session_id: "display-session".into(),
+            turn_id: Some("display-turn".into()),
+            phase: Phase::Running,
+            ..Controller::default()
+        }
     }
     fn display_event(controller: &mut Controller, seq: u64, kind: &str, data: Value) {
         controller.runtime_event(&json!({"sessionId":"display-session", "turnId":"display-turn", "seq":seq, "type":kind, "data":data}));
