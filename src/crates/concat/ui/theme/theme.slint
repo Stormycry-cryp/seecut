@@ -102,6 +102,7 @@ export global Theme {
     out property <length> workbench-h: 40px;
     out property <length> workbench-gap: 8px;
     out property <length> workbench-font: 14px;
+    out property <color> assistant-floating-surface: panel.with-alpha(0.96);
     out property <length> workbench-icon: 20px;
     out property <color> nav: dark ? #232326 : #f4f5f7;
     out property <color> focus-control: dark ? #b87b6b : #547aa3;
@@ -124,6 +125,11 @@ export global Theme {
     out property <color> field: dark ? Dark.field : Light.field;
     out property <color> field-hover: dark ? Dark.field-hover : Light.field-hover;
     out property <color> field-active: dark ? Dark.field-active : Light.field-active;
+
+    // Borderless secondary action surfaces. Keep fields independent.
+    out property <color> button-secondary: dark ? #343438 : #eef0f3;
+    out property <color> button-secondary-hover: dark ? #3e3e43 : #e2e5eb;
+    out property <color> button-secondary-pressed: dark ? #48484e : #d4d9e2;
 
     // hairlines
     out property <color> line: dark ? Dark.line : Light.line;

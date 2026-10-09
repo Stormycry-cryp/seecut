@@ -31,7 +31,9 @@ use concat_canvas::{
     fill_region,
 };
 use concat_core::frame::Frame;
-use concat_host::ownership::{ResourceIdentity, WriterGuard, desktop_writer_ownership_supported};
+use concat_host::ownership::{
+    OwnershipError, ResourceIdentity, WriterGuard, desktop_writer_ownership_supported,
+};
 use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, SharedPixelBuffer};
 
@@ -43,6 +45,42 @@ use crate::studio::Studio;
 enum EditKind {
     Fill,
     Delete,
+}
+
+/// Failures at the current canvas's typed MCP write boundary.
+#[derive(Debug)]
+pub(crate) enum CanvasMoveError {
+    UnsupportedPlatform,
+    NoDocument,
+    Busy,
+    UnstableBinding,
+    MissingOwner,
+    OwnerMismatch,
+    Ownership(OwnershipError),
+    PixelSelection,
+    MaskTarget,
+    SelectionChanged,
+    ObjectGone,
+    NonImageTarget,
+    MissingPixels,
+    InvalidDelta,
+    InvalidTransform,
+    InvalidAnchor,
+}
+
+/// Preserve both canvas failures and the UI caller's final commit checks.
+#[derive(Debug)]
+pub(crate) enum CanvasMoveCheckedError<E> {
+    Canvas(CanvasMoveError),
+    Commit(E),
+}
+
+/// The actual f32 document coordinates committed by one move.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CanvasMoveResult {
+    pub x: f32,
+    pub y: f32,
+    pub changed: bool,
 }
 
 type ActiveGeometry = (
@@ -2223,8 +2261,216 @@ impl CanvasPane {
         )
     }
 
+    /// The existing bound path for the trusted permission view only.
+    pub(crate) fn mcp_project_path(&self) -> Option<&std::path::Path> {
+        self.project_path.as_deref()
+    }
+
     pub(crate) fn mcp_binding_epoch(&self) -> u64 {
         self.mcp_binding_epoch
+    }
+
+    /// A rendering hint only: no filesystem or ownership validation. An
+    /// explicit grant/renew and every actual write still use mcp_writer_ready.
+    pub(crate) fn mcp_move_permission_request_ready(&self) -> Result<(), CanvasMoveError> {
+        self.mcp_writer_preflight(desktop_writer_ownership_supported())?;
+        if self.writer_owner.is_none()
+            && (self.project_path.is_some() || self.autosave_inflight.is_some())
+        {
+            return Err(CanvasMoveError::MissingOwner);
+        }
+        if self.project_path.is_none()
+            && self.writer_owner.is_some()
+            && self.autosave_inflight.is_none()
+        {
+            return Err(CanvasMoveError::UnstableBinding);
+        }
+        Ok(())
+    }
+
+    /// Read-only check of the existing App-held writer and document binding.
+    /// This never acquires a guard, saves, or creates a filesystem entry.
+    pub(crate) fn mcp_writer_ready(&self) -> Result<(), CanvasMoveError> {
+        self.mcp_writer_ready_on_platform(desktop_writer_ownership_supported())
+    }
+
+    fn mcp_writer_preflight(&self, supported: bool) -> Result<(), CanvasMoveError> {
+        if !supported {
+            return Err(CanvasMoveError::UnsupportedPlatform);
+        }
+        if self.document.is_none() {
+            return Err(CanvasMoveError::NoDocument);
+        }
+        if self.open_confirm
+            || self.pending_open.is_some()
+            || self.pending_handoff_paths.is_some()
+            || self.pending_transform_boundary.is_some()
+        {
+            return Err(CanvasMoveError::UnstableBinding);
+        }
+        if self.mcp_state().2 || self.nav.is_gesturing() {
+            return Err(CanvasMoveError::Busy);
+        }
+        Ok(())
+    }
+
+    fn mcp_writer_ready_on_platform(&self, supported: bool) -> Result<(), CanvasMoveError> {
+        self.mcp_writer_preflight(supported)?;
+        match (
+            self.project_path.as_deref(),
+            self.writer_owner.as_ref(),
+            self.autosave_inflight.as_ref(),
+        ) {
+            (Some(path), Some(owner), inflight) => {
+                owner.validate().map_err(CanvasMoveError::Ownership)?;
+                if !owner
+                    .matches_canvas(path)
+                    .map_err(CanvasMoveError::Ownership)?
+                {
+                    return Err(CanvasMoveError::OwnerMismatch);
+                }
+                if inflight.is_some_and(|save| {
+                    save.generation != self.document_generation
+                        || save.path != owner.identity().target()
+                }) {
+                    return Err(CanvasMoveError::UnstableBinding);
+                }
+            }
+            (Some(_), None, _) | (None, None, Some(_)) => {
+                return Err(CanvasMoveError::MissingOwner);
+            }
+            (None, Some(owner), Some(save)) => {
+                owner.validate().map_err(CanvasMoveError::Ownership)?;
+                if save.generation != self.document_generation {
+                    return Err(CanvasMoveError::UnstableBinding);
+                }
+                if save.path != owner.identity().target()
+                    || !owner
+                        .matches_canvas(&save.path)
+                        .map_err(CanvasMoveError::Ownership)?
+                {
+                    return Err(CanvasMoveError::OwnerMismatch);
+                }
+            }
+            (None, Some(_), None) => return Err(CanvasMoveError::UnstableBinding),
+            (None, None, None) => {}
+        }
+        Ok(())
+    }
+
+    /// Translate the current single image selection in one history entry.
+    /// The UI caller caches this result before it refreshes or publishes views.
+    #[cfg(test)]
+    pub(crate) fn mcp_translate_selected(
+        &mut self,
+        layer_id: concat_canvas::LayerId,
+        dx: f64,
+        dy: f64,
+    ) -> Result<CanvasMoveResult, CanvasMoveError> {
+        match self.mcp_translate_selected_checked(layer_id, dx, dy, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(result) => Ok(result),
+            Err(CanvasMoveCheckedError::Canvas(error)) => Err(error),
+            Err(CanvasMoveCheckedError::Commit(never)) => match never {},
+        }
+    }
+
+    /// Calculate read-only, then recheck the owner and caller's lease/session
+    /// at the final commit point within the same exclusive UI callback.
+    pub(crate) fn mcp_translate_selected_checked<E>(
+        &mut self,
+        layer_id: concat_canvas::LayerId,
+        dx: f64,
+        dy: f64,
+        check: impl FnOnce(&Self) -> Result<(), E>,
+    ) -> Result<CanvasMoveResult, CanvasMoveCheckedError<E>> {
+        let canvas_error = CanvasMoveCheckedError::Canvas;
+        self.mcp_writer_ready().map_err(canvas_error)?;
+        if self.selection.is_some() {
+            return Err(canvas_error(CanvasMoveError::PixelSelection));
+        }
+        if self.paint_mask {
+            return Err(canvas_error(CanvasMoveError::MaskTarget));
+        }
+        let document = self
+            .document
+            .as_ref()
+            .ok_or(CanvasMoveError::NoDocument)
+            .map_err(canvas_error)?;
+        let node = document
+            .find(layer_id)
+            .ok_or(CanvasMoveError::ObjectGone)
+            .map_err(canvas_error)?;
+        // Canvas currently represents its layer selection with one stable ID.
+        if self.active != Some(layer_id) {
+            return Err(canvas_error(CanvasMoveError::SelectionChanged));
+        }
+        let LayerNode::Layer(layer) = node else {
+            return Err(canvas_error(CanvasMoveError::NonImageTarget));
+        };
+        if self.store.get(layer.pixels).is_none() {
+            return Err(canvas_error(CanvasMoveError::MissingPixels));
+        }
+        if !dx.is_finite() || !dy.is_finite() || dx.abs() > 32768.0 || dy.abs() > 32768.0 {
+            return Err(canvas_error(CanvasMoveError::InvalidDelta));
+        }
+        let old = layer.transform;
+        let x = f64::from(old.x) + dx;
+        let y = f64::from(old.y) + dy;
+        if !x.is_finite() || !y.is_finite() || x.abs() > 1_000_000.0 || y.abs() > 1_000_000.0 {
+            return Err(canvas_error(CanvasMoveError::InvalidTransform));
+        }
+        let mut next = old;
+        next.x = x as f32;
+        next.y = y as f32;
+        // Canonicalization is only a check. Preserve all raw legacy fields.
+        if !next.canonical_for_edit().is_valid_edit()
+            || next.x.abs() > 1_000_000.0
+            || next.y.abs() > 1_000_000.0
+        {
+            return Err(canvas_error(CanvasMoveError::InvalidTransform));
+        }
+        if layer.mask.as_ref().is_some_and(|mask| {
+            mask.linked && mask.anchor.is_some_and(|anchor| !anchor.is_invertible())
+        }) {
+            return Err(canvas_error(CanvasMoveError::InvalidAnchor));
+        }
+        let result = CanvasMoveResult {
+            x: next.x,
+            y: next.y,
+            changed: next.x != old.x || next.y != old.y,
+        };
+        self.mcp_writer_ready().map_err(canvas_error)?;
+        check(self).map_err(CanvasMoveCheckedError::Commit)?;
+        if !result.changed {
+            return Ok(result);
+        }
+        // Every fallible check above is read-only. From here, the same UI
+        // callback owns the pane until the one complete transform is committed.
+        self.begin_history();
+        let layer = self
+            .document
+            .as_mut()
+            .and_then(|document| document.layer_mut(layer_id))
+            .expect("validated image layer in the same UI callback");
+        if let Some(mask) = layer.mask.as_mut().filter(|mask| mask.linked)
+            && mask.anchor.is_none()
+        {
+            mask.anchor = Some(old);
+        }
+        layer.transform = next;
+        self.commit_history();
+        Ok(result)
+    }
+
+    /// Refresh after the UI caller has cached a changed move's outcome and
+    /// released its bridge borrow, following the normal canvas edit lifecycle.
+    pub(crate) fn mcp_move_committed(&mut self, studio: &mut Studio) {
+        self.render(studio);
+        if self.is_modified() {
+            self.schedule_auto_save(900);
+        }
     }
 
     /// Starts a stroke: the paint target's pixels are snapshotted for the
@@ -7369,6 +7615,725 @@ mod tests {
         assert_eq!(reopened.project_path.as_deref(), Some(path.as_path()));
         assert!(!reopened.is_modified());
         std::fs::remove_dir_all(&dir).expect("remove isolated fixture");
+    }
+
+    fn mcp_assert_move_rejected(
+        pane: &mut CanvasPane,
+        id: concat_canvas::LayerId,
+        dx: f64,
+        dy: f64,
+        expected: impl FnOnce(&CanvasMoveError) -> bool,
+    ) {
+        // Debug preserves NaN/Inf fields too, unlike float PartialEq.
+        let document = format!("{:?}", pane.document);
+        let store = pane.store.clone();
+        let history = (
+            pane.undo_stack.len(),
+            pane.redo_stack.len(),
+            pane.pending_history.is_some(),
+        );
+        let revisions = (pane.revision, pane.saved_revision, pane.revision_clock);
+        let binding = (pane.document_generation, pane.mcp_binding_epoch);
+        let modified = pane.is_modified();
+        let error = pane.mcp_translate_selected(id, dx, dy).unwrap_err();
+        assert!(expected(&error), "unexpected error: {error:?}");
+        assert_eq!(format!("{:?}", pane.document), document);
+        assert!(pane.store.same_versions(&store));
+        assert_eq!(
+            (
+                pane.undo_stack.len(),
+                pane.redo_stack.len(),
+                pane.pending_history.is_some()
+            ),
+            history
+        );
+        assert_eq!(
+            (pane.revision, pane.saved_revision, pane.revision_clock),
+            revisions
+        );
+        assert_eq!((pane.document_generation, pane.mcp_binding_epoch), binding);
+        assert_eq!(pane.is_modified(), modified);
+    }
+
+    #[test]
+    fn mcp_move_transparent_image_preserves_raw_legacy_fields_and_undoes_once() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        let mask_pixels = pane.store.put(Frame::transparent(300, 200));
+        let old = concat_canvas::LayerTransform {
+            x: 17.0,
+            y: -23.0,
+            scale_x: -2.0,
+            scale_y: -0.5,
+            rotation: 0.73,
+            flip_h: true,
+            flip_v: false,
+        };
+        let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+        layer.transform = old;
+        layer.mask = Some(LayerMask::new(mask_pixels));
+        let before = pane.snapshot().unwrap();
+        let result = pane.mcp_translate_selected(id, 3.25, -7.5).unwrap();
+        assert_eq!(
+            result,
+            CanvasMoveResult {
+                x: 20.25,
+                y: -30.5,
+                changed: true
+            }
+        );
+        let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+        assert_eq!(
+            layer.transform,
+            concat_canvas::LayerTransform {
+                x: result.x,
+                y: result.y,
+                ..old
+            }
+        );
+        assert_eq!(layer.mask.unwrap().anchor, Some(old));
+        assert_eq!(pane.undo_stack.len(), 1);
+        assert!(pane.is_modified());
+        assert!(pane.pending_history.is_none());
+        pane.undo();
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert!(pane.undo_stack.is_empty());
+        assert_eq!(pane.redo_stack.len(), 1);
+    }
+
+    #[test]
+    fn mcp_move_commit_check_sees_raw_state_and_rejection_keeps_changed_or_unchanged_state() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for (dx, dy) in [(0.0, 0.0), (2.0, 3.0)] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            let old = concat_canvas::LayerTransform {
+                x: 17.0,
+                y: -23.0,
+                scale_x: -2.0,
+                scale_y: -0.5,
+                rotation: 0.73,
+                flip_h: true,
+                flip_v: false,
+            };
+            let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+            layer.transform = old;
+            layer.mask = Some(LayerMask::new(pixels));
+            let before = pane.snapshot().unwrap();
+            let clock = pane.revision_clock;
+            let binding = (pane.document_generation, pane.mcp_binding_epoch);
+            let mut called = false;
+            let result = pane.mcp_translate_selected_checked(id, dx, dy, |current| {
+                called = true;
+                assert!(current.pending_history.is_none());
+                assert!(current.undo_stack.is_empty());
+                assert!(current.snapshot().unwrap().same_state(&before));
+                let LayerNode::Layer(layer) = current.document.as_ref().unwrap().find(id).unwrap()
+                else {
+                    panic!("current image selection");
+                };
+                assert_eq!(layer.transform, old);
+                assert!(layer.mask.unwrap().anchor.is_none());
+                Err(7_u8)
+            });
+            assert!(called, "unchanged also requires the final commit check");
+            assert!(matches!(result, Err(CanvasMoveCheckedError::Commit(7))));
+            assert!(pane.snapshot().unwrap().same_state(&before));
+            assert!(pane.pending_history.is_none());
+            assert!(pane.undo_stack.is_empty());
+            assert!(pane.redo_stack.is_empty());
+            assert_eq!(pane.revision_clock, clock);
+            assert_eq!((pane.document_generation, pane.mcp_binding_epoch), binding);
+            assert!(!pane.is_modified());
+        }
+    }
+
+    #[test]
+    fn mcp_move_passing_commit_check_still_creates_exactly_one_undo() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, pixels) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.document.as_mut().unwrap().layer_mut(id).unwrap().mask = Some(LayerMask::new(pixels));
+        let before = pane.snapshot().unwrap();
+        let mut called = false;
+        let result = pane
+            .mcp_translate_selected_checked(id, 2.0, -3.0, |current| {
+                called = true;
+                assert!(current.pending_history.is_none());
+                assert!(current.snapshot().unwrap().same_state(&before));
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert!(called);
+        assert_eq!(
+            result,
+            CanvasMoveResult {
+                x: 2.0,
+                y: -3.0,
+                changed: true
+            }
+        );
+        assert_eq!(pane.undo_stack.len(), 1);
+        assert!(pane.pending_history.is_none());
+        pane.undo();
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert!(pane.undo_stack.is_empty());
+        assert_eq!(pane.redo_stack.len(), 1);
+    }
+
+    #[test]
+    fn mcp_move_accepts_inclusive_delta_coordinate_and_signed_scale_limits() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+        layer.transform.x = 967232.0;
+        layer.transform.y = -967232.0;
+        layer.transform.scale_x = -0.001;
+        layer.transform.scale_y = -1000.0;
+        assert_eq!(
+            pane.mcp_translate_selected(id, 32768.0, -32768.0).unwrap(),
+            CanvasMoveResult {
+                x: 1_000_000.0,
+                y: -1_000_000.0,
+                changed: true
+            }
+        );
+        assert_eq!(pane.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn mcp_zero_and_f32_unchanged_moves_create_no_anchor_history_or_revision() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for (x, y, dx, dy) in [
+            (0.0, 0.0, 0.0, -0.0),
+            (900_000.0, -900_000.0, 0.001, -0.001),
+        ] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+            layer.transform.x = x;
+            layer.transform.y = y;
+            layer.mask = Some(LayerMask::new(pixels));
+            let before = pane.snapshot().unwrap();
+            let clock = pane.revision_clock;
+            assert_eq!(
+                pane.mcp_translate_selected(id, dx, dy).unwrap(),
+                CanvasMoveResult {
+                    x,
+                    y,
+                    changed: false
+                }
+            );
+            assert!(pane.snapshot().unwrap().same_state(&before));
+            assert!(pane.undo_stack.is_empty());
+            assert!(pane.redo_stack.is_empty());
+            assert!(pane.pending_history.is_none());
+            assert_eq!(pane.revision_clock, clock);
+            assert!(!pane.is_modified());
+        }
+    }
+
+    #[test]
+    fn mcp_move_rejects_nonfinite_or_excessive_delta_without_any_edit() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for (dx, dy) in [
+            (f64::NAN, 0.0),
+            (0.0, f64::INFINITY),
+            (f64::NEG_INFINITY, 0.0),
+            (32768.0001, 0.0),
+            (0.0, -32768.0001),
+        ] {
+            let (mut pane, _) = painting_pane();
+            let id = pane.active.unwrap();
+            mcp_assert_move_rejected(&mut pane, id, dx, dy, |e| {
+                matches!(e, CanvasMoveError::InvalidDelta)
+            });
+        }
+    }
+
+    #[test]
+    fn mcp_move_rejects_invalid_raw_transforms_even_for_zero_delta() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let base = concat_canvas::LayerTransform::default();
+        for invalid in [
+            concat_canvas::LayerTransform {
+                scale_x: 0.0,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                scale_y: -0.0009,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                scale_x: -1000.1,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                scale_x: f32::NAN,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                scale_y: f32::INFINITY,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                rotation: f32::NAN,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                rotation: f32::INFINITY,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                x: f32::NAN,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                y: f32::NEG_INFINITY,
+                ..base
+            },
+        ] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+            layer.transform = invalid;
+            layer.mask = Some(LayerMask::new(pixels));
+            mcp_assert_move_rejected(&mut pane, id, 0.0, 0.0, |e| {
+                matches!(e, CanvasMoveError::InvalidTransform)
+            });
+        }
+    }
+
+    #[test]
+    fn mcp_move_checks_f64_coordinate_limit_before_f32_rounding() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for (x, y, dx, dy) in [
+            (1_000_000.0, 0.0, 0.0001, 0.0),
+            (0.0, -1_000_000.0, 0.0, -1.0),
+        ] {
+            let (mut pane, _) = painting_pane();
+            let id = pane.active.unwrap();
+            let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+            layer.transform.x = x;
+            layer.transform.y = y;
+            mcp_assert_move_rejected(&mut pane, id, dx, dy, |e| {
+                matches!(e, CanvasMoveError::InvalidTransform)
+            });
+        }
+    }
+
+    #[test]
+    fn mcp_move_keeps_existing_linked_and_unlinked_mask_anchors() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for linked in [true, false] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            let anchor = concat_canvas::LayerTransform {
+                x: 42.0,
+                scale_x: -0.0001,
+                ..Default::default()
+            };
+            pane.document.as_mut().unwrap().layer_mut(id).unwrap().mask = Some(LayerMask {
+                linked,
+                anchor: Some(anchor),
+                ..LayerMask::new(pixels)
+            });
+            pane.mcp_translate_selected(id, 2.0, 3.0).unwrap();
+            assert_eq!(
+                pane.document
+                    .as_ref()
+                    .unwrap()
+                    .find(id)
+                    .unwrap()
+                    .mask()
+                    .unwrap()
+                    .anchor,
+                Some(anchor)
+            );
+        }
+        let (mut pane, pixels) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.document.as_mut().unwrap().layer_mut(id).unwrap().mask = Some(LayerMask {
+            linked: false,
+            ..LayerMask::new(pixels)
+        });
+        pane.mcp_translate_selected(id, 2.0, 3.0).unwrap();
+        assert!(
+            pane.document
+                .as_ref()
+                .unwrap()
+                .find(id)
+                .unwrap()
+                .mask()
+                .unwrap()
+                .anchor
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mcp_move_rejects_noninvertible_linked_anchor_without_edit() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for anchor in [
+            concat_canvas::LayerTransform {
+                scale_x: 0.0,
+                ..Default::default()
+            },
+            concat_canvas::LayerTransform {
+                scale_y: f32::INFINITY,
+                ..Default::default()
+            },
+            concat_canvas::LayerTransform {
+                rotation: f32::NAN,
+                ..Default::default()
+            },
+            concat_canvas::LayerTransform {
+                x: f32::NEG_INFINITY,
+                ..Default::default()
+            },
+        ] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            pane.document.as_mut().unwrap().layer_mut(id).unwrap().mask = Some(LayerMask {
+                anchor: Some(anchor),
+                ..LayerMask::new(pixels)
+            });
+            mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+                matches!(e, CanvasMoveError::InvalidAnchor)
+            });
+        }
+    }
+
+    #[test]
+    fn mcp_move_rejects_selection_mask_nonimage_missing_pixels_and_changed_id() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.selection = Some(Mask::all(300, 200));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::PixelSelection)
+        });
+        pane.selection = None;
+        pane.paint_mask = true;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::MaskTarget)
+        });
+        pane.paint_mask = false;
+        pane.active = None;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::SelectionChanged)
+        });
+        let other_pixels = pane.store.put(Frame::transparent(1, 1));
+        let other = pane
+            .document
+            .as_mut()
+            .unwrap()
+            .new_layer("other image", other_pixels);
+        pane.active = Some(other);
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::SelectionChanged)
+        });
+        let group = pane.document.as_mut().unwrap().new_group("group");
+        pane.active = Some(group);
+        mcp_assert_move_rejected(&mut pane, group, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::NonImageTarget)
+        });
+        let adjustment = pane
+            .document
+            .as_mut()
+            .unwrap()
+            .new_adjustment("adjustment", Adjustment::Invert);
+        pane.active = Some(adjustment);
+        mcp_assert_move_rejected(&mut pane, adjustment, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::NonImageTarget)
+        });
+        pane.active = Some(id);
+        pane.store = PixelStore::new();
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::MissingPixels)
+        });
+        pane.document.as_mut().unwrap().root.children.clear();
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::ObjectGone)
+        });
+    }
+
+    #[test]
+    fn mcp_move_rejects_history_transform_brush_parameter_and_navigation_gestures() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.begin_history();
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.pending_history = None;
+        pane.transform_session = Some(id);
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.transform_session = None;
+        pane.object_drag = Some(ObjectDrag {
+            id,
+            generation: pane.document_generation,
+            start: (0.0, 0.0),
+            original: Default::default(),
+            bounds: (0.0, 0.0, 300.0, 200.0),
+            kind: ObjectDragKind::Move,
+        });
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.object_drag = None;
+        pane.marquee_start = Some((1.0, 2.0));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.marquee_start = None;
+        pane.begin_parameter_gesture(ParameterTarget::Opacity(id));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.finish_parameter_gesture(false);
+        pane.brush_press_document(150.0, 100.0);
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.brush_release();
+        for input in [
+            NavInput::PanPress((12.0, 34.0)),
+            NavInput::ZoomPress {
+                pointer: (12.0, 34.0),
+                option: false,
+            },
+        ] {
+            pane.nav.apply(input);
+            mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+                matches!(e, CanvasMoveError::Busy)
+            });
+            pane.nav.apply(NavInput::Release { option: false });
+            assert!(pane.mcp_writer_ready().is_ok());
+        }
+    }
+
+    #[test]
+    fn mcp_writer_memory_document_is_readonly_and_platform_or_document_gate_is_closed() {
+        let root = ownership_test_root();
+        let (pane, _) = painting_pane();
+        let before = pane.snapshot().unwrap();
+        assert!(matches!(
+            pane.mcp_writer_ready_on_platform(false),
+            Err(CanvasMoveError::UnsupportedPlatform)
+        ));
+        assert!(pane.mcp_writer_ready_on_platform(true).is_ok());
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert!(pane.writer_owner.is_none());
+        assert!(pane.project_path.is_none());
+        assert!(pane.undo_stack.is_empty());
+        assert!(pane.pending_history.is_none());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        assert!(matches!(
+            CanvasPane::default().mcp_writer_ready_on_platform(true),
+            Err(CanvasMoveError::NoDocument)
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mcp_writer_rejects_every_pending_rebind_or_close_state() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.open_confirm = true;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.open_confirm = false;
+        pane.pending_open = Some(PathBuf::from("pending.comp"));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.pending_open = None;
+        pane.pending_handoff_paths = Some(Vec::new());
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.pending_handoff_paths = None;
+        pane.pending_transform_boundary = Some(PendingTransformBoundary {
+            action: CanvasBoundaryAction::WindowClose,
+            label: "关闭窗口",
+        });
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+    }
+
+    #[test]
+    fn mcp_writer_bound_owner_requires_guard_and_matching_valid_identity() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let root = ownership_test_root();
+        let path = root.join("bound.comp");
+        let other = root.join("other.comp");
+        std::fs::create_dir(&path).unwrap();
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.project_path = Some(path.clone());
+        assert!(matches!(
+            pane.mcp_move_permission_request_ready(),
+            Err(CanvasMoveError::MissingOwner)
+        ));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::MissingOwner)
+        });
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation: pane.document_generation,
+            path: path.clone(),
+            revision: pane.revision,
+            sequence: 1,
+        });
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::MissingOwner)
+        });
+        pane.autosave_inflight = None;
+        assert!(!root.join(".seecut-canvas-locks").exists());
+        pane.writer_owner = pane.owner_for_path(&path).unwrap();
+        assert!(pane.mcp_writer_ready().is_ok());
+        pane.project_path = Some(other.clone());
+        assert!(
+            pane.mcp_move_permission_request_ready().is_ok(),
+            "UI readiness does not validate ownership or touch the mismatched path"
+        );
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::OwnerMismatch)
+        });
+        assert!(!other.exists());
+        assert!(!root.join(".seecut-canvas-locks/other.comp").exists());
+        pane.project_path = Some(path.clone());
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation: pane.document_generation + 1,
+            path: path.clone(),
+            revision: pane.revision,
+            sequence: 1,
+        });
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        let save = pane.autosave_inflight.as_mut().unwrap();
+        save.generation = pane.document_generation;
+        save.path = other;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.autosave_inflight = None;
+        let sidecar = root.join(".seecut-canvas-locks/bound.comp");
+        std::fs::rename(&sidecar, root.join("held-old-lock")).unwrap();
+        std::fs::write(&sidecar, b"replacement").unwrap();
+        assert!(
+            pane.mcp_move_permission_request_ready().is_ok(),
+            "UI readiness does not inspect the replaced owner file"
+        );
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(
+                e,
+                CanvasMoveError::Ownership(OwnershipError::IdentityAmbiguous { .. })
+            )
+        });
+        drop(pane);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mcp_writer_first_autosave_candidate_may_be_absent_but_must_match_generation_and_path() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let root = ownership_test_root();
+        let path = root.join("candidate.comp");
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.writer_owner = pane.owner_for_path(&path).unwrap();
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation: pane.document_generation,
+            path: path.clone(),
+            revision: pane.revision,
+            sequence: 1,
+        });
+        let before = pane.snapshot().unwrap();
+        let epoch = pane.mcp_binding_epoch;
+        let sidecar = root.join(".seecut-canvas-locks/candidate.comp");
+        let lock_bytes = std::fs::read(&sidecar).unwrap();
+        assert!(pane.mcp_writer_ready().is_ok());
+        assert!(!path.exists());
+        assert!(pane.project_path.is_none());
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert_eq!(pane.mcp_binding_epoch, epoch);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), lock_bytes);
+        pane.autosave_inflight.as_mut().unwrap().generation += 1;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.autosave_inflight.as_mut().unwrap().generation = pane.document_generation;
+        pane.autosave_inflight.as_mut().unwrap().path = root.join("different.comp");
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::OwnerMismatch)
+        });
+        assert!(!root.join(".seecut-canvas-locks/different.comp").exists());
+        pane.autosave_inflight.as_mut().unwrap().path = path.clone();
+        pane.autosave_inflight = None;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation: pane.document_generation,
+            path: path.clone(),
+            revision: pane.revision,
+            sequence: 1,
+        });
+        std::fs::rename(&sidecar, root.join("held-old-lock")).unwrap();
+        std::fs::write(&sidecar, b"replacement").unwrap();
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(
+                e,
+                CanvasMoveError::Ownership(OwnershipError::IdentityAmbiguous { .. })
+            )
+        });
+        pane.writer_owner = None;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::MissingOwner)
+        });
+        assert!(!path.exists());
+        drop(pane);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn ownership_test_root() -> PathBuf {

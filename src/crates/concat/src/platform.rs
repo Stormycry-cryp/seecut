@@ -60,13 +60,32 @@ impl CustomApplicationHandler for DropHandler {
     fn window_event(
         &mut self,
         _event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         _winit_window: Option<&WinitWindow>,
         _slint_window: Option<&slint::Window>,
         event: &WindowEvent,
     ) -> EventResult {
         if let WindowEvent::DroppedFile(path) = event {
             self.pending.push(path.clone());
+        }
+        if matches!(event, WindowEvent::Focused(_) | WindowEvent::Occluded(_)) {
+            use slint::{ComponentHandle, winit_030::WinitWindowAccessor};
+            crate::host::Shell::with(|_, app| {
+                if app.window().with_winit_window(|own| own.id() == window_id) != Some(true) {
+                    return;
+                }
+                let assistant = app.global::<crate::ui::Assistant>();
+                match event {
+                    WindowEvent::Focused(focused) => assistant.set_window_focused(*focused),
+                    WindowEvent::Occluded(occluded) => assistant.set_window_visible(!*occluded),
+                    _ => {}
+                }
+                log::trace!(
+                    "assistant window focused={}, visible={}",
+                    assistant.get_window_focused(),
+                    assistant.get_window_visible()
+                );
+            });
         }
         EventResult::Propagate
     }

@@ -19,6 +19,8 @@ export struct ToastData {
     /// show the first and swallow the second.
     token: int,
     message: string,
+    /// Full text for Copy; ordinary notices use the same text as message.
+    detail: string,
     /// Failed notices are red and hold long enough to actually be read;
     /// confirmations only need a glance.
     failed: bool,
@@ -90,7 +92,7 @@ export component ToastLayer inherits Rectangle {
         // Capped, then the label elides: a notice is a sentence, and one long
         // enough to reach across the window has stopped being one. A failure
         // keeps room for its copy chip.
-        width: Math.min(root.width - 32px,
+        width: Math.min(Math.min(420px, root.width - 32px),
             12px + icon.width + 8px + measure.preferred-width + 12px
                 + (root.data.failed ? 60px : 0px));
         // 12px by 8px of padding around a 16px line.
@@ -136,11 +138,11 @@ export component ToastLayer inherits Rectangle {
         }
 
         // A failure can be lifted off the screen whole, elided or not: what
-        // the chip copies is the message, not what fitted.
+        // the chip copies is its detail, not what fitted.
         if root.data.failed: CopyChip {
             x: parent.width - self.width - 6px;
             y: (parent.height - self.height) / 2;
-            text: root.data.message;
+            text: root.data.detail;
         }
     }
 }

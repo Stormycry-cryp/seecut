@@ -47,6 +47,7 @@ export component WorkflowFeedback inherits VerticalLayout {
 // The pending project import above stays in the layout because it has an
 // explicit action; ordinary operation results never shift the page.
 export component WorkflowToast inherits Rectangle {
+    in property <length> bottom-offset: 58px;
     property <string> message: !SeeCut.auth-open && !SeeCut.asset-picker-open
         ? (SeeCut.error != "" ? SeeCut.error : SeeCut.notice) : "";
     property <bool> failed: SeeCut.error != "";
@@ -54,8 +55,8 @@ export component WorkflowToast inherits Rectangle {
     changed message => { if root.message != "" { root.token += 1; } }
     ToastLayer {
         width: parent.width; height: parent.height;
-        bottom-offset: 58px;
-        data: { token: root.token, message: root.message, failed: root.failed };
+        bottom-offset: root.bottom-offset;
+        data: { token: root.token, message: root.message, detail: root.message, failed: root.failed };
     }
 }
 

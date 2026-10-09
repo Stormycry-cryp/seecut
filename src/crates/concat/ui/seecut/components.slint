@@ -209,6 +209,11 @@ export component NavItem inherits Rectangle {
 }
 
 export component AppRail inherits Rectangle {
+    in property <bool> assistant-available;
+    in property <bool> assistant-enabled;
+    in property <bool> assistant-active;
+    callback toggle-assistant();
+    public function focus-assistant() { assistant-button.take-focus(); }
     callback begin-drag();
     callback toggle-maximize();
     callback open-settings();
@@ -228,10 +233,20 @@ export component AppRail inherits Rectangle {
             }
         }
         NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; }
+        NavItem { label: "Flow"; glyph: Glyph.distribute; page: 8; }
         NavItem { label: "画布"; glyph: Glyph.brush; page: 6; }
         NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; }
         NavItem { label: "资产库"; glyph: Glyph.folder; page: 5; }
         Rectangle { vertical-stretch: 1; }
+        assistant-button := IconButton {
+            visible: root.assistant-available;
+            width: 44px; height: root.assistant-available ? 44px : 0px;
+            side: 44px; icon-size: 24px; glyph: Glyph.sparkle;
+            label: root.assistant-enabled ? "助手" : "打开工程后使用助手";
+            enabled: root.assistant-available && root.assistant-enabled;
+            checkable: true; checked: root.assistant-active;
+            clicked => { root.toggle-assistant(); }
+        }
         settings-focus := FocusScope {
             width: 44px; height: 44px;
             focus-on-tab-navigation: false;

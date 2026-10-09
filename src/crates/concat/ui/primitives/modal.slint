@@ -37,6 +37,16 @@ export component Modal inherits Rectangle {
     in property <length> surface-height: 0px;
 
     callback closed();
+    // A non-dismissable sheet has no close button. Its owner supplies a
+    // visible focus destination, such as Cancel export, for forward wrap.
+    callback focus-fallback();
+    public function focus-default() {
+        if root.open && root.trap-focus {
+            if root.dismissable && (!root.title-at-start || root.show-close-for-start-title) {
+                root.close-focus-request += 1;
+            } else { root.focus-fallback(); }
+        }
+    }
 
     // Keep the layer mounted until the exit finishes. Its TouchArea still
     // blocks the app underneath, and a quick reopen cancels the old exit.
@@ -221,7 +231,9 @@ export component Modal inherits Rectangle {
                 enabled: root.open && root.trap-focus;
                 focus-on-click: false;
                 focus-gained(reason) => {
-                    if reason == FocusReason.tab-navigation { root.close-focus-request += 1; }
+                    if reason == FocusReason.tab-navigation {
+                        root.focus-default();
+                    }
                 }
             }
         }
@@ -247,6 +259,8 @@ export component Button inherits Rectangle {
     /// bare until hovered, for a secondary action beside a real one
     in property <bool> ghost;
     in property <bool> enabled: true;
+    in property <int> focus-request;
+    changed focus-request => { if root.enabled { focus.focus(); } }
     /// fill the width it is given, for a footer's single action
     in property <bool> block;
     /// 34px instead of 28px, for the action a sheet is built around
@@ -257,6 +271,7 @@ export component Button inherits Rectangle {
     property <length> gap: root.glyph == Glyph.none ? 0px : 6px;
     property <length> mark: root.glyph == Glyph.none ? 0px : 14px;
     property <bool> lit: touch.has-hover && root.enabled;
+    property <bool> ring;
     /// the red the danger tone hovers into — a dark wash, not a fill
     property <color> danger-wash: Theme.danger-wash;
     property <color> danger-edge: Theme.danger-edge;
@@ -282,11 +297,28 @@ export component Button inherits Rectangle {
         : root.lit ? Theme.field-hover
         : Theme.field;
 
-    animate background, border-color { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background, border-color { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     property <brush> ink: !root.enabled ? Theme.fg-dim : root.primary ? Theme.on-accent
         : root.ghost ? (root.lit ? Theme.fg : Theme.fg-muted)
         : Theme.fg;
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
 
     HorizontalLayout {
         alignment: center;
@@ -313,8 +345,9 @@ export component Button inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => { focus.focus(); root.clicked(); }
     }
+    FocusRing { active: root.ring; radius: Theme.r; }
 }
 
 // A chip that puts a line of text on the clipboard.
@@ -327,6 +360,28 @@ export component CopyChip inherits Rectangle {
     in property <string> text;
     /// Said for a moment after a press, so the press is seen to have worked.
     property <bool> done;
+    property <bool> ring;
+
+    function copy-message() {
+        hidden.select-all();
+        hidden.copy();
+        root.done = true;
+    }
+
+    accessible-role: button;
+    accessible-label: I18n.t("Copy");
+    accessible-action-default => { root.copy-message(); }
+    focus := FocusScope {
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.copy-message();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
 
     width: 52px;
     height: 20px;
@@ -335,7 +390,7 @@ export component CopyChip inherits Rectangle {
     border-width: 1px;
     border-color: touch.has-hover ? Theme.line-strong : Theme.line;
 
-    animate background, border-color { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background, border-color { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     hidden := TextInput {
         x: 0;
@@ -345,6 +400,7 @@ export component CopyChip inherits Rectangle {
         opacity: 0;
         text: root.text;
         read-only: true;
+        enabled: false;
     }
 
     Text {
@@ -358,11 +414,11 @@ export component CopyChip inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => {
-            hidden.select-all();
-            hidden.copy();
-            root.done = true;
+            focus.focus();
+            root.copy-message();
         }
     }
+    FocusRing { active: root.ring; radius: Theme.r-xs; }
 
     Timer {
         interval: 1500ms;
@@ -556,6 +612,8 @@ export component Field inherits Rectangle {
     in property <string> placeholder;
     /// numbers, paths and names read better in the technical face
     in property <bool> technical;
+    /// Facts remain selectable, while published values update even with focus.
+    in property <bool> read-only: false;
 
     callback edited(text: string);
 
@@ -567,11 +625,11 @@ export component Field inherits Rectangle {
     max-height: 28px;
     horizontal-stretch: 1;
     border-radius: Theme.r;
-    background: input.has-focus ? Theme.field
+    background: root.input-focused ? Theme.field
         : touch.has-hover ? Theme.field-hover
         : Theme.field;
     border-width: 1px;
-    border-color: input.has-focus ? Theme.accent : Colors.transparent;
+    border-color: root.input-focused ? Theme.accent : Colors.transparent;
     clip: true;
 
     animate background, border-color { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
@@ -581,25 +639,29 @@ export component Field inherits Rectangle {
     // A TextInput writes to whatever property it is two-way bound to, and an
     // assignment in Slint replaces the binding the caller declared — so
     // binding it straight to `value` works for exactly one keystroke and then
-    // goes deaf to the model. This is seeded instead, and never while the
-    // field has focus, so a republish mid-sentence cannot yank the caret.
+    // goes deaf to the model. Editable fields preserve their focused draft.
+    // Read-only facts use a separate TextInput bound directly to the value.
     property <string> draft;
+    property <bool> input-focused: root.read-only ? read-input.has-focus : input.has-focus;
     function seed() {
         root.draft = root.value;
     }
     init => { root.seed(); }
     changed value => {
-        if (!input.has-focus) {
+        if (!root.read-only && !input.has-focus) {
             root.seed();
         }
     }
+    changed read-only => { if !root.read-only { root.seed(); } }
 
     touch := TouchArea {
         mouse-cursor: MouseCursor.text;
-        clicked => { input.focus(); }
+        clicked => { if root.read-only { read-input.focus(); } else { input.focus(); } }
     }
 
     input := TextInput {
+        visible: !root.read-only;
+        enabled: !root.read-only;
         x: 10px;
         y: (parent.height - self.height) / 2;
         width: parent.width - 20px;
@@ -619,7 +681,24 @@ export component Field inherits Rectangle {
         edited => { root.edited(self.text); }
     }
 
-    if root.draft == "" && !input.has-focus: Text {
+    read-input := TextInput {
+        visible: root.read-only;
+        enabled: root.read-only;
+        x: 10px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - 20px;
+        height: self.preferred-height;
+        text: root.value;
+        color: Theme.fg;
+        font-family: root.technical ? Theme.font-technical : Theme.font;
+        font-size: Theme.fs;
+        single-line: true;
+        read-only: true;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.on-accent;
+    }
+
+    if (root.read-only ? root.value == "" : root.draft == "") && !root.input-focused: Text {
         x: 10px;
         y: (parent.height - self.height) / 2;
         height: self.preferred-height;

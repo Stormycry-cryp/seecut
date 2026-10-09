@@ -9,9 +9,23 @@ export component TemplateEditor inherits Modal {
     title: root.current-config ? "保存当前生成配置" : "编辑模板";
     glyph: Glyph.tag;
     surface-width: Math.min(520px, root.width - 32px);
+    // Request focus after the open state and child controls have settled.
+    // Watch a local binding so Modal's own open/exit callback stays intact.
+    property <bool> editor-open: root.open;
+    property <bool> name-focus-pending;
+    init => { root.name-focus-pending = root.open; }
+    changed editor-open => { root.name-focus-pending = root.open; }
+    Timer {
+        interval: 1ms;
+        running: root.name-focus-pending;
+        triggered => {
+            root.name-focus-pending = false;
+            if root.open { name-field.focus-at(0); }
+        }
+    }
     VerticalLayout {
         padding: 20px; padding-top: 12px; spacing: 12px;
-        CloudField { auto-focus: true; value <=> SeeCut.template-name; placeholder: "模板名称"; edited(value) => { SeeCut.changed("template-name", value); } }
+        name-field := CloudField { value <=> SeeCut.template-name; placeholder: "模板名称"; edited(value) => { SeeCut.changed("template-name", value); } }
         CloudField { value <=> SeeCut.template-prompt; multiline: true; placeholder: "提示词"; edited(value) => { SeeCut.changed("template-prompt", value); } }
         Text { text: root.current-config ? "保存当前模型、参数和参考素材。" : "这里修改名称和提示词。修改模型、参数或参考素材时，先应用到生成页，再覆盖保存。"; color: Theme.fg-muted; wrap: word-wrap; }
         if SeeCut.error != "": Text { text: SeeCut.error; color: Theme.danger; wrap: word-wrap; }

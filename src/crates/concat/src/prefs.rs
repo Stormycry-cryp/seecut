@@ -17,6 +17,8 @@ const FILE: &str = "settings.json";
 pub struct Preferences {
     /// The dark theme. `None` is the app's default, which is light.
     pub dark: Option<bool>,
+    /// Window-relative assistant position and logical size; no project data.
+    pub assistant_geometry: Option<AssistantGeometry>,
     /// The chosen transcriber model id, e.g. "base.en".
     pub transcriber_model: Option<String>,
     /// The chosen speech model id.
@@ -50,6 +52,32 @@ pub struct Preferences {
     /// The Concat API on a socket while the window is open.
     #[serde(default)]
     pub server: ServerPrefs,
+}
+
+/// Assistant panel geometry, independent of any active document.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AssistantGeometry {
+    /// Horizontal fraction of the available travel within the window.
+    pub x: f32,
+    /// Vertical fraction of the available travel within the window.
+    pub y: f32,
+    /// Panel width in logical pixels.
+    pub width: f32,
+    /// Panel height in logical pixels.
+    pub height: f32,
+}
+
+impl AssistantGeometry {
+    /// Reject corrupt or unreasonable saved geometry before it reaches Slint.
+    pub fn valid(&self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|n| n.is_finite())
+            && (0.0..=1.0).contains(&self.x)
+            && (0.0..=1.0).contains(&self.y)
+            && (320.0..=480.0).contains(&self.width)
+            && (320.0..=4096.0).contains(&self.height)
+    }
 }
 
 impl Preferences {

@@ -33,12 +33,24 @@ mod ui {
     slint::include_modules!();
 }
 
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_components;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_controller;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_identity;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_process;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_ui;
 mod chips;
 mod cloud;
 mod cloud_files;
 mod dock;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod editor_mcp;
+mod flow_controller;
+mod flow_ui;
 mod format;
 mod generation_templates;
 mod gpu;
@@ -53,6 +65,7 @@ pub use platform::{FilePicker, install_file_picker};
 mod panes;
 mod prefs;
 mod presets;
+mod project_open;
 mod studio;
 mod sysinfo;
 mod ui_preview;
@@ -313,7 +326,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
 
     let app = App::new()?;
-    cloud::bind(&app);
+    let account = cloud::bind(&app);
+    flow_ui::bind(&app, host.dirs.data.join("flow-projects"));
     app.set_macos(platform::MACOS);
 
     let studio = Studio::new(host);
@@ -328,6 +342,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     Shell::install(shell.clone());
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     {
+        account.attach_editor_bridge(Rc::downgrade(&shell.studio.borrow().editor_mcp));
         let instance = shell
             .studio
             .borrow()
@@ -472,6 +487,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_titlebar_close(|| {
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
+            if app.global::<ui::Flow>().invoke_close_requested() {
+                return;
+            }
             let should_close = shell.studio.borrow_mut().request_window_close();
             shell.studio.borrow_mut().refresh_art();
             shell.studio.borrow().publish(&app, &shell.models);
@@ -488,6 +506,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
         log::info!("close: system close request (Alt+F4 / taskbar)");
         let mut should_close = false;
         Shell::with(|shell, app| {
+            if app.global::<ui::Flow>().invoke_close_requested() {
+                return;
+            }
             should_close = shell.studio.borrow_mut().request_window_close();
             shell.studio.borrow_mut().refresh_art();
             shell.studio.borrow().publish(&app, &shell.models);
@@ -589,6 +610,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     app.on_start_create(on_window!(|state| {
         state.handle(Msg::Start(StartMsg::Create));
+    }));
+    app.on_project_open_cancel(on_window!(|state| {
+        state.cancel_project_open(&i18n::t("Project opening cancelled"));
     }));
     app.on_start_open_recent(on_window!(|state, path: SharedString| {
         state.handle(Msg::Start(StartMsg::OpenRecent(path.to_string())));
@@ -1823,6 +1847,33 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 studio.publish(&app, &shell.models);
             });
         });
+        app.on_settings_mcp_grant_move(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                {
+                    studio.editor_mcp.borrow_mut().grant_move(&studio, &app);
+                }
+                studio.publish(&app, &shell.models);
+            });
+        });
+        app.on_settings_mcp_renew_move(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                {
+                    studio.editor_mcp.borrow_mut().renew_move(&studio, &app);
+                }
+                studio.publish(&app, &shell.models);
+            });
+        });
+        app.on_settings_mcp_revoke_move(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                {
+                    studio.editor_mcp.borrow_mut().revoke_move();
+                }
+                studio.publish(&app, &shell.models);
+            });
+        });
     }
     #[cfg(not(all(unix, not(any(target_os = "android", target_os = "ios")))))]
     {
@@ -1830,6 +1881,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
         app.on_settings_mcp_grant_r(|| {});
         app.on_settings_mcp_grant_m(|| {});
         app.on_settings_mcp_revoke(|| {});
+        app.on_settings_mcp_grant_move(|| {});
+        app.on_settings_mcp_renew_move(|| {});
+        app.on_settings_mcp_revoke_move(|| {});
     }
     app.on_model_activated(on_window!(|state, id: SharedString| {
         state.handle(Msg::Settings(SettingsMsg::ModelActivated(id.to_string())));
@@ -1911,14 +1965,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
                         "open" => {
                             if let Some(path) = platform::pick_folder(&i18n::t("Open project"), "")
                             {
-                                let concat_json = path.join("concat.json");
-                                if concat_json.exists() {
-                                    state.handle(Msg::Start(StartMsg::OpenRecent(
-                                        path.to_string_lossy().into_owned(),
-                                    )));
-                                } else {
-                                    state.notify("Not a valid project folder", true);
-                                }
+                                state.handle(Msg::Start(StartMsg::OpenRecent(
+                                    path.to_string_lossy().into_owned(),
+                                )));
                             }
                         }
                         "import" => {
@@ -1972,6 +2021,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 }
                 if action == "close-window" {
                     log::info!("close: File > Close Window");
+                    if app.global::<ui::Flow>().invoke_close_requested() {
+                        return;
+                    }
                     let should_close = shell.studio.borrow_mut().request_window_close();
                     shell.studio.borrow_mut().refresh_art();
                     shell.studio.borrow().publish(&app, &shell.models);
@@ -2207,9 +2259,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // The timer is the animation's only owner; the event loop outlives it.
     std::mem::forget(ants);
 
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    let assistant = agent_ui::bind(&app, account);
     let result = app.run();
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     {
+        assistant.shutdown();
+        // Normal UI callbacks stay nonblocking. Only process exit waits for owned children.
+        if !agent_process::shutdown_all_at_exit() {
+            log::warn!("assistant shutdown did not finish before the exit deadline");
+        }
         let instance = shell
             .studio
             .borrow()
@@ -2225,3 +2284,6 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
     std::process::exit(0);
 }
+
+#[cfg(test)]
+mod field_tests;

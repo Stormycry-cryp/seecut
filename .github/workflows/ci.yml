@@ -8,21 +8,131 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      desktop_package_candidate:
+        description: Build one artifact-only Seecut macOS arm64 candidate on a feature branch; no App launch/install/publish
+        type: boolean
+        default: false
+      linux_window_diagnostic:
+        description: Only capture the normal Linux App's ungranted Settings window
+        type: boolean
+        default: false
+      linux_blackbox_qa:
+        description: Run the reviewed independent black-box script instead of window capture
+        type: boolean
+        default: false
+      qa_next_stage:
+        description: Reviewed independent script stage
+        type: choice
+        options: ['observe-only', 'navigation', 'project-entry', 'canvas-create-observation', 'canvas-create-entry', 'editor-entry-observation', 'image-picker-observation', 'workflow-observation', 'alpha-workflow-observation', 'fresh-workbench-observation', 'settings-controls-observation', 'canvas-entry-observation', 'workspaces-observation', 'assistant-entry-observation', 'assistant-config-observation', 'assets-import', 'asset-library-flow', 'clip-create-observation', 'clip-editor-entry', 'clip-media-import', 'visual-settings-entry-observation', 'visual-theme-matrix-observation', 'persistence-pair-observation']
+        default: 'navigation'
+      qa_ui_approval:
+        description: Exact independent-QA UI JSON; forwarded unchanged, no automatic approval
+        type: string
+        default: ''
+      qa_identity_approval:
+        description: Exact main-reviewer runtime identity JSON; forwarded unchanged, no automatic approval
+        type: string
+        default: ''
+      blackbox_timeout_seconds:
+        description: Total QA time including cleanup (420 only for real lease expiry)
+        type: choice
+        options: ['300', '420']
+        default: '300'
+      qa_source_run_id:
+        description: Exact prior candidate build run ID; empty builds a fresh candidate
+        type: string
+        default: ''
+      qa_source_artifact_id:
+        description: Exact immutable candidate artifact ID; required with source run ID
+        type: string
+        default: ''
+      qa_source_head:
+        description: Exact App source HEAD; required with both immutable candidate IDs
+        type: string
+        default: ''
+      expected_sha:
+        description: Exact 40-character feature HEAD required for the window diagnostic
+        type: string
+        default: ''
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A manual window capture must not cancel the feature's ordinary CI.
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop_package_candidate && format('ci-macos-package-{0}-{1}', github.ref, github.run_id) || (github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && format('ci-window-{0}', github.ref) || format('ci-{0}', github.ref)) }}
   cancel-in-progress: true
 
 jobs:
   engine:
-    name: Engine tests and lints
+    if: github.event_name != 'workflow_dispatch' || inputs.desktop_package_candidate != true
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && (inputs.linux_blackbox_qa && 'Linux independent black-box QA' || 'Linux actual window diagnostic') || 'Engine tests and lints' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && 90 || 360 }}
     env:
       FFMPEG_LINUX: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-shared-8.1.tar.xz
       # See build-app.yml: the version the ort crate is built against.
       ORT_VERSION: 1.28.0
     steps:
       - uses: actions/checkout@v7
+      - name: Verify the requested window candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          SOURCE_HEAD: ${{ inputs.qa_source_head }}
+          BLACKBOX_QA: ${{ inputs.linux_blackbox_qa }}
+          NEXT_STAGE: ${{ inputs.qa_next_stage }}
+          QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
+          QA_IDENTITY_APPROVAL: ${{ inputs.qa_identity_approval }}
+          QA_UI_APPROVAL: ${{ inputs.qa_ui_approval }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]] || exit 1
+          if [[ -n "$SOURCE_RUN_ID" || -n "$SOURCE_ARTIFACT_ID" || -n "$SOURCE_HEAD" ]]; then
+            [[ "$BLACKBOX_QA" == true && "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ &&
+               "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == alpha-workflow-observation ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               "$SOURCE_RUN_ID" == 37385930165 && "$SOURCE_ARTIFACT_ID" == 11380395799 &&
+               "$SOURCE_HEAD" == 0aa9406247e53f073c0b4df686adc68b40e2f8f6 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == persistence-pair-observation ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               "$SOURCE_RUN_ID" == 37340470010 && "$SOURCE_ARTIFACT_ID" == 11359607955 &&
+               "$SOURCE_HEAD" == a6cf09ad935bbbc6cf792c4ac6a4b506a47aebd3 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == clip-create-observation ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               "$SOURCE_RUN_ID" == 37328783317 && "$SOURCE_ARTIFACT_ID" == 11355501142 &&
+               "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == asset-library-flow ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               "$SOURCE_RUN_ID" == 37618873449 && "$SOURCE_ARTIFACT_ID" == 11482882493 &&
+               "$SOURCE_HEAD" == 7be354a92315a6dd5128f0da59e84db7434be918 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == visual-theme-matrix-observation || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == clip-media-import ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               "$SOURCE_RUN_ID" == 37385930165 && "$SOURCE_ARTIFACT_ID" == 11380395799 &&
+               "$SOURCE_HEAD" == 0aa9406247e53f073c0b4df686adc68b40e2f8f6 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+          fi
+          if [[ "$NEXT_STAGE" == fresh-workbench-observation ]]; then
+            [[ "$BLACKBOX_QA" == true && "$QA_SECONDS" == 300 &&
+               "$SOURCE_RUN_ID" == 37312315509 && "$SOURCE_ARTIFACT_ID" == 11345919609 &&
+               "$SOURCE_HEAD" == cecc8fdf9578675051dae58bda25f0ff805ce235 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+          fi
+          echo "Window candidate: $EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -40,6 +150,30 @@ jobs:
             libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libgl1-mesa-dev \
             libgtk-3-dev libasound2-dev libclang-dev cmake \
             mesa-vulkan-drivers vulkan-tools
+
+      - name: Window diagnostic tools
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        env:
+          NEXT_STAGE: ${{ inputs.qa_next_stage }}
+          BLACKBOX_QA: ${{ inputs.linux_blackbox_qa }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y xvfb xdotool imagemagick fonts-noto-cjk libxkbcommon-x11-0
+          if [[ "$BLACKBOX_QA" == true && ( "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == visual-theme-matrix-observation || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == persistence-pair-observation ) ]]; then
+            missing=()
+            packages=(python3-gi gir1.2-atspi-2.0 dbus-x11 at-spi2-core)
+            if [[ "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == persistence-pair-observation ]]; then
+              packages+=(zenity)
+            fi
+            for package in "${packages[@]}"; do
+              if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+                missing+=("$package")
+              fi
+            done
+            if (( ${#missing[@]} )); then
+              sudo apt-get install -y "${missing[@]}"
+            fi
+          fi
 
       - name: Software Vulkan adapter
         run: |
@@ -101,26 +235,347 @@ jobs:
           free -h
           df -h .
           /usr/bin/time -v cargo clippy --workspace --all-targets -- -D warnings
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_BUILD_JOBS: "1"
       - run: cargo test --workspace -j 1
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
       # The gRPC transport is a feature nothing else in the workspace turns
       # on, so it is linted and tested here on its own. See concat-server.
       - run: cargo clippy -p concat-server -p concat-cli --features grpc --all-targets -- -D warnings
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
       - run: cargo test -p concat-server --features grpc
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         working-directory: src
+
+      - name: Build the normal window candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.qa_source_run_id == '' && inputs.qa_source_artifact_id == '' && inputs.qa_source_head == ''
+        working-directory: src
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_BUILD_JOBS: '1'
+        run: cargo build -p concat -j 1
+
+      - name: Prepare the immutable normal App candidate
+        id: candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          SOURCE_HEAD: ${{ inputs.qa_source_head }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SOURCE_RUN_ID" && -z "$SOURCE_ARTIFACT_ID" && -z "$SOURCE_HEAD" ]]; then
+            python3 scripts/qa-candidate-artifact.py create \
+              --app "$PWD/src/target/debug/concat" \
+              --expected-head "$EXPECTED_SHA" \
+              --output-dir "$RUNNER_TEMP/seecut-normal-candidate"
+          else
+            python3 scripts/qa-candidate-artifact.py restore \
+              --source-run-id "$SOURCE_RUN_ID" --source-artifact-id "$SOURCE_ARTIFACT_ID" \
+              --source-head "$SOURCE_HEAD" \
+              --expected-head "$EXPECTED_SHA" \
+              --output-dir "$RUNNER_TEMP/seecut-normal-candidate"
+          fi
+          python3 - <<'PYCANDIDATE'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'seecut-normal-candidate'
+          data = json.loads((root / 'outputs.json').read_text())
+          assert data['workflow_head'] == os.environ['EXPECTED_SHA']
+          assert data['source_head'] == (os.environ['SOURCE_HEAD'] or os.environ['EXPECTED_SHA'])
+          for key in ('binary_path', 'manifest_path'):
+              path = Path(data[key])
+              assert path.is_absolute() and path.is_file() and not path.is_symlink()
+              assert '\n' not in str(path) and '\r' not in str(path)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('binary=' + data['binary_path'] + '\n')
+              output.write('manifest=' + data['manifest_path'] + '\n')
+              output.write('source_head=' + data['source_head'] + '\n')
+              output.write('upload=' + str(not os.environ['SOURCE_RUN_ID']).lower() + '\n')
+          PYCANDIDATE
+
+      - name: Retain the immutable normal App candidate
+        if: always() && steps.candidate.outcome == 'success' && steps.candidate.outputs.upload == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: seecut-linux-candidate-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/seecut-normal-candidate/candidate.tar
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Build the public stdio client
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa && inputs.qa_next_stage == 'project-entry'
+        working-directory: src
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_BUILD_JOBS: '1'
+        run: cargo build -p concat-editor-mcp --features stdio --bin seecut-editor-mcp -j 1
+
+      - name: Capture the normal App window
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa != true
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          # Lavapipe is a CPU adapter; Slint requires an explicit opt-in.
+          SLINT_WGPU_CPU: '1'
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
+            timeout --signal=TERM --kill-after=10s 290s \
+            python3 scripts/check-linux-window.py \
+            --binary "$PWD/src/target/debug/concat" \
+            --output "$RUNNER_TEMP/seecut-window-evidence" \
+            --expected-sha "$EXPECTED_SHA"
+
+      - name: Run the independent black-box script
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa && inputs.qa_next_stage != 'persistence-pair-observation'
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          APP_BINARY: ${{ steps.candidate.outputs.binary }}
+          CANDIDATE_MANIFEST: ${{ steps.candidate.outputs.manifest }}
+          SOURCE_HEAD: ${{ steps.candidate.outputs.source_head }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
+          NEXT_STAGE: ${{ inputs.qa_next_stage }}
+          QA_IDENTITY_APPROVAL: ${{ inputs.qa_identity_approval }}
+          QA_UI_APPROVAL: ${{ inputs.qa_ui_approval }}
+          SLINT_WGPU_CPU: '1'
+        run: |
+          set -euo pipefail
+          [[ "$QA_SECONDS" == 300 || "$QA_SECONDS" == 420 ]]
+          [[ "$NEXT_STAGE" == observe-only || "$NEXT_STAGE" == navigation || "$NEXT_STAGE" == project-entry || "$NEXT_STAGE" == canvas-create-observation || "$NEXT_STAGE" == canvas-create-entry || "$NEXT_STAGE" == editor-entry-observation || "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == visual-theme-matrix-observation ]]
+          CANDIDATE_ARGS=(--candidate-manifest "$CANDIDATE_MANIFEST" --source-head "$SOURCE_HEAD")
+          if [[ -n "$SOURCE_ARTIFACT_ID" ]]; then
+            CANDIDATE_ARGS+=(--candidate-artifact-id "$SOURCE_ARTIFACT_ID")
+          fi
+          CLIENT_ARGS=()
+          if [[ "$NEXT_STAGE" == project-entry ]]; then
+            CLIENT_ARGS=(--client-binary "$PWD/src/target/debug/seecut-editor-mcp")
+          fi
+          DISPLAY_CAPTURE_ARGS=()
+          if [[ "$NEXT_STAGE" == image-picker-observation || "$NEXT_STAGE" == workflow-observation || "$NEXT_STAGE" == alpha-workflow-observation || "$NEXT_STAGE" == fresh-workbench-observation || "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation || "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == asset-library-flow || "$NEXT_STAGE" == clip-media-import || "$NEXT_STAGE" == clip-create-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == visual-theme-matrix-observation ]]; then
+            DISPLAY_CAPTURE_ARGS=(--isolated-display-capture)
+          fi
+          QA_SCRIPT="$PWD/scripts/independent-linux-blackbox.py"
+          BUS_COMMAND=()
+          BUS_ARGS=()
+          INPUT_ARGS=()
+          if [[ "$NEXT_STAGE" == alpha-workflow-observation ]]; then
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37385930165 &&
+               "$SOURCE_ARTIFACT_ID" == 11380395799 && "$SOURCE_HEAD" == 0aa9406247e53f073c0b4df686adc68b40e2f8f6 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+            QA_SCRIPT="$PWD/scripts/alpha-workflow-controller.py"
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
+            INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
+          elif [[ "$NEXT_STAGE" == workflow-observation ]]; then
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37340470010 &&
+               "$SOURCE_ARTIFACT_ID" == 11359607955 && "$SOURCE_HEAD" == a6cf09ad935bbbc6cf792c4ac6a4b506a47aebd3 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+            QA_SCRIPT="$PWD/scripts/style-workflow-controller.py"
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
+            INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
+          elif [[ "$NEXT_STAGE" == fresh-workbench-observation ]]; then
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_ARTIFACT_ID" == 11345919609 &&
+               "$SOURCE_HEAD" == cecc8fdf9578675051dae58bda25f0ff805ce235 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+            QA_SCRIPT="$PWD/scripts/independent-next-ui.py"
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
+          elif [[ "$NEXT_STAGE" == settings-controls-observation || "$NEXT_STAGE" == canvas-entry-observation ]]; then
+            # One invocation owns one fresh App and one independently reviewed A2 scope.
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37328783317 &&
+               "$SOURCE_ARTIFACT_ID" == 11355501142 && "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+            QA_SCRIPT="$PWD/scripts/next_ui_11ebf20_a3.py"
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
+          elif [[ "$NEXT_STAGE" == asset-library-flow ]]; then
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37618873449 &&
+               "$SOURCE_ARTIFACT_ID" == 11482882493 && "$SOURCE_HEAD" == 7be354a92315a6dd5128f0da59e84db7434be918 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]] || exit 1
+            QA_SCRIPT="$PWD/scripts/asset-flow-controller.py"
+            INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
+          elif [[ "$NEXT_STAGE" == visual-theme-matrix-observation || "$NEXT_STAGE" == visual-settings-entry-observation || "$NEXT_STAGE" == clip-editor-entry || "$NEXT_STAGE" == assistant-config-observation || "$NEXT_STAGE" == clip-media-import ]]; then
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37385930165 &&
+               "$SOURCE_ARTIFACT_ID" == 11380395799 && "$SOURCE_HEAD" == 0aa9406247e53f073c0b4df686adc68b40e2f8f6 &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+            if [[ "$NEXT_STAGE" == clip-media-import ]]; then
+              QA_SCRIPT="$PWD/scripts/clip-import-controller.py"
+              INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
+            elif [[ "$NEXT_STAGE" == visual-theme-matrix-observation ]]; then
+              QA_SCRIPT="$PWD/scripts/visual-theme-matrix-controller.py"
+            elif [[ "$NEXT_STAGE" == visual-settings-entry-observation ]]; then
+              QA_SCRIPT="$PWD/scripts/visual-settings-entry-controller.py"
+            elif [[ "$NEXT_STAGE" == assistant-config-observation ]]; then
+              QA_SCRIPT="$PWD/scripts/assistant-0aa/agent-config-controller.py"
+            else
+              QA_SCRIPT="$PWD/scripts/clip-editor-controller.py"
+            fi
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
+          elif [[ "$NEXT_STAGE" == workspaces-observation || "$NEXT_STAGE" == assistant-entry-observation || "$NEXT_STAGE" == assets-import || "$NEXT_STAGE" == clip-create-observation ]]; then
+            [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37328783317 &&
+               "$SOURCE_ARTIFACT_ID" == 11355501142 && "$SOURCE_HEAD" == 11ebf203e1a78d3b6a21677c4b17e96223c74b0e &&
+               -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+            if [[ "$NEXT_STAGE" == workspaces-observation ]]; then
+              QA_SCRIPT="$PWD/scripts/workspaces-ui-11ebf20.py"
+            elif [[ "$NEXT_STAGE" == assets-import ]]; then
+              QA_SCRIPT="$PWD/scripts/asset-clip-assets-controller.py"
+              INPUT_ARGS=(--input-dir "$PWD/scripts/qa-fixtures")
+            elif [[ "$NEXT_STAGE" == clip-create-observation ]]; then
+              QA_SCRIPT="$PWD/scripts/asset-clip-clip-controller.py"
+            else
+              QA_SCRIPT="$PWD/scripts/agent-native-entry-controller.py"
+            fi
+            BUS_COMMAND=(dbus-run-session --)
+            BUS_ARGS=(--private-accessibility-bus)
+          fi
+          APPROVAL_ARGS=()
+          if [[ -n "$QA_IDENTITY_APPROVAL" ]]; then
+            python3 - <<'PYAPPROVAL'
+          import os
+          from pathlib import Path
+          data = os.environ['QA_IDENTITY_APPROVAL'].encode('utf-8')
+          assert len(data) <= 16384, 'Runtime declaration exceeds 16 KiB'
+          path = Path(os.environ['RUNNER_TEMP']) / 'qa-identity-approval.json'
+          with path.open('xb') as stream:
+              os.fchmod(stream.fileno(), 0o600)
+              stream.write(data)
+          PYAPPROVAL
+            APPROVAL_ARGS=(--identity-approval "$RUNNER_TEMP/qa-identity-approval.json")
+          fi
+          UI_ARGS=()
+          if [[ -n "$QA_UI_APPROVAL" ]]; then
+            python3 - <<'PYUIAPPROVAL'
+          import os
+          from pathlib import Path
+          data = os.environ['QA_UI_APPROVAL'].encode('utf-8')
+          assert len(data) <= 16384, 'UI declaration exceeds 16 KiB'
+          path = Path(os.environ['RUNNER_TEMP']) / 'qa-ui-approval.json'
+          with path.open('xb') as stream:
+              os.fchmod(stream.fileno(), 0o600)
+              stream.write(data)
+          PYUIAPPROVAL
+            UI_ARGS=(--ui-approval "$RUNNER_TEMP/qa-ui-approval.json")
+          fi
+          xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
+            timeout --signal=TERM --kill-after=10s "$((QA_SECONDS - 10))s" \
+            "${BUS_COMMAND[@]}" \
+            python3 scripts/run-linux-blackbox.py \
+            --binary "$APP_BINARY" \
+            --qa-script "$QA_SCRIPT" \
+            --output "$RUNNER_TEMP/seecut-window-evidence" \
+            --expected-sha "$EXPECTED_SHA" --seconds "$QA_SECONDS" \
+            --next-stage "$NEXT_STAGE" "${CANDIDATE_ARGS[@]}" "${CLIENT_ARGS[@]}" "${APPROVAL_ARGS[@]}" "${UI_ARGS[@]}" "${DISPLAY_CAPTURE_ARGS[@]}" "${BUS_ARGS[@]}" "${INPUT_ARGS[@]}"
+
+      - name: Run two finite App lifetimes on the original portable state
+        if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa && inputs.qa_next_stage == 'persistence-pair-observation'
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          APP_BINARY: ${{ steps.candidate.outputs.binary }}
+          CANDIDATE_MANIFEST: ${{ steps.candidate.outputs.manifest }}
+          SOURCE_HEAD: ${{ steps.candidate.outputs.source_head }}
+          SOURCE_RUN_ID: ${{ inputs.qa_source_run_id }}
+          SOURCE_ARTIFACT_ID: ${{ inputs.qa_source_artifact_id }}
+          QA_SECONDS: ${{ inputs.blackbox_timeout_seconds }}
+          QA_IDENTITY_APPROVAL: ${{ inputs.qa_identity_approval }}
+          QA_UI_APPROVAL: ${{ inputs.qa_ui_approval }}
+          SLINT_WGPU_CPU: '1'
+        run: |
+          set -euo pipefail
+          [[ "$QA_SECONDS" == 300 && "$SOURCE_RUN_ID" == 37340470010 &&
+             "$SOURCE_ARTIFACT_ID" == 11359607955 && "$SOURCE_HEAD" == a6cf09ad935bbbc6cf792c4ac6a4b506a47aebd3 &&
+             -n "$QA_IDENTITY_APPROVAL" && -n "$QA_UI_APPROVAL" ]]
+          python3 -B - <<'PYAPPROVAL'
+          import os
+          from pathlib import Path
+          for variable, name in (('QA_IDENTITY_APPROVAL', 'persistence-identity.json'), ('QA_UI_APPROVAL', 'persistence-ui.json')):
+              data = os.environ[variable].encode('utf-8')
+              assert len(data) <= 16384
+              path = Path(os.environ['RUNNER_TEMP']) / name
+              with path.open('xb') as stream:
+                  os.fchmod(stream.fileno(), 0o600)
+                  stream.write(data)
+          PYAPPROVAL
+          # One dedicated display; pair launches two dedicated dbus-run-session parents serially.
+          xvfb-run -a -s '-screen 0 1920x1200x24 -nolisten tcp' \
+            timeout --signal=TERM --kill-after=10s 620s \
+            python3 -B scripts/persistence-pair.py \
+            --binary "$APP_BINARY" --candidate-manifest "$CANDIDATE_MANIFEST" \
+            --expected-sha "$EXPECTED_SHA" \
+            --identity-approval "$RUNNER_TEMP/persistence-identity.json" \
+            --ui-approval "$RUNNER_TEMP/persistence-ui.json" \
+            --input-dir "$PWD/scripts/qa-fixtures" \
+            --output "$RUNNER_TEMP/seecut-window-evidence"
+          # Existing private evidence sealing consumes only this bounded evidence tree.
+          # The separate random state root and executable are never uploaded.
+
+      - name: Seal private QA evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.linux_blackbox_qa
+        run: |
+          python3 scripts/seal-qa-evidence.py \
+            --source "$RUNNER_TEMP/seecut-window-evidence" \
+            --recipient "$PWD/scripts/qa-evidence-recipient.pem" \
+            --output "$RUNNER_TEMP/seecut-private-qa-evidence"
+
+      - name: Verify bounded window evidence
+        id: window_evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/${{ inputs.linux_blackbox_qa && 'seecut-private-qa-evidence' || 'seecut-window-evidence' }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import stat
+          from pathlib import Path
+          root = Path(os.environ['EVIDENCE_DIR'])
+          files = []
+          if root.exists():
+              assert root.is_dir() and not root.is_symlink(), 'Invalid evidence directory'
+              for path in root.rglob('*'):
+                  assert not path.is_symlink(), 'Evidence contains a symlink'
+                  mode = path.stat().st_mode
+                  if stat.S_ISDIR(mode):
+                      continue
+                  assert stat.S_ISREG(mode), 'Evidence contains a non-regular file'
+                  files.append(path)
+          size = sum(path.stat().st_size for path in files)
+          assert size <= 15 * 1024 * 1024, 'Window evidence exceeds 15 MiB'
+          print(f'Window evidence: {len(files)} files, {size} bytes')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'upload={str(bool(files)).lower()}\n')
+          PY
+
+      - name: Upload bounded window evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && steps.window_evidence.outputs.upload == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: seecut-linux-${{ inputs.linux_blackbox_qa && 'private-qa' || 'window' }}-${{ github.sha }}
+          path: ${{ runner.temp }}/${{ inputs.linux_blackbox_qa && 'seecut-private-qa-evidence' || 'seecut-window-evidence' }}
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The engine crates that carry no native library build for the web. This
   # job is what keeps that true: a std::thread or a blocking wait that
   # creeps into concat-core or concat-project fails here, not when someone
   # next tries the target. See src/README.md for the list.
   web:
+    if: (github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true) && (github.event_name != 'workflow_dispatch' || inputs.desktop_package_candidate != true)
     name: Engine on wasm32
     runs-on: ubuntu-latest
     steps:
@@ -139,3 +594,114 @@ jobs:
           --features concat-render/gpu --target wasm32-unknown-unknown
           -- -D warnings
         working-directory: src
+
+  macos_package_candidate:
+    name: Seecut macOS arm64 package candidate
+    if: github.event_name == 'workflow_dispatch' && inputs.desktop_package_candidate == true
+    runs-on: macos-15
+    permissions:
+      contents: read
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+      GGML_NATIVE: 'OFF'
+      SEECUT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      SEECUT_NATIVE_REQUESTED: ${{ (inputs.linux_window_diagnostic || inputs.linux_blackbox_qa || inputs.qa_source_run_id != '' || inputs.qa_source_artifact_id != '' || inputs.qa_source_head != '' || inputs.qa_ui_approval != '' || inputs.qa_identity_approval != '') && 'true' || 'false' }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify isolated source and arm64 runner before dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/macos-package-manifest.py \
+            --repository "$GITHUB_WORKSPACE" --expected-sha "$EXPECTED_SHA" --verify-source-only
+          printf 'CARGO_TARGET_DIR=%s\n' "$RUNNER_TEMP/seecut-macos-arm64-target" >> "$GITHUB_ENV"
+          printf 'SEECUT_PACKAGE_OUT=%s\n' "$RUNNER_TEMP/seecut-macos-arm64-candidate" >> "$GITHUB_ENV"
+          test ! -e "$RUNNER_TEMP/seecut-macos-arm64-candidate"
+          test ! -L "$RUNNER_TEMP/seecut-macos-arm64-candidate"
+          mkdir "$RUNNER_TEMP/seecut-macos-arm64-candidate"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Existing macOS build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install ffmpeg cmake dylibbundler
+          printf 'FFMPEG_DIR=%s\n' "$(brew --prefix ffmpeg)" >> "$GITHUB_ENV"
+          printf 'RUSTFLAGS=-C link-arg=%s\n' "$(xcrun clang --print-file-name=libclang_rt.osx.a)" >> "$GITHUB_ENV"
+      - name: Existing arm64 sherpa static dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 - <<'PYSHERPA'
+          import pathlib, re, tomllib
+          data = tomllib.loads(pathlib.Path('src/Cargo.lock').read_text())
+          versions = [p['version'] for p in data['package'] if p['name'] == 'sherpa-onnx-sys']
+          assert len(versions) == 1 and re.fullmatch(r'[0-9]+(?:\.[0-9]+){2}', versions[0])
+          print(versions[0])
+          PYSHERPA
+          )
+          stem="sherpa-onnx-v$version-osx-arm64-static-lib"
+          dependency_dir=$(mktemp -d "$RUNNER_TEMP/seecut-sherpa.XXXXXX")
+          url="https://github.com/k2-fsa/sherpa-onnx/releases/download/v$version/$stem.tar.bz2"
+          curl -fsSL --retry 5 --retry-all-errors --max-time 600 -o "$dependency_dir/sherpa.tar.bz2" "$url"
+          tar -xjf "$dependency_dir/sherpa.tar.bz2" -C "$dependency_dir"
+          test -d "$dependency_dir/$stem/lib"
+          printf 'SHERPA_ONNX_LIB_DIR=%s\n' "$dependency_dir/$stem/lib" >> "$GITHUB_ENV"
+          printf 'SEECUT_SHERPA_ARCHIVE=%s\n' "$dependency_dir/sherpa.tar.bz2" >> "$GITHUB_ENV"
+          printf 'SEECUT_SHERPA_URL=%s\n' "$url" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src
+          key: seecut-macos-arm64-package-app
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST GGML
+      - name: Build the shipping profile without launching App
+        shell: bash
+        working-directory: src
+        run: |
+          set -euo pipefail
+          cargo build --locked --profile app -p concat --target aarch64-apple-darwin 2>&1 | tee "$SEECUT_PACKAGE_OUT/build.log"
+      - name: Package then finalize fresh Seecut bundle and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          SEECUT_INSTALL=0 \
+          SEECUT_BIN="$CARGO_TARGET_DIR/aarch64-apple-darwin/app/concat" \
+          SEECUT_OUT="$SEECUT_PACKAGE_OUT" \
+          ./scripts/make-app.sh
+          python3 -B scripts/macos-package-manifest.py \
+            --repository "$GITHUB_WORKSPACE" --expected-sha "$EXPECTED_SHA" \
+            --output "$SEECUT_PACKAGE_OUT" \
+            --binary "$CARGO_TARGET_DIR/aarch64-apple-darwin/app/concat" \
+            --sherpa-archive "$SEECUT_SHERPA_ARCHIVE" --sherpa-url "$SEECUT_SHERPA_URL"
+      - name: Retain complete artifact-only candidate
+        id: candidate_artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: seecut-macos-arm64-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/seecut-macos-arm64-candidate/Seecut-macos.zip
+            ${{ runner.temp }}/seecut-macos-arm64-candidate/candidate-manifest.json
+            ${{ runner.temp }}/seecut-macos-arm64-candidate/SHA256SUMS
+            ${{ runner.temp }}/seecut-macos-arm64-candidate/build.log
+            ${{ runner.temp }}/seecut-macos-arm64-candidate/LICENSE
+            ${{ runner.temp }}/seecut-macos-arm64-candidate/LICENSE-EXCEPTIONS.md
+            ${{ runner.temp }}/seecut-macos-arm64-candidate/THIRD_PARTY_NOTICES.md
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Record immutable upload identity for consumer review
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.candidate_artifact.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.candidate_artifact.outputs.artifact-digest }}
+          ARTIFACT_URL: ${{ steps.candidate_artifact.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          printf 'Artifact ID: %s\nUpload digest: %s\nArtifact URL: %s\n' "$ARTIFACT_ID" "$ARTIFACT_DIGEST" "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"

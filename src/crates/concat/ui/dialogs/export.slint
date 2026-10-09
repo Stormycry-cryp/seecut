@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
+import { ScrollView } from "std-widgets.slint";
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
 import { Glyph, Icon } from "../icons.slint";
 import { Button, CopyChip, DialogRow, DialogSection, Field, Modal, Progress } from "../primitives/modal.slint";
 import { Select } from "../primitives/select.slint";
 import { Switch } from "../inspector/controls.slint";
+import { FocusRing } from "../primitives/focus-ring.slint";
+import { SeeCut } from "../seecut/state.slint";
 
 // The export dialog.
 //
@@ -102,6 +105,24 @@ component QualityCard inherits Rectangle {
     in property <bool> current;
 
     callback clicked();
+    property <bool> ring;
+
+    accessible-role: button;
+    accessible-label: root.label + " · " + root.note + " · ~" + root.size;
+    accessible-checkable: true;
+    accessible-checked: root.current;
+    accessible-action-default => { root.clicked(); }
+    focus := FocusScope {
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
 
     horizontal-stretch: 1;
     height: 72px;
@@ -112,7 +133,7 @@ component QualityCard inherits Rectangle {
         : Theme.line;
     background: root.current ? Theme.accent-soft : Theme.raised;
 
-    animate background, border-color { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background, border-color { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     VerticalLayout {
         padding: 10px;
@@ -146,8 +167,9 @@ component QualityCard inherits Rectangle {
 
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => { focus.focus(); root.clicked(); }
     }
+    FocusRing { active: root.ring; radius: Theme.r; }
 }
 
 export component ExportDialog inherits Modal {
@@ -170,137 +192,161 @@ export component ExportDialog inherits Modal {
     open: root.data.open;
     title: I18n.t("Export");
     glyph: Glyph.export;
-    surface-width: 470px;
+    surface-width: Math.min(470px, root.width - 32px);
+    surface-height: Math.min(export-options.preferred-height + export-footer.preferred-height + 43px, root.height - 32px);
     dismissable: !root.running;
+    trap-focus: true;
+    property <int> cancel-focus-request;
+    property <bool> restore-phase-focus;
+    changed running => { root.restore-phase-focus = true; }
+    Timer {
+        interval: 1ms;
+        running: root.restore-phase-focus;
+        triggered => {
+            root.restore-phase-focus = false;
+            root.focus-default();
+        }
+    }
+    focus-fallback => { if root.running { root.cancel-focus-request += 1; } }
 
     // The sheet's own header carries the fact it is acting on.
     note: root.data.format;
 
     VerticalLayout {
-        DialogSection {
-            first: true;
-            title: I18n.t("Summary");
+        vertical-stretch: 1;
+        ScrollView {
+            min-height: 0px;
+            vertical-stretch: 1;
+            viewport-width: self.visible-width;
+            viewport-height: export-options.preferred-height;
+            horizontal-scrollbar-policy: always-off;
+            export-options := VerticalLayout {
+                DialogSection {
+                    first: true;
+                    title: I18n.t("Summary");
 
-            Rectangle {
-                border-radius: Theme.r;
-                // The ground the 1px gaps show through.
-                background: Theme.line;
-                clip: true;
+                    Rectangle {
+                        border-radius: Theme.r;
+                        // The ground the 1px gaps show through.
+                        background: Theme.line;
+                        clip: true;
 
-                VerticalLayout {
-                    spacing: 1px;
+                        VerticalLayout {
+                            spacing: 1px;
 
-                    Fact { label: I18n.t("Format"); value: root.data.format + " · " + root.data.encoding; }
-                    Fact { label: I18n.t("Duration"); value: root.data.duration; }
-                    Fact { label: I18n.t("Contents"); value: root.data.contents; }
-                }
-            }
-        }
-
-        if !root.running: DialogSection {
-            title: I18n.t("Destination");
-
-            DialogRow {
-                Field {
-                    value: root.data.name;
-                    technical: true;
-                    edited(text) => { root.name-edited(text); }
-                }
-
-                Button {
-                    label: I18n.t("Browse");
-                    glyph: Glyph.import;
-                    clicked => { root.browse(); }
-                }
-            }
-
-            // The whole path under the field rather than in it, so the part
-            // you are editing is never the part that gets truncated away.
-            Text {
-                text: root.data.path;
-                color: Theme.fg-dim;
-                font-family: Theme.font-technical;
-                font-size: Theme.fs-sm;
-                overflow: elide;
-            }
-        }
-
-        if !root.running: DialogSection {
-            title: I18n.t("Output");
-
-            DialogRow {
-                label: I18n.t("Resolution");
-                Select {
-                    current: root.data.resolution;
-                    options: ["3840 × 2160", "2560 × 1440", "1920 × 1080", "1280 × 720"];
-                    details: ["4K", "QHD", "1080p", "720p"];
-                    changed(index) => { root.resolution-changed(index); }
-                }
-            }
-
-            DialogRow {
-                label: I18n.t("Frame rate");
-                Select {
-                    current: root.data.rate;
-                    options: ["24 fps", "30 fps", "60 fps"];
-                    changed(index) => { root.rate-changed(index); }
-                }
-            }
-
-            // The standard, not the encoder: which encoder makes it is the
-            // platform's business, and the Format line above says when
-            // the hardware one will.
-            DialogRow {
-                label: I18n.t("Codec");
-                Select {
-                    current: root.data.codec;
-                    options: ["H.264", "HEVC", "AV1"];
-                    details: [I18n.t("Plays everywhere"), I18n.t("Half the size"), I18n.t("Smallest")];
-                    changed(index) => { root.codec-changed(index); }
-                }
-            }
-
-            DialogRow {
-                label: I18n.t("10-bit colour");
-                HorizontalLayout {
-                    alignment: end;
-                    VerticalLayout {
-                        alignment: center;
-                        Switch {
-                            checked: root.data.ten-bit;
-                            toggled(on) => { root.ten-bit-changed(on); }
+                            Fact { label: I18n.t("Format"); value: root.data.format + " · " + root.data.encoding; }
+                            Fact { label: I18n.t("Duration"); value: root.data.duration; }
+                            Fact { label: I18n.t("Contents"); value: root.data.contents; }
                         }
                     }
                 }
-            }
-        }
 
-        if !root.running: DialogSection {
-            title: I18n.t("Quality");
+                if !root.running: DialogSection {
+                    title: I18n.t("Destination");
 
-            HorizontalLayout {
-                spacing: 6px;
+                    DialogRow {
+                        Field {
+                            value: root.data.name;
+                            technical: true;
+                            edited(text) => { root.name-edited(text); }
+                        }
 
-                QualityCard {
-                    label: I18n.t("High");
-                    note: I18n.t("Master");
-                    size: root.data.size-high;
-                    current: root.data.quality == 0;
-                    clicked => { root.quality-changed(0); }
+                        Button {
+                            label: I18n.t("Browse");
+                            glyph: Glyph.import;
+                            clicked => { root.browse(); }
+                        }
+                    }
+
+                    // The whole path under the field rather than in it, so the part
+                    // you are editing is never the part that gets truncated away.
+                    Text {
+                        text: root.data.path;
+                        color: Theme.fg-dim;
+                        font-family: Theme.font-technical;
+                        font-size: Theme.fs-sm;
+                        overflow: elide;
+                    }
                 }
-                QualityCard {
-                    label: I18n.t("Balanced");
-                    note: I18n.t("Recommended");
-                    size: root.data.size-balanced;
-                    current: root.data.quality == 1;
-                    clicked => { root.quality-changed(1); }
+
+                if !root.running: DialogSection {
+                    title: I18n.t("Output");
+
+                    DialogRow {
+                        label: I18n.t("Resolution");
+                        Select {
+                            current: root.data.resolution;
+                            options: ["3840 × 2160", "2560 × 1440", "1920 × 1080", "1280 × 720"];
+                            details: ["4K", "QHD", "1080p", "720p"];
+                            changed(index) => { root.resolution-changed(index); }
+                        }
+                    }
+
+                    DialogRow {
+                        label: I18n.t("Frame rate");
+                        Select {
+                            current: root.data.rate;
+                            options: ["24 fps", "30 fps", "60 fps"];
+                            changed(index) => { root.rate-changed(index); }
+                        }
+                    }
+
+                    // The standard, not the encoder: which encoder makes it is the
+                    // platform's business, and the Format line above says when
+                    // the hardware one will.
+                    DialogRow {
+                        label: I18n.t("Codec");
+                        Select {
+                            current: root.data.codec;
+                            options: ["H.264", "HEVC", "AV1"];
+                            details: [I18n.t("Plays everywhere"), I18n.t("Half the size"), I18n.t("Smallest")];
+                            changed(index) => { root.codec-changed(index); }
+                        }
+                    }
+
+                    DialogRow {
+                        label: I18n.t("10-bit colour");
+                        HorizontalLayout {
+                            alignment: end;
+                            VerticalLayout {
+                                alignment: center;
+                                Switch {
+                                    checked: root.data.ten-bit;
+                                    toggled(on) => { root.ten-bit-changed(on); }
+                                }
+                            }
+                        }
+                    }
                 }
-                QualityCard {
-                    label: I18n.t("Small");
-                    note: I18n.t("Share");
-                    size: root.data.size-small;
-                    current: root.data.quality == 2;
-                    clicked => { root.quality-changed(2); }
+
+                if !root.running: DialogSection {
+                    title: I18n.t("Quality");
+
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        QualityCard {
+                            label: I18n.t("High");
+                            note: I18n.t("Master");
+                            size: root.data.size-high;
+                            current: root.data.quality == 0;
+                            clicked => { root.quality-changed(0); }
+                        }
+                        QualityCard {
+                            label: I18n.t("Balanced");
+                            note: I18n.t("Recommended");
+                            size: root.data.size-balanced;
+                            current: root.data.quality == 1;
+                            clicked => { root.quality-changed(1); }
+                        }
+                        QualityCard {
+                            label: I18n.t("Small");
+                            note: I18n.t("Share");
+                            size: root.data.size-small;
+                            current: root.data.quality == 2;
+                            clicked => { root.quality-changed(2); }
+                        }
+                    }
                 }
             }
         }
@@ -311,7 +357,8 @@ export component ExportDialog inherits Modal {
             background: Theme.line;
         }
 
-        VerticalLayout {
+        export-footer := VerticalLayout {
+            vertical-stretch: 0;
             padding: 14px;
             spacing: 10px;
 
@@ -330,12 +377,17 @@ export component ExportDialog inherits Modal {
                         Icon { glyph: Glyph.close; size: 13px; tint: Theme.danger; }
                     }
 
-                    Text {
+                    ScrollView {
                         horizontal-stretch: 1;
-                        text: root.data.message;
-                        color: Theme.danger;
-                        font-size: Theme.fs-sm;
-                        wrap: word-wrap;
+                        height: Math.min(88px, failure-message.preferred-height);
+                        viewport-width: self.visible-width;
+                        horizontal-scrollbar-policy: always-off;
+                        failure-message := Text {
+                            text: root.data.message;
+                            color: Theme.danger;
+                            font-size: Theme.fs-sm;
+                            wrap: word-wrap;
+                        }
                     }
 
                     VerticalLayout {
@@ -379,6 +431,7 @@ export component ExportDialog inherits Modal {
                 alignment: start;
                 Button {
                     label: I18n.t("Cancel export");
+                    focus-request: root.cancel-focus-request;
                     glyph: Glyph.close;
                     ghost: true;
                     clicked => { root.cancel(); }

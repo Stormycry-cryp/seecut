@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme, FocusRing } from "../primitives/primitives.slint";
+
+export component AssistantLauncher inherits Rectangle {
+    in property <bool> expanded;
+    in property <bool> chrome: true;
+    in property <bool> enabled: true;
+    in property <bool> reduced-motion;
+    in property <int> expression;
+    callback activated();
+    public function take-focus() { keyboard.focus(); }
+    width: 52px;
+    height: 52px;
+    border-radius: 26px;
+    background: !root.chrome ? transparent : touch.pressed ? Theme.workbench-action-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent;
+    border-width: 0px;
+    drop-shadow-blur: root.chrome ? 16px : 0px;
+    drop-shadow-offset-y: root.chrome ? 4px : 0px;
+    drop-shadow-color: root.chrome ? Theme.image-control : transparent;
+    accessible-role: button;
+    accessible-label: (root.expanded ? "收起 Agent" : "打开 Agent") + (root.expression == 1 ? "，正在处理" : root.expression == 3 ? "，处理失败" : root.expression == 4 ? "，需要确认" : root.celebrating ? "，已完成" : "");
+    accessible-enabled: root.enabled;
+    accessible-checkable: true;
+    accessible-checked: root.expanded;
+    accessible-action-default => { if root.enabled { root.ring = false; keyboard.focus(); root.activated(); } }
+    forward-focus: keyboard;
+
+    property <bool> blinking;
+    property <bool> ring;
+    property <int> glance;
+    property <bool> celebrating;
+    property <bool> thinking-shift;
+    changed reduced-motion => {
+        if root.reduced-motion {
+            root.blinking = false;
+            root.celebrating = false;
+            root.thinking-shift = false;
+            celebration.stop();
+        }
+    }
+    changed expression => {
+        root.celebrating = root.expression == 2 && root.visible && root.enabled && !root.reduced-motion;
+        root.thinking-shift = false;
+        if root.celebrating { celebration.start(); celebration.restart(); }
+        else { celebration.stop(); }
+    }
+    celebration := Timer {
+        running: false; interval: 1500ms;
+        triggered => { self.stop(); root.celebrating = false; }
+    }
+    Timer {
+        running: root.expression == 1 && root.visible && root.enabled && !root.reduced-motion;
+        interval: 1100ms;
+        triggered => { root.thinking-shift = !root.thinking-shift; }
+    }
+    property <float> gaze-x: root.reduced-motion ? 0 : touch.has-hover
+        ? max(-2, min(2, (touch.mouse-x / 1px - 26) / 10))
+        : root.expression == 1 ? (root.thinking-shift ? 2 : -2)
+        : root.glance == 1 ? 1.5 : root.glance == 3 ? -1.5 : 0;
+    property <float> gaze-y: root.reduced-motion ? 0 : touch.has-hover
+        ? max(-1.5, min(1.5, (touch.mouse-y / 1px - 26) / 14)) : 0;
+    Timer {
+        running: !root.reduced-motion && root.visible && root.enabled && root.expression != 3 && root.expression != 4 && !root.celebrating;
+        interval: 3400ms;
+        triggered => { root.blinking = true; root.glance = Math.mod(root.glance + 1, 4); }
+    }
+    Timer {
+        running: root.blinking && root.visible && root.enabled && !root.reduced-motion;
+        interval: 130ms;
+        triggered => { root.blinking = false; }
+    }
+    for index in 2: Rectangle {
+        x: (14 + index * 16 + root.gaze-x) * 1px;
+        y: (26 + root.gaze-y) * 1px - self.height / 2;
+        width: 9px;
+        height: root.blinking && !root.reduced-motion ? 3px : root.expression == 1 ? (index == 0 ? 11px : 7px) : root.expression == 4 ? 20px : touch.has-hover ? 20px : 17px;
+        border-radius: 5px;
+        background: Theme.on-accent;
+        visible: !root.celebrating && root.expression != 3;
+        animate x, y { duration: root.reduced-motion ? 0ms : 220ms; easing: ease-in-out; }
+        animate height { duration: root.reduced-motion ? 0ms : 75ms; easing: ease-in-out; }
+    }
+    for index in 2: Path {
+        x: (14 + index * 16) * 1px; y: 22px;
+        width: 9px; height: 9px;
+        visible: root.celebrating || root.expression == 3;
+        commands: root.celebrating ? "M 0 7 Q 4.5 0 9 7" : "M 0 1 L 9 9 M 9 1 L 0 9";
+        stroke: Theme.on-accent; stroke-width: 2.5px;
+    }
+    if root.expression == 4: Rectangle {
+        x: 24.5px; y: 37px; width: 3px; height: 3px;
+        border-radius: 1.5px; background: Theme.on-accent;
+    }
+    keyboard := FocusScope {
+        enabled: root.enabled;
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                if !event.repeat { root.activated(); }
+                return accept;
+            }
+            return reject;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.ring = false; keyboard.focus(); root.activated(); }
+    }
+    FocusRing { active: root.ring; button: true; marker-color: root.chrome ? Theme.on-accent : Theme.focus-control; }
+}

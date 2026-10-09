@@ -1,0 +1,263 @@
+{
+  "schema": 1,
+  "reviewed_by": "main-reviewer",
+  "observed_head": "11ebf203e1a78d3b6a21677c4b17e96223c74b0e",
+  "observed_app_sha256": "8fe30fc73f4ab79435e79aa582edf4e2b3adeb26a5435315ea32b537c28abf30",
+  "stage": "workspaces-public-navigation-observation-v1",
+  "status": "prepared_not_executed",
+  "window": {
+    "width": 1280,
+    "height": 900
+  },
+  "quick_mode": [
+    558,
+    500
+  ],
+  "mode_guard": {
+    "region": [
+      420,
+      388,
+      520,
+      155
+    ],
+    "rgb_sha256": "2e513f04d1897fef7c6e6a0710c7afae9b7d6d592ddf1e316cb7e3fa89eb1b97",
+    "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-fresh-review/independent-qa-navigation/00-observe-only-1280x900.png",
+    "source_sha256": "a9787954fb94d609bd41ee35df86fb66b7f44741d5ebc413167caaef4231df4c"
+  },
+  "public_probe_sha256": "ef194ed6b55e545c922308f875aed184d76490530c8f2a88a27459ce3f1994bd",
+  "navigation": {
+    "generate": {
+      "path": [
+        0,
+        1
+      ],
+      "role": 43,
+      "label": "生成",
+      "showing": true,
+      "enabled": true,
+      "sensitive": true,
+      "focusable": true,
+      "button": true,
+      "radio": false,
+      "entry": false,
+      "editable": false,
+      "editable_text_interface": false,
+      "action_interface": false,
+      "modal": false,
+      "dialog": false,
+      "file_chooser": false,
+      "bounds": {
+        "x": 18,
+        "y": 90,
+        "width": 44,
+        "height": 44
+      },
+      "xy": [
+        40,
+        112
+      ]
+    },
+    "canvas": {
+      "path": [
+        0,
+        2
+      ],
+      "role": 43,
+      "label": "画布",
+      "showing": true,
+      "enabled": true,
+      "sensitive": true,
+      "focusable": true,
+      "button": true,
+      "radio": false,
+      "entry": false,
+      "editable": false,
+      "editable_text_interface": false,
+      "action_interface": false,
+      "modal": false,
+      "dialog": false,
+      "file_chooser": false,
+      "bounds": {
+        "x": 18,
+        "y": 148,
+        "width": 44,
+        "height": 44
+      },
+      "xy": [
+        40,
+        170
+      ]
+    },
+    "clip": {
+      "path": [
+        0,
+        3
+      ],
+      "role": 43,
+      "label": "剪辑",
+      "showing": true,
+      "enabled": true,
+      "sensitive": true,
+      "focusable": true,
+      "button": true,
+      "radio": false,
+      "entry": false,
+      "editable": false,
+      "editable_text_interface": false,
+      "action_interface": false,
+      "modal": false,
+      "dialog": false,
+      "file_chooser": false,
+      "bounds": {
+        "x": 18,
+        "y": 206,
+        "width": 44,
+        "height": 44
+      },
+      "xy": [
+        40,
+        228
+      ]
+    },
+    "assets": {
+      "path": [
+        0,
+        4
+      ],
+      "role": 43,
+      "label": "资产库",
+      "showing": true,
+      "enabled": true,
+      "sensitive": true,
+      "focusable": true,
+      "button": true,
+      "radio": false,
+      "entry": false,
+      "editable": false,
+      "editable_text_interface": false,
+      "action_interface": false,
+      "modal": false,
+      "dialog": false,
+      "file_chooser": false,
+      "bounds": {
+        "x": 18,
+        "y": 264,
+        "width": 44,
+        "height": 44
+      },
+      "xy": [
+        40,
+        286
+      ]
+    }
+  },
+  "public_navigation_source": {
+    "file": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-a3-settings-controls-review/main-qa-11ebf20-a3-settings-controls/06-after-close-public.json",
+    "sha256": "f65deff0866aa66e54394a25dec80bf26fa42bf262a3e922b4888cdf4dcf271c",
+    "use": "Public button semantics and actual bounds only; source was dark/professional. All metadata collected afresh; pixels below are actual light quick/gallery."
+  },
+  "guards": {
+    "quick-sidebar": {
+      "region": [
+        18,
+        90,
+        44,
+        218
+      ],
+      "rgb_sha256": "deff345e37cee6bb0f5f6cfda16b0e0d867980e3d228ce587828ccd54772e94d",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-a3-canvas-entry-review/main-qa-11ebf20-a3-canvas-entry/02-after-quick-1280x900.png",
+      "source_sha256": "991a40d24ae07415c4b8e0ec4dd8f9cf1da1014cf187e2885ba17232d114d649"
+    },
+    "nav-clip": {
+      "region": [
+        18,
+        206,
+        44,
+        44
+      ],
+      "rgb_sha256": "22e810783bba37b83441a1e9f6c796dc01042d462c5d42c29bc1e97ee7f488ef",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-a3-canvas-entry-review/main-qa-11ebf20-a3-canvas-entry/02-after-quick-1280x900.png",
+      "source_sha256": "991a40d24ae07415c4b8e0ec4dd8f9cf1da1014cf187e2885ba17232d114d649"
+    },
+    "nav-assets": {
+      "region": [
+        18,
+        264,
+        44,
+        44
+      ],
+      "rgb_sha256": "69017341c1aeacbed232296adaf18eb99483610d08fa2e3b33b426a84969e120",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-a3-canvas-entry-review/main-qa-11ebf20-a3-canvas-entry/02-after-quick-1280x900.png",
+      "source_sha256": "991a40d24ae07415c4b8e0ec4dd8f9cf1da1014cf187e2885ba17232d114d649"
+    },
+    "nav-generate": {
+      "region": [
+        18,
+        90,
+        44,
+        44
+      ],
+      "rgb_sha256": "c2023327de09beb6145452019a446793537154cfb10572a2928c90e014e8862b",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-a3-canvas-entry-review/main-qa-11ebf20-a3-canvas-entry/03-canvas-gallery-1280x900.png",
+      "source_sha256": "6e5b856147dd18980f9ac630d56a487fea5de19db06b20db2ef76b85fdd76dc2"
+    },
+    "returned-generation-sidebar": {
+      "region": [
+        18,
+        90,
+        44,
+        218
+      ],
+      "rgb_sha256": "deff345e37cee6bb0f5f6cfda16b0e0d867980e3d228ce587828ccd54772e94d",
+      "source_evidence": "/Users/chenyunzhe/.codex/private/seecut-qa/2026-10-05/11ebf20-a3-canvas-entry-review/main-qa-11ebf20-a3-canvas-entry/02-after-quick-1280x900.png",
+      "source_sha256": "991a40d24ae07415c4b8e0ec4dd8f9cf1da1014cf187e2885ba17232d114d649"
+    }
+  },
+  "layout_matrix": [
+    [
+      1280,
+      900
+    ],
+    [
+      1024,
+      900
+    ],
+    [
+      1440,
+      900
+    ],
+    [
+      1280,
+      720
+    ]
+  ],
+  "artifact_limits": {
+    "PNG_each": 2097152,
+    "PNG_total": 14680064,
+    "all": 15728640,
+    "PNG_count_max": 10,
+    "metadata_each": 131072,
+    "private_review_then_encrypted_transfer": true,
+    "Action_metadata_each": 8192
+  },
+  "runtime_limits": {
+    "script_seconds": 120,
+    "whole_App_including_cleanup_seconds": 300,
+    "global_deadline_reserve_seconds": 15,
+    "one_owned_fresh_portable_App": true,
+    "same_OS_user": true,
+    "private_Xvfb_and_accessibility_bus": true,
+    "launcher_owns_cleanup": true
+  },
+  "approved_actions": [
+    "Fresh frozen ordinary App initial mode RGB in memory only; one reviewed quick click",
+    "Fresh complete public navigation and live light full-sidebar RGB before clip navigation",
+    "Clip 1280/1024/1440x900 and1280x720 App-window captures; no page controls",
+    "Restore1280x900 then fresh complete public metadata and target RGB before assets navigation",
+    "Assets same4 finite layouts; no page controls",
+    "Restore1280x900 then fresh complete public metadata and unselected generation target RGB; return generation",
+    "Fresh complete metadata and returned generation sidebarRGB; save final App-window PNG"
+  ],
+  "product_verdict": "pending_main_actual_page_and_layout_image_review",
+  "evidence_boundary": "Three navigation clicks do not prove page identity. Main must inspect both actual page headings/selected sidebar/layout content at all4 sizes. Unknown navigation, modal, health, pixels or metadata stops without further input. Initial modal has no saved PNG; live RGB guard is recorded. No Settings screenshots."
+}

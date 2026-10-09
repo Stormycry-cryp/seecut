@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// The launcher occupies the final 76px of the window. Include an 8px gap.
+// Docked panes reserve space only when their trailing edge reaches that corner.
+export global LauncherSafeArea {
+    in-out property <length> window-width: 100000px;
+    in-out property <length> window-height: 100000px;
+    out property <length> inset: 84px;
+    public pure function trailing(right: length, bottom: length) -> length {
+        return right > window-width - inset && bottom > window-height - inset ? inset : 0px;
+    }
+}
