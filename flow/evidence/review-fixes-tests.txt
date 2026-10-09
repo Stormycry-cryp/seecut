@@ -1,0 +1,93 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (flow/core/target/debug/deps/seecut_flow_core-2dff8f6f13902f1d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (flow/core/target/debug/deps/seecut_flow_core-b3886a32d055d45c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/commands.rs (flow/core/target/debug/deps/commands-138e2c5ccda1b143)
+
+running 3 tests
+test invalid_edge_transaction_leaves_original_revision_untouched ... ok
+test command_idempotency_conflict_and_restart_receipt ... ok
+test stale_command_is_rejected_and_duplicates_have_new_ids ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/host.rs (flow/core/target/debug/deps/host-d7ca3e73c4065b1a)
+
+running 9 tests
+test library_unavailable_or_wrong_account_never_changes_graph ... ok
+test stale_library_return_cannot_leave_an_orphan_reference ... ok
+test library_selection_is_versioned_and_stale_callback_is_rejected ... ok
+test library_reference_is_one_atomic_edit_with_idempotent_replay ... ok
+test callback_replay_after_target_deletion_returns_original_receipt ... ok
+test no_op_move_does_not_invalidate_pending_asset_callback ... ok
+test asset_callback_shares_undo_history_and_discards_old_redo ... ok
+test generation_handoff_preserves_ordered_versions_without_submit ... ok
+test shared_model_is_serializable_but_never_run_by_simulator ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/integrity.rs (flow/core/target/debug/deps/integrity-1e839a0f2c4fc358)
+
+running 3 tests
+test historical_tasks_and_deliveries_survive_deleted_nodes_and_graphs ... ok
+test parseable_runtime_corruption_is_rejected_without_repair ... ok
+test accepted_and_unaccepted_cancellation_boundaries_survive_reopen ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
+
+     Running tests/reliability.rs (flow/core/target/debug/deps/reliability-bf7536835c1028de)
+
+running 25 tests
+test exclusive_writer_and_corrupt_file_are_not_overwritten ... ok
+test changed_account_cannot_recover_or_bypass_unknown ... ok
+test cancelled_before_submit_is_proven_terminal_without_a_task ... ok
+test failed_persistence_prevents_new_execution_and_poisons_session ... ok
+test invalid_geometry_cannot_corrupt_saved_document ... ok
+test malformed_connections_missing_required_and_cycles_block_execution ... ok
+test late_result_after_edit_is_historical_only ... ok
+test cancellation_keeps_late_result_and_blocks_downstream ... ok
+test cross_graph_identical_node_ids_do_not_share_results ... ok
+test ancestor_run_leaves_unrelated_branch_untouched ... ok
+test interrupted_run_is_marked_on_reopen ... ok
+test pre_submit_interruption_requires_reconcile_then_explicit_retry ... ok
+test lost_response_reopens_and_reconciles_without_second_debit ... ok
+test single_node_never_runs_ancestors ... ok
+test stale_graph_save_is_refused ... ok
+test stale_document_cannot_erase_new_graph ... ok
+test unknown_node_kept_read_only_and_future_envelope_refused ... ok
+test duplicate_click_and_move_reuse_but_input_edit_invalidates ... ok
+test rejected_attempt_is_retryable_without_debit ... ok
+test repeated_retry_click_reuses_success_without_extra_virtual_debit ... ok
+test old_choice_does_not_adopt_new_batch ... ok
+test save_as_preserves_graph_but_drops_all_execution_authority ... ok
+test interrupted_delivery_readback_is_idempotent ... ok
+test end_to_end_requires_each_choice_and_reopens_same_output ... ok
+test undo_retains_execution_facts_and_monotonic_revision ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.45s
+
+     Running tests/revisions.rs (flow/core/target/debug/deps/revisions-f81a911a844f864e)
+
+running 4 tests
+test connect_and_history_exhaustion_preserve_graph_and_stacks ... ok
+test document_and_graph_max_reopen_read_only_with_receipt_replay ... ok
+test candidate_selection_at_max_preserves_graph_and_runtime ... ok
+test protocol_undo_redo_exhaustion_keeps_history_and_saved_bytes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+   Doc-tests seecut_flow_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

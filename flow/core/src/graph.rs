@@ -246,7 +246,7 @@ impl Graph {
         let mut next = self.clone();
         next.edges.push(edge);
         next.validate(false)?;
-        next.revision += 1;
+        next.revision = crate::next_revision(next.revision)?;
         *self = next;
         Ok(())
     }
@@ -318,26 +318,27 @@ impl History {
         if next == *graph {
             return Ok(());
         }
-        next.revision = graph.revision + 1;
+        next.revision = crate::next_revision(graph.revision)?;
         self.undo.push(graph.clone());
         self.redo.clear();
         *graph = next;
         Ok(())
     }
-    pub fn undo(&mut self, graph: &mut Graph) -> bool {
+    pub fn undo(&mut self, graph: &mut Graph) -> Result<bool> {
         Self::swap(graph, &mut self.undo, &mut self.redo)
     }
-    pub fn redo(&mut self, graph: &mut Graph) -> bool {
+    pub fn redo(&mut self, graph: &mut Graph) -> Result<bool> {
         Self::swap(graph, &mut self.redo, &mut self.undo)
     }
-    fn swap(graph: &mut Graph, from: &mut Vec<Graph>, to: &mut Vec<Graph>) -> bool {
-        if let Some(mut next) = from.pop() {
-            next.revision = graph.revision + 1;
+    fn swap(graph: &mut Graph, from: &mut Vec<Graph>, to: &mut Vec<Graph>) -> Result<bool> {
+        if let Some(mut next) = from.last().cloned() {
+            next.revision = crate::next_revision(graph.revision)?;
+            from.pop();
             to.push(graph.clone());
             *graph = next;
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 }

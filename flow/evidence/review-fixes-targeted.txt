@@ -1,0 +1,21 @@
+   Compiling seecut-flow-core v0.1.0 (/Users/chenyunzhe/Documents/Codex/2026-10-09/task-2/Seecut-flow-p2/flow/core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.74s
+     Running tests/integrity.rs (flow/core/target/debug/deps/integrity-1e839a0f2c4fc358)
+
+running 3 tests
+test historical_tasks_and_deliveries_survive_deleted_nodes_and_graphs ... ok
+test parseable_runtime_corruption_is_rejected_without_repair ... ok
+test accepted_and_unaccepted_cancellation_boundaries_survive_reopen ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+     Running tests/revisions.rs (flow/core/target/debug/deps/revisions-f81a911a844f864e)
+
+running 4 tests
+test connect_and_history_exhaustion_preserve_graph_and_stacks ... ok
+test document_and_graph_max_reopen_read_only_with_receipt_replay ... ok
+test candidate_selection_at_max_preserves_graph_and_runtime ... ok
+test protocol_undo_redo_exhaustion_keeps_history_and_saved_bytes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+

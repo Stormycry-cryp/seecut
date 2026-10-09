@@ -283,7 +283,7 @@ fn undo_retains_execution_facts_and_monotonic_revision() {
         })
         .unwrap();
     let revision = graph.revision;
-    assert!(history.undo(graph));
+    assert!(history.undo(graph).unwrap());
     assert!(graph.revision > revision);
     r.store.save_document(doc).unwrap();
     assert!(r.current_output(&g, "image").is_ok());

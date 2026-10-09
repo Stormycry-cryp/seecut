@@ -91,7 +91,7 @@ impl Store {
                 return Err("stale graph revision".into());
             }
         }
-        document.revision += 1;
+        document.revision = crate::next_revision(document.revision)?;
         self.write("document.json", &document)?;
         self.document = document;
         Ok(())

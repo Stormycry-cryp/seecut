@@ -110,18 +110,61 @@ impl Runtime {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        let mut ids = std::collections::BTreeSet::new();
+        let mut attempts = BTreeMap::new();
+        let mut deliveries = BTreeMap::new();
         for a in &self.attempts {
-            if !ids.insert(&a.id)
+            a.node.ports()?;
+            a.node.validate_params()?;
+            if a.id.is_empty()
+                || attempts.insert(a.key.as_str(), a).is_some()
                 || a.id != a.key
+                || a.node_id.is_empty()
                 || a.node_id != a.node.id
+                || a.graph_id.is_empty()
+                || a.run_id.is_empty()
+                || a.scope.account.is_empty()
+                || a.scope.service.is_empty()
                 || a.fingerprint != fingerprint(&a.node, &a.inputs)
+                || a.virtual_quote != virtual_quote(&a.node)?
             {
                 return Err("corrupt attempt identity/input snapshot".into());
             }
-            if a.status == Status::Succeeded && a.output.is_none() {
-                return Err("successful attempt missing output".into());
+            let task = self.tasks.get(&a.key);
+            let invalid_state = match a.status {
+                Status::Intent | Status::Failed => task.is_some(),
+                Status::Unknown | Status::Succeeded => task.is_none(),
+                Status::CancelRequested | Status::Cancelled => false,
+            };
+            let output = if matches!(a.status, Status::Succeeded | Status::Cancelled) {
+                task.map(|t| &t.output)
+            } else {
+                None
+            };
+            if invalid_state || a.output.as_ref() != output {
+                return Err("corrupt attempt/task state or output".into());
             }
+            if a.status == Status::Succeeded && a.node.kind == "deliver" {
+                let Some(Output::Media(asset)) = output else {
+                    return Err("corrupt delivery output".into());
+                };
+                deliveries.insert(a.key.clone(), asset.clone());
+            }
+        }
+        let mut spent = 0_u64;
+        for (key, task) in &self.tasks {
+            let a = attempts.get(key.as_str()).ok_or("orphan simulated task")?;
+            if task.scope != a.scope
+                || task.fingerprint != a.fingerprint
+                || task.output != simulate(&a.node, &a.inputs, &a.id)?
+            {
+                return Err("corrupt simulated task identity/output".into());
+            }
+            spent = spent
+                .checked_add(a.virtual_quote)
+                .ok_or("virtual ledger overflow")?;
+        }
+        if self.virtual_spent != spent || self.deliveries != deliveries {
+            return Err("corrupt virtual ledger/delivery receipts".into());
         }
         Ok(())
     }
@@ -291,12 +334,7 @@ impl Runner {
         fault: Fault,
     ) -> Result<Output> {
         let node = graph.nodes.get(node_id).ok_or("node missing")?.clone();
-        if node.kind.ends_with("_generate")
-            && (node.params["model"].as_str() != Some("deterministic-v1")
-                || !(1..=3).contains(&node.params["count"].as_u64().unwrap_or(0)))
-        {
-            return Err("this simulator cannot execute SeeCut generation capabilities; connect the shared host first".into());
-        }
+        let quote = virtual_quote(&node)?;
         let inputs = self.inputs(graph, &node)?;
         let fp = fingerprint(&node, &inputs);
         // Block unresolved attempts even after editing parameters or switching account.
@@ -329,11 +367,6 @@ impl Runner {
             select(&node, &inputs)?;
         }
         let attempt_id = id();
-        let quote = if node.kind.ends_with("_generate") {
-            node.params["count"].as_u64().unwrap() * 10
-        } else {
-            0
-        };
         let attempt = Attempt {
             id: attempt_id.clone(),
             key: attempt_id.clone(),
@@ -382,7 +415,10 @@ impl Runner {
                 output: output.clone(),
             },
         );
-        runtime.virtual_spent += quote;
+        runtime.virtual_spent = runtime
+            .virtual_spent
+            .checked_add(quote)
+            .ok_or("virtual ledger overflow")?;
         attempt.status = Status::Unknown;
         attempt.message = "accepted by deterministic simulator; needs result readback".into();
         self.store.save_runtime(runtime)?;
@@ -489,7 +525,7 @@ impl Runner {
         let node = graph.nodes.get_mut(node_id).unwrap();
         node.params["batch"] = batch.clone().into();
         node.params["asset_id"] = asset_id.into();
-        graph.revision += 1;
+        graph.revision = crate::next_revision(graph.revision)?;
         self.store.save_document(doc)
     }
     fn update_attempt(
@@ -523,6 +559,16 @@ impl Runner {
 }
 fn fingerprint(node: &Node, inputs: &[Input]) -> String {
     digest(&(node.kind.as_str(), node.version, &node.params, inputs))
+}
+fn virtual_quote(node: &Node) -> Result<u64> {
+    if !node.kind.ends_with("_generate") {
+        return Ok(0);
+    }
+    let count = node.params["count"].as_u64().unwrap_or(0);
+    if node.params["model"].as_str() != Some("deterministic-v1") || !(1..=3).contains(&count) {
+        return Err("this simulator cannot execute SeeCut generation capabilities; connect the shared host first".into());
+    }
+    Ok(count * 10)
 }
 fn select(node: &Node, inputs: &[Input]) -> Result<Output> {
     let Some(Input {

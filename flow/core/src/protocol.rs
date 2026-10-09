@@ -110,7 +110,7 @@ impl Session {
                 let mut graph = history.last().ok_or("no edit history")?.clone();
                 let mut document = runner.store.document().clone();
                 let previous = document.graphs[&graph_id].clone();
-                graph.revision = previous.revision + 1;
+                graph.revision = crate::next_revision(previous.revision)?;
                 document.graphs.insert(graph_id.clone(), graph);
                 runner.store.save_document(document)?;
                 history.pop();

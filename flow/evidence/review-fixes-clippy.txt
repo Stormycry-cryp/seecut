@@ -1,0 +1,2 @@
+    Checking seecut-flow-core v0.1.0 (/Users/chenyunzhe/Documents/Codex/2026-10-09/task-2/Seecut-flow-p2/flow/core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.15s

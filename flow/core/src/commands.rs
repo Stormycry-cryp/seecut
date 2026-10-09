@@ -87,7 +87,7 @@ pub fn apply(store: &mut Store, request: Request) -> Result<Receipt> {
     let created = edit(graph, &request.command)?;
     graph.validate(false)?;
     if *graph != previous {
-        graph.revision += 1;
+        graph.revision = crate::next_revision(graph.revision)?;
     }
     let receipt = Receipt {
         operation: request.operation.clone(),
