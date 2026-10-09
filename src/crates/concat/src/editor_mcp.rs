@@ -90,7 +90,7 @@ impl AssistantPermissionError {
 /// Ephemeral credentials for the trusted host only. Deliberately not Debug or
 /// serializable; never publish either token to Slint, logs, or disk.
 pub struct AssistantSnapshot {
-    pub document: Option<crate::agent_controller::DocumentIdentity>,
+    pub document: Option<crate::agent_identity::DocumentIdentity>,
     pub project_name: String,
     pub read_token: Option<String>,
     pub write_token: Option<String>,
@@ -158,7 +158,7 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
     }
     let writable = scope.is_some() && canvas && read_ready && write_ready;
     AssistantSnapshot {
-        document: scope.map(|scope| crate::agent_controller::DocumentIdentity {
+        document: scope.map(|scope| crate::agent_identity::DocumentIdentity {
             instance_id: scope.instance.clone(),
             project_id: scope.project.clone(),
             document_session_id: scope.session.clone(),
@@ -737,7 +737,9 @@ impl BridgeUi {
         self.write_timer
             .start(slint::TimerMode::Repeated, Duration::from_secs(60), || {
                 Shell::with(|shell, app| {
-                    let studio = shell.studio.borrow();
+                    let Ok(studio) = shell.studio.try_borrow() else {
+                        return;
+                    };
                     if studio.settings.open {
                         studio.publish(&app, &shell.models);
                     }
@@ -787,6 +789,16 @@ impl BridgeUi {
             Ok(())
         })();
         self.write_message = result.err().unwrap_or_default();
+    }
+
+    pub(crate) fn revoke_assistant_for_account_change(&mut self) {
+        self.grants.remove(ASSISTANT_CLIENT_ID);
+        let owned = matches!(self.writes.lease_status(Instant::now()),
+            LeaseStatus::Active { client, .. } | LeaseStatus::Expired { client, .. }
+            if client == ASSISTANT_CLIENT_ID);
+        if owned {
+            self.revoke_move();
+        }
     }
 
     pub(crate) fn revoke_move(&mut self) {
@@ -1433,7 +1445,10 @@ fn dispatch_move(request: Request) -> Response {
             if !queued.claim() {
                 return;
             }
-            let mut studio = shell.studio.borrow_mut();
+            let Ok(mut studio) = shell.studio.try_borrow_mut() else {
+                queued.complete(Response::error("busy"));
+                return;
+            };
             let (response, changed) = execute_move(&request, &mut studio, &app);
             queued.complete(response);
             // Store both cache and request result before rendering can publish Settings.
@@ -1464,11 +1479,13 @@ fn dispatch(request: Request) -> Response {
     let reply = on_ui({
         let request = request.clone();
         move |shell, app| {
-            let studio = shell.studio.borrow();
-            studio
-                .editor_mcp
-                .borrow_mut()
-                .handle(&request, &studio, &app)
+            let Ok(studio) = shell.studio.try_borrow() else {
+                return UiReply::Response(Response::error("busy"));
+            };
+            let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+                return UiReply::Response(Response::error("busy"));
+            };
+            bridge.handle(&request, &studio, &app)
         }
     });
     let Ok(reply) = reply else {
@@ -1495,10 +1512,14 @@ fn dispatch(request: Request) -> Response {
                 let request = job.request.clone();
                 let ids = job.ids.clone();
                 move |shell, app| {
-                    let studio = shell.studio.borrow();
-                    let mut bridge = studio.editor_mcp.borrow_mut();
+                    let Ok(studio) = shell.studio.try_borrow() else {
+                        return Err(Response::error("busy"));
+                    };
+                    let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+                        return Err(Response::error("busy"));
+                    };
                     let current = bridge.active_ids(&studio, &app);
-                    current.is_some_and(|(kind, now)| {
+                    Ok(current.is_some_and(|(kind, now)| {
                         kind == "canvas"
                             && now.project == ids.project
                             && now.session == ids.session
@@ -1511,13 +1532,13 @@ fn dispatch(request: Request) -> Response {
                                 studio.mcp_context_epoch(),
                             )
                             && !studio.canvas.mcp_state().2
-                    })
+                    }))
                 }
             });
             match stable {
-                Ok(true) => {}
-                Ok(false) => return Response::error("stalePreview"),
-                Err(error) => return error,
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) => return Response::error("stalePreview"),
+                Ok(Err(error)) | Err(error) => return error,
             }
             Response::ok(json!({
                 "projectId": job.ids.project, "documentSessionId": job.ids.session,

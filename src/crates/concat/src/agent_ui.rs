@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Native assistant host wiring. No connection, grant or model request is automatic.
+//! Managed assistant entry plus an explicitly enabled local development runtime.
+//! The default desktop host uses the signed-in account and bundled components.
 
 use crate::ui::{App, Assistant};
 use slint::ComponentHandle;
@@ -9,18 +10,25 @@ use std::rc::Rc;
 pub(crate) use desktop::Binding;
 
 /// Bind once after Shell::install and keep the returned guard until app.run returns.
-pub(crate) fn bind(app: &App) -> Rc<Binding> {
+pub(crate) fn bind(app: &App, account: crate::cloud::AccountAccess) -> Rc<Binding> {
+    bind_geometry(app);
     #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
     {
-        desktop::bind(app)
+        desktop::bind(app, account)
     }
     #[cfg(not(all(unix, not(any(target_os = "ios", target_os = "android")))))]
     {
+        let _ = account;
         let ui = app.global::<Assistant>();
-        ui.set_enabled(false);
-        ui.set_open(false);
+        ui.set_enabled(true);
+        ui.set_developer_tools(false);
+        ui.set_settings_open(false);
+        ui.set_can_send(false);
+        ui.set_can_connect(false);
         ui.set_can_select_files(false);
-        ui.set_connection("此平台暂不支持本地助手".into());
+        ui.set_connection("Agent 服务暂未接入".into());
+        // The managed service is not connected yet. Do not bind the local-provider
+        // callbacks or create a controller, polling timer, process, or credential.
         ui.on_close_requested({
             let app = app.as_weak();
             move || {
@@ -40,8 +48,42 @@ pub(crate) struct Binding;
 
 #[cfg(not(all(unix, not(any(target_os = "ios", target_os = "android")))))]
 impl Binding {
-    /// No local process exists on unsupported platforms.
     pub(crate) fn shutdown(&self) {}
+}
+
+fn bind_geometry(app: &App) {
+    use crate::host::Shell;
+    let ui = app.global::<Assistant>();
+    Shell::with(|shell, _| {
+        let studio = shell.studio.borrow();
+        if let Some(geometry) = studio
+            .prefs
+            .assistant_geometry
+            .as_ref()
+            .filter(|g| g.valid())
+        {
+            ui.set_float_x(geometry.x);
+            ui.set_float_y(geometry.y);
+            ui.set_float_width(geometry.width);
+            ui.set_float_height(geometry.height);
+            ui.set_geometry_set(true);
+        }
+    });
+    ui.on_geometry_changed(|x, y, width, height| {
+        let geometry = crate::prefs::AssistantGeometry {
+            x,
+            y,
+            width,
+            height,
+        };
+        if geometry.valid() {
+            Shell::with(|shell, _| {
+                let mut studio = shell.studio.borrow_mut();
+                studio.prefs.assistant_geometry = Some(geometry.clone());
+                studio.prefs.save(&studio.host.dirs);
+            });
+        }
+    });
 }
 
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
@@ -84,6 +126,7 @@ mod desktop {
             }
         }
     }
+    #[cfg(feature = "assistant-local-dev")]
     #[derive(Clone, Copy)]
     enum FileKind {
         Runtime,
@@ -91,6 +134,7 @@ mod desktop {
         McpClient,
     }
     enum WorkerResult {
+        #[cfg(feature = "assistant-local-dev")]
         File {
             epoch: u64,
             kind: FileKind,
@@ -98,20 +142,11 @@ mod desktop {
         },
         Prepared {
             epoch: u64,
+            account_epoch: Option<u64>,
             config: Result<Box<ConnectionConfig>, &'static str>,
         },
     }
 
-    // The bounded channel holds at most four results. Drop stale configurations
-    // (including their keys) even after close invalidated their epoch/flags.
-    fn discard_closed_worker_results<T>(receiver: &Receiver<T>) {
-        for _ in 0..4 {
-            let Ok(result) = receiver.try_recv() else {
-                break;
-            };
-            drop(result);
-        }
-    }
     #[derive(Clone, PartialEq)]
     struct FrozenApproval {
         id: String,
@@ -129,6 +164,9 @@ mod desktop {
         selecting: bool,
         preparing: bool,
         epoch: u64,
+        account_epoch: Option<u64>,
+        runtime_account_epoch: Option<u64>,
+        billing_revision: u64,
         notice: String,
         provider_label: String,
         assistant_row: Option<usize>,
@@ -137,6 +175,8 @@ mod desktop {
     /// Owns the controller, stable transcript model and nonblocking UI timer.
     pub(crate) struct Binding {
         timer: Timer,
+        account: crate::cloud::AccountAccess,
+        components: Option<PathBuf>,
         state: RefCell<State>,
         messages: Rc<VecModel<AssistantMessage>>,
         sender: SyncSender<WorkerResult>,
@@ -157,24 +197,40 @@ mod desktop {
         fn snapshot(app: &App) -> Option<AssistantSnapshot> {
             let mut result = None;
             Shell::with(|shell, _| {
-                let studio = shell.studio.borrow();
+                // Native file dialogs may run a nested event loop while their
+                // caller holds Studio. Retry on the next tick in that case.
+                let Ok(studio) = shell.studio.try_borrow() else {
+                    return;
+                };
+                let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+                    return;
+                };
                 // Bridge and studio borrows end before any setter or callback runs.
-                result = Some(
-                    studio
-                        .editor_mcp
-                        .borrow_mut()
-                        .assistant_snapshot(&studio, app),
-                );
+                result = Some(bridge.assistant_snapshot(&studio, app));
             });
             result
         }
         fn refresh(&self, app: &App) {
-            if !app.global::<Assistant>().get_open() {
-                discard_closed_worker_results(&self.receiver);
-                // close already disconnected. Reap responses/process exit
-                // without reading Studio, publishing UI, or clearing unknown.
-                self.state.borrow_mut().controller.tick(None);
-                return;
+            let account_epoch = self.account.epoch();
+            {
+                let mut state = self.state.borrow_mut();
+                if state.account_epoch != account_epoch {
+                    state.account_epoch = account_epoch;
+                    state.runtime_account_epoch = None;
+                    state.epoch = state.epoch.wrapping_add(1);
+                    state.preparing = false;
+                    state.selecting = false;
+                    state.approval = None;
+                    state.assistant_row = None;
+                    state.controller.disconnect();
+                    state.notice = "账户已变化，请重新连接".into();
+                    while self.messages.row_count() != 0 {
+                        self.messages.remove(0);
+                    }
+                    let ui = app.global::<Assistant>();
+                    ui.set_draft("".into());
+                    ui.set_secret_clear_token(ui.get_secret_clear_token().wrapping_add(1));
+                }
             }
             let Some(snapshot) = Self::snapshot(app) else {
                 return;
@@ -192,6 +248,7 @@ mod desktop {
                 };
                 let mut state = self.state.borrow_mut();
                 match result {
+                    #[cfg(feature = "assistant-local-dev")]
                     WorkerResult::File { epoch, kind, path } if state.epoch == epoch => {
                         state.selecting = false;
                         if let Some(path) = path {
@@ -211,19 +268,23 @@ mod desktop {
                             }
                         }
                     }
-                    WorkerResult::Prepared { epoch, config } if state.epoch == epoch => {
+                    WorkerResult::Prepared {
+                        epoch,
+                        account_epoch,
+                        config,
+                    } if state.epoch == epoch && state.account_epoch == account_epoch => {
                         state.preparing = false;
                         match config {
                             Ok(config)
-                                if app.global::<Assistant>().get_open()
-                                    && snapshot.document.as_ref() == Some(&config.document)
+                                if snapshot.document.as_ref() == Some(&config.document)
                                     && snapshot.read_token.as_deref()
                                         == Some(config.read_token.as_str())
                                     && snapshot.write_token == config.write_token =>
                             {
                                 state.notice.clear();
-                                if let Err(error) = state.controller.connect(*config) {
-                                    state.notice = error.message().into();
+                                match state.controller.connect(*config) {
+                                    Ok(()) => state.runtime_account_epoch = account_epoch,
+                                    Err(error) => state.notice = error.message().into(),
                                 }
                             }
                             Err(message) => state.notice = message.into(),
@@ -233,7 +294,56 @@ mod desktop {
                     _ => {}
                 }
             }
+            let (expired, billing_changed) = {
+                let mut state = self.state.borrow_mut();
+                let view = state.controller.view();
+                let owns_account = state.runtime_account_epoch.is_some()
+                    && state.runtime_account_epoch == account_epoch;
+                let expired = view.account_expired && owns_account;
+                let revision = view.billing_revision;
+                let changed = owns_account && state.billing_revision != revision;
+                state.billing_revision = revision;
+                (expired, changed)
+            };
+            if expired && let Some(epoch) = account_epoch {
+                self.account.expire_if_current(app, epoch);
+                return;
+            }
+            if billing_changed && self.account.signed_in() {
+                self.account.refresh_wallet(app);
+            }
             self.publish(app, &snapshot);
+        }
+        fn schedule(self: &Rc<Self>, app: &App) {
+            let phase = self.state.borrow().controller.view().phase;
+            let hot = self.state.borrow().preparing
+                || matches!(
+                    phase,
+                    Phase::Initializing
+                        | Phase::OpeningSession
+                        | Phase::Running
+                        | Phase::AwaitingApproval
+                        | Phase::Stopping
+                        | Phase::Closing
+                );
+            let delay = if hot {
+                40
+            } else if app.global::<Assistant>().get_open() {
+                120
+            } else {
+                1000
+            };
+            self.timer
+                .start(TimerMode::SingleShot, Duration::from_millis(delay), {
+                    let binding = Rc::downgrade(self);
+                    let app = app.as_weak();
+                    move || {
+                        if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                            binding.refresh(&app);
+                            binding.schedule(&app);
+                        }
+                    }
+                });
         }
         fn sync_lease(&self, snapshot: &AssistantSnapshot) -> bool {
             let next = Lease::from_snapshot(snapshot);
@@ -281,7 +391,7 @@ mod desktop {
                         | Phase::Stopping
                         | Phase::Closing
                 )
-                || (phase == Phase::Ready && !view.can_send);
+                || (phase == Phase::Ready && !view.can_send && view.error.is_none());
             let outcome = outcome_label(view.outcome);
             let status = if unknown {
                 "操作结果待核实"
@@ -296,7 +406,7 @@ mod desktop {
                     Phase::Running => "正在处理",
                     Phase::AwaitingApproval => "等待你确认移动操作",
                     Phase::Stopping => "正在停止，等待结果",
-                    Phase::Ready if busy => "已提交，等待助手回应",
+                    Phase::Ready if busy => "已提交，等待 Agent 回应",
                     Phase::Ready => "可以发送问题",
                     _ => "",
                 }
@@ -307,20 +417,33 @@ mod desktop {
             ui.set_connection(
                 match phase {
                     Phase::Disconnected => "尚未连接",
-                    Phase::Initializing | Phase::OpeningSession => "正在初始化助手",
-                    Phase::Closing => "正在断开助手",
-                    Phase::Failed => "连接失败，请检查配置后显式重连",
-                    Phase::OutcomeUnknown => "助手已暂停",
-                    _ => "助手已连接",
+                    Phase::Initializing | Phase::OpeningSession => "正在初始化 Agent",
+                    Phase::Closing => "正在断开 Agent",
+                    Phase::Failed => "连接失败，请稍后重试",
+                    Phase::OutcomeUnknown => "Agent 已暂停",
+                    _ => "Agent 已连接",
                 }
                 .into(),
             );
             ui.set_status(status.into());
             ui.set_details("".into());
             ui.set_busy(busy);
+            ui.set_expression(if unknown || phase == Phase::AwaitingApproval {
+                4
+            } else if busy {
+                1
+            } else if phase == Phase::Failed || view.outcome == Some(TaskOutcome::Failed) {
+                3
+            } else if view.outcome == Some(TaskOutcome::Completed) {
+                2
+            } else {
+                0
+            });
             ui.set_unknown(unknown);
             ui.set_can_send(view.can_send && !state.preparing && snapshot.read_token.is_some());
             ui.set_can_stop(view.can_stop);
+            ui.set_can_reconcile(view.can_reconcile);
+            ui.set_budget_label(view.budget_label.into());
             let connected = matches!(
                 phase,
                 Phase::Ready | Phase::Running | Phase::AwaitingApproval | Phase::Stopping
@@ -335,19 +458,25 @@ mod desktop {
             );
             ui.set_can_disconnect(connected && !busy);
             ui.set_connect_label(if state.preparing || matches!(phase, Phase::Initializing | Phase::OpeningSession) { "正在连接…" } else if phase == Phase::Closing { "正在断开…" } else if connected { "断开" } else { "连接" }.into());
-            let reason = if unknown {
+            let reason = if unknown && !view.can_connect {
                 "操作结果待核实，连接已锁定"
+            } else if !cfg!(feature = "assistant-local-dev") && !self.account.signed_in() {
+                "请先登录账户"
+            } else if !cfg!(feature = "assistant-local-dev")
+                && !self.components.as_ref().is_some_and(|path| path.is_file())
+            {
+                "此应用尚未包含 Agent 运行组件"
             } else if snapshot.document.is_none() {
                 "请先打开工程"
             } else if snapshot.read_token.is_none() {
                 "请先允许读取与预览"
             } else if state.selecting {
                 "请先完成文件选择"
-            } else if state.runtime.is_none() {
+            } else if cfg!(feature = "assistant-local-dev") && state.runtime.is_none() {
                 "请选择运行环境文件"
-            } else if state.entrypoint.is_none() {
-                "请选择助手入口文件"
-            } else if state.mcp_client.is_none() {
+            } else if cfg!(feature = "assistant-local-dev") && state.entrypoint.is_none() {
+                "请选择 Agent 入口文件"
+            } else if cfg!(feature = "assistant-local-dev") && state.mcp_client.is_none() {
                 "请选择 MCP 客户端文件"
             } else if busy {
                 "请求正在处理，请稍后操作"
@@ -362,9 +491,9 @@ mod desktop {
                 } else if busy {
                     "请求正在处理，可等待或停止"
                 } else if snapshot.read_token.is_none() {
-                    "请先允许读取与预览并连接助手"
+                    "请先允许读取与预览并连接 Agent"
                 } else if !view.can_send {
-                    "请先连接助手"
+                    "请先连接 Agent"
                 } else {
                     ""
                 }
@@ -374,15 +503,33 @@ mod desktop {
             ui.set_write_granted(snapshot.write_token.is_some());
             ui.set_read_permission_status(snapshot.read_status.as_str().into());
             ui.set_write_permission_status(snapshot.write_status.as_str().into());
-            ui.set_can_grant_read(snapshot.can_grant_read && !busy);
+            ui.set_can_grant_read(
+                snapshot.can_grant_read
+                    && !busy
+                    && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
+            );
             ui.set_can_revoke_read(snapshot.can_revoke_read);
-            ui.set_can_grant_write(snapshot.can_grant_write && !busy);
-            ui.set_can_renew_write(snapshot.can_renew_write && !busy);
+            ui.set_can_grant_write(
+                snapshot.can_grant_write
+                    && !busy
+                    && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
+            );
+            ui.set_can_renew_write(
+                snapshot.can_renew_write
+                    && !busy
+                    && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
+            );
             ui.set_can_revoke_write(snapshot.can_revoke_write);
             ui.set_runtime_filename(filename(state.runtime.as_deref()).into());
             ui.set_entrypoint_filename(filename(state.entrypoint.as_deref()).into());
             ui.set_mcp_client_filename(filename(state.mcp_client.as_deref()).into());
-            ui.set_can_select_files(view.can_connect && !busy && !state.selecting && !unknown);
+            ui.set_can_select_files(
+                cfg!(feature = "assistant-local-dev")
+                    && view.can_connect
+                    && !busy
+                    && !state.selecting
+                    && !unknown,
+            );
             let approval = view.approval;
             let description = approval
                 .map(|a| match (&a.object_id, a.delta_x, a.delta_y) {
@@ -455,6 +602,9 @@ mod desktop {
                             visible = visible.replace(token, "[已隐藏]");
                         }
                     }
+                    if let Some(account) = self.account.snapshot() {
+                        visible = visible.replace(&account.token, "[已隐藏]");
+                    }
                     self.messages.push(AssistantMessage {
                         role: "你".into(),
                         text: visible.into(),
@@ -462,7 +612,7 @@ mod desktop {
                         progress: "".into(),
                     });
                     self.messages.push(AssistantMessage {
-                        role: "助手".into(),
+                        role: "Agent".into(),
                         text: "".into(),
                         state: "".into(),
                         progress: "".into(),
@@ -483,20 +633,10 @@ mod desktop {
             self.refresh(app);
         }
         fn close(&self, app: &App) {
-            {
-                let mut state = self.state.borrow_mut();
-                state.epoch = state.epoch.wrapping_add(1);
-                state.selecting = false;
-                state.preparing = false;
-                state.approval = None;
-                state.controller.disconnect();
-            }
             let ui = app.global::<Assistant>();
             ui.set_open(false);
             ui.set_secret_clear_token(ui.get_secret_clear_token().wrapping_add(1));
-            // App may call close while Studio::publish still holds its borrow.
-            // Subsequent closed ticks only discard stale worker results and
-            // pump shutdown; closing itself never borrows Studio.
+            // The conversation, draft, active request and pending approval survive hiding.
         }
         fn disconnect(&self, app: &App) {
             {
@@ -571,6 +711,7 @@ mod desktop {
             drop(state);
             self.refresh(app);
         }
+        #[cfg(feature = "assistant-local-dev")]
         fn choose(&self, app: &App, kind: FileKind) {
             self.refresh(app);
             if !app.global::<Assistant>().get_open()
@@ -588,7 +729,7 @@ mod desktop {
             spawn_detached(move || {
                 let title = match kind {
                     FileKind::Runtime => "选择 Node 运行环境文件",
-                    FileKind::Entrypoint => "选择助手入口文件",
+                    FileKind::Entrypoint => "选择 Agent 入口文件",
                     FileKind::McpClient => "选择 MCP 客户端文件",
                 };
                 // The shared async wrapper skips its callback on desktop cancel.
@@ -603,6 +744,89 @@ mod desktop {
             });
             self.refresh(app);
         }
+        fn reconcile(&self, app: &App) {
+            self.refresh(app);
+            if app.global::<Assistant>().get_open() {
+                let mut state = self.state.borrow_mut();
+                state.notice = state
+                    .controller
+                    .reconcile()
+                    .err()
+                    .map(|e| e.message())
+                    .unwrap_or_default()
+                    .into();
+                drop(state);
+                self.refresh(app);
+            }
+        }
+        fn connect_managed(&self, app: &App) {
+            self.refresh(app);
+            let ui = app.global::<Assistant>();
+            if !ui.get_open() || !ui.get_can_connect() {
+                return;
+            }
+            let Some(account) = self.account.snapshot() else {
+                return;
+            };
+            let Some(snapshot) = Self::snapshot(app) else {
+                return;
+            };
+            let (Some(document), Some(read_token), Some(manifest)) = (
+                snapshot.document,
+                snapshot.read_token,
+                self.components.clone(),
+            ) else {
+                return;
+            };
+            let mut data = None;
+            Shell::with(|shell, _| data = Some(shell.studio.borrow().host.dirs.data.clone()));
+            let Some(data) = data else {
+                return;
+            };
+            let epoch = {
+                let mut state = self.state.borrow_mut();
+                state.epoch = state.epoch.wrapping_add(1);
+                state.preparing = true;
+                state.notice.clear();
+                state.provider_label = "账户服务".into();
+                state.epoch
+            };
+            let sender = self.sender.clone();
+            let environment = app_environment();
+            spawn_detached(move || {
+                let config = (|| {
+                    let files = crate::agent_components::load(&manifest)?;
+                    let environment = environment?;
+                    let mcp_environment = environment
+                        .iter()
+                        .filter(|(name, _)| matches!(name.as_str(), "TMPDIR" | "XDG_RUNTIME_DIR"))
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect();
+                    Ok(ConnectionConfig {
+                        launch: LaunchSpec {
+                            executable: files.runtime,
+                            entrypoint: files.entrypoint,
+                            environment,
+                        },
+                        document,
+                        client_id: ASSISTANT_CLIENT_ID.into(),
+                        mcp_client_path: files.mcp_client,
+                        mcp_environment,
+                        session_directory: session_directory(&data)?,
+                        provider: json!({"protocol":"seecut-managed","baseURL":account.base,"sessionToken":account.token}),
+                        read_token,
+                        write_token: snapshot.write_token,
+                    })
+                })();
+                let _ = sender.send(WorkerResult::Prepared {
+                    epoch,
+                    account_epoch: Some(account.epoch),
+                    config: config.map(Box::new),
+                });
+            });
+            self.refresh(app);
+        }
+        #[cfg(feature = "assistant-local-dev")]
         fn connect(&self, app: &App, base: &str, model: &str, key: &str, images: bool) {
             self.refresh(app);
             let ui = app.global::<Assistant>();
@@ -658,6 +882,7 @@ mod desktop {
             let environment = app_environment();
             let provider = json!({"protocol":"openai-chat","baseURL":base,"model":model.trim(),"apiKey":key,"images":images});
             let sender = self.sender.clone();
+            let account_epoch = self.account.epoch();
             spawn_detached(move || {
                 let config = (|| {
                     ordinary_file(&runtime)?;
@@ -688,6 +913,7 @@ mod desktop {
                 })();
                 let _ = sender.send(WorkerResult::Prepared {
                     epoch,
+                    account_epoch,
                     config: config.map(Box::new),
                 });
             });
@@ -695,10 +921,12 @@ mod desktop {
         }
     }
 
-    pub(super) fn bind(app: &App) -> Rc<Binding> {
+    pub(super) fn bind(app: &App, account: crate::cloud::AccountAccess) -> Rc<Binding> {
         let (sender, receiver) = sync_channel(4);
         let binding = Rc::new(Binding {
             timer: Timer::default(),
+            account: account.clone(),
+            components: crate::agent_components::manifest_path(),
             state: RefCell::new(State {
                 controller: Controller::default(),
                 lease: None,
@@ -708,6 +936,9 @@ mod desktop {
                 selecting: false,
                 preparing: false,
                 epoch: 0,
+                account_epoch: account.epoch(),
+                runtime_account_epoch: None,
+                billing_revision: 0,
                 notice: String::new(),
                 provider_label: String::new(),
                 assistant_row: None,
@@ -719,6 +950,7 @@ mod desktop {
         });
         let ui = app.global::<Assistant>();
         ui.set_enabled(true);
+        ui.set_developer_tools(cfg!(feature = "assistant-local-dev"));
         ui.set_messages(ModelRc::from(binding.messages.clone()));
         macro_rules! callback {
             ($name:ident, $method:ident $(, $argument:expr)*) => {
@@ -731,6 +963,8 @@ mod desktop {
         }
         callback!(on_close_requested, close);
         callback!(on_disconnect, disconnect);
+        callback!(on_connect_managed, connect_managed);
+        callback!(on_reconcile, reconcile);
         callback!(on_grant_read, permission, AssistantPermission::GrantRead);
         callback!(on_revoke_read, permission, AssistantPermission::RevokeRead);
         callback!(on_grant_write, permission, AssistantPermission::GrantWrite);
@@ -742,8 +976,11 @@ mod desktop {
         );
         callback!(on_allow, approve, true);
         callback!(on_reject, approve, false);
+        #[cfg(feature = "assistant-local-dev")]
         callback!(on_choose_runtime, choose, FileKind::Runtime);
+        #[cfg(feature = "assistant-local-dev")]
         callback!(on_choose_entrypoint, choose, FileKind::Entrypoint);
+        #[cfg(feature = "assistant-local-dev")]
         callback!(on_choose_mcp_client, choose, FileKind::McpClient);
         ui.on_send({
             let binding = Rc::downgrade(&binding);
@@ -754,6 +991,7 @@ mod desktop {
                 }
             }
         });
+        #[cfg(feature = "assistant-local-dev")]
         ui.on_connect({
             let binding = Rc::downgrade(&binding);
             let app = app.as_weak();
@@ -781,17 +1019,7 @@ mod desktop {
             }
         });
         binding.refresh(app);
-        binding
-            .timer
-            .start(TimerMode::Repeated, Duration::from_millis(40), {
-                let binding = Rc::downgrade(&binding);
-                let app = app.as_weak();
-                move || {
-                    if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
-                        binding.refresh(&app);
-                    }
-                }
-            });
+        binding.schedule(app);
         binding
     }
 
@@ -847,7 +1075,7 @@ mod desktop {
             match phase {
                 Phase::Running => "正在处理…",
                 Phase::Stopping => "正在停止，等待结果",
-                Phase::Ready => "等待助手回应…",
+                Phase::Ready => "等待 Agent 回应…",
                 _ => progress,
             }
         } else {
@@ -871,6 +1099,7 @@ mod desktop {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default()
     }
+    #[cfg(any(test, feature = "assistant-local-dev"))]
     fn provider_url(raw: &str) -> Result<String, &'static str> {
         let raw = raw.trim();
         let url = url::Url::parse(raw).map_err(|_| "服务地址格式无效")?;
@@ -890,6 +1119,7 @@ mod desktop {
         }
         Ok(url.into())
     }
+    #[cfg(any(test, feature = "assistant-local-dev"))]
     fn ordinary_file(path: &Path) -> Result<(), &'static str> {
         if !path.is_absolute() {
             return Err("请选择绝对路径的普通文件");
@@ -960,17 +1190,17 @@ mod desktop {
                 std::fs::DirBuilder::new()
                     .mode(0o700)
                     .create(&directory)
-                    .map_err(|_| "无法创建助手会话目录")?;
+                    .map_err(|_| "无法创建 Agent 会话目录")?;
             }
-            Err(_) => return Err("助手会话目录不可用"),
+            Err(_) => return Err("Agent 会话目录不可用"),
         }
-        let metadata = std::fs::symlink_metadata(&directory).map_err(|_| "助手会话目录不可用")?;
+        let metadata = std::fs::symlink_metadata(&directory).map_err(|_| "Agent 会话目录不可用")?;
         if metadata.file_type().is_symlink()
             || !metadata.is_dir()
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.permissions().mode() & 0o777 != 0o700
         {
-            return Err("助手会话目录必须由当前用户拥有、权限为 0700，且不能是软链接");
+            return Err("Agent 会话目录必须由当前用户拥有、权限为 0700，且不能是软链接");
         }
         Ok(directory)
     }
@@ -980,50 +1210,6 @@ mod desktop {
         use super::*;
         use std::os::unix::fs::symlink;
         use std::sync::atomic::{AtomicU64, Ordering};
-
-        #[test]
-        fn closed_ticks_discard_queued_and_late_credential_results() {
-            use std::cell::Cell;
-            struct CredentialResult {
-                secret: String,
-                dropped: Rc<Cell<usize>>,
-            }
-            impl Drop for CredentialResult {
-                fn drop(&mut self) {
-                    assert!(!self.secret.is_empty());
-                    self.dropped.set(self.dropped.get() + 1);
-                }
-            }
-            let dropped = Rc::new(Cell::new(0));
-            let (sender, receiver) = sync_channel(4);
-            for _ in 0..4 {
-                assert!(
-                    sender
-                        .send(CredentialResult {
-                            secret: "fixture-key".into(),
-                            dropped: dropped.clone(),
-                        })
-                        .is_ok()
-                );
-            }
-            discard_closed_worker_results(&receiver);
-            assert_eq!(dropped.get(), 4);
-            assert!(receiver.try_recv().is_err());
-            // A cancelled preparation can report after close cleared its flags.
-            assert!(
-                sender
-                    .send(CredentialResult {
-                        secret: "late-fixture-key".into(),
-                        dropped: dropped.clone(),
-                    })
-                    .is_ok()
-            );
-            discard_closed_worker_results(&receiver);
-            assert_eq!(dropped.get(), 5);
-            assert!(receiver.try_recv().is_err());
-            discard_closed_worker_results(&receiver);
-            assert_eq!(dropped.get(), 5);
-        }
 
         #[test]
         fn terminal_replies_detach_and_transport_failure_preserves_text() {
@@ -1064,7 +1250,7 @@ mod desktop {
         #[test]
         fn pending_tool_receipt_does_not_detach_streaming_body() {
             let messages = VecModel::from(vec![AssistantMessage {
-                role: "助手".into(),
+                role: "Agent".into(),
                 text: "".into(),
                 state: "".into(),
                 progress: "".into(),
@@ -1118,7 +1304,7 @@ mod desktop {
         #[test]
         fn completed_reply_survives_new_connection_buffer_reset() {
             let messages = VecModel::from(vec![AssistantMessage {
-                role: "助手".into(),
+                role: "Agent".into(),
                 text: "".into(),
                 state: "".into(),
                 progress: "".into(),

@@ -46,6 +46,7 @@ pub enum BridgeError {
 pub enum Event {
     Response(Value),
     Runtime(Value),
+    Managed(Value),
     Result(Value),
     RuntimeDiagnostic {
         code: String,
@@ -107,6 +108,7 @@ impl Handle {
                     | "send"
                     | "stop"
                     | "approve"
+                    | "reconcile"
                     | "shutdown"
             )
         {
@@ -405,6 +407,15 @@ fn protocol_frame(line: &[u8]) -> Result<Event, BridgeError> {
                 return Err(BridgeError::ProtocolFailed);
             }
             Event::Result(value)
+        }
+        Some("managed.state") => {
+            if line.len() > 64 * 1024
+                || !value.get("sessionId").is_some_and(valid_id)
+                || !value.get("modelState").is_some_and(Value::is_object)
+            {
+                return Err(BridgeError::ProtocolFailed);
+            }
+            Event::Managed(value)
         }
         Some("diagnostic") => {
             let code = value
@@ -806,6 +817,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn managed_frames_require_a_bounded_session_and_object() {
+        let valid =
+            json!({"version":1,"type":"managed.state","sessionId":"session-1","modelState":{}});
+        assert!(matches!(
+            protocol_frame(&serde_json::to_vec(&valid).unwrap()),
+            Ok(Event::Managed(_))
+        ));
+        for (key, value) in [
+            ("sessionId", json!("")),
+            ("sessionId", json!("x".repeat(101))),
+            ("modelState", json!(null)),
+            ("modelState", json!({"large":"x".repeat(65536)})),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[key] = value;
+            assert!(matches!(
+                protocol_frame(&serde_json::to_vec(&invalid).unwrap()),
+                Err(BridgeError::ProtocolFailed)
+            ));
+        }
+    }
     #[test]
     fn bidirectional_response_and_runtime_events() {
         let fixture = Fixture::python(

@@ -34,11 +34,17 @@ mod ui {
 }
 
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_components;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_controller;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_identity;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_process;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_ui;
+mod flow_controller;
+mod flow_ui;
 mod chips;
 mod cloud;
 mod cloud_files;
@@ -320,7 +326,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
 
     let app = App::new()?;
-    cloud::bind(&app);
+    let account = cloud::bind(&app);
+    flow_ui::bind(&app, host.dirs.data.join("flow-projects"));
     app.set_macos(platform::MACOS);
 
     let studio = Studio::new(host);
@@ -335,6 +342,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     Shell::install(shell.clone());
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     {
+        account.attach_editor_bridge(Rc::downgrade(&shell.studio.borrow().editor_mcp));
         let instance = shell
             .studio
             .borrow()
@@ -479,6 +487,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_titlebar_close(|| {
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
+            if app.global::<ui::Flow>().invoke_close_requested() { return; }
             let should_close = shell.studio.borrow_mut().request_window_close();
             shell.studio.borrow_mut().refresh_art();
             shell.studio.borrow().publish(&app, &shell.models);
@@ -495,6 +504,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         log::info!("close: system close request (Alt+F4 / taskbar)");
         let mut should_close = false;
         Shell::with(|shell, app| {
+            if app.global::<ui::Flow>().invoke_close_requested() { return; }
             should_close = shell.studio.borrow_mut().request_window_close();
             shell.studio.borrow_mut().refresh_art();
             shell.studio.borrow().publish(&app, &shell.models);
@@ -2007,6 +2017,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 }
                 if action == "close-window" {
                     log::info!("close: File > Close Window");
+                    if app.global::<ui::Flow>().invoke_close_requested() { return; }
                     let should_close = shell.studio.borrow_mut().request_window_close();
                     shell.studio.borrow_mut().refresh_art();
                     shell.studio.borrow().publish(&app, &shell.models);
@@ -2243,7 +2254,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     std::mem::forget(ants);
 
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
-    let assistant = agent_ui::bind(&app);
+    let assistant = agent_ui::bind(&app, account);
     let result = app.run();
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     {

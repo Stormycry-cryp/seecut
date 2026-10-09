@@ -19,6 +19,7 @@ import "fonts/Synonym-Medium.ttf";
 import "fonts/Synonym-SemiBold.ttf";
 
 import { Theme } from "theme/theme.slint";
+import { Flow, FlowPage, FlowDraftDialog, FlowRecoveryDialog, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter } from "flow/page.slint";
 import { Bezier, Curves, Fmt, Focus, Payload } from "util.slint";
 import { EffectData } from "demo/effects-panel.slint";
 import { MediaFilter, MediaItemData, MediaKind, TextPresetData } from "workspace/media-pane.slint";
@@ -47,10 +48,11 @@ import { Workspace } from "workspace/workspace.slint";
 import { AppRail, CloudWorkbench, SeeCut, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup, GenerationBatch } from "seecut/workbench.slint";
 import { AuthDialog, EditorBridgeBar, WorkflowFeedback, WorkflowToast } from "seecut/shell.slint";
 import { CanvasProjectsPage } from "seecut/project-gallery.slint";
+import { LauncherSafeArea } from "seecut/launcher-safe-area.slint";
 import { AssetPicker } from "seecut/asset-picker.slint";
 import { MediaPreview } from "seecut/media-preview.slint";
 import { Assistant, AssistantMessage } from "seecut/assistant_state.slint";
-import { AssistantDock } from "seecut/assistant_dock.slint";
+import { AssistantFloating } from "seecut/assistant-floating.slint";
 import {
     ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
     SelectedClipData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
@@ -59,6 +61,7 @@ import {
 
 // Re-exported so main.rs can reach the globals and the struct.
 export {
+    Flow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter,
     Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, CanvasControls, CanvasThumbs, I18n, Assistant, AssistantMessage,
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData, ParamFormat,
     DockDivider, DockSide, PaneKind, SeatBox,
@@ -104,22 +107,32 @@ export component App inherits Window {
             keys.focus();
         }
     }
-    property <bool> assistant-context: (SeeCut.page == 6 && !SeeCut.canvas-gallery-open && Editor.canvas-has-document)
-        || (SeeCut.page == 0 && !root.on-start);
-    property <bool> assistant-show: Assistant.enabled && Assistant.open && root.assistant-context;
-    property <length> assistant-width: root.width < 1100px ? 300px : 344px;
-    property <bool> assistant-replaces-sidebar: root.assistant-show && root.width < 1440px;
+    property <bool> assistant-modal-active: root.workflow-modal-open || root.sheet-open
+        || (SeeCut.page == 1 && SeeCut.creator-mode < 0) || SeeCut.save-team-task != ""
+        || SeeCut.canvas-create-open || SeeCut.team-dialog > 0 || SeeCut.team-menu > 0;
+    property <bool> assistant-modal-exiting;
+    changed assistant-modal-active => {
+        root.assistant-modal-exiting = !root.assistant-modal-active && !SeeCut.reduced-motion;
+        if root.assistant-modal-exiting { assistant-modal-settled.start(); assistant-modal-settled.restart(); }
+        else { assistant-modal-settled.stop(); }
+        if !root.assistant-modal-active && !root.assistant-modal-exiting {
+            root.focus-restore-pending = true;
+        }
+    }
+    assistant-modal-settled := Timer {
+        running: false; interval: 200ms;
+        triggered => { self.stop(); root.assistant-modal-exiting = false; root.restore-focus(); }
+    }
+    property <bool> assistant-ui-blocked: root.assistant-modal-active || root.assistant-modal-exiting;
+    property <bool> assistant-show: Assistant.enabled && Assistant.open && !root.assistant-ui-blocked;
+    property <bool> clip-menu-shortcuts-active: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open && !root.sheet-open;
     property <bool> assistant-was-open: Assistant.open;
     property <bool> assistant-focus-pending;
-    changed assistant-context => {
-        if !root.assistant-context && Assistant.open { Assistant.close-requested(); }
-    }
     changed assistant-was-open => {
-        if Assistant.open { root.assistant-focus-pending = true; }
-        else {
+        if !Assistant.open {
             assistant-panel.clear-session-secret();
-            if Assistant.enabled && root.assistant-context { rail.focus-assistant(); }
-            else { keys.focus(); }
+            // Keep keyboard events inside the panel until its close animation settles.
+            assistant-panel.focus();
         }
     }
     Timer {
@@ -127,12 +140,15 @@ export component App inherits Window {
         running: root.assistant-focus-pending;
         triggered => {
             root.assistant-focus-pending = false;
-            if root.assistant-show { assistant-panel.focus-composer(); }
+            if !root.assistant-ui-blocked && Assistant.enabled {
+                if Assistant.open { assistant-panel.focus-composer(); }
+                else { assistant-panel.focus-launcher(); }
+            }
         }
     }
     function toggle-assistant() {
         if Assistant.open { Assistant.close-requested(); }
-        else if Assistant.enabled && root.assistant-context { Assistant.open = true; }
+        else if Assistant.enabled && !root.assistant-ui-blocked { Assistant.open = true; }
     }
     property <bool> sheet-open: root.export.open || root.settings.open
         || root.project-sheet.open || root.captions.open || root.speech.open;
@@ -160,14 +176,17 @@ export component App inherits Window {
         }
     }
     changed workspace-page => {
+        Flow.input-focused = false;
         SeeCut.generation-parameters-open = false; SeeCut.result-preview-open = false; SeeCut.media-preview-open = false;
         SeeCut.personal-menu = 0;
         SeeCut.template-menu-id = "";
         root.canvas-open-menu = false;
         SeeCut.personal-dialog = 0;
         SeeCut.template-delete-id = "";
+        SeeCut.canvas-create-open = false;
+        SeeCut.team-dialog = 0;
     }
-    property <bool> workflow-modal-open: root.clip-create-open || SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
+    property <bool> workflow-modal-open: Flow.confirm || Flow.recovery || Flow.picker-open || root.clip-create-open || SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
     // A small set of stable opening controls can receive focus again after
     // their sheet closes. Other workflows use the window keyboard scope.
     // 1 canvas open, 2 canvas export, 3 clip assets, 4 clip export, 5 settings.
@@ -176,7 +195,7 @@ export component App inherits Window {
     property <int> focus-request-token;
     property <bool> focus-restore-pending;
     function restore-focus() {
-        if !root.workflow-modal-open && !root.sheet-open {
+        if !root.assistant-ui-blocked {
             if SeeCut.focus-return-claimed {
                 SeeCut.focus-return-claimed = false;
             } else if root.focus-return == 1 && SeeCut.page == 6 && !SeeCut.canvas-gallery-open {
@@ -193,6 +212,10 @@ export component App inherits Window {
                 root.focus-request-token += 1;
             } else if root.focus-return == 5 {
                 rail.focus-settings();
+            } else if SeeCut.page == 8 && !root.assistant-show {
+                Flow.focus-token += 1;
+            } else if root.assistant-show {
+                assistant-panel.focus-composer();
             } else {
                 keys.focus();
             }
@@ -293,8 +316,9 @@ export component App inherits Window {
     /// restore rather than maximise - whichever route maximised it.
     in-out property <bool> window-maximized;
     callback window-resized();
-    changed width => { root.window-resized(); }
-    changed height => { root.window-resized(); }
+    init => { LauncherSafeArea.window-width = root.width; LauncherSafeArea.window-height = root.height; }
+    changed width => { LauncherSafeArea.window-width = root.width; root.window-resized(); }
+    changed height => { LauncherSafeArea.window-height = root.height; root.window-resized(); }
     // The dialogs. Both are held at the root because Slint has no portal: a
     // modal has to be declared where it is drawn, and it is drawn over
     // everything.
@@ -449,17 +473,17 @@ export component App inherits Window {
             keys: @keys(Control + S);
             // Nothing on the launch screen has a project to act on, which is
             // why the strip up there is missing the menus this belongs to.
-            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open && !root.sheet-open;
+            enabled: root.clip-menu-shortcuts-active;
             activated => { root.app-menu-selected("save"); }
         }
         KeyBinding {
             keys: @keys(Control + Z);
-            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open && !root.sheet-open;
+            enabled: root.clip-menu-shortcuts-active;
             activated => { root.app-menu-selected("undo"); }
         }
         KeyBinding {
             keys: @keys(Control + Shift + Z);
-            enabled: !root.on-start && SeeCut.page == 0 && !root.workflow-modal-open && !root.sheet-open;
+            enabled: root.clip-menu-shortcuts-active;
             activated => { root.app-menu-selected("redo"); }
         }
 
@@ -470,6 +494,8 @@ export component App inherits Window {
         // its own letters and spaces before a key can walk up to this
         // scope, which is what keeps typing a title from cutting a clip.
         key-pressed(event) => {
+            if event.text == Key.Escape && Flow.recovery { Flow.recover(0); return accept; }
+            if event.text == Key.Escape && Flow.confirm { Flow.resolve(0); return accept; }
             if event.text == Key.Escape && Editor.canvas-transform-confirm { Editor.canvas-transform-resolve(0); return accept; }
             if event.text == Key.Escape && Editor.canvas-exit-confirm { Editor.canvas-exit-cancel(); return accept; }
             if event.text == Key.Escape && root.clip-create-open {
@@ -492,6 +518,16 @@ export component App inherits Window {
             if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.template-delete-id = ""; return accept; }
             if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } return accept; }
             if event.text == Key.Escape && root.settings.open { root.settings-closed(); return accept; }
+            if SeeCut.page == 8 && !root.workflow-modal-open && !root.sheet-open {
+                if !Flow.input-focused && (event.modifiers.control || event.modifiers.meta) {
+                    let shortcut = event.text.to-lowercase();
+                    if shortcut == "z" { Flow.action(event.modifiers.shift ? "redo" : "undo"); return accept; }
+                    if shortcut == "s" { Flow.action("save"); return accept; }
+                    if shortcut == "o" { Flow.action("open"); return accept; }
+                }
+                if !Flow.input-focused && event.text == Key.Escape { Flow.action("cancel-connect"); return accept; }
+                return reject;
+            }
             if (SeeCut.page == 6 && !SeeCut.canvas-gallery-open && !root.workflow-modal-open && !root.sheet-open) {
                 if (event.modifiers.control || event.modifiers.meta) {
                     let shortcut = event.text.to-lowercase();
@@ -652,19 +688,17 @@ export component App inherits Window {
                 vertical-stretch: 1;
                 min-width: 0px;
                 min-height: 0px;
-                // Keep the editor toolbar full width; the assistant shares only the body.
-                property <length> assistant-top: SeeCut.page == 6 ? 56px : 54px + (root.project-open-busy ? 40px : 0px);
                 rail := AppRail {
                     x: 0; y: 0; height: parent.height;
                     begin-drag => { root.titlebar-begin-drag(); }
                     toggle-maximize => { root.titlebar-toggle-maximize(); }
                     open-settings => { root.focus-return = 5; root.open-settings(); }
-                    assistant-available: Assistant.enabled;
-                    assistant-enabled: root.assistant-context;
-                    assistant-active: root.assistant-show;
-                    toggle-assistant => { root.toggle-assistant(); }
                 }
-                if SeeCut.page != 0 && SeeCut.page != 6: CloudWorkbench { compact-height: root.height < 800px; x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%; }
+                if SeeCut.page != 0 && SeeCut.page != 6 && SeeCut.page != 8: CloudWorkbench { compact-height: root.height < 800px; x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%; }
+                if SeeCut.page == 8: FlowPage {
+                    x: rail.width; width: max(0px, parent.width - rail.width - (Assistant.enabled && !root.assistant-ui-blocked && !assistant-panel.fully-closed ? assistant-panel.width + 32px : 0px)); height: 100%;
+                    launcher-clearance: Assistant.enabled && !root.assistant-ui-blocked && !assistant-panel.fully-closed ? 0px : LauncherSafeArea.inset;
+                }
                 if SeeCut.page == 6 && SeeCut.canvas-gallery-open: CanvasProjectsPage {
                     x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%;
                 }
@@ -688,7 +722,7 @@ export component App inherits Window {
                                 running: canvas-header.restore-pending;
                                 triggered => {
                                     canvas-header.restore-pending = false;
-                                    if !root.workflow-modal-open && !root.sheet-open && SeeCut.page == 6 && !SeeCut.canvas-gallery-open {
+                                    if !root.assistant-ui-blocked && SeeCut.page == 6 && !SeeCut.canvas-gallery-open {
                                         if root.focus-request-target == 1 { canvas-open-button.take-focus(); }
                                         else if root.focus-request-target == 2 { canvas-export-button.take-focus(); }
                                     }
@@ -729,12 +763,9 @@ export component App inherits Window {
                                 }
                                 WorkspaceIcon {
                                     width: 32px; height: 32px; side: 32px; glyph: Glyph.sliders;
-                                    label: Editor.canvas-sidebar-open && !root.assistant-replaces-sidebar ? "收起图层与属性" : "展开图层与属性";
-                                    checkable: true; checked: Editor.canvas-sidebar-open && !root.assistant-replaces-sidebar;
-                                    clicked => {
-                                        if root.assistant-replaces-sidebar { Assistant.close-requested(); Editor.canvas-sidebar-open = true; }
-                                        else { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; }
-                                    }
+                                    label: Editor.canvas-sidebar-open ? "收起图层与属性" : "展开图层与属性";
+                                    checkable: true; checked: Editor.canvas-sidebar-open;
+                                    clicked => { Editor.canvas-sidebar-open = !Editor.canvas-sidebar-open; }
                                 }
                             }
                         }
@@ -743,9 +774,8 @@ export component App inherits Window {
                             VerticalLayout {
                                 horizontal-stretch: 1; min-width: 0px;
                                 WorkflowFeedback { }
-                                Seat { kind: PaneKind.canvas; standalone: true; hide-sidebar: root.assistant-replaces-sidebar; vertical-stretch: 1; min-width: 0px; }
+                                Seat { kind: PaneKind.canvas; standalone: true; vertical-stretch: 1; min-width: 0px; }
                             }
-                            Rectangle { width: root.assistant-show ? root.assistant-width : 0px; }
                         }
                     }
                 }
@@ -759,7 +789,7 @@ export component App inherits Window {
                         project-status: root.project-status;
                         focus-request-target: root.focus-request-target;
                         focus-request-token: root.focus-request-token;
-                        focus-restore-allowed: !root.workflow-modal-open && !root.sheet-open && SeeCut.page == 0 && !root.on-start;
+                        focus-restore-allowed: !root.assistant-ui-blocked && SeeCut.page == 0 && !root.on-start;
                         assets-clicked => { root.focus-return = 3; SeeCut.action("project-assets", ""); }
                         export-clicked => { root.focus-return = 4; root.export-clicked(); }
                     }
@@ -800,22 +830,8 @@ export component App inherits Window {
                             }
                             if !root.on-start: Workspace { vertical-stretch: 1; min-width: 0px; }
                         }
-                        Rectangle { width: root.assistant-show ? root.assistant-width : 0px; }
                     }
                     }
-                }
-                assistant-keys := FocusScope {
-                    x: parent.width - root.assistant-width;
-                    y: workspace-area.assistant-top;
-                    width: root.assistant-width;
-                    height: Math.max(0px, parent.height - self.y);
-                    visible: root.assistant-show;
-                    enabled: root.assistant-show;
-                    focus-on-tab-navigation: false;
-                    // Child inputs consume editing keys first; remaining keys must not edit the canvas.
-                    key-pressed(event) => { return event.text == Key.Tab || event.text == Key.Backtab ? EventResult.reject : EventResult.accept; }
-                    key-released(event) => { return EventResult.accept; }
-                    assistant-panel := AssistantDock { width: 100%; height: 100%; }
                 }
             }
         }
@@ -1145,23 +1161,6 @@ export component App inherits Window {
         selected(id) => { root.app-menu-selected(id); }
     }
 
-    // Last of all, and over everything including the sheets: an export that
-    // failed behind a dialog is exactly the case a notice is for. It takes no
-    // events — there is no TouchArea anywhere in it — so covering the window
-    // costs the window nothing.
-    ToastLayer {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        data: root.toast;
-        // Leave the canvas layer actions and zoom status unobstructed.
-        bottom-offset: root.canvas-editor-active ? 80px : 16px;
-    }
-    WorkflowToast {
-        width: root.width; height: root.height;
-        bottom-offset: root.canvas-editor-active ? 122px : 58px;
-    }
     Modal {
         open: Editor.canvas-transform-confirm;
         title: "结束自由变换？";
@@ -1251,6 +1250,62 @@ export component App inherits Window {
                 }
             }
         }
+    }
+
+    FlowDraftDialog { }
+    FlowRecoveryDialog { }
+
+    // Global floating UI stays above pages. Modal tasks temporarily hide the
+    // panel and disable the entry; the host keeps the active-workspace rules.
+    assistant-panel := AssistantFloating {
+        dock-right: SeeCut.page == 8;
+        room-width: root.width;
+        room-height: root.height;
+        animations-active: !root.minimized && Assistant.window-visible && Assistant.window-focused;
+        visible: Assistant.enabled;
+        enabled: !root.assistant-ui-blocked;
+        blocked: root.assistant-ui-blocked;
+        toggle-requested => { root.toggle-assistant(); }
+        settled(expanded) => { root.assistant-focus-pending = true; }
+        focus-on-tab-navigation: false;
+        // This overlay is a sibling of the workspace keyboard scope. Preserve
+        // its menu chords while the closed entry owns keyboard focus.
+        KeyBinding {
+            keys: @keys(Control + S);
+            enabled: assistant-panel.fully-closed && root.clip-menu-shortcuts-active;
+            activated => { root.app-menu-selected("save"); }
+        }
+        KeyBinding {
+            keys: @keys(Control + Z);
+            enabled: assistant-panel.fully-closed && root.clip-menu-shortcuts-active;
+            activated => { root.app-menu-selected("undo"); }
+        }
+        KeyBinding {
+            keys: @keys(Control + Shift + Z);
+            enabled: assistant-panel.fully-closed && root.clip-menu-shortcuts-active;
+            activated => { root.app-menu-selected("redo"); }
+        }
+        key-pressed(event) => {
+            if assistant-panel.fully-closed { return keys.key-pressed(event); }
+            if event.text == Key.Escape { Assistant.close-requested(); return EventResult.accept; }
+            return assistant-panel.fully-open && (event.text == Key.Tab || event.text == Key.Backtab) ? EventResult.reject : EventResult.accept;
+        }
+        key-released(event) => {
+            if event.text == Key.Space && root.canvas-space-hand { return keys.key-released(event); }
+            return assistant-panel.fully-closed ? EventResult.reject : EventResult.accept;
+        }
+    }
+    // Notices remain readable above the panel; reserve the launcher's corner.
+    ToastLayer {
+        width: root.width - (Assistant.enabled ? 84px : 0px);
+        height: root.height;
+        data: root.toast;
+        bottom-offset: root.canvas-editor-active ? 80px : 16px;
+    }
+    WorkflowToast {
+        width: root.width - (Assistant.enabled ? 84px : 0px);
+        height: root.height;
+        bottom-offset: root.canvas-editor-active ? 122px : 58px;
     }
 
 }

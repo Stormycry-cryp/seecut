@@ -1216,8 +1216,10 @@ dependencies = [
  "png 0.17.16",
  "pollster",
  "rfd",
+ "seecut-flow-core",
  "serde",
  "serde_json",
+ "sha2",
  "slint",
  "slint-build",
  "tempfile",
@@ -6148,6 +6150,17 @@ checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "seecut-flow-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

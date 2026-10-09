@@ -32,6 +32,76 @@ fn project_media_error() -> String {
     crate::i18n::t("Could not prepare project media.")
 }
 
+/// A host-only view of the existing login. Credentials never enter Slint or preferences.
+#[derive(Clone)]
+pub(crate) struct AccountAccess {
+    state: std::rc::Weak<RefCell<Cloud>>,
+}
+pub(crate) struct AccountSnapshot {
+    pub epoch: u64,
+    pub base: String,
+    pub token: String,
+}
+// Cloud is cloned into network workers. Keep this UI-only ownership outside it.
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+thread_local! {
+    static ACCOUNT_EDITOR_BRIDGE: RefCell<std::rc::Weak<RefCell<crate::editor_mcp::BridgeUi>>> =
+        const { RefCell::new(std::rc::Weak::new()) };
+}
+impl AccountAccess {
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    pub(crate) fn attach_editor_bridge(
+        &self,
+        bridge: std::rc::Weak<RefCell<crate::editor_mcp::BridgeUi>>,
+    ) {
+        ACCOUNT_EDITOR_BRIDGE.with(|slot| *slot.borrow_mut() = bridge);
+    }
+    pub(crate) fn epoch(&self) -> Option<u64> {
+        self.state.upgrade().map(|state| state.borrow().epoch)
+    }
+    pub(crate) fn signed_in(&self) -> bool {
+        self.state
+            .upgrade()
+            .is_some_and(|state| !state.borrow().token.is_empty())
+    }
+    pub(crate) fn snapshot(&self) -> Option<AccountSnapshot> {
+        let state = self.state.upgrade()?;
+        let cloud = state.borrow();
+        if cloud.token.is_empty() {
+            return None;
+        }
+        Some(AccountSnapshot {
+            epoch: cloud.epoch,
+            base: cloud.base.clone(),
+            token: cloud.token.clone(),
+        })
+    }
+    pub(crate) fn refresh_wallet(&self, app: &App) {
+        if let Some(state) = self.state.upgrade() {
+            job(
+                app,
+                &state,
+                "wallet".into(),
+                request("GET", "/api/wallet", Value::Null),
+            );
+        }
+    }
+    pub(crate) fn expire_if_current(&self, app: &App, epoch: u64) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        if state.borrow().epoch != epoch || state.borrow().token.is_empty() {
+            return;
+        }
+        clear_session(app, &state, true);
+        let ui = app.global::<SeeCut>();
+        switch_auth(&ui, 0);
+        ui.set_auth_open(true);
+        ui.set_error("登录状态已失效，请重新登录".into());
+        sync_operation_state(app, &state);
+    }
+}
+
 const DEFAULT_API_URL: &str = "https://seecut.stormycry.cloud";
 
 struct ClientError {
@@ -1342,7 +1412,7 @@ enum NavigationDecision {
 }
 
 fn navigation_decision(current: i32, target: i32, signed_in: bool) -> NavigationDecision {
-    let target = target.clamp(0, 7);
+    let target = target.clamp(0, 8);
     if !signed_in && matches!(target, 2..=4) {
         NavigationDecision::Authenticate {
             stay: current,
@@ -1354,13 +1424,13 @@ fn navigation_decision(current: i32, target: i32, signed_in: bool) -> Navigation
 }
 
 fn auth_return_target(pending: Option<i32>, current: i32) -> i32 {
-    pending.unwrap_or(current).clamp(0, 7)
+    pending.unwrap_or(current).clamp(0, 8)
 }
 
 fn show_auth(app: &App, state: &Rc<RefCell<Cloud>>, target: Option<i32>) {
     let ui = app.global::<SeeCut>();
     if let Some(target) = target {
-        state.borrow_mut().auth_return_page = Some(target.clamp(0, 7));
+        state.borrow_mut().auth_return_page = Some(target.clamp(0, 8));
     }
     if !ui.get_signed_in() {
         switch_auth(&ui, 0);
@@ -2089,6 +2159,7 @@ fn apply_generation_configuration(
 }
 
 fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
+    if app.global::<crate::ui::Flow>().invoke_leave_requested(target) { return; }
     let ui = app.global::<SeeCut>();
     if ui.get_page() == 6 && !ui.get_canvas_gallery_open() && app.invoke_canvas_leave_page(target) {
         return;
@@ -6501,6 +6572,16 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.active_name.clear();
     cloud.epoch += 1;
     drop(cloud);
+    // Revoke the old account's App permissions synchronously, before another
+    // queued MCP write can be dispatched. The Agent timer also closes its runtime.
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    ACCOUNT_EDITOR_BRIDGE.with(|slot| {
+        if let Some(bridge) = slot.borrow().upgrade() {
+            // Native dialogs may hold Studio while pumping this account callback.
+            // Bridge ownership is independent so revocation remains synchronous.
+            bridge.borrow_mut().revoke_assistant_for_account_change();
+        }
+    });
     let ui = app.global::<SeeCut>();
     ui.set_signed_in(false);
     ui.set_email("".into());
@@ -6720,7 +6801,7 @@ fn save_preferences(app: &App, state: &Rc<RefCell<Cloud>>) {
         let _ = std::fs::write(path, bytes);
     }
 }
-pub fn bind(app: &App) {
+pub(crate) fn bind(app: &App) -> AccountAccess {
     let saved: Value = preferences_path()
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -6751,6 +6832,9 @@ pub fn bind(app: &App) {
         folder,
         ..Cloud::default()
     }));
+    let account = AccountAccess {
+        state: Rc::downgrade(&state),
+    };
     let started_state = state.clone();
     app.on_clip_open_started(move |id, target, created| {
         let Ok(id) = id.as_str().parse::<u64>() else {
@@ -7280,6 +7364,7 @@ pub fn bind(app: &App) {
     refresh_canvas_projects(app, &state);
     auth_countdown(app.as_weak());
     heartbeat(app.as_weak(), state);
+    account
 }
 fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
     slint::Timer::single_shot(Duration::from_secs(5), move || {

@@ -9,6 +9,7 @@ rust-version = "1.93"
 license = "AGPL-3.0-or-later"  # + plugin exception, see LICENSE-EXCEPTIONS.md
 
 [workspace.dependencies]
+seecut-flow-core = { path = "crates/seecut-flow-core" }
 concat-core = { path = "crates/concat-core" }
 concat-media = { path = "crates/concat-media" }
 concat-project = { path = "crates/concat-project" }

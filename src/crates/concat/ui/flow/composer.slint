@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme, Icon, IconButton, Glyph, FocusRing, Tip } from "../primitives/primitives.slint";
+import { AppButton } from "../seecut/components.slint";
+export struct FlowParameter { id: string, label: string }
+export struct FlowAttachment { id: string, label: string, preview: image }
+/// One input surface. Drafts stay editable while host actions are pending.
+/// Enter remains native multiline/IME editing; committing requires the named action.
+export component FlowComposer inherits Rectangle {
+    in-out property <string> value;
+    in property <string> identity-token;
+    property <string> editing-token;
+    changed identity-token => { root.editing-token = ""; }
+    in property <string> label: "节点提示词";
+    in property <string> placeholder: "写下这个节点的提示词…";
+    in property <[FlowAttachment]> attachments;
+    in property <bool> allow-assets;
+    in property <bool> read-only;
+    in property <[FlowParameter]> parameters;
+    in property <string> action-label: "保存提示词";
+    in property <Glyph> action-glyph: Glyph.check;
+    in property <string> caption: "提示词";
+    callback parameter-requested(string);
+    callback attachment-requested(string);
+    in property <bool> busy;
+    in property <bool> dirty;
+    callback edited(string, string);
+    callback commit(string, string);
+    callback library-requested();
+    callback upload-requested();
+    out property <bool> input-focused: editor.has-focus;
+    public function focus-editor() { editor.focus(); }
+    min-width: 0px;
+    preferred-height: root.allow-assets || root.attachments.length > 0 ? 220px : 148px;
+    border-radius: 18px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: editor.has-focus ? Theme.line-strong : Theme.line;
+    clip: true;
+    if root.allow-assets || root.attachments.length > 0: Flickable {
+        x: 16px; y: 14px; width: parent.width - 32px; height: 66px;
+        viewport-height: 66px; viewport-width: max(self.width, root.attachments.length * 72px + (root.allow-assets ? 64px : 0px));
+        HorizontalLayout {
+            height: 64px; width: parent.width; alignment: start; spacing: 8px;
+            for attachment[index] in root.attachments: Rectangle {
+                width: 64px; height: 64px; border-radius: 8px; background: Theme.well; clip: true;
+                accessible-role: button; accessible-label: "参考 " + (index + 1) + " · " + attachment.label;
+                accessible-action-default => { root.attachment-requested(attachment.id); }
+                Image { width: parent.width; height: parent.height; source: attachment.preview; image-fit: contain; }
+                Rectangle {
+                    x: 4px; y: 4px; width: 19px; height: 19px; border-radius: 10px; background: Theme.image-control;
+                    Text { text: "" + (index + 1); color: Theme.image-control-ink; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                attachment-focus := FocusScope {
+                    key-pressed(event) => { if (event.text == " " || event.text == "\n") && !event.repeat { root.attachment-requested(attachment.id); return accept; } return reject; }
+                }
+                TouchArea { mouse-cursor: pointer; clicked => { attachment-focus.focus(); root.attachment-requested(attachment.id); } }
+                FocusRing { active: attachment-focus.has-focus; radius: 8px; }
+                Tip { text: attachment.label; active: attachment-focus.has-focus; }
+            }
+            if root.allow-assets: Rectangle {
+                width: 64px; height: 64px; border-radius: 8px; background: Theme.well; border-width: 1px; border-color: Theme.line;
+                IconButton { width: parent.width; height: parent.height; glyph: Glyph.plus; label: "从资产库添加参考素材"; icon-size: 19px; side: 48px; clicked => { root.library-requested(); } }
+            }
+        }
+    }
+    area := Flickable {
+        x: 16px; y: root.allow-assets || root.attachments.length > 0 ? 94px : 16px;
+        width: parent.width - 32px; height: parent.height - self.y - 58px;
+        viewport-width: self.width; viewport-height: max(self.height, editor.preferred-height);
+        editor := TextInput {
+            width: parent.width; height: max(parent.height, self.preferred-height);
+            page-height: area.height;
+            text <=> root.value; read-only: root.read-only; single-line: false; wrap: word-wrap;
+            font-family: Theme.font; font-size: Theme.workbench-font; color: Theme.fg;
+            selection-background-color: Theme.accent-soft; selection-foreground-color: Theme.workbench-selection-ink;
+            accessible-role: text-input; accessible-label: root.label; accessible-value: self.text; accessible-placeholder-text: root.placeholder;
+            changed has-focus => { if self.has-focus { root.editing-token = root.identity-token; } }
+            edited => { root.edited(root.editing-token, self.text); }
+            cursor-position-changed(position) => {
+                if position.y + area.viewport-y < 0px { area.viewport-y = max(area.height - self.height, -position.y); }
+                else if position.y + area.viewport-y > area.height - 22px { area.viewport-y = min(0px, max(area.height - self.height, area.height - position.y - 22px)); }
+            }
+        }
+    }
+    if root.value == "": Text {
+        x: 16px; y: root.allow-assets || root.attachments.length > 0 ? 94px : 16px;
+        width: parent.width - 32px; text: root.placeholder;
+        font-family: Theme.font; font-size: Theme.workbench-font; color: Theme.fg-muted;
+        accessible-role: none;
+    }
+    Flickable {
+        x: 12px; y: parent.height - 48px; height: 36px; width: parent.width - 76px;
+        viewport-height: 36px; viewport-width: max(self.width, parameters-row.preferred-width);
+        parameters-row := HorizontalLayout {
+            height: 36px; spacing: 6px; alignment: start;
+            if root.allow-assets: IconButton { glyph: Glyph.import; label: "上传本地素材到资产库"; side: 32px; icon-size: 18px; clicked => { root.upload-requested(); } }
+            for parameter in root.parameters: AppButton {
+                height: 32px; label: parameter.label; glyph: Glyph.chevron-down;
+                accessible-name: "SeeCut 生成设置 · " + parameter.label;
+                clicked => { root.parameter-requested(parameter.id); }
+            }
+            if root.parameters.length == 0: Text { text: root.dirty ? "未保存" : root.caption; color: Theme.fg-dim; font-family: Theme.font; font-size: Theme.fs; vertical-alignment: center; }
+        }
+    }
+    save := Rectangle {
+        x: parent.width - 48px; y: parent.height - 48px; width: 36px; height: 36px; border-radius: 18px;
+        background: root.busy ? Theme.field-active : touch.pressed ? Theme.workbench-action-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent;
+        accessible-role: button; accessible-label: root.action-label; accessible-enabled: !root.busy;
+        accessible-action-default => { if !root.busy { root.commit(root.identity-token, root.value); } }
+        forward-focus: focus;
+        focus := FocusScope {
+            enabled: !root.busy;
+            key-pressed(event) => { if (event.text == " " || event.text == "\n") && !event.repeat { root.commit(root.identity-token, root.value); return accept; } return reject; }
+        }
+        Icon { x: 9px; y: 9px; size: 18px; glyph: root.action-glyph; tint: root.busy ? Theme.fg-dim : Theme.on-accent; }
+        touch := TouchArea { enabled: !root.busy; mouse-cursor: pointer; clicked => { root.commit(root.identity-token, root.value); } }
+        FocusRing { active: focus.has-focus; radius: 18px; button: true; }
+        Tip { text: root.action-label; active: touch.has-hover || focus.has-focus; }
+    }
+}

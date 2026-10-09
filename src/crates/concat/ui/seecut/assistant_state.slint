@@ -6,15 +6,28 @@ export { AssistantMessage }
 export global Assistant {
     in-out property <bool> open;
     in-out property <bool> enabled;
+    in-out property <bool> developer-tools;
+    in-out property <bool> window-visible: true;
+    in-out property <bool> window-focused: true;
+    in-out property <bool> geometry-set;
+    in-out property <float> float-x: 1;
+    in-out property <float> float-y: 1;
+    in-out property <float> float-width: 380;
+    in-out property <float> float-height: 640;
+    callback geometry-changed(float, float, float, float);
     in-out property <string> current-project;
     in-out property <string> provider-label;
     in-out property <string> connection;
     in-out property <string> status;
     in-out property <string> details;
     in-out property <bool> busy;
+    // 0 idle, 1 working, 2 verified completed turn, 3 error, 4 needs attention.
+    in-out property <int> expression;
     in-out property <bool> unknown;
     in-out property <bool> can-send;
     in-out property <bool> can-stop;
+    in-out property <bool> can-reconcile;
+    in-out property <string> budget-label;
     in-out property <bool> can-connect;
     in-out property <bool> connected;
     in-out property <bool> can-disconnect;
@@ -55,6 +68,8 @@ export global Assistant {
     callback stop();
     callback connect(string, string, string, bool);
     callback disconnect();
+    callback connect-managed();
+    callback reconcile();
     callback grant-read();
     callback revoke-read();
     callback grant-write();

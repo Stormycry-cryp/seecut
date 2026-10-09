@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme } from "../primitives/primitives.slint";
+import { Assistant } from "assistant_state.slint";
+import { AssistantDock } from "assistant_dock.slint";
+import { AssistantLauncher } from "assistant-launcher.slint";
+import { SeeCut } from "state.slint";
+
+export component AssistantFloating inherits FocusScope {
+    in property <bool> dock-right;
+    in property <length> room-width;
+    in property <length> room-height;
+    in property <bool> blocked;
+    in property <bool> animations-active: true;
+    callback toggle-requested();
+    callback settled(expanded: bool);
+    out property <bool> fully-open: root.display-progress >= 1 && Assistant.open && !root.blocked;
+    out property <bool> fully-closed: root.display-progress <= 0 && !Assistant.open;
+    public function focus-composer() { if root.fully-open && !root.blocked { panel.focus-composer(); } }
+    public function focus-launcher() { if root.fully-closed && !root.blocked { launcher.take-focus(); } }
+    public function clear-session-secret() { panel.clear-session-secret(); }
+    property <bool> requested-open: Assistant.open;
+    property <bool> reduced-motion: SeeCut.reduced-motion || !root.animations-active;
+    property <float> progress;
+    init => { root.progress = root.requested-open ? 1 : 0; }
+    changed requested-open => { root.progress = root.requested-open ? 1 : 0; }
+    changed reduced-motion => {
+        // Replace the running animation with its endpoint. Turning motion back
+        // on must not expose the previous animation's intermediate position.
+        if root.reduced-motion { root.progress = root.requested-open ? 1 : 0; }
+    }
+    animate progress { duration: root.reduced-motion ? 0ms : 260ms; easing: ease-in-out; }
+    // A modal keeps the open state but shows only the disabled global entry.
+    property <float> display-progress: root.blocked ? 0 : root.progress;
+    changed fully-open => { if root.fully-open { root.settled(true); } }
+    changed fully-closed => { if root.fully-closed { root.settled(false); } }
+    property <length> panel-width: min(480px, root.room-width - 40px,
+        Assistant.geometry-set ? max(320px, Assistant.float-width * 1px) : root.room-width < 1100px ? 344px : 380px);
+    property <length> panel-height: min(root.room-height - 72px, max(320px, Assistant.float-height * 1px));
+    property <length> travel-x: max(0px, root.room-width - root.panel-width - 40px);
+    property <length> panel-x: root.dock-right ? root.room-width - root.panel-width - 16px : 16px + root.travel-x * Assistant.float-x;
+    width: 52px + (root.panel-width - 52px) * root.display-progress;
+    height: 52px + (root.panel-height - 52px) * root.display-progress;
+    x: root.room-width - 76px + (root.panel-x - (root.room-width - 76px)) * root.display-progress;
+    // Both forms share the same bottom edge, including every animation frame.
+    y: root.room-height - 24px - root.height;
+    focus-on-click: false;
+    focus-on-tab-navigation: false;
+    function remember() {
+        // Keep the legacy preference field compatible while anchoring vertically.
+        Assistant.geometry-changed(Assistant.float-x, 1, root.panel-width / 1px, root.panel-height / 1px);
+    }
+    function freeze-size() {
+        Assistant.float-width = root.panel-width / 1px;
+        Assistant.float-height = root.panel-height / 1px;
+        Assistant.geometry-set = true;
+    }
+    Rectangle {
+        width: 100%; height: 100%;
+        border-radius: 26px - 6px * root.display-progress;
+        background: Theme.accent.mix(Theme.assistant-floating-surface, 1 - root.display-progress);
+        border-width: root.display-progress >= 1 ? 1px : 0px;
+        border-color: Theme.accent.mix(Theme.line-strong, 1 - root.display-progress);
+        drop-shadow-blur: 16px + 4px * root.display-progress;
+        drop-shadow-offset-y: 4px + 2px * root.display-progress;
+        drop-shadow-color: Theme.image-control;
+    }
+    Rectangle {
+        width: 100%; height: 100%;
+        border-radius: 26px - 6px * root.display-progress;
+        clip: true;
+        panel := AssistantDock {
+            x: parent.width - self.width; y: parent.height - self.height;
+            width: root.panel-width; height: root.panel-height;
+            visible: root.display-progress > 0;
+            opacity: clamp((root.display-progress - 0.4) / 0.6, 0, 1);
+            floating: true;
+            background: transparent; border-width: 0px; border-radius: 0px;
+            drop-shadow-blur: 0px; drop-shadow-offset-y: 0px; drop-shadow-color: transparent;
+            active: root.visible && root.enabled && root.fully-open && !root.blocked;
+        }
+        launcher := AssistantLauncher {
+            x: parent.width - 52px; y: parent.height - 52px;
+            chrome: false;
+            visible: root.display-progress < 0.25;
+            opacity: max(0, 1 - root.display-progress * 4);
+            enabled: root.enabled && !root.blocked;
+            expanded: Assistant.open;
+            expression: Assistant.expression;
+            reduced-motion: root.reduced-motion;
+            activated => { root.focus(); root.toggle-requested(); }
+        }
+    }
+    // During the short transition the moving surface can reverse direction.
+    TouchArea {
+        visible: root.display-progress > 0 && root.display-progress < 1 && !root.blocked;
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.focus(); root.toggle-requested(); }
+    }
+    drag := TouchArea {
+        visible: root.fully-open && !root.blocked && !root.dock-right;
+        enabled: root.enabled && root.fully-open && !root.blocked;
+        x: 12px; y: 0px; width: max(0px, parent.width - 96px); height: 48px;
+        mouse-cursor: move;
+        property <length> start-pointer-x;
+        property <length> start-x;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.freeze-size();
+                self.start-pointer-x = self.absolute-position.x + self.mouse-x;
+                self.start-x = root.x;
+            }
+        }
+        moved => {
+            if self.pressed {
+                Assistant.float-x = clamp((self.start-x + self.absolute-position.x + self.mouse-x - self.start-pointer-x - 16px) / max(1px, root.travel-x), 0, 1);
+            }
+        }
+        changed pressed => { if !self.pressed { root.remember(); } }
+    }
+    resize := TouchArea {
+        visible: root.fully-open && !root.blocked;
+        enabled: root.enabled && root.fully-open && !root.blocked;
+        // The window defaults to the bottom-right. Resize from the opposite
+        // corner so enlarging it never requires dragging outside the window.
+        x: 0px; y: 0px;
+        width: 16px; height: 16px;
+        mouse-cursor: nwse-resize;
+        property <length> start-pointer-x;
+        property <length> start-pointer-y;
+        property <length> start-x;
+        property <length> start-y;
+        property <length> start-width;
+        property <length> start-height;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.freeze-size();
+                self.start-pointer-x = self.absolute-position.x + self.mouse-x;
+                self.start-pointer-y = self.absolute-position.y + self.mouse-y;
+                self.start-x = root.x; self.start-y = root.y;
+                self.start-width = root.width; self.start-height = root.height;
+            }
+        }
+        moved => {
+            if self.pressed {
+                Assistant.float-width = clamp(self.start-width - (self.absolute-position.x + self.mouse-x - self.start-pointer-x), 320px, min(480px, self.start-x + self.start-width - 16px)) / 1px;
+                Assistant.float-height = clamp(self.start-height - (self.absolute-position.y + self.mouse-y - self.start-pointer-y), 320px, self.start-y + self.start-height - 48px) / 1px;
+                Assistant.float-x = clamp((self.start-x + self.start-width - root.width - 16px) / max(1px, root.travel-x), 0, 1);
+            }
+        }
+        changed pressed => { if !self.pressed { root.remember(); } }
+        Path { width: 16px; height: 16px; commands: "M 4 11 L 11 4 M 4 7 L 7 4"; stroke: Theme.fg-muted; stroke-width: 1px; opacity: 0.6; }
+    }
+}

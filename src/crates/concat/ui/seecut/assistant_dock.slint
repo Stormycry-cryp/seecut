@@ -5,6 +5,9 @@ import { SeeCut } from "state.slint";
 
 // One persistent view; only the host supplies connection and operation facts.
 export component AssistantDock inherits AssistantPanel {
+    developer-tools: Assistant.developer-tools;
+    signed-in: SeeCut.signed-in;
+    sign-in => { SeeCut.action("auth-open", ""); }
     current-project: Assistant.current-project;
     provider-label: Assistant.provider-label;
     connection: Assistant.connection;
@@ -14,6 +17,8 @@ export component AssistantDock inherits AssistantPanel {
     unknown: Assistant.unknown;
     can-send: Assistant.can-send;
     can-stop: Assistant.can-stop;
+    can-reconcile: Assistant.can-reconcile;
+    budget-label: Assistant.budget-label;
     can-connect: Assistant.can-connect;
     connected: Assistant.connected;
     can-disconnect: Assistant.can-disconnect;
@@ -54,6 +59,8 @@ export component AssistantDock inherits AssistantPanel {
     stop() => { Assistant.stop(); }
     connect(service-url, model-name, api-key, images) => { Assistant.connect(service-url, model-name, api-key, images); }
     disconnect() => { Assistant.disconnect(); }
+    connect-managed() => { Assistant.connect-managed(); }
+    reconcile() => { Assistant.reconcile(); }
     grant-read() => { Assistant.grant-read(); }
     revoke-read() => { Assistant.revoke-read(); }
     grant-write() => { Assistant.grant-write(); }

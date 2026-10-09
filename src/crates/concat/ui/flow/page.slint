@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme, Glyph, IconButton, Modal } from "../primitives/primitives.slint";
+import { AppButton } from "../seecut/components.slint";
+import { FlowWorkspace, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter } from "workspace.slint";
+export { FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter }
+export global Flow {
+    in-out property <bool> open;
+    in-out property <string> title;
+    in-out property <string> token;
+    in-out property <string> draft-token;
+    in-out property <string> selected-id;
+    in-out property <string> selected-title;
+    in-out property <string> selected-kind;
+    in-out property <string> prompt;
+    in-out property <string> generation-prompt;
+    in-out property <bool> dirty;
+    in-out property <bool> confirm;
+    in-out property <bool> recovery;
+    in-out property <bool> recovery-available;
+    in-out property <bool> picker-open;
+    in-out property <bool> input-focused;
+    in-out property <bool> can-undo;
+    in-out property <bool> can-redo;
+    in-out property <bool> error;
+    in-out property <string> message: "新建或打开 Flow 工程";
+    in-out property <string> connecting-from;
+    in-out property <float> pan-x: 60;
+    in-out property <float> pan-y: 64;
+    in-out property <float> zoom: 0.8;
+    in-out property <[FlowNodeView]> nodes;
+    in-out property <[FlowEdgeView]> edges;
+    in-out property <int> focus-token;
+    callback action(string);
+    callback selected(string, string);
+    callback draft-changed(string, string);
+    callback prompt-commit(string, string);
+    callback move-node(string, string, float, float, bool);
+    callback viewport(string, float, float, float, bool);
+    callback input-port(string, string, string);
+    callback output-port(string, string);
+    callback resolve(int);
+    callback recover(int);
+    callback leave-requested(int) -> bool;
+    callback close-requested() -> bool;
+}
+export component FlowPage inherits Rectangle {
+    in property <length> launcher-clearance: 84px;
+    property <bool> compact-header: root.width < 740px;
+    property <length> header-height: root.compact-header ? 88px : 52px;
+    background: Theme.page;
+    clip: true;
+    Text {
+        x: 16px; y: root.compact-header ? 8px : 0px;
+        width: root.compact-header ? parent.width - 32px : 190px;
+        height: root.compact-header ? 24px : 52px;
+        text: Flow.open ? Flow.title : "Flow 工程";
+        color: Theme.fg; font-family: Theme.font; font-size: Theme.fs-lg;
+        vertical-alignment: center; overflow: elide;
+    }
+    HorizontalLayout {
+        x: root.compact-header ? 16px : 214px;
+        y: root.compact-header ? 40px : 6px;
+        width: parent.width - self.x - 16px; height: 40px;
+        spacing: 8px; alignment: start;
+        AppButton { label: "新建"; glyph: root.compact-header ? Glyph.none : Glyph.plus; clicked => { Flow.action("new"); } }
+        AppButton { label: "打开"; glyph: root.compact-header ? Glyph.none : Glyph.folder; clicked => { Flow.action("open"); } }
+        if Flow.open: AppButton { label: "保存"; glyph: root.compact-header ? Glyph.none : Glyph.check; clicked => { Flow.action("save"); } }
+        if Flow.open: AppButton { label: "关闭"; glyph: root.compact-header ? Glyph.none : Glyph.close; clicked => { Flow.action("close"); } }
+        if Flow.open && Flow.recovery-available: AppButton { label: "恢复选项"; clicked => { Flow.action("recover"); } }
+    }
+    if !Flow.open: VerticalLayout {
+        x: 24px; y: 100px; width: parent.width - 48px; height: 180px; spacing: 16px;
+        Text { text: "用节点组织创作步骤"; color: Theme.fg; font-family: Theme.font; font-size: Theme.fs-xl; }
+        Text { text: "可编辑节点、连线和提示词，保存后继续工作。生成、资产导入及交付尚未接通。"; color: Theme.fg-muted; font-family: Theme.font; font-size: Theme.fs-lg; wrap: word-wrap; }
+        Text { text: Flow.message; color: Flow.error ? Theme.accent : Theme.fg-dim; wrap: word-wrap; }
+    }
+    if Flow.open: workspace := FlowWorkspace {
+        y: root.header-height; width: parent.width; height: max(0px, parent.height - root.header-height);
+        document-token: Flow.token; draft-token: Flow.draft-token;
+        nodes: Flow.nodes; edges: Flow.edges;
+        selected-id: Flow.selected-id; selected-title: Flow.selected-title; selected-kind: Flow.selected-kind;
+        selected-status: Flow.dirty ? "提示词未保存" : "已保存";
+        generation-prompt: Flow.generation-prompt;
+        prompt-text <=> Flow.prompt;
+        changed input-focused => { Flow.input-focused = self.input-focused; }
+        focus-token: Flow.focus-token;
+        message: Flow.message; error: Flow.error;
+        pan-x <=> Flow.pan-x; pan-y <=> Flow.pan-y; zoom <=> Flow.zoom;
+        connecting-from: Flow.connecting-from;
+        can-undo: Flow.can-undo; can-redo: Flow.can-redo;
+        save-label: Flow.dirty ? "未保存提示词" : "已保存";
+        launcher-clearance: root.launcher-clearance;
+        selected(id) => { Flow.selected(Flow.token, id); }
+        draft-changed(token,text) => { Flow.draft-changed(token, text); }
+        prompt-commit(token,text) => { Flow.prompt-commit(token, text); }
+        move-node(id, x, y, commit) => { Flow.move-node(Flow.token, id, x, y, commit); }
+        viewport-preview(x,y,z) => { Flow.viewport(Flow.token,x,y,z,false); }
+        viewport-settled(token,x,y,z) => { Flow.viewport(token,x,y,z,true); }
+        input-port(id, port) => { Flow.input-port(Flow.token,id,port); }
+        output-port(id) => { Flow.output-port(Flow.token,id); }
+        action(action) => { Flow.action(action); }
+    }
+}
+export component FlowDraftDialog inherits Modal {
+    open: Flow.confirm;
+    title: "保存提示词草稿";
+    trap-focus: true;
+    surface-width: 460px;
+    closed => { Flow.resolve(0); }
+    VerticalLayout {
+        padding: 20px; spacing: 20px;
+        Text { text: Flow.error ? Flow.message : "当前提示词尚未保存。请选择如何继续。"; color: Theme.fg; wrap: word-wrap; }
+        if Flow.error: AppButton { label: "恢复选项"; clicked => { Flow.action("recover"); } }
+        HorizontalLayout { alignment: end; spacing: 8px;
+            AppButton { label: "取消"; clicked => { Flow.resolve(0); } }
+            AppButton { label: "放弃并继续"; clicked => { Flow.resolve(1); } }
+            AppButton { label: "保存并继续"; primary: true; clicked => { Flow.resolve(2); } }
+        }
+    }
+}
+export component FlowRecoveryDialog inherits Modal {
+    open: Flow.recovery;
+    title: "恢复工程内容";
+    trap-focus: true;
+    surface-width: 540px;
+    closed => { Flow.recover(0); }
+    VerticalLayout {
+        padding: 20px; spacing: 16px;
+        Text { text: "可先导出当前图、提示词草稿和视口的 JSON 备份，供恢复内容时参考。该文件不能作为工程直接打开。"; color: Theme.fg; wrap: word-wrap; }
+        Text { text: "放弃并关闭会丢弃未保存的提示词和视口。磁盘写入结果需要在重新打开原工程后检查。"; color: Theme.fg-muted; wrap: word-wrap; }
+        Text { text: Flow.message; color: Flow.error ? Theme.accent : Theme.fg-muted; wrap: word-wrap; }
+        HorizontalLayout { alignment: end; spacing: 8px;
+            AppButton { label: "取消"; clicked => { Flow.recover(0); } }
+            AppButton { label: "导出恢复备份"; clicked => { Flow.recover(1); } }
+            AppButton { label: "放弃未保存内容并关闭"; clicked => { Flow.recover(2); } }
+        }
+    }
+}
