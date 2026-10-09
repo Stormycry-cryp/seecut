@@ -1,0 +1,267 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme, Icon, IconButton, Glyph, FocusRing } from "../../src/crates/concat/ui/primitives/primitives.slint";
+import { AppButton } from "../../src/crates/concat/ui/seecut/components.slint";
+import { FlowComposer, FlowAttachment, FlowParameter } from "composer.slint";
+export { FlowAttachment, FlowParameter }
+export struct FlowNodeView { id: string, title: string, kind: string, summary: string, state: string, x: float, y: float, preview: image, has-preview: bool, inputs: [string] }
+export struct FlowEdgeView { path: string, selected: bool }
+export struct FlowCandidate { id: string, label: string, selected: bool }
+component PortPoint inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback activated();
+    width: 28px; height: 28px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.activated(); }
+    Rectangle { x: 9px; y: 9px; width: 10px; height: 10px; border-radius: 5px; background: root.active ? Theme.accent : Theme.panel; border-width: 1px; border-color: root.active ? Theme.accent : Theme.fg-muted; }
+    scope := FocusScope {
+        key-pressed(event) => { if event.text == " " || event.text == "\n" { root.activated(); return accept; } return reject; }
+        FocusRing { active: scope.has-focus; radius: 6px; }
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { scope.focus(); root.activated(); } }
+}
+/// Host supplies view models and callbacks; it owns every graph edit and run transition.
+export component FlowWorkspace inherits Rectangle {
+    in property <[FlowNodeView]> nodes;
+    in property <[FlowEdgeView]> edges;
+    in property <[FlowCandidate]> candidates;
+    in property <[FlowAttachment]> references;
+    in property <[FlowParameter]> generation-parameters;
+    in property <string> generation-prompt;
+    callback reference-selected(string);
+    in property <string> selected-id;
+    in property <string> selected-title;
+    in property <string> selected-kind;
+    in property <string> selected-status;
+    in property <bool> has-attempt;
+    in property <bool> can-cancel;
+    in property <bool> can-retry;
+    in-out property <string> prompt-text;
+    in property <string> message: "合成练习 · 结果由本地模拟器产生";
+    in property <bool> error;
+    in-out property <float> zoom: 0.75;
+    in-out property <float> pan-x: 60;
+    in-out property <float> pan-y: 84;
+    in property <string> connecting-from;
+    in property <string> points-label;
+    in property <string> save-label: "已保存";
+    callback draft-changed(string);
+    // Host supplies the fixed launcher exclusion size when integrating into App.
+    in property <length> launcher-clearance: 104px;
+    callback selected(string);
+    callback move-node(string, float, float, bool);
+    callback viewport-settled(float, float, float);
+    callback viewport-preview(float, float, float);
+    property <bool> view-dirty;
+    property <bool> show-catalog;
+    changed pan-x => { root.viewport-preview(root.pan-x, root.pan-y, root.zoom); root.view-dirty = true; }
+    changed pan-y => { root.viewport-preview(root.pan-x, root.pan-y, root.zoom); root.view-dirty = true; }
+    changed zoom => { root.viewport-preview(root.pan-x, root.pan-y, root.zoom); root.view-dirty = true; }
+    Timer { interval: 250ms; running: root.view-dirty && !floor.pressed; triggered => { root.save-viewport(); } }
+    callback input-port(string, string);
+    callback output-port(string);
+    callback action(string);
+    callback prompt-commit(string);
+    callback choose(string);
+    callback assets-requested(string, bool);
+    callback shared-generation-requested(string);
+    background: Theme.page;
+    clip: true;
+    function save-viewport() { root.view-dirty = false; root.viewport-settled(root.pan-x, root.pan-y, root.zoom); }
+    // An unbounded world is mapped into this clipped viewport; no bitmap editor state is reused.
+    stage := Rectangle {
+        y: 64px; width: parent.width; height: parent.height - 64px;
+        clip: true;
+        for row in 40: Rectangle {
+          for column in 80: Rectangle {
+            x: mod(root.pan-x * 1px, 28px) + column * 28px;
+            y: mod(root.pan-y * 1px, 28px) + row * 28px;
+            width: 1px; height: 1px; background: Theme.line; opacity: 0.65;
+          }
+        }
+        floor := TouchArea {
+            property <float> start-x;
+            property <float> start-y;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down { self.start-x = root.pan-x; self.start-y = root.pan-y; }
+                if event.kind == PointerEventKind.up { root.save-viewport(); }
+                if event.kind == PointerEventKind.cancel { root.pan-x = self.start-x; root.pan-y = self.start-y; }
+            }
+            moved => { if self.pressed { root.pan-x = self.start-x + (self.mouse-x - self.pressed-x) / 1px; root.pan-y = self.start-y + (self.mouse-y - self.pressed-y) / 1px; } }
+            clicked => { root.selected(""); }
+            scroll-event(event) => { root.pan-x += event.delta-x / 1px; root.pan-y += event.delta-y / 1px; return accept; }
+        }
+        for edge in root.edges: Path { x: 0px; y: 0px; width: parent.width; height: parent.height; viewbox-width: parent.width / 1px; viewbox-height: parent.height / 1px; commands: edge.path; stroke: edge.selected ? Theme.accent : Theme.line-strong; stroke-width: edge.selected ? 1.6px : 1px; }
+        for node in root.nodes: card := Rectangle {
+            x: (node.x * root.zoom + root.pan-x) * 1px;
+            y: (node.y * root.zoom + root.pan-y) * 1px;
+            width: 228px * root.zoom; height: 190px * root.zoom;
+            accessible-role: button;
+            accessible-label: "选择节点 · " + node.title;
+            accessible-action-default => { root.selected(node.id); }
+            Text { y: 0px; width: parent.width; height: 26px * root.zoom; text: node.title; font-family: Theme.font; font-size: max(11px, Theme.fs-lg * root.zoom); color: root.selected-id == node.id ? Theme.fg : Theme.fg-muted; overflow: elide; }
+            Rectangle {
+                y: 28px * root.zoom; width: parent.width; height: 154px * root.zoom;
+                border-radius: 8px; background: Theme.well;
+                border-width: root.selected-id == node.id ? 1.5px : 1px;
+                border-color: root.selected-id == node.id ? Theme.accent : Theme.line;
+                clip: true;
+                if node.has-preview: Image { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; source: node.preview; image-fit: contain; }
+                if !node.has-preview: Text {
+                    x: 12px; y: 12px; width: parent.width - 24px; height: parent.height - 24px;
+                    text: node.summary; font-family: Theme.font; font-size: max(11px, Theme.fs * root.zoom);
+                    color: Theme.fg-muted; wrap: word-wrap; overflow: elide;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                if node.has-preview: Rectangle {
+                    x: 8px; y: parent.height - 26px; width: parent.width - 16px; height: 20px; border-radius: 4px; background: Theme.panel;
+                    Text { text: node.state; font-family: Theme.font; font-size: 10px; color: Theme.fg-muted; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+            drag := TouchArea {
+                property <float> start-x;
+                property <float> start-y;
+                property <length> pointer-x;
+                property <length> pointer-y;
+                mouse-cursor: move;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        root.selected(node.id); self.start-x = node.x; self.start-y = node.y;
+                        self.pointer-x = self.absolute-position.x + self.mouse-x;
+                        self.pointer-y = self.absolute-position.y + self.mouse-y;
+                    }
+                    if event.kind == PointerEventKind.up { root.move-node(node.id, node.x, node.y, true); }
+                    if event.kind == PointerEventKind.cancel { root.move-node(node.id, self.start-x, self.start-y, false); }
+                }
+                moved => { if self.pressed { root.move-node(node.id, self.start-x + (self.absolute-position.x + self.mouse-x - self.pointer-x) / (root.zoom * 1px), self.start-y + (self.absolute-position.y + self.mouse-y - self.pointer-y) / (root.zoom * 1px), false); } }
+            }
+            for port[index] in node.inputs: PortPoint {
+                x: -14px; y: (68 + index * 36) * root.zoom * 1px;
+                label: node.title + " · 输入 " + port;
+                active: root.connecting-from != "";
+                activated => { root.input-port(node.id, port); }
+            }
+            PortPoint { x: parent.width - 14px; y: 86px * root.zoom; label: node.title + " · 输出"; active: root.connecting-from == node.id; activated => { root.output-port(node.id); } }
+        }
+    }
+    Rectangle {
+        x: 0px; y: 0px; width: parent.width; height: 64px; background: Theme.page;
+        Rectangle { y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.line; }
+        HorizontalLayout {
+            x: 0px; y: 12px; height: 40px; width: parent.width; padding-left: 24px; padding-right: 24px; spacing: 12px;
+            Text { text: "合成练习 Flow"; color: Theme.fg; font-family: Theme.font; font-size: Theme.fs-xl; font-weight: 500; vertical-alignment: center; }
+            Text { text: root.save-label; color: Theme.fg-dim; font-family: Theme.font; font-size: Theme.fs; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            IconButton { glyph: Glyph.plus; label: "新建节点"; side: 36px; icon-size: 18px; clicked => { root.show-catalog = !root.show-catalog; } }
+            IconButton { glyph: Glyph.distribute; label: "整理节点"; side: 36px; icon-size: 18px; clicked => { root.action("arrange"); } }
+            IconButton { glyph: Glyph.undo; label: "撤销"; side: 36px; icon-size: 18px; clicked => { root.action("undo"); } }
+            IconButton { glyph: Glyph.redo; label: "重做"; side: 36px; icon-size: 18px; clicked => { root.action("redo"); } }
+            IconButton { glyph: Theme.dark ? Glyph.sun : Glyph.moon; label: Theme.dark ? "切换浅色主题" : "切换深色主题"; side: 36px; icon-size: 18px; clicked => { Theme.dark = !Theme.dark; } }
+        }
+    }
+    if root.show-catalog: Rectangle {
+        x: max(16px, parent.width - 420px); y: 70px; width: 200px; height: 300px;
+        border-radius: 12px; background: Theme.panel; border-width: 1px; border-color: Theme.line-strong;
+        VerticalLayout { padding: 10px; spacing: 4px;
+            for label[index] in ["提示词", "参考素材", "图像生成", "采用图片", "视频生成", "采用视频", "交付"]: AppButton {
+                label: label; subtle: true;
+                clicked => { root.show-catalog = false; root.action("add_" + ["prompt", "asset", "image_generate", "select", "video_generate", "select_video", "deliver"][index]); }
+            }
+        }
+    }
+    Rectangle {
+        x: 20px; y: parent.height - 52px; width: 180px; height: 36px; border-radius: 10px; background: Theme.panel; border-width: 1px; border-color: Theme.line;
+        HorizontalLayout { padding: 3px; spacing: 4px;
+            IconButton { glyph: Glyph.minus; side: 30px; label: "缩小画布"; clicked => { root.zoom = max(0.25, root.zoom - 0.1); root.save-viewport(); } }
+            Text { text: round(root.zoom * 100) + "%"; color: Theme.fg-muted; horizontal-alignment: center; vertical-alignment: center; font-size: Theme.fs; }
+            IconButton { glyph: Glyph.plus; side: 30px; label: "放大画布"; clicked => { root.zoom = min(2, root.zoom + 0.1); root.save-viewport(); } }
+            IconButton { glyph: Glyph.fit; side: 30px; label: "适合画布"; clicked => { root.action("fit"); } }
+        }
+    }
+    if root.selected-id != "" && root.selected-kind != "prompt" && root.selected-kind != "image_generate" && root.selected-kind != "video_generate": Rectangle {
+        x: max(264px, min(parent.width - self.width - root.launcher-clearance, parent.width / 2 - self.width / 2));
+        y: parent.height - self.height - 24px;
+        width: min(660px, parent.width - 280px - root.launcher-clearance);
+        height: root.candidates.length > 0 ? 216px : 176px;
+        border-radius: 16px; background: Theme.panel; border-width: 1px; border-color: Theme.line-strong;
+        VerticalLayout {
+            padding: 18px; spacing: 12px;
+            HorizontalLayout {
+                height: 40px;
+                Text { text: root.selected-title; color: Theme.fg; font-family: Theme.font; font-size: Theme.fs-xl; font-weight: 500; }
+                Text { text: root.selected-status; color: Theme.fg-muted; font-family: Theme.font; font-size: Theme.fs; horizontal-alignment: right; }
+                IconButton { glyph: Glyph.close; side: 28px; label: "收起编辑区"; clicked => { root.selected(""); } }
+            }
+            if root.selected-kind != "prompt": Text { text: root.message; color: root.error ? Theme.accent : Theme.fg-muted; wrap: word-wrap; font-family: Theme.font; font-size: Theme.fs-lg; }
+            if root.candidates.length > 0: HorizontalLayout {
+                spacing: 8px; alignment: start;
+                for candidate in root.candidates: AppButton { label: candidate.label; selected: candidate.selected; clicked => { root.choose(candidate.id); } }
+            }
+            HorizontalLayout {
+                spacing: 8px; alignment: start;
+                if root.selected-kind == "asset": IconButton { glyph: Glyph.folder; label: "从资产库选择"; side: 36px; icon-size: 18px; clicked => { root.assets-requested(root.selected-id, false); } }
+                if root.selected-kind == "asset": IconButton { glyph: Glyph.import; label: "上传本地素材"; side: 36px; icon-size: 18px; clicked => { root.assets-requested(root.selected-id, true); } }
+                if root.selected-kind == "image_generate" || root.selected-kind == "video_generate": IconButton { glyph: Glyph.sliders; label: "SeeCut 生成设置"; side: 36px; icon-size: 18px; clicked => { root.shared-generation-requested(root.selected-id); } }
+                if root.can-cancel: IconButton { glyph: Glyph.pause; label: "停止"; side: 32px; clicked => { root.action("cancel"); } }
+                if root.has-attempt: IconButton { glyph: Glyph.search; label: "核实结果"; side: 32px; clicked => { root.action("reconcile"); } }
+                if root.can-retry: IconButton { glyph: Glyph.reset; label: "重试"; side: 32px; clicked => { root.action("retry"); } }
+                IconButton { glyph: Glyph.copy; side: 32px; label: "复制节点"; clicked => { root.action("duplicate"); } }
+                Rectangle { horizontal-stretch: 1; }
+                IconButton { glyph: Glyph.play; label: "运行此节点"; side: 36px; clicked => { root.action("run_node"); } }
+                IconButton { glyph: Glyph.skip-forward; label: "运行到这里"; accent: true; side: 36px; clicked => { root.action("run_to"); } }
+            }
+        }
+    }
+    if root.selected-id != "" && (root.selected-kind == "image_generate" || root.selected-kind == "video_generate"): Rectangle {
+        x: max(220px, min(parent.width - self.width - root.launcher-clearance, parent.width / 2 - self.width / 2));
+        y: parent.height - self.height - 24px;
+        width: min(720px, parent.width - 240px - root.launcher-clearance); height: 284px;
+        HorizontalLayout {
+            x: 12px; y: 0px; width: parent.width - 24px; height: 28px; spacing: 8px;
+            Text { text: root.selected-title; color: Theme.fg; font-family: Theme.font; font-size: Theme.fs-lg; vertical-alignment: center; }
+            Text { text: root.selected-status; color: Theme.fg-dim; font-family: Theme.font; font-size: Theme.fs; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            if root.can-cancel: IconButton { glyph: Glyph.pause; label: "停止"; side: 28px; clicked => { root.action("cancel"); } }
+            if root.has-attempt: IconButton { glyph: Glyph.search; label: "核实结果"; side: 28px; clicked => { root.action("reconcile"); } }
+            if root.can-retry: IconButton { glyph: Glyph.reset; label: "重试"; side: 28px; clicked => { root.action("retry"); } }
+            IconButton { glyph: Glyph.play; label: "运行此节点"; side: 28px; clicked => { root.action("run_node"); } }
+            IconButton { glyph: Glyph.skip-forward; label: "运行到这里"; side: 28px; clicked => { root.action("run_to"); } }
+            IconButton { glyph: Glyph.close; label: "收起编辑区"; side: 28px; clicked => { root.selected(""); } }
+        }
+        FlowComposer {
+            x: 0px; y: 40px; width: parent.width; height: 220px;
+            value: root.generation-prompt; read-only: true; label: "来自提示词节点的内容";
+            placeholder: "连接提示词节点；生成设置沿用 SeeCut";
+            attachments: root.references; allow-assets: true; parameters: root.generation-parameters;
+            action-label: "打开 SeeCut 生成设置"; action-glyph: Glyph.sliders;
+            commit(_) => { root.shared-generation-requested(root.selected-id); }
+            parameter-requested(_) => { root.shared-generation-requested(root.selected-id); }
+            attachment-requested(id) => { root.reference-selected(id); }
+            library-requested => { root.assets-requested(root.selected-id, false); }
+            upload-requested => { root.assets-requested(root.selected-id, true); }
+        }
+        Text { x: 12px; y: 266px; width: parent.width - 24px; height: 18px; text: root.message; color: root.error ? Theme.accent : Theme.fg-dim; font-size: Theme.fs; overflow: elide; }
+    }
+    if root.selected-id != "" && root.selected-kind == "prompt": Rectangle {
+        x: max(220px, min(parent.width - self.width - root.launcher-clearance, parent.width / 2 - self.width / 2));
+        y: parent.height - self.height - 24px;
+        width: min(680px, parent.width - 240px - root.launcher-clearance); height: 188px;
+        HorizontalLayout {
+            x: 12px; y: 0px; width: parent.width - 24px; height: 28px; spacing: 10px;
+            Text { text: root.selected-title; font-family: Theme.font; font-size: Theme.fs-lg; color: Theme.fg; vertical-alignment: center; }
+            Text { text: root.selected-status; font-family: Theme.font; font-size: Theme.fs; color: Theme.fg-dim; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            IconButton { glyph: Glyph.copy; label: "复制节点"; side: 28px; clicked => { root.action("duplicate"); } }
+            IconButton { glyph: Glyph.play; label: "运行此节点"; side: 28px; clicked => { root.action("run_node"); } }
+            IconButton { glyph: Glyph.close; label: "收起编辑区"; side: 28px; clicked => { root.selected(""); } }
+        }
+        FlowComposer {
+            x: 0px; y: 40px; width: parent.width; height: 148px;
+            value <=> root.prompt-text; dirty: root.save-label != "已保存";
+            edited(value) => { root.draft-changed(value); }
+            commit(value) => { root.prompt-commit(value); }
+        }
+    }
+    if root.selected-id == "": Text { x: 264px; y: parent.height - 44px; width: parent.width - 280px - root.launcher-clearance; height: 24px; text: root.message; color: Theme.fg-muted; font-size: Theme.fs; vertical-alignment: center; overflow: elide; }
+}

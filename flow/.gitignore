@@ -1,0 +1,4 @@
+core/target/
+**/__pycache__/
+**/writer.lock
+**/.*.tmp

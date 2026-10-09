@@ -1,0 +1,3 @@
+Slint FlowProbe + FlowWorkspace + FlowComposer compile succeeded.
+Python QA adapter syntax verified.
+Uses installed shared QA environment; no dependency installation.

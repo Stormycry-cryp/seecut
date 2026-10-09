@@ -1,0 +1,281 @@
+{
+  "format": 1,
+  "revision": 14,
+  "id": "215d95a3-8723-4077-9977-e6ff808a3634",
+  "project_id": "8d87ddb1-80e9-4c87-b29c-3219c4278d0a",
+  "graphs": {
+    "22986b53-e046-48cb-af9e-d6d1787cc48a": {
+      "id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 16,
+      "nodes": {
+        "asset": {
+          "id": "asset",
+          "kind": "asset",
+          "version": 1,
+          "title": "asset",
+          "params": {
+            "asset_id": "synthetic:product",
+            "content_version": "1",
+            "media_kind": "Image"
+          },
+          "position": [
+            0.0,
+            0.0
+          ]
+        },
+        "bf7b32b7-0907-4eec-8a0c-752cfdcdc34d": {
+          "id": "bf7b32b7-0907-4eec-8a0c-752cfdcdc34d",
+          "kind": "asset",
+          "version": 1,
+          "title": "合成资产库参考",
+          "params": {
+            "asset_id": "synthetic:library-1",
+            "content_version": "fixture-v1",
+            "media_kind": "Image"
+          },
+          "position": [
+            0.0,
+            230.0
+          ]
+        },
+        "delivery": {
+          "id": "delivery",
+          "kind": "deliver",
+          "version": 1,
+          "title": "deliver",
+          "params": {
+            "media_kind": "Video",
+            "target": "synthetic-assets"
+          },
+          "position": [
+            1450.0,
+            0.0
+          ]
+        },
+        "image": {
+          "id": "image",
+          "kind": "image_generate",
+          "version": 1,
+          "title": "image_generate",
+          "params": {
+            "count": 2,
+            "model": "deterministic-v1"
+          },
+          "position": [
+            290.0,
+            0.0
+          ]
+        },
+        "pick_image": {
+          "id": "pick_image",
+          "kind": "select",
+          "version": 1,
+          "title": "select",
+          "params": {
+            "asset_id": "synthetic:4d950a1a-3399-4b42-baa8-12124f93eac7:1",
+            "batch": "4d950a1a-3399-4b42-baa8-12124f93eac7",
+            "media_kind": "Image"
+          },
+          "position": [
+            580.0,
+            0.0
+          ]
+        },
+        "pick_video": {
+          "id": "pick_video",
+          "kind": "select",
+          "version": 1,
+          "title": "select",
+          "params": {
+            "asset_id": "synthetic:1737402f-bca4-451b-9a81-d4e85ca320d9:0",
+            "batch": "1737402f-bca4-451b-9a81-d4e85ca320d9",
+            "media_kind": "Video"
+          },
+          "position": [
+            1160.0,
+            0.0
+          ]
+        },
+        "prompt": {
+          "id": "prompt",
+          "kind": "prompt",
+          "version": 1,
+          "title": "prompt",
+          "params": {
+            "text": "合成商品的柔光展示\n保留瓶身轮廓，采用干净背景。"
+          },
+          "position": [
+            0.0,
+            460.0
+          ]
+        },
+        "video": {
+          "id": "video",
+          "kind": "video_generate",
+          "version": 1,
+          "title": "video_generate",
+          "params": {
+            "count": 1,
+            "model": "deterministic-v1"
+          },
+          "position": [
+            870.0,
+            0.0
+          ]
+        }
+      },
+      "edges": [
+        {
+          "from": "prompt",
+          "output": "out",
+          "to": "image",
+          "input": "prompt",
+          "order": 0
+        },
+        {
+          "from": "asset",
+          "output": "out",
+          "to": "image",
+          "input": "references",
+          "order": 0
+        },
+        {
+          "from": "image",
+          "output": "out",
+          "to": "pick_image",
+          "input": "candidates",
+          "order": 0
+        },
+        {
+          "from": "prompt",
+          "output": "out",
+          "to": "video",
+          "input": "prompt",
+          "order": 0
+        },
+        {
+          "from": "pick_image",
+          "output": "out",
+          "to": "video",
+          "input": "references",
+          "order": 0
+        },
+        {
+          "from": "video",
+          "output": "out",
+          "to": "pick_video",
+          "input": "candidates",
+          "order": 0
+        },
+        {
+          "from": "pick_video",
+          "output": "out",
+          "to": "delivery",
+          "input": "media",
+          "order": 0
+        },
+        {
+          "from": "bf7b32b7-0907-4eec-8a0c-752cfdcdc34d",
+          "output": "out",
+          "to": "image",
+          "input": "references",
+          "order": 1
+        }
+      ],
+      "viewport": [
+        50.0,
+        80.0,
+        0.6769230961799622
+      ]
+    }
+  },
+  "operations": {
+    "417a3c57-8574-4206-8e21-470250179429": {
+      "operation": "417a3c57-8574-4206-8e21-470250179429",
+      "request_hash": "06f305eb39759b30f597a4ce4d4ba8da40a89f13cf9a780046fe5a84f1bc5a91",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 13,
+      "created": []
+    },
+    "4cd2f2e9-66bb-4929-81c2-27b0577e1bc4": {
+      "operation": "4cd2f2e9-66bb-4929-81c2-27b0577e1bc4",
+      "request_hash": "75f6110adfdd12dbe213cf6759635da879a3062851c0bb12adf64ec997c2f7b4",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 14,
+      "created": []
+    },
+    "5ad52019-0386-43a2-91a7-36f09f2d0322": {
+      "operation": "5ad52019-0386-43a2-91a7-36f09f2d0322",
+      "request_hash": "a3ffa3acfaf6f81a635359d9c018d9f17a98245fdf871cc29e5cf1e45303aca2",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 16,
+      "created": []
+    },
+    "73c5d13a-3bb7-4aef-880a-0a94261cb44d": {
+      "operation": "73c5d13a-3bb7-4aef-880a-0a94261cb44d",
+      "request_hash": "256b79e8b5ef556796a5435c348c770496e1d4beaa157be19294c40266d32f00",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 14,
+      "created": []
+    },
+    "75887529-3020-4702-8242-c3818aac2b00": {
+      "operation": "75887529-3020-4702-8242-c3818aac2b00",
+      "request_hash": "f1aad62b45e3910ad0752d11e78a3b2ea71e4314ea872178b5a3d3c90a1460e3",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 12,
+      "created": []
+    },
+    "814ed356-7099-4e5d-84b4-51d826de91a4": {
+      "operation": "814ed356-7099-4e5d-84b4-51d826de91a4",
+      "request_hash": "40eeba453020bf6ab764c587e0c8a9232e7ba1eace8de849c79349a5a1a754d4",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 13,
+      "created": []
+    },
+    "8826bc68-c90f-4889-9984-b8effac0cac2": {
+      "operation": "8826bc68-c90f-4889-9984-b8effac0cac2",
+      "request_hash": "83afa213b452beaa97b115960c93c115d3c7135e08cf19245ead73b63e998858",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 14,
+      "created": []
+    },
+    "8ef1abb2-68c3-4cd1-9a31-d85d94e98430": {
+      "operation": "8ef1abb2-68c3-4cd1-9a31-d85d94e98430",
+      "request_hash": "664e676d5f9e0378b0a173465d22161830383bcb4e30df2605f043c10cb8e9e0",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 11,
+      "created": []
+    },
+    "b07e4069-875e-4af2-8a31-b984b8fb5ff5": {
+      "operation": "b07e4069-875e-4af2-8a31-b984b8fb5ff5",
+      "request_hash": "91b8415e3d4a6134350b050f08ff7b2ed65258aa0612156099228f6e4f692a86",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 16,
+      "created": []
+    },
+    "d1173828-0f0e-4a7c-b615-d61241085ec0": {
+      "operation": "d1173828-0f0e-4a7c-b615-d61241085ec0",
+      "request_hash": "714fd13c0dcba4a7f41da64a8b92644b7f0cbe891dca9a4903e7517e04430415",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 15,
+      "created": []
+    },
+    "e0b09178-77bb-44dd-b6b1-5528dc5c39b5": {
+      "operation": "e0b09178-77bb-44dd-b6b1-5528dc5c39b5",
+      "request_hash": "20c349be8e58de3034ee42e24fa8e107d475c27357f8d22a50924c79da42a767",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 10,
+      "created": [
+        "bf7b32b7-0907-4eec-8a0c-752cfdcdc34d"
+      ]
+    },
+    "f14804d1-b071-44f2-a75c-50b3df9df480": {
+      "operation": "f14804d1-b071-44f2-a75c-50b3df9df480",
+      "request_hash": "5be1e7aeba217869a0cf1ac920bad9b861d488c9211c86798b54aaf8b07bfef5",
+      "graph_id": "22986b53-e046-48cb-af9e-d6d1787cc48a",
+      "revision": 12,
+      "created": []
+    }
+  },
+  "source_document": null
+}

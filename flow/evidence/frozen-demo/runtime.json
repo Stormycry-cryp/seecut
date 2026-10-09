@@ -1,0 +1,571 @@
+{
+  "format": 1,
+  "document_id": "9e6d352f-c681-43fa-a154-5179f02567b4",
+  "attempts": [
+    {
+      "id": "d3bd783d-0aa8-481e-b300-0c7b88c22b78",
+      "key": "d3bd783d-0aa8-481e-b300-0c7b88c22b78",
+      "run_id": "cb5299f0-d412-4845-893d-b96d23711087",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "node_id": "asset",
+      "revision": 7,
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "fingerprint": "7c5a52b8a8f5bf76b42b1a88e0ad408b01b2e5211d652a50a41f795bee2a3096",
+      "node": {
+        "id": "asset",
+        "kind": "asset",
+        "version": 1,
+        "title": "asset",
+        "params": {
+          "asset_id": "synthetic:product",
+          "content_version": "1",
+          "media_kind": "Image"
+        },
+        "position": [
+          0.0,
+          0.0
+        ]
+      },
+      "inputs": [],
+      "virtual_quote": 0,
+      "status": "Succeeded",
+      "output": {
+        "Media": {
+          "id": "synthetic:product",
+          "version": "1",
+          "kind": "Image",
+          "simulated": true
+        }
+      },
+      "message": "simulated output read back"
+    },
+    {
+      "id": "b9a3d35b-a5f7-47a0-9fe6-2cbef15076a1",
+      "key": "b9a3d35b-a5f7-47a0-9fe6-2cbef15076a1",
+      "run_id": "cb5299f0-d412-4845-893d-b96d23711087",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "node_id": "prompt",
+      "revision": 7,
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "fingerprint": "01400dec2282babf77c3f930d4db46dca11a83418830d27921d6c21921a9dcdc",
+      "node": {
+        "id": "prompt",
+        "kind": "prompt",
+        "version": 1,
+        "title": "prompt",
+        "params": {
+          "text": "合成商品的柔光展示"
+        },
+        "position": [
+          0.0,
+          0.0
+        ]
+      },
+      "inputs": [],
+      "virtual_quote": 0,
+      "status": "Succeeded",
+      "output": {
+        "Text": "合成商品的柔光展示"
+      },
+      "message": "simulated output read back"
+    },
+    {
+      "id": "f6bfe8ea-0292-4eb5-bc49-08304a3d1445",
+      "key": "f6bfe8ea-0292-4eb5-bc49-08304a3d1445",
+      "run_id": "cb5299f0-d412-4845-893d-b96d23711087",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "node_id": "image",
+      "revision": 7,
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "fingerprint": "e6e11b3680da5f87e84ffd07fd2948d2cdad168372a37a5cbc1a3bdfd02385e1",
+      "node": {
+        "id": "image",
+        "kind": "image_generate",
+        "version": 1,
+        "title": "image_generate",
+        "params": {
+          "count": 2,
+          "model": "deterministic-v1"
+        },
+        "position": [
+          0.0,
+          0.0
+        ]
+      },
+      "inputs": [
+        {
+          "port": "prompt",
+          "order": 0,
+          "source": "prompt",
+          "output": {
+            "Text": "合成商品的柔光展示"
+          }
+        },
+        {
+          "port": "references",
+          "order": 0,
+          "source": "asset",
+          "output": {
+            "Media": {
+              "id": "synthetic:product",
+              "version": "1",
+              "kind": "Image",
+              "simulated": true
+            }
+          }
+        }
+      ],
+      "virtual_quote": 20,
+      "status": "Succeeded",
+      "output": {
+        "Candidates": {
+          "batch": "f6bfe8ea-0292-4eb5-bc49-08304a3d1445",
+          "assets": [
+            {
+              "id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:0",
+              "version": "1867e248982145f1943f7090c78f2ddba7ab402c63a328f992fff8bbe1536b88",
+              "kind": "Image",
+              "simulated": true
+            },
+            {
+              "id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:1",
+              "version": "71634422fa22d6e7fead622ee75035079d69e256e74f65d6f6cf80bbd90f7848",
+              "kind": "Image",
+              "simulated": true
+            }
+          ]
+        }
+      },
+      "message": "simulated output read back"
+    },
+    {
+      "id": "d6975bb1-b697-43c1-ac98-0c307fd43250",
+      "key": "d6975bb1-b697-43c1-ac98-0c307fd43250",
+      "run_id": "657c40e4-acf7-452c-95be-b95131d9f712",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "node_id": "pick_image",
+      "revision": 8,
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "fingerprint": "326d4db33fb88cd995b27be9969b440d7e45b6e06e7c1ed0c6233ce71b11262e",
+      "node": {
+        "id": "pick_image",
+        "kind": "select",
+        "version": 1,
+        "title": "select",
+        "params": {
+          "asset_id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:0",
+          "batch": "f6bfe8ea-0292-4eb5-bc49-08304a3d1445",
+          "media_kind": "Image"
+        },
+        "position": [
+          0.0,
+          0.0
+        ]
+      },
+      "inputs": [
+        {
+          "port": "candidates",
+          "order": 0,
+          "source": "image",
+          "output": {
+            "Candidates": {
+              "batch": "f6bfe8ea-0292-4eb5-bc49-08304a3d1445",
+              "assets": [
+                {
+                  "id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:0",
+                  "version": "1867e248982145f1943f7090c78f2ddba7ab402c63a328f992fff8bbe1536b88",
+                  "kind": "Image",
+                  "simulated": true
+                },
+                {
+                  "id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:1",
+                  "version": "71634422fa22d6e7fead622ee75035079d69e256e74f65d6f6cf80bbd90f7848",
+                  "kind": "Image",
+                  "simulated": true
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "virtual_quote": 0,
+      "status": "Succeeded",
+      "output": {
+        "Media": {
+          "id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:0",
+          "version": "1867e248982145f1943f7090c78f2ddba7ab402c63a328f992fff8bbe1536b88",
+          "kind": "Image",
+          "simulated": true
+        }
+      },
+      "message": "simulated output read back"
+    },
+    {
+      "id": "7991987a-33f4-489f-9e84-38099719e446",
+      "key": "7991987a-33f4-489f-9e84-38099719e446",
+      "run_id": "657c40e4-acf7-452c-95be-b95131d9f712",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "node_id": "video",
+      "revision": 8,
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "fingerprint": "48bc10715d261770884a15c73cffaa3a18e1a9ac34e542a5346475a463a49226",
+      "node": {
+        "id": "video",
+        "kind": "video_generate",
+        "version": 1,
+        "title": "video_generate",
+        "params": {
+          "count": 1,
+          "model": "deterministic-v1"
+        },
+        "position": [
+          0.0,
+          0.0
+        ]
+      },
+      "inputs": [
+        {
+          "port": "prompt",
+          "order": 0,
+          "source": "prompt",
+          "output": {
+            "Text": "合成商品的柔光展示"
+          }
+        },
+        {
+          "port": "references",
+          "order": 0,
+          "source": "pick_image",
+          "output": {
+            "Media": {
+              "id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:0",
+              "version": "1867e248982145f1943f7090c78f2ddba7ab402c63a328f992fff8bbe1536b88",
+              "kind": "Image",
+              "simulated": true
+            }
+          }
+        }
+      ],
+      "virtual_quote": 10,
+      "status": "Succeeded",
+      "output": {
+        "Candidates": {
+          "batch": "7991987a-33f4-489f-9e84-38099719e446",
+          "assets": [
+            {
+              "id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+              "version": "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb",
+              "kind": "Video",
+              "simulated": true
+            }
+          ]
+        }
+      },
+      "message": "simulated output read back"
+    },
+    {
+      "id": "6e8909fe-67af-4572-99c9-5875f8489893",
+      "key": "6e8909fe-67af-4572-99c9-5875f8489893",
+      "run_id": "bafb616a-ec77-4de4-a1e9-6d45f9c2112e",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "node_id": "pick_video",
+      "revision": 9,
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "fingerprint": "d5ff8b9c79901f68fc581f363f0fa45801b178c95de404f34742c8bf1c783770",
+      "node": {
+        "id": "pick_video",
+        "kind": "select",
+        "version": 1,
+        "title": "select",
+        "params": {
+          "asset_id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+          "batch": "7991987a-33f4-489f-9e84-38099719e446",
+          "media_kind": "Video"
+        },
+        "position": [
+          0.0,
+          0.0
+        ]
+      },
+      "inputs": [
+        {
+          "port": "candidates",
+          "order": 0,
+          "source": "video",
+          "output": {
+            "Candidates": {
+              "batch": "7991987a-33f4-489f-9e84-38099719e446",
+              "assets": [
+                {
+                  "id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+                  "version": "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb",
+                  "kind": "Video",
+                  "simulated": true
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "virtual_quote": 0,
+      "status": "Succeeded",
+      "output": {
+        "Media": {
+          "id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+          "version": "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb",
+          "kind": "Video",
+          "simulated": true
+        }
+      },
+      "message": "simulated output read back"
+    },
+    {
+      "id": "0f211302-2dfb-4bb8-8a91-a529666867e7",
+      "key": "0f211302-2dfb-4bb8-8a91-a529666867e7",
+      "run_id": "bafb616a-ec77-4de4-a1e9-6d45f9c2112e",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "node_id": "delivery",
+      "revision": 9,
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "fingerprint": "5dfb98c97358e06a4a2b74790299300def1de0f77483cb77c97bdf053683aad5",
+      "node": {
+        "id": "delivery",
+        "kind": "deliver",
+        "version": 1,
+        "title": "deliver",
+        "params": {
+          "media_kind": "Video",
+          "target": "synthetic-assets"
+        },
+        "position": [
+          0.0,
+          0.0
+        ]
+      },
+      "inputs": [
+        {
+          "port": "media",
+          "order": 0,
+          "source": "pick_video",
+          "output": {
+            "Media": {
+              "id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+              "version": "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb",
+              "kind": "Video",
+              "simulated": true
+            }
+          }
+        }
+      ],
+      "virtual_quote": 0,
+      "status": "Succeeded",
+      "output": {
+        "Media": {
+          "id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+          "version": "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb",
+          "kind": "Video",
+          "simulated": true
+        }
+      },
+      "message": "simulated output read back"
+    }
+  ],
+  "runs": [
+    {
+      "id": "cb5299f0-d412-4845-893d-b96d23711087",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "target": "delivery",
+      "revision": 7,
+      "order": [
+        "asset",
+        "prompt",
+        "image",
+        "pick_image",
+        "video",
+        "pick_video",
+        "delivery"
+      ],
+      "status": "paused"
+    },
+    {
+      "id": "657c40e4-acf7-452c-95be-b95131d9f712",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "target": "delivery",
+      "revision": 8,
+      "order": [
+        "asset",
+        "prompt",
+        "image",
+        "pick_image",
+        "video",
+        "pick_video",
+        "delivery"
+      ],
+      "status": "paused"
+    },
+    {
+      "id": "bafb616a-ec77-4de4-a1e9-6d45f9c2112e",
+      "graph_id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "target": "delivery",
+      "revision": 9,
+      "order": [
+        "asset",
+        "prompt",
+        "image",
+        "pick_image",
+        "video",
+        "pick_video",
+        "delivery"
+      ],
+      "status": "succeeded"
+    }
+  ],
+  "virtual_spent": 30,
+  "tasks": {
+    "0f211302-2dfb-4bb8-8a91-a529666867e7": {
+      "fingerprint": "5dfb98c97358e06a4a2b74790299300def1de0f77483cb77c97bdf053683aad5",
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "output": {
+        "Media": {
+          "id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+          "version": "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb",
+          "kind": "Video",
+          "simulated": true
+        }
+      }
+    },
+    "6e8909fe-67af-4572-99c9-5875f8489893": {
+      "fingerprint": "d5ff8b9c79901f68fc581f363f0fa45801b178c95de404f34742c8bf1c783770",
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "output": {
+        "Media": {
+          "id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+          "version": "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb",
+          "kind": "Video",
+          "simulated": true
+        }
+      }
+    },
+    "7991987a-33f4-489f-9e84-38099719e446": {
+      "fingerprint": "48bc10715d261770884a15c73cffaa3a18e1a9ac34e542a5346475a463a49226",
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "output": {
+        "Candidates": {
+          "batch": "7991987a-33f4-489f-9e84-38099719e446",
+          "assets": [
+            {
+              "id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+              "version": "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb",
+              "kind": "Video",
+              "simulated": true
+            }
+          ]
+        }
+      }
+    },
+    "b9a3d35b-a5f7-47a0-9fe6-2cbef15076a1": {
+      "fingerprint": "01400dec2282babf77c3f930d4db46dca11a83418830d27921d6c21921a9dcdc",
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "output": {
+        "Text": "合成商品的柔光展示"
+      }
+    },
+    "d3bd783d-0aa8-481e-b300-0c7b88c22b78": {
+      "fingerprint": "7c5a52b8a8f5bf76b42b1a88e0ad408b01b2e5211d652a50a41f795bee2a3096",
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "output": {
+        "Media": {
+          "id": "synthetic:product",
+          "version": "1",
+          "kind": "Image",
+          "simulated": true
+        }
+      }
+    },
+    "d6975bb1-b697-43c1-ac98-0c307fd43250": {
+      "fingerprint": "326d4db33fb88cd995b27be9969b440d7e45b6e06e7c1ed0c6233ce71b11262e",
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "output": {
+        "Media": {
+          "id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:0",
+          "version": "1867e248982145f1943f7090c78f2ddba7ab402c63a328f992fff8bbe1536b88",
+          "kind": "Image",
+          "simulated": true
+        }
+      }
+    },
+    "f6bfe8ea-0292-4eb5-bc49-08304a3d1445": {
+      "fingerprint": "e6e11b3680da5f87e84ffd07fd2948d2cdad168372a37a5cbc1a3bdfd02385e1",
+      "scope": {
+        "account": "synthetic-account",
+        "service": "deterministic-local-v1"
+      },
+      "output": {
+        "Candidates": {
+          "batch": "f6bfe8ea-0292-4eb5-bc49-08304a3d1445",
+          "assets": [
+            {
+              "id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:0",
+              "version": "1867e248982145f1943f7090c78f2ddba7ab402c63a328f992fff8bbe1536b88",
+              "kind": "Image",
+              "simulated": true
+            },
+            {
+              "id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:1",
+              "version": "71634422fa22d6e7fead622ee75035079d69e256e74f65d6f6cf80bbd90f7848",
+              "kind": "Image",
+              "simulated": true
+            }
+          ]
+        }
+      }
+    }
+  },
+  "deliveries": {
+    "0f211302-2dfb-4bb8-8a91-a529666867e7": {
+      "id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+      "version": "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb",
+      "kind": "Video",
+      "simulated": true
+    }
+  }
+}

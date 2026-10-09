@@ -1,0 +1,17 @@
+{
+  "document": "215d95a3-8723-4077-9977-e6ff808a3634",
+  "document_revision": 14,
+  "graph_revision": 16,
+  "nodes": 8,
+  "edges": 8,
+  "prompt": "合成商品的柔光展示\n保留瓶身轮廓，采用干净背景。",
+  "attempts": 7,
+  "virtual_spent": 30,
+  "deliveries": 1,
+  "runs": [
+    "paused",
+    "paused",
+    "succeeded"
+  ],
+  "all_assets_simulated": true
+}

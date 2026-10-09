@@ -1,0 +1,5 @@
+Paused { node: "pick_image", reason: "choose one result from the current batch before continuing" }
+Paused { node: "pick_video", reason: "choose one result from the current batch before continuing" }
+Complete(Media(Asset { id: "synthetic:7991987a-33f4-489f-9e84-38099719e446:0", version: "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb", kind: Video, simulated: true }))
+reopened output: Media(Asset { id: "synthetic:7991987a-33f4-489f-9e84-38099719e446:0", version: "c0ff0ebf99940a55934e98ace9a82e855cb8ef20f0f4879927927243793a9beb", kind: Video, simulated: true })
+virtual points: 30; simulated deliveries: 1

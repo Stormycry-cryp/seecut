@@ -1,0 +1,92 @@
+import { Theme, TooltipLayer, IconButton, Glyph } from "../../src/crates/concat/ui/primitives/primitives.slint";
+import { FlowWorkspace, FlowNodeView, FlowEdgeView, FlowCandidate, FlowAttachment, FlowParameter } from "../ui/workspace.slint";
+export { Theme, FlowNodeView, FlowEdgeView, FlowCandidate, FlowAttachment, FlowParameter }
+export component FlowProbe inherits Window {
+    title: "SeeCut Flow · 合成验证";
+    in-out property <length> view-width: 1280px;
+    in-out property <length> view-height: 800px;
+    width: root.view-width; height: root.view-height;
+    background: Theme.page; default-font-family: Theme.font; default-font-size: Theme.fs;
+    in-out property <[FlowNodeView]> nodes;
+    in-out property <[FlowEdgeView]> edges;
+    in-out property <[FlowCandidate]> candidates;
+    in-out property <[FlowAttachment]> references;
+    in-out property <[FlowParameter]> generation-parameters;
+    in-out property <string> generation-prompt;
+    in-out property <bool> fixture-picker;
+    in-out property <image> fixture-image;
+    callback reference-selected(string);
+    callback fixture-chosen(string);
+    in-out property <string> selected-id;
+    in-out property <string> selected-title;
+    in-out property <string> selected-kind;
+    in-out property <string> selected-status;
+    in-out property <string> prompt-text;
+    in-out property <string> message;
+    in-out property <bool> error;
+    in-out property <bool> has-attempt;
+    in-out property <bool> can-cancel;
+    in-out property <bool> can-retry;
+    in-out property <float> zoom: 0.62;
+    in-out property <float> pan-x: 36;
+    in-out property <float> pan-y: 112;
+    in-out property <string> connecting-from;
+    in-out property <string> points-label;
+    in-out property <string> save-label: "已保存";
+    callback draft-changed(string);
+    callback selected(string);
+    callback move-node(string, float, float, bool);
+    callback viewport-settled(float, float, float);
+    callback viewport-preview(float, float, float);
+    callback input-port(string, string);
+    callback output-port(string);
+    callback action(string);
+    callback prompt-commit(string);
+    callback choose(string);
+    callback assets-requested(string, bool);
+    callback shared-generation-requested(string);
+    FlowWorkspace {
+        references: root.references; generation-parameters: root.generation-parameters; generation-prompt: root.generation-prompt;
+        reference-selected(id) => { root.reference-selected(id); }
+        nodes: root.nodes; edges: root.edges; candidates: root.candidates;
+        selected-id: root.selected-id; selected-title: root.selected-title; selected-kind: root.selected-kind; selected-status: root.selected-status;
+        save-label: root.save-label;
+        draft-changed(value) => { root.draft-changed(value); }
+        prompt-text <=> root.prompt-text; message: root.message; error: root.error;
+        has-attempt: root.has-attempt; can-cancel: root.can-cancel; can-retry: root.can-retry;
+        zoom <=> root.zoom; pan-x <=> root.pan-x; pan-y <=> root.pan-y; connecting-from: root.connecting-from; points-label: root.points-label;
+        selected(id) => { root.selected(id); }
+        move-node(id,x,y,commit) => { root.move-node(id,x,y,commit); }
+        viewport-settled(x,y,z) => { root.viewport-settled(x,y,z); }
+        viewport-preview(x,y,z) => { root.viewport-preview(x,y,z); }
+        input-port(id,port) => { root.input-port(id,port); }
+        output-port(id) => { root.output-port(id); }
+        action(name) => { root.action(name); }
+        prompt-commit(text) => { root.prompt-commit(text); }
+        choose(id) => { root.choose(id); }
+        assets-requested(id,local) => { root.assets-requested(id,local); }
+        shared-generation-requested(id) => { root.shared-generation-requested(id); }
+    }
+    // QA-only picker. Production uses the existing SeeCut library/import dialog.
+    if root.fixture-picker: Rectangle {
+        background: Theme.page.with-alpha(0.8);
+        TouchArea { clicked => { root.fixture-picker = false; } }
+        Rectangle {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: 380px; height: 230px; border-radius: 16px; background: Theme.panel; border-width: 1px; border-color: Theme.line-strong;
+            TouchArea { }
+            Text { x: 20px; y: 20px; text: "合成资产库"; color: Theme.fg; font-size: Theme.fs-xl; }
+            Text { x: 20px; y: 48px; text: "仅测试素材 · 不访问你的资产"; color: Theme.fg-dim; font-size: Theme.fs; }
+            IconButton { x: parent.width - 48px; y: 12px; glyph: Glyph.close; side: 32px; label: "关闭合成资产库"; clicked => { root.fixture-picker = false; } }
+            for choice[index] in ["瓶身参考", "构图参考"]: Rectangle {
+                x: 20px + index * 176px; y: 82px; width: 164px; height: 128px; border-radius: 8px; background: Theme.well;
+                Image { x: 0px; y: 0px; width: parent.width; height: 96px; source: root.fixture-image; image-fit: contain; }
+                Text { y: 101px; width: parent.width; text: choice; font-size: Theme.fs; color: Theme.fg; horizontal-alignment: center; }
+                accessible-role: button; accessible-label: "选择合成素材 · " + choice;
+                accessible-action-default => { root.fixture-chosen("synthetic:library-" + index); }
+                TouchArea { mouse-cursor: pointer; clicked => { root.fixture-chosen("synthetic:library-" + index); } }
+            }
+        }
+    }
+    TooltipLayer { width: parent.width; height: parent.height; }
+}

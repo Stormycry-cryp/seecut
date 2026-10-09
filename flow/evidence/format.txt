@@ -1,0 +1,2 @@
+cargo +1.93 fmt --manifest-path flow/core/Cargo.toml --check
+exit: 0

@@ -1,0 +1,172 @@
+{
+  "format": 1,
+  "revision": 2,
+  "id": "9e6d352f-c681-43fa-a154-5179f02567b4",
+  "project_id": "9960d354-d9c6-4b75-a048-1ecd14660617",
+  "graphs": {
+    "c4e083c8-1d86-4a01-8670-cbc1d1366c06": {
+      "id": "c4e083c8-1d86-4a01-8670-cbc1d1366c06",
+      "revision": 9,
+      "nodes": {
+        "asset": {
+          "id": "asset",
+          "kind": "asset",
+          "version": 1,
+          "title": "asset",
+          "params": {
+            "asset_id": "synthetic:product",
+            "content_version": "1",
+            "media_kind": "Image"
+          },
+          "position": [
+            0.0,
+            0.0
+          ]
+        },
+        "delivery": {
+          "id": "delivery",
+          "kind": "deliver",
+          "version": 1,
+          "title": "deliver",
+          "params": {
+            "media_kind": "Video",
+            "target": "synthetic-assets"
+          },
+          "position": [
+            0.0,
+            0.0
+          ]
+        },
+        "image": {
+          "id": "image",
+          "kind": "image_generate",
+          "version": 1,
+          "title": "image_generate",
+          "params": {
+            "count": 2,
+            "model": "deterministic-v1"
+          },
+          "position": [
+            0.0,
+            0.0
+          ]
+        },
+        "pick_image": {
+          "id": "pick_image",
+          "kind": "select",
+          "version": 1,
+          "title": "select",
+          "params": {
+            "asset_id": "synthetic:f6bfe8ea-0292-4eb5-bc49-08304a3d1445:0",
+            "batch": "f6bfe8ea-0292-4eb5-bc49-08304a3d1445",
+            "media_kind": "Image"
+          },
+          "position": [
+            0.0,
+            0.0
+          ]
+        },
+        "pick_video": {
+          "id": "pick_video",
+          "kind": "select",
+          "version": 1,
+          "title": "select",
+          "params": {
+            "asset_id": "synthetic:7991987a-33f4-489f-9e84-38099719e446:0",
+            "batch": "7991987a-33f4-489f-9e84-38099719e446",
+            "media_kind": "Video"
+          },
+          "position": [
+            0.0,
+            0.0
+          ]
+        },
+        "prompt": {
+          "id": "prompt",
+          "kind": "prompt",
+          "version": 1,
+          "title": "prompt",
+          "params": {
+            "text": "合成商品的柔光展示"
+          },
+          "position": [
+            0.0,
+            0.0
+          ]
+        },
+        "video": {
+          "id": "video",
+          "kind": "video_generate",
+          "version": 1,
+          "title": "video_generate",
+          "params": {
+            "count": 1,
+            "model": "deterministic-v1"
+          },
+          "position": [
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "edges": [
+        {
+          "from": "prompt",
+          "output": "out",
+          "to": "image",
+          "input": "prompt",
+          "order": 0
+        },
+        {
+          "from": "asset",
+          "output": "out",
+          "to": "image",
+          "input": "references",
+          "order": 0
+        },
+        {
+          "from": "image",
+          "output": "out",
+          "to": "pick_image",
+          "input": "candidates",
+          "order": 0
+        },
+        {
+          "from": "prompt",
+          "output": "out",
+          "to": "video",
+          "input": "prompt",
+          "order": 0
+        },
+        {
+          "from": "pick_image",
+          "output": "out",
+          "to": "video",
+          "input": "references",
+          "order": 0
+        },
+        {
+          "from": "video",
+          "output": "out",
+          "to": "pick_video",
+          "input": "candidates",
+          "order": 0
+        },
+        {
+          "from": "pick_video",
+          "output": "out",
+          "to": "delivery",
+          "input": "media",
+          "order": 0
+        }
+      ],
+      "viewport": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  },
+  "operations": {},
+  "source_document": null
+}
