@@ -43,14 +43,14 @@ mod agent_identity;
 mod agent_process;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_ui;
-mod flow_controller;
-mod flow_ui;
 mod chips;
 mod cloud;
 mod cloud_files;
 mod dock;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod editor_mcp;
+mod flow_controller;
+mod flow_ui;
 mod format;
 mod generation_templates;
 mod gpu;
@@ -487,7 +487,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_titlebar_close(|| {
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
-            if app.global::<ui::Flow>().invoke_close_requested() { return; }
+            if app.global::<ui::Flow>().invoke_close_requested() {
+                return;
+            }
             let should_close = shell.studio.borrow_mut().request_window_close();
             shell.studio.borrow_mut().refresh_art();
             shell.studio.borrow().publish(&app, &shell.models);
@@ -504,7 +506,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
         log::info!("close: system close request (Alt+F4 / taskbar)");
         let mut should_close = false;
         Shell::with(|shell, app| {
-            if app.global::<ui::Flow>().invoke_close_requested() { return; }
+            if app.global::<ui::Flow>().invoke_close_requested() {
+                return;
+            }
             should_close = shell.studio.borrow_mut().request_window_close();
             shell.studio.borrow_mut().refresh_art();
             shell.studio.borrow().publish(&app, &shell.models);
@@ -2017,7 +2021,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 }
                 if action == "close-window" {
                     log::info!("close: File > Close Window");
-                    if app.global::<ui::Flow>().invoke_close_requested() { return; }
+                    if app.global::<ui::Flow>().invoke_close_requested() {
+                        return;
+                    }
                     let should_close = shell.studio.borrow_mut().request_window_close();
                     shell.studio.borrow_mut().refresh_art();
                     shell.studio.borrow().publish(&app, &shell.models);

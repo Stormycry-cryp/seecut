@@ -2159,7 +2159,12 @@ fn apply_generation_configuration(
 }
 
 fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
-    if app.global::<crate::ui::Flow>().invoke_leave_requested(target) { return; }
+    if app
+        .global::<crate::ui::Flow>()
+        .invoke_leave_requested(target)
+    {
+        return;
+    }
     let ui = app.global::<SeeCut>();
     if ui.get_page() == 6 && !ui.get_canvas_gallery_open() && app.invoke_canvas_leave_page(target) {
         return;
