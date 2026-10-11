@@ -420,6 +420,64 @@ mod tests {
         (dir, c, id)
     }
     #[test]
+    fn navigation_and_quit_keep_drafts_until_the_original_intent_is_confirmed() {
+        let (dir, mut c, node) = open();
+        let token = c.draft_token().to_owned();
+        c.change_draft(&token, "导航前保存".into()).unwrap();
+        assert_eq!(c.request(Intent::Navigate(3)).unwrap(), None);
+        assert_eq!(c.resolve(0).unwrap(), Effect::None);
+        assert!(!c.pending());
+        assert!(c.dirty());
+        assert_eq!(c.prompt(), "导航前保存");
+        assert_eq!(c.session.as_ref().unwrap().selected, node);
+        assert_eq!(c.request(Intent::Navigate(3)).unwrap(), None);
+        assert_eq!(c.resolve(2).unwrap(), Effect::Navigate(3));
+        assert!(!c.dirty());
+
+        let token = c.draft_token().to_owned();
+        c.change_draft(&token, "退出前保存".into()).unwrap();
+        assert_eq!(c.request(Intent::Quit).unwrap(), None);
+        assert_eq!(c.resolve(0).unwrap(), Effect::None);
+        assert!(c.dirty());
+        assert!(!c.pending());
+        assert_eq!(c.prompt(), "退出前保存");
+        assert_eq!(c.request(Intent::Quit).unwrap(), None);
+        assert_eq!(c.resolve(2).unwrap(), Effect::Quit);
+        assert!(!c.pending());
+        assert!(!c.dirty());
+        let saved: Document =
+            serde_json::from_slice(&std::fs::read(dir.path().join("one/document.json")).unwrap())
+                .unwrap();
+        let graph_id = &c.session.as_ref().unwrap().graph_id;
+        assert_eq!(
+            saved.graphs[graph_id].nodes[&node].params["text"],
+            "退出前保存"
+        );
+        assert_eq!(c.request(Intent::Quit).unwrap(), Some(Effect::Quit));
+    }
+    #[test]
+    fn redo_intent_restores_the_node_in_memory_and_on_disk() {
+        let (dir, mut c, node) = open();
+        assert_eq!(c.request(Intent::Undo).unwrap(), Some(Effect::None));
+        assert!(
+            !c.session
+                .as_ref()
+                .unwrap()
+                .graph()
+                .nodes
+                .contains_key(&node)
+        );
+        assert_eq!(c.request(Intent::Redo).unwrap(), Some(Effect::None));
+        let session = c.session.as_ref().unwrap();
+        assert_eq!(session.graph().nodes[&node].params["text"], "原文");
+        assert!(session.selected.is_empty());
+        let saved: Document =
+            serde_json::from_slice(&std::fs::read(dir.path().join("one/document.json")).unwrap())
+                .unwrap();
+        let graph_id = &c.session.as_ref().unwrap().graph_id;
+        assert_eq!(saved.graphs[graph_id].nodes[&node].params["text"], "原文");
+    }
+    #[test]
     fn draft_cancel_save_and_reopen_preserve_identity() {
         let (dir, mut c, node) = open();
         let token = c.draft_token().to_owned();
