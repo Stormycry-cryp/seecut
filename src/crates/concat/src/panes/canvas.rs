@@ -4102,11 +4102,18 @@ impl CanvasPane {
         used.dedup();
         if used.len() > PROJECT_BITMAP_LIMIT
             || checked_frame_bytes(document.width, document.height)
-                .unwrap_or(usize::MAX)
-                .checked_mul(used.len())
                 .is_none_or(|bytes| bytes > PROJECT_PIXEL_LIMIT)
         {
             return Err("save: project pixel data is too large".into());
+        }
+        let mut pixel_bytes = 0;
+        for id in &used {
+            let frame = data
+                .store
+                .get(*id)
+                .ok_or_else(|| format!("save: pixels {id:?} are gone"))?;
+            pixel_bytes = checked_project_pixel_bytes(pixel_bytes, frame.width(), frame.height())
+                .ok_or("save: project pixel data is too large")?;
         }
 
         let staging = sibling_temp(path);
@@ -4226,13 +4233,10 @@ impl CanvasPane {
         }
         let canvas_bytes =
             checked_frame_bytes(document.width, document.height).unwrap_or(usize::MAX);
-        if canvas_bytes == 0
-            || canvas_bytes
-                .checked_mul(used.len())
-                .is_none_or(|bytes| bytes > PROJECT_PIXEL_LIMIT)
-        {
+        if canvas_bytes == 0 || canvas_bytes > PROJECT_PIXEL_LIMIT {
             return Err("open: project pixel data is too large".into());
         }
+        let mut pixel_bytes = 0;
         let mut store = PixelStore::new();
         for id in &used {
             let file = path.join("images").join(format!("{}.png", id.as_u64()));
@@ -4244,10 +4248,15 @@ impl CanvasPane {
                 return Err("open: project bitmap is too large".into());
             }
             let bytes = std::fs::read(&file).map_err(|e| format!("open: {e}"))?;
-            let (width, height, rgba) = decode_png(&bytes, texture_limit)?;
-            if width != document.width || height != document.height {
-                return Err("open: project bitmap dimensions do not match canvas".into());
-            }
+            // Layers and masks retain their own bitmap dimensions. Check
+            // their cumulative RGBA budget before the decoder allocates pixels.
+            let (width, height, rgba) = decode_png_with_pixel_budget(
+                &bytes,
+                texture_limit,
+                PROJECT_PIXEL_LIMIT - pixel_bytes,
+            )?;
+            pixel_bytes = checked_project_pixel_bytes(pixel_bytes, width, height)
+                .ok_or("open: project pixel data is too large")?;
             let frame = Frame::from_rgba(width, height, rgba).ok_or("open: empty image")?;
             store.restore(*id, frame);
         }
@@ -5805,6 +5814,12 @@ fn checked_frame_bytes(width: u32, height: u32) -> Option<usize> {
         .checked_mul(4)
 }
 
+fn checked_project_pixel_bytes(total: usize, width: u32, height: u32) -> Option<usize> {
+    total
+        .checked_add(checked_frame_bytes(width, height)?)
+        .filter(|&bytes| bytes <= PROJECT_PIXEL_LIMIT)
+}
+
 fn unique_sibling(path: &Path, kind: &str) -> std::path::PathBuf {
     static NEXT_SAVE: AtomicU64 = AtomicU64::new(1);
     loop {
@@ -5894,6 +5909,14 @@ fn decode(path: &Path, texture_limit: Option<u32>) -> Result<Frame, String> {
 /// PNG to RGBA, any of the colour types a still is likely to come in.
 /// Returns `(width, height, rgba)`.
 fn decode_png(bytes: &[u8], texture_limit: Option<u32>) -> Result<(u32, u32, Vec<u8>), String> {
+    decode_png_with_pixel_budget(bytes, texture_limit, PROJECT_PIXEL_LIMIT)
+}
+
+fn decode_png_with_pixel_budget(
+    bytes: &[u8],
+    texture_limit: Option<u32>,
+    pixel_budget: usize,
+) -> Result<(u32, u32, Vec<u8>), String> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_limits(png::Limits {
         bytes: PROJECT_PIXEL_LIMIT,
@@ -5905,6 +5928,9 @@ fn decode_png(bytes: &[u8], texture_limit: Option<u32>) -> Result<(u32, u32, Vec
         (info.width, info.height)
     };
     validate_canvas_dimensions(width, height, texture_limit)?;
+    if checked_frame_bytes(width, height).is_none_or(|bytes| bytes > pixel_budget) {
+        return Err("project pixel data is too large".into());
+    }
     let mut buffer = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buffer).map_err(|e| e.to_string())?;
     let plain = &buffer[..info.buffer_size()];
@@ -7449,6 +7475,92 @@ mod tests {
             println!("imported and GPU-rendered {extension}: {width}x{height}");
         }
         std::fs::remove_dir_all(dir).expect("remove isolated image fixtures");
+    }
+
+    #[test]
+    fn mixed_dimension_project_preserves_each_bitmap_and_transform() {
+        let root = ownership_test_root();
+        let path = root.join("mixed-dimensions.comp");
+        let (mut pane, base_pixels) = painting_pane();
+        pane.name = "混尺寸画布".to_owned();
+        let mut expected_frames = vec![(base_pixels, pane.store.get(base_pixels).unwrap())];
+        for (width, height, color, x, y, scale) in [
+            (37, 23, [30, 80, 240, 255], 55.0, -30.0, 1.5),
+            (420, 260, [240, 40, 20, 128], -45.0, 20.0, 0.75),
+        ] {
+            let frame = Frame::from_rgba(width, height, color.repeat((width * height) as usize))
+                .expect("fixture pixels");
+            let pixels = pane.store.put(frame);
+            expected_frames.push((pixels, pane.store.get(pixels).unwrap()));
+            let document = pane.document.as_mut().unwrap();
+            let layer = document.new_layer(format!("{width}x{height}"), pixels);
+            let Some(LayerNode::Layer(layer)) = document.find_mut(layer) else {
+                panic!("image layer");
+            };
+            layer.transform.x = x;
+            layer.transform.y = y;
+            layer.transform.scale_x = scale;
+            layer.transform.scale_y = scale;
+        }
+        let document = pane.document.as_ref().unwrap();
+        let tree = document.to_json().unwrap();
+        let composed = concat_canvas::compose(document, &pane.store);
+        pane.agent_save_comp(&path).expect("save mixed sizes");
+        let manifest = std::fs::read(path.join("manifest.json")).unwrap();
+        drop(pane);
+
+        let mut reopened = CanvasPane::default();
+        reopened.agent_open(&path).expect("reopen mixed sizes");
+        let document = reopened.document.as_ref().unwrap();
+        assert_eq!((document.width, document.height), (300, 200));
+        assert_eq!(document.to_json().unwrap(), tree);
+        for (id, expected) in expected_frames {
+            let actual = reopened.store.get(id).expect("original pixel id");
+            assert_eq!(
+                (actual.width(), actual.height()),
+                (expected.width(), expected.height())
+            );
+            assert_eq!(actual.pixels(), expected.pixels());
+        }
+        assert_eq!(
+            concat_canvas::compose(document, &reopened.store).pixels(),
+            composed.pixels()
+        );
+        reopened
+            .agent_save_comp(&path)
+            .expect("save reopened sizes");
+        assert_eq!(std::fs::read(path.join("manifest.json")).unwrap(), manifest);
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mixed_dimension_project_budget_counts_actual_rgba_before_decoding() {
+        let total = checked_project_pixel_bytes(0, 1920, 1080).unwrap();
+        assert_eq!(
+            checked_project_pixel_bytes(total, 320, 240),
+            Some(total + 320 * 240 * 4)
+        );
+        assert_eq!(
+            checked_project_pixel_bytes(PROJECT_PIXEL_LIMIT - 4, 1, 1),
+            Some(PROJECT_PIXEL_LIMIT)
+        );
+        assert_eq!(
+            checked_project_pixel_bytes(PROJECT_PIXEL_LIMIT - 3, 1, 1),
+            None
+        );
+        assert_eq!(checked_project_pixel_bytes(usize::MAX, 1, 1), None);
+        assert_eq!(checked_project_pixel_bytes(0, u32::MAX, u32::MAX), None);
+
+        let bytes = encode_png(&Frame::black(2, 2)).unwrap();
+        assert!(decode_png_with_pixel_budget(&bytes, None, 16).is_ok());
+        let error = decode_png_with_pixel_budget(&bytes, None, 15).unwrap_err();
+        assert!(error.contains("project pixel data is too large"));
+        assert!(
+            decode_png_with_pixel_budget(&bytes, Some(1), 16)
+                .unwrap_err()
+                .contains("1px texture limit")
+        );
     }
 
     #[test]
