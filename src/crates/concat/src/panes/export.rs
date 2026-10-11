@@ -584,7 +584,9 @@ mod tests {
             ..Default::default()
         };
         assert!(pane.take_finished_job(1).is_none());
-        assert_eq!(pane.take_finished_job(2).unwrap().name, "new");
+        let finished = pane.take_finished_job(2).unwrap();
+        assert_eq!(finished.id, 2);
+        assert_eq!(finished.output, "new.mp4");
         assert!(pane.take_finished_job(2).is_none());
     }
 
