@@ -143,6 +143,40 @@ class SeeCutHandler(BaseHTTPRequestHandler):
 
         user, raw_token = self._auth()
         user_id = user["id"]
+        if path.startswith("/api/assistant/"):
+            assistant = self.service.assistant
+            key = self.headers.get("Idempotency-Key", "")
+            if method == "GET" and path == "/api/assistant/capabilities":
+                return 200, assistant.capabilities()
+            if method == "POST" and path == "/api/assistant/turn-budgets":
+                return 200, assistant.turn_budget(user_id, self._json_body(), key)
+            close_budget = re.fullmatch(r"/api/assistant/turn-budgets/([^/]+)/close", path)
+            if method == "POST" and close_budget:
+                return 200, assistant.close_budget(user_id, close_budget.group(1), self._json_body(), key)
+            if method == "POST" and path == "/api/assistant/quotes":
+                return 200, assistant.quote(user_id, self._json_body(), key)
+            if method == "POST" and path == "/api/assistant/operations":
+                snapshot, created = assistant.create(user_id, self._json_body(), key)
+                return (202 if created else 200), snapshot
+            by_request = re.fullmatch(r"/api/assistant/operations/by-request/([^/]+)", path)
+            if method == "GET" and by_request:
+                return 200, assistant.by_request(user_id, by_request.group(1))
+            operation = re.fullmatch(r"/api/assistant/operations/([^/]+)(?:/(events|cancel|reconcile))?", path)
+            if operation:
+                operation_id, action = operation.groups()
+                if method == "GET" and action is None:
+                    return 200, assistant.get(user_id, operation_id)
+                if method == "GET" and action == "events":
+                    try:
+                        after = int(query.get("after", ["0"])[0])
+                    except ValueError:
+                        raise ApiError(400, "ASSISTANT_INVALID_CURSOR", "Agent 事件游标无效")
+                    return 200, assistant.events(user_id, operation_id, after)
+                if method == "POST" and action == "cancel":
+                    return 200, assistant.cancel(user_id, operation_id, self._json_body(), key)
+                if method == "POST" and action == "reconcile":
+                    return 200, assistant.reconcile(user_id, operation_id, self._json_body(), key)
+            raise ApiError(404, "NOT_FOUND", "接口不存在")
         if method == "POST" and path == "/api/auth/logout":
             self.service.logout(raw_token)
             return 204, None

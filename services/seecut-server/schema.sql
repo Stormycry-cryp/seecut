@@ -217,3 +217,54 @@ CREATE TABLE IF NOT EXISTS generation_outputs (
     expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL
 );
+
+-- Agent uses the existing wallet; a turn budget is a ceiling, never a debit.
+CREATE TABLE IF NOT EXISTS assistant_turn_budgets (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ local_session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+ max_credits INTEGER NOT NULL CHECK(max_credits > 0),
+ held_credits INTEGER NOT NULL DEFAULT 0 CHECK(held_credits >= 0),
+ spent_credits INTEGER NOT NULL DEFAULT 0 CHECK(spent_credits >= 0),
+ operation_count INTEGER NOT NULL DEFAULT 0, max_steps INTEGER NOT NULL,
+ state TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+ UNIQUE(user_id,local_session_id,turn_id)
+);
+CREATE TABLE IF NOT EXISTS assistant_idempotency (
+ user_id TEXT NOT NULL REFERENCES users(id), namespace TEXT NOT NULL,
+ key TEXT NOT NULL, digest TEXT NOT NULL, target_id TEXT NOT NULL,
+ PRIMARY KEY(user_id,namespace,key)
+);
+CREATE TABLE IF NOT EXISTS assistant_quotes (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ request_digest TEXT NOT NULL, pricing_version TEXT NOT NULL,
+ input_token_upper_bound INTEGER NOT NULL, payload_digest TEXT NOT NULL,
+ route_fingerprint TEXT NOT NULL, input_rate INTEGER NOT NULL, output_rate INTEGER NOT NULL, context_window INTEGER NOT NULL,
+ max_credits INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+ consumed_at INTEGER, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assistant_operations (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ client_request_id TEXT NOT NULL, local_session_id TEXT NOT NULL,
+ turn_id TEXT NOT NULL, step_id TEXT NOT NULL,
+ budget_id TEXT NOT NULL REFERENCES assistant_turn_budgets(id),
+ request_digest TEXT NOT NULL, request_json TEXT NOT NULL,
+ input_token_upper_bound INTEGER NOT NULL, payload_digest TEXT NOT NULL,
+ pricing_version TEXT NOT NULL, input_rate INTEGER NOT NULL, output_rate INTEGER NOT NULL,
+ route_fingerprint TEXT NOT NULL, context_window INTEGER NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('queued','dispatching','running','succeeded','failed','cancelled','outcome_unknown')),
+ version INTEGER NOT NULL DEFAULT 1, last_event_seq INTEGER NOT NULL DEFAULT 0,
+ cancel_requested INTEGER NOT NULL DEFAULT 0,
+ billing_state TEXT NOT NULL DEFAULT 'held', reserved_credits INTEGER NOT NULL,
+ captured_credits INTEGER NOT NULL DEFAULT 0, released_credits INTEGER NOT NULL DEFAULT 0,
+ result_json TEXT, error_json TEXT, usage_json TEXT,
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+ UNIQUE(user_id,client_request_id), UNIQUE(user_id,local_session_id,turn_id,step_id)
+);
+CREATE TABLE IF NOT EXISTS assistant_events (
+ operation_id TEXT NOT NULL REFERENCES assistant_operations(id), seq INTEGER NOT NULL,
+ type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+ PRIMARY KEY(operation_id,seq)
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_queued ON assistant_operations(state,created_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assistant_active_budget ON assistant_turn_budgets(user_id) WHERE state='active';

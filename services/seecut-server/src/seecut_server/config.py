@@ -30,6 +30,19 @@ def _optional_positive_int(name: str) -> int | None:
     return parsed
 
 
+def _assistant_integer(name: str, default: int, maximum: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a positive integer") from exc
+    if not 1 <= value <= maximum:
+        raise ConfigError(f"{name} must be between 1 and {maximum}")
+    return value
+
+
 @dataclass(frozen=True)
 class Config:
     env: str
@@ -80,6 +93,18 @@ class Config:
     alipay_notify_url: str
     alipay_seller_id: str
 
+    assistant_base_url: str = ""
+    assistant_model: str = ""
+    assistant_api_key: str = ""
+    assistant_pricing_version: str = ""
+    assistant_input_rate: int = 0
+    assistant_output_rate: int = 0
+    assistant_context_window: int = 32768
+    assistant_max_output_tokens: int = 2048
+    assistant_max_steps: int = 8
+    assistant_max_turn_credits: int = 0
+    assistant_images: bool = False
+
     @classmethod
     def from_env(cls) -> "Config":
         try:
@@ -119,6 +144,17 @@ class Config:
             raise ConfigError("SMTP authentication requires TLS outside development and test")
 
         return cls(
+            assistant_base_url=os.getenv("SECUT_ASSISTANT_BASE_URL", "").rstrip("/"),
+            assistant_model=os.getenv("SECUT_ASSISTANT_MODEL", ""),
+            assistant_api_key=os.getenv("SECUT_ASSISTANT_API_KEY", ""),
+            assistant_pricing_version=os.getenv("SECUT_ASSISTANT_PRICING_VERSION", ""),
+            assistant_input_rate=_assistant_integer("SECUT_ASSISTANT_INPUT_CREDITS_PER_1000", 0, 1_000_000),
+            assistant_output_rate=_assistant_integer("SECUT_ASSISTANT_OUTPUT_CREDITS_PER_1000", 0, 1_000_000),
+            assistant_context_window=_assistant_integer("SECUT_ASSISTANT_CONTEXT_WINDOW", 32768, 1_000_000),
+            assistant_max_output_tokens=_assistant_integer("SECUT_ASSISTANT_MAX_OUTPUT_TOKENS", 2048, 131072),
+            assistant_max_steps=_assistant_integer("SECUT_ASSISTANT_MAX_STEPS", 8, 8),
+            assistant_max_turn_credits=_assistant_integer("SECUT_ASSISTANT_MAX_TURN_CREDITS", 0, 1_000_000_000),
+            assistant_images=_bool("SECUT_ASSISTANT_IMAGES", False),
             env=env,
             host=os.getenv("SECUT_HOST", "127.0.0.1"),
             port=int(os.getenv("SECUT_PORT", "8787")),
