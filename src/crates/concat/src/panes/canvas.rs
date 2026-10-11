@@ -3670,7 +3670,7 @@ impl CanvasPane {
                 if let Err(error) = std::fs::write(&path, bytes) {
                     log::warn!("canvas: {error}");
                     studio.notify(&tf("Canvas failed: {0}", &[&error.to_string()]), true);
-                } else if to_library {
+                } else {
                     let path = path.to_string_lossy().into_owned();
                     let payload = serde_json::json!({
                         "path": path,
@@ -3681,8 +3681,6 @@ impl CanvasPane {
                         app.global::<crate::ui::SeeCut>()
                             .invoke_action("personal-register-canvas".into(), payload.into());
                     });
-                } else {
-                    studio.notify("图片已导出", false);
                 }
             }
             Err(error) => {

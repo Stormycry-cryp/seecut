@@ -261,26 +261,22 @@ impl ExportPane {
         self.phase = ExportPhase::Done;
         self.progress = 1.0;
         self.written = written;
-        if job.to_library {
-            let registration = crate::personal_library::with_library_write_lock(|| {
-                let dirs = concat_host::AppDirs::locate()?;
-                let mut library =
-                    crate::personal_library::Library::load(dirs.data.join("personal-library"))?;
-                library.register_generated_with_name(&self.written, Some(&job.name))?;
-                Ok::<(), String>(())
-            });
-            match registration {
-                Ok(()) => {
-                    studio.notify("视频已导出并加入资产库", false);
-                    crate::host::Shell::with(|_, app| {
-                        app.global::<crate::ui::SeeCut>()
-                            .invoke_action("personal-refresh".into(), "".into())
-                    });
-                }
-                Err(error) => studio.notify(&format!("视频已导出，入库失败：{error}"), true),
+        let registration = crate::personal_library::with_library_write_lock(|| {
+            let dirs = concat_host::AppDirs::locate()?;
+            let mut library =
+                crate::personal_library::Library::load(dirs.data.join("personal-library"))?;
+            library.register_generated_with_name(&self.written, Some(&job.name))?;
+            Ok::<(), String>(())
+        });
+        match registration {
+            Ok(()) => {
+                studio.notify("视频已导出并加入资产库", false);
+                crate::host::Shell::with(|_, app| {
+                    app.global::<crate::ui::SeeCut>()
+                        .invoke_action("personal-refresh".into(), "".into())
+                });
             }
-        } else {
-            studio.notify(&t("Export finished"), false);
+            Err(error) => studio.notify(&format!("视频已导出，入库失败：{error}"), true),
         }
     }
 
