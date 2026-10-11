@@ -5,8 +5,7 @@ use super::agent_process::{self, BridgeError, Event, Handle, LaunchSpec};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const TEXT_LIMIT: usize = 64 * 1024;
 const MAX_TOOL_PROGRESS: usize = 12;
@@ -21,6 +20,8 @@ pub struct ConnectionConfig {
     pub mcp_client_path: PathBuf,
     pub mcp_environment: BTreeMap<String, String>,
     pub session_directory: PathBuf,
+    pub local_session_id: String,
+    pub restore: bool,
     pub provider: Value,
     pub read_token: String,
     pub write_token: Option<String>,
@@ -180,6 +181,9 @@ pub struct Controller {
     process: Option<Handle>,
     document: Option<DocumentIdentity>,
     session_id: String,
+    restore: bool,
+    recover_existing: bool,
+    session_opened: bool,
     phase: Phase,
     pending: VecDeque<Pending>,
     counter: u64,
@@ -212,6 +216,9 @@ impl Default for Controller {
             process: None,
             document: None,
             session_id: String::new(),
+            restore: false,
+            recover_existing: false,
+            session_opened: false,
             phase: Phase::Disconnected,
             pending: VecDeque::new(),
             counter: 0,
@@ -241,7 +248,7 @@ impl Default for Controller {
     }
 }
 impl Controller {
-    /// An explicit host action only. Ready requires successful initialize AND session.create replies.
+    /// An explicit host action only. Opening or restoring never sends saved input.
     pub fn connect(&mut self, config: ConnectionConfig) -> Result<(), UiError> {
         if self.unknown_latched {
             return Err(UiError::VerifyRequired);
@@ -254,6 +261,8 @@ impl Controller {
             || config.document.project_id.is_empty()
             || !valid_id(&config.document.document_session_id)
             || !valid_id(&config.client_id)
+            || !valid_session_id(&config.local_session_id)
+            || (!self.session_id.is_empty() && self.session_id != config.local_session_id)
             || !config.provider.is_object()
             || config.read_token.is_empty()
             || !config.mcp_client_path.is_absolute()
@@ -269,16 +278,9 @@ impl Controller {
         {
             return Err(UiError::Configuration);
         }
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let epoch = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| UiError::Configuration)?
-            .as_nanos();
-        self.session_id = format!(
-            "native-{}-{epoch}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
+        self.session_id = config.local_session_id;
+        self.restore = config.restore;
+        self.recover_existing = false;
         self.secrets = vec![config.read_token.clone()];
         if let Some(token) = &config.write_token {
             self.secrets.push(token.clone());
@@ -345,6 +347,16 @@ impl Controller {
         });
         Ok(())
     }
+    /// True only after the runtime confirms this session exists. Hosts persist
+    /// this separately from connection state and never infer it from enqueueing.
+    pub fn session_opened(&self) -> bool {
+        self.session_opened
+    }
+    /// Includes closing and failed-but-not-yet-reaped children, so a host can
+    /// enforce one runtime owner for a shared account operation journal.
+    pub fn process_present(&self) -> bool {
+        self.process.is_some()
+    }
     pub fn view(&self) -> View<'_> {
         View {
             can_connect: self.process.is_none() && !self.unknown_latched,
@@ -393,7 +405,9 @@ impl Controller {
         if text.trim().is_empty() || text.len() > 32_000 {
             return Err(UiError::Configuration);
         }
-        let input_id = format!("input-{}-{}", self.session_id, self.counter + 1);
+        // IPC counters restart with the process; persisted sessions must never
+        // mistake a new explicit question for an already accepted input.
+        let input_id = format!("input-{}", uuid::Uuid::new_v4());
         self.enqueue("send",json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":[{"type":"text","text":text}]}),Request::Send{input_id})?;
         self.text.clear();
         self.tool_progress.clear();
@@ -801,13 +815,30 @@ impl Controller {
                 if result["protocolVersion"].as_u64() != Some(1)
                     || result["instanceId"].as_str()
                         != self.document.as_ref().map(|d| d.instance_id.as_str())
+                    || (self.restore
+                        && result["capabilities"]["session_restore_rebind"].as_bool() != Some(true))
                 {
                     self.fail(UiError::Protocol);
                     return;
                 }
                 let document = self.document.as_ref().unwrap();
-                let params = json!({"sessionId":self.session_id,"projectId":document.project_id,"documentSessionId":document.document_session_id});
-                match self.enqueue("session.create", params, Request::Create) {
+                let mut params = json!({"sessionId":self.session_id,"projectId":document.project_id,"documentSessionId":document.document_session_id});
+                self.recover_existing = !self.restore
+                    && result["capabilities"]["session_create_or_restore"].as_bool() == Some(true);
+                let method = if self.restore {
+                    params["rebind"] = json!(true);
+                    "session.restore"
+                } else {
+                    if self.recover_existing {
+                        // The first create may have committed before its receipt
+                        // was lost. Only an advertised, explicit recovery may
+                        // open that same record; the host never retries a send.
+                        params["recoverExisting"] = json!(true);
+                        params["rebind"] = json!(true);
+                    }
+                    "session.create"
+                };
+                match self.enqueue(method, params, Request::Create) {
                     Ok(()) => self.phase = Phase::OpeningSession,
                     Err(error) => self.fail(error),
                 }
@@ -816,8 +847,17 @@ impl Controller {
                 if self.phase != Phase::OpeningSession {
                     return;
                 }
+                let status = result["status"].as_str();
+                let restoring = self.restore || self.recover_existing;
                 if result["sessionId"].as_str() != Some(self.session_id.as_str())
-                    || result["status"].as_str() != Some("idle")
+                    || if restoring {
+                        !matches!(status, Some("idle" | "interrupted"))
+                            || !result["recoveryRequired"].is_boolean()
+                            || result["pendingInputCount"].as_u64().is_none_or(|n| n > 8)
+                    } else {
+                        status != Some("idle")
+                    }
+                    || !result["toolState"]["outcomeUnknown"].is_boolean()
                 {
                     self.fail(UiError::Protocol);
                     return;
@@ -825,6 +865,11 @@ impl Controller {
                 if self.managed_mode && !self.apply_model_state(&result["modelState"]) {
                     self.fail(UiError::Protocol);
                     return;
+                }
+                self.session_opened = true;
+                if restoring {
+                    self.recovery_pending = result["recoveryRequired"] == true
+                        || result["pendingInputCount"].as_u64().is_some_and(|n| n > 0);
                 }
                 if result["toolState"]["outcomeUnknown"].as_bool() == Some(true) {
                     self.unknown();
@@ -834,6 +879,7 @@ impl Controller {
                     } else {
                         Phase::Ready
                     };
+                    self.error = self.blocking_error();
                 }
             }
             Request::Send { input_id } => {
@@ -1321,6 +1367,13 @@ fn checked_model_state(value: &Value, session_id: &str) -> Option<CheckedModelSt
 fn max64(value: &str) -> bool {
     !value.is_empty() && value.len() <= 64
 }
+fn valid_session_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+}
 fn bridge_error(error: BridgeError) -> UiError {
     match error {
         BridgeError::QueueBusy | BridgeError::InputBackpressure => UiError::Busy,
@@ -1353,8 +1406,9 @@ fn remote_error(code: &str) -> UiError {
 #[cfg(all(test, unix, not(any(target_os = "ios", target_os = "android"))))]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::{fs, thread};
-    const FIXTURE: &str = r#"import sys,json,time
+    const FIXTURE: &str = r#"import sys,json,time,pathlib
 scenario='finish';session='';seq=0;managed=False
 revision=0
 def modelstate(unknown=False):
@@ -1375,6 +1429,7 @@ def final(status='completed',unknown=False,pending=False,failed=False):
     print(json.dumps({'version':1,'type':'result','sessionId':session,'result':{'turnId':'turn-1','status':status,'text':'模型结果 inference-secret read-secret write-secret'},'toolState':{'outcomeUnknown':unknown,'unresolved':[],'recoveryOperations':[],'observed':observed}}),flush=True)
 for line in sys.stdin:
     f=json.loads(line);p=f['params'];m=f['method']
+    with pathlib.Path(__file__).with_name('methods.txt').open('a') as trace: trace.write(m+'\n')
     if m=='initialize':
         assert p['protocolVersion']==1 and p['appProtocolVersion']==1
         managed=p['provider']['protocol']=='seecut-managed'
@@ -1383,12 +1438,18 @@ for line in sys.stdin:
         assert p['mcpEnvironment']['TMPDIR']==p['sessionDirectory']
         scenario=p['provider']['model'];time.sleep(.08)
         if scenario=='init-fail': reply(f,error={'code':'provider_configuration','message':'raw inference-secret'});continue
-        reply(f,{'protocolVersion':1,'instanceId':p['instanceId']})
-    elif m=='session.create':
+        capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True}
+        reply(f,{'protocolVersion':1,'instanceId':p['instanceId'],'capabilities':capabilities})
+    elif m in ('session.create','session.restore'):
         assert p['projectId']=='project-1' and p['documentSessionId']=='doc-1'
+        if m=='session.restore': assert p['rebind'] is True and 'recoverExisting' not in p
+        elif scenario=='old-runtime': assert 'rebind' not in p and 'recoverExisting' not in p
+        else: assert p['rebind'] is True and p['recoverExisting'] is True
         session=p['sessionId'];time.sleep(.08)
         if managed: print(json.dumps({'version':1,'type':'managed.state','sessionId':session,'modelState':modelstate(True)}),flush=True)
-        reply(f,{'sessionId':session if scenario!='bad-session' else 'other','status':'idle','toolState':{'outcomeUnknown':False,'unresolved':[],'recoveryOperations':[],'observed':[]},'modelState':modelstate(True) if managed else None})
+        status='interrupted' if scenario in ('restore-interrupted','restore-pending','create-existing-clean','create-existing-pending','create-existing-unknown') else 'idle'
+        pending=scenario in ('restore-pending','create-existing-pending')
+        reply(f,{'sessionId':session if scenario!='bad-session' else 'other','status':status,'recoveryRequired':pending,'pendingInputCount':1 if pending else 0,'toolState':{'outcomeUnknown':scenario in ('restore-unknown','create-existing-unknown'),'unresolved':[],'recoveryOperations':[],'observed':[]},'modelState':modelstate(True) if managed else None})
     elif m=='reconcile':
         assert managed and p=={'sessionId':session}
         reply(f,{'modelState':modelstate(False)})
@@ -1423,6 +1484,9 @@ for line in sys.stdin:
     }
     impl Fixture {
         fn new(scenario: &str) -> Self {
+            Self::with_session(scenario, "fixture-session", false)
+        }
+        fn with_session(scenario: &str, session_id: &str, restore: bool) -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(1);
             let directory = std::env::temp_dir().join(format!(
                 "agent-controller-{}-{}",
@@ -1440,7 +1504,7 @@ for line in sys.stdin:
             let mut controller = Controller::default();
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let result = controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},document:identity.clone(),client_id:"client-1".into(),mcp_client_path:entry.clone(),mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),provider:if scenario == "managed" {json!({"protocol":"seecut-managed","model":scenario,"sessionToken":"inference-secret"})} else {json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"})},read_token:"read-secret".into(),write_token:Some("write-secret".into())});
+                let result = controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},document:identity.clone(),client_id:"client-1".into(),mcp_client_path:entry.clone(),mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),local_session_id:session_id.into(),restore,provider:if scenario == "managed" {json!({"protocol":"seecut-managed","model":scenario,"sessionToken":"inference-secret"})} else {json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"})},read_token:"read-secret".into(),write_token:Some("write-secret".into())});
                 match result {
                     Ok(()) => break,
                     // Parallel fixtures can contend on the nonblocking registration/input
@@ -1496,6 +1560,130 @@ for line in sys.stdin:
             }
             assert!(self.controller.process.is_none());
             fs::remove_dir_all(&self.directory).unwrap();
+        }
+    }
+    #[test]
+    fn restore_uses_the_saved_identity_and_never_sends_history() {
+        let mut f = Fixture::with_session("finish", "saved-session", true);
+        assert!(f.controller.process_present());
+        assert!(!f.controller.session_opened());
+        f.until(|c| c.view().phase == Phase::OpeningSession);
+        assert!(!f.controller.session_opened());
+        f.ready();
+        assert!(f.controller.session_opened());
+        assert_eq!(f.controller.session_id, "saved-session");
+        assert_eq!(f.controller.view().text, "");
+        assert_eq!(
+            fs::read_to_string(f.directory.join("methods.txt")).unwrap(),
+            "initialize\nsession.restore\n"
+        );
+        f.controller.disconnect();
+        assert!(f.controller.process_present());
+        f.until(|c| !c.process_present());
+        assert!(f.controller.session_opened());
+    }
+    #[test]
+    fn restore_requires_advertised_rebinding_without_create_fallback() {
+        let mut f = Fixture::with_session("old-runtime", "saved-session", true);
+        f.until(|c| !c.process_present());
+        assert_eq!(f.controller.view().phase, Phase::Failed);
+        assert_eq!(f.controller.view().error, Some(UiError::Protocol));
+        assert!(!f.controller.session_opened());
+        let methods = fs::read_to_string(f.directory.join("methods.txt")).unwrap();
+        assert!(methods.starts_with("initialize\n"));
+        assert!(!methods.contains("session.create"));
+        assert!(!methods.contains("session.restore"));
+        assert!(!methods.lines().any(|method| method == "send"));
+    }
+    #[test]
+    fn lost_create_receipt_opens_existing_state_without_replaying_input() {
+        for (scenario, expected_error) in [
+            ("create-existing-clean", None),
+            (
+                "create-existing-pending",
+                Some(UiError::SessionRecoveryRequired),
+            ),
+            ("create-existing-unknown", Some(UiError::VerifyRequired)),
+            ("managed", Some(UiError::ModelVerifyRequired)),
+        ] {
+            // The host still thinks this session is new because its original
+            // create receipt was lost. The fixture returns the saved state.
+            let mut f = Fixture::with_session(scenario, "unconfirmed-session", false);
+            f.until(Controller::session_opened);
+            assert!(f.controller.recover_existing);
+            assert_eq!(f.controller.view().error, expected_error);
+            assert_eq!(f.controller.view().can_send, expected_error.is_none());
+            assert_eq!(
+                fs::read_to_string(f.directory.join("methods.txt")).unwrap(),
+                "initialize\nsession.create\n"
+            );
+            if expected_error.is_some() {
+                assert_eq!(f.controller.view().phase, Phase::OutcomeUnknown);
+            }
+        }
+    }
+    #[test]
+    fn legacy_runtime_keeps_new_session_creation_without_recovery_flags() {
+        let mut f = Fixture::with_session("old-runtime", "new-session", false);
+        f.ready();
+        assert!(f.controller.session_opened());
+        assert!(!f.controller.recover_existing);
+        assert_eq!(
+            fs::read_to_string(f.directory.join("methods.txt")).unwrap(),
+            "initialize\nsession.create\n"
+        );
+    }
+    #[test]
+    fn restored_session_new_input_ids_do_not_repeat_process_counters() {
+        fn accepted_input_id(f: &mut Fixture) -> String {
+            f.ready();
+            f.controller.send_text("用户明确的新问题").unwrap();
+            f.controller
+                .pending
+                .iter()
+                .find_map(|pending| match &pending.request {
+                    Request::Send { input_id } => Some(input_id.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        }
+        let first = {
+            let mut f = Fixture::with_session("finish", "saved-session", false);
+            let id = accepted_input_id(&mut f);
+            f.until(|c| c.view().outcome.is_some());
+            id
+        };
+        let mut restored = Fixture::with_session("finish", "saved-session", true);
+        let second = accepted_input_id(&mut restored);
+        assert_ne!(first, second);
+        assert!(uuid::Uuid::parse_str(first.strip_prefix("input-").unwrap()).is_ok());
+        assert!(uuid::Uuid::parse_str(second.strip_prefix("input-").unwrap()).is_ok());
+        restored.until(|c| c.view().outcome.is_some());
+    }
+    #[test]
+    fn restore_preserves_pending_and_unknown_but_allows_clean_interruption() {
+        for (scenario, expected_error) in [
+            ("restore-interrupted", None),
+            ("restore-pending", Some(UiError::SessionRecoveryRequired)),
+            ("restore-unknown", Some(UiError::VerifyRequired)),
+            ("managed", Some(UiError::ModelVerifyRequired)),
+        ] {
+            let mut f = Fixture::with_session(scenario, "saved-session", true);
+            f.until(Controller::session_opened);
+            assert_eq!(f.controller.view().error, expected_error);
+            assert_eq!(f.controller.view().can_send, expected_error.is_none());
+            assert_eq!(
+                fs::read_to_string(f.directory.join("methods.txt")).unwrap(),
+                "initialize\nsession.restore\n"
+            );
+            if expected_error.is_none() {
+                f.controller.send_text("停止后用户发送的新问题").unwrap();
+                f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
+            } else if scenario == "managed" {
+                f.controller.reconcile().unwrap();
+                f.ready();
+                assert!(f.controller.view().can_send);
+            }
         }
     }
     #[test]

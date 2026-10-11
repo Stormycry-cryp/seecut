@@ -44,6 +44,8 @@ mod agent_identity;
 mod agent_models;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_process;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod agent_sessions;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_ui;
 mod chips;
@@ -2269,7 +2271,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let result = app.run();
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     {
-        assistant.shutdown();
+        assistant.shutdown(&app);
         // Normal UI callbacks stay nonblocking. Only process exit waits for owned children.
         if !agent_process::shutdown_all_at_exit() {
             log::warn!("assistant shutdown did not finish before the exit deadline");

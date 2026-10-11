@@ -17,6 +17,10 @@ export global Assistant {
     callback geometry-changed(float, float, float, float);
     in-out property <string> current-project;
     in-out property <string> provider-label;
+    in-out property <[string]> session-names;
+    in-out property <int> session-index;
+    in-out property <bool> can-create-session;
+    in-out property <bool> history-ready;
     in-out property <[string]> model-names;
     in-out property <int> model-index;
     in-out property <bool> can-select-model;
@@ -72,6 +76,8 @@ export global Assistant {
     callback connect(string, string, string, bool);
     callback disconnect();
     callback connect-managed();
+    callback new-session();
+    callback select-session(int);
     callback select-model(int);
     callback refresh-models();
     callback reconcile();

@@ -64,6 +64,17 @@ impl AccountAccess {
             .upgrade()
             .is_some_and(|state| !state.borrow().token.is_empty())
     }
+    /// Stable public account identity; neither tokens nor the UI epoch are history keys.
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    pub(crate) fn history_scope(&self) -> Option<String> {
+        let state = self.state.upgrade()?;
+        let cloud = state.borrow();
+        let id = cloud.history_name.strip_suffix("-history.json")?;
+        if cloud.token.is_empty() || id.is_empty() {
+            return None;
+        }
+        serde_json::to_string(&(&cloud.base, id)).ok()
+    }
     pub(crate) fn snapshot(&self) -> Option<AccountSnapshot> {
         let state = self.state.upgrade()?;
         let cloud = state.borrow();

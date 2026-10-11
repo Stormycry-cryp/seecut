@@ -8,6 +8,7 @@ pub(crate) struct Choice {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) available: bool,
+    pub(crate) policy: Value,
 }
 #[derive(Default)]
 pub(crate) struct Catalog {
@@ -91,6 +92,25 @@ fn alias(id: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
 }
+// Only public server policy metadata is frozen into local request history.
+fn policy_snapshot(value: &Value) -> Value {
+    let mut policy = serde_json::Map::new();
+    for name in [
+        "protocol_version",
+        "max_output_tokens",
+        "max_steps",
+        "max_turn_credits",
+        "pricing_version",
+    ] {
+        if let Some(field) = value
+            .get(name)
+            .filter(|field| field.is_number() || field.is_string())
+        {
+            policy.insert(name.into(), field.clone());
+        }
+    }
+    Value::Object(policy)
+}
 pub(crate) fn parse(value: Value) -> Result<Vec<Choice>, &'static str> {
     let invalid = "模型目录暂不可用";
     if value["protocol_version"] != 1 {
@@ -102,6 +122,7 @@ pub(crate) fn parse(value: Value) -> Result<Vec<Choice>, &'static str> {
             id: "default".into(),
             label: "账户模型".into(),
             available,
+            policy: policy_snapshot(&value),
         }]);
     };
     let models = models
@@ -134,6 +155,7 @@ pub(crate) fn parse(value: Value) -> Result<Vec<Choice>, &'static str> {
             id: id.into(),
             label: label.into(),
             available,
+            policy: policy_snapshot(model),
         });
     }
     let index = result

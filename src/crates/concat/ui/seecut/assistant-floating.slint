@@ -100,7 +100,8 @@ export component AssistantFloating inherits FocusScope {
     drag := TouchArea {
         visible: root.fully-open && !root.blocked && !root.dock-right;
         enabled: root.enabled && root.fully-open && !root.blocked;
-        x: 12px; y: 0px; width: max(0px, parent.width - 96px); height: 48px;
+        // Leave the four header buttons clear: new, switch, permissions, close.
+        x: 12px; y: 0px; width: max(0px, parent.width - 172px); height: 48px;
         mouse-cursor: move;
         property <length> start-pointer-x;
         property <length> start-x;

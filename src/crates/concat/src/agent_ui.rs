@@ -93,6 +93,9 @@ mod desktop {
         ConnectionConfig, Controller, DocumentIdentity, Phase, TaskOutcome,
     };
     use crate::agent_process::LaunchSpec;
+    use crate::agent_sessions::{
+        self, Archive, ContextReference, Message, Record, RequestSnapshot, Store,
+    };
     use crate::editor_mcp::{
         ASSISTANT_CLIENT_ID, AssistantPermission, AssistantPermissionError, AssistantSnapshot,
     };
@@ -100,15 +103,15 @@ mod desktop {
     use crate::ui::AssistantMessage;
     use serde_json::json;
     use slint::{Model, ModelRc, Timer, TimerMode, VecModel};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     use std::path::{Component, Path, PathBuf};
     use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-    use std::time::Duration;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    const MAX_ROWS: usize = 32;
-    const MAX_HISTORY_BYTES: usize = 256 * 1024;
+    // Leave room for one complete 32 KiB input and bounded streaming reply.
+    const NEW_TURN_HISTORY_LIMIT: usize = 128 * 1024;
 
     // Never Debug/serialize this: comparison includes real lease tokens.
     #[derive(Clone, PartialEq, Eq)]
@@ -135,17 +138,21 @@ mod desktop {
     }
     enum WorkerResult {
         Models {
+            session_id: String,
+            generation: u64,
             account_epoch: u64,
             ticket: u64,
             result: Result<Vec<crate::agent_models::Choice>, &'static str>,
         },
         #[cfg(feature = "assistant-local-dev")]
         File {
+            session_id: String,
             epoch: u64,
             kind: FileKind,
             path: Option<Result<PathBuf, &'static str>>,
         },
         Prepared {
+            session_id: String,
             epoch: u64,
             account_epoch: Option<u64>,
             config: Result<Box<ConnectionConfig>, &'static str>,
@@ -161,6 +168,10 @@ mod desktop {
         delta_y: Option<f64>,
     }
     struct State {
+        record: Record,
+        generation: u64,
+        submitting: bool,
+        messages: Rc<VecModel<AssistantMessage>>,
         controller: Controller,
         lease: Option<Lease>,
         runtime: Option<PathBuf>,
@@ -189,12 +200,24 @@ mod desktop {
         }
     }
     /// Owns the controller, stable transcript model and nonblocking UI timer.
+    struct Retiring {
+        states: Vec<State>,
+        store: Option<Store>,
+        active_id: String,
+    }
     pub(crate) struct Binding {
         timer: Timer,
         account: crate::cloud::AccountAccess,
         components: Option<PathBuf>,
         state: RefCell<State>,
-        messages: Rc<VecModel<AssistantMessage>>,
+        parked: RefCell<Vec<State>>,
+        retiring: RefCell<Vec<Retiring>>,
+        scope: RefCell<Option<(String, String)>>,
+        data: Option<PathBuf>,
+        store: RefCell<Option<Store>>,
+        history_error: RefCell<Option<&'static str>>,
+        last_saved: RefCell<Vec<u8>>,
+        last_persist: Cell<Instant>,
         sender: SyncSender<WorkerResult>,
         receiver: Receiver<WorkerResult>,
     }
@@ -202,14 +225,281 @@ mod desktop {
         fn drop(&mut self) {
             self.timer.stop();
             self.state.get_mut().controller.shutdown_now();
+            for state in self.parked.get_mut() {
+                state.controller.shutdown_now();
+            }
+            for group in self.retiring.get_mut() {
+                for state in &mut group.states {
+                    state.controller.shutdown_now();
+                }
+            }
         }
     }
     impl Binding {
         /// Start bounded process shutdown before the app's exit-only reaping hook.
-        pub(crate) fn shutdown(&self) {
+        pub(crate) fn shutdown(&self, app: &App) {
+            self.state.borrow_mut().record.draft =
+                app.global::<Assistant>().get_draft().to_string();
+            let _ = self.persist(true);
             self.state.borrow_mut().controller.shutdown_now();
+            for state in self.parked.borrow_mut().iter_mut() {
+                state.controller.shutdown_now();
+            }
         }
 
+        fn drain_retiring(&self) {
+            self.retiring.borrow_mut().retain_mut(|group| {
+                for state in &mut group.states {
+                    state.controller.tick(None);
+                    capture(state);
+                }
+                if group
+                    .states
+                    .iter()
+                    .any(|state| state.controller.process_present())
+                {
+                    return true;
+                }
+                if let Some(store) = &group.store {
+                    let archive = Archive {
+                        version: agent_sessions::ARCHIVE_VERSION,
+                        active_id: group.active_id.clone(),
+                        sessions: group
+                            .states
+                            .iter()
+                            .map(|state| state.record.clone())
+                            .collect(),
+                    };
+                    // The old archive already contains a conservative pending intent.
+                    // A failed final checkpoint cannot permit a second runtime.
+                    if let Err(error) = store.save(&archive) {
+                        *self.history_error.borrow_mut() = Some(error);
+                        return true;
+                    }
+                }
+                false
+            });
+        }
+        fn sync_scope(&self, app: &App, snapshot: &AssistantSnapshot) {
+            let account = self.account.history_scope().or_else(|| {
+                cfg!(feature = "assistant-local-dev").then(|| "local-development".into())
+            });
+            let next = account
+                .filter(|_| !snapshot.project_key.is_empty())
+                .map(|account| (account, snapshot.project_key.clone()));
+            if *self.scope.borrow() == next
+                && self.state.borrow().account_epoch == self.account.epoch()
+            {
+                return;
+            }
+            if !self.retiring.borrow().is_empty() {
+                return;
+            }
+            self.state.borrow_mut().record.draft =
+                app.global::<Assistant>().get_draft().to_string();
+            let _ = self.persist(true);
+            let old = std::mem::replace(
+                &mut *self.state.borrow_mut(),
+                new_state(new_record(), self.account.epoch()),
+            );
+            let active_id = old.record.id.clone();
+            let mut states = vec![old];
+            states.append(&mut self.parked.borrow_mut());
+            for state in &mut states {
+                state.catalog.clear();
+            }
+            let old_store = self.store.borrow_mut().take();
+            let needs_retirement = states
+                .iter()
+                .any(|state| state.controller.process_present());
+            if needs_retirement {
+                for state in &mut states {
+                    state.controller.disconnect();
+                    state.preparing = false;
+                }
+                self.retiring.borrow_mut().push(Retiring {
+                    states,
+                    store: old_store,
+                    active_id,
+                });
+                *self.scope.borrow_mut() = None;
+                self.show_session(app);
+                return;
+            }
+            *self.history_error.borrow_mut() = None;
+            self.last_saved.borrow_mut().clear();
+            let mut records = Vec::new();
+            let mut active = String::new();
+            if let Some((account, project)) = &next {
+                let loaded = (|| {
+                    let data = self.data.as_deref().ok_or("Agent 数据目录不可用")?;
+                    let store = Store::open(&session_directory(data)?, account, project)?;
+                    let archive = store.load()?;
+                    *self.store.borrow_mut() = Some(store);
+                    Ok::<_, &'static str>(archive)
+                })();
+                match loaded {
+                    Ok(Some(archive)) => {
+                        active = archive.active_id;
+                        records = archive.sessions;
+                    }
+                    Ok(None) => {}
+                    Err(message) => *self.history_error.borrow_mut() = Some(message),
+                }
+            }
+            if records.is_empty() {
+                records.push(new_record());
+            }
+            let index = records
+                .iter()
+                .position(|record| record.id == active)
+                .unwrap_or(0);
+            let record = records.remove(index);
+            *self.state.borrow_mut() = new_state(record, self.account.epoch());
+            *self.parked.borrow_mut() = records
+                .into_iter()
+                .map(|record| new_state(record, self.account.epoch()))
+                .collect();
+            *self.scope.borrow_mut() = next;
+            self.show_session(app);
+        }
+        fn show_session(&self, app: &App) {
+            let state = self.state.borrow();
+            let ui = app.global::<Assistant>();
+            ui.set_messages(ModelRc::from(state.messages.clone()));
+            ui.set_draft(state.record.draft.as_str().into());
+            ui.set_settings_open(false);
+            ui.set_secret_clear_token(ui.get_secret_clear_token().wrapping_add(1));
+            ui.set_scroll_token(ui.get_scroll_token().wrapping_add(1));
+        }
+        fn persist(&self, force: bool) -> Result<(), &'static str> {
+            if let Some(error) = *self.history_error.borrow() {
+                return Err(error);
+            }
+            if !force && self.last_persist.get().elapsed() < Duration::from_millis(500) {
+                return Ok(());
+            }
+            let store = self.store.borrow();
+            let Some(store) = store.as_ref() else {
+                return Ok(());
+            };
+            let mut state = self.state.borrow_mut();
+            let mut parked = self.parked.borrow_mut();
+            capture(&mut state);
+            for state in parked.iter_mut() {
+                capture(state);
+            }
+            let archive = Archive {
+                version: agent_sessions::ARCHIVE_VERSION,
+                active_id: state.record.id.clone(),
+                sessions: std::iter::once(&*state)
+                    .chain(parked.iter())
+                    .map(|state| state.record.clone())
+                    .collect(),
+            };
+            let bytes = serde_json::to_vec(&archive).map_err(|_| "无法保存会话")?;
+            if *self.last_saved.borrow() != bytes {
+                if let Err(error) = store.save(&archive) {
+                    *self.history_error.borrow_mut() = Some(error);
+                    return Err(error);
+                }
+                *self.last_saved.borrow_mut() = bytes;
+            }
+            self.last_persist.set(Instant::now());
+            Ok(())
+        }
+        fn save_selection(
+            &self,
+            active_id: String,
+            extra: Option<Record>,
+        ) -> Result<(), &'static str> {
+            let current = self.state.borrow();
+            let parked = self.parked.borrow();
+            let mut sessions = std::iter::once(&*current)
+                .chain(parked.iter())
+                .map(|state| state.record.clone())
+                .collect::<Vec<_>>();
+            if let Some(record) = extra {
+                sessions.push(record);
+            }
+            let archive = Archive {
+                version: agent_sessions::ARCHIVE_VERSION,
+                active_id,
+                sessions,
+            };
+            let store = self.store.borrow();
+            let store = store.as_ref().ok_or("会话目录不可用")?;
+            if let Err(error) = store.save(&archive) {
+                *self.history_error.borrow_mut() = Some(error);
+                return Err(error);
+            }
+            *self.last_saved.borrow_mut() =
+                serde_json::to_vec(&archive).map_err(|_| "无法保存会话")?;
+            self.last_persist.set(Instant::now());
+            Ok(())
+        }
+        fn new_session(&self, app: &App) {
+            self.refresh(app);
+            if !app.global::<Assistant>().get_open()
+                || !app.global::<Assistant>().get_can_create_session()
+            {
+                return;
+            }
+            if self.persist(true).is_err() {
+                return;
+            }
+            let mut record = new_record();
+            record.title = format!("新会话 {}", self.parked.borrow().len() + 2);
+            if self
+                .save_selection(record.id.clone(), Some(record.clone()))
+                .is_err()
+            {
+                self.refresh(app);
+                return;
+            }
+            let next = new_state(record, self.account.epoch());
+            let mut old = std::mem::replace(&mut *self.state.borrow_mut(), next);
+            // A not-yet-launched preparation may be cancelled; submitted work is retained.
+            old.epoch = next_epoch();
+            old.preparing = false;
+            old.selecting = false;
+            self.parked.borrow_mut().push(old);
+            self.show_session(app);
+            self.refresh(app);
+            let _ = self.persist(true);
+        }
+        fn select_session(&self, app: &App, index: i32) {
+            self.refresh(app);
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            if !app.global::<Assistant>().get_open()
+                || index == 0
+                || index > self.parked.borrow().len()
+            {
+                return;
+            }
+            if self.persist(true).is_err() {
+                return;
+            }
+            let id = self.parked.borrow()[index - 1].record.id.clone();
+            if self.save_selection(id, None).is_err() {
+                self.refresh(app);
+                return;
+            }
+            let next = self.parked.borrow_mut().remove(index - 1);
+            let mut old = std::mem::replace(&mut *self.state.borrow_mut(), next);
+            old.epoch = next_epoch();
+            old.preparing = false;
+            old.selecting = false;
+            self.parked.borrow_mut().push(old);
+            self.show_session(app);
+            self.refresh(app);
+            let _ = self.persist(true);
+        }
+        fn other_session_reason(&self) -> &'static str {
+            parked_connection_reason(&self.parked.borrow(), !self.retiring.borrow().is_empty())
+        }
         fn snapshot(app: &App) -> Option<AssistantSnapshot> {
             let mut result = None;
             Shell::with(|shell, _| {
@@ -228,30 +518,13 @@ mod desktop {
         }
         fn refresh(&self, app: &App) {
             let account_epoch = self.account.epoch();
-            {
-                let mut state = self.state.borrow_mut();
-                if state.account_epoch != account_epoch {
-                    state.account_epoch = account_epoch;
-                    state.runtime_account_epoch = None;
-                    state.catalog.clear();
-                    state.epoch = state.epoch.wrapping_add(1);
-                    state.preparing = false;
-                    state.selecting = false;
-                    state.approval = None;
-                    state.assistant_row = None;
-                    state.controller.disconnect();
-                    state.notice = "账户已变化，请重新连接".into();
-                    while self.messages.row_count() != 0 {
-                        self.messages.remove(0);
-                    }
-                    let ui = app.global::<Assistant>();
-                    ui.set_draft("".into());
-                    ui.set_secret_clear_token(ui.get_secret_clear_token().wrapping_add(1));
-                }
-            }
             let Some(snapshot) = Self::snapshot(app) else {
                 return;
             };
+            self.drain_retiring();
+            self.sync_scope(app, &snapshot);
+            self.state.borrow_mut().record.draft =
+                app.global::<Assistant>().get_draft().to_string();
             self.load_models(app);
             if self.sync_lease(&snapshot) {
                 app.global::<Assistant>().set_draft("".into());
@@ -259,27 +532,84 @@ mod desktop {
             {
                 let mut state = self.state.borrow_mut();
                 state.controller.tick(snapshot.document.as_ref());
+                capture(&mut state);
+            }
+            for state in self.parked.borrow_mut().iter_mut() {
+                state.controller.tick(snapshot.document.as_ref());
+                capture(state);
+                // Idle background sessions release the one execution connection.
+                // Running and uncertain work keeps its original owner and callbacks.
+                if state.controller.process_present()
+                    && !session_busy(state)
+                    && !session_uncertain(state)
+                    && !matches!(
+                        state.controller.view().phase,
+                        Phase::Initializing | Phase::OpeningSession | Phase::Closing
+                    )
+                {
+                    state.controller.disconnect();
+                }
             }
             let mut catalog_expired = None;
             for _ in 0..4 {
                 let Ok(result) = self.receiver.try_recv() else {
                     break;
                 };
-                let mut state = self.state.borrow_mut();
+                let target = match &result {
+                    WorkerResult::Models { session_id, .. }
+                    | WorkerResult::Prepared { session_id, .. } => session_id,
+                    #[cfg(feature = "assistant-local-dev")]
+                    WorkerResult::File { session_id, .. } => session_id,
+                };
+                let mut current = self.state.borrow_mut();
+                let mut parked = self.parked.borrow_mut();
+                let state = if current.record.id == *target {
+                    &mut *current
+                } else if let Some(state) =
+                    parked.iter_mut().find(|state| state.record.id == *target)
+                {
+                    state
+                } else {
+                    continue;
+                };
                 match result {
                     WorkerResult::Models {
+                        session_id: _,
+                        generation,
                         account_epoch,
                         ticket,
                         result,
-                    } if state.account_epoch == Some(account_epoch) => {
+                    } if state.account_epoch == Some(account_epoch)
+                        && state.generation == generation =>
+                    {
                         let expired =
                             result.as_ref().err() == Some(&crate::agent_models::ACCOUNT_EXPIRED);
-                        if state.catalog.finish(ticket, result) && expired {
-                            catalog_expired = Some(account_epoch);
+                        if state.catalog.finish(ticket, result) {
+                            if expired {
+                                catalog_expired = Some(account_epoch);
+                            }
+                            if let Some(id) = &state.record.selected_model_id {
+                                if let Some(index) = state
+                                    .catalog
+                                    .choices
+                                    .iter()
+                                    .position(|choice| &choice.id == id)
+                                {
+                                    state.catalog.select(index as i32);
+                                }
+                            } else {
+                                state.record.selected_model_id =
+                                    state.catalog.current().map(|choice| choice.id.clone());
+                            }
                         }
                     }
                     #[cfg(feature = "assistant-local-dev")]
-                    WorkerResult::File { epoch, kind, path } if state.epoch == epoch => {
+                    WorkerResult::File {
+                        session_id: _,
+                        epoch,
+                        kind,
+                        path,
+                    } if state.epoch == epoch => {
                         state.selecting = false;
                         if let Some(path) = path {
                             match path {
@@ -299,6 +629,7 @@ mod desktop {
                         }
                     }
                     WorkerResult::Prepared {
+                        session_id: _,
                         epoch,
                         account_epoch,
                         config,
@@ -330,13 +661,17 @@ mod desktop {
             }
             let (expired, billing_changed) = {
                 let mut state = self.state.borrow_mut();
-                let view = state.controller.view();
-                let owns_account = state.runtime_account_epoch.is_some()
-                    && state.runtime_account_epoch == account_epoch;
-                let expired = view.account_expired && owns_account;
-                let revision = view.billing_revision;
-                let changed = owns_account && state.billing_revision != revision;
-                state.billing_revision = revision;
+                let mut parked = self.parked.borrow_mut();
+                let mut expired = false;
+                let mut changed = false;
+                for state in std::iter::once(&mut *state).chain(parked.iter_mut()) {
+                    let view = state.controller.view();
+                    let owns_account = state.runtime_account_epoch.is_some()
+                        && state.runtime_account_epoch == account_epoch;
+                    expired |= view.account_expired && owns_account;
+                    changed |= owns_account && state.billing_revision != view.billing_revision;
+                    state.billing_revision = view.billing_revision;
+                }
                 (expired, changed)
             };
             if expired && let Some(epoch) = account_epoch {
@@ -347,10 +682,13 @@ mod desktop {
                 self.account.refresh_wallet(app);
             }
             self.publish(app, &snapshot);
+            let _ = self.persist(false);
         }
         fn schedule(self: &Rc<Self>, app: &App) {
             let phase = self.state.borrow().controller.view().phase;
-            let hot = self.state.borrow().catalog.loading
+            let hot = self.parked.borrow().iter().any(|state| {
+                session_busy(state) || state.controller.view().phase == Phase::Closing
+            }) || self.state.borrow().catalog.loading
                 || self.state.borrow().preparing
                 || matches!(
                     phase,
@@ -379,40 +717,30 @@ mod desktop {
         }
         fn sync_lease(&self, snapshot: &AssistantSnapshot) -> bool {
             let next = Lease::from_snapshot(snapshot);
-            let mut state = self.state.borrow_mut();
-            let mut clear_draft = false;
-            if let Some(previous) = &state.lease
-                && previous != &next
-            {
-                let document_changed = previous.document != next.document;
-                state.controller.disconnect();
-                state.preparing = false;
-                state.selecting = false;
-                state.epoch = state.epoch.wrapping_add(1);
-                state.approval = None;
-                state.notice = if document_changed {
-                    "工程已变化，请重新连接"
-                } else {
-                    "权限已变化，请重新连接"
+            let sync = |state: &mut State| {
+                if state.lease.as_ref().is_some_and(|old| old != &next) {
+                    state.controller.disconnect();
+                    state.preparing = false;
+                    state.selecting = false;
+                    state.epoch = next_epoch();
+                    state.approval = None;
+                    state.notice = "工程或权限已变化，请重新连接".into();
                 }
-                .into();
-                if document_changed {
-                    clear_draft = true;
-                    state.assistant_row = None;
-                    while self.messages.row_count() != 0 {
-                        self.messages.remove(0);
-                    }
-                }
+                state.lease = Some(Lease::from_snapshot(snapshot));
+            };
+            sync(&mut self.state.borrow_mut());
+            for state in self.parked.borrow_mut().iter_mut() {
+                sync(state);
             }
-            state.lease = Some(next);
-            clear_draft
+            false
         }
         fn publish(&self, app: &App, snapshot: &AssistantSnapshot) {
             let mut state = self.state.borrow_mut();
             let view = state.controller.view();
             let phase = view.phase;
-            let unknown =
-                view.outcome == Some(TaskOutcome::OutcomeUnknown) || phase == Phase::OutcomeUnknown;
+            let unknown = view.outcome == Some(TaskOutcome::OutcomeUnknown)
+                || phase == Phase::OutcomeUnknown
+                || state.record.pending == "unknown";
             let busy = state.preparing
                 || matches!(
                     phase,
@@ -425,7 +753,10 @@ mod desktop {
                 )
                 || (phase == Phase::Ready && !view.can_send && view.error.is_none());
             let outcome = outcome_label(view.outcome);
-            let status = if unknown {
+            let history_error = *self.history_error.borrow();
+            let status = if let Some(error) = history_error {
+                error
+            } else if unknown {
                 "操作结果待核实"
             } else if !state.notice.is_empty() {
                 &state.notice
@@ -444,6 +775,27 @@ mod desktop {
                 }
             };
             let ui = app.global::<Assistant>();
+            let names = std::iter::once(&*state)
+                .chain(self.parked.borrow().iter())
+                .map(|state| {
+                    let suffix = if session_uncertain(state) {
+                        " · 待核实"
+                    } else if session_busy(state) || state.record.pending == "running" {
+                        " · 处理中"
+                    } else {
+                        ""
+                    };
+                    slint::SharedString::from(format!("{}{suffix}", state.record.title))
+                })
+                .collect::<Vec<_>>();
+            ui.set_session_names(ModelRc::new(VecModel::from(names)));
+            ui.set_session_index(0);
+            ui.set_history_ready(self.store.borrow().is_some() && history_error.is_none());
+            ui.set_can_create_session(
+                self.store.borrow().is_some()
+                    && history_error.is_none()
+                    && self.parked.borrow().len() + 1 < agent_sessions::MAX_SESSIONS,
+            );
             ui.set_current_project(snapshot.project_name.as_str().into());
             ui.set_provider_label(state.provider_label.as_str().into());
             ui.set_model_names(ModelRc::new(VecModel::from(
@@ -481,7 +833,13 @@ mod desktop {
                 0
             });
             ui.set_unknown(unknown);
-            ui.set_can_send(view.can_send && !state.preparing && snapshot.read_token.is_some());
+            ui.set_can_send(
+                view.can_send
+                    && !state.preparing
+                    && snapshot.read_token.is_some()
+                    && history_error.is_none()
+                    && !history_full(&state),
+            );
             ui.set_can_stop(view.can_stop);
             ui.set_can_reconcile(view.can_reconcile);
             ui.set_budget_label(view.budget_label.into());
@@ -500,7 +858,25 @@ mod desktop {
             ui.set_can_select_model(state.can_select_model());
             ui.set_can_disconnect(connected && !busy);
             ui.set_connect_label(if state.preparing || matches!(phase, Phase::Initializing | Phase::OpeningSession) { "正在连接…" } else if phase == Phase::Closing { "正在断开…" } else if connected { "断开" } else { "连接" }.into());
-            let reason = if unknown && !view.can_connect {
+            let other = self.other_session_reason();
+            let missing_model = state.record.selected_model_id.as_ref().is_some_and(|id| {
+                !state.catalog.loading
+                    && !state.catalog.choices.is_empty()
+                    && !state.catalog.choices.iter().any(|choice| &choice.id == id)
+            });
+            let reason = if let Some(error) = history_error {
+                error
+            } else if self.store.borrow().is_none() {
+                if snapshot.document.is_some() && snapshot.project_key.is_empty() {
+                    "工程保存后即可开始会话"
+                } else {
+                    "请登录并打开工程"
+                }
+            } else if !other.is_empty() {
+                other
+            } else if missing_model {
+                "原模型暂不可用，请重新选择"
+            } else if unknown && !view.can_connect {
                 "操作结果待核实，连接已锁定"
             } else if !cfg!(feature = "assistant-local-dev") && !self.account.signed_in() {
                 "请先登录账户"
@@ -530,7 +906,9 @@ mod desktop {
             ui.set_can_connect(view.can_connect && reason.is_empty());
             ui.set_connect_disabled_reason(reason.into());
             ui.set_send_disabled_reason(
-                if unknown {
+                if history_full(&state) {
+                    "当前会话已满，请新建会话"
+                } else if unknown {
                     "核实操作结果前已暂停后续请求"
                 } else if busy {
                     "请求正在处理，可等待或停止"
@@ -601,7 +979,7 @@ mod desktop {
             ui.set_can_allow(view.can_approve && valid_approval);
             ui.set_can_reject(view.can_approve);
             let next_row = update_streaming_reply(
-                &self.messages,
+                &state.messages,
                 state.assistant_row,
                 phase,
                 view.outcome,
@@ -610,70 +988,120 @@ mod desktop {
             );
             state.assistant_row = next_row;
             state.approval = frozen_approval;
-            self.trim(&mut state);
-        }
-        fn trim(&self, state: &mut State) {
-            let bytes = || {
-                self.messages
-                    .iter()
-                    .map(|row| {
-                        row.role.len() + row.text.len() + row.state.len() + row.progress.len()
-                    })
-                    .sum::<usize>()
-            };
-            while self.messages.row_count() > MAX_ROWS || bytes() > MAX_HISTORY_BYTES {
-                self.messages.remove(0);
-                state.assistant_row = state.assistant_row.and_then(|index| index.checked_sub(1));
-            }
         }
         fn send(&self, app: &App, text: &str) {
             self.refresh(app);
-            if !app.global::<Assistant>().get_open() {
+            if !app.global::<Assistant>().get_open()
+                || !app.global::<Assistant>().get_can_send()
+                || text.trim().is_empty()
+                || text.len() > 32_000
+            {
                 return;
             }
             let mut state = self.state.borrow_mut();
             if state.preparing || state.selecting {
                 return;
             }
-            match state.controller.send_text(text) {
+            let previous = state.record.clone();
+            let mut visible = text.to_owned();
+            if let Some(lease) = &state.lease {
+                for token in [lease.read.as_ref(), lease.write.as_ref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    visible = visible.replace(token, "[已隐藏]");
+                }
+            }
+            if let Some(account) = self.account.snapshot() {
+                visible = visible.replace(&account.token, "[已隐藏]");
+            }
+            let Some(snapshot) = Self::snapshot(app) else {
+                return;
+            };
+            let choice = state.catalog.current();
+            let request = RequestSnapshot {
+                session_id: state.record.id.clone(),
+                model_id: choice
+                    .map(|choice| choice.id.clone())
+                    .unwrap_or_else(|| state.provider_label.clone()),
+                effort_id: None,
+                policy: choice
+                    .map(|choice| choice.policy.clone())
+                    .unwrap_or_else(|| json!({})),
+                context: ContextReference {
+                    project_key: snapshot.project_key,
+                    project_name: snapshot.project_name,
+                },
+            };
+            state.record.request_snapshots.push(request);
+            if state.record.request_snapshots.len() == 1 {
+                state.record.title = visible
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(24)
+                    .collect();
+            }
+            state.messages.push(AssistantMessage {
+                role: "你".into(),
+                text: visible.into(),
+                state: "".into(),
+                progress: "".into(),
+            });
+            state.messages.push(AssistantMessage {
+                role: "Agent".into(),
+                text: "".into(),
+                state: "".into(),
+                progress: "".into(),
+            });
+            state.assistant_row = Some(state.messages.row_count() - 1);
+            state.record.draft.clear();
+            state.submitting = true;
+            state.record.pending = "running".into();
+            drop(state);
+            // Persist the frozen intent before IPC acceptance. A crash can only
+            // require recovery; opening this file never resends the input.
+            let saved = self.persist(true);
+            let mut state = self.state.borrow_mut();
+            let result = match saved {
+                Ok(()) => state
+                    .controller
+                    .send_text(text)
+                    .map_err(|error| error.message()),
+                Err(error) => Err(error),
+            };
+            state.submitting = false;
+            match result {
                 Ok(()) => {
-                    let mut visible = text.to_owned();
-                    if let Some(lease) = &state.lease {
-                        for token in [lease.read.as_ref(), lease.write.as_ref()]
-                            .into_iter()
-                            .flatten()
-                        {
-                            visible = visible.replace(token, "[已隐藏]");
-                        }
-                    }
-                    if let Some(account) = self.account.snapshot() {
-                        visible = visible.replace(&account.token, "[已隐藏]");
-                    }
-                    self.messages.push(AssistantMessage {
-                        role: "你".into(),
-                        text: visible.into(),
-                        state: "".into(),
-                        progress: "".into(),
-                    });
-                    self.messages.push(AssistantMessage {
-                        role: "Agent".into(),
-                        text: "".into(),
-                        state: "".into(),
-                        progress: "".into(),
-                    });
-                    state.assistant_row = Some(self.messages.row_count() - 1);
                     state.notice.clear();
-                    self.trim(&mut state);
-                    // Enqueue acceptance immediately locks submission, before any timer tick.
                     let ui = app.global::<Assistant>();
                     ui.set_draft("".into());
                     ui.set_scroll_token(ui.get_scroll_token().wrapping_add(1));
                     ui.set_busy(true);
                     ui.set_can_send(false);
                 }
-                Err(error) => state.notice = error.message().into(),
+                Err(error) => {
+                    state.record = previous;
+                    state.messages.set_vec(
+                        state
+                            .record
+                            .messages
+                            .iter()
+                            .map(|row| AssistantMessage {
+                                role: row.role.as_str().into(),
+                                text: row.text.as_str().into(),
+                                state: row.state.as_str().into(),
+                                progress: row.progress.as_str().into(),
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    state.assistant_row = None;
+                    state.notice = error.into();
+                }
             }
             drop(state);
+            let _ = self.persist(true);
             self.refresh(app);
         }
         fn close(&self, app: &App) {
@@ -689,7 +1117,7 @@ mod desktop {
                     return;
                 }
                 state.controller.disconnect();
-                state.epoch = state.epoch.wrapping_add(1);
+                state.epoch = next_epoch();
                 state.notice.clear();
             }
             let ui = app.global::<Assistant>();
@@ -766,10 +1194,11 @@ mod desktop {
             let epoch = {
                 let mut state = self.state.borrow_mut();
                 state.selecting = true;
-                state.epoch = state.epoch.wrapping_add(1);
+                state.epoch = next_epoch();
                 state.epoch
             };
             let sender = self.sender.clone();
+            let session_id = self.state.borrow().record.id.clone();
             spawn_detached(move || {
                 let title = match kind {
                     FileKind::Runtime => "选择 Node 运行环境文件",
@@ -784,7 +1213,12 @@ mod desktop {
                     [path] => Some(ordinary_file(path).map(|()| path.clone())),
                     _ => Some(Err("请只选择一个普通文件")),
                 };
-                let _ = sender.send(WorkerResult::File { epoch, kind, path });
+                let _ = sender.send(WorkerResult::File {
+                    session_id,
+                    epoch,
+                    kind,
+                    path,
+                });
             });
             self.refresh(app);
         }
@@ -814,9 +1248,13 @@ mod desktop {
                 return;
             };
             let sender = self.sender.clone();
+            let session_id = self.state.borrow().record.id.clone();
+            let generation = self.state.borrow().generation;
             spawn_detached(move || {
                 let result = crate::agent_models::fetch(&account.base, &account.token);
                 let _ = sender.send(WorkerResult::Models {
+                    session_id,
+                    generation,
                     account_epoch: account.epoch,
                     ticket,
                     result,
@@ -836,13 +1274,23 @@ mod desktop {
             if !self.state.borrow().can_select_model() {
                 return;
             }
-            self.state.borrow_mut().catalog.select(index);
+            {
+                let mut state = self.state.borrow_mut();
+                state.catalog.select(index);
+                state.record.selected_model_id =
+                    state.catalog.current().map(|choice| choice.id.clone());
+            }
+            let _ = self.persist(true);
             self.refresh(app);
         }
         fn connect_managed(&self, app: &App) {
             self.refresh(app);
             let ui = app.global::<Assistant>();
             if !ui.get_open() || !ui.get_can_connect() {
+                return;
+            }
+            if self.persist(true).is_err() {
+                self.refresh(app);
                 return;
             }
             let Some(account) = self.account.snapshot() else {
@@ -870,13 +1318,15 @@ mod desktop {
                 };
                 let model_id = choice.id.clone();
                 state.provider_label = choice.label.clone();
-                state.epoch = state.epoch.wrapping_add(1);
+                state.epoch = next_epoch();
                 state.preparing = true;
                 state.notice.clear();
                 (state.epoch, model_id)
             };
             let sender = self.sender.clone();
             let environment = app_environment();
+            let session_id = self.state.borrow().record.id.clone();
+            let restore = self.state.borrow().record.runtime_created;
             spawn_detached(move || {
                 let config = (|| {
                     let files = crate::agent_components::load(&manifest)?;
@@ -891,6 +1341,8 @@ mod desktop {
                         provider["modelId"] = json!(model_id);
                     }
                     Ok(ConnectionConfig {
+                        local_session_id: session_id.clone(),
+                        restore,
                         launch: LaunchSpec {
                             executable: files.runtime,
                             entrypoint: files.entrypoint,
@@ -907,6 +1359,7 @@ mod desktop {
                     })
                 })();
                 let _ = sender.send(WorkerResult::Prepared {
+                    session_id,
                     epoch,
                     account_epoch: Some(account.epoch),
                     config: config.map(Box::new),
@@ -919,6 +1372,10 @@ mod desktop {
             self.refresh(app);
             let ui = app.global::<Assistant>();
             if !ui.get_open() || !ui.get_can_connect() {
+                return;
+            }
+            if self.persist(true).is_err() {
+                self.refresh(app);
                 return;
             }
             let Some(snapshot) = Self::snapshot(app) else {
@@ -960,7 +1417,7 @@ mod desktop {
                     return;
                 };
                 let files = (runtime.clone(), entrypoint.clone(), client.clone());
-                state.epoch = state.epoch.wrapping_add(1);
+                state.epoch = next_epoch();
                 state.preparing = true;
                 state.notice.clear();
                 state.provider_label = model.trim().to_owned();
@@ -971,6 +1428,8 @@ mod desktop {
             let provider = json!({"protocol":"openai-chat","baseURL":base,"model":model.trim(),"apiKey":key,"images":images});
             let sender = self.sender.clone();
             let account_epoch = self.account.epoch();
+            let session_id = self.state.borrow().record.id.clone();
+            let restore = self.state.borrow().record.runtime_created;
             spawn_detached(move || {
                 let config = (|| {
                     ordinary_file(&runtime)?;
@@ -984,6 +1443,8 @@ mod desktop {
                         .collect();
                     let session_directory = session_directory(&data)?;
                     Ok(ConnectionConfig {
+                        local_session_id: session_id.clone(),
+                        restore,
                         launch: LaunchSpec {
                             executable: runtime,
                             entrypoint,
@@ -1000,6 +1461,7 @@ mod desktop {
                     })
                 })();
                 let _ = sender.send(WorkerResult::Prepared {
+                    session_id,
                     epoch,
                     account_epoch,
                     config: config.map(Box::new),
@@ -1009,38 +1471,207 @@ mod desktop {
         }
     }
 
+    fn parked_connection_reason(parked: &[State], retiring: bool) -> &'static str {
+        if retiring {
+            "正在结束原工程的连接"
+        } else if parked.iter().any(session_uncertain) {
+            "请先回到待核实会话确认原操作"
+        } else if parked
+            .iter()
+            .any(|state| session_busy(state) || state.record.pending == "running")
+        {
+            "另一会话正在处理，请稍后连接"
+        } else if parked
+            .iter()
+            .any(|state| state.preparing || state.controller.process_present())
+        {
+            "正在释放上一会话的连接"
+        } else {
+            ""
+        }
+    }
+
+    fn next_epoch() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64
+    }
+    fn new_record() -> Record {
+        Record {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: "新会话".into(),
+            draft: String::new(),
+            messages: Vec::new(),
+            selected_model_id: None,
+            runtime_created: false,
+            request_snapshots: Vec::new(),
+            pending: String::new(),
+            updated_at_ms: now_ms(),
+        }
+    }
+    fn new_state(record: Record, account_epoch: Option<u64>) -> State {
+        let messages = Rc::new(VecModel::from(
+            record
+                .messages
+                .iter()
+                .map(|message| AssistantMessage {
+                    role: message.role.as_str().into(),
+                    text: message.text.as_str().into(),
+                    state: message.state.as_str().into(),
+                    progress: message.progress.as_str().into(),
+                })
+                .collect::<Vec<_>>(),
+        ));
+        State {
+            record,
+            generation: next_epoch(),
+            messages,
+            submitting: false,
+            controller: Controller::default(),
+            lease: None,
+            runtime: None,
+            entrypoint: None,
+            mcp_client: None,
+            selecting: false,
+            preparing: false,
+            epoch: next_epoch(),
+            account_epoch,
+            runtime_account_epoch: None,
+            billing_revision: 0,
+            notice: String::new(),
+            provider_label: String::new(),
+            catalog: crate::agent_models::Catalog::default(),
+            assistant_row: None,
+            approval: None,
+        }
+    }
+    fn history_full(state: &State) -> bool {
+        serde_json::to_vec(&state.record)
+            .map_or(true, |bytes| bytes.len() >= NEW_TURN_HISTORY_LIMIT)
+    }
+    fn session_busy(state: &State) -> bool {
+        let view = state.controller.view();
+        state.preparing
+            || state.submitting
+            || matches!(
+                view.phase,
+                Phase::Initializing
+                    | Phase::OpeningSession
+                    | Phase::Running
+                    | Phase::AwaitingApproval
+                    | Phase::Stopping
+            )
+            || (view.phase == Phase::Ready && !view.can_send && view.error.is_none())
+    }
+    fn session_uncertain(state: &State) -> bool {
+        let view = state.controller.view();
+        state.record.pending == "unknown"
+            || view.phase == Phase::OutcomeUnknown
+            || view.outcome == Some(TaskOutcome::OutcomeUnknown)
+    }
+    fn capture(state: &mut State) {
+        let view = state.controller.view();
+        if !state.submitting {
+            state.assistant_row = update_streaming_reply(
+                &state.messages,
+                state.assistant_row,
+                view.phase,
+                view.outcome,
+                view.text,
+                view.progress,
+            );
+        }
+        let previous_pending = state.record.pending.clone();
+        if view.phase == Phase::OutcomeUnknown || view.outcome == Some(TaskOutcome::OutcomeUnknown)
+        {
+            state.record.pending = "unknown".into();
+        } else if state.submitting
+            || matches!(
+                view.phase,
+                Phase::Running | Phase::AwaitingApproval | Phase::Stopping
+            )
+            || (view.phase == Phase::Ready && !view.can_send && view.error.is_none())
+        {
+            state.record.pending = "running".into();
+        } else if state.controller.session_opened()
+            && matches!(
+                view.phase,
+                Phase::Ready | Phase::Failed | Phase::Disconnected
+            )
+        {
+            state.record.pending.clear();
+        }
+        // A recovered interrupted reply stays as history; it is never replayed or
+        // replaced with the new process's empty stream buffer.
+        if !previous_pending.is_empty()
+            && state.record.pending.is_empty()
+            && state.assistant_row.is_none()
+            && let Some(index) = state.messages.row_count().checked_sub(1)
+            && let Some(mut row) = state.messages.row_data(index)
+            && row.role == "Agent"
+            && (row.state.is_empty()
+                || (previous_pending == "unknown" && row.state == "操作结果待核实"))
+        {
+            row.state = if previous_pending == "unknown" {
+                "已核实"
+            } else {
+                "旧请求已结束"
+            }
+            .into();
+            row.progress = "".into();
+            state.messages.set_row_data(index, row);
+        }
+        let messages = state
+            .messages
+            .iter()
+            .map(|row| Message {
+                role: row.role.to_string(),
+                text: row.text.to_string(),
+                state: row.state.to_string(),
+                progress: row.progress.to_string(),
+            })
+            .collect::<Vec<_>>();
+        let created = state.record.runtime_created || state.controller.session_opened();
+        if messages != state.record.messages
+            || previous_pending != state.record.pending
+            || created != state.record.runtime_created
+        {
+            state.record.updated_at_ms = now_ms();
+        }
+        state.record.messages = messages;
+        state.record.runtime_created = created;
+    }
+
     pub(super) fn bind(app: &App, account: crate::cloud::AccountAccess) -> Rc<Binding> {
         let (sender, receiver) = sync_channel(4);
+        let mut data = None;
+        Shell::with(|shell, _| data = Some(shell.studio.borrow().host.dirs.data.clone()));
         let binding = Rc::new(Binding {
             timer: Timer::default(),
             account: account.clone(),
             components: crate::agent_components::manifest_path(),
-            state: RefCell::new(State {
-                controller: Controller::default(),
-                lease: None,
-                runtime: None,
-                entrypoint: None,
-                mcp_client: None,
-                selecting: false,
-                preparing: false,
-                epoch: 0,
-                account_epoch: account.epoch(),
-                runtime_account_epoch: None,
-                billing_revision: 0,
-                notice: String::new(),
-                provider_label: String::new(),
-                catalog: crate::agent_models::Catalog::default(),
-                assistant_row: None,
-                approval: None,
-            }),
-            messages: Rc::new(VecModel::default()),
+            state: RefCell::new(new_state(new_record(), account.epoch())),
+            parked: RefCell::new(Vec::new()),
+            retiring: RefCell::new(Vec::new()),
+            scope: RefCell::new(None),
+            data,
+            store: RefCell::new(None),
+            history_error: RefCell::new(None),
+            last_saved: RefCell::new(Vec::new()),
+            last_persist: Cell::new(Instant::now()),
             sender,
             receiver,
         });
         let ui = app.global::<Assistant>();
         ui.set_enabled(true);
         ui.set_developer_tools(cfg!(feature = "assistant-local-dev"));
-        ui.set_messages(ModelRc::from(binding.messages.clone()));
+        ui.set_messages(ModelRc::from(binding.state.borrow().messages.clone()));
         macro_rules! callback {
             ($name:ident, $method:ident $(, $argument:expr)*) => {
                 ui.$name({
@@ -1051,6 +1682,17 @@ mod desktop {
             };
         }
         callback!(on_close_requested, close);
+        callback!(on_new_session, new_session);
+        ui.on_select_session({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |index| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.select_session(&app, index);
+                    binding.schedule(&app);
+                }
+            }
+        });
         callback!(on_disconnect, disconnect);
         callback!(on_connect_managed, connect_managed);
         callback!(on_refresh_models, refresh_models);
@@ -1314,6 +1956,69 @@ mod desktop {
         use std::os::unix::fs::symlink;
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        #[test]
+        fn persisting_a_submitting_question_keeps_its_new_reply_row_attached() {
+            let mut state = new_state(new_record(), Some(1));
+            state.messages.push(AssistantMessage {
+                role: "Agent".into(),
+                text: "上一轮已经完成".into(),
+                state: "已完成".into(),
+                progress: "".into(),
+            });
+            state.messages.push(AssistantMessage {
+                role: "Agent".into(),
+                text: "".into(),
+                state: "".into(),
+                progress: "".into(),
+            });
+            state.assistant_row = Some(1);
+            state.submitting = true;
+            // No subprocess is needed: even a stale disconnected Controller would
+            // detach this row if capture observed it before the new IPC send.
+            capture(&mut state);
+            assert_eq!(state.assistant_row, Some(1));
+            assert_eq!(state.record.pending, "running");
+            assert_eq!(state.record.messages[0].text, "上一轮已经完成");
+            assert_eq!(state.record.messages[0].state, "已完成");
+            assert_eq!(state.record.messages[1].text, "");
+            assert_eq!(state.record.messages[1].state, "");
+            assert_eq!(state.record.messages[1].progress, "");
+        }
+
+        #[test]
+        fn rebuilding_the_same_session_cannot_reuse_worker_tickets() {
+            let record = new_record();
+            let old = new_state(record.clone(), Some(7));
+            let rebuilt = new_state(record, Some(7));
+            assert_eq!(old.record.id, rebuilt.record.id);
+            assert_eq!(old.account_epoch, rebuilt.account_epoch);
+            assert_ne!(old.epoch, rebuilt.epoch);
+            assert_ne!(old.generation, rebuilt.generation);
+            assert_ne!(old.epoch, rebuilt.generation);
+            assert_ne!(old.generation, rebuilt.epoch);
+        }
+        #[test]
+        fn a_blank_view_cannot_release_another_sessions_pending_work() {
+            for (pending, reason) in [
+                ("running", "另一会话正在处理，请稍后连接"),
+                ("unknown", "请先回到待核实会话确认原操作"),
+            ] {
+                let blank = new_state(new_record(), Some(1));
+                let mut owner = new_state(new_record(), Some(1));
+                owner.record.runtime_created = true;
+                owner.record.pending = pending.into();
+                let original_id = owner.record.id.clone();
+                capture(&mut owner);
+                assert!(blank.controller.view().can_connect);
+                assert_eq!(owner.record.id, original_id);
+                assert_eq!(owner.record.pending, pending);
+                assert_eq!(parked_connection_reason(&[owner], false), reason);
+                // Selecting the owner should allow its explicit restoration; the
+                // empty background view cannot itself claim unfinished work.
+                assert_eq!(parked_connection_reason(&[blank], false), "");
+            }
+            assert_eq!(parked_connection_reason(&[], true), "正在结束原工程的连接");
+        }
         #[test]
         fn terminal_replies_detach_and_transport_failure_preserves_text() {
             for outcome in [

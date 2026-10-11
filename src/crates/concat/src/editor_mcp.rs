@@ -92,6 +92,8 @@ impl AssistantPermissionError {
 pub struct AssistantSnapshot {
     pub document: Option<crate::agent_identity::DocumentIdentity>,
     pub project_name: String,
+    /// Stable history identity, never an execution/permission scope.
+    pub project_key: String,
     pub read_token: Option<String>,
     pub write_token: Option<String>,
     pub read_status: String,
@@ -168,6 +170,7 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
         } else {
             String::new()
         },
+        project_key: String::new(),
         read_token: grant
             .filter(|grant| grant.media)
             .map(|grant| grant.token.clone()),
@@ -519,7 +522,7 @@ impl BridgeUi {
         let ready = canvas
             && !modal_busy(studio, app, false)
             && studio.canvas.mcp_move_permission_request_ready().is_ok();
-        assistant_registry_snapshot(
+        let mut snapshot = assistant_registry_snapshot(
             AssistantPermissionContext {
                 scope: scope.as_ref(),
                 canvas,
@@ -530,7 +533,25 @@ impl BridgeUi {
             &self.grants,
             &self.writes,
             &self.write_token,
-        )
+        );
+        let path = if canvas {
+            studio
+                .canvas
+                .mcp_project_path()
+                .map(|path| path.to_string_lossy().into_owned())
+        } else {
+            studio
+                .session
+                .as_ref()
+                .map(|session| session.path().to_owned())
+        };
+        snapshot.project_key = match (active.as_ref(), path.filter(|path| !path.is_empty())) {
+            (Some((kind, _)), Some(path)) => format!("{kind}:{path}"),
+            // A first automatic save establishes the durable history identity.
+            // Until then, the host keeps session creation and draft editing disabled.
+            _ => String::new(),
+        };
+        snapshot
     }
 
     /// Called only by explicit trusted native assistant permission callbacks.

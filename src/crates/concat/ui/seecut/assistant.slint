@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ScrollView } from "std-widgets.slint";
-import { Theme, Glyph, IconButton, FocusRing } from "../primitives/primitives.slint";
+import { Theme, Glyph, Icon, IconButton, FocusRing, ThinScrollbar } from "../primitives/primitives.slint";
 import { Switch } from "../inspector/controls.slint";
 import { AppButton, WorkspaceSelect } from "components.slint";
 
@@ -155,6 +155,129 @@ component AssistantPathRow inherits VerticalLayout {
     }
 }
 
+component AssistantSessionPicker inherits IconButton {
+    in property <[string]> names;
+    in property <int> current;
+    in property <length> list-width: 280px;
+    callback selected(int);
+    side: 36px;
+    icon-size: 20px;
+    glyph: Glyph.rows;
+    label: "切换会话";
+    checked: list.is-open;
+    property <int> active-row;
+    property <length> content-height: root.names.length * 36px + 8px;
+    property <length> list-height: min(224px, root.content-height);
+    property <length> scroll;
+    property <length> offset: clamp(root.scroll, 0px, max(0px, root.content-height - root.list-height));
+    changed enabled => { if !root.enabled { list.close(); } }
+    function reveal-row(index: int) {
+        if index * 36px < root.offset { root.scroll = index * 36px; }
+        else if (index + 1) * 36px + 8px > root.offset + root.list-height {
+            root.scroll = (index + 1) * 36px + 8px - root.list-height;
+        }
+    }
+    function select(index: int) {
+        if !root.enabled || index < 0 || index >= root.names.length { return; }
+        list.close();
+        root.take-focus();
+        // The host owns selection and all message/task state.
+        root.selected(index);
+    }
+    clicked => {
+        if list.is-open { list.close(); return; }
+        if root.names.length == 0 { return; }
+        root.active-row = clamp(root.current, 0, root.names.length - 1);
+        root.scroll = 0px;
+        root.reveal-row(root.active-row);
+        list.show();
+    }
+    list := PopupWindow {
+        x: root.width - root.list-width;
+        y: root.height + 4px;
+        width: root.list-width;
+        height: root.list-height;
+        close-policy: close-on-click-outside;
+        init => { keys.focus(); }
+        Rectangle {
+            background: Theme.raised;
+            border-width: 1px; border-color: Theme.line-strong;
+            border-radius: Theme.r;
+            clip: true;
+            keys := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                        root.active-row = clamp(root.active-row + (event.text == Key.DownArrow ? 1 : -1), 0, root.names.length - 1);
+                        root.reveal-row(root.active-row);
+                        return EventResult.accept;
+                    }
+                    if event.text == Key.Home || event.text == Key.End {
+                        root.active-row = event.text == Key.Home ? 0 : root.names.length - 1;
+                        root.reveal-row(root.active-row);
+                        return EventResult.accept;
+                    }
+                    if event.text == "\n" || event.text == " " {
+                        if !event.repeat { root.select(root.active-row); }
+                        return EventResult.accept;
+                    }
+                    if event.text == Key.Escape {
+                        list.close(); root.take-focus();
+                        return EventResult.accept;
+                    }
+                    return EventResult.reject;
+                }
+            }
+            TouchArea {
+                scroll-event(event) => { root.scroll = root.offset - event.delta-y; return EventResult.accept; }
+                VerticalLayout {
+                    y: -root.offset;
+                    height: root.content-height;
+                    padding: 4px;
+                    alignment: start;
+                    for name[index] in root.names: Rectangle {
+                        height: 36px;
+                        border-radius: Theme.r-sm;
+                        background: index == root.current ? Theme.accent-soft
+                            : row-touch.pressed ? Theme.field-active
+                            : index == root.active-row ? Theme.field-hover : transparent;
+                        accessible-role: button;
+                        accessible-label: name;
+                        accessible-enabled: root.enabled;
+                        accessible-checkable: true;
+                        accessible-checked: index == root.current;
+                        accessible-action-default => { root.select(index); }
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 10px; spacing: 8px;
+                            Text {
+                                min-width: 0px; horizontal-stretch: 1;
+                                text: name; font-family: Theme.font; font-size: Theme.workbench-font;
+                                color: index == root.current ? Theme.accent : Theme.fg;
+                                vertical-alignment: center; overflow: elide;
+                                accessible-role: none;
+                            }
+                            if index == root.current: VerticalLayout {
+                                alignment: center;
+                                Icon { glyph: Glyph.check; size: 14px; tint: Theme.accent; }
+                            }
+                        }
+                        row-touch := TouchArea {
+                            enabled: root.enabled; mouse-cursor: pointer;
+                            changed has-hover => { if self.has-hover { root.active-row = index; } }
+                            clicked => { root.select(index); }
+                        }
+                    }
+                }
+            }
+            ThinScrollbar {
+                x: parent.width - self.width - 1px; y: 1px;
+                height: parent.height - 2px;
+                viewport: root.list-height; content: root.content-height; offset: root.offset;
+                scrolled(to) => { root.scroll = to; }
+            }
+        }
+    }
+}
+
 export component AssistantPanel inherits Rectangle {
     // Only the isolated development build enables local provider configuration.
     in property <bool> developer-tools;
@@ -165,6 +288,10 @@ export component AssistantPanel inherits Rectangle {
     // These are facts supplied by the host, never inferred from model output.
     in property <string> current-project;
     in property <string> provider-label;
+    in property <[string]> session-names;
+    in property <int> session-index;
+    in property <bool> can-create-session;
+    in property <bool> history-ready;
     in property <[string]> model-names;
     in property <int> model-index;
     in property <bool> can-select-model;
@@ -220,6 +347,8 @@ export component AssistantPanel inherits Rectangle {
     callback connect(service-url: string, model-name: string, api-key: string, images: bool);
     callback disconnect();
     callback connect-managed();
+    callback new-session();
+    callback select-session(int);
     callback select-model(int);
     callback refresh-models();
     callback reconcile();
@@ -322,7 +451,22 @@ export component AssistantPanel inherits Rectangle {
             height: root.floating ? 48px : 40px;
             padding-left: 12px; padding-right: 4px;
             spacing: 4px;
-            AssistantText { text: "Agent"; font-weight: Theme.weight-title; vertical-alignment: center; horizontal-stretch: 1; }
+            AssistantText {
+                text: root.session-index >= 0 && root.session-index < root.session-names.length ? root.session-names[root.session-index] : "Agent";
+                font-weight: Theme.weight-title; vertical-alignment: center; horizontal-stretch: 1;
+                wrap: no-wrap; overflow: elide;
+            }
+            IconButton {
+                enabled: root.active && root.can-create-session;
+                side: 36px; icon-size: 20px; glyph: Glyph.plus; label: "新建会话";
+                clicked => { root.new-session(); }
+            }
+            AssistantSessionPicker {
+                enabled: root.active && root.session-names.length > 0;
+                names: root.session-names; current: root.session-index;
+                list-width: min(280px, max(120px, root.width - 100px));
+                selected(index) => { root.select-session(index); }
+            }
             IconButton {
                 enabled: root.active;
                 side: 36px; icon-size: 20px; glyph: root.settings-open ? Glyph.chevron-left : root.developer-tools ? Glyph.sliders : Glyph.lock;
@@ -541,7 +685,7 @@ export component AssistantPanel inherits Rectangle {
                 label: "给 Agent 的问题"; placeholder: "与 Agent 协作…";
                 multiline: true;
                 // Connection and turn state gate sending, while drafts remain editable.
-                enabled: root.active && !root.settings-open && !root.unknown && (root.developer-tools || root.connected);
+                enabled: root.active && root.history-ready && !root.settings-open && !root.unknown;
                 send-enabled: root.active && (root.send-ready);
                 busy: root.busy; can-stop: root.active && !root.settings-open && root.can-stop;
                 submit => { root.submit(); }

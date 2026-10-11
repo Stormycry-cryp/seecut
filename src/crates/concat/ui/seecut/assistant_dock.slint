@@ -10,6 +10,10 @@ export component AssistantDock inherits AssistantPanel {
     sign-in => { SeeCut.action("auth-open", ""); }
     current-project: Assistant.current-project;
     provider-label: Assistant.provider-label;
+    session-names: Assistant.session-names;
+    session-index: Assistant.session-index;
+    can-create-session: Assistant.can-create-session;
+    history-ready: Assistant.history-ready;
     model-names: Assistant.model-names;
     model-index: Assistant.model-index;
     can-select-model: Assistant.can-select-model;
@@ -63,6 +67,8 @@ export component AssistantDock inherits AssistantPanel {
     connect(service-url, model-name, api-key, images) => { Assistant.connect(service-url, model-name, api-key, images); }
     disconnect() => { Assistant.disconnect(); }
     connect-managed() => { Assistant.connect-managed(); }
+    new-session() => { Assistant.new-session(); }
+    select-session(index) => { Assistant.select-session(index); }
     select-model(index) => { Assistant.model-index = index; Assistant.select-model(index); }
     refresh-models() => { Assistant.refresh-models(); }
     reconcile() => { Assistant.reconcile(); }
