@@ -326,13 +326,10 @@ mod desktop {
                         | Phase::Stopping
                         | Phase::Closing
                 );
-            let delay = if hot {
-                40
-            } else if app.global::<Assistant>().get_open() {
-                120
-            } else {
-                1000
-            };
+            // Visibility alone does not create work. Idle sessions keep only
+            // the low-frequency account/document check; user actions wake the
+            // timer immediately when they start an active phase.
+            let delay = if hot { 40 } else { 1000 };
             self.timer
                 .start(TimerMode::SingleShot, Duration::from_millis(delay), {
                     let binding = Rc::downgrade(self);
@@ -957,7 +954,7 @@ mod desktop {
                 ui.$name({
                     let binding = Rc::downgrade(&binding);
                     let app = app.as_weak();
-                    move || if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) { binding.$method(&app $(, $argument)*); }
+                    move || if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) { binding.$method(&app $(, $argument)*); binding.schedule(&app); }
                 });
             };
         }
@@ -988,6 +985,7 @@ mod desktop {
             move |text| {
                 if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
                     binding.send(&app, &text);
+                    binding.schedule(&app);
                 }
             }
         });
@@ -998,6 +996,7 @@ mod desktop {
             move |base, model, key, images| {
                 if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
                     binding.connect(&app, &base, &model, &key, images);
+                    binding.schedule(&app);
                 }
             }
         });
@@ -1015,6 +1014,7 @@ mod desktop {
                         drop(state);
                         binding.refresh(&app);
                     }
+                    binding.schedule(&app);
                 }
             }
         });
