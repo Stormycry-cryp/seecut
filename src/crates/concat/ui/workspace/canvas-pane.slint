@@ -451,11 +451,11 @@ export component CanvasPane inherits Rectangle {
     in property <float> object-h;
     in property <float> object-angle;
     in property <bool> transforming;
-    in property <float> object-doc-x;
-    in property <float> object-doc-y;
-    in property <float> object-doc-w;
-    in property <float> object-doc-h;
-    in property <float> object-doc-angle;
+    in-out property <float> object-doc-x;
+    in-out property <float> object-doc-y;
+    in-out property <float> object-doc-w;
+    in-out property <float> object-doc-h;
+    in-out property <float> object-doc-angle;
     in property <bool> object-flip-h;
     in property <bool> object-flip-v;
     /// 0 move, 1 hand, 2 zoom, 3 brush, 4 eraser.
@@ -1180,15 +1180,15 @@ export component CanvasPane inherits Rectangle {
                                 spacing: 5px;
                                 HorizontalLayout {
                                     spacing: 5px;
-                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "X"; value: root.object-doc-x; precision: 1; changed(value) => { root.transform-set(0, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
-                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "Y"; value: root.object-doc-y; precision: 1; changed(value) => { root.transform-set(1, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "X"; value <=> root.object-doc-x; precision: 1; changed(value) => { root.transform-set(0, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "Y"; value <=> root.object-doc-y; precision: 1; changed(value) => { root.transform-set(1, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
                                 }
                                 HorizontalLayout {
                                     spacing: 5px;
-                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "W"; value: root.object-doc-w; minimum: 1; precision: 1; changed(value) => { root.transform-set(2, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
-                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "H"; value: root.object-doc-h; minimum: 1; precision: 1; changed(value) => { root.transform-set(3, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "W"; value <=> root.object-doc-w; minimum: 1; precision: 1; changed(value) => { root.transform-set(2, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "H"; value <=> root.object-doc-h; minimum: 1; precision: 1; changed(value) => { root.transform-set(3, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
                                 }
-                                NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix-glyph: Glyph.angle; value: root.object-doc-angle; unit: "°"; precision: 1; changed(value) => { root.transform-set(4, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix-glyph: Glyph.angle; value <=> root.object-doc-angle; unit: "°"; precision: 1; changed(value) => { root.transform-set(4, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
                             }
                             if root.has-selection && root.active-layer >= 0
                                 && (root.layers[root.active-layer].kind == 0 || root.layers[root.active-layer].mask-paint): HorizontalLayout {
