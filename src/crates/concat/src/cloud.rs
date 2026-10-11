@@ -7823,7 +7823,17 @@ mod reference_tests {
         assert!(path.exists());
         let restored = run("restore", json!({"id":id}));
         assert_eq!(restored["items"][0]["trashed"], false);
+        let managed = PathBuf::from(first["items"][0]["path"].as_str().unwrap());
+        assert_ne!(managed, path);
+        assert_eq!(
+            first["items"][0]["original_path"],
+            json!(path.canonicalize().unwrap())
+        );
         std::fs::remove_file(path).unwrap();
+        let retained = run("list", serde_json::Value::Null);
+        assert_eq!(retained["items"][0]["available"], true);
+        assert_eq!(retained["items"][0]["id"], id);
+        std::fs::remove_file(managed).unwrap();
         let missing = run("list", serde_json::Value::Null);
         assert_eq!(missing["items"][0]["available"], false);
         std::fs::remove_dir_all(root).unwrap();
