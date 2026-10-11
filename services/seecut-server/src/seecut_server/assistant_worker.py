@@ -39,7 +39,7 @@ class AssistantWorker:
                                 error={'code': 'ASSISTANT_ROUTE_CHANGED', 'message': 'Agent 服务配置已变更，请重新发起请求'})
             return 1
         try:
-            prepared = service.prepare(json.loads(operation['request_json']))
+            prepared = service.prepare(json.loads(operation['request_json']), user=operation['user_id'], budget_id=operation['budget_id'], client_request_id=operation['client_request_id'])
             if prepared.input_token_upper_bound != operation['input_token_upper_bound'] or hashlib.sha256(prepared.payload).hexdigest() != operation['payload_digest']:
                 raise ValueError('prepared input changed')
         except Exception:

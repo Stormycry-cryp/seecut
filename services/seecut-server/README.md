@@ -91,6 +91,44 @@ credential or request-header fields. Each configured model still requires a
 verified provider/token contract before it can be available. Existing clients
 that omit `model_id` keep the default contract.
 
+### Domestic GLM adapter
+
+The server selects `GLMAssistantProvider` for the exact model name
+`glm-5.3-flash` and the domestic base
+`https://open.bigmodel.cn/api/paas/v4`. This adapter uses the existing Agent
+quote, hold, single-dispatch, cancellation and reconciliation protocol. It
+supports bounded SSE and normal JSON responses, tool fragments, final usage,
+and enabled thinking. Same-turn tool reasoning is stored only in the server
+DB and recovered only for the original user's settled operation and budget.
+It is not sent to the client or accepted from client-supplied reasoning fields.
+
+**Availability remains off.** The official Tokenizer model enumeration does
+not currently list `glm-5.3-flash`. A Flash-specific input counting contract
+for the exact frozen request (including tool reasoning) must be independently
+verified and supplied by server code before this adapter can be advertised as
+available. No environment switch, client setting or pricing entry bypasses
+this requirement. The loopback tests inject a synthetic byte counter; they
+prove protocol and ledger behavior, not production GLM token counts or a live
+connection. Images remain disabled.
+
+Documented pre-inference rejection codes release the hold with zero usage.
+Timeouts, incomplete usage and ambiguous supplier errors retain UNKNOWN and
+the original hold. `request_id` is correlation metadata, not a vendor
+idempotency promise. There is no automatic POST retry or invented synchronous
+status lookup; the async-result API does not reconcile synchronous requests.
+Complete confirmed usage after cancellation is settled exactly once while
+late results and tool calls are suppressed. Documented unsuccessful finish
+reasons with a complete final response and valid usage settle a failed operation
+at its actual cost; they never publish a successful result or execute tools.
+
+References: [Flash model](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash),
+[Chat Completions](https://docs.bigmodel.cn/api-reference/模型-api/对话补全),
+[Tokenizer](https://docs.bigmodel.cn/api-reference/模型-api/文本分词器),
+[error codes](https://docs.bigmodel.cn/cn/api/api-code).
+Deployment, safe server credential provisioning, verified Flash token counting
+and authorized real-provider acceptance remain separate gates. This change
+performs none of them and contains no real credentials.
+
 The dedicated **SeeCut service** workflow runs the existing account, wallet,
 generation and Agent tests on Python 3.12 when this service changes. These tests
 use temporary storage and synthetic providers or local HTTP fixtures.

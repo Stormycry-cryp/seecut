@@ -269,3 +269,12 @@ CREATE TABLE IF NOT EXISTS assistant_events (
 CREATE INDEX IF NOT EXISTS idx_assistant_queued ON assistant_operations(state,created_at);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_assistant_active_budget ON assistant_turn_budgets(user_id) WHERE state='active';
+
+-- GLM reasoning stays server-side, bound to the original settled operation.
+CREATE TABLE IF NOT EXISTS assistant_glm_messages (
+ message_id TEXT PRIMARY KEY,
+ operation_id TEXT NOT NULL UNIQUE REFERENCES assistant_operations(id),
+ model TEXT NOT NULL,
+ message_digest TEXT NOT NULL,
+ reasoning TEXT NOT NULL
+);

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import Config
-from .assistant_provider import AssistantProvider
+from .assistant_provider import make_assistant_provider
 from .assistant_service import AssistantService
 from .catalog import billing_key, public_catalog, validate_request
 from .db import Database
@@ -65,7 +65,7 @@ class SeeCutService:
         self.xiangxin = xiangxin or XiangxinClient(config)
         self.image2 = image2 or Image2Client(config)
         self.clock = clock
-        self.assistant = AssistantService(self, assistant_provider if assistant_provider is not None else AssistantProvider(config), providers=assistant_providers)
+        self.assistant = AssistantService(self, assistant_provider if assistant_provider is not None else make_assistant_provider(config, self.db), providers=assistant_providers)
         self.config.storage_path.mkdir(parents=True, exist_ok=True)
 
     def now(self) -> int:

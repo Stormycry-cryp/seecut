@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import hashlib
 
-from .assistant_provider import AssistantProvider, PreparedInference
+from .assistant_provider import make_assistant_provider, AssistantProvider, PreparedInference
 from .assistant_models import model_config
 from dataclasses import replace
 
@@ -31,7 +31,7 @@ class AssistantService:
                 child_config = model_config(self.config, specification)
                 child_provider = (providers or {}).get(specification['id'])
                 if child_provider is None:
-                    child_provider = AssistantProvider(child_config)
+                    child_provider = make_assistant_provider(child_config, self.db)
                 self.models[specification['id']] = AssistantService(
                     account, child_provider, config=child_config,
                     model_id=specification['id'], label=specification['label'])
@@ -98,10 +98,11 @@ class AssistantService:
         return bool(isinstance(identity, str) and contract.IDENTITY.fullmatch(identity)
                     and callable(getattr(self.provider, 'prepare', None)) and not self.config.assistant_images)
 
-    def prepare(self, request):
+    def prepare(self, request, *, user=None, budget_id=None, client_request_id=None):
         self._available()
         try:
-            prepared = self.provider.prepare(request)
+            scoped = getattr(self.provider, "prepare_scoped", None)
+            prepared = scoped(request, dict(user_id=user, budget_id=budget_id, client_request_id=client_request_id)) if callable(scoped) else self.provider.prepare(request)
         except Exception:
             raise ApiError(503, 'ASSISTANT_INPUT_CONTRACT_UNAVAILABLE', 'Agent 输入计数规则尚未验证') from None
         if not isinstance(prepared, PreparedInference) or type(prepared.input_token_upper_bound) is not int or \
@@ -239,7 +240,7 @@ class AssistantService:
             if row and (accepted or row['expires_at'] > self.now()):
                 self._remember(connection, user, 'quote', key, digest, row['id'])
             else:
-                prepared = self.prepare(body['request'])
+                prepared = self.prepare(body['request'], user=user, budget_id=body['budget_id'], client_request_id=body['client_request_id'])
                 credits = (self.config.assistant_context_window * self.config.assistant_input_rate +
                            body['request']['maxOutputTokens'] * self.config.assistant_output_rate + 999) // 1000
                 self._check_budget(budget, credits)
@@ -308,7 +309,7 @@ class AssistantService:
                     quote['route_fingerprint'] != self.route_fingerprint() or quote['input_rate'] != self.config.assistant_input_rate or \
                     quote['output_rate'] != self.config.assistant_output_rate or quote['context_window'] != self.config.assistant_context_window:
                 raise ApiError(409, 'ASSISTANT_QUOTE_MISMATCH', 'Agent 报价已过期或与请求不一致')
-            prepared = self.prepare(body['request'])
+            prepared = self.prepare(body['request'], user=user, budget_id=body['budget_id'], client_request_id=body['client_request_id'])
             if prepared.input_token_upper_bound != quote['input_token_upper_bound'] or hashlib.sha256(prepared.payload).hexdigest() != quote['payload_digest']:
                 raise ApiError(409, 'ASSISTANT_QUOTE_MISMATCH', 'Agent 输入规则已变更')
             credits = quote['max_credits']

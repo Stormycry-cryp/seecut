@@ -180,3 +180,10 @@ class AssistantProvider:
                 yield bytes(line)
             if len(pending) > 262144:
                 raise ProviderFailure()
+
+
+def make_assistant_provider(config, db):
+    if config.assistant_model == 'glm-5.3-flash':
+        from .assistant_glm import GLMAssistantProvider
+        return GLMAssistantProvider(config, db)
+    return AssistantProvider(config)
