@@ -134,6 +134,11 @@ mod desktop {
         McpClient,
     }
     enum WorkerResult {
+        Models {
+            account_epoch: u64,
+            ticket: u64,
+            result: Result<Vec<crate::agent_models::Choice>, &'static str>,
+        },
         #[cfg(feature = "assistant-local-dev")]
         File {
             epoch: u64,
@@ -169,8 +174,19 @@ mod desktop {
         billing_revision: u64,
         notice: String,
         provider_label: String,
+        catalog: crate::agent_models::Catalog,
         assistant_row: Option<usize>,
         approval: Option<FrozenApproval>,
+    }
+    impl State {
+        fn can_select_model(&self) -> bool {
+            let view = self.controller.view();
+            view.can_connect
+                && matches!(view.phase, Phase::Disconnected | Phase::Failed)
+                && view.outcome != Some(TaskOutcome::OutcomeUnknown)
+                && !self.preparing
+                && !self.catalog.loading
+        }
     }
     /// Owns the controller, stable transcript model and nonblocking UI timer.
     pub(crate) struct Binding {
@@ -217,6 +233,7 @@ mod desktop {
                 if state.account_epoch != account_epoch {
                     state.account_epoch = account_epoch;
                     state.runtime_account_epoch = None;
+                    state.catalog.clear();
                     state.epoch = state.epoch.wrapping_add(1);
                     state.preparing = false;
                     state.selecting = false;
@@ -235,6 +252,7 @@ mod desktop {
             let Some(snapshot) = Self::snapshot(app) else {
                 return;
             };
+            self.load_models(app);
             if self.sync_lease(&snapshot) {
                 app.global::<Assistant>().set_draft("".into());
             }
@@ -242,12 +260,24 @@ mod desktop {
                 let mut state = self.state.borrow_mut();
                 state.controller.tick(snapshot.document.as_ref());
             }
+            let mut catalog_expired = None;
             for _ in 0..4 {
                 let Ok(result) = self.receiver.try_recv() else {
                     break;
                 };
                 let mut state = self.state.borrow_mut();
                 match result {
+                    WorkerResult::Models {
+                        account_epoch,
+                        ticket,
+                        result,
+                    } if state.account_epoch == Some(account_epoch) => {
+                        let expired =
+                            result.as_ref().err() == Some(&crate::agent_models::ACCOUNT_EXPIRED);
+                        if state.catalog.finish(ticket, result) && expired {
+                            catalog_expired = Some(account_epoch);
+                        }
+                    }
                     #[cfg(feature = "assistant-local-dev")]
                     WorkerResult::File { epoch, kind, path } if state.epoch == epoch => {
                         state.selecting = false;
@@ -294,6 +324,10 @@ mod desktop {
                     _ => {}
                 }
             }
+            if let Some(epoch) = catalog_expired {
+                self.account.expire_if_current(app, epoch);
+                return;
+            }
             let (expired, billing_changed) = {
                 let mut state = self.state.borrow_mut();
                 let view = state.controller.view();
@@ -316,7 +350,8 @@ mod desktop {
         }
         fn schedule(self: &Rc<Self>, app: &App) {
             let phase = self.state.borrow().controller.view().phase;
-            let hot = self.state.borrow().preparing
+            let hot = self.state.borrow().catalog.loading
+                || self.state.borrow().preparing
                 || matches!(
                     phase,
                     Phase::Initializing
@@ -411,6 +446,15 @@ mod desktop {
             let ui = app.global::<Assistant>();
             ui.set_current_project(snapshot.project_name.as_str().into());
             ui.set_provider_label(state.provider_label.as_str().into());
+            ui.set_model_names(ModelRc::new(VecModel::from(
+                state
+                    .catalog
+                    .choices
+                    .iter()
+                    .map(|choice| slint::SharedString::from(choice.label.as_str()))
+                    .collect::<Vec<_>>(),
+            )));
+            ui.set_model_index(state.catalog.selected as i32);
             ui.set_connection(
                 match phase {
                     Phase::Disconnected => "尚未连接",
@@ -453,6 +497,7 @@ mod desktop {
                         Phase::Initializing | Phase::OpeningSession | Phase::Closing
                     ),
             );
+            ui.set_can_select_model(state.can_select_model());
             ui.set_can_disconnect(connected && !busy);
             ui.set_connect_label(if state.preparing || matches!(phase, Phase::Initializing | Phase::OpeningSession) { "正在连接…" } else if phase == Phase::Closing { "正在断开…" } else if connected { "断开" } else { "连接" }.into());
             let reason = if unknown && !view.can_connect {
@@ -477,6 +522,8 @@ mod desktop {
                 "请选择 MCP 客户端文件"
             } else if busy {
                 "请求正在处理，请稍后操作"
+            } else if !cfg!(feature = "assistant-local-dev") {
+                state.catalog.reason()
             } else {
                 ""
             };
@@ -756,6 +803,42 @@ mod desktop {
                 self.refresh(app);
             }
         }
+        fn load_models(&self, app: &App) {
+            if cfg!(feature = "assistant-local-dev") || !app.global::<Assistant>().get_open() {
+                return;
+            }
+            let Some(account) = self.account.snapshot() else {
+                return;
+            };
+            let Some(ticket) = self.state.borrow_mut().catalog.begin() else {
+                return;
+            };
+            let sender = self.sender.clone();
+            spawn_detached(move || {
+                let result = crate::agent_models::fetch(&account.base, &account.token);
+                let _ = sender.send(WorkerResult::Models {
+                    account_epoch: account.epoch,
+                    ticket,
+                    result,
+                });
+            });
+        }
+        fn refresh_models(&self, app: &App) {
+            self.refresh(app);
+            if !self.state.borrow().can_select_model() {
+                return;
+            }
+            self.state.borrow_mut().catalog.retry();
+            self.refresh(app);
+        }
+        fn select_model(&self, app: &App, index: i32) {
+            self.refresh(app);
+            if !self.state.borrow().can_select_model() {
+                return;
+            }
+            self.state.borrow_mut().catalog.select(index);
+            self.refresh(app);
+        }
         fn connect_managed(&self, app: &App) {
             self.refresh(app);
             let ui = app.global::<Assistant>();
@@ -780,13 +863,17 @@ mod desktop {
             let Some(data) = data else {
                 return;
             };
-            let epoch = {
+            let (epoch, model_id) = {
                 let mut state = self.state.borrow_mut();
+                let Some(choice) = state.catalog.current().filter(|choice| choice.available) else {
+                    return;
+                };
+                let model_id = choice.id.clone();
+                state.provider_label = choice.label.clone();
                 state.epoch = state.epoch.wrapping_add(1);
                 state.preparing = true;
                 state.notice.clear();
-                state.provider_label = "账户服务".into();
-                state.epoch
+                (state.epoch, model_id)
             };
             let sender = self.sender.clone();
             let environment = app_environment();
@@ -799,6 +886,10 @@ mod desktop {
                         .filter(|(name, _)| matches!(name.as_str(), "TMPDIR" | "XDG_RUNTIME_DIR"))
                         .map(|(name, value)| (name.clone(), value.clone()))
                         .collect();
+                    let mut provider = json!({"protocol":"seecut-managed","baseURL":account.base,"sessionToken":account.token});
+                    if model_id != "default" {
+                        provider["modelId"] = json!(model_id);
+                    }
                     Ok(ConnectionConfig {
                         launch: LaunchSpec {
                             executable: files.runtime,
@@ -810,7 +901,7 @@ mod desktop {
                         mcp_client_path: files.mcp_client,
                         mcp_environment,
                         session_directory: session_directory(&data)?,
-                        provider: json!({"protocol":"seecut-managed","baseURL":account.base,"sessionToken":account.token}),
+                        provider,
                         read_token,
                         write_token: snapshot.write_token,
                     })
@@ -938,6 +1029,7 @@ mod desktop {
                 billing_revision: 0,
                 notice: String::new(),
                 provider_label: String::new(),
+                catalog: crate::agent_models::Catalog::default(),
                 assistant_row: None,
                 approval: None,
             }),
@@ -961,6 +1053,17 @@ mod desktop {
         callback!(on_close_requested, close);
         callback!(on_disconnect, disconnect);
         callback!(on_connect_managed, connect_managed);
+        callback!(on_refresh_models, refresh_models);
+        ui.on_select_model({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |index| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.select_model(&app, index);
+                    binding.schedule(&app);
+                }
+            }
+        });
         callback!(on_reconcile, reconcile);
         callback!(on_grant_read, permission, AssistantPermission::GrantRead);
         callback!(on_revoke_read, permission, AssistantPermission::RevokeRead);

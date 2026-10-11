@@ -3,7 +3,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, IconButton, FocusRing } from "../primitives/primitives.slint";
 import { Switch } from "../inspector/controls.slint";
-import { AppButton } from "components.slint";
+import { AppButton, WorkspaceSelect } from "components.slint";
 
 // Text is content only. Operation state always comes from the host separately.
 export struct AssistantMessage { role: string, text: string, state: string, progress: string }
@@ -165,6 +165,9 @@ export component AssistantPanel inherits Rectangle {
     // These are facts supplied by the host, never inferred from model output.
     in property <string> current-project;
     in property <string> provider-label;
+    in property <[string]> model-names;
+    in property <int> model-index;
+    in property <bool> can-select-model;
     in property <string> connection;
     in property <string> status;
     in property <string> details;
@@ -217,6 +220,8 @@ export component AssistantPanel inherits Rectangle {
     callback connect(service-url: string, model-name: string, api-key: string, images: bool);
     callback disconnect();
     callback connect-managed();
+    callback select-model(int);
+    callback refresh-models();
     callback reconcile();
     callback grant-read();
     callback revoke-read();
@@ -376,6 +381,11 @@ export component AssistantPanel inherits Rectangle {
                     }
                     if !root.developer-tools && root.signed-in && !root.connected: VerticalLayout {
                         spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            WorkspaceSelect { options: root.model-names; current: root.model-index; placeholder: "账户模型"; enabled: root.active && root.can-select-model; horizontal-stretch: 1; changed(index) => { root.select-model(index); } }
+                            IconButton { glyph: Glyph.reset; label: "刷新模型"; enabled: root.active && root.can-select-model; clicked => { root.refresh-models(); } }
+                        }
                         if root.connect-disabled-reason != "": AssistantText { text: root.connect-disabled-reason; color: Theme.fg-muted; }
                         HorizontalLayout {
                             AppButton { label: root.connect-label; primary: true; enabled: root.active && root.can-connect && !root.connecting; clicked => { root.connect-managed(); } }

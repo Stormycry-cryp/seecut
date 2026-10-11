@@ -17,6 +17,9 @@ export global Assistant {
     callback geometry-changed(float, float, float, float);
     in-out property <string> current-project;
     in-out property <string> provider-label;
+    in-out property <[string]> model-names;
+    in-out property <int> model-index;
+    in-out property <bool> can-select-model;
     in-out property <string> connection;
     in-out property <string> status;
     in-out property <string> details;
@@ -69,6 +72,8 @@ export global Assistant {
     callback connect(string, string, string, bool);
     callback disconnect();
     callback connect-managed();
+    callback select-model(int);
+    callback refresh-models();
     callback reconcile();
     callback grant-read();
     callback revoke-read();
