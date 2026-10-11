@@ -2652,16 +2652,9 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     .flatten()
                     .map(|v| AccountEntry {
                         id: text(v, "id").into(),
-                        title: match text(v, "kind").as_str() {
-                            "hold" => "生成预扣",
-                            "capture" => "生成消费",
-                            "release" => "退回积分",
-                            "recharge" => "充值到账",
-                            _ => "积分变动",
-                        }
-                        .into(),
+                        title: crate::account_ledger::title(v).into(),
                         detail: text(v, "reference_id").into(),
-                        value: v["delta_available"].to_string().into(),
+                        value: crate::account_ledger::amount(v).into(),
                     })
                     .collect(),
             ));

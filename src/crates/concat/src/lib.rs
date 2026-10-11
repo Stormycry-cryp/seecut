@@ -33,6 +33,7 @@ mod ui {
     slint::include_modules!();
 }
 
+mod account_ledger;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_components;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
