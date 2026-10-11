@@ -54,6 +54,31 @@ Use `.env.tencent.example` as the production template. It targets Tencent Cloud 
 
 Alipay remains deferred. The Tencent template intentionally leaves all Alipay settings empty, so credit orders remain unavailable until merchant configuration is approved and supplied.
 
+## Managed Agent service
+
+The authenticated `/api/assistant` endpoints provide capabilities, turn budgets,
+quotes, operations, operation lookup by client request ID, paginated events,
+cancellation and reconciliation. They use the existing account wallet. Agent
+holds, consumption and released credits appear in the same ledger as generation
+and recharge entries.
+
+Each inference operation has stable request and operation IDs. After a lost
+response or an interrupted worker, recover by querying those IDs. An uncertain
+upstream result remains `outcome_unknown` with its credits held until it can be
+reconciled. Cancellation requests do not imply a free operation: confirmed usage
+is captured and the unused hold is released exactly once.
+
+The default compatible-gateway adapter remains unavailable until a verified
+model-specific adapter supplies its input token counting contract and prepared
+request. Configuring a model name or pricing alone does not enable it. The
+current verified contract supports text and tools; images remain disabled.
+Production model selection and real provider verification are separate from the
+local synthetic contract tests.
+
+The dedicated **SeeCut service** workflow runs the existing account, wallet,
+generation and Agent tests on Python 3.12 when this service changes. These tests
+use temporary storage and synthetic providers or local HTTP fixtures.
+
 ## Configuration
 
 All supported variables are documented in `.env.example`. `GET /api/capabilities` reports whether email, Xiangxin and Alipay configuration is complete without revealing credential values.

@@ -167,7 +167,7 @@ export component CreditsPage inherits Rectangle {
             }
             Rectangle { height: 1px; background: Theme.line; }
             if SeeCut.payment-enabled: Heading { text: "充值积分"; }
-            if !SeeCut.payment-enabled: Label { text: "当前已开放模型为 0 积分，充值暂未开放"; }
+            if !SeeCut.payment-enabled: Label { text: "充值暂未开放"; }
             if SeeCut.payment-enabled && !SeeCut.signed-in: AppButton { label: "登录后充值"; primary: true; clicked => { SeeCut.action("auth-open", ""); } }
             if SeeCut.payment-enabled && SeeCut.signed-in && SeeCut.plans.length == 0: Label { text: "暂无可用套餐"; }
             for plan in (SeeCut.payment-enabled ? SeeCut.plans : []): Rectangle {
