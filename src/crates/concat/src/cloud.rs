@@ -3684,6 +3684,28 @@ fn library_call_unlocked(
     root: &std::path::Path,
 ) -> Result<Value, String> {
     use crate::personal_library::Library;
+    if req.path == "local:library-register" {
+        crate::registration_retry::register(
+            root,
+            Path::new(&text(&req.body, "path")),
+            req.body["name"].as_str(),
+        )?;
+        return library_result(&Library::load(root)?, root, String::new());
+    }
+    let recovery = if req.path == "local:library-list" {
+        match crate::registration_retry::retry(root) {
+            Ok(outcome) if outcome.remaining > 0 => {
+                format!("{} 项尚未入库，刷新可重试", outcome.remaining)
+            }
+            Ok(outcome) if outcome.completed > 0 => {
+                format!("已补入库 {} 项素材", outcome.completed)
+            }
+            Ok(_) => String::new(),
+            Err(error) => format!("入库恢复失败：{error}"),
+        }
+    } else {
+        String::new()
+    };
     let mut library = Library::load(root)?;
     let id = text(&req.body, "id");
     if !id.is_empty() && library.get(&id).is_none() {
@@ -3695,11 +3717,6 @@ fn library_call_unlocked(
             let id = asset.id.clone();
             library.restore(&id)?;
             "已导入个人资产库"
-        }
-        "local:library-register" => {
-            library
-                .register_generated_with_name(text(&req.body, "path"), req.body["name"].as_str())?;
-            ""
         }
         "local:library-rename" => {
             library.rename(&id, text(&req.body, "name"))?;
@@ -3802,7 +3819,15 @@ fn library_call_unlocked(
         }
         _ => return Err("未知的个人资产操作".into()),
     };
-    library_result(&library, root, notice.to_owned())
+    library_result(
+        &library,
+        root,
+        if recovery.is_empty() {
+            notice.to_owned()
+        } else {
+            recovery
+        },
+    )
 }
 
 fn library_result(

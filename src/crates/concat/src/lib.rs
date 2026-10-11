@@ -62,6 +62,7 @@ mod host;
 mod i18n;
 mod personal_library;
 mod platform;
+mod registration_retry;
 /// What a phone's own crate installs before the window runs: the way to
 /// the system's file picker. See `platform::pick_files_async`.
 #[cfg(any(target_os = "android", target_os = "ios"))]

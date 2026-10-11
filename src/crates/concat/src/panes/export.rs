@@ -263,14 +263,21 @@ impl ExportPane {
         self.written = written;
         let registration = crate::personal_library::with_library_write_lock(|| {
             let dirs = concat_host::AppDirs::locate()?;
-            let mut library =
-                crate::personal_library::Library::load(dirs.data.join("personal-library"))?;
-            library.register_generated_with_name(&self.written, Some(&job.name))?;
+            crate::registration_retry::register(
+                &dirs.data.join("personal-library"),
+                std::path::Path::new(&self.written),
+                Some(&job.name),
+            )?;
             Ok::<(), String>(())
         });
         match registration {
             Ok(()) => {
-                studio.notify("视频已导出并加入资产库", false);
+                let notice = if job.to_library {
+                    "视频已导出并加入资产库".into()
+                } else {
+                    t("Export finished")
+                };
+                studio.notify(&notice, false);
                 crate::host::Shell::with(|_, app| {
                     app.global::<crate::ui::SeeCut>()
                         .invoke_action("personal-refresh".into(), "".into())
