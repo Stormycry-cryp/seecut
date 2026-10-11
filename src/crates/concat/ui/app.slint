@@ -104,7 +104,11 @@ export component App inherits Window {
         SeeCut.project-open = !root.on-start;
         if (!root.on-start) {
             root.clip-create-open = false;
-            keys.focus();
+            // This change handler can run while AccessKit is building its tree.
+            // Restore focus after that pass, as for a mounted canvas editor.
+            root.focus-return = 0;
+            SeeCut.focus-return-claimed = false;
+            root.focus-restore-pending = true;
         }
     }
     property <bool> assistant-modal-active: root.workflow-modal-open || root.sheet-open
