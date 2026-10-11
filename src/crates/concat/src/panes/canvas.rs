@@ -4403,6 +4403,9 @@ impl CanvasPane {
         self.invalidate_auto_save();
         let (width, height) = (width.clamp(64, 4096), height.clamp(64, 4096));
         self.store = PixelStore::new();
+        self.thumbnail_cache.clear();
+        self.content_bounds.clear();
+        self.pixel_revisions.clear();
         let pixels = self.store.put(Frame::transparent(width, height));
         let mut document = ImageDocument::new(width, height);
         let layer = document.new_layer("图层 1", pixels);
