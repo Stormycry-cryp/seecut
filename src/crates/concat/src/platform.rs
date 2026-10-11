@@ -343,6 +343,24 @@ pub fn pick_files(title: &str, filter: Option<(&str, &[&str])>) -> Option<Vec<Pa
     }
 }
 
+/// A single-file desktop picker. Cancellation is an explicit `Ok(None)`;
+/// mobile callers receive an error until a single-file picker is available.
+pub fn pick_file(title: &str, filter: Option<(&str, &[&str])>) -> Result<Option<PathBuf>, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let mut dialog = rfd::FileDialog::new().set_title(title);
+        if let Some((name, extensions)) = filter {
+            dialog = dialog.add_filter(name, extensions);
+        }
+        Ok(dialog.pick_file())
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = (title, filter);
+        Err("当前平台暂不支持重新关联素材".into())
+    }
+}
+
 /// Asks where to save one file, seeded with `name`. Returns the chosen
 /// path, or `None` when the dialog was cancelled.
 pub fn save_file(title: &str, name: &str, filter: Option<(&str, &[&str])>) -> Option<PathBuf> {

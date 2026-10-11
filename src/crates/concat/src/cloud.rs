@@ -270,6 +270,7 @@ struct Cloud {
     personal_folders: Vec<Value>,
     selected_personal: HashSet<String>,
     pending_handoff: Option<PendingHandoff>,
+    pending_relink: Option<PendingRelink>,
     pending_delete_ids: Vec<String>,
     /// Ordered, temporary selection used only by the asset picker. It is
     /// scoped to the current source/purpose/team context and never overlaps
@@ -337,6 +338,24 @@ struct PendingHandoff {
     imports: Vec<crate::panes::canvas::CanvasImport>,
     awaiting_new_project: bool,
     clip_open: Option<crate::project_open::HandoffBinding>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelinkPhase {
+    Picking,
+    Confirming,
+    Queued,
+    Running,
+}
+
+#[derive(Clone)]
+struct PendingRelink {
+    token: String,
+    epoch: u64,
+    view: i32,
+    expected: crate::personal_library::Asset,
+    selected: Option<PathBuf>,
+    phase: RelinkPhase,
 }
 
 #[derive(Clone)]
@@ -490,6 +509,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
                     },
                     source: AssetSource::Imported,
                     original_path: None,
+                    recovery: None,
                     version: None,
                     created_at: 0,
                     trashed: false,
@@ -715,6 +735,21 @@ fn quote_request_current(ui: &SeeCut, cloud: &Cloud, request: &Request) -> bool 
 
 fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
     let ui = app.global::<SeeCut>();
+    if let Some(token) = name.strip_prefix("personal-relink:")
+        && !relink_job_current(&state.borrow(), ui.get_personal_relink_view(), token)
+    {
+        cancel_personal_relink(app, state, token);
+        sync_operation_state(app, state);
+        // Some existing error handlers dispatch their next item directly.
+        // Dropping an obsolete relink must not strand the rest of that queue.
+        if !ui.get_busy() {
+            let next = state.borrow_mut().pending.pop_front();
+            if let Some((name, req)) = next {
+                job(app, state, name, req);
+            }
+        }
+        return;
+    }
     if name == "quote" && !quote_request_current(&ui, &state.borrow(), &req) {
         sync_operation_state(app, state);
         return;
@@ -734,6 +769,11 @@ fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
         drop(c);
         sync_operation_state(app, state);
         return;
+    }
+    if name.starts_with("personal-relink:")
+        && let Some(pending) = state.borrow_mut().pending_relink.as_mut()
+    {
+        pending.phase = RelinkPhase::Running;
     }
     let snapshot = state.borrow().clone();
     state.borrow_mut().active_name = name.clone();
@@ -789,6 +829,12 @@ fn poll(
         app.global::<SeeCut>().set_busy(false);
         state.borrow_mut().active_name.clear();
         match result {
+            result if name.starts_with("personal-relink:") => finish_personal_relink(
+                &app,
+                &state,
+                name.trim_start_matches("personal-relink:"),
+                result,
+            ),
             Ok(value) => publish(&app, &state, &name, value),
             Err(error) => {
                 let ui = app.global::<SeeCut>();
@@ -907,6 +953,17 @@ fn poll(
                 && name == "quote"
                 && !quote_request_current(&app.global::<SeeCut>(), &state.borrow(), request)
             {
+                continue;
+            }
+            if let Some((name, _)) = &next
+                && let Some(token) = name.strip_prefix("personal-relink:")
+                && !relink_job_current(
+                    &state.borrow(),
+                    app.global::<SeeCut>().get_personal_relink_view(),
+                    token,
+                )
+            {
+                cancel_personal_relink(&app, &state, token);
                 continue;
             }
             break next;
@@ -1831,6 +1888,7 @@ fn render_templates(app: &App, state: &Rc<RefCell<Cloud>>) {
                             kind,
                             source: AssetSource::Generated,
                             original_path: None,
+                            recovery: None,
                             version: None,
                             created_at: 0,
                             trashed: false,
@@ -3510,6 +3568,7 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
                         kind: AssetKind::Video,
                         source: AssetSource::Generated,
                         original_path: None,
+                        recovery: None,
                         version: None,
                         created_at: 0,
                         trashed: false,
@@ -4025,6 +4084,26 @@ fn library_call_unlocked(
     root: &std::path::Path,
 ) -> Result<Value, String> {
     use crate::personal_library::Library;
+    if req.path == "local:library-relink" {
+        let expected =
+            serde_json::from_value::<crate::personal_library::Asset>(req.body["expected"].clone())
+                .map_err(|_| "素材信息已变化，请重新选择".to_owned())?;
+        let selected = req.body["path"]
+            .as_str()
+            .filter(|path| !path.is_empty())
+            .ok_or("请选择一个素材文件")?;
+        if text(&req.body, "id") != expected.id {
+            return Err("素材信息已变化，请重新选择".into());
+        }
+        // A rejected relink must not migrate other legacy entries or scan outputs.
+        let mut library = Library::load_for_relink(root)?;
+        library.relink_missing(
+            &expected,
+            Path::new(selected),
+            req.body["allow_unverified"].as_bool().unwrap_or(false),
+        )?;
+        return library_result(&library, root, "已重新关联素材".into());
+    }
     if req.path == "local:library-register" {
         crate::registration_retry::register(
             root,
@@ -4216,6 +4295,279 @@ fn library_result(
         })
         .collect();
     Ok(json!({"items":items,"folders":library.folders(),"notice":notice}))
+}
+
+fn relink_has_checksum(asset: &crate::personal_library::Asset) -> bool {
+    asset.version.is_some() || asset.recovery.is_some()
+}
+
+fn freeze_personal_relink(cloud: &mut Cloud, id: &str, view: i32) -> Result<String, String> {
+    if cloud.pending_relink.is_some() {
+        return Err("请先完成当前关联".into());
+    }
+    let value = cloud
+        .personal
+        .iter()
+        .find(|item| text(item, "id") == id)
+        .ok_or("素材信息已变化，请刷新后重试")?;
+    let expected = serde_json::from_value::<crate::personal_library::Asset>(value.clone())
+        .map_err(|_| "素材信息已变化，请刷新后重试".to_owned())?;
+    if expected.path.is_file() {
+        return Err("素材文件已可用，无需重新关联".into());
+    }
+    let token = uuid::Uuid::new_v4().to_string();
+    cloud.pending_relink = Some(PendingRelink {
+        token: token.clone(),
+        epoch: cloud.epoch,
+        view,
+        expected,
+        selected: None,
+        phase: RelinkPhase::Picking,
+    });
+    Ok(token)
+}
+
+fn relink_context_current(cloud: &Cloud, view: i32, token: &str) -> bool {
+    let Some(pending) = cloud
+        .pending_relink
+        .as_ref()
+        .filter(|pending| pending.token == token)
+    else {
+        return false;
+    };
+    pending.epoch == cloud.epoch
+        && pending.view == view
+        && cloud
+            .personal
+            .iter()
+            .find(|item| text(item, "id") == pending.expected.id)
+            .and_then(|item| {
+                serde_json::from_value::<crate::personal_library::Asset>(item.clone()).ok()
+            })
+            .as_ref()
+            == Some(&pending.expected)
+}
+
+fn relink_job_current(cloud: &Cloud, view: i32, token: &str) -> bool {
+    relink_context_current(cloud, view, token)
+        && cloud
+            .pending_relink
+            .as_ref()
+            .is_some_and(|pending| pending.phase == RelinkPhase::Queued)
+}
+
+fn take_personal_relink(cloud: &mut Cloud, token: &str) -> Option<PendingRelink> {
+    if cloud
+        .pending_relink
+        .as_ref()
+        .is_some_and(|pending| pending.token == token)
+    {
+        cloud.pending_relink.take()
+    } else {
+        None
+    }
+}
+
+fn cancel_personal_relink(app: &App, state: &Rc<RefCell<Cloud>>, token: &str) {
+    let cancelled = {
+        let mut cloud = state.borrow_mut();
+        if cloud
+            .pending_relink
+            .as_ref()
+            .is_some_and(|pending| pending.phase == RelinkPhase::Running)
+        {
+            return;
+        }
+        let cancelled = take_personal_relink(&mut cloud, token);
+        if cancelled.is_some() {
+            cloud
+                .pending
+                .retain(|(name, _)| name != &format!("personal-relink:{token}"));
+        }
+        cancelled
+    };
+    if cancelled.is_some() {
+        let ui = app.global::<SeeCut>();
+        ui.set_personal_relink_id("".into());
+        if ui.get_personal_dialog() == 6 {
+            ui.set_personal_dialog_busy(false);
+            ui.set_personal_dialog(0);
+            ui.set_personal_dialog_error("".into());
+        }
+    }
+}
+
+fn relink_request(
+    cloud: &mut Cloud,
+    view: i32,
+    token: &str,
+    confirmed: bool,
+) -> Result<Request, String> {
+    if !relink_context_current(cloud, view, token) {
+        return Err("素材或页面已变化，请重新选择".into());
+    }
+    let pending = cloud.pending_relink.as_mut().unwrap();
+    if !matches!(
+        pending.phase,
+        RelinkPhase::Picking | RelinkPhase::Confirming
+    ) {
+        return Err("素材正在关联，请稍候".into());
+    }
+    let allow_unverified = !relink_has_checksum(&pending.expected);
+    if allow_unverified && (!confirmed || pending.phase != RelinkPhase::Confirming) {
+        return Err("请先确认所选文件".into());
+    }
+    let selected = pending.selected.as_ref().ok_or("请选择一个素材文件")?;
+    let req = request(
+        "POST",
+        "local:library-relink",
+        json!({
+            "id": pending.expected.id, "expected": pending.expected,
+            "path": selected, "allow_unverified": allow_unverified,
+        }),
+    );
+    pending.phase = RelinkPhase::Queued;
+    Ok(req)
+}
+
+fn submit_personal_relink(app: &App, state: &Rc<RefCell<Cloud>>, token: &str, confirmed: bool) {
+    let ui = app.global::<SeeCut>();
+    let result = relink_request(
+        &mut state.borrow_mut(),
+        ui.get_personal_relink_view(),
+        token,
+        confirmed,
+    );
+    match result {
+        Ok(req) => {
+            if ui.get_personal_dialog() == 6 {
+                // The confirmed operation continues on the card. Do not let
+                // its busy state leak into another personal-library dialog.
+                ui.set_personal_dialog(0);
+            }
+            job(app, state, format!("personal-relink:{token}"), req);
+        }
+        Err(error) => {
+            cancel_personal_relink(app, state, token);
+            ui.set_error(error.into());
+        }
+    }
+}
+
+fn begin_personal_relink(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
+    let ui = app.global::<SeeCut>();
+    if ui.get_working() || ui.get_personal_dialog() != 0 || state.borrow().pending_relink.is_some()
+    {
+        return;
+    }
+    let frozen = freeze_personal_relink(&mut state.borrow_mut(), id, ui.get_personal_relink_view());
+    let token = match frozen {
+        Ok(token) => token,
+        Err(error) => {
+            ui.set_error(error.into());
+            return;
+        }
+    };
+    ui.set_personal_relink_id(id.into());
+    ui.set_error("".into());
+    // Native desktop pickers may pump the event loop. Hold neither Cloud nor
+    // the library lock while they are open, and recheck the frozen context.
+    let selected = crate::platform::pick_file("重新关联素材", None);
+    if !relink_context_current(&state.borrow(), ui.get_personal_relink_view(), &token) {
+        cancel_personal_relink(app, state, &token);
+        return;
+    }
+    let path = match selected {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            cancel_personal_relink(app, state, &token);
+            return;
+        }
+        Err(error) => {
+            cancel_personal_relink(app, state, &token);
+            ui.set_error(error.into());
+            return;
+        }
+    };
+    let needs_confirmation = {
+        let mut cloud = state.borrow_mut();
+        let pending = cloud.pending_relink.as_mut().unwrap();
+        pending.selected = Some(path);
+        let needs_confirmation = !relink_has_checksum(&pending.expected);
+        if needs_confirmation {
+            pending.phase = RelinkPhase::Confirming;
+        }
+        needs_confirmation
+    };
+    if needs_confirmation {
+        ui.set_personal_dialog_busy(false);
+        ui.set_personal_dialog_error("".into());
+        ui.set_personal_dialog(6);
+    } else {
+        submit_personal_relink(app, state, &token, false);
+    }
+}
+
+fn relink_cancelled_context(cloud: &Cloud, view: i32, dialog: i32) -> Option<String> {
+    let pending = cloud.pending_relink.as_ref()?;
+    if matches!(pending.phase, RelinkPhase::Picking | RelinkPhase::Running) {
+        return None;
+    }
+    (!relink_context_current(cloud, view, &pending.token)
+        || (pending.phase == RelinkPhase::Confirming && dialog != 6))
+        .then(|| pending.token.clone())
+}
+
+fn schedule_relink_context_cleanup(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let weak = app.as_weak();
+    let state = state.clone();
+    // Property change trackers can run while a host callback is on the stack.
+    // Defer state access; this callback never changes focus.
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let ui = app.global::<SeeCut>();
+        let cancelled = relink_cancelled_context(
+            &state.borrow(),
+            ui.get_personal_relink_view(),
+            ui.get_personal_dialog(),
+        );
+        if let Some(token) = cancelled {
+            cancel_personal_relink(&app, &state, &token);
+            sync_operation_state(&app, &state);
+        }
+    });
+}
+
+fn finish_personal_relink(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    token: &str,
+    result: Result<Value, ClientError>,
+) {
+    let pending = take_personal_relink(&mut state.borrow_mut(), token);
+    let Some(pending) = pending else {
+        return;
+    };
+    let ui = app.global::<SeeCut>();
+    let same_view = pending.view == ui.get_personal_relink_view();
+    ui.set_personal_relink_id("".into());
+    if ui.get_personal_dialog() == 6 {
+        ui.set_personal_dialog_busy(false);
+        ui.set_personal_dialog(0);
+        ui.set_personal_dialog_error("".into());
+    }
+    match result {
+        Ok(mut value) => {
+            if !same_view {
+                value["notice"] = Value::Null;
+            }
+            publish(app, state, "personal", value);
+        }
+        Err(error) if same_view => ui.set_error(error.message.into()),
+        Err(_) => {}
+    }
 }
 
 fn personal_job(app: &App, state: &Rc<RefCell<Cloud>>, operation: &str, body: Value) {
@@ -4912,6 +5264,19 @@ fn continue_picker_batch(app: &App, state: &Rc<RefCell<Cloud>>) {
 fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str) {
     let ui = app.global::<SeeCut>();
     match action {
+        "personal-relink" => begin_personal_relink(app, state, id),
+        "personal-confirm-relink" => {
+            if ui.get_personal_dialog() == 6 && !ui.get_personal_dialog_busy() {
+                let token = state
+                    .borrow()
+                    .pending_relink
+                    .as_ref()
+                    .map(|pending| pending.token.clone());
+                if let Some(token) = token {
+                    submit_personal_relink(app, state, &token, true);
+                }
+            }
+        }
         "personal-preview" => open_personal_media_preview(app, state, id),
         "personal-refresh" => personal_job(app, state, "list", Value::Null),
         "personal-register-canvas" => {
@@ -5623,6 +5988,7 @@ fn media_preview_image(path: &str, kind: &str) -> slint::Image {
                 },
                 source: crate::personal_library::AssetSource::Generated,
                 original_path: None,
+                recovery: None,
                 version: None,
                 created_at: 0,
                 trashed: false,
@@ -6975,6 +7341,7 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.quote_id.clear();
     cloud.quote_credits = None;
     cloud.pending.clear();
+    cloud.pending_relink = None;
     cloud.models.clear();
     cloud.catalog_models.clear();
     cloud.catalog_efforts.clear();
@@ -7035,6 +7402,12 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
         }
     });
     let ui = app.global::<SeeCut>();
+    ui.set_personal_relink_id("".into());
+    if ui.get_personal_dialog() == 6 {
+        ui.set_personal_dialog_busy(false);
+        ui.set_personal_dialog(0);
+        ui.set_personal_dialog_error("".into());
+    }
     ui.set_signed_in(false);
     ui.set_email("".into());
     ui.set_account_label("?".into());
@@ -7375,6 +7748,14 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
                 folder_index,
             )
             .is_some()
+        });
+    let relink_app = app.as_weak();
+    let relink_state = state.clone();
+    app.global::<SeeCut>()
+        .on_personal_relink_context_changed(move || {
+            if let Some(app) = relink_app.upgrade() {
+                schedule_relink_context_cleanup(&app, &relink_state);
+            }
         });
     let weak = app.as_weak();
     let shared = state.clone();
@@ -8231,6 +8612,190 @@ mod reference_tests {
         let references = vec![json!({"local_path":"/tmp/result.png"})];
         assert!(has_reference_path(&references, "/tmp/result.png"));
         assert!(!has_reference_path(&references, "/tmp/other.png"));
+    }
+
+    fn relink_state_fixture() -> Cloud {
+        Cloud {
+            epoch: 7,
+            personal: vec![json!({
+                "id":"missing", "name":"保留名称", "path":"/nonexistent-seecut-relink-fixture.png",
+                "kind":"image", "source":"imported", "created_at":1,
+                "trashed":false, "favorite":true, "folder_id":"kept", "available":false
+            })],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn relink_requires_explicit_confirmation_and_submits_frozen_asset_once() {
+        let mut cloud = relink_state_fixture();
+        let token = super::freeze_personal_relink(&mut cloud, "missing", 3).unwrap();
+        assert!(super::freeze_personal_relink(&mut cloud, "missing", 3).is_err());
+        cloud.pending_relink.as_mut().unwrap().selected = Some("/selected.png".into());
+        assert!(super::relink_request(&mut cloud, 3, &token, true).is_err());
+        cloud.pending_relink.as_mut().unwrap().phase = super::RelinkPhase::Confirming;
+        assert!(super::relink_request(&mut cloud, 3, &token, false).is_err());
+        let expected = cloud.pending_relink.as_ref().unwrap().expected.clone();
+        let req = super::relink_request(&mut cloud, 3, &token, true).unwrap();
+        assert_eq!(
+            req.body["expected"],
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(req.body["path"], "/selected.png");
+        assert_eq!(req.body["allow_unverified"], true);
+        assert!(super::relink_job_current(&cloud, 3, &token));
+        assert!(super::relink_request(&mut cloud, 3, &token, true).is_err());
+        cloud.pending_relink.as_mut().unwrap().phase = super::RelinkPhase::Running;
+        assert!(!super::relink_job_current(&cloud, 3, &token));
+        assert!(super::relink_request(&mut cloud, 3, &token, true).is_err());
+    }
+
+    #[test]
+    fn relink_rejects_changed_view_account_or_metadata_and_late_tokens() {
+        let mut cloud = relink_state_fixture();
+        let old = super::freeze_personal_relink(&mut cloud, "missing", 3).unwrap();
+        assert!(super::relink_context_current(&cloud, 3, &old));
+        assert!(!super::relink_context_current(&cloud, 5, &old)); // leave and return
+        cloud.epoch += 1;
+        assert!(!super::relink_context_current(&cloud, 3, &old));
+        cloud.epoch -= 1;
+        cloud.personal[0]["name"] = json!("期间重命名");
+        assert!(!super::relink_context_current(&cloud, 3, &old));
+        assert!(super::take_personal_relink(&mut cloud, &old).is_some()); // picker cancel
+        assert!(cloud.pending_relink.is_none());
+        let new = super::freeze_personal_relink(&mut cloud, "missing", 5).unwrap();
+        assert_ne!(new, old);
+        assert!(super::take_personal_relink(&mut cloud, &old).is_none()); // late completion
+        assert!(super::relink_context_current(&cloud, 5, &new));
+    }
+
+    #[test]
+    fn relink_queued_confirmation_does_not_depend_on_an_open_or_busy_dialog() {
+        let mut cloud = relink_state_fixture();
+        let token = super::freeze_personal_relink(&mut cloud, "missing", 3).unwrap();
+        let pending = cloud.pending_relink.as_mut().unwrap();
+        pending.selected = Some("/selected.png".into());
+        pending.phase = super::RelinkPhase::Confirming;
+        assert_eq!(
+            super::relink_cancelled_context(&cloud, 3, 0),
+            Some(token.clone())
+        );
+        let req = super::relink_request(&mut cloud, 3, &token, true).unwrap();
+        cloud
+            .pending
+            .push_back((format!("personal-relink:{token}"), req));
+        // Confirmation closes immediately even when an unrelated background job
+        // delays dispatch. Only the relink token stays busy, not another dialog.
+        assert_eq!(super::relink_cancelled_context(&cloud, 3, 0), None);
+        assert_eq!(super::relink_cancelled_context(&cloud, 3, 1), None);
+        assert!(super::relink_job_current(&cloud, 3, &token));
+        assert_eq!(
+            super::relink_cancelled_context(&cloud, 4, 0),
+            Some(token.clone())
+        );
+        cloud.pending_relink.as_mut().unwrap().phase = super::RelinkPhase::Running;
+        assert_eq!(super::relink_cancelled_context(&cloud, 4, 0), None);
+        assert!(!super::relink_job_current(&cloud, 4, &token));
+    }
+
+    #[test]
+    fn relink_recorded_recovery_checksum_bypasses_unverified_confirmation() {
+        let mut cloud = relink_state_fixture();
+        cloud.personal[0]["recovery"] = json!({
+            "previous_path":"/old.png", "selected_path":"/first-selection.png",
+            "sha256":"a".repeat(64), "verified_original":false
+        });
+        let token = super::freeze_personal_relink(&mut cloud, "missing", 3).unwrap();
+        cloud.pending_relink.as_mut().unwrap().selected = Some("/selected.png".into());
+        let req = super::relink_request(&mut cloud, 3, &token, false).unwrap();
+        assert_eq!(req.body["allow_unverified"], false);
+        assert_eq!(req.body["expected"]["recovery"]["verified_original"], false);
+        assert!(!super::relink_job_current(&cloud, 4, &token));
+    }
+
+    #[test]
+    fn relink_bridge_failures_preserve_index_and_success_does_not_scan_or_migrate() {
+        use crate::personal_library::{Library, MANIFEST_NAME};
+        let root =
+            std::env::temp_dir().join(format!("seecut-relink-bridge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let selected = root.join("selected.png");
+        let mut encoder = png::Encoder::new(std::fs::File::create(&selected).unwrap(), 4, 4);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[160; 48])
+            .unwrap();
+        let library_root = root.join("library");
+        let mut library = Library::load(&library_root).unwrap();
+        let id = library.register_generated(&selected).unwrap().id.clone();
+        library.rename(&id, "保留名称").unwrap();
+        library.set_favorite(&id, true).unwrap();
+        let expected = library.get(&id).unwrap().clone();
+        std::fs::remove_file(&expected.path).unwrap();
+        let mut legacy = expected.clone();
+        legacy.id = "untouched-legacy".into();
+        legacy.path = selected.clone();
+        legacy.version = None;
+        let manifest = library_root.join(MANIFEST_NAME);
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(&json!({"items":[expected,legacy],"folders":[]})).unwrap(),
+        )
+        .unwrap();
+        let before = std::fs::read(&manifest).unwrap();
+        let outputs = root.join("outputs");
+        std::fs::create_dir_all(&outputs).unwrap();
+        std::fs::copy(&selected, outputs.join("gen_do_not_scan.png")).unwrap();
+        let wrong = root.join("wrong.png");
+        std::fs::write(&wrong, b"different bytes").unwrap();
+        let cloud = Cloud {
+            folder: outputs,
+            ..Default::default()
+        };
+        let run = |snapshot: &crate::personal_library::Asset, path: &std::path::Path| {
+            super::library_call_at(
+                &cloud,
+                &super::request(
+                    "POST",
+                    "local:library-relink",
+                    json!({
+                        "id":id, "expected":snapshot, "path":path, "allow_unverified":false
+                    }),
+                ),
+                &library_root,
+            )
+        };
+        assert!(run(&expected, &wrong).is_err());
+        assert_eq!(std::fs::read(&manifest).unwrap(), before);
+        assert!(!expected.path.exists());
+        assert!(!library_root.join("pending-legacy-generated.json").exists());
+        let mut stale = expected.clone();
+        stale.name = "过期名称".into();
+        assert!(run(&stale, &selected).is_err());
+        assert_eq!(std::fs::read(&manifest).unwrap(), before);
+        let result = run(&expected, &selected).unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        let restored = items.iter().find(|asset| asset["id"] == id).unwrap();
+        assert_eq!(restored["name"], expected.name);
+        assert_eq!(restored["favorite"], true);
+        assert_eq!(restored["available"], true);
+        assert_eq!(restored["path"], json!(expected.path));
+        assert_eq!(
+            std::fs::read(&expected.path).unwrap(),
+            std::fs::read(&selected).unwrap()
+        );
+        let untouched = items
+            .iter()
+            .find(|asset| asset["id"] == "untouched-legacy")
+            .unwrap();
+        assert!(untouched["version"].is_null());
+        assert!(!library_root.join("pending-legacy-generated.json").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -41,6 +41,10 @@ export struct AccountEntry {
 
 export global SeeCut {
     in-out property <int> page: 1;
+    changed page => {
+        self.personal-relink-view += 1;
+        self.personal-relink-context-changed();
+    }
     in-out property <bool> busy;
     in-out property <bool> working;
     in-out property <bool> auth-open: true;
@@ -123,7 +127,11 @@ export global SeeCut {
     in-out property <string> personal-rename;
     in-out property <[PersonalAssetGroup]> personal-groups;
     in-out property <bool> personal-favorites;
+    callback personal-relink-context-changed();
+    in-out property <string> personal-relink-id;
+    in-out property <int> personal-relink-view;
     in-out property <int> personal-dialog;
+    changed personal-dialog => { self.personal-relink-context-changed(); }
     in-out property <bool> personal-dialog-busy;
     in-out property <string> personal-dialog-error;
     in-out property <bool> export-copy-open;

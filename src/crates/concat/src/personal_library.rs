@@ -71,6 +71,9 @@ pub struct Asset {
     /// Canonical source path retained as provenance, separate from managed storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_path: Option<PathBuf>,
+    /// Explicit recovery provenance; an unknown historical file remains unverified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<AssetRecovery>,
     /// Creation time in milliseconds since the Unix epoch.
     pub created_at: u64,
     /// Whether the item is in the library recycle bin.
@@ -89,6 +92,16 @@ pub struct AssetVersion {
     pub registration_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AssetRecovery {
+    /// First missing path, retained across subsequent recovery attempts.
+    pub previous_path: PathBuf,
+    pub selected_path: PathBuf,
+    pub sha256: String,
+    /// False stays false even after a later match against the recovered bytes.
+    pub verified_original: bool,
 }
 
 /// Durable registration input. Its managed bytes survive a failed index update.
@@ -125,6 +138,25 @@ pub struct Library {
 }
 
 impl Library {
+    /// Reads the existing index without migration, registration retry or writes.
+    /// Use for a frozen relink request, whose failure must preserve the index.
+    pub fn load_for_relink(root: impl AsRef<Path>) -> Result<Self, String> {
+        let root = root.as_ref().to_path_buf();
+        if !root.is_dir() {
+            return Err("个人资产库目录不存在，请刷新后重试".into());
+        }
+        let bytes = fs::read(root.join(MANIFEST_NAME))
+            .map_err(|error| format!("无法读取个人资产库索引：{error}"))?;
+        let manifest = serde_json::from_slice::<Manifest>(&bytes).map_err(|error| {
+            format!("个人资产库索引已损坏，请先备份或修复 library.json：{error}")
+        })?;
+        Ok(Self {
+            root,
+            items: manifest.items,
+            folders: manifest.folders,
+        })
+    }
+
     /// Opens a library, creating its directories when no index exists.
     pub fn load(root: impl AsRef<Path>) -> Result<Self, String> {
         let root = root.as_ref().to_path_buf();
@@ -380,6 +412,7 @@ impl Library {
             source: AssetSource::Imported,
             version: None,
             original_path: Some(source.0),
+            recovery: None,
             created_at,
             trashed: false,
             favorite: false,
@@ -447,6 +480,7 @@ impl Library {
             kind: prepared.kind,
             source: AssetSource::Generated,
             original_path: Some(prepared.source_path.clone()),
+            recovery: None,
             version: Some(AssetVersion {
                 sha256: prepared.sha256.clone(),
                 registration_id: prepared.registration_id.clone(),
@@ -462,6 +496,180 @@ impl Library {
             return Err(error);
         }
         Ok(self.items.last().expect("刚保存的资产必须存在"))
+    }
+
+    /// Restores one frozen missing item without registering another asset.
+    /// The caller holds the library write lock across load and this operation.
+    /// Returned failures roll back the index and newly published file; this is
+    /// not a crash-atomic transaction across the media file and JSON index.
+    pub fn relink_missing(
+        &mut self,
+        expected: &Asset,
+        selected: &Path,
+        allow_unverified: bool,
+    ) -> Result<&Asset, String> {
+        let mut matches = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.id == expected.id);
+        let index = matches.next().map(|(index, _)| index);
+        if index.is_none() || matches.next().is_some() {
+            return Err("找不到唯一的原资产，请刷新后重试".into());
+        }
+        let index = index.expect("已验证资产身份");
+        if &self.items[index] != expected {
+            return Err("资产记录已变化，请刷新后重新选择文件".into());
+        }
+        if crate::registration_retry::load_legacy_migrations(&self.root)?
+            .iter()
+            .any(|entry| entry.target_asset_id == expected.id)
+        {
+            return Err("此资产仍有待恢复的原副本，请先刷新完成原入库恢复".into());
+        }
+        let expected_hash = expected
+            .version
+            .as_ref()
+            .map(|version| version.sha256.as_str())
+            .or_else(|| {
+                expected
+                    .recovery
+                    .as_ref()
+                    .map(|recovery| recovery.sha256.as_str())
+            });
+        match fs::symlink_metadata(&expected.path) {
+            Ok(metadata) => {
+                // A repeated completed request never creates another record or
+                // replaces a file, including one changed by an external writer.
+                if metadata.is_file()
+                    && expected.recovery.is_some()
+                    && expected_hash.is_some_and(|hash| {
+                        file_digest(&expected.path).is_ok_and(|actual| actual == hash)
+                    })
+                {
+                    return Ok(&self.items[index]);
+                }
+                return Err("原素材路径已存在，未覆盖任何文件".into());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("无法确认原素材缺失：{error}")),
+        }
+        if expected_hash.is_none() && !allow_unverified {
+            return Err("旧素材没有内容指纹，请先确认使用所选文件；无法验证是否为原内容".into());
+        }
+        let (selected_path, kind) = checked_media(selected)?;
+        if kind != expected.kind {
+            return Err("所选文件的素材类型与原记录不一致".into());
+        }
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let source_folder = match expected.source {
+            AssetSource::Imported => "imported",
+            AssetSource::Generated => "generated",
+        };
+        // Only a direct managed path may be restored in place. Never recreate
+        // an old external source or traverse a symlinked managed directory.
+        let folder_name = ["imported", "generated"]
+            .into_iter()
+            .find(|name| expected.path.parent() == Some(root.join(name).as_path()))
+            .unwrap_or(source_folder);
+        let folder = checked_recovery_folder(&root, folder_name)?;
+        let extension = selected_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .ok_or("文件扩展名无效")?;
+        let destination = if expected.path.parent() == Some(folder.as_path()) {
+            expected.path.clone()
+        } else {
+            folder.join(format!("recovered-{}.{}", Uuid::new_v4(), extension))
+        };
+        let temporary = folder.join(format!(".recovery-{}.tmp", Uuid::new_v4()));
+        let mut staged = false;
+        let mut published = false;
+        let mut copied_hash = String::new();
+        let result = (|| {
+            let mut input = File::open(&selected_path).map_err(|error| error.to_string())?;
+            let mut output = File::options()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| error.to_string())?;
+            staged = true;
+            std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+            output.sync_all().map_err(|error| error.to_string())?;
+            copied_hash = file_digest(&temporary)?;
+            if let Some(hash) = expected_hash {
+                if copied_hash != hash {
+                    return Err("所选文件与已记录的内容指纹不一致，原记录未改变".into());
+                }
+            } else {
+                let info = concat_media::probe(&temporary)
+                    .map_err(|_| "所选文件不是可读取的有效素材".to_owned())?;
+                if (kind == AssetKind::Audio && info.audio.is_none())
+                    || (kind != AssetKind::Audio && info.video.is_none())
+                {
+                    return Err("所选文件内容与素材类型不一致".into());
+                }
+            }
+            if !same_file_bytes(&selected_path, &temporary)? {
+                return Err("所选文件在复制过程中发生变化，请重新选择".into());
+            }
+            // hard_link publishes atomically without overwriting an existing
+            // destination, unlike rename on platforms that replace the target.
+            fs::hard_link(&temporary, &destination)
+                .map_err(|error| format!("无法恢复素材文件，未覆盖已有文件：{error}"))?;
+            published = true;
+            let mut restored = expected.clone();
+            restored.path = destination.clone();
+            restored
+                .original_path
+                .get_or_insert_with(|| expected.path.clone());
+            if restored.version.is_none() {
+                restored.version = Some(AssetVersion {
+                    sha256: copied_hash.clone(),
+                    registration_id: format!("recovery:{}:{}", expected.id, copied_hash),
+                    previous_id: None,
+                });
+            }
+            restored.recovery = Some(AssetRecovery {
+                previous_path: expected
+                    .recovery
+                    .as_ref()
+                    .map(|recovery| recovery.previous_path.clone())
+                    .unwrap_or_else(|| expected.path.clone()),
+                selected_path: selected_path.clone(),
+                sha256: copied_hash.clone(),
+                verified_original: expected
+                    .recovery
+                    .as_ref()
+                    .map(|recovery| recovery.verified_original)
+                    .unwrap_or(expected_hash.is_some()),
+            });
+            self.items[index] = restored;
+            if let Err(error) = self.save() {
+                self.items[index] = expected.clone();
+                return Err(error);
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let cleanup = if published {
+                remove_recovery_copy(&temporary, &destination, &copied_hash)
+            } else {
+                Ok(())
+            };
+            if staged {
+                let _ = fs::remove_file(&temporary);
+            }
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}；{cleanup}"),
+            });
+        }
+        let _ = fs::remove_file(temporary);
+        Ok(&self.items[index])
     }
 
     /// Changes only an item's display name.
@@ -597,6 +805,44 @@ fn file_digest(path: &Path) -> Result<String, String> {
         digest.update(&buffer[..count]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn checked_recovery_folder(root: &Path, name: &str) -> Result<PathBuf, String> {
+    let folder = root.join(name);
+    match fs::symlink_metadata(&folder) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&folder).map_err(|error| error.to_string())?;
+        }
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    let metadata = fs::symlink_metadata(&folder).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("受管素材目录不是普通文件夹，未写入任何素材".into());
+    }
+    if folder.canonicalize().map_err(|error| error.to_string())? != folder {
+        return Err("受管素材目录路径已变化，未写入任何素材".into());
+    }
+    Ok(folder)
+}
+
+fn remove_recovery_copy(temporary: &Path, destination: &Path, sha256: &str) -> Result<(), String> {
+    // Keep an external replacement intact if it appeared after our publication.
+    let metadata = fs::symlink_metadata(destination).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || file_digest(destination)? != sha256 {
+        return Err("恢复路径被其他操作改变，已保留该文件；资产索引未改变".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let staged = fs::metadata(temporary).map_err(|error| error.to_string())?;
+        if metadata.dev() != staged.dev() || metadata.ino() != staged.ino() {
+            return Err("恢复路径被其他操作替换，已保留该文件；资产索引未改变".into());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = temporary;
+    fs::remove_file(destination).map_err(|error| format!("无法清理本次恢复副本：{error}"))
 }
 
 /// Run on a worker. Canvas can supply its encoded bytes, avoiding an external-path overwrite race.
@@ -848,6 +1094,292 @@ fn now_millis() -> Result<u64, String> {
 mod tests {
     use super::*;
 
+    struct RelinkTemp(PathBuf);
+
+    impl RelinkTemp {
+        fn new() -> Self {
+            let path = temp_root("relink");
+            fs::create_dir_all(&path).unwrap();
+            Self(path.canonicalize().unwrap())
+        }
+    }
+
+    impl Drop for RelinkTemp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn relink_fixture() -> (RelinkTemp, Library, Asset, PathBuf) {
+        let temporary = RelinkTemp::new();
+        let selected = temporary.0.join("selected.png");
+        fs::write(&selected, b"original immutable output").unwrap();
+        let mut library = Library::load(temporary.0.join("library")).unwrap();
+        let id = library.register_generated(&selected).unwrap().id.clone();
+        library.rename(&id, "保留名称").unwrap();
+        library.set_favorite(&id, true).unwrap();
+        let folder = library.create_folder("保留目录").unwrap().id.clone();
+        library
+            .move_to_folder(std::slice::from_ref(&id), Some(&folder))
+            .unwrap();
+        let expected = library.get(&id).unwrap().clone();
+        fs::remove_file(&expected.path).unwrap();
+        (temporary, library, expected, selected)
+    }
+
+    fn relink_image(path: &Path) {
+        let frame = concat_core::frame::Frame::black(16, 16);
+        fs::write(path, concat_media::jpeg(&frame, 5).unwrap()).unwrap();
+    }
+
+    fn relink_assert_unchanged(library: &Library, expected: &Asset, manifest: &[u8]) {
+        assert_eq!(library.items(), std::slice::from_ref(expected));
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        assert!(!expected.path.exists());
+        for name in ["imported", "generated"] {
+            if let Ok(entries) = fs::read_dir(library.root.join(name)) {
+                assert!(entries.into_iter().all(|entry| {
+                    !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".recovery-")
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn relink_matching_hash_restores_original_path_identity_and_metadata_once() {
+        let (_temporary, mut library, expected, selected) = relink_fixture();
+        let recovered = library
+            .relink_missing(&expected, &selected, false)
+            .unwrap()
+            .clone();
+        let mut preserved = recovered.clone();
+        preserved.recovery = None;
+        assert_eq!(preserved, expected);
+        assert_eq!(
+            fs::read(&recovered.path).unwrap(),
+            fs::read(&selected).unwrap()
+        );
+        let recovery = recovered.recovery.as_ref().unwrap();
+        assert_eq!(recovery.previous_path, expected.path);
+        assert_eq!(recovery.selected_path, selected.canonicalize().unwrap());
+        assert!(recovery.verified_original);
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        assert_eq!(
+            library
+                .relink_missing(&recovered, &selected, false)
+                .unwrap(),
+            &recovered
+        );
+        assert_eq!(library.items().len(), 1);
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        let reopened = Library::load(&library.root).unwrap();
+        assert_eq!(reopened.items(), std::slice::from_ref(&recovered));
+    }
+
+    #[test]
+    fn relink_wrong_hash_kind_and_cancelled_selection_keep_original_record() {
+        let (temporary, mut library, expected, selected) = relink_fixture();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        fs::write(&selected, b"wrong content").unwrap();
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        let audio = temporary.0.join("different.wav");
+        fs::write(&audio, b"original immutable output").unwrap();
+        assert!(library.relink_missing(&expected, &audio, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        assert!(
+            library
+                .relink_missing(&expected, Path::new(""), false)
+                .is_err()
+        );
+        relink_assert_unchanged(&library, &expected, &manifest);
+    }
+
+    #[test]
+    fn relink_unverified_requires_confirmation_probes_snapshot_and_retains_provenance() {
+        let (temporary, mut library, mut expected, _) = relink_fixture();
+        expected.path = temporary.0.join("old-external-missing.jpg");
+        expected.version = None;
+        library.items[0] = expected.clone();
+        library.save().unwrap();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        let selected = temporary.0.join("replacement.jpg");
+        relink_image(&selected);
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        let invalid = temporary.0.join("invalid.jpg");
+        fs::write(&invalid, b"not a media file").unwrap();
+        assert!(library.relink_missing(&expected, &invalid, true).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+
+        let restored = library
+            .relink_missing(&expected, &selected, true)
+            .unwrap()
+            .clone();
+        assert_eq!(restored.id, expected.id);
+        assert_eq!(restored.name, expected.name);
+        assert_eq!(restored.source, expected.source);
+        assert_eq!(restored.original_path, expected.original_path);
+        assert_eq!(restored.folder_id, expected.folder_id);
+        assert_eq!(restored.created_at, expected.created_at);
+        assert_eq!(restored.favorite, expected.favorite);
+        assert_eq!(restored.trashed, expected.trashed);
+        assert_eq!(
+            restored.path.parent(),
+            Some(library.root.join("generated").as_path())
+        );
+        assert!(!expected.path.exists());
+        assert!(!restored.recovery.as_ref().unwrap().verified_original);
+        assert_eq!(
+            restored.recovery.as_ref().unwrap().previous_path,
+            expected.path
+        );
+        assert_eq!(
+            restored.version.as_ref().unwrap().sha256,
+            file_digest(&selected).unwrap()
+        );
+
+        // A second recovery matches the recorded replacement, not proven
+        // historical content, and preserves the first external missing path.
+        fs::remove_file(&restored.path).unwrap();
+        let restored_again = library
+            .relink_missing(&restored, &selected, false)
+            .unwrap()
+            .clone();
+        assert_eq!(restored_again.path, restored.path);
+        assert_eq!(restored_again.version, restored.version);
+        assert!(!restored_again.recovery.as_ref().unwrap().verified_original);
+        assert_eq!(
+            restored_again.recovery.as_ref().unwrap().previous_path,
+            expected.path
+        );
+        let reopened = Library::load(&library.root).unwrap();
+        assert_eq!(reopened.items(), std::slice::from_ref(&restored_again));
+    }
+
+    #[test]
+    fn relink_imported_without_hash_keeps_id_source_and_original_managed_path() {
+        let temporary = RelinkTemp::new();
+        let selected = temporary.0.join("selected.jpg");
+        relink_image(&selected);
+        let mut library = Library::load(temporary.0.join("library")).unwrap();
+        let expected = library.import(&selected).unwrap().clone();
+        fs::remove_file(&expected.path).unwrap();
+        let restored = library.relink_missing(&expected, &selected, true).unwrap();
+        assert_eq!(restored.id, expected.id);
+        assert_eq!(restored.path, expected.path);
+        assert_eq!(restored.source, AssetSource::Imported);
+        assert_eq!(restored.original_path, expected.original_path);
+        assert!(restored.version.is_some());
+        assert!(!restored.recovery.as_ref().unwrap().verified_original);
+    }
+
+    #[test]
+    fn relink_manifest_failure_rolls_back_memory_index_and_new_file() {
+        let (_temporary, mut library, expected, selected) = relink_fixture();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        fail_next_manifest_save(&library.root);
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        let restored = library.relink_missing(&expected, &selected, false).unwrap();
+        assert_eq!(restored.path, expected.path);
+        assert_eq!(restored.id, expected.id);
+        assert!(restored.path.is_file());
+        assert_eq!(library.items().len(), 1);
+    }
+
+    #[test]
+    fn relink_stale_expected_and_existing_file_are_not_overwritten() {
+        let (_temporary, mut library, expected, selected) = relink_fixture();
+        library.rename(&expected.id, "后来修改的名称").unwrap();
+        let updated = library.get(&expected.id).unwrap().clone();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &updated, &manifest);
+        fs::write(&updated.path, b"another existing file").unwrap();
+        assert!(library.relink_missing(&updated, &selected, false).is_err());
+        assert_eq!(fs::read(&updated.path).unwrap(), b"another existing file");
+        assert_eq!(library.items(), std::slice::from_ref(&updated));
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relink_rejects_symlinked_managed_directory() {
+        use std::os::unix::fs::symlink;
+        let (temporary, mut library, expected, selected) = relink_fixture();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        let external = temporary.0.join("external-directory");
+        fs::create_dir(&external).unwrap();
+        fs::remove_dir(library.root.join("generated")).unwrap();
+        symlink(&external, library.root.join("generated")).unwrap();
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        assert_eq!(fs::read_dir(&external).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn relink_loader_does_not_migrate_retry_or_create_directories() {
+        let (temporary, mut library, mut expected, selected) = relink_fixture();
+        expected.path = selected.clone();
+        expected.version = None;
+        library.items[0] = expected.clone();
+        library.save().unwrap();
+        fs::remove_dir(library.root.join("generated")).unwrap();
+        fs::remove_dir(library.root.join("imported")).unwrap();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        let mut reopened = Library::load_for_relink(&library.root).unwrap();
+        assert_eq!(reopened.items(), std::slice::from_ref(&expected));
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        assert!(!library.root.join("generated").exists());
+        assert!(!library.root.join("imported").exists());
+        assert!(reopened.relink_missing(&expected, &selected, true).is_err());
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        let absent = temporary.0.join("absent-library");
+        assert!(Library::load_for_relink(&absent).is_err());
+        assert!(!absent.exists());
+    }
+
+    #[test]
+    fn relink_preserves_existing_legacy_migration_intent() {
+        let (_temporary, mut library, expected, selected) = relink_fixture();
+        let prepared = prepare_generated(&library.root, &selected, None, None, None).unwrap();
+        fs::remove_file(&prepared.path).unwrap();
+        let entries = vec![crate::registration_retry::LegacyMigration {
+            target_asset_id: expected.id.clone(),
+            asset_path: expected.path.clone(),
+            prepared,
+        }];
+        crate::registration_retry::save_legacy_migrations(&library.root, &entries).unwrap();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        let journal = fs::read(library.root.join("pending-legacy-generated.json")).unwrap();
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        assert_eq!(
+            fs::read(library.root.join("pending-legacy-generated.json")).unwrap(),
+            journal
+        );
+    }
+
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "seecut-personal-library-{label}-{}",
@@ -1072,6 +1604,7 @@ mod tests {
             source: AssetSource::Generated,
             version: None,
             original_path: None,
+            recovery: None,
             created_at: 0,
             trashed: false,
             favorite: false,
