@@ -293,6 +293,12 @@ struct Cloud {
     task_snapshots: HashMap<String, TaskInputSnapshot>,
     invite_id: String,
     orders: Vec<Value>,
+    purchase: Option<PendingPurchase>,
+    purchase_uid: String,
+    purchase_data: Option<PathBuf>,
+    purchase_journal: Option<std::sync::Arc<std::sync::Mutex<crate::purchase_journal::Journal>>>,
+    purchase_error: Option<&'static str>,
+    purchase_expiry_checked: HashSet<String>,
     submission: Option<PendingSubmission>,
     pending_task_references: HashSet<String>,
     epoch: u64,
@@ -377,6 +383,219 @@ fn request(method: &str, path: impl Into<String>, body: Value) -> Request {
         body,
         idem: None,
     }
+}
+
+// The process epoch fences callbacks in poll; durable keys belong to base/uid/plan.
+type PendingPurchase = crate::purchase_journal::Intent;
+
+fn restore_purchases(cloud: &mut Cloud) -> Result<(), &'static str> {
+    cloud.purchase = None;
+    cloud.purchase_journal = None;
+    cloud.purchase_expiry_checked.clear();
+    cloud.purchase_error = None;
+    let loaded = (|| {
+        let data = cloud
+            .purchase_data
+            .as_deref()
+            .ok_or(crate::purchase_journal::UNAVAILABLE)?;
+        crate::purchase_journal::Journal::open(data, &cloud.base, &cloud.purchase_uid)
+    })();
+    match loaded {
+        Ok(journal) => {
+            cloud.purchase_journal = Some(std::sync::Arc::new(std::sync::Mutex::new(journal)));
+            Ok(())
+        }
+        Err(error) => {
+            cloud.purchase_error = Some(error);
+            Err(error)
+        }
+    }
+}
+
+fn purchase_busy(cloud: &Cloud) -> bool {
+    matches!(cloud.active_name.as_str(), "purchase" | "order")
+        || cloud
+            .pending
+            .iter()
+            .any(|(name, _)| matches!(name.as_str(), "purchase" | "order"))
+}
+
+fn purchase_request(
+    cloud: &mut Cloud,
+    plan_id: &str,
+    now: i64,
+) -> Result<Option<Request>, &'static str> {
+    if cloud.token.is_empty() || plan_id.is_empty() || purchase_busy(cloud) {
+        return Ok(None);
+    }
+    if let Some(error) = cloud.purchase_error {
+        return Err(error);
+    }
+    let journal = cloud
+        .purchase_journal
+        .clone()
+        .ok_or(crate::purchase_journal::UNAVAILABLE)?;
+    let mut journal = journal
+        .lock()
+        .map_err(|_| crate::purchase_journal::UNAVAILABLE)?;
+    if !journal.matches(&cloud.base, &cloud.purchase_uid) {
+        return Err(crate::purchase_journal::UNAVAILABLE);
+    }
+    let old = journal.get(plan_id).cloned();
+    let expired = old
+        .as_ref()
+        .is_some_and(|intent| intent.expires_at.is_some_and(|expiry| expiry <= now));
+    let checked = old
+        .as_ref()
+        .is_some_and(|intent| cloud.purchase_expiry_checked.contains(&intent.key));
+    let intent = match journal.prepare(plan_id, expired && checked) {
+        Ok(intent) => intent,
+        Err(error) => {
+            cloud.purchase_error = Some(error);
+            return Err(error);
+        }
+    };
+    cloud.purchase = Some(intent.clone());
+    // An expired unresolved order must be queried before a new purchase. If its
+    // response was lost, same-key creation first recovers the original order id.
+    if expired
+        && !checked
+        && let Some(id) = &intent.order_id
+    {
+        return Ok(Some(request(
+            "POST",
+            format!("/api/orders/{id}/refresh"),
+            Value::Null,
+        )));
+    }
+    let mut req = request("POST", "/api/orders", json!({"plan_id":plan_id}));
+    req.idem = Some(intent.key);
+    Ok(Some(req))
+}
+
+fn accept_purchase_order(
+    cloud: &mut Cloud,
+    order: &Value,
+    created: bool,
+    refreshed: bool,
+    now: i64,
+) -> Result<(), &'static str> {
+    let id = text(order, "id");
+    if id.is_empty() {
+        return Ok(());
+    }
+    let Some(journal) = cloud.purchase_journal.clone() else {
+        return Ok(());
+    };
+    let mut journal = journal
+        .lock()
+        .map_err(|_| crate::purchase_journal::UNAVAILABLE)?;
+    if !journal.matches(&cloud.base, &cloud.purchase_uid) {
+        return Err(crate::purchase_journal::UNAVAILABLE);
+    }
+    let plan = if created {
+        cloud.purchase.as_ref().map(|intent| intent.plan_id.clone())
+    } else {
+        journal.plan_for_order(&id)
+    };
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    let expiry = order["expires_at"].as_i64().or_else(|| {
+        order
+            .pointer("/payment_action/expires_at")
+            .and_then(Value::as_i64)
+    });
+    let status = text(order, "status");
+    if let Err(error) = journal.accept(&plan, &id, &status, expiry) {
+        cloud.purchase_error = Some(error);
+        return Err(error);
+    }
+    if refreshed
+        && order["payment_status_verified"] == true
+        && status == "pending"
+        && expiry.is_some_and(|expiry| expiry <= now)
+        && let Some(intent) = journal.get(&plan)
+    {
+        cloud.purchase_expiry_checked.insert(intent.key.clone());
+    }
+    if cloud
+        .purchase
+        .as_ref()
+        .is_some_and(|intent| intent.plan_id == plan)
+    {
+        cloud.purchase = journal.get(&plan).cloned();
+    }
+    Ok(())
+}
+
+fn purchase_plan_label(cloud: &Cloud, plan: &str, now: i64) -> &'static str {
+    if purchase_busy(cloud)
+        && cloud
+            .purchase
+            .as_ref()
+            .is_some_and(|intent| intent.plan_id == plan)
+    {
+        return "处理中…";
+    }
+    if cloud.purchase_error.is_some() {
+        return "重试";
+    }
+    let Some(journal) = &cloud.purchase_journal else {
+        return "购买";
+    };
+    let Ok(journal) = journal.lock() else {
+        return "重试";
+    };
+    if journal.blocked() {
+        return "重试";
+    }
+    let Some(intent) = journal.get(plan) else {
+        return "购买";
+    };
+    if intent.expires_at.is_some_and(|expiry| expiry <= now) {
+        if cloud.purchase_expiry_checked.contains(&intent.key) {
+            "购买"
+        } else if intent.order_id.is_some() {
+            "查询订单"
+        } else {
+            "重试"
+        }
+    } else if intent.order_id.is_some() {
+        "继续支付"
+    } else {
+        "重试"
+    }
+}
+
+fn purchase_action_label(cloud: &Cloud, now: i64) -> &'static str {
+    cloud
+        .purchase
+        .as_ref()
+        .map(|intent| purchase_plan_label(cloud, &intent.plan_id, now))
+        .unwrap_or("购买")
+}
+
+fn purchase_payment_url(order: &Value, now: i64) -> Option<&str> {
+    let expires_at = order["expires_at"].as_i64().or_else(|| {
+        order
+            .pointer("/payment_action/expires_at")
+            .and_then(Value::as_i64)
+    });
+    if order["status"] != "pending" || expires_at.is_some_and(|expires_at| expires_at <= now) {
+        return None;
+    }
+    let raw = order
+        .pointer("/payment_action/url")
+        .and_then(Value::as_str)?;
+    Url::parse(raw)
+        .is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str().is_some_and(|host| {
+                    host == "openapi.alipay.com" || host == "openapi-sandbox.dl.alipaydev.com"
+                })
+        })
+        .then_some(raw)
 }
 fn text(v: &Value, key: &str) -> String {
     v.get(key)
@@ -723,6 +942,33 @@ fn sync_operation_state(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     ui.set_auth_busy(auth_busy);
     ui.set_working(working);
+    ui.set_purchase_plan_id(
+        cloud
+            .purchase
+            .as_ref()
+            .map(|purchase| purchase.plan_id.as_str())
+            .unwrap_or_default()
+            .into(),
+    );
+    ui.set_purchase_action_label(
+        purchase_action_label(&cloud, chrono::Utc::now().timestamp()).into(),
+    );
+    let mut changed = false;
+    let plans = ui
+        .get_plans()
+        .iter()
+        .map(|mut plan| {
+            let label: SharedString =
+                purchase_plan_label(&cloud, plan.id.as_str(), chrono::Utc::now().timestamp())
+                    .into();
+            changed |= plan.purchase_label != label;
+            plan.purchase_label = label;
+            plan
+        })
+        .collect();
+    if changed {
+        ui.set_plans(rows(plans));
+    }
 }
 
 fn quote_request_current(ui: &SeeCut, cloud: &Cloud, request: &Request) -> bool {
@@ -2950,6 +3196,10 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             let history = state.borrow().folder.join(&history_name);
             let task_snapshots = state.borrow().folder.join(&task_snapshot_name);
             state.borrow_mut().history_name = history_name;
+            state.borrow_mut().purchase_uid = uid;
+            if let Err(error) = restore_purchases(&mut state.borrow_mut()) {
+                ui.set_error(error.into());
+            }
             state.borrow_mut().task_snapshot_name = task_snapshot_name;
             state.borrow_mut().local = std::fs::read(history)
                 .ok()
@@ -3273,6 +3523,12 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     name: text(v, "name").into(),
                     price: format!("¥{:.2}", v["price_fen"].as_f64().unwrap_or(0.) / 100.).into(),
                     credits: format!("{} 积分", v["credits"]).into(),
+                    purchase_label: purchase_plan_label(
+                        &state.borrow(),
+                        &text(v, "id"),
+                        chrono::Utc::now().timestamp(),
+                    )
+                    .into(),
                 })
                 .collect(),
         )),
@@ -3442,11 +3698,35 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
         }
         "purchase" | "order" | "orders" => {
             if name == "orders" {
-                state.borrow_mut().orders = items(&value);
+                let orders = items(&value);
+                let mut cloud = state.borrow_mut();
+                for order in &orders {
+                    if let Err(error) = accept_purchase_order(
+                        &mut cloud,
+                        order,
+                        false,
+                        false,
+                        chrono::Utc::now().timestamp(),
+                    ) {
+                        ui.set_error(error.into());
+                    }
+                }
+                cloud.orders = orders;
             } else {
                 let id = text(&value, "id");
-                state.borrow_mut().orders.retain(|v| text(v, "id") != id);
-                state.borrow_mut().orders.insert(0, value.clone());
+                let mut cloud = state.borrow_mut();
+                if let Err(error) = accept_purchase_order(
+                    &mut cloud,
+                    &value,
+                    name == "purchase",
+                    name == "order",
+                    chrono::Utc::now().timestamp(),
+                ) {
+                    ui.set_error(error.into());
+                    return;
+                }
+                cloud.orders.retain(|v| text(v, "id") != id);
+                cloud.orders.insert(0, value.clone());
             }
             ui.set_orders(rows(
                 state
@@ -3456,27 +3736,25 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     .map(|v| AccountEntry {
                         id: text(v, "id").into(),
                         title: "支付宝充值".into(),
-                        detail: match text(v, "status").as_str() {
-                            "paid" => "已到账",
-                            "closed" => "已关闭",
-                            _ => "等待支付",
-                        }
+                        detail: crate::account_ledger::order_status(
+                            v,
+                            chrono::Utc::now().timestamp(),
+                        )
                         .into(),
                         value: format!("¥{:.2}", v["amount_fen"].as_f64().unwrap_or(0.) / 100.)
                             .into(),
                     })
                     .collect(),
             ));
-            if name == "purchase"
-                && let Some(raw) = value.pointer("/payment_action/url").and_then(Value::as_str)
-                && Url::parse(raw).is_ok_and(|u| {
-                    u.scheme() == "https"
-                        && u.host_str().is_some_and(|h| {
-                            h == "openapi.alipay.com" || h == "openapi-sandbox.dl.alipaydev.com"
-                        })
-                })
-            {
-                open_file(raw);
+            if name == "purchase" {
+                if let Some(raw) = purchase_payment_url(&value, chrono::Utc::now().timestamp()) {
+                    open_file(raw);
+                } else {
+                    ui.set_notice(
+                        crate::account_ledger::order_status(&value, chrono::Utc::now().timestamp())
+                            .into(),
+                    );
+                }
             }
             job(
                 app,
@@ -7384,6 +7662,11 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.task_snapshots.clear();
     cloud.task_snapshot_name.clear();
     cloud.orders.clear();
+    cloud.purchase = None;
+    cloud.purchase_uid.clear();
+    cloud.purchase_journal = None;
+    cloud.purchase_error = None;
+    cloud.purchase_expiry_checked.clear();
     cloud.submission = None;
     cloud.pending_task_references.clear();
     cloud.download_attempts.clear();
@@ -7423,6 +7706,8 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     ui.set_members(rows(vec![]));
     ui.set_ledger(rows(vec![]));
     ui.set_orders(rows(vec![]));
+    ui.set_purchase_plan_id("".into());
+    ui.set_purchase_action_label("购买".into());
     ui.set_team_names(strings(vec![]));
     ui.set_team_index(-1);
     ui.set_invite_url("".into());
@@ -7655,6 +7940,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
     let state = Rc::new(RefCell::new(Cloud {
         base,
         folder,
+        purchase_data: concat_host::AppDirs::locate().ok().map(|dirs| dirs.data),
         ..Cloud::default()
     }));
     let account = AccountAccess {
@@ -7899,7 +8185,17 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         "logout"=>job(&app,&shared,"logout".into(),request("POST","/api/auth/logout",Value::Null)),
         "wallet-refresh"=>job(&app,&shared,"wallet".into(),request("GET","/api/wallet",Value::Null)),
         "tasks-refresh"=>job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null)),
-        "purchase"=>job(&app,&shared,"purchase".into(),request("POST","/api/orders",json!({"plan_id":id.to_string()}))),
+        "purchase"=>{
+            if !ui.get_signed_in(){show_auth(&app,&shared,Some(3));return;}
+            if ui.get_working(){return;}
+            let now=chrono::Utc::now().timestamp();
+            let result = purchase_request(&mut shared.borrow_mut(),id.as_str(),now);
+            match result {
+                Ok(Some(req))=>{let name=if req.path=="/api/orders"{"purchase"}else{"order"};job(&app,&shared,name.into(),req);},
+                Ok(None)=>{},
+                Err(error)=>{ui.set_error(error.into());sync_operation_state(&app,&shared);},
+            }
+        },
         "order-refresh"=>job(&app,&shared,"order".into(),request("POST",format!("/api/orders/{id}/refresh"),Value::Null)),
         "navigate"=>navigate(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
         "navigate-resume"=>navigate_unchecked(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
@@ -8203,6 +8499,9 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
     slint::Timer::single_shot(Duration::from_secs(5), move || {
         let Some(app) = weak.upgrade() else { return };
         app.global::<SeeCut>().set_project_open(!app.get_on_start());
+        if state.borrow().purchase_journal.is_some() {
+            sync_operation_state(&app, &state);
+        }
         if app.global::<SeeCut>().get_signed_in()
             && !app.global::<SeeCut>().get_busy()
             && app.global::<SeeCut>().get_page() == 1
@@ -8241,6 +8540,270 @@ mod reference_tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    fn purchase_fixture() -> (tempfile::TempDir, Cloud) {
+        let root = tempfile::Builder::new()
+            .prefix("seecut-purchase-cloud-")
+            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+            .unwrap();
+        let mut cloud = Cloud {
+            base: "http://127.0.0.1:19000".into(),
+            token: "synthetic-session".into(),
+            purchase_uid: "synthetic-account".into(),
+            purchase_data: Some(root.path().into()),
+            epoch: 3,
+            ..Default::default()
+        };
+        super::restore_purchases(&mut cloud).unwrap();
+        (root, cloud)
+    }
+    fn purchase(cloud: &mut Cloud, plan: &str, now: i64) -> super::Request {
+        super::purchase_request(cloud, plan, now).unwrap().unwrap()
+    }
+    fn purchase_order(
+        cloud: &mut Cloud,
+        id: &str,
+        status: &str,
+        created: bool,
+        refreshed: bool,
+        now: i64,
+    ) {
+        super::accept_purchase_order(
+            cloud,
+            &json!({"id":id,"status":status,"expires_at":1900,"payment_status_verified":refreshed}),
+            created,
+            refreshed,
+            now,
+        )
+        .unwrap();
+    }
+    #[test]
+    fn purchase_lost_reply_restart_retains_key_without_automatic_request() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        let mut reopened = Cloud {
+            base: cloud.base.clone(),
+            token: cloud.token.clone(),
+            purchase_uid: cloud.purchase_uid.clone(),
+            purchase_data: cloud.purchase_data.clone(),
+            epoch: 0,
+            ..Default::default()
+        };
+        super::restore_purchases(&mut reopened).unwrap();
+        assert!(reopened.pending.is_empty());
+        assert!(reopened.active_name.is_empty());
+        assert!(reopened.purchase.is_none());
+        assert_eq!(super::purchase_plan_label(&reopened, "plan-a", 110), "重试");
+        assert_eq!(purchase(&mut reopened, "plan-a", 110).idem, first.idem);
+        purchase_order(&mut reopened, "ord-a", "pending", true, false, 110);
+        super::restore_purchases(&mut reopened).unwrap();
+        assert_eq!(
+            super::purchase_plan_label(&reopened, "plan-a", 120),
+            "继续支付"
+        );
+        assert_eq!(purchase(&mut reopened, "plan-a", 120).idem, first.idem);
+    }
+    #[test]
+    fn purchase_plan_switch_and_restart_keep_both_unresolved_intentions() {
+        let (_root, mut cloud) = purchase_fixture();
+        let a = purchase(&mut cloud, "plan-a", 100);
+        let b = purchase(&mut cloud, "plan-b", 110);
+        assert_ne!(a.idem, b.idem);
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(purchase(&mut cloud, "plan-a", 120).idem, a.idem);
+        assert_eq!(purchase(&mut cloud, "plan-b", 130).idem, b.idem);
+    }
+    #[test]
+    fn purchase_epoch_reauth_retains_key_but_account_and_endpoint_are_isolated() {
+        let (_root, mut cloud) = purchase_fixture();
+        let a = purchase(&mut cloud, "plan-a", 100);
+        cloud.epoch += 1;
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(purchase(&mut cloud, "plan-a", 110).idem, a.idem);
+        cloud.purchase_uid = "other-account".into();
+        assert!(super::purchase_request(&mut cloud, "plan-a", 120).is_err());
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(super::purchase_plan_label(&cloud, "plan-a", 120), "购买");
+        let b = purchase(&mut cloud, "plan-a", 120);
+        assert_ne!(b.idem, a.idem);
+        cloud.base = "http://127.0.0.1:19001".into();
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(super::purchase_plan_label(&cloud, "plan-a", 130), "购买");
+        assert_ne!(purchase(&mut cloud, "plan-a", 130).idem, b.idem);
+        cloud.token.clear();
+        assert!(
+            super::purchase_request(&mut cloud, "plan-a", 140)
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn purchase_terminal_retirement_persists_and_does_not_drop_another_plan() {
+        for terminal in ["paid", "closed"] {
+            let (_root, mut cloud) = purchase_fixture();
+            let a = purchase(&mut cloud, "plan-a", 100);
+            let b = purchase(&mut cloud, "plan-b", 110);
+            purchase(&mut cloud, "plan-a", 120);
+            purchase_order(&mut cloud, "ord-a", terminal, true, false, 120);
+            super::restore_purchases(&mut cloud).unwrap();
+            assert_eq!(super::purchase_plan_label(&cloud, "plan-a", 140), "购买");
+            assert_ne!(purchase(&mut cloud, "plan-a", 140).idem, a.idem);
+            assert_eq!(purchase(&mut cloud, "plan-b", 150).idem, b.idem);
+        }
+    }
+    #[test]
+    fn purchase_expired_unverified_intention_queries_before_explicit_new_purchase() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        purchase_order(&mut cloud, "ord-a", "pending", true, false, 100);
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(
+            super::purchase_plan_label(&cloud, "plan-a", 1900),
+            "查询订单"
+        );
+        let query = purchase(&mut cloud, "plan-a", 1900);
+        assert_eq!(query.path, "/api/orders/ord-a/refresh");
+        assert!(query.idem.is_none());
+        assert_eq!(
+            cloud.purchase.as_ref().unwrap().key,
+            first.idem.clone().unwrap()
+        );
+        purchase_order(&mut cloud, "ord-a", "pending", false, true, 1900);
+        assert_eq!(super::purchase_plan_label(&cloud, "plan-a", 1901), "购买");
+        let next = purchase(&mut cloud, "plan-a", 1901);
+        assert_eq!(next.path, "/api/orders");
+        assert_ne!(next.idem, first.idem);
+    }
+    #[test]
+    fn purchase_unconfirmed_expired_query_cannot_authorize_a_new_key() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        purchase_order(&mut cloud, "ord-a", "pending", true, false, 100);
+        for verified in [serde_json::Value::Null, json!(false)] {
+            super::accept_purchase_order(&mut cloud, &json!({"id":"ord-a","status":"pending","expires_at":1900,"payment_status_verified":verified}), false, true, 1900).unwrap();
+            assert_eq!(
+                super::purchase_plan_label(&cloud, "plan-a", 1901),
+                "查询订单"
+            );
+            assert_eq!(
+                purchase(&mut cloud, "plan-a", 1901).path,
+                "/api/orders/ord-a/refresh"
+            );
+            assert_eq!(
+                cloud.purchase.as_ref().unwrap().key,
+                first.idem.clone().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn purchase_expired_lost_response_recovers_id_with_same_key_before_query() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(purchase(&mut cloud, "plan-a", 1900).idem, first.idem);
+        purchase_order(&mut cloud, "ord-a", "pending", true, false, 1900);
+        assert_eq!(
+            super::purchase_plan_label(&cloud, "plan-a", 1900),
+            "查询订单"
+        );
+        assert_eq!(
+            purchase(&mut cloud, "plan-a", 1901).path,
+            "/api/orders/ord-a/refresh"
+        );
+    }
+    #[test]
+    fn purchase_active_or_queued_prevents_duplicate_request() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        cloud.active_name = "purchase".into();
+        assert!(
+            super::purchase_request(&mut cloud, "plan-a", 101)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(super::purchase_action_label(&cloud, 101), "处理中…");
+        cloud.active_name.clear();
+        cloud.pending.push_back(("purchase".into(), first));
+        assert!(
+            super::purchase_request(&mut cloud, "plan-b", 102)
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn purchase_response_save_failure_keeps_original_key_and_blocks_new_request() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        let mut other = crate::purchase_journal::Journal::open(
+            cloud.purchase_data.as_deref().unwrap(),
+            &cloud.base,
+            &cloud.purchase_uid,
+        )
+        .unwrap();
+        other.prepare("plan-b", false).unwrap();
+        assert!(
+            super::accept_purchase_order(
+                &mut cloud,
+                &json!({"id":"ord-a","status":"pending","expires_at":1900}),
+                true,
+                false,
+                100
+            )
+            .is_err()
+        );
+        assert_eq!(cloud.purchase.as_ref().unwrap().key, first.idem.unwrap());
+        assert!(super::purchase_request(&mut cloud, "plan-a", 110).is_err());
+        assert!(super::purchase_request(&mut cloud, "plan-c", 110).is_err());
+    }
+    #[test]
+    fn purchase_first_save_failure_produces_no_request_and_does_not_overwrite() {
+        let (_root, mut cloud) = purchase_fixture();
+        let directory = cloud
+            .purchase_data
+            .as_ref()
+            .unwrap()
+            .join("purchase-journals/purchase-intents");
+        std::fs::rename(&directory, directory.with_extension("preserved")).unwrap();
+        assert!(super::purchase_request(&mut cloud, "plan-a", 100).is_err());
+        assert!(cloud.purchase.is_none());
+        assert!(cloud.pending.is_empty());
+        assert!(super::purchase_request(&mut cloud, "plan-a", 110).is_err());
+        assert!(!directory.exists());
+    }
+    #[test]
+    fn purchase_other_order_cannot_retire_active_intention() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        purchase_order(&mut cloud, "ord-a", "pending", true, false, 100);
+        purchase_order(&mut cloud, "ord-b", "paid", false, true, 120);
+        assert_eq!(purchase(&mut cloud, "plan-a", 130).idem, first.idem);
+    }
+
+    #[test]
+    fn purchase_without_valid_pending_payment_action_never_opens_cashier() {
+        let valid = json!({"status":"pending", "expires_at":1900,
+            "payment_action":{"url":"https://openapi.alipay.com/gateway.do"}});
+        assert_eq!(
+            super::purchase_payment_url(&valid, 100),
+            Some("https://openapi.alipay.com/gateway.do")
+        );
+        assert_eq!(super::purchase_payment_url(&valid, 1900), None);
+        for status in ["paid", "closed"] {
+            let mut terminal = valid.clone();
+            terminal["status"] = json!(status);
+            assert_eq!(super::purchase_payment_url(&terminal, 100), None);
+        }
+        assert_eq!(
+            super::purchase_payment_url(&json!({"status":"pending"}), 100),
+            None
+        );
+        let invalid =
+            json!({"status":"pending", "payment_action":{"url":"https://example.invalid/pay"}});
+        assert_eq!(super::purchase_payment_url(&invalid, 100), None);
+        let legacy_expired = json!({"status":"pending", "payment_action":{"url":"https://openapi.alipay.com/gateway.do", "expires_at":99}});
+        assert_eq!(super::purchase_payment_url(&legacy_expired, 100), None);
+    }
 
     fn effort_fixture(id: &str, revision: &str, image: &str) -> Value {
         json!({"id":id,"label":id,"policy_revision":revision,"available":true,

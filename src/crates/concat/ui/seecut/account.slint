@@ -186,7 +186,7 @@ export component CreditsPage inherits Rectangle {
                     }
                     Rectangle { horizontal-stretch: 1; }
                     Text { text: plan.price; color: Theme.fg; vertical-alignment: center; font-size: 18px; }
-                    AppButton { label: "购买"; primary: true; enabled: SeeCut.signed-in && !SeeCut.working; clicked => { SeeCut.action("purchase", plan.id); } }
+                    AppButton { label: plan.purchase-label; primary: true; enabled: SeeCut.signed-in && !SeeCut.working; clicked => { SeeCut.action("purchase", plan.id); } }
                 }
             }
             Rectangle { height: 8px; }
@@ -204,7 +204,7 @@ export component CreditsPage inherits Rectangle {
                         Text { text: entry.detail; color: Theme.fg-dim; font-size: Theme.fs-sm; overflow: elide; }
                     }
                     Text { text: entry.value; color: Theme.fg-muted; vertical-alignment: center; }
-                    if root.tab == 1: IconButton { glyph: Glyph.reset; label: "查询订单状态"; clicked => { SeeCut.action("order-refresh", entry.id); } }
+                    if root.tab == 1: IconButton { glyph: Glyph.reset; label: "查询订单状态"; enabled: !SeeCut.working; clicked => { SeeCut.action("order-refresh", entry.id); } }
                 }
                 Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.line; }
             }

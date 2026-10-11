@@ -286,7 +286,7 @@ class ServiceTest(unittest.TestCase):
                 (service.now(),),
             )
         with patch.object(service, "_alipay_page_url", return_value="https://pay.example.test/order"):
-            order = service.create_order(user_id, "plan-1")
+            order = service.create_order(user_id, "plan-1", "purchase-1")
         fields = {
             "app_id": "app-1",
             "seller_id": "seller-1",

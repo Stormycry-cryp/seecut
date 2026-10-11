@@ -26,6 +26,7 @@ export struct GenerationTemplate {
 }
 
 export struct CreditPlan {
+    purchase-label: string,
     id: string,
     name: string,
     price: string,
@@ -190,6 +191,8 @@ export global SeeCut {
     in-out property <bool> can-generate;
     in-out property <bool> insufficient-credits;
     in-out property <bool> payment-enabled;
+    in-out property <string> purchase-plan-id;
+    in-out property <string> purchase-action-label: "购买";
     in-out property <[CloudItem]> tasks;
     in-out property <[GenerationBatch]> batches;
     in-out property <bool> task-selection-mode;

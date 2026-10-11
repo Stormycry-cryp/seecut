@@ -61,6 +61,14 @@ class Database:
                 connection.execute(
                     "ALTER TABLE email_tokens ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0"
                 )
+            order_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(orders)")
+            }
+            if "expires_at" not in order_columns:
+                # Earlier payment links did not impose a provider deadline.
+                # NULL explicitly preserves that unknown state; do not invent
+                # a deadline or close an order solely from its local age.
+                connection.execute("ALTER TABLE orders ADD COLUMN expires_at INTEGER")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

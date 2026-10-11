@@ -142,7 +142,18 @@ CREATE TABLE IF NOT EXISTS orders (
     provider_trade_no TEXT,
     paid_at INTEGER,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER
+);
+
+-- Purchase intents use the same account-scoped digest/target contract as Agent
+-- requests. Legacy orders have no intent key and an unknown expiry (NULL).
+CREATE TABLE IF NOT EXISTS order_idempotency (
+    user_id TEXT NOT NULL REFERENCES users(id),
+    key TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    order_id TEXT NOT NULL REFERENCES orders(id),
+    PRIMARY KEY(user_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS payment_events (

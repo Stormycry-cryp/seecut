@@ -14,8 +14,10 @@ import urllib.parse
 import urllib.error
 import urllib.request
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from .config import Config
 from .assistant_provider import make_assistant_provider
@@ -916,7 +918,9 @@ class SeeCutService:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def create_order(self, user_id: str, plan_id: str) -> dict[str, Any]:
+    def create_order(
+        self, user_id: str, plan_id: str, idempotency_key: str = ""
+    ) -> dict[str, Any]:
         if not self.config.alipay_configured():
             raise ApiError(
                 503,
@@ -924,32 +928,59 @@ class SeeCutService:
                 "支付宝商户配置尚未完成",
                 {"required": ["app_id", "notify_url", "public_key", "merchant_private_key"]},
             )
-        with self.db.connect() as connection:
-            plan = connection.execute(
-                "SELECT * FROM plans WHERE id=? AND active=1", (plan_id,)
-            ).fetchone()
-        if not plan:
-            raise ApiError(404, "PLAN_NOT_FOUND", "积分套餐不存在")
-        order_id = new_id("ord")
+        if not idempotency_key or len(idempotency_key) > 128 or not idempotency_key.strip():
+            raise ApiError(400, "INVALID_IDEMPOTENCY_KEY", "请提供有效的幂等键")
+        digest = hashlib.sha256(
+            json.dumps({"plan_id": plan_id}, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         now = self.now()
-        with self.db.transaction() as connection:
-            connection.execute(
-                """INSERT INTO orders
-                   (id,user_id,plan_id,provider,amount_fen,credits,status,created_at,updated_at)
-                   VALUES(?,?,?,'alipay',?,?, 'pending',?,?)""",
-                (order_id, user_id, plan_id, plan["price_fen"], plan["credits"], now, now),
+        with self.db.transaction(immediate=True) as connection:
+            intent = connection.execute(
+                "SELECT digest,order_id FROM order_idempotency WHERE user_id=? AND key=?",
+                (user_id, idempotency_key),
+            ).fetchone()
+            if intent:
+                if intent["digest"] != digest:
+                    raise ApiError(409, "ORDER_IDEMPOTENCY_CONFLICT", "该请求标识已用于其他套餐")
+                order_id = intent["order_id"]
+            else:
+                plan = connection.execute(
+                    "SELECT * FROM plans WHERE id=? AND active=1", (plan_id,)
+                ).fetchone()
+                if not plan:
+                    raise ApiError(404, "PLAN_NOT_FOUND", "积分套餐不存在")
+                order_id = new_id("ord")
+                connection.execute(
+                    """INSERT INTO orders
+                       (id,user_id,plan_id,provider,amount_fen,credits,status,created_at,updated_at,expires_at)
+                       VALUES(?,?,?,'alipay',?,?,'pending',?,?,?)""",
+                    (order_id, user_id, plan_id, plan["price_fen"], plan["credits"], now, now, now + 1800),
+                )
+                connection.execute(
+                    "INSERT INTO order_idempotency(user_id,key,digest,order_id) VALUES(?,?,?,?)",
+                    (user_id, idempotency_key, digest, order_id),
+                )
+            row = connection.execute(
+                "SELECT orders.*,plans.name AS subject FROM orders JOIN plans ON plans.id=orders.plan_id WHERE orders.id=?",
+                (order_id,),
+            ).fetchone()
+        # Commit the intent before signing: a transient signer failure can be
+        # retried with the same key without creating an orphan second purchase.
+        result = self.order(user_id, order_id)
+        if result["status"] == "pending" and result["expires_at"] is not None and self.now() < result["expires_at"]:
+            payment_url = self._alipay_page_url(
+                order_id, row["amount_fen"], row["subject"], row["expires_at"]
             )
-        payment_url = self._alipay_page_url(order_id, plan["price_fen"], plan["name"])
-        return {
-            "id": order_id,
-            "status": "pending",
-            "provider": "alipay",
-            "amount_fen": plan["price_fen"],
-            "credits": plan["credits"],
-            "payment_action": {"type": "open_url", "url": payment_url, "expires_at": now + 1800},
-        }
+            result = self.order(user_id, order_id)
+            if result["status"] == "pending" and self.now() < result["expires_at"]:
+                result["payment_action"] = {
+                    "type": "open_url", "url": payment_url, "expires_at": result["expires_at"]
+                }
+        return result
 
-    def _alipay_page_url(self, order_id: str, amount_fen: int, subject: str) -> str:
+    def _alipay_page_url(
+        self, order_id: str, amount_fen: int, subject: str, expires_at: int
+    ) -> str:
         if not self.config.alipay_configured():
             raise ApiError(503, "ALIPAY_NOT_CONFIGURED", "支付宝商户配置尚未完成")
         params = {
@@ -967,6 +998,8 @@ class SeeCutService:
                     "product_code": "FAST_INSTANT_TRADE_PAY",
                     "total_amount": f"{amount_fen / 100:.2f}",
                     "subject": subject,
+                    # Absolute Beijing time remains fixed across link retries.
+                    "time_expire": datetime.fromtimestamp(expires_at, ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S"),
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -990,7 +1023,7 @@ class SeeCutService:
     def order(self, user_id: str, order_id: str) -> dict[str, Any]:
         with self.db.connect() as connection:
             row = connection.execute(
-                """SELECT id,provider,amount_fen,credits,status,provider_trade_no,paid_at,created_at
+                """SELECT id,provider,amount_fen,credits,status,provider_trade_no,paid_at,created_at,expires_at
                    FROM orders WHERE id=? AND user_id=?""",
                 (order_id, user_id),
             ).fetchone()
@@ -1001,7 +1034,7 @@ class SeeCutService:
     def orders(self, user_id: str) -> dict[str, Any]:
         with self.db.connect() as connection:
             rows = connection.execute(
-                "SELECT id,provider,amount_fen,credits,status,paid_at,created_at FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
+                "SELECT id,provider,amount_fen,credits,status,paid_at,created_at,expires_at FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
                 (user_id,),
             ).fetchall()
         return {"items": [dict(row) for row in rows]}
@@ -1027,30 +1060,34 @@ class SeeCutService:
         if not isinstance(payload, dict) or not self._verify_alipay_response_signature(payload, signed_content):
             raise ApiError(502, "ALIPAY_QUERY_SIGNATURE_INVALID", "支付宝查询响应验签失败")
         result = payload.get("alipay_trade_query_response", {}) if isinstance(payload, dict) else {}
-        if result.get("trade_status") in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
-            if result.get("code") != "10000" or not result.get("trade_no"):
-                raise ApiError(502, "ALIPAY_QUERY_INVALID", "支付宝查询结果无效")
-            try:
-                amount = Decimal(str(result.get("total_amount"))) * 100
-                if amount != amount.to_integral_value():
-                    raise InvalidOperation
-                amount_fen = int(amount)
-            except (InvalidOperation, ValueError) as exc:
-                raise ApiError(502, "ALIPAY_QUERY_INVALID", "支付宝订单金额无效") from exc
-            if (
-                amount_fen != order["amount_fen"]
-                or result.get("out_trade_no") != order_id
-                or (result.get("app_id") and result.get("app_id") != self.config.alipay_app_id)
-                or (result.get("seller_id") and result.get("seller_id") != self.config.alipay_seller_id)
-            ):
-                raise ApiError(400, "PAYMENT_ORDER_MISMATCH", "支付宝查询结果与订单不匹配")
-            self._settle_alipay_order(
-                order_id,
-                str(result.get("trade_no", "")),
-                f"query:{result.get('trade_no', '')}",
-                payload,
-            )
-        return self.order(user_id, order_id)
+        status = result.get("trade_status")
+        if result.get("code") != "10000" or not isinstance(status, str) or status not in {
+            "WAIT_BUYER_PAY", "TRADE_SUCCESS", "TRADE_FINISHED", "TRADE_CLOSED"
+        }:
+            raise ApiError(502, "ALIPAY_QUERY_UNRESOLVED", "支付宝订单状态尚未确认")
+        trade_no = result.get("trade_no")
+        if not isinstance(trade_no, str) or not trade_no.strip():
+            raise ApiError(502, "ALIPAY_QUERY_INVALID", "支付宝查询结果无效")
+        try:
+            amount = Decimal(str(result.get("total_amount"))) * 100
+            if not amount.is_finite() or amount != amount.to_integral_value():
+                raise InvalidOperation
+            amount_fen = int(amount)
+        except (InvalidOperation, ValueError) as exc:
+            raise ApiError(502, "ALIPAY_QUERY_INVALID", "支付宝订单金额无效") from exc
+        if (
+            amount_fen != order["amount_fen"]
+            or result.get("out_trade_no") != order_id
+            or ("app_id" in result and result["app_id"] != self.config.alipay_app_id)
+            or ("seller_id" in result and result["seller_id"] != self.config.alipay_seller_id)
+            or (order["provider_trade_no"] and order["provider_trade_no"] != trade_no)
+        ):
+            raise ApiError(400, "PAYMENT_ORDER_MISMATCH", "支付宝查询结果与订单不匹配")
+        if status == "TRADE_CLOSED":
+            self._close_alipay_order(order_id, trade_no, f"query:closed:{trade_no}", payload)
+        elif status in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
+            self._settle_alipay_order(order_id, trade_no, f"query:{trade_no}", payload)
+        return {**self.order(user_id, order_id), "payment_status_verified": True}
 
     def _alipay_api_params(self, method: str, biz_content: dict[str, Any]) -> dict[str, str]:
         if not self.config.alipay_configured():
@@ -1092,7 +1129,7 @@ class SeeCutService:
             raise ApiError(400, "PAYMENT_APP_MISMATCH", "支付通知应用不匹配")
         if fields.get("seller_id") != self.config.alipay_seller_id:
             raise ApiError(400, "PAYMENT_SELLER_MISMATCH", "支付通知商户不匹配")
-        if status not in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
+        if status not in {"TRADE_SUCCESS", "TRADE_FINISHED", "TRADE_CLOSED"}:
             return "success"
         try:
             amount_in_fen = Decimal(fields.get("total_amount", "")) * 100
@@ -1105,8 +1142,37 @@ class SeeCutService:
             order = connection.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
         if not order or order["provider"] != "alipay" or order["amount_fen"] != amount_fen:
             raise ApiError(400, "PAYMENT_ORDER_MISMATCH", "支付通知与订单不匹配")
-        self._settle_alipay_order(order_id, trade_no, trade_no, fields)
+        if status == "TRADE_CLOSED":
+            self._close_alipay_order(order_id, trade_no, f"closed:{trade_no}", fields)
+        else:
+            self._settle_alipay_order(order_id, trade_no, trade_no, fields)
         return "success"
+
+    def _close_alipay_order(
+        self, order_id: str, trade_no: str, event_id: str, payload: dict[str, Any]
+    ) -> None:
+        if not trade_no:
+            raise ApiError(400, "PAYMENT_TRADE_NUMBER_MISSING", "支付宝交易号缺失")
+        now = self.now()
+        with self.db.transaction(immediate=True) as connection:
+            order = connection.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+            if not order:
+                raise ApiError(400, "PAYMENT_ORDER_MISMATCH", "支付订单不存在")
+            connection.execute(
+                """INSERT OR IGNORE INTO payment_events
+                   (id,provider,provider_event_id,order_id,verified,payload_sha256,created_at)
+                   VALUES(?,'alipay',?,?,1,?,?)""",
+                (
+                    new_id("payevt"), event_id, order_id,
+                    hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(), now,
+                ),
+            )
+            # A verified late success is allowed to settle a closed order via
+            # the existing transaction, but a close can never downgrade paid.
+            connection.execute(
+                "UPDATE orders SET status='closed',provider_trade_no=?,updated_at=? WHERE id=? AND status!='paid'",
+                (trade_no, now, order_id),
+            )
 
     def _settle_alipay_order(
         self, order_id: str, trade_no: str, event_id: str, payload: dict[str, Any]

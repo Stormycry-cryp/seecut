@@ -12,8 +12,24 @@ pub(crate) fn title(entry: &Value) -> &'static str {
         (_, Some("hold")) => "生成预扣",
         (_, Some("capture")) => "生成消费",
         (_, Some("release")) => "退回积分",
-        (_, Some("recharge")) => "充值到账",
+        (_, Some("purchase")) => "充值到账",
         _ => "积分变动",
+    }
+}
+
+pub(crate) fn order_status(order: &Value, now: i64) -> &'static str {
+    match order["status"].as_str() {
+        Some("paid") => "已到账",
+        Some("closed") => "已关闭",
+        Some("pending")
+            if order["expires_at"]
+                .as_i64()
+                .is_some_and(|expires_at| expires_at <= now) =>
+        {
+            "支付已过期"
+        }
+        Some("pending") => "等待支付",
+        _ => "状态待确认",
     }
 }
 
@@ -34,7 +50,7 @@ pub(crate) fn amount(entry: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{amount, title};
+    use super::{amount, order_status, title};
     use serde_json::json;
 
     #[test]
@@ -65,15 +81,41 @@ mod tests {
     }
 
     #[test]
-    fn recharge_and_cancel_keep_available_credit_changes() {
-        let recharge = json!({"kind":"recharge", "delta_available":500, "delta_held":0});
+    fn purchase_and_cancel_keep_available_credit_changes() {
+        let purchase = json!({"reference_type":"order", "reference_id":"ord_test",
+            "kind":"purchase", "delta_available":500, "delta_held":0});
         let cancelled = json!({"reference_type":"assistant_operation", "kind":"release",
             "delta_available":100, "delta_held":-100});
         assert_eq!(
-            (title(&recharge), amount(&recharge)),
+            (title(&purchase), amount(&purchase)),
             ("充值到账", "500".into())
         );
         assert_eq!(amount(&cancelled), "100");
+    }
+
+    #[test]
+    fn order_expiry_does_not_override_verified_paid_or_closed_status() {
+        assert_eq!(
+            order_status(&json!({"status":"pending", "expires_at":1800}), 1799),
+            "等待支付"
+        );
+        assert_eq!(
+            order_status(&json!({"status":"pending", "expires_at":1800}), 1800),
+            "支付已过期"
+        );
+        assert_eq!(
+            order_status(&json!({"status":"paid", "expires_at":1800}), 1900),
+            "已到账"
+        );
+        assert_eq!(
+            order_status(&json!({"status":"closed", "expires_at":1800}), 1900),
+            "已关闭"
+        );
+        assert_eq!(order_status(&json!({"status":"pending"}), 1900), "等待支付");
+        assert_eq!(
+            order_status(&json!({"status":"unexpected"}), 1900),
+            "状态待确认"
+        );
     }
 
     #[test]

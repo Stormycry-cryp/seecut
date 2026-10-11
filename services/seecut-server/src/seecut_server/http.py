@@ -248,7 +248,10 @@ class SeeCutHandler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/credit-plans":
             return 200, {"items": self.service.list_plans()}
         if method == "POST" and path == "/api/orders":
-            return 201, self.service.create_order(user_id, str(self._json_body().get("plan_id", "")))
+            return 201, self.service.create_order(
+                user_id, str(self._json_body().get("plan_id", "")),
+                self.headers.get("Idempotency-Key", ""),
+            )
         if method == "GET" and path == "/api/orders":
             return 200, self.service.orders(user_id)
         order_match = re.fullmatch(r"/api/orders/([^/]+)", path)
