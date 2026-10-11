@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Stable cache plans for every successful generation output.
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Output {
     pub(crate) key: String,
+    pub(crate) task_id: String,
+    pub(crate) sha256: Option<String>,
+    pub(crate) legacy: Option<PathBuf>,
     pub(crate) url: String,
     pub(crate) path: PathBuf,
 }
@@ -41,8 +47,7 @@ pub(crate) fn plan(task: &Value, folder: &Path, local: &HashMap<String, String>)
         .as_array()
         .into_iter()
         .flatten()
-        .enumerate()
-        .filter_map(|(index, output)| {
+        .filter_map(|output| {
             let output_id = output["id"].as_str().unwrap_or_default();
             let url = output["download_url"]
                 .as_str()
@@ -64,18 +69,9 @@ pub(crate) fn plan(task: &Value, folder: &Path, local: &HashMap<String, String>)
                 },
                 _ => return None,
             };
-            // Preserve the legacy primary key/path used by preview and handoff.
-            // Additional outputs use the server's immutable output ID, not an index.
-            let key = if index == 0 {
-                id.to_owned()
-            } else {
-                format!("{id}:{output_id}")
-            };
-            let destination = root.join(if index == 0 {
-                format!("{id}.{extension}")
-            } else {
-                format!("{id}-{output_id}.{extension}")
-            });
+            // Every output, including the first, has the same immutable identity rule.
+            let key = format!("{id}:{output_id}");
+            let destination = root.join(format!("{id}-{output_id}.{extension}"));
             // Never register an existing destination that resolves outside the cache.
             if destination.exists() && existing_file(&destination, &root).is_none() {
                 return None;
@@ -87,6 +83,14 @@ pub(crate) fn plan(task: &Value, folder: &Path, local: &HashMap<String, String>)
                 .unwrap_or(destination);
             Some(Output {
                 key,
+                task_id: id.to_owned(),
+                sha256: output["sha256"]
+                    .as_str()
+                    .filter(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .map(|hash| hash.to_ascii_lowercase()),
+                legacy: local
+                    .get(id)
+                    .and_then(|path| existing_file(Path::new(path), &root)),
                 url: url.to_owned(),
                 path,
             })
@@ -100,6 +104,58 @@ pub(crate) fn registered(items: &[Value], path: &Path) -> bool {
             .as_str()
             .is_some_and(|value| Path::new(value) == path)
     })
+}
+
+fn matches_digest(path: &Path, expected: &str) -> Result<bool, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()) == expected)
+}
+
+/// Called on the existing download worker, so migration hashing never blocks the UI thread.
+pub(crate) fn prepare(
+    output: &Output,
+    download: impl FnOnce(&Path) -> Result<PathBuf, String>,
+) -> Result<PathBuf, String> {
+    if output.path.is_file() {
+        if let Some(expected) = &output.sha256
+            && !matches_digest(&output.path, expected)?
+        {
+            return Err("缓存内容与输出身份不一致，已保留原文件".into());
+        }
+        return Ok(output.path.clone());
+    }
+    if let (Some(legacy), Some(expected)) = (&output.legacy, &output.sha256)
+        && legacy.is_file()
+        && matches_digest(legacy, expected)?
+    {
+        return Ok(legacy.clone());
+    }
+    let path = download(&output.path)?;
+    if let Some(expected) = &output.sha256
+        && !matches_digest(&path, expected)?
+    {
+        // This path was just created for this immutable output ID, never the legacy primary.
+        let _ = std::fs::remove_file(&path);
+        return Err("下载内容校验失败，请重试".into());
+    }
+    Ok(path)
+}
+
+/// Persist the immutable output mapping in the existing account history. Keep the old task preview alias.
+pub(crate) fn record(local: &mut HashMap<String, String>, key: &str, task: &str, path: &str) {
+    local.insert(key.to_owned(), path.to_owned());
+    if !task.is_empty() && !local.get(task).is_some_and(|p| Path::new(p).is_file()) {
+        local.insert(task.to_owned(), path.to_owned());
+    }
 }
 
 #[cfg(test)]
@@ -120,15 +176,15 @@ mod tests {
         assert_eq!(outputs.len(), 3);
         assert_eq!(
             outputs.iter().map(|o| o.key.as_str()).collect::<Vec<_>>(),
-            ["gen_task", "gen_task:out_b", "gen_task:out_c"]
+            ["gen_task:out_a", "gen_task:out_b", "gen_task:out_c"]
         );
         assert_eq!(outputs[1].path, Path::new("cache/gen_task-out_b.jpg"));
         assert_eq!(outputs[2].url, "/c");
         let mut reordered = task();
-        reordered["outputs"].as_array_mut().unwrap().swap(1, 2);
+        reordered["outputs"].as_array_mut().unwrap().swap(0, 1);
         let again = plan(&reordered, Path::new("cache"), &HashMap::new());
-        assert_eq!(again[2].key, outputs[1].key);
-        assert_eq!(again[2].path, outputs[1].path);
+        assert_eq!(again[0].key, outputs[1].key);
+        assert_eq!(again[0].path, outputs[1].path);
     }
 
     #[test]

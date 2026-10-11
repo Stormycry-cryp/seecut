@@ -433,6 +433,17 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
         result["intent_team"] = json!(team);
         return Ok(result);
     }
+    if req.path == "local:generation-cache" {
+        let output: crate::generation_outputs::Output =
+            serde_json::from_value(req.body["output"].clone()).map_err(|e| e.to_string())?;
+        let path = crate::generation_outputs::prepare(&output, |target| {
+            crate::cloud_files::download(&c.base, &c.token, &output.url, target)
+        })?;
+        return Ok(
+            json!({"id":req.body["id"],"cache_key":output.key,"task_id":output.task_id,"path":path,
+            "intent":req.body["intent"],"intent_team":req.body["intent_team"],"preview_token":req.body["preview_token"]}),
+        );
+    }
     if req.path == "local:download" {
         let mut url = text(&req.body, "url");
         if let Some(endpoint) = req.body.get("endpoint").and_then(Value::as_str) {
@@ -2994,7 +3005,16 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             let id = text(&value, "id");
             state.borrow_mut().pending_task_references.remove(&id);
             let generated = id.starts_with("gen_");
-            state.borrow_mut().local.insert(id.clone(), path.clone());
+            if let Some(key) = value["cache_key"].as_str() {
+                crate::generation_outputs::record(
+                    &mut state.borrow_mut().local,
+                    key,
+                    &text(&value, "task_id"),
+                    &path,
+                );
+            } else {
+                state.borrow_mut().local.insert(id.clone(), path.clone());
+            }
             let folder = state.borrow().folder.clone();
             let _ = std::fs::create_dir_all(&folder);
             if let Ok(bytes) = serde_json::to_vec(&state.borrow().local) {
@@ -5873,18 +5893,31 @@ fn cache_task_outputs(app: &App, state: &Rc<RefCell<Cloud>>, task: &Value) {
         crate::generation_outputs::plan(task, &cloud.folder, &cloud.local)
     };
     for output in plans {
-        let registered =
-            crate::generation_outputs::registered(&state.borrow().personal, &output.path);
-        if registered
-            || !state
-                .borrow_mut()
-                .download_attempts
-                .insert(output.key.clone())
+        let (registered, bound) = {
+            let cloud = state.borrow();
+            (
+                crate::generation_outputs::registered(&cloud.personal, &output.path),
+                cloud
+                    .local
+                    .get(&output.key)
+                    .is_some_and(|p| Path::new(p) == output.path)
+                    && cloud
+                        .local
+                        .get(&output.task_id)
+                        .is_some_and(|p| Path::new(p).is_file()),
+            )
+        };
+        if registered && bound {
+            continue;
+        }
+        if !state
+            .borrow_mut()
+            .download_attempts
+            .insert(output.key.clone())
         {
             continue;
         }
-        if output.path.is_file() {
-            // Retry indexing an already-downloaded file without another network read.
+        if bound && output.path.is_file() {
             job(
                 app,
                 state,
@@ -5902,9 +5935,8 @@ fn cache_task_outputs(app: &App, state: &Rc<RefCell<Cloud>>, task: &Value) {
                 format!("local-cache:{}", output.key),
                 request(
                     "GET",
-                    "local:download",
-                    json!({"id":output.key,"url":output.url,
-                    "path":output.path,"intent":"cache","intent_team":""}),
+                    "local:generation-cache",
+                    json!({"id":output.key,"output":output,"intent":"cache","intent_team":""}),
                 ),
             );
         }
@@ -5951,33 +5983,30 @@ fn download_task_with_token(
         return;
     }
     if let Some(task) = c.tasks.iter().find(|v| text(v, "id") == id)
-        && let Some(out) = task["outputs"].as_array().and_then(|v| v.first())
+        && let Some(output) = crate::generation_outputs::plan(task, &c.folder, &c.local)
+            .into_iter()
+            .next()
     {
-        let ext = if text(task, "kind") == "video" {
-            "mp4"
+        let name = if intent == "cache" {
+            format!("local-cache:{}", output.key)
+        } else if intent == "reference" {
+            format!("local-reference:{id}")
+        } else if intent == "media-preview" {
+            format!("media-preview:{id}:{}", preview_token.unwrap_or_default())
         } else {
-            "png"
+            "local".into()
         };
-        let path = c.folder.join(format!("{id}.{ext}"));
         job(
             app,
             state,
-            if intent == "cache" {
-                format!("local-cache:{id}")
-            } else if intent == "reference" {
-                format!("local-reference:{id}")
-            } else if intent == "media-preview" {
-                format!("media-preview:{id}:{}", preview_token.unwrap_or_default())
-            } else {
-                "local".into()
-            },
-            {
-                let mut body = json!({"id":id,"url":out["download_url"],"path":path,"intent":intent,"intent_team":intent_team});
-                if let Some(token) = preview_token {
-                    body["preview_token"] = json!(token);
-                }
-                request("GET", "local:download", body)
-            },
+            name,
+            request(
+                "GET",
+                "local:generation-cache",
+                json!({
+                    "id":id,"output":output,"intent":intent,"intent_team":intent_team,"preview_token":preview_token
+                }),
+            ),
         );
     }
 }
