@@ -394,6 +394,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
                     },
                     source: AssetSource::Imported,
                     original_path: None,
+                    version: None,
                     created_at: 0,
                     trashed: false,
                     favorite: false,
@@ -1553,6 +1554,7 @@ fn render_templates(app: &App, state: &Rc<RefCell<Cloud>>) {
                             kind,
                             source: AssetSource::Generated,
                             original_path: None,
+                            version: None,
                             created_at: 0,
                             trashed: false,
                             favorite: false,
@@ -3190,6 +3192,7 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
                         kind: AssetKind::Video,
                         source: AssetSource::Generated,
                         original_path: None,
+                        version: None,
                         created_at: 0,
                         trashed: false,
                         favorite: false,
@@ -3828,7 +3831,15 @@ fn library_call_unlocked(
                                     )
                             });
                         if generated && path.is_file() {
-                            library.register_generated(path)?;
+                            let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+                            let indexed = library.items().iter().any(|item| {
+                                item.version.is_some()
+                                    && item.original_path.as_ref() == Some(&canonical)
+                                    && item.path.is_file()
+                            });
+                            if !indexed {
+                                library.register_generated(canonical)?;
+                            }
                         }
                     }
                 }
@@ -5294,6 +5305,7 @@ fn media_preview_image(path: &str, kind: &str) -> slint::Image {
                 },
                 source: crate::personal_library::AssetSource::Generated,
                 original_path: None,
+                version: None,
                 created_at: 0,
                 trashed: false,
                 favorite: false,

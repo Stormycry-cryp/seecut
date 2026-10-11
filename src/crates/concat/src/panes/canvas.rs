@@ -3665,29 +3665,38 @@ impl CanvasPane {
             };
             path
         };
-        match encode_png(&frame) {
-            Ok(bytes) => {
-                if let Err(error) = std::fs::write(&path, bytes) {
-                    log::warn!("canvas: {error}");
-                    studio.notify(&tf("Canvas failed: {0}", &[&error.to_string()]), true);
-                } else {
-                    let path = path.to_string_lossy().into_owned();
-                    let payload = serde_json::json!({
-                        "path": path,
-                        "name": export_stem,
-                    })
-                    .to_string();
+        let registration_id = uuid::Uuid::new_v4().to_string();
+        crate::host::spawn(
+            move || {
+                let bytes = encode_png(&frame)?;
+                std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+                let registration = crate::personal_library::with_library_write_lock(|| {
+                    let dirs = concat_host::AppDirs::locate()?;
+                    crate::registration_retry::register_output(
+                        &dirs.data.join("personal-library"),
+                        &path,
+                        Some(&export_stem),
+                        Some(&registration_id),
+                        Some(&bytes),
+                    )
+                });
+                Ok::<_, String>(registration)
+            },
+            move |studio, _, _, result| match result {
+                Ok(Ok(())) => {
+                    studio.notify("画布已导出并加入资产库", false);
                     crate::host::Shell::with(|_, app| {
                         app.global::<crate::ui::SeeCut>()
-                            .invoke_action("personal-register-canvas".into(), payload.into());
+                            .invoke_action("personal-refresh".into(), "".into());
                     });
                 }
-            }
-            Err(error) => {
-                log::warn!("canvas: {error}");
-                studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
-            }
-        }
+                Ok(Err(error)) => studio.notify(&format!("画布已导出，入库失败：{error}"), true),
+                Err(error) => {
+                    log::warn!("canvas: {error}");
+                    studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
+                }
+            },
+        );
     }
 
     /// The document's size, as the navigator wants it: `None` while the

@@ -103,6 +103,12 @@ pub(crate) fn registered(items: &[Value], path: &Path) -> bool {
         item["path"]
             .as_str()
             .is_some_and(|value| Path::new(value) == path)
+            || (item["original_path"]
+                .as_str()
+                .is_some_and(|value| Path::new(value) == path)
+                && item["path"]
+                    .as_str()
+                    .is_some_and(|value| Path::new(value).is_file()))
     })
 }
 
@@ -214,5 +220,17 @@ mod tests {
         let items = vec![json!({"path":"cache/gen_task.png","trashed":true,"favorite":true})];
         assert!(registered(&items, Path::new("cache/gen_task.png")));
         assert!(!registered(&items, Path::new("cache/gen_other.png")));
+    }
+    #[test]
+    fn managed_registration_requires_available_snapshot() {
+        let folder = std::env::temp_dir().join(format!("registered-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("managed.png");
+        std::fs::write(&path, b"snapshot").unwrap();
+        let items = vec![json!({"path":path,"original_path":"cache/output.png","trashed":true})];
+        assert!(registered(&items, Path::new("cache/output.png")));
+        std::fs::remove_file(&path).unwrap();
+        assert!(!registered(&items, Path::new("cache/output.png")));
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }

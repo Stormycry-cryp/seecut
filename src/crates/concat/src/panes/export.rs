@@ -57,14 +57,13 @@ pub enum ExportMsg {
     /// The render's worker is done: the file written, or why not.
     Finished {
         job_id: u64,
-        result: Result<String, String>,
+        result: Result<(String, Result<(), String>), String>,
     },
 }
 
 struct ActiveExport {
     id: u64,
     to_library: bool,
-    name: String,
     output: String,
 }
 
@@ -231,14 +230,16 @@ impl ExportPane {
             ExportMsg::Finished { job_id, result } => {
                 let Some(job) = self.take_finished_job(job_id) else {
                     if self.cancelled_jobs.remove(&job_id)
-                        && let Ok(written) = result
+                        && let Ok((written, _)) = result
                     {
                         studio.notify(&format!("上一次导出已完成：{written}"), false);
                     }
                     return;
                 };
                 match result {
-                    Ok(written) => self.finish_success(studio, written, job),
+                    Ok((written, registration)) => {
+                        self.finish_success(studio, written, job, registration)
+                    }
                     Err(error) => {
                         self.phase = ExportPhase::Failed;
                         self.message = error.clone();
@@ -257,19 +258,16 @@ impl ExportPane {
         }
     }
 
-    fn finish_success(&mut self, studio: &mut Studio, written: String, job: ActiveExport) {
+    fn finish_success(
+        &mut self,
+        studio: &mut Studio,
+        written: String,
+        job: ActiveExport,
+        registration: Result<(), String>,
+    ) {
         self.phase = ExportPhase::Done;
         self.progress = 1.0;
         self.written = written;
-        let registration = crate::personal_library::with_library_write_lock(|| {
-            let dirs = concat_host::AppDirs::locate()?;
-            crate::registration_retry::register(
-                &dirs.data.join("personal-library"),
-                std::path::Path::new(&self.written),
-                Some(&job.name),
-            )?;
-            Ok::<(), String>(())
-        });
         match registration {
             Ok(()) => {
                 let notice = if job.to_library {
@@ -406,14 +404,15 @@ impl ExportPane {
         self.active_job = Some(ActiveExport {
             id: job_id,
             to_library: self.to_library,
-            name: self.name.clone(),
             output: output.clone(),
         });
 
+        let registration_id = uuid::Uuid::new_v4().to_string();
+        let registration_name = self.name.clone();
         spawn(
             move || {
                 let job = job;
-                export::run(&request, job.cancel_flag(), |progress| {
+                let written = export::run(&request, job.cancel_flag(), |progress| {
                     let fraction = if progress.total > 0 {
                         progress.frame as f32 / progress.total as f32
                     } else {
@@ -432,7 +431,18 @@ impl ExportPane {
                             stage,
                         }));
                     });
-                })
+                })?;
+                let registration = crate::personal_library::with_library_write_lock(|| {
+                    let dirs = concat_host::AppDirs::locate()?;
+                    crate::registration_retry::register_output(
+                        &dirs.data.join("personal-library"),
+                        std::path::Path::new(&written),
+                        Some(&registration_name),
+                        Some(&registration_id),
+                        None,
+                    )
+                });
+                Ok((written, registration))
             },
             move |studio, _, _, result| {
                 studio.handle(Msg::Export(ExportMsg::Finished { job_id, result }))
@@ -569,7 +579,6 @@ mod tests {
             active_job: Some(ActiveExport {
                 id: 2,
                 to_library: true,
-                name: "new".into(),
                 output: "new.mp4".into(),
             }),
             ..Default::default()
