@@ -104,6 +104,7 @@ class Config:
     assistant_max_steps: int = 8
     assistant_max_turn_credits: int = 0
     assistant_images: bool = False
+    assistant_models: tuple = ()
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -146,6 +147,7 @@ class Config:
         return cls(
             assistant_base_url=os.getenv("SECUT_ASSISTANT_BASE_URL", "").rstrip("/"),
             assistant_model=os.getenv("SECUT_ASSISTANT_MODEL", ""),
+            assistant_models=_assistant_model_catalog(),
             assistant_api_key=os.getenv("SECUT_ASSISTANT_API_KEY", ""),
             assistant_pricing_version=os.getenv("SECUT_ASSISTANT_PRICING_VERSION", ""),
             assistant_input_rate=_assistant_integer("SECUT_ASSISTANT_INPUT_CREDITS_PER_1000", 0, 1_000_000),
@@ -244,3 +246,11 @@ class Config:
             and self.alipay_notify_url
             and all(path and Path(path).is_file() for path in paths)
         )
+
+
+def _assistant_model_catalog():
+    from .assistant_models import parse_models
+    try:
+        return parse_models(os.getenv("SECUT_ASSISTANT_MODELS_JSON", "[]"))
+    except ValueError as error:
+        raise ConfigError("Invalid Agent model catalog") from error

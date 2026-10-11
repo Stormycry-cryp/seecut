@@ -45,6 +45,9 @@ class Database:
                 connection.execute(
                     "ALTER TABLE generation_outputs ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0"
                 )
+            budget_columns = {row["name"] for row in connection.execute("PRAGMA table_info(assistant_turn_budgets)")}
+            if budget_columns and "model_id" not in budget_columns:
+                connection.execute("ALTER TABLE assistant_turn_budgets ADD COLUMN model_id TEXT NOT NULL DEFAULT 'default'")
             email_token_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(email_tokens)")
             }

@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import hashlib
 
-from .assistant_provider import PreparedInference
+from .assistant_provider import AssistantProvider, PreparedInference
+from .assistant_models import model_config
+from dataclasses import replace
 
 from . import assistant_contract as contract
 from .errors import ApiError
@@ -15,24 +17,81 @@ TERMINAL = frozenset({'succeeded', 'failed', 'cancelled', 'outcome_unknown'})
 
 
 class AssistantService:
-    def __init__(self, account, provider):
+    def __init__(self, account, provider, *, config=None, model_id="default", label=None, providers=None):
         self.account = account
         self.db = account.db
-        self.config = account.config
+        self.config = config if config is not None else account.config
         self.now = account.now
         self.provider = provider
+        self.model_id = model_id
+        self.label = label or self.config.assistant_model[:64] or '账户模型'
+        self.models = {}
+        if model_id == 'default':
+            for specification in self.config.assistant_models:
+                child_config = model_config(self.config, specification)
+                child_provider = (providers or {}).get(specification['id'])
+                if child_provider is None:
+                    child_provider = AssistantProvider(child_config)
+                self.models[specification['id']] = AssistantService(
+                    account, child_provider, config=child_config,
+                    model_id=specification['id'], label=specification['label'])
 
-    def capabilities(self):
+    def _model_service(self, model_id, *, read_only=False):
+        contract.identity(model_id)
+        if model_id == self.model_id:
+            return self
+        service = self.models.get(model_id)
+        if service is not None:
+            return service
+        if read_only:
+            # Removed aliases remain queryable/cancellable. They cannot dispatch
+            # through the current default model or reconcile with another provider.
+            config = replace(self.config, assistant_model='', assistant_models=())
+            return AssistantService(self.account, AssistantProvider(config), config=config, model_id=model_id)
+        raise ApiError(409, 'ASSISTANT_MODEL_UNAVAILABLE', '所选 Agent 模型当前不可用')
+
+    def _selected(self, body):
+        if not isinstance(body, dict):
+            contract.invalid()
+        model_id = body.get('model_id', self.model_id)
+        service = self._model_service(model_id)
+        return service, {key: value for key, value in body.items() if key != 'model_id'}
+
+    def _selection_digest(self, body):
+        return contract.digest(body if self.model_id == 'default' else body | {'model_id': self.model_id})
+
+    def _budget_service(self, user, budget_id, *, read_only=False):
+        with self.db.connect() as connection:
+            row = connection.execute('SELECT model_id FROM assistant_turn_budgets WHERE id=? AND user_id=?',
+                                     (budget_id, user)).fetchone()
+        if row is None:
+            raise ApiError(404, 'ASSISTANT_BUDGET_NOT_FOUND', 'Agent 本轮预算不存在')
+        return self._model_service(row['model_id'], read_only=read_only)
+
+    def _operation_service(self, user, operation_id, *, read_only=False):
+        with self.db.connect() as connection:
+            row = self._owned(connection, user, operation_id)
+        return self._budget_service(user, row['budget_id'], read_only=read_only)
+
+    def execution_service(self, operation):
+        return self._budget_service(operation['user_id'], operation['budget_id'], read_only=True)
+
+    def capabilities(self, *, include_models=True):
         c = self.config
         available = bool(self.provider.configured and self.input_contract_ready() and c.assistant_pricing_version and
                          c.assistant_input_rate > 0 and c.assistant_output_rate > 0 and
                          0 < c.assistant_max_output_tokens <= c.assistant_context_window and
                          0 < c.assistant_max_steps <= 8 and c.assistant_max_turn_credits > 0)
-        return dict(available=available, reason_code=None if available else ('ASSISTANT_INPUT_CONTRACT_UNAVAILABLE' if not self.input_contract_ready() else 'ASSISTANT_NOT_CONFIGURED'),
+        value = dict(available=available, reason_code=None if available else ('ASSISTANT_INPUT_CONTRACT_UNAVAILABLE' if not self.input_contract_ready() else 'ASSISTANT_NOT_CONFIGURED'),
                     protocol_version=1, images=c.assistant_images, tools=True,
                     context_window=c.assistant_context_window, max_output_tokens=c.assistant_max_output_tokens,
                     max_steps=c.assistant_max_steps, max_turn_credits=c.assistant_max_turn_credits,
                     pricing_version=c.assistant_pricing_version)
+        value.update(model_id=self.model_id, label=self.label)
+        if include_models:
+            value['default_model_id'] = self.model_id
+            value['models'] = [value.copy()] + [child.capabilities(include_models=False) for child in self.models.values()]
+        return value
 
     def input_contract_ready(self):
         identity = getattr(self.provider, 'token_contract_id', None)
@@ -58,7 +117,7 @@ class AssistantService:
                                 'model': self.config.assistant_model, 'token_contract': getattr(self.provider, 'token_contract_id', None)})
 
     def _available(self):
-        if not self.capabilities()['available']:
+        if not self.capabilities(include_models=False)['available']:
             raise ApiError(503, 'ASSISTANT_NOT_CONFIGURED', 'Agent 服务尚未配置')
 
     @staticmethod
@@ -82,22 +141,27 @@ class AssistantService:
     def _budget_snapshot(row):
         return {('budget_id' if key == 'id' else key): row[key] for key in (
             'id', 'local_session_id', 'turn_id', 'max_credits', 'held_credits', 'spent_credits',
-            'operation_count', 'max_steps', 'state', 'expires_at')}
+            'operation_count', 'max_steps', 'state', 'expires_at', 'model_id')}
 
     def _budget(self, connection, user, budget_id, scope=None):
         row = connection.execute('SELECT * FROM assistant_turn_budgets WHERE id=? AND user_id=?',
                                  (budget_id, user)).fetchone()
         if not row:
             raise ApiError(404, 'ASSISTANT_BUDGET_NOT_FOUND', 'Agent 本轮预算不存在')
+        if row['model_id'] != self.model_id:
+            raise ApiError(409, 'ASSISTANT_SCOPE_MISMATCH', 'Agent 模型与本轮预算不一致')
         if scope and (row['local_session_id'] != scope['local_session_id'] or row['turn_id'] != scope['turn_id']):
             raise ApiError(409, 'ASSISTANT_SCOPE_MISMATCH', 'Agent 请求与本轮预算不一致')
         return row
 
     def turn_budget(self, user, body, key):
+        service, body = self._selected(body)
+        if service is not self:
+            return service.turn_budget(user, body, key)
         contract.fields(body, {'client_request_id', 'local_session_id', 'turn_id'})
         for value in body.values():
             contract.identity(value)
-        digest = contract.digest(body)
+        digest = self._selection_digest(body)
         with self.db.transaction(immediate=True) as connection:
             target = self._replay(connection, user, 'budget', key, digest)
             # The body identity and header are independently idempotent.
@@ -112,10 +176,11 @@ class AssistantService:
                     raise ApiError(409, 'ASSISTANT_ACTIVE_TURN', '请先结束或核实当前 Agent 回合')
                 target = new_id('abud')
                 connection.execute('''INSERT INTO assistant_turn_budgets
-                    (id,user_id,local_session_id,turn_id,max_credits,max_steps,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)''',
+                    (id,user_id,local_session_id,turn_id,max_credits,max_steps,created_at,expires_at,model_id) VALUES(?,?,?,?,?,?,?,?,?)''',
                     (target, user, body['local_session_id'], body['turn_id'], self.config.assistant_max_turn_credits,
-                     self.config.assistant_max_steps, self.now(), self.now() + 120))
+                     self.config.assistant_max_steps, self.now(), self.now() + 120, self.model_id))
                 row = self._budget(connection, user, target)
+            row = self._budget(connection, user, row['id'])
             if (target and target != row['id']) or (original and original != row['id']):
                 self._conflict()
             self._remember(connection, user, 'budget', key, digest, row['id'])
@@ -123,6 +188,9 @@ class AssistantService:
             return self._budget_snapshot(row)
 
     def close_budget(self, user, budget_id, body, key):
+        service = self._budget_service(user, budget_id, read_only=True)
+        if service is not self:
+            return service.close_budget(user, budget_id, body, key)
         contract.fields(body, set())
         with self.db.transaction(immediate=True) as connection:
             row = self._budget(connection, user, budget_id)
@@ -143,8 +211,11 @@ class AssistantService:
             raise ApiError(409, 'ASSISTANT_BUDGET_EXCEEDED', '本轮 Agent 积分或步骤已达到上限')
 
     def quote(self, user, body, key):
+        service, body = self._selected(body)
+        if service is not self:
+            return service.quote(user, body, key)
         normalized = contract.inference_body(body, self.config)
-        digest = contract.digest(normalized)
+        digest = self._selection_digest(normalized)
         with self.db.transaction(immediate=True) as connection:
             replay = self._replay(connection, user, 'quote', key, digest)
             original = self._replay(connection, user, 'quote-request', body['client_request_id'], digest)
@@ -204,8 +275,11 @@ class AssistantService:
         return value
 
     def create(self, user, body, key):
+        service, body = self._selected(body)
+        if service is not self:
+            return service.create(user, body, key)
         normalized = contract.inference_body(body, self.config, creation=True)
-        digest = contract.digest(normalized)
+        digest = self._selection_digest(normalized)
         with self.db.transaction(immediate=True) as connection:
             target = self._replay(connection, user, 'create', key, digest)
             row = connection.execute('SELECT * FROM assistant_operations WHERE user_id=? AND client_request_id=?',
@@ -263,6 +337,9 @@ class AssistantService:
             return self._snapshot(connection, self._owned(connection, user, target)), True
 
     def get(self, user, operation_id):
+        service = self._operation_service(user, operation_id, read_only=True)
+        if service is not self:
+            return service.get(user, operation_id)
         with self.db.connect() as connection:
             return self._snapshot(connection, self._owned(connection, user, operation_id))
 
@@ -272,9 +349,12 @@ class AssistantService:
             row = connection.execute('SELECT * FROM assistant_operations WHERE user_id=? AND client_request_id=?', (user, request_id)).fetchone()
             if not row:
                 raise ApiError(404, 'ASSISTANT_OPERATION_NOT_FOUND', 'Agent 操作不存在')
-            return self._snapshot(connection, row)
+            return self.get(user, row['id'])
 
     def events(self, user, operation_id, after):
+        service = self._operation_service(user, operation_id, read_only=True)
+        if service is not self:
+            return service.events(user, operation_id, after)
         contract.integer(after, 0, 1_000_000)
         with self.db.transaction() as connection:
             row = self._owned(connection, user, operation_id)
@@ -315,6 +395,9 @@ class AssistantService:
             (new_id('led'), user, kind, available, held, operation, f'assistant:{operation}:{kind}', self.now()))
 
     def cancel(self, user, operation_id, body, key):
+        service = self._operation_service(user, operation_id, read_only=True)
+        if service is not self:
+            return service.cancel(user, operation_id, body, key)
         contract.fields(body, set())
         with self.db.transaction(immediate=True) as connection:
             row = self._owned(connection, user, operation_id)
@@ -435,6 +518,9 @@ class AssistantService:
         return len(ids)
 
     def reconcile(self, user, operation_id, body, key):
+        service = self._operation_service(user, operation_id)
+        if service is not self:
+            return service.reconcile(user, operation_id, body, key)
         contract.fields(body, set())
         with self.db.transaction(immediate=True) as connection:
             row = self._owned(connection, user, operation_id)

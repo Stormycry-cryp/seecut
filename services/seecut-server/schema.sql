@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS generation_outputs (
 CREATE TABLE IF NOT EXISTS assistant_turn_budgets (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
  local_session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+ model_id TEXT NOT NULL DEFAULT 'default',
  max_credits INTEGER NOT NULL CHECK(max_credits > 0),
  held_credits INTEGER NOT NULL DEFAULT 0 CHECK(held_credits >= 0),
  spent_credits INTEGER NOT NULL DEFAULT 0 CHECK(spent_credits >= 0),

@@ -75,6 +75,22 @@ current verified contract supports text and tools; images remain disabled.
 Production model selection and real provider verification are separate from the
 local synthetic contract tests.
 
+`capabilities.models` lists public aliases, labels, limits and availability. The
+legacy alias is `default`. Clients may send `model_id` with turn-budget, quote
+and operation creation requests. The budget records that alias permanently;
+query, cancel and reconcile follow the original operation's model even after a
+new model is selected. An unavailable or removed model cannot redirect an
+operation to the default provider.
+
+Additional aliases are configured by the server through
+`SECUT_ASSISTANT_MODELS_JSON`, a bounded list of objects with `id`, `label` and
+`model`. Optional fields are `pricing_version`, `input_rate`, `output_rate`,
+`context_window`, `max_output_tokens`, `max_steps` and `max_turn_credits`.
+These models use the server's existing gateway. The catalog accepts no gateway,
+credential or request-header fields. Each configured model still requires a
+verified provider/token contract before it can be available. Existing clients
+that omit `model_id` keep the default contract.
+
 The dedicated **SeeCut service** workflow runs the existing account, wallet,
 generation and Agent tests on Python 3.12 when this service changes. These tests
 use temporary storage and synthetic providers or local HTTP fixtures.

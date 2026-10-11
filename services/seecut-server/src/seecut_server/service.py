@@ -57,6 +57,7 @@ class SeeCutService:
         image2: Image2Client | None = None,
         clock: Callable[[], float] = time.time,
         assistant_provider=None,
+        assistant_providers=None,
     ):
         self.config = config
         self.db = database
@@ -64,7 +65,7 @@ class SeeCutService:
         self.xiangxin = xiangxin or XiangxinClient(config)
         self.image2 = image2 or Image2Client(config)
         self.clock = clock
-        self.assistant = AssistantService(self, assistant_provider if assistant_provider is not None else AssistantProvider(config))
+        self.assistant = AssistantService(self, assistant_provider if assistant_provider is not None else AssistantProvider(config), providers=assistant_providers)
         self.config.storage_path.mkdir(parents=True, exist_ok=True)
 
     def now(self) -> int:
