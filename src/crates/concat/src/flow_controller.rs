@@ -60,10 +60,10 @@ impl Session {
     pub fn edit(&mut self, command: Command) -> Result<Vec<String>> {
         let before = self.graph().clone();
         let viewport_only = matches!(&command, Command::Viewport { .. });
-        if let Command::Viewport { viewport } = &command {
-            if before.viewport == *viewport {
-                return Ok(vec![]);
-            }
+        if let Command::Viewport { viewport } = &command
+            && before.viewport == *viewport
+        {
+            return Ok(vec![]);
         }
         let request = Request {
             document_id: self.store.document().id.clone(),
@@ -140,7 +140,7 @@ pub(crate) enum Intent {
     Select(String),
     Navigate(i32),
     Quit,
-    Edit(Command),
+    Edit(Box<Command>),
     Undo,
     Redo,
 }
@@ -288,10 +288,10 @@ impl Controller {
             return Ok(None);
         }
         self.flush_viewport()?;
-        if let Intent::Select(node) = &intent {
-            if self.session.as_ref().is_some_and(|s| s.selected == *node) {
-                return Ok(Some(Effect::None));
-            }
+        if let Intent::Select(node) = &intent
+            && self.session.as_ref().is_some_and(|s| s.selected == *node)
+        {
+            return Ok(Some(Effect::None));
         }
         if self.dirty() {
             self.pending = Some(intent);
@@ -362,7 +362,7 @@ impl Controller {
             Intent::Quit => return Ok(Effect::Quit),
             Intent::Edit(command) => {
                 let session = self.session.as_mut().ok_or("请先打开工程")?;
-                let created = session.edit(command)?;
+                let created = session.edit(*command)?;
                 if let Some(node) = created.first() {
                     session.selected = node.clone();
                 }
@@ -415,7 +415,8 @@ mod tests {
         c.request(Intent::New(dir.path().join("one"))).unwrap();
         let n = Node::new("prompt", json!({"text":"原文"}));
         let id = n.id.clone();
-        c.request(Intent::Edit(Command::Add { node: n })).unwrap();
+        c.request(Intent::Edit(Box::new(Command::Add { node: n })))
+            .unwrap();
         (dir, c, id)
     }
     #[test]
@@ -437,6 +438,59 @@ mod tests {
         c.request(Intent::Select(node)).unwrap();
         assert_eq!(c.prompt(), "中文\n第二行");
         assert!(c.change_draft(&token, "旧回调".into()).is_err());
+    }
+    #[test]
+    fn pending_edit_cancel_save_and_undo_preserve_saved_prompt() {
+        let (dir, mut c, original) = open();
+        let generation = c.draft_token().to_owned();
+        c.change_draft(&generation, "已保存的修改".into()).unwrap();
+        let added = Node::new("prompt", json!({"text":"新节点提示词"}));
+        let added_id = added.id.clone();
+        assert_eq!(
+            c.request(Intent::Edit(Box::new(Command::Add {
+                node: added.clone(),
+            })))
+            .unwrap(),
+            None
+        );
+        c.resolve(0).unwrap();
+        assert!(!c.pending());
+        assert!(c.dirty());
+        assert_eq!(c.prompt(), "已保存的修改");
+        assert_eq!(c.session.as_ref().unwrap().selected, original);
+        assert_eq!(c.session.as_ref().unwrap().graph().nodes.len(), 1);
+        assert!(
+            !c.session
+                .as_ref()
+                .unwrap()
+                .graph()
+                .nodes
+                .contains_key(&added_id)
+        );
+        assert_eq!(
+            c.request(Intent::Edit(Box::new(Command::Add { node: added })))
+                .unwrap(),
+            None
+        );
+        c.resolve(2).unwrap();
+        assert!(!c.pending());
+        assert!(!c.dirty());
+        let session = c.session.as_ref().unwrap();
+        assert_eq!(session.graph().nodes.len(), 2);
+        assert!(session.graph().nodes.contains_key(&added_id));
+        let saved: Document =
+            serde_json::from_slice(&std::fs::read(dir.path().join("one/document.json")).unwrap())
+                .unwrap();
+        let saved_graph = &saved.graphs[&session.graph_id];
+        assert_eq!(saved_graph.nodes.len(), 2);
+        assert_eq!(saved_graph.nodes[&original].params["text"], "已保存的修改");
+        c.resolve(2).unwrap();
+        assert_eq!(c.session.as_ref().unwrap().graph().nodes.len(), 2);
+        c.request(Intent::Undo).unwrap();
+        let graph = c.session.as_ref().unwrap().graph();
+        assert_eq!(graph.nodes.len(), 1);
+        assert!(!graph.nodes.contains_key(&added_id));
+        assert_eq!(graph.nodes[&original].params["text"], "已保存的修改");
     }
     #[test]
     fn history_persists_before_moving_stacks() {
@@ -488,7 +542,7 @@ mod tests {
         let (_dir, mut c, first) = open();
         let old = c.draft_token().to_owned();
         let second = Node::new("prompt", json!({"text":"另一个节点"}));
-        c.request(Intent::Edit(Command::Add { node: second }))
+        c.request(Intent::Edit(Box::new(Command::Add { node: second })))
             .unwrap();
         assert!(c.change_draft(&old, "旧组合输入".into()).is_err());
         assert_eq!(c.prompt(), "另一个节点");

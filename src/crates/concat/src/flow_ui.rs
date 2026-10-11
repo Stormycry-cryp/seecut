@@ -189,21 +189,21 @@ impl Host {
             }
             "undo" => self.request(Intent::Undo),
             "redo" => self.request(Intent::Redo),
-            "arrange" => self.request(Intent::Edit(Command::Arrange)),
+            "arrange" => self.request(Intent::Edit(Box::new(Command::Arrange))),
             "duplicate" | "remove" => {
                 let s = self.controller.session.as_ref().ok_or("请先打开工程")?;
                 if s.selected.is_empty() {
                     return Err("请先选择节点".into());
                 }
                 let nodes = vec![s.selected.clone()];
-                self.request(Intent::Edit(if action == "remove" {
+                self.request(Intent::Edit(Box::new(if action == "remove" {
                     Command::Remove { nodes }
                 } else {
                     Command::Duplicate {
                         nodes,
                         incoming: true,
                     }
-                }))
+                })))
             }
             "fit" => {
                 let s = self.controller.session.as_mut().ok_or("请先打开工程")?;
@@ -253,7 +253,7 @@ impl Host {
                 node.title = format!("{} {}", kind_label(kind), s.graph().nodes.len() + 1);
                 let count = s.graph().nodes.len() as f64;
                 node.position = [40. + (count % 3.) * 300., 40. + (count / 3.).floor() * 250.];
-                self.request(Intent::Edit(Command::Add { node }))
+                self.request(Intent::Edit(Box::new(Command::Add { node })))
             }
             _ => Err("该功能尚未接通".into()),
         }
@@ -304,6 +304,7 @@ fn finish(app: &App, host: &Rc<RefCell<Host>>, result: Result<Option<Effect>>) {
 }
 
 /// Native sheets must not run a nested modal loop inside a Slint timer callback.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn pick_path(app: &App, host: &Rc<RefCell<Host>>, export: bool) {
     if app.global::<Flow>().get_picker_open() {
         return;
@@ -385,6 +386,22 @@ fn pick_path(app: &App, host: &Rc<RefCell<Host>>, export: bool) {
         app.global::<Flow>().set_picker_open(false);
         finish(app, host, Err(format!("无法打开文件选择器：{error}")));
     }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn pick_path(app: &App, host: &Rc<RefCell<Host>>, export: bool) {
+    app.global::<Flow>().set_picker_open(false);
+    {
+        let mut h = host.borrow_mut();
+        h.error = true;
+        h.message = if export {
+            "移动端暂不支持导出 Flow 内存恢复备份"
+        } else {
+            "移动端暂不支持选择 Flow 工程文件夹"
+        }
+        .into();
+    }
+    finish(app, host, Ok(None));
 }
 
 pub(crate) fn bind(app: &App, root: PathBuf) {
@@ -704,13 +721,13 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             } else {
                 h.preview.insert(id.to_string(), position);
                 for row in 0..h.nodes.row_count() {
-                    if let Some(mut item) = h.nodes.row_data(row) {
-                        if item.id == id {
-                            item.x = x;
-                            item.y = y;
-                            h.nodes.set_row_data(row, item);
-                            break;
-                        }
+                    if let Some(mut item) = h.nodes.row_data(row)
+                        && item.id == id
+                    {
+                        item.x = x;
+                        item.y = y;
+                        h.nodes.set_row_data(row, item);
+                        break;
                     }
                 }
                 h.publish_edges();
@@ -790,7 +807,7 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
                         },
                     }
                 };
-                h.request(Intent::Edit(command))
+                h.request(Intent::Edit(Box::new(command)))
             })();
             finish(&app, &host, result);
         }

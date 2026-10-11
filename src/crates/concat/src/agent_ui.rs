@@ -1119,7 +1119,7 @@ mod desktop {
         }
         Ok(url.into())
     }
-    #[cfg(any(test, feature = "assistant-local-dev"))]
+    #[cfg(feature = "assistant-local-dev")]
     fn ordinary_file(path: &Path) -> Result<(), &'static str> {
         if !path.is_absolute() {
             return Err("请选择绝对路径的普通文件");
