@@ -104,7 +104,7 @@ mod desktop {
     use serde_json::json;
     use slint::{Model, ModelRc, Timer, TimerMode, VecModel};
     use std::cell::{Cell, RefCell};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     use std::path::{Component, Path, PathBuf};
     use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
@@ -142,7 +142,7 @@ mod desktop {
             generation: u64,
             account_epoch: u64,
             ticket: u64,
-            result: Result<Vec<crate::agent_models::Choice>, &'static str>,
+            result: Result<crate::agent_models::Directory, &'static str>,
         },
         #[cfg(feature = "assistant-local-dev")]
         File {
@@ -197,6 +197,146 @@ mod desktop {
                 && view.outcome != Some(TaskOutcome::OutcomeUnknown)
                 && !self.preparing
                 && !self.catalog.loading
+                && self.catalog.efforts.is_empty()
+                && self.record.selected_effort_id.is_none()
+        }
+        fn selected_effort(&self) -> Option<&crate::agent_models::Effort> {
+            self.catalog
+                .effort(
+                    self.record.selected_effort_id.as_deref()?,
+                    self.record.selected_policy_revision.as_deref()?,
+                )
+                .filter(|effort| {
+                    self.record.selected_effort_policy.as_ref() == Some(&effort.policy())
+                })
+        }
+        fn restore_catalog_selection(&mut self) -> bool {
+            if !self.catalog.metadata_reason().is_empty() {
+                return false;
+            }
+            let mut initialized_effort = false;
+            if !self.record.selection_initialized {
+                if let Some(effort) = self.catalog.efforts.first() {
+                    self.record.selected_effort_id = Some(effort.id.clone());
+                    self.record.selected_policy_revision = Some(effort.revision.clone());
+                    self.record.selected_effort_policy = Some(effort.policy());
+                    self.record.selected_model_id = Some(effort.model_id.clone());
+                    initialized_effort = true;
+                }
+                self.record.selection_initialized = true;
+            }
+            if let Some(id) = &self.record.selected_model_id {
+                if let Some(index) = self
+                    .catalog
+                    .choices
+                    .iter()
+                    .position(|choice| &choice.id == id)
+                {
+                    self.catalog.select(index as i32);
+                }
+            } else {
+                self.record.selected_model_id =
+                    self.catalog.current().map(|choice| choice.id.clone());
+            }
+            self.provider_label = self
+                .record
+                .selected_model_id
+                .as_ref()
+                .and_then(|id| self.catalog.choices.iter().find(|choice| &choice.id == id))
+                .map(|choice| choice.label.clone())
+                .unwrap_or_default();
+            initialized_effort
+        }
+        fn selection_reason(&self) -> &'static str {
+            if cfg!(feature = "assistant-local-dev") {
+                return "";
+            }
+            let metadata = self.catalog.metadata_reason();
+            if !metadata.is_empty() {
+                return metadata;
+            }
+            if self.record.selected_effort_id.is_some() {
+                let Some(effort) = self.selected_effort() else {
+                    return "原强度策略已变更，请重新选择";
+                };
+                if self.record.selected_model_id.as_deref() != Some(effort.model_id.as_str()) {
+                    return "请选择强度";
+                }
+                if !effort.available {
+                    return effort.reason();
+                }
+                if self.controller.view().phase == Phase::Ready
+                    && !self.controller.supports_model_selection()
+                {
+                    return "Agent 组件尚不支持强度选择";
+                }
+            } else if !self.catalog.efforts.is_empty() {
+                return "请选择强度";
+            }
+            if self
+                .record
+                .selected_model_id
+                .as_ref()
+                .is_some_and(|id| !self.catalog.choices.iter().any(|choice| &choice.id == id))
+            {
+                return "原模型暂不可用，请重新选择";
+            }
+            self.catalog.reason()
+        }
+        fn can_select_effort(&self) -> bool {
+            !cfg!(feature = "assistant-local-dev")
+                && !self.catalog.loading
+                && self.catalog.metadata_reason().is_empty()
+                && !self.catalog.efforts.is_empty()
+                && !self.preparing
+                && !self.submitting
+        }
+        // This changes only the next explicit request. The existing controller,
+        // running turn, reconciliation and frozen request history keep ownership.
+        fn select_effort_draft(&mut self, index: usize) -> bool {
+            let Some(effort) = self.catalog.efforts.get(index).cloned() else {
+                return false;
+            };
+            self.record.selected_effort_id = Some(effort.id.clone());
+            self.record.selected_policy_revision = Some(effort.revision.clone());
+            self.record.selected_effort_policy = Some(effort.policy());
+            self.record.selected_model_id = Some(effort.model_id.clone());
+            self.record.selection_initialized = true;
+            if let Some(index) = self
+                .catalog
+                .choices
+                .iter()
+                .position(|choice| choice.id == effort.model_id)
+            {
+                self.catalog.select(index as i32);
+            }
+            self.provider_label = self
+                .catalog
+                .current()
+                .map(|choice| choice.label.clone())
+                .unwrap_or_default();
+            true
+        }
+        fn generation_effort(&self) -> Option<serde_json::Value> {
+            if !self.catalog.metadata_reason().is_empty() {
+                return Some(json!({
+                    "id": self.record.selected_effort_id,
+                    "policy_revision": self.record.selected_policy_revision,
+                    "available": false, "reason_code": "catalog_unavailable",
+                    "generation": {"image_model_ids": [], "video_model_ids": []}
+                }));
+            }
+            self.record.selected_effort_id.as_ref().map(|id| {
+                self.selected_effort()
+                    .map(|effort| effort.public.clone())
+                    .unwrap_or_else(|| {
+                        json!({
+                            "id": id, "policy_revision": self.record.selected_policy_revision,
+                            "available": false, "reason_code": "policy_unavailable",
+                            "generation": {"image_model_ids": [], "video_model_ids": []}
+                        })
+                    })
+            })
         }
     }
     /// Owns the controller, stable transcript model and nonblocking UI timer.
@@ -371,6 +511,24 @@ mod desktop {
             ui.set_settings_open(false);
             ui.set_secret_clear_token(ui.get_secret_clear_token().wrapping_add(1));
             ui.set_scroll_token(ui.get_scroll_token().wrapping_add(1));
+            drop(state);
+            self.apply_generation_selection(app, false);
+        }
+        fn apply_generation_selection(&self, app: &App, explicit_change: bool) {
+            if !self.account.signed_in() {
+                return;
+            }
+            let (effort, models) = {
+                let state = self.state.borrow();
+                (
+                    state.generation_effort(),
+                    state.record.generation_model_ids.clone(),
+                )
+            };
+            self.account
+                .apply_effort_selection(app, effort, models, explicit_change);
+            self.state.borrow_mut().record.generation_model_ids =
+                self.account.generation_selection();
         }
         fn persist(&self, force: bool) -> Result<(), &'static str> {
             if let Some(error) = *self.history_error.borrow() {
@@ -384,6 +542,14 @@ mod desktop {
                 return Ok(());
             };
             let mut state = self.state.borrow_mut();
+            if self
+                .scope
+                .borrow()
+                .as_ref()
+                .is_some_and(|(account, _)| self.account.history_scope().as_ref() == Some(account))
+            {
+                state.record.generation_model_ids = self.account.generation_selection();
+            }
             let mut parked = self.parked.borrow_mut();
             capture(&mut state);
             for state in parked.iter_mut() {
@@ -551,6 +717,8 @@ mod desktop {
                 }
             }
             let mut catalog_expired = None;
+            let mut active_catalog_changed = false;
+            let mut initialize_generation_selection = false;
             for _ in 0..4 {
                 let Ok(result) = self.receiver.try_recv() else {
                     break;
@@ -563,7 +731,8 @@ mod desktop {
                 };
                 let mut current = self.state.borrow_mut();
                 let mut parked = self.parked.borrow_mut();
-                let state = if current.record.id == *target {
+                let is_current = current.record.id == *target;
+                let state = if is_current {
                     &mut *current
                 } else if let Some(state) =
                     parked.iter_mut().find(|state| state.record.id == *target)
@@ -585,22 +754,12 @@ mod desktop {
                         let expired =
                             result.as_ref().err() == Some(&crate::agent_models::ACCOUNT_EXPIRED);
                         if state.catalog.finish(ticket, result) {
+                            active_catalog_changed |= is_current;
                             if expired {
                                 catalog_expired = Some(account_epoch);
                             }
-                            if let Some(id) = &state.record.selected_model_id {
-                                if let Some(index) = state
-                                    .catalog
-                                    .choices
-                                    .iter()
-                                    .position(|choice| &choice.id == id)
-                                {
-                                    state.catalog.select(index as i32);
-                                }
-                            } else {
-                                state.record.selected_model_id =
-                                    state.catalog.current().map(|choice| choice.id.clone());
-                            }
+                            initialize_generation_selection |=
+                                state.restore_catalog_selection() && is_current;
                         }
                     }
                     #[cfg(feature = "assistant-local-dev")]
@@ -658,6 +817,9 @@ mod desktop {
             if let Some(epoch) = catalog_expired {
                 self.account.expire_if_current(app, epoch);
                 return;
+            }
+            if active_catalog_changed {
+                self.apply_generation_selection(app, initialize_generation_selection);
             }
             let (expired, billing_changed) = {
                 let mut state = self.state.borrow_mut();
@@ -807,6 +969,50 @@ mod desktop {
                     .collect::<Vec<_>>(),
             )));
             ui.set_model_index(state.catalog.selected as i32);
+            ui.set_effort_names(ModelRc::new(VecModel::from(
+                state
+                    .catalog
+                    .efforts
+                    .iter()
+                    .map(|effort| slint::SharedString::from(effort.label.as_str()))
+                    .collect::<Vec<_>>(),
+            )));
+            let effort_index = state
+                .selected_effort()
+                .and_then(|selected| {
+                    state
+                        .catalog
+                        .efforts
+                        .iter()
+                        .position(|effort| effort.id == selected.id)
+                })
+                .map(|index| index as i32)
+                .unwrap_or(-1);
+            ui.set_effort_index(effort_index);
+            ui.set_effort_visible(
+                !state.catalog.efforts.is_empty() || state.record.selected_effort_id.is_some(),
+            );
+            ui.set_effort_label(
+                state
+                    .selected_effort()
+                    .map(|effort| effort.label.as_str())
+                    .unwrap_or(if state.record.selected_effort_id.is_some() {
+                        "原强度已失效"
+                    } else {
+                        "选择强度"
+                    })
+                    .into(),
+            );
+            let selection_reason = state.selection_reason();
+            ui.set_effort_reason(
+                if ui.get_effort_visible() {
+                    selection_reason
+                } else {
+                    ""
+                }
+                .into(),
+            );
+            ui.set_can_select_effort(history_error.is_none() && state.can_select_effort());
             ui.set_connection(
                 match phase {
                     Phase::Disconnected => "尚未连接",
@@ -838,7 +1044,8 @@ mod desktop {
                     && !state.preparing
                     && snapshot.read_token.is_some()
                     && history_error.is_none()
-                    && !history_full(&state),
+                    && !history_full(&state)
+                    && selection_reason.is_empty(),
             );
             ui.set_can_stop(view.can_stop);
             ui.set_can_reconcile(view.can_reconcile);
@@ -874,7 +1081,7 @@ mod desktop {
                 }
             } else if !other.is_empty() {
                 other
-            } else if missing_model {
+            } else if missing_model && !session_uncertain(&state) {
                 "原模型暂不可用，请重新选择"
             } else if unknown && !view.can_connect {
                 "操作结果待核实，连接已锁定"
@@ -898,8 +1105,8 @@ mod desktop {
                 "请选择 MCP 客户端文件"
             } else if busy {
                 "请求正在处理，请稍后操作"
-            } else if !cfg!(feature = "assistant-local-dev") {
-                state.catalog.reason()
+            } else if !cfg!(feature = "assistant-local-dev") && !session_uncertain(&state) {
+                selection_reason
             } else {
                 ""
             };
@@ -914,6 +1121,8 @@ mod desktop {
                     "请求正在处理，可等待或停止"
                 } else if snapshot.read_token.is_none() {
                     "请先允许读取与预览并连接 Agent"
+                } else if !selection_reason.is_empty() {
+                    selection_reason
                 } else if !view.can_send {
                     "请先连接 Agent"
                 } else {
@@ -1019,14 +1228,28 @@ mod desktop {
                 return;
             };
             let choice = state.catalog.current();
+            let effort = state.selected_effort();
+            let selection = if !cfg!(feature = "assistant-local-dev")
+                && state.controller.supports_model_selection()
+            {
+                let mut selection = json!({"modelId": state.record.selected_model_id.as_deref().unwrap_or("default")});
+                if let Some(effort) = effort {
+                    selection["effortId"] = json!(effort.id);
+                    selection["policyRevision"] = json!(effort.revision);
+                }
+                Some(selection)
+            } else {
+                None
+            };
             let request = RequestSnapshot {
                 session_id: state.record.id.clone(),
                 model_id: choice
                     .map(|choice| choice.id.clone())
                     .unwrap_or_else(|| state.provider_label.clone()),
-                effort_id: None,
-                policy: choice
-                    .map(|choice| choice.policy.clone())
+                effort_id: effort.map(|effort| effort.id.clone()),
+                policy: effort
+                    .map(|effort| effort.policy())
+                    .or_else(|| choice.map(|choice| choice.policy.clone()))
                     .unwrap_or_else(|| json!({})),
                 context: ContextReference {
                     project_key: snapshot.project_key,
@@ -1065,10 +1288,12 @@ mod desktop {
             let saved = self.persist(true);
             let mut state = self.state.borrow_mut();
             let result = match saved {
-                Ok(()) => state
-                    .controller
-                    .send_text(text)
-                    .map_err(|error| error.message()),
+                Ok(()) => if selection.is_some() {
+                    state.controller.send_text_with_selection(text, selection)
+                } else {
+                    state.controller.send_text(text)
+                }
+                .map_err(|error| error.message()),
                 Err(error) => Err(error),
             };
             state.submitting = false;
@@ -1247,6 +1472,7 @@ mod desktop {
             let Some(ticket) = self.state.borrow_mut().catalog.begin() else {
                 return;
             };
+            self.apply_generation_selection(app, false);
             let sender = self.sender.clone();
             let session_id = self.state.borrow().record.id.clone();
             let generation = self.state.borrow().generation;
@@ -1263,7 +1489,7 @@ mod desktop {
         }
         fn refresh_models(&self, app: &App) {
             self.refresh(app);
-            if !self.state.borrow().can_select_model() {
+            if self.state.borrow().catalog.loading || self.state.borrow().preparing {
                 return;
             }
             self.state.borrow_mut().catalog.retry();
@@ -1281,6 +1507,41 @@ mod desktop {
                     state.catalog.current().map(|choice| choice.id.clone());
             }
             let _ = self.persist(true);
+            self.refresh(app);
+        }
+        fn select_effort(&self, app: &App, index: i32) {
+            self.refresh(app);
+            if !app.global::<Assistant>().get_open()
+                || !app.global::<Assistant>().get_can_select_effort()
+            {
+                return;
+            }
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            let previous = self.state.borrow().record.clone();
+            let previous_index = self.state.borrow().catalog.selected;
+            {
+                let mut state = self.state.borrow_mut();
+                if !state.select_effort_draft(index) {
+                    return;
+                }
+                state.notice.clear();
+            }
+            self.apply_generation_selection(app, true);
+            if self.persist(true).is_err() {
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.record = previous;
+                    state.catalog.selected = previous_index;
+                    state.provider_label = state
+                        .catalog
+                        .current()
+                        .map(|choice| choice.label.clone())
+                        .unwrap_or_default();
+                }
+                self.apply_generation_selection(app, false);
+            }
             self.refresh(app);
         }
         fn connect_managed(&self, app: &App) {
@@ -1313,11 +1574,28 @@ mod desktop {
             };
             let (epoch, model_id) = {
                 let mut state = self.state.borrow_mut();
-                let Some(choice) = state.catalog.current().filter(|choice| choice.available) else {
-                    return;
+                let model_id = if session_uncertain(&state) {
+                    state
+                        .record
+                        .request_snapshots
+                        .last()
+                        .map(|request| request.model_id.clone())
+                        .or_else(|| state.record.selected_model_id.clone())
+                        .unwrap_or_else(|| "default".into())
+                } else {
+                    let Some(choice) = state.catalog.current().filter(|choice| choice.available)
+                    else {
+                        return;
+                    };
+                    choice.id.clone()
                 };
-                let model_id = choice.id.clone();
-                state.provider_label = choice.label.clone();
+                state.provider_label = state
+                    .catalog
+                    .choices
+                    .iter()
+                    .find(|choice| choice.id == model_id)
+                    .map(|choice| choice.label.clone())
+                    .unwrap_or_else(|| model_id.clone());
                 state.epoch = next_epoch();
                 state.preparing = true;
                 state.notice.clear();
@@ -1509,6 +1787,11 @@ mod desktop {
             draft: String::new(),
             messages: Vec::new(),
             selected_model_id: None,
+            selected_effort_id: None,
+            selected_policy_revision: None,
+            selected_effort_policy: None,
+            generation_model_ids: HashMap::new(),
+            selection_initialized: false,
             runtime_created: false,
             request_snapshots: Vec::new(),
             pending: String::new(),
@@ -1696,6 +1979,16 @@ mod desktop {
         callback!(on_disconnect, disconnect);
         callback!(on_connect_managed, connect_managed);
         callback!(on_refresh_models, refresh_models);
+        ui.on_select_effort({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |index| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.select_effort(&app, index);
+                    binding.schedule(&app);
+                }
+            }
+        });
         ui.on_select_model({
             let binding = Rc::downgrade(&binding);
             let app = app.as_weak();
@@ -1953,6 +2246,121 @@ mod desktop {
     #[cfg(test)]
     mod tests {
         use super::*;
+        fn effort_catalog(available: bool) -> crate::agent_models::Directory {
+            crate::agent_models::parse(json!({
+                "protocol_version":1,"default_model_id":"model-one",
+                "models":[{"model_id":"model-one","label":"模型一","available":true,"protocol_version":1}],
+                "effort_policy_version":1,"default_effort_id":"balanced",
+                "efforts":[{"id":"balanced","label":"均衡","policy_revision":"rev-one","available":available,"reason_code":if available { serde_json::Value::Null } else { json!("unavailable") },
+                    "agent":{"model_id":"model-one","max_output_tokens":2048,"max_steps":6,"max_turn_credits":20,"pricing_version":"prices-1","context_window":8192,"input_rate":1,"output_rate":2},
+                    "generation":{"image_model_ids":["image-one"],"video_model_ids":[]}}]
+            })).unwrap()
+        }
+        fn apply_catalog(state: &mut State, directory: crate::agent_models::Directory) -> bool {
+            state.catalog.retry();
+            let ticket = state.catalog.begin().unwrap();
+            state.catalog.finish(ticket, Ok(directory));
+            state.restore_catalog_selection()
+        }
+        #[test]
+        fn only_new_sessions_adopt_default_effort_and_unavailable_defaults_stay_unavailable() {
+            let mut new = new_state(new_record(), Some(1));
+            assert!(apply_catalog(&mut new, effort_catalog(false)));
+            assert_eq!(new.record.selected_effort_id.as_deref(), Some("balanced"));
+            assert!(!new.selected_effort().unwrap().available);
+            let mut legacy = new_state(new_record(), Some(1));
+            legacy.record.selection_initialized = true;
+            assert!(!apply_catalog(&mut legacy, effort_catalog(true)));
+            assert!(legacy.record.selected_effort_id.is_none());
+            assert!(legacy.record.selected_effort_policy.is_none());
+        }
+        #[test]
+        fn restored_policy_rejects_same_revision_drift_but_not_availability_changes() {
+            let mut state = new_state(new_record(), Some(1));
+            apply_catalog(&mut state, effort_catalog(true));
+            let original = state.record.clone();
+            apply_catalog(&mut state, effort_catalog(false));
+            assert!(state.selected_effort().is_some());
+            assert!(
+                !state.generation_effort().unwrap()["available"]
+                    .as_bool()
+                    .unwrap()
+            );
+            let mut changed = effort_catalog(true);
+            changed.efforts[0].public["agent"]["max_steps"] = json!(7);
+            apply_catalog(&mut state, changed);
+            assert!(state.selected_effort().is_none());
+            assert_eq!(
+                state.record.selected_effort_policy,
+                original.selected_effort_policy
+            );
+            assert_eq!(
+                state.record.selected_policy_revision,
+                original.selected_policy_revision
+            );
+            assert_eq!(state.generation_effort().unwrap()["available"], false);
+            let mut restored = new_state(state.record.clone(), Some(1));
+            let mut changed = effort_catalog(true);
+            changed.efforts[0].public["generation"]["image_model_ids"] = json!(["another-image"]);
+            apply_catalog(&mut restored, changed);
+            assert!(restored.selected_effort().is_none());
+            assert_eq!(
+                restored.record.selected_effort_policy,
+                original.selected_effort_policy
+            );
+        }
+        #[test]
+        fn catalog_refresh_error_never_exposes_old_available_policy_to_generation() {
+            let mut state = new_state(new_record(), Some(1));
+            apply_catalog(&mut state, effort_catalog(true));
+            let original = state.record.selected_effort_policy.clone();
+            state.catalog.retry();
+            let ticket = state.catalog.begin().unwrap();
+            assert_eq!(state.generation_effort().unwrap()["available"], false);
+            state.catalog.finish(ticket, Err("强度目录暂不可用"));
+            assert_eq!(state.generation_effort().unwrap()["available"], false);
+            assert_eq!(state.record.selected_effort_policy, original);
+            apply_catalog(&mut state, effort_catalog(true));
+            assert_eq!(state.generation_effort().unwrap()["available"], true);
+        }
+        #[test]
+        fn pending_sessions_can_change_next_effort_without_rewriting_original_request() {
+            for pending in ["running", "unknown"] {
+                let mut state = new_state(new_record(), Some(1));
+                apply_catalog(&mut state, effort_catalog(true));
+                state.record.pending = pending.into();
+                state.record.runtime_created = true;
+                let original = RequestSnapshot {
+                    session_id: state.record.id.clone(),
+                    model_id: "model-one".into(),
+                    effort_id: Some("balanced".into()),
+                    policy: state.selected_effort().unwrap().policy(),
+                    context: ContextReference {
+                        project_key: "project".into(),
+                        project_name: "测试工程".into(),
+                    },
+                };
+                state.record.request_snapshots.push(original.clone());
+                let mut second = state.catalog.efforts[0].clone();
+                second.id = "quality".into();
+                second.revision = "rev-two".into();
+                second.public["id"] = json!(second.id);
+                second.public["policy_revision"] = json!(second.revision);
+                second.public["agent"]["max_steps"] = json!(9);
+                state.catalog.efforts.push(second);
+                assert_eq!(
+                    state.can_select_effort(),
+                    !cfg!(feature = "assistant-local-dev")
+                );
+                assert!(state.select_effort_draft(1));
+                assert_eq!(state.record.selected_effort_id.as_deref(), Some("quality"));
+                assert_eq!(state.record.request_snapshots, vec![original]);
+                assert_eq!(state.record.pending, pending);
+                assert!(!state.controller.view().can_send);
+                assert!(state.controller.send_text_with_selection("must not send", Some(json!({"modelId":"model-one","effortId":"quality","policyRevision":"rev-two"}))).is_err());
+                assert_eq!(state.record.pending, pending);
+            }
+        }
         use std::os::unix::fs::symlink;
         use std::sync::atomic::{AtomicU64, Ordering};
 

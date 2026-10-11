@@ -45,9 +45,15 @@ class Database:
                 connection.execute(
                     "ALTER TABLE generation_outputs ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0"
                 )
+            quote_columns = {row["name"] for row in connection.execute("PRAGMA table_info(generation_quotes)")}
+            if "effort_policy_fingerprint" not in quote_columns:
+                connection.execute("ALTER TABLE generation_quotes ADD COLUMN effort_policy_fingerprint TEXT")
             budget_columns = {row["name"] for row in connection.execute("PRAGMA table_info(assistant_turn_budgets)")}
             if budget_columns and "model_id" not in budget_columns:
                 connection.execute("ALTER TABLE assistant_turn_budgets ADD COLUMN model_id TEXT NOT NULL DEFAULT 'default'")
+            for name in ('effort_id', 'policy_revision', 'policy_json', 'route_fingerprint'):
+                if budget_columns and name not in budget_columns:
+                    connection.execute(f'ALTER TABLE assistant_turn_budgets ADD COLUMN {name} TEXT')
             email_token_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(email_tokens)")
             }

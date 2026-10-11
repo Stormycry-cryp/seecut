@@ -91,6 +91,44 @@ credential or request-header fields. Each configured model still requires a
 verified provider/token contract before it can be available. Existing clients
 that omit `model_id` keep the default contract.
 
+### Effort policies
+
+`SECUT_EFFORTS_JSON` optionally defines up to eight ordered effort policies. No
+production tiers are installed by default. Each object contains `id`, `label`,
+`policy_revision`, `agent` and `generation`. `agent` selects one existing
+`model_id` alias and sets `max_output_tokens`, `max_steps` and
+`max_turn_credits`, bounded by that model's limits. `generation` contains
+`image_model_ids` and `video_model_ids` from the existing supported catalog;
+at least one model reference is required. This is a server selection and budget
+policy, not a provider `reasoning_effort` parameter.
+
+Both Agent capabilities and generation models return `effort_policy_version`,
+`default_effort_id` and `efforts`. The first configured policy is the default.
+Available generation references require a configured provider and an applicable
+price; a tier is available only when its Agent route is verified and at least
+one allowed generation model is available. A client must not turn configuration
+names into availability. Empty policies preserve the legacy contract.
+
+With policies configured, new budget and generation requests must provide the
+paired `effort_id` and `policy_revision`. The service resolves the full policy;
+client-provided limits or snapshots are not accepted. Budgets freeze their model,
+limits, pricing and policy for all steps. Queries, cancellation and UNKNOWN
+reconciliation retain the original operation even if its tier is removed.
+New effort budgets also require `expected_policy_digest`: lowercase SHA-256 of
+the UTF-8 policy JSON with recursively sorted keys, compact separators and
+unescaped Unicode, excluding only transient `available` and `reason_code`.
+Clients freeze this digest with the original budget request. The service checks
+it inside the creation transaction before writing any budget or idempotency
+record. A mismatch returns `EFFORT_POLICY_STALE`; a missing digest returns
+`EFFORT_POLICY_DIGEST_REQUIRED`. Existing budgets restore their original snapshot
+before this check, including journals created before digest support. The field
+is accepted only on budget creation, not on quotes or operations. Legacy budgets
+without an effort retain their existing contract.
+Generation quotes and tasks retain their original `policy`. A changed server
+configuration rejects an old quote with `EFFORT_POLICY_STALE`; temporary loss of
+an unrelated generation provider does not rewrite or invalidate an otherwise
+valid quote. Policy errors must not trigger automatic re-pricing or resubmission.
+
 ### Domestic GLM adapter
 
 The server selects `GLMAssistantProvider` for the exact model name

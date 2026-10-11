@@ -7,6 +7,8 @@ import hashlib
 from .assistant_provider import make_assistant_provider, AssistantProvider, PreparedInference
 from .assistant_models import model_config
 from dataclasses import replace
+from copy import copy, deepcopy
+from .efforts import FROZEN_FIELDS, public_efforts, resolve_effort, selection_pair, validate_efforts
 
 from . import assistant_contract as contract
 from .errors import ApiError
@@ -25,7 +27,13 @@ class AssistantService:
         self.provider = provider
         self.model_id = model_id
         self.label = label or self.config.assistant_model[:64] or '账户模型'
+        self.effort_policy = None
+        self.bound_budget_id = None
+        self.budget_route = None
+        self.selection_applied = False
         self.models = {}
+        if config is None:
+            validate_efforts(self.config)
         if model_id == 'default':
             for specification in self.config.assistant_models:
                 child_config = model_config(self.config, specification)
@@ -50,23 +58,79 @@ class AssistantService:
             return AssistantService(self.account, AssistantProvider(config), config=config, model_id=model_id)
         raise ApiError(409, 'ASSISTANT_MODEL_UNAVAILABLE', '所选 Agent 模型当前不可用')
 
-    def _selected(self, body):
+    def _with_policy(self, policy, *, budget_id=None, route=None):
+        # Routing/credentials remain owned by the current provider. Only the
+        # original public limits and rates are reconstructed from this budget.
+        fields = {'assistant_' + name: policy['agent'][name] for name in FROZEN_FIELDS}
+        config = replace(self.config, **fields, assistant_models=(), efforts=())
+        provider = self.provider
+        if hasattr(provider, 'config'):
+            provider = copy(provider)
+            provider.config = config
+        frozen = AssistantService(self.account, provider, config=config,
+                                  model_id=self.model_id, label=self.label)
+        frozen.effort_policy = deepcopy(policy)
+        frozen.bound_budget_id = budget_id
+        frozen.budget_route = route
+        frozen.selection_applied = True
+        return frozen
+
+    def _selected(self, body, user, *, creating_budget=False):
         if not isinstance(body, dict):
             contract.invalid()
+        if self.selection_applied:
+            return self, body
+        if 'policy' in body or ('effort_id' in body) != ('policy_revision' in body):
+            raise ApiError(400, 'EFFORT_POLICY_INVALID', '请仅提交完整的强度策略标识')
+        pair = selection_pair(body.get('effort_id'), body.get('policy_revision'))
         model_id = body.get('model_id', self.model_id)
-        service = self._model_service(model_id)
-        return service, {key: value for key, value in body.items() if key != 'model_id'}
+        contract.identity(model_id)
+        row = None
+        with self.db.connect() as connection:
+            if creating_budget and all(isinstance(body.get(name), str) for name in ('local_session_id', 'turn_id')):
+                row = connection.execute('SELECT * FROM assistant_turn_budgets WHERE user_id=? AND local_session_id=? AND turn_id=?',
+                                         (user, body['local_session_id'], body['turn_id'])).fetchone()
+            elif not creating_budget and isinstance(body.get('budget_id'), str):
+                row = connection.execute('SELECT * FROM assistant_turn_budgets WHERE user_id=? AND id=?',
+                                         (user, body['budget_id'])).fetchone()
+        if row is not None and row['policy_json'] is not None:
+            if pair != (row['effort_id'], row['policy_revision']) or model_id != row['model_id']:
+                raise ApiError(409, 'EFFORT_POLICY_MISMATCH', '请求与原回合强度策略不一致')
+            policy = json.loads(row['policy_json'])
+            service = self._model_service(model_id, read_only=True)._with_policy(
+                policy, budget_id=row['id'], route=row['route_fingerprint'])
+        elif row is not None:
+            # A legacy budget stays legacy even after the deployment adds tiers.
+            if pair is not None:
+                raise ApiError(409, 'EFFORT_POLICY_MISMATCH', '原回合未绑定强度策略')
+            service = self._model_service(model_id)
+        else:
+            policy = resolve_effort(self.account, body.get('effort_id'), body.get('policy_revision'))
+            if policy is not None and model_id != policy['agent']['model_id']:
+                raise ApiError(409, 'EFFORT_POLICY_MISMATCH', 'Agent 模型与所选强度策略不一致')
+            service = self._model_service(model_id)
+            if policy is not None:
+                service = service._with_policy(policy)
+        return service, {key: value for key, value in body.items() if key not in {'model_id', 'effort_id', 'policy_revision'}}
 
     def _selection_digest(self, body):
-        return contract.digest(body if self.model_id == 'default' else body | {'model_id': self.model_id})
+        selection = {} if self.model_id == 'default' else {'model_id': self.model_id}
+        if self.effort_policy is not None:
+            selection.update(effort_id=self.effort_policy['id'], policy_revision=self.effort_policy['policy_revision'])
+        return contract.digest(body | selection)
 
     def _budget_service(self, user, budget_id, *, read_only=False):
+        if self.bound_budget_id == budget_id:
+            return self
         with self.db.connect() as connection:
-            row = connection.execute('SELECT model_id FROM assistant_turn_budgets WHERE id=? AND user_id=?',
+            row = connection.execute('SELECT * FROM assistant_turn_budgets WHERE id=? AND user_id=?',
                                      (budget_id, user)).fetchone()
         if row is None:
             raise ApiError(404, 'ASSISTANT_BUDGET_NOT_FOUND', 'Agent 本轮预算不存在')
-        return self._model_service(row['model_id'], read_only=read_only)
+        service = self._model_service(row['model_id'], read_only=read_only)
+        if row['policy_json'] is not None:
+            service = service._with_policy(json.loads(row['policy_json']), budget_id=budget_id, route=row['route_fingerprint'])
+        return service
 
     def _operation_service(self, user, operation_id, *, read_only=False):
         with self.db.connect() as connection:
@@ -91,6 +155,7 @@ class AssistantService:
         if include_models:
             value['default_model_id'] = self.model_id
             value['models'] = [value.copy()] + [child.capabilities(include_models=False) for child in self.models.values()]
+            value.update(public_efforts(self.account))
         return value
 
     def input_contract_ready(self):
@@ -99,6 +164,8 @@ class AssistantService:
                     and callable(getattr(self.provider, 'prepare', None)) and not self.config.assistant_images)
 
     def prepare(self, request, *, user=None, budget_id=None, client_request_id=None):
+        if self.budget_route is not None and self.budget_route != self.route_fingerprint():
+            raise ApiError(409, 'EFFORT_POLICY_MISMATCH', '原回合模型路由已变更，不能重新绑定')
         self._available()
         try:
             scoped = getattr(self.provider, "prepare_scoped", None)
@@ -140,9 +207,11 @@ class AssistantService:
 
     @staticmethod
     def _budget_snapshot(row):
-        return {('budget_id' if key == 'id' else key): row[key] for key in (
+        value = {('budget_id' if key == 'id' else key): row[key] for key in (
             'id', 'local_session_id', 'turn_id', 'max_credits', 'held_credits', 'spent_credits',
-            'operation_count', 'max_steps', 'state', 'expires_at', 'model_id')}
+            'operation_count', 'max_steps', 'state', 'expires_at', 'model_id', 'effort_id', 'policy_revision')}
+        value['policy'] = json.loads(row['policy_json']) if row['policy_json'] is not None else None
+        return value
 
     def _budget(self, connection, user, budget_id, scope=None):
         row = connection.execute('SELECT * FROM assistant_turn_budgets WHERE id=? AND user_id=?',
@@ -151,14 +220,19 @@ class AssistantService:
             raise ApiError(404, 'ASSISTANT_BUDGET_NOT_FOUND', 'Agent 本轮预算不存在')
         if row['model_id'] != self.model_id:
             raise ApiError(409, 'ASSISTANT_SCOPE_MISMATCH', 'Agent 模型与本轮预算不一致')
+        expected = contract.canonical(self.effort_policy) if self.effort_policy is not None else None
+        if row['policy_json'] != expected:
+            raise ApiError(409, 'EFFORT_POLICY_MISMATCH', '请求与原回合强度策略不一致')
         if scope and (row['local_session_id'] != scope['local_session_id'] or row['turn_id'] != scope['turn_id']):
             raise ApiError(409, 'ASSISTANT_SCOPE_MISMATCH', 'Agent 请求与本轮预算不一致')
         return row
 
     def turn_budget(self, user, body, key):
-        service, body = self._selected(body)
+        service, body = self._selected(body, user, creating_budget=True)
         if service is not self:
             return service.turn_budget(user, body, key)
+        body = dict(body)
+        expected_policy_digest = body.pop('expected_policy_digest', None)
         contract.fields(body, {'client_request_id', 'local_session_id', 'turn_id'})
         for value in body.values():
             contract.identity(value)
@@ -170,6 +244,19 @@ class AssistantService:
             row = connection.execute('SELECT * FROM assistant_turn_budgets WHERE user_id=? AND local_session_id=? AND turn_id=?',
                                      (user, body['local_session_id'], body['turn_id'])).fetchone()
             if not row:
+                # Compare the accepted selection with exactly the server policy
+                # about to be persisted, before any write in this transaction.
+                # Existing/legacy budgets recover their original record instead.
+                if self.effort_policy is not None:
+                    if expected_policy_digest is None:
+                        raise ApiError(409, 'EFFORT_POLICY_DIGEST_REQUIRED', '请提交已冻结的强度策略摘要')
+                    if (not isinstance(expected_policy_digest, str) or len(expected_policy_digest) != 64
+                            or any(char not in '0123456789abcdef' for char in expected_policy_digest)):
+                        raise ApiError(400, 'EFFORT_POLICY_INVALID', '冻结的强度策略摘要无效')
+                    if expected_policy_digest != contract.digest(self.effort_policy):
+                        raise ApiError(409, 'EFFORT_POLICY_STALE', '强度策略已变更，请重新选择')
+                elif expected_policy_digest is not None:
+                    raise ApiError(400, 'EFFORT_POLICY_INVALID', '原回合未绑定强度策略')
                 self._available()
                 # A client-chosen session/turn cannot evade an unfinished account turn.
                 connection.execute("UPDATE assistant_turn_budgets SET state='expired' WHERE user_id=? AND state='active' AND held_credits=0 AND operation_count=0 AND expires_at<=?", (user, self.now()))
@@ -177,9 +264,14 @@ class AssistantService:
                     raise ApiError(409, 'ASSISTANT_ACTIVE_TURN', '请先结束或核实当前 Agent 回合')
                 target = new_id('abud')
                 connection.execute('''INSERT INTO assistant_turn_budgets
-                    (id,user_id,local_session_id,turn_id,max_credits,max_steps,created_at,expires_at,model_id) VALUES(?,?,?,?,?,?,?,?,?)''',
+                    (id,user_id,local_session_id,turn_id,max_credits,max_steps,created_at,expires_at,model_id,
+                     effort_id,policy_revision,policy_json,route_fingerprint) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                     (target, user, body['local_session_id'], body['turn_id'], self.config.assistant_max_turn_credits,
-                     self.config.assistant_max_steps, self.now(), self.now() + 120, self.model_id))
+                     self.config.assistant_max_steps, self.now(), self.now() + 120, self.model_id,
+                     self.effort_policy['id'] if self.effort_policy else None,
+                     self.effort_policy['policy_revision'] if self.effort_policy else None,
+                     contract.canonical(self.effort_policy) if self.effort_policy else None,
+                     self.route_fingerprint() if self.effort_policy else None))
                 row = self._budget(connection, user, target)
             row = self._budget(connection, user, row['id'])
             if (target and target != row['id']) or (original and original != row['id']):
@@ -212,7 +304,7 @@ class AssistantService:
             raise ApiError(409, 'ASSISTANT_BUDGET_EXCEEDED', '本轮 Agent 积分或步骤已达到上限')
 
     def quote(self, user, body, key):
-        service, body = self._selected(body)
+        service, body = self._selected(body, user)
         if service is not self:
             return service.quote(user, body, key)
         normalized = contract.inference_body(body, self.config)
@@ -257,7 +349,10 @@ class AssistantService:
                 self._remember(connection, user, 'quote-request', body['client_request_id'], digest, target)
                 row = connection.execute('SELECT * FROM assistant_quotes WHERE id=?', (target,)).fetchone()
             return dict(quote_id=row['id'], request_digest=row['request_digest'], pricing_version=row['pricing_version'],
-                        max_credits=row['max_credits'], expires_at=row['expires_at'])
+                        max_credits=row['max_credits'], expires_at=row['expires_at'],
+                        effort_id=self.effort_policy['id'] if self.effort_policy else None,
+                        policy_revision=self.effort_policy['policy_revision'] if self.effort_policy else None,
+                        policy=deepcopy(self.effort_policy))
 
     def _owned(self, connection, user, operation_id):
         row = connection.execute('SELECT * FROM assistant_operations WHERE id=? AND user_id=?', (operation_id, user)).fetchone()
@@ -276,7 +371,7 @@ class AssistantService:
         return value
 
     def create(self, user, body, key):
-        service, body = self._selected(body)
+        service, body = self._selected(body, user)
         if service is not self:
             return service.create(user, body, key)
         normalized = contract.inference_body(body, self.config, creation=True)

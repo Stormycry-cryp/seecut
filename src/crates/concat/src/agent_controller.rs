@@ -61,6 +61,7 @@ pub enum UiError {
     AccountExpired,
     ServiceUnavailable,
     SessionRecoveryRequired,
+    ModelSelectionUnavailable,
 }
 impl UiError {
     pub fn message(self) -> &'static str {
@@ -77,6 +78,7 @@ impl UiError {
             Self::AccountExpired => "登录已过期，请重新登录",
             Self::ServiceUnavailable => "Agent 服务暂不可用，请稍后重试",
             Self::SessionRecoveryRequired => "会话需要恢复，请重新连接后发送新问题",
+            Self::ModelSelectionUnavailable => "模型或档位已变更，请重新选择",
         }
     }
 }
@@ -183,6 +185,7 @@ pub struct Controller {
     session_id: String,
     restore: bool,
     recover_existing: bool,
+    model_selection_supported: bool,
     session_opened: bool,
     phase: Phase,
     pending: VecDeque<Pending>,
@@ -218,6 +221,7 @@ impl Default for Controller {
             session_id: String::new(),
             restore: false,
             recover_existing: false,
+            model_selection_supported: false,
             session_opened: false,
             phase: Phase::Disconnected,
             pending: VecDeque::new(),
@@ -281,6 +285,7 @@ impl Controller {
         self.session_id = config.local_session_id;
         self.restore = config.restore;
         self.recover_existing = false;
+        self.model_selection_supported = false;
         self.secrets = vec![config.read_token.clone()];
         if let Some(token) = &config.write_token {
             self.secrets.push(token.clone());
@@ -357,6 +362,10 @@ impl Controller {
     pub fn process_present(&self) -> bool {
         self.process.is_some()
     }
+    /// Negotiated for this process only; a reconnect must advertise it again.
+    pub fn supports_model_selection(&self) -> bool {
+        self.process.is_some() && self.model_selection_supported
+    }
     pub fn view(&self) -> View<'_> {
         View {
             can_connect: self.process.is_none() && !self.unknown_latched,
@@ -396,6 +405,15 @@ impl Controller {
         }
     }
     pub fn send_text(&mut self, text: &str) -> Result<(), UiError> {
+        self.send_text_with_selection(text, None)
+    }
+    /// Selection is consumed by this new input only. It is never installed as
+    /// mutable controller state or attached to stop, reconciliation or recovery.
+    pub fn send_text_with_selection(
+        &mut self,
+        text: &str,
+        selection: Option<Value>,
+    ) -> Result<(), UiError> {
         if let Some(error) = self.blocking_error() {
             return Err(error);
         }
@@ -405,10 +423,22 @@ impl Controller {
         if text.trim().is_empty() || text.len() > 32_000 {
             return Err(UiError::Configuration);
         }
+        if let Some(selection) = selection.as_ref() {
+            if !self.supports_model_selection() {
+                return Err(UiError::Protocol);
+            }
+            if !valid_model_selection(selection) {
+                return Err(UiError::Configuration);
+            }
+        }
         // IPC counters restart with the process; persisted sessions must never
         // mistake a new explicit question for an already accepted input.
         let input_id = format!("input-{}", uuid::Uuid::new_v4());
-        self.enqueue("send",json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":[{"type":"text","text":text}]}),Request::Send{input_id})?;
+        let mut params = json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":[{"type":"text","text":text}]});
+        if let Some(selection) = selection {
+            params["modelSelection"] = selection;
+        }
+        self.enqueue("send", params, Request::Send { input_id })?;
         self.text.clear();
         self.tool_progress.clear();
         self.progress.clear();
@@ -822,6 +852,8 @@ impl Controller {
                     return;
                 }
                 let document = self.document.as_ref().unwrap();
+                self.model_selection_supported =
+                    result["capabilities"]["turn_model_selection"].as_bool() == Some(true);
                 let mut params = json!({"sessionId":self.session_id,"projectId":document.project_id,"documentSessionId":document.document_session_id});
                 self.recover_existing = !self.restore
                     && result["capabilities"]["session_create_or_restore"].as_bool() == Some(true);
@@ -1374,6 +1406,33 @@ fn valid_session_id(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
 }
+fn valid_model_selection(value: &Value) -> bool {
+    let Some(selection) = value.as_object() else {
+        return false;
+    };
+    if selection
+        .keys()
+        .any(|key| !matches!(key.as_str(), "modelId" | "effortId" | "policyRevision"))
+        || !selection
+            .get("modelId")
+            .and_then(Value::as_str)
+            .is_some_and(valid_session_id)
+    {
+        return false;
+    }
+    let effort = selection.get("effortId").filter(|value| !value.is_null());
+    let revision = selection
+        .get("policyRevision")
+        .filter(|value| !value.is_null());
+    match (effort, revision) {
+        (None, None) => true,
+        (Some(effort), Some(revision)) => {
+            effort.as_str().is_some_and(valid_session_id)
+                && revision.as_str().is_some_and(valid_session_id)
+        }
+        _ => false,
+    }
+}
 fn bridge_error(error: BridgeError) -> UiError {
     match error {
         BridgeError::QueueBusy | BridgeError::InputBackpressure => UiError::Busy,
@@ -1388,17 +1447,19 @@ fn remote_error(code: &str) -> UiError {
     match code {
         "turn_settling" | "managed_busy" | "session_busy" => UiError::Busy,
         "managed_unknown" | "managed_transport" | "managed_timeout" => UiError::ModelVerifyRequired,
-        "managed_protocol" => UiError::Protocol,
+        "managed_protocol" | "idempotency_conflict" => UiError::Protocol,
         "managed_account_expired" => UiError::AccountExpired,
         "managed_unavailable" | "managed_http" => UiError::ServiceUnavailable,
+        "managed_policy_unavailable" => UiError::ModelSelectionUnavailable,
         "tool_denied" | "notAuthorized" | "approval_expired" => UiError::AuthorizationRequired,
         "project_conflict" | "session_scope" | "instance_conflict" | "managed_scope"
         | "account_scope" => UiError::DocumentChanged,
         "outcome_unknown" => UiError::VerifyRequired,
         "recovery_required" => UiError::SessionRecoveryRequired,
-        "provider_configuration" | "invalid_initialize" | "invalid_binding" => {
-            UiError::Configuration
-        }
+        "provider_configuration"
+        | "invalid_initialize"
+        | "invalid_binding"
+        | "invalid_model_selection" => UiError::Configuration,
         _ => UiError::Connection,
     }
 }
@@ -1430,6 +1491,8 @@ def final(status='completed',unknown=False,pending=False,failed=False):
 for line in sys.stdin:
     f=json.loads(line);p=f['params'];m=f['method']
     with pathlib.Path(__file__).with_name('methods.txt').open('a') as trace: trace.write(m+'\n')
+    if m in ('send','stop','reconcile'):
+        with pathlib.Path(__file__).with_name('requests.jsonl').open('a') as trace: trace.write(json.dumps({'method':m,'params':p})+'\n')
     if m=='initialize':
         assert p['protocolVersion']==1 and p['appProtocolVersion']==1
         managed=p['provider']['protocol']=='seecut-managed'
@@ -1438,7 +1501,10 @@ for line in sys.stdin:
         assert p['mcpEnvironment']['TMPDIR']==p['sessionDirectory']
         scenario=p['provider']['model'];time.sleep(.08)
         if scenario=='init-fail': reply(f,error={'code':'provider_configuration','message':'raw inference-secret'});continue
-        capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True}
+        capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True,'turn_model_selection':True}
+        if scenario=='selection-absent': capabilities.pop('turn_model_selection')
+        if scenario=='selection-false': capabilities['turn_model_selection']=False
+        if scenario=='selection-string': capabilities['turn_model_selection']='true'
         reply(f,{'protocolVersion':1,'instanceId':p['instanceId'],'capabilities':capabilities})
     elif m in ('session.create','session.restore'):
         assert p['projectId']=='project-1' and p['documentSessionId']=='doc-1'
@@ -1455,6 +1521,8 @@ for line in sys.stdin:
         reply(f,{'modelState':modelstate(False)})
     elif m=='send':
         assert p['sessionId']==session and p['mode']=='follow_up' and p['content'][0]['type']=='text'
+        if scenario=='selection-policy-rejected':
+            reply(f,error={'code':'managed_policy_unavailable','message':'raw service details'});continue
         if scenario=='settling-once':
             scenario='finish';reply(f,error={'code':'turn_settling','message':'上一轮正在结束，请稍后发送'});continue
         if scenario=='early-result':
@@ -1473,7 +1541,7 @@ for line in sys.stdin:
         event('approval.resolved',{'approvalId':'approval-1','allowed':p['allowed']})
         reply(f,{'resolved':True,'appAuthorizationChanged':False});final(failed=not p['allowed'])
     elif m=='stop':
-        assert p['turnId']=='turn-1' and p['sessionId']==session
+        assert p=={'turnId':'turn-1','sessionId':session}
         reply(f,{'stopping':True});time.sleep(.15);final('interrupted')
     elif m=='session.close': reply(f,{'closed':True})
 "#;
@@ -1549,6 +1617,16 @@ for line in sys.stdin:
         fn ready(&mut self) {
             self.until(|controller| controller.view().phase == Phase::Ready);
         }
+        fn requests(&self) -> Vec<Value> {
+            match fs::read_to_string(self.directory.join("requests.jsonl")) {
+                Ok(trace) => trace
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(error) => panic!("fixture request trace failed: {error}"),
+            }
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -1561,6 +1639,187 @@ for line in sys.stdin:
             assert!(self.controller.process.is_none());
             fs::remove_dir_all(&self.directory).unwrap();
         }
+    }
+    #[test]
+    fn model_selection_is_frozen_per_new_input_and_never_inherited() {
+        let mut f = Fixture::new("finish");
+        assert!(!f.controller.supports_model_selection());
+        f.ready();
+        assert!(f.controller.supports_model_selection());
+        let first =
+            json!({"modelId":"agent.fast","effortId":"balanced","policyRevision":"policy-1"});
+        let mut selected = first.clone();
+        f.controller
+            .send_text_with_selection("第一轮", Some(selected.clone()))
+            .unwrap();
+        selected["modelId"] = json!("agent.deep");
+        selected["effortId"] = json!("deep");
+        assert_eq!(
+            f.controller
+                .send_text_with_selection("队列中不能覆盖", Some(selected.clone())),
+            Err(UiError::Busy)
+        );
+        f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
+        f.controller
+            .send_text_with_selection("第二轮", Some(selected.clone()))
+            .unwrap();
+        f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
+        f.controller.send_text("第三轮沿用初始化配置").unwrap();
+        f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
+        let requests = f.requests();
+        assert_eq!(requests.len(), 3);
+        assert!(requests.iter().all(|request| request["method"] == "send"));
+        assert_eq!(requests[0]["params"]["modelSelection"], first);
+        assert_eq!(requests[1]["params"]["modelSelection"], selected);
+        assert!(requests[2]["params"].get("modelSelection").is_none());
+        assert_ne!(
+            requests[0]["params"]["inputId"],
+            requests[1]["params"]["inputId"]
+        );
+        assert_ne!(
+            requests[1]["params"]["inputId"],
+            requests[2]["params"]["inputId"]
+        );
+        f.controller.disconnect();
+        f.until(|c| !c.process_present());
+        assert!(!f.controller.supports_model_selection());
+    }
+    #[test]
+    fn model_selection_requires_an_exact_capability_without_legacy_fallback() {
+        for scenario in [
+            "old-runtime",
+            "selection-absent",
+            "selection-false",
+            "selection-string",
+        ] {
+            let mut f = Fixture::new(scenario);
+            f.ready();
+            assert!(!f.controller.supports_model_selection(), "{scenario}");
+            assert_eq!(
+                f.controller.send_text_with_selection(
+                    "不得忽略选择",
+                    Some(json!({"modelId":"agent.fast"})),
+                ),
+                Err(UiError::Protocol),
+                "{scenario}"
+            );
+            assert!(f.controller.pending.is_empty());
+            assert!(f.requests().is_empty());
+            assert!(f.controller.view().can_send);
+            f.controller.send_text("旧协议仍可明确发送").unwrap();
+            f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
+            let requests = f.requests();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0]["params"].get("modelSelection").is_none());
+        }
+    }
+    #[test]
+    fn model_selection_rejects_malformed_or_privileged_fields_before_enqueue() {
+        let mut f = Fixture::new("finish");
+        f.ready();
+        for selection in [
+            Value::Null,
+            json!([]),
+            json!({}),
+            json!({"modelId":null}),
+            json!({"modelId":true}),
+            json!({"modelId":""}),
+            json!({"modelId":"provider/model"}),
+            json!({"modelId":"模型"}),
+            json!({"modelId":"m".repeat(129)}),
+            json!({"modelId":"agent.fast","effortId":"deep"}),
+            json!({"modelId":"agent.fast","policyRevision":"policy-1"}),
+            json!({"modelId":"agent.fast","effortId":null,"policyRevision":"policy-1"}),
+            json!({"modelId":"agent.fast","effortId":"deep","policyRevision":null}),
+            json!({"modelId":"agent.fast","effortId":"deep","policyRevision":1}),
+            json!({"modelId":"agent.fast","effortId":"","policyRevision":"policy-1"}),
+            json!({"modelId":"agent.fast","effortId":"deep","policyRevision":"r".repeat(129)}),
+            json!({"modelId":"agent.fast","apiKey":"must-not-forward"}),
+            json!({"modelId":"agent.fast","maxSteps":8}),
+            json!({"modelId":"agent.fast","budgetId":"old-budget"}),
+        ] {
+            assert_eq!(
+                f.controller
+                    .send_text_with_selection("新问题", Some(selection)),
+                Err(UiError::Configuration)
+            );
+            assert!(f.controller.pending.is_empty());
+            assert!(f.controller.view().can_send);
+        }
+        assert!(f.requests().is_empty());
+    }
+    #[test]
+    fn model_selection_accepts_only_bounded_ids_and_nullish_legacy_pairs() {
+        for selection in [
+            json!({"modelId":"agent.fast"}),
+            json!({"modelId":"agent.fast","effortId":null}),
+            json!({"modelId":"agent.fast","policyRevision":null}),
+            json!({"modelId":"agent.fast","effortId":null,"policyRevision":null}),
+            json!({"modelId":"m".repeat(128),"effortId":"e".repeat(128),"policyRevision":"r".repeat(128)}),
+            json!({"modelId":"A-z_0.9:1","effortId":"deep","policyRevision":"policy-1"}),
+        ] {
+            assert!(valid_model_selection(&selection));
+        }
+    }
+    #[test]
+    fn model_selection_cannot_replace_a_running_turn_or_change_stop() {
+        let mut f = Fixture::new("stop");
+        f.ready();
+        let selection =
+            json!({"modelId":"agent.fast","effortId":"balanced","policyRevision":"policy-1"});
+        f.controller
+            .send_text_with_selection("执行原请求", Some(selection.clone()))
+            .unwrap();
+        f.until(|c| c.view().phase == Phase::AwaitingApproval);
+        assert_eq!(
+            f.controller
+                .send_text_with_selection("改成另一模型", Some(json!({"modelId":"agent.deep"}))),
+            Err(UiError::Busy)
+        );
+        f.controller.stop().unwrap();
+        f.until(|c| c.view().outcome == Some(TaskOutcome::Stopped));
+        let requests = f.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["params"]["modelSelection"], selection);
+        assert_eq!(
+            requests[1],
+            json!({"method":"stop","params":{"sessionId":"fixture-session","turnId":"turn-1"}})
+        );
+    }
+    #[test]
+    fn model_selection_cannot_bypass_unknown_or_attach_to_reconciliation() {
+        let mut f = Fixture::new("managed");
+        f.until(|c| c.view().can_reconcile);
+        assert!(f.controller.supports_model_selection());
+        assert_eq!(
+            f.controller
+                .send_text_with_selection("不能替换旧操作", Some(json!({"modelId":"agent.deep"}))),
+            Err(UiError::ModelVerifyRequired)
+        );
+        f.controller.reconcile().unwrap();
+        f.ready();
+        assert_eq!(
+            f.requests(),
+            vec![json!({"method":"reconcile","params":{"sessionId":"fixture-session"}})]
+        );
+    }
+    #[test]
+    fn model_selection_policy_rejection_is_explicit_and_never_retried() {
+        let mut f = Fixture::new("selection-policy-rejected");
+        f.ready();
+        f.controller
+            .send_text_with_selection("策略已经变更", Some(json!({"modelId":"agent.fast","effortId":"balanced","policyRevision":"old-policy"})))
+            .unwrap();
+        f.until(|c| c.view().error == Some(UiError::ModelSelectionUnavailable));
+        assert_eq!(f.controller.view().phase, Phase::Ready);
+        assert!(f.controller.view().can_send);
+        assert!(f.controller.view().outcome.is_none());
+        assert_eq!(f.requests().len(), 1);
+        assert_eq!(
+            remote_error("invalid_model_selection"),
+            UiError::Configuration
+        );
+        assert_eq!(remote_error("idempotency_conflict"), UiError::Protocol);
     }
     #[test]
     fn restore_uses_the_saved_identity_and_never_sends_history() {

@@ -24,6 +24,12 @@ export global Assistant {
     in-out property <[string]> model-names;
     in-out property <int> model-index;
     in-out property <bool> can-select-model;
+    in-out property <[string]> effort-names;
+    in-out property <int> effort-index: -1;
+    in-out property <bool> effort-visible;
+    in-out property <string> effort-label;
+    in-out property <string> effort-reason;
+    in-out property <bool> can-select-effort;
     in-out property <string> connection;
     in-out property <string> status;
     in-out property <string> details;
@@ -79,6 +85,7 @@ export global Assistant {
     callback new-session();
     callback select-session(int);
     callback select-model(int);
+    callback select-effort(int);
     callback refresh-models();
     callback reconcile();
     callback grant-read();

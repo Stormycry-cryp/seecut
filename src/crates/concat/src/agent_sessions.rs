@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -57,10 +57,25 @@ pub(crate) struct Record {
     pub(crate) draft: String,
     pub(crate) messages: Vec<Message>,
     pub(crate) selected_model_id: Option<String>,
+    #[serde(default)]
+    pub(crate) selected_effort_id: Option<String>,
+    #[serde(default)]
+    pub(crate) selected_policy_revision: Option<String>,
+    #[serde(default)]
+    pub(crate) selected_effort_policy: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(crate) generation_model_ids: HashMap<String, String>,
+    // A record written before effort support must remain an explicit legacy choice.
+    #[serde(default = "selection_initialized")]
+    pub(crate) selection_initialized: bool,
     pub(crate) runtime_created: bool,
     pub(crate) request_snapshots: Vec<RequestSnapshot>,
     pub(crate) pending: String,
     pub(crate) updated_at_ms: u64,
+}
+
+fn selection_initialized() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -256,6 +271,31 @@ impl Store {
             {
                 return Err(INVALID);
             }
+            if session.selected_effort_id.is_some() != session.selected_policy_revision.is_some()
+                || session
+                    .selected_effort_id
+                    .as_deref()
+                    .is_some_and(|id| !valid_id(id))
+                || session
+                    .selected_policy_revision
+                    .as_deref()
+                    .is_some_and(|id| !valid_id(id))
+                || session.generation_model_ids.iter().any(|(kind, id)| {
+                    !matches!(kind.as_str(), "image" | "video") || !valid_model(id)
+                })
+                || session
+                    .selected_effort_policy
+                    .as_ref()
+                    .is_some_and(|policy| {
+                        !policy.is_object()
+                            || policy["id"].as_str() != session.selected_effort_id.as_deref()
+                            || policy["policy_revision"].as_str()
+                                != session.selected_policy_revision.as_deref()
+                            || session.selected_effort_id.is_none()
+                    })
+            {
+                return Err(INVALID);
+            }
             if !matches!(session.pending.as_str(), "" | "running" | "unknown") {
                 return Err(INVALID);
             }
@@ -396,6 +436,11 @@ mod tests {
                     progress: "移动画布对象".into(),
                 }],
                 selected_model_id: Some("managed-model".into()),
+                selected_effort_id: None,
+                selected_policy_revision: None,
+                selected_effort_policy: None,
+                generation_model_ids: HashMap::new(),
+                selection_initialized: true,
                 runtime_created: true,
                 request_snapshots: vec![RequestSnapshot {
                     session_id: "session-one".into(),
@@ -416,6 +461,56 @@ mod tests {
     fn write_owned(path: &Path, bytes: &[u8]) {
         fs::write(path, bytes).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[test]
+    fn legacy_archive_does_not_adopt_a_new_effort_policy() {
+        let mut value = serde_json::to_value(archive("project")).unwrap();
+        let session = value["sessions"][0].as_object_mut().unwrap();
+        for key in [
+            "selected_effort_id",
+            "selected_policy_revision",
+            "selected_effort_policy",
+            "generation_model_ids",
+            "selection_initialized",
+        ] {
+            session.remove(key);
+        }
+        let restored: Archive = serde_json::from_value(value).unwrap();
+        assert!(restored.sessions[0].selection_initialized);
+        assert!(restored.sessions[0].selected_effort_id.is_none());
+        assert!(restored.sessions[0].selected_effort_policy.is_none());
+        assert!(restored.sessions[0].generation_model_ids.is_empty());
+        assert_eq!(restored.sessions[0].pending, "unknown");
+    }
+
+    #[test]
+    fn effort_selection_roundtrip_preserves_old_requests_and_rejects_partial_pairs() {
+        let fixture = fixture();
+        let store = Store::open(fixture.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let mut original = archive("project");
+        let previous = original.sessions[0].request_snapshots.clone();
+        let session = &mut original.sessions[0];
+        session.selected_effort_id = Some("balanced".into());
+        session.selected_policy_revision = Some("revision-2".into());
+        session.selected_effort_policy = Some(
+            json!({"id":"balanced","policy_revision":"revision-2","agent":{"model_id":"managed-model","max_steps":8}}),
+        );
+        session.generation_model_ids = HashMap::from([
+            ("image".into(), "image/one".into()),
+            ("video".into(), "video/two".into()),
+        ]);
+        store.save(&original).unwrap();
+        assert_eq!(store.load().unwrap(), Some(original.clone()));
+        assert_eq!(original.sessions[0].request_snapshots, previous);
+        original.sessions[0].selected_policy_revision = None;
+        assert!(store.save(&original).is_err());
+        assert!(
+            store.load().unwrap().unwrap().sessions[0]
+                .selected_policy_revision
+                .is_some()
+        );
     }
 
     #[test]

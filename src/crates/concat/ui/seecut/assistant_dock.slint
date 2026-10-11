@@ -17,6 +17,12 @@ export component AssistantDock inherits AssistantPanel {
     model-names: Assistant.model-names;
     model-index: Assistant.model-index;
     can-select-model: Assistant.can-select-model;
+    effort-names: Assistant.effort-names;
+    effort-index: Assistant.effort-index;
+    effort-visible: Assistant.effort-visible;
+    effort-label: Assistant.effort-label;
+    effort-reason: Assistant.effort-reason;
+    can-select-effort: Assistant.can-select-effort;
     connection: Assistant.connection;
     status: Assistant.status;
     details: Assistant.details;
@@ -70,6 +76,7 @@ export component AssistantDock inherits AssistantPanel {
     new-session() => { Assistant.new-session(); }
     select-session(index) => { Assistant.select-session(index); }
     select-model(index) => { Assistant.model-index = index; Assistant.select-model(index); }
+    select-effort(index) => { Assistant.select-effort(index); }
     refresh-models() => { Assistant.refresh-models(); }
     reconcile() => { Assistant.reconcile(); }
     grant-read() => { Assistant.grant-read(); }

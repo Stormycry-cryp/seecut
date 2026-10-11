@@ -105,6 +105,7 @@ class Config:
     assistant_max_turn_credits: int = 0
     assistant_images: bool = False
     assistant_models: tuple = ()
+    efforts: tuple = ()
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -144,10 +145,11 @@ class Config:
         ):
             raise ConfigError("SMTP authentication requires TLS outside development and test")
 
-        return cls(
+        config = cls(
             assistant_base_url=os.getenv("SECUT_ASSISTANT_BASE_URL", "").rstrip("/"),
             assistant_model=os.getenv("SECUT_ASSISTANT_MODEL", ""),
             assistant_models=_assistant_model_catalog(),
+            efforts=_effort_policies(),
             assistant_api_key=os.getenv("SECUT_ASSISTANT_API_KEY", ""),
             assistant_pricing_version=os.getenv("SECUT_ASSISTANT_PRICING_VERSION", ""),
             assistant_input_rate=_assistant_integer("SECUT_ASSISTANT_INPUT_CREDITS_PER_1000", 0, 1_000_000),
@@ -221,6 +223,12 @@ class Config:
             alipay_notify_url=os.getenv("SECUT_ALIPAY_NOTIFY_URL", ""),
             alipay_seller_id=os.getenv("SECUT_ALIPAY_SELLER_ID", ""),
         )
+        from .efforts import validate_efforts
+        try:
+            validate_efforts(config)
+        except ValueError as error:
+            raise ConfigError('Invalid effort policies') from error
+        return config
 
     def email_configured(self) -> bool:
         if self.email_provider == "disabled":
@@ -246,6 +254,14 @@ class Config:
             and self.alipay_notify_url
             and all(path and Path(path).is_file() for path in paths)
         )
+
+
+def _effort_policies():
+    from .efforts import parse_efforts
+    try:
+        return parse_efforts(os.getenv('SECUT_EFFORTS_JSON', '[]'))
+    except ValueError as error:
+        raise ConfigError('Invalid effort policies') from error
 
 
 def _assistant_model_catalog():

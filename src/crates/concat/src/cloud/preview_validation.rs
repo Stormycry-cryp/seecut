@@ -46,6 +46,7 @@ pub(super) fn run(app: &App, directory: &Path) -> Result<(), String> {
         model_id: model.into(),
         parameters,
         references: Vec::new(),
+        effort: None,
     };
     let verify = |condition: bool, message: &str| -> Result<(), String> {
         if condition {

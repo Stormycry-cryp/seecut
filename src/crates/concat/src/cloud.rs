@@ -87,6 +87,82 @@ impl AccountAccess {
             token: cloud.token.clone(),
         })
     }
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    pub(crate) fn generation_selection(&self) -> HashMap<String, String> {
+        self.state
+            .upgrade()
+            .map(|state| state.borrow().selected_model_ids.clone())
+            .unwrap_or_default()
+    }
+    /// Change only the next draft. Submitted bodies and their idempotency keys
+    /// remain owned by their original operation, even across session switches.
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    pub(crate) fn apply_effort_selection(
+        &self,
+        app: &App,
+        effort: Option<Value>,
+        selections: HashMap<String, String>,
+        explicit_change: bool,
+    ) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        {
+            let mut cloud = state.borrow_mut();
+            remember_current_model_draft(&app.global::<SeeCut>(), &mut cloud);
+            cloud.effort_selection = effort;
+            if explicit_change {
+                cloud.effort_confirmation_required = false;
+            }
+            cloud.selected_model_ids = selections;
+            filter_effort_models(&mut cloud);
+            if explicit_change {
+                for kind in ["image", "video"] {
+                    let allowed = cloud
+                        .selected_model_ids
+                        .get(kind)
+                        .is_some_and(|id| model_by_id(&cloud.models, kind, id).is_some());
+                    if !allowed {
+                        if let Some(id) = cloud
+                            .models
+                            .iter()
+                            .find(|model| text(model, "kind") == kind)
+                            .map(|model| text(model, "id"))
+                        {
+                            cloud.selected_model_ids.insert(kind.into(), id);
+                        } else {
+                            cloud.selected_model_ids.remove(kind);
+                        }
+                    }
+                }
+            }
+            let kind = model_kind(app.global::<SeeCut>().get_mode());
+            let missing = cloud
+                .selected_model_ids
+                .get(kind)
+                .filter(|id| model_by_id(&cloud.models, kind, id).is_none())
+                .cloned();
+            cloud.unavailable_model_id = missing;
+            cloud.unavailable_model_kind = cloud.unavailable_model_id.as_ref().map(|_| kind.into());
+        }
+        if explicit_change {
+            let ui = app.global::<SeeCut>();
+            let previous = ui.get_recovery_warning().to_string();
+            let warning = previous
+                .split('；')
+                .filter(|part| *part != EFFORT_REFILL_WARNING)
+                .collect::<Vec<_>>()
+                .join("；");
+            if previous != warning {
+                ui.set_recovery_warning(warning.clone().into());
+                if ui.get_error().as_str() == previous {
+                    ui.set_error(warning.into());
+                }
+            }
+        }
+        update_model_options_preserving_catalog(app, &state);
+        refresh_quote(app, &state);
+    }
     pub(crate) fn refresh_wallet(&self, app: &App) {
         if let Some(state) = self.state.upgrade() {
             job(
@@ -114,6 +190,7 @@ impl AccountAccess {
 }
 
 const DEFAULT_API_URL: &str = "https://seecut.stormycry.cloud";
+const EFFORT_REFILL_WARNING: &str = "历史任务强度不同，请点击当前强度档名确认后报价";
 
 struct ClientError {
     status: u16,
@@ -130,6 +207,8 @@ struct TaskInputSnapshot {
     parameters: Value,
     #[serde(default)]
     references: Vec<crate::generation_templates::TemplateReference>,
+    #[serde(default)]
+    effort: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -162,6 +241,12 @@ struct Cloud {
     token: String,
     teams: Vec<Value>,
     models: Vec<Value>,
+    catalog_models: Vec<Value>,
+    catalog_efforts: Vec<Value>,
+    effort_catalog_valid: bool,
+    effort_required: bool,
+    effort_selection: Option<Value>,
+    effort_confirmation_required: bool,
     /// The catalog can be refreshed and reordered while the form is open. Keep
     /// the user's choice by stable model id and retain the raw values per model
     /// instead of treating the UI index as persisted state.
@@ -620,8 +705,20 @@ fn sync_operation_state(app: &App, state: &Rc<RefCell<Cloud>>) {
     ui.set_working(working);
 }
 
+fn quote_request_current(ui: &SeeCut, cloud: &Cloud, request: &Request) -> bool {
+    let mut body = request.body.clone();
+    if let Some(body) = body.as_object_mut() {
+        body.remove("kind");
+    }
+    reference_validation(ui, cloud).is_empty() && body == generation_body(ui, cloud)
+}
+
 fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
     let ui = app.global::<SeeCut>();
+    if name == "quote" && !quote_request_current(&ui, &state.borrow(), &req) {
+        sync_operation_state(app, state);
+        return;
+    }
     if !can_start_request(ui.get_signed_in(), &req) {
         if !is_background_job(&name) && name != "logout" {
             show_auth(app, state, None);
@@ -804,13 +901,171 @@ fn poll(
                 }
             }
         }
-        let next = state.borrow_mut().pending.pop_front();
+        let next = loop {
+            let next = state.borrow_mut().pending.pop_front();
+            if let Some((name, request)) = &next
+                && name == "quote"
+                && !quote_request_current(&app.global::<SeeCut>(), &state.borrow(), request)
+            {
+                continue;
+            }
+            break next;
+        };
         if let Some((name, req)) = next {
             job(&app, &state, name, req)
         } else {
             sync_operation_state(&app, &state);
         }
     });
+}
+
+fn effort_identity(value: &Value) -> bool {
+    value.as_str().is_some_and(|value| {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+    })
+}
+
+fn generation_model_identity(value: &Value) -> bool {
+    value.as_str().is_some_and(|value| {
+        !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+    })
+}
+
+fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
+    cloud.catalog_efforts.clear();
+    let legacy = ["efforts", "effort_policy_version", "default_effort_id"]
+        .into_iter()
+        .all(|field| value.get(field).is_none());
+    cloud.effort_required = !legacy;
+    cloud.effort_catalog_valid = legacy;
+    let Some(efforts) = value.get("efforts").and_then(Value::as_array) else {
+        return;
+    };
+    cloud.effort_required = !efforts.is_empty();
+    if value["effort_policy_version"] != 1 || efforts.len() > 8 {
+        cloud.effort_catalog_valid = false;
+        cloud.effort_required = true;
+        return;
+    }
+    let mut ids = HashSet::new();
+    for effort in efforts {
+        let generation = &effort["generation"];
+        let valid_models = ["image_model_ids", "video_model_ids"]
+            .into_iter()
+            .all(|key| {
+                generation[key].as_array().is_some_and(|models| {
+                    models.len() <= 17
+                        && models.iter().all(generation_model_identity)
+                        && models
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<HashSet<_>>()
+                            .len()
+                            == models.len()
+                })
+            });
+        if !effort_identity(&effort["id"])
+            || !effort_identity(&effort["policy_revision"])
+            || effort["available"].as_bool().is_none()
+            || !effort_identity(&effort["agent"]["model_id"])
+            || !valid_models
+            || !ids.insert(text(effort, "id"))
+        {
+            cloud.effort_catalog_valid = false;
+            cloud.effort_required = true;
+            return;
+        }
+    }
+    let default_valid = if efforts.is_empty() {
+        value["default_effort_id"].is_null()
+    } else {
+        value["default_effort_id"]
+            .as_str()
+            .is_some_and(|id| ids.contains(id))
+    };
+    cloud.effort_catalog_valid = default_valid;
+    if !default_valid {
+        cloud.effort_required = true;
+        return;
+    }
+    cloud.catalog_efforts = efforts.clone();
+}
+
+fn public_effort_policy(effort: &Value) -> Value {
+    json!({"id": effort["id"], "label": effort["label"], "policy_revision": effort["policy_revision"],
+        "agent": effort["agent"], "generation": effort["generation"]})
+}
+
+fn generation_effort_reason(cloud: &Cloud) -> &'static str {
+    if cloud.effort_confirmation_required {
+        return "请点击强度档名，确认本次生成策略";
+    }
+    generation_policy_reason(cloud)
+}
+
+fn generation_policy_reason(cloud: &Cloud) -> &'static str {
+    let Some(selected) = &cloud.effort_selection else {
+        return if cloud.effort_required {
+            "请选择可用的强度档位"
+        } else {
+            ""
+        };
+    };
+    if !cloud.effort_catalog_valid {
+        return "强度目录暂不可用";
+    }
+    let Some(current) = cloud
+        .catalog_efforts
+        .iter()
+        .find(|entry| entry["id"] == selected["id"])
+    else {
+        return "该强度档位暂不可用";
+    };
+    if current["policy_revision"] != selected["policy_revision"]
+        || current["agent"] != selected["agent"]
+        || current["generation"] != selected["generation"]
+    {
+        return "强度策略已更新，请重新选择";
+    }
+    if current["available"] != true || selected["available"] != true {
+        return "该强度档位暂不可用";
+    }
+    ""
+}
+
+fn filter_effort_models(cloud: &mut Cloud) {
+    if !generation_policy_reason(cloud).is_empty() {
+        cloud.models.clear();
+        return;
+    }
+    cloud.models = cloud
+        .catalog_models
+        .iter()
+        .filter(|model| {
+            if model.get("available") == Some(&Value::Bool(false)) {
+                return false;
+            }
+            let Some(effort) = &cloud.effort_selection else {
+                return true;
+            };
+            if model["available"] != true {
+                return false;
+            }
+            let key = match text(model, "kind").as_str() {
+                "image" => "image_model_ids",
+                "video" => "video_model_ids",
+                _ => return false,
+            };
+            effort["generation"][key]
+                .as_array()
+                .is_some_and(|ids| ids.contains(&model["id"]))
+        })
+        .cloned()
+        .collect();
 }
 
 fn selected_model(ui: &SeeCut, state: &Cloud) -> String {
@@ -822,6 +1077,9 @@ fn selected_model(ui: &SeeCut, state: &Cloud) -> String {
             .any(|model| text(model, "id") == id.as_str() && text(model, "kind") == kind)
     {
         return id.clone();
+    }
+    if state.effort_selection.is_some() && state.selected_model_ids.contains_key(kind) {
+        return String::new();
     }
     model_id_at_index(&state.models, ui.get_mode(), ui.get_model_index()).unwrap_or_default()
 }
@@ -1050,6 +1308,10 @@ fn validate_configuration_references(
 }
 
 fn reference_validation(ui: &SeeCut, state: &Cloud) -> String {
+    let policy_error = generation_effort_reason(state);
+    if !policy_error.is_empty() {
+        return policy_error.into();
+    }
     if selected_model(ui, state).is_empty() {
         return "请选择可用的生成模型后再继续".into();
     }
@@ -1253,6 +1515,10 @@ fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
     };
     let mut body =
         json!({"model": selected_model(ui, state), "operation":"generate", "prompt":prompt});
+    if let Some(effort) = &state.effort_selection {
+        body["effort_id"] = effort["id"].clone();
+        body["policy_revision"] = effort["policy_revision"].clone();
+    }
     let model_id = selected_model(ui, state);
     let model = state
         .models
@@ -1697,6 +1963,7 @@ fn current_task_snapshot(ui: &SeeCut, state: &Cloud) -> TaskInputSnapshot {
         model_id: selected_model(ui, state),
         parameters: current_template_parameters(ui, state),
         references: template_references(state),
+        effort: state.effort_selection.clone(),
     }
 }
 
@@ -1853,6 +2120,7 @@ fn server_task_snapshot(task: &Value) -> Result<TaskInputSnapshot, String> {
         model_id,
         parameters: Value::Object(parameters),
         references: historical_references(task, &request),
+        effort: request.get("policy").cloned(),
     })
 }
 
@@ -2001,6 +2269,20 @@ fn apply_task_snapshot(
     state: &Rc<RefCell<Cloud>>,
     snapshot: TaskInputSnapshot,
 ) -> Result<(), String> {
+    {
+        let mut cloud = state.borrow_mut();
+        if cloud.active_name == "generate"
+            || cloud.pending.iter().any(|(name, _)| name == "generate")
+        {
+            return Err("请等待当前生成请求确认".into());
+        }
+        let old_policy = snapshot.effort.as_ref().map(public_effort_policy);
+        let current_policy = cloud.effort_selection.as_ref().map(public_effort_policy);
+        if old_policy.is_some() && current_policy.is_none() {
+            return Err("原任务强度暂不可用，请先选择强度档位".into());
+        }
+        cloud.effort_confirmation_required = old_policy != current_policy;
+    }
     let configuration = crate::generation_templates::GenerationTemplate {
         id: String::new(),
         name: String::new(),
@@ -2016,7 +2298,15 @@ fn apply_task_snapshot(
     let ui = app.global::<SeeCut>();
     ui.set_generation_step(0);
     ui.set_result_preview_open(false);
-    if ui.get_recovery_warning().is_empty() {
+    if state.borrow().effort_confirmation_required {
+        let previous = ui.get_recovery_warning().to_string();
+        let warning = if previous.is_empty() {
+            EFFORT_REFILL_WARNING.into()
+        } else {
+            format!("{previous}；{EFFORT_REFILL_WARNING}")
+        };
+        set_recovery_warning(&ui, warning);
+    } else if ui.get_recovery_warning().is_empty() {
         ui.set_notice("历史任务输入已回填，可调整后重新报价".into());
     }
     Ok(())
@@ -2714,11 +3004,16 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 let mut cloud = state.borrow_mut();
                 remember_current_model_draft(&ui, &mut cloud);
             }
-            state.borrow_mut().models = value
-                .get("models")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_else(|| items(&value));
+            {
+                let mut cloud = state.borrow_mut();
+                cloud.catalog_models = value
+                    .get("models")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_else(|| items(&value));
+                accept_effort_catalog(&mut cloud, &value);
+                filter_effort_models(&mut cloud);
+            }
             update_model_options_preserving_catalog(app, state);
             refresh_quote(app, state);
             if ui.get_page() == 7 {
@@ -2786,6 +3081,18 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
         "quote" => {
             let current = generation_body(&ui, &state.borrow());
             if value["client_request_body"] != current {
+                return;
+            }
+            if state
+                .borrow()
+                .effort_selection
+                .as_ref()
+                .is_some_and(|effort| {
+                    value["policy"] != public_effort_policy(effort)
+                        || value["effort_id"] != effort["id"]
+                        || value["policy_revision"] != effort["policy_revision"]
+                })
+            {
                 return;
             }
             if !state
@@ -5711,8 +6018,14 @@ fn refresh_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
 fn refresh_quote(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     ui.set_can_generate(false);
-    state.borrow_mut().quote_id.clear();
-    state.borrow_mut().quote_credits = None;
+    {
+        let mut cloud = state.borrow_mut();
+        cloud.quote_id.clear();
+        cloud.quote_credits = None;
+        // Quotes describe the editable draft; submitted generation requests
+        // keep their original body, idempotency key and queue position.
+        cloud.pending.retain(|(name, _)| name != "quote");
+    }
     ui.set_quote("".into());
     ui.set_insufficient_credits(false);
     let reference_error = reference_validation(&ui, &state.borrow());
@@ -6483,17 +6796,17 @@ fn update_model_options_inner(
             .cloned()
             .collect::<Vec<_>>();
         let desired_id = selected_id.filter(|id| !id.is_empty());
-        let unavailable = if cloud.unavailable_model_kind.as_deref() == Some(kind)
-            && cloud.unavailable_model_id.is_some()
-            && desired_id.is_none()
-        {
-            true
-        } else {
-            desired_id.as_deref().is_some_and(|id| {
+        let unavailable = (cloud.effort_selection.is_some()
+            && desired_id
+                .as_ref()
+                .is_some_and(|id| !models.iter().any(|model| text(model, "id") == *id)))
+            || (cloud.unavailable_model_kind.as_deref() == Some(kind)
+                && cloud.unavailable_model_id.is_some()
+                && desired_id.is_none())
+            || desired_id.as_deref().is_some_and(|id| {
                 !models.iter().any(|model| text(model, "id") == id)
                     && cloud.unavailable_model_id.as_deref() == Some(id)
-            })
-        };
+            });
         let draft = desired_id.as_deref().and_then(|id| {
             cloud
                 .parameter_drafts
@@ -6663,6 +6976,12 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.quote_credits = None;
     cloud.pending.clear();
     cloud.models.clear();
+    cloud.catalog_models.clear();
+    cloud.catalog_efforts.clear();
+    cloud.effort_catalog_valid = false;
+    cloud.effort_required = false;
+    cloud.effort_selection = None;
+    cloud.effort_confirmation_required = false;
     cloud.selected_model_ids.clear();
     cloud.parameter_drafts.clear();
     cloud.generation_mode = None;
@@ -7520,7 +7839,6 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
 
 #[cfg(test)]
 mod reference_tests {
-    use super::accept_asset_list;
     use super::{
         Cloud, DEFAULT_API_URL, ExportCopyItem, ExportCopyJob, NavigationDecision, PickerSelection,
         TaskInputSnapshot, auth_request, auth_return_target, can_start_request,
@@ -7534,8 +7852,162 @@ mod reference_tests {
         should_surface_job_error, stable_model_index, task_item, task_reference_source,
         validate_configuration_references,
     };
+    use super::{
+        PendingSubmission, accept_asset_list, accept_effort_catalog, filter_effort_models,
+        generation_effort_reason, model_id_at_index,
+    };
+    use serde_json::Value;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::path::PathBuf;
+
+    fn effort_fixture(id: &str, revision: &str, image: &str) -> Value {
+        json!({"id":id,"label":id,"policy_revision":revision,"available":true,
+            "agent":{"model_id":"default","max_steps":2,"max_turn_credits":10,"max_output_tokens":128,"pricing_version":"p1"},
+            "generation":{"image_model_ids":[image],"video_model_ids":[]}})
+    }
+    #[test]
+    fn effort_generation_filters_model_values_and_preserves_submitted_snapshot() {
+        let low = effort_fixture("low", "v1", "image-low");
+        let high = effort_fixture("high", "v1", "image-high");
+        let original_body = json!({"model":"image-low","effort_id":"low","policy_revision":"v1"});
+        let mut cloud = Cloud {
+            catalog_models: vec![
+                json!({"id":"image-low","kind":"image","available":true}),
+                json!({"id":"image-high","kind":"image","available":true}),
+                json!({"id":"unwired","kind":"image","available":false}),
+            ],
+            effort_selection: Some(low.clone()),
+            submission: Some(PendingSubmission {
+                body: original_body.clone(),
+                key: "original-key".into(),
+                snapshot: TaskInputSnapshot {
+                    mode: 0,
+                    prompt: "old prompt".into(),
+                    model_id: "image-low".into(),
+                    parameters: json!({}),
+                    references: vec![],
+                    effort: Some(low.clone()),
+                },
+            }),
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":"low","efforts":[low.clone(),high.clone()]}),
+        );
+        filter_effort_models(&mut cloud);
+        assert_eq!(
+            model_id_at_index(&cloud.models, 0, 0).as_deref(),
+            Some("image-low")
+        );
+        cloud.effort_selection = Some(high);
+        filter_effort_models(&mut cloud);
+        assert_eq!(
+            model_id_at_index(&cloud.models, 0, 0).as_deref(),
+            Some("image-high")
+        );
+        let pending = cloud.submission.unwrap();
+        assert_eq!(pending.body, original_body);
+        assert_eq!(pending.key, "original-key");
+        assert_eq!(pending.snapshot.effort, Some(low));
+    }
+    #[test]
+    fn effort_generation_rejects_changed_policy_unavailable_and_missing_selection() {
+        let old = effort_fixture("low", "v1", "image-low");
+        let mut current = old.clone();
+        current["policy_revision"] = json!("v2");
+        let mut cloud = Cloud {
+            effort_selection: Some(old.clone()),
+            catalog_models: vec![json!({"id":"image-low","kind":"image"})],
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":"low","efforts":[current.clone()]}),
+        );
+        filter_effort_models(&mut cloud);
+        assert_eq!(
+            generation_effort_reason(&cloud),
+            "强度策略已更新，请重新选择"
+        );
+        assert!(cloud.models.is_empty());
+        cloud.effort_selection = Some(current.clone());
+        assert!(generation_effort_reason(&cloud).is_empty());
+        current["available"] = json!(false);
+        cloud.catalog_efforts = vec![current];
+        filter_effort_models(&mut cloud);
+        assert_eq!(generation_effort_reason(&cloud), "该强度档位暂不可用");
+        assert!(cloud.models.is_empty());
+        cloud.effort_selection = None;
+        assert_eq!(generation_effort_reason(&cloud), "请选择可用的强度档位");
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":null,"efforts":[]}),
+        );
+        assert!(generation_effort_reason(&cloud).is_empty());
+    }
+    #[test]
+    fn effort_generation_accepts_opaque_provider_models_and_checks_confirmation() {
+        let tier = effort_fixture("low", "v1", "provider/image");
+        let mut cloud = Cloud {
+            effort_selection: Some(tier.clone()),
+            effort_confirmation_required: true,
+            catalog_models: vec![json!({"id":"provider/image","kind":"image","available":true})],
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":"low","efforts":[tier]}),
+        );
+        filter_effort_models(&mut cloud);
+        assert!(cloud.effort_catalog_valid);
+        assert_eq!(
+            model_id_at_index(&cloud.models, 0, 0).as_deref(),
+            Some("provider/image")
+        );
+        assert!(!generation_effort_reason(&cloud).is_empty());
+        cloud.effort_confirmation_required = false;
+        assert!(generation_effort_reason(&cloud).is_empty());
+    }
+
+    #[test]
+    fn effort_generation_partial_metadata_cannot_downgrade_to_legacy() {
+        for response in [
+            json!({"effort_policy_version":1,"default_effort_id":"low"}),
+            json!({"effort_policy_version":1}),
+            json!({"efforts":null}),
+        ] {
+            let mut cloud = Cloud {
+                catalog_models: vec![json!({"id":"image-low","kind":"image","available":true})],
+                ..Default::default()
+            };
+            accept_effort_catalog(&mut cloud, &response);
+            filter_effort_models(&mut cloud);
+            assert!(cloud.effort_required);
+            assert!(!cloud.effort_catalog_valid);
+            assert!(!generation_effort_reason(&cloud).is_empty());
+            assert!(cloud.models.is_empty());
+        }
+    }
+
+    #[test]
+    fn effort_generation_invalid_catalog_fails_closed_without_rebinding_ids() {
+        let tier = effort_fixture("low", "v1", "image-low");
+        let mut cloud = Cloud {
+            effort_selection: Some(tier.clone()),
+            selected_model_ids: HashMap::from([("image".into(), "removed-image".into())]),
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":"low","efforts":[tier.clone(),tier]}),
+        );
+        filter_effort_models(&mut cloud);
+        assert_eq!(generation_effort_reason(&cloud), "强度目录暂不可用");
+        assert!(cloud.models.is_empty());
+        assert_eq!(cloud.selected_model_ids["image"], "removed-image");
+    }
 
     #[test]
     fn repeat_export_keeps_every_existing_file_and_uses_display_name() {
@@ -7613,6 +8085,7 @@ mod reference_tests {
             prompt: "让 @[视频1] 跟随 @[图片1]".into(),
             model_id: "video-model".into(),
             parameters: json!({"duration": 8, "resolution": "720p"}),
+            effort: None,
             references: vec![
                 crate::generation_templates::TemplateReference {
                     path: "/tmp/first.mp4".into(),

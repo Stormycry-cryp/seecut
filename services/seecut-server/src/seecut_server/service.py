@@ -24,6 +24,7 @@ from .catalog import billing_key, public_catalog, validate_request
 from .db import Database
 from .emailer import EmailDeliveryError, EmailSender
 from .errors import ApiError
+from .efforts import configured_policy_fingerprint, generation_catalog, resolve_generation_effort
 from .security import (
     email_token_digest,
     hash_password,
@@ -1221,12 +1222,35 @@ class SeeCutService:
     # Xiangxin generation gateway and wallet holds
 
     def generation_capabilities(self) -> dict[str, Any]:
-        return public_catalog(self.config.image2_model)
+        return generation_catalog(self)
 
     def generation_models(self) -> dict[str, Any]:
         # The upstream catalog is diagnostic only. Client parameters come from
-        # our static whitelist and never from provider IDs alone.
-        return public_catalog(self.config.image2_model)
+        # our whitelist, configured providers and server-owned effort policies.
+        return generation_catalog(self)
+
+    @staticmethod
+    def _generation_selection(request: dict[str, Any]) -> tuple[dict[str, Any], Any, Any]:
+        request = dict(request)
+        if "policy" in request:
+            raise ApiError(400, "EFFORT_POLICY_INVALID", "生成策略由服务端确定")
+        if ("effort_id" in request) != ("policy_revision" in request):
+            raise ApiError(400, "EFFORT_POLICY_INVALID", "请选择有效的生成策略及版本")
+        effort_id = request.pop("effort_id", None)
+        revision = request.pop("policy_revision", None)
+        if (effort_id is not None or revision is not None) and (
+            not isinstance(effort_id, str) or not effort_id
+            or not isinstance(revision, str) or not revision
+        ):
+            raise ApiError(400, "EFFORT_POLICY_INVALID", "请选择有效的生成策略及版本")
+        return request, effort_id, revision
+
+    @staticmethod
+    def _freeze_generation_effort(
+        normalized: dict[str, Any], effort_id: Any, revision: Any, policy: Any
+    ) -> None:
+        if policy is not None:
+            normalized.update(effort_id=effort_id, policy_revision=revision, policy=policy)
 
     def quote_generation(
         self, user_id: str, body_or_kind: dict[str, Any] | str, legacy_body: dict[str, Any] | None = None
@@ -1239,7 +1263,10 @@ class SeeCutService:
             kind = str(body.get("kind", ""))
         request = dict(body)
         request.pop("kind", None)
+        request, effort_id, revision = self._generation_selection(request)
         model, normalized = validate_request(kind, request, self.config.image2_model)
+        policy = resolve_generation_effort(self, kind, model["id"], effort_id, revision)
+        self._freeze_generation_effort(normalized, effort_id, revision, policy)
         self._validate_generation_assets(
             user_id, normalized.get("reference_asset_ids", []), model
         )
@@ -1257,8 +1284,8 @@ class SeeCutService:
         with self.db.transaction() as connection:
             connection.execute(
                 """INSERT INTO generation_quotes
-                   (id,user_id,kind,model,canonical_json,billing_key,credits,expires_at,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                   (id,user_id,kind,model,canonical_json,billing_key,credits,expires_at,created_at,effort_policy_fingerprint)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 (
                     quote_id,
                     user_id,
@@ -1269,6 +1296,7 @@ class SeeCutService:
                     credits,
                     expires_at,
                     now,
+                    configured_policy_fingerprint(self, policy),
                 ),
             )
         return {
@@ -1278,6 +1306,9 @@ class SeeCutService:
             "currency": "credits",
             "expires_at": expires_at,
             "billing_key": key,
+            "effort_id": effort_id,
+            "policy_revision": revision,
+            "policy": policy,
             "request": normalized,
         }
 
@@ -1296,23 +1327,25 @@ class SeeCutService:
         request = dict(payload)
         request.pop("quote_id", None)
         request.pop("kind", None)
-        model, normalized = validate_request(kind, request, self.config.image2_model)
-        self._validate_generation_assets(
-            user_id, normalized.get("reference_asset_ids", []), model
-        )
-        canonical_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
-        operation = normalized["operation"]
-        now = self.now()
-        quantity = normalized.get("quantity", 1)
-        task_id = new_id("gen")
-        batch_id = new_id("batch") if quantity > 1 else None
+        request, effort_id, revision = self._generation_selection(request)
         with self.db.transaction(immediate=True) as connection:
             existing = connection.execute(
                 "SELECT * FROM generation_tasks WHERE user_id=? AND idempotency_key=?",
                 (user_id, idempotency_key),
             ).fetchone()
             if existing:
-                if existing["kind"] != kind or existing["request_json"] != canonical_json:
+                stored = json.loads(existing["request_json"])
+                if (existing["kind"] != kind or stored.get("model") != request.get("model")
+                        or stored.get("effort_id") != effort_id or stored.get("policy_revision") != revision):
+                    raise ApiError(409, "IDEMPOTENCY_CONFLICT", "该幂等键已用于不同的生成参数")
+                # Recovery is a read of the original task, not permission to
+                # dispatch under today's catalog, asset expiry or effort policy.
+                # The persisted image model selects the same parameter schema
+                # even after the server's configured image model changes.
+                _, normalized = validate_request(kind, request, existing["model"])
+                self._freeze_generation_effort(normalized, effort_id, revision, stored.get("policy"))
+                canonical_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+                if existing["request_json"] != canonical_json:
                     raise ApiError(
                         409,
                         "IDEMPOTENCY_CONFLICT",
@@ -1326,18 +1359,35 @@ class SeeCutService:
                     ).fetchall()
                     result["tasks"] = [self._task_dict(connection, row) for row in rows]
                 return result
+            now = self.now()
             quote = connection.execute(
                 "SELECT * FROM generation_quotes WHERE id=? AND user_id=?",
                 (quote_id, user_id),
             ).fetchone()
-            if (
-                not quote
-                or quote["consumed_at"] is not None
-                or quote["expires_at"] < now
-                or quote["kind"] != kind
-                or quote["model"] != model["id"]
-                or quote["canonical_json"] != canonical_json
-            ):
+            if (not quote or quote["consumed_at"] is not None
+                    or quote["expires_at"] < now or quote["kind"] != kind):
+                raise ApiError(409, "QUOTE_MISMATCH", "报价已过期或与当前参数不一致")
+            model, normalized = validate_request(kind, request, self.config.image2_model)
+            policy = resolve_generation_effort(self, kind, model["id"], effort_id, revision)
+            quoted_request = json.loads(quote["canonical_json"])
+            if (quoted_request.get("effort_id") != effort_id
+                    or quoted_request.get("policy_revision") != revision
+                    or quote["effort_policy_fingerprint"] != configured_policy_fingerprint(self, policy)):
+                # Config changes require an explicit selection refresh. Filtering
+                # an unavailable model in another domain does not change policy.
+                raise ApiError(409, "EFFORT_POLICY_STALE", "生成策略已变更，请重新选择")
+            # Current selection was checked above; persist the original complete
+            # quote snapshot even if unrelated catalog availability changed.
+            self._freeze_generation_effort(normalized, effort_id, revision, quoted_request.get("policy"))
+            self._validate_generation_assets(
+                user_id, normalized.get("reference_asset_ids", []), model
+            )
+            canonical_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+            operation = normalized["operation"]
+            quantity = normalized.get("quantity", 1)
+            task_id = new_id("gen")
+            batch_id = new_id("batch") if quantity > 1 else None
+            if quote["model"] != model["id"] or quote["canonical_json"] != canonical_json:
                 raise ApiError(409, "QUOTE_MISMATCH", "报价已过期或与当前参数不一致")
             credits = quote["credits"]
             unit_credits = credits // quantity
@@ -1568,6 +1618,8 @@ class SeeCutService:
         payload = json.loads(task["request_json"])
         payload.pop("operation", None)
         payload.pop("quantity", None)
+        for field in ("effort_id", "policy_revision", "policy"):
+            payload.pop(field, None)
         reference_ids = payload.pop("reference_asset_ids", [])
         if reference_ids:
             rows = self._generation_asset_rows(task["user_id"], reference_ids)
@@ -1614,6 +1666,8 @@ class SeeCutService:
         reference_ids = raw_payload.pop("reference_asset_ids", [])
         raw_payload.pop("operation", None)
         raw_payload.pop("quantity", None)
+        for field in ("effort_id", "policy_revision", "policy"):
+            raw_payload.pop(field, None)
         if task["operation"] == "edit":
             references = self._generation_asset_files(task["user_id"], reference_ids)
             output_bytes = self.image2.edit(raw_payload, references)
@@ -2059,5 +2113,8 @@ class SeeCutService:
             "generate_audio",
             "reference_asset_ids",
             "quantity",
+            "effort_id",
+            "policy_revision",
+            "policy",
         )
         return {key: request[key] for key in public_fields if key in request}

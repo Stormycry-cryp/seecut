@@ -4,6 +4,7 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Icon, IconButton, FocusRing, ThinScrollbar } from "../primitives/primitives.slint";
 import { Switch } from "../inspector/controls.slint";
 import { AppButton, WorkspaceSelect } from "components.slint";
+import { EffortSlider } from "effort-slider.slint";
 
 // Text is content only. Operation state always comes from the host separately.
 export struct AssistantMessage { role: string, text: string, state: string, progress: string }
@@ -295,6 +296,12 @@ export component AssistantPanel inherits Rectangle {
     in property <[string]> model-names;
     in property <int> model-index;
     in property <bool> can-select-model;
+    in property <[string]> effort-names;
+    in property <int> effort-index: -1;
+    in property <bool> effort-visible;
+    in property <string> effort-label;
+    in property <string> effort-reason;
+    in property <bool> can-select-effort;
     in property <string> connection;
     in property <string> status;
     in property <string> details;
@@ -350,6 +357,7 @@ export component AssistantPanel inherits Rectangle {
     callback new-session();
     callback select-session(int);
     callback select-model(int);
+    callback select-effort(int);
     callback refresh-models();
     callback reconcile();
     callback grant-read();
@@ -527,8 +535,9 @@ export component AssistantPanel inherits Rectangle {
                         spacing: 8px;
                         HorizontalLayout {
                             spacing: 8px;
-                            WorkspaceSelect { options: root.model-names; current: root.model-index; placeholder: "账户模型"; enabled: root.active && root.can-select-model; horizontal-stretch: 1; changed(index) => { root.select-model(index); } }
-                            IconButton { glyph: Glyph.reset; label: "刷新模型"; enabled: root.active && root.can-select-model; clicked => { root.refresh-models(); } }
+                            if !root.effort-visible: WorkspaceSelect { options: root.model-names; current: root.model-index; placeholder: "账户模型"; enabled: root.active && root.can-select-model; horizontal-stretch: 1; changed(index) => { root.select-model(index); } }
+                            if root.effort-visible: AssistantText { text: root.provider-label == "" ? "账户模型" : root.provider-label; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; wrap: no-wrap; overflow: elide; }
+                            IconButton { glyph: Glyph.reset; label: "刷新模型"; enabled: root.active && !root.connecting; clicked => { root.refresh-models(); } }
                         }
                         if root.connect-disabled-reason != "": AssistantText { text: root.connect-disabled-reason; color: Theme.fg-muted; }
                         HorizontalLayout {
@@ -680,6 +689,14 @@ export component AssistantPanel inherits Rectangle {
             height: self.preferred-height;
             padding: 12px;
             spacing: 8px;
+            if root.effort-visible: EffortSlider {
+                names: root.effort-names; current: root.effort-index; current-label: root.effort-label;
+                reason: root.effort-reason; enabled: root.active && root.can-select-effort;
+                can-refresh: root.active && !root.connecting;
+                selected(index) => { root.select-effort(index); }
+                refresh => { root.refresh-models(); }
+            }
+            if root.effort-visible && root.effort-reason != "": AssistantText { text: root.effort-reason; font-size: Theme.fs; color: Theme.fg-muted; }
             composer := AssistantInput {
                 value <=> root.draft;
                 label: "给 Agent 的问题"; placeholder: "与 Agent 协作…";
