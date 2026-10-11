@@ -55,6 +55,7 @@ mod editor_mcp;
 mod flow_controller;
 mod flow_ui;
 mod format;
+mod generation_outputs;
 mod generation_templates;
 mod gpu;
 mod host;

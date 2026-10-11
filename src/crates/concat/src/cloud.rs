@@ -513,7 +513,8 @@ fn is_auth_job(name: &str) -> bool {
 }
 
 fn is_background_job(name: &str) -> bool {
-    name.starts_with("local-cache:")
+    name.starts_with("personal-cache:")
+        || name.starts_with("local-cache:")
         || matches!(
             name,
             "quote"
@@ -756,9 +757,7 @@ fn poll(
                 if let Some(id) = name.strip_prefix("local-reference:") {
                     state.borrow_mut().pending_task_references.remove(id);
                 }
-                if let Some(id) = name.strip_prefix("local-cache:") {
-                    state.borrow_mut().download_attempts.remove(id);
-                }
+                release_cache_attempt(&state, &name);
                 if let Some(rest) = name.strip_prefix("media-preview:")
                     && let Some((id, token)) = rest.rsplit_once(':')
                     && let Ok(token) = token.parse()
@@ -2468,6 +2467,12 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
 }
 
 fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
+    let name = if name.starts_with("personal-cache:") {
+        release_cache_attempt(state, name);
+        "personal-cache"
+    } else {
+        name
+    };
     let ui = app.global::<SeeCut>();
     match name {
         "export-copy" => {
@@ -2845,16 +2850,8 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 );
                 refresh_quote(app, state);
             }
-            for task in tasks.iter().filter(|v| text(v, "status") == "succeeded") {
-                let id = text(task, "id");
-                let needs_download = !state
-                    .borrow()
-                    .local
-                    .get(&id)
-                    .is_some_and(|p| std::path::Path::new(p).is_file());
-                if needs_download && state.borrow_mut().download_attempts.insert(id.clone()) {
-                    download_task(app, state, &id, "cache", "");
-                }
+            for task in &tasks {
+                cache_task_outputs(app, state, task);
             }
         }
         "tasks-trash" => {
@@ -3037,7 +3034,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     job(
                         app,
                         state,
-                        "personal-cache".into(),
+                        format!("personal-cache:{id}"),
                         request("POST", "local:library-register", json!({"path":path})),
                     );
                 } else {
@@ -3782,7 +3779,15 @@ fn library_call_unlocked(
                                 name.starts_with("gen_")
                                     && matches!(
                                         path.extension().and_then(|ext| ext.to_str()),
-                                        Some("png" | "mp4")
+                                        Some(
+                                            "png"
+                                                | "jpg"
+                                                | "jpeg"
+                                                | "webp"
+                                                | "gif"
+                                                | "mp4"
+                                                | "webm"
+                                        )
                                     )
                             });
                         if generated && path.is_file() {
@@ -5828,6 +5833,59 @@ fn upload_file_for_team(
         ),
     );
 }
+fn release_cache_attempt(state: &Rc<RefCell<Cloud>>, name: &str) {
+    if let Some(id) = name
+        .strip_prefix("local-cache:")
+        .or_else(|| name.strip_prefix("personal-cache:"))
+    {
+        state.borrow_mut().download_attempts.remove(id);
+    }
+}
+
+fn cache_task_outputs(app: &App, state: &Rc<RefCell<Cloud>>, task: &Value) {
+    let plans = {
+        let cloud = state.borrow();
+        crate::generation_outputs::plan(task, &cloud.folder, &cloud.local)
+    };
+    for output in plans {
+        let registered =
+            crate::generation_outputs::registered(&state.borrow().personal, &output.path);
+        if registered
+            || !state
+                .borrow_mut()
+                .download_attempts
+                .insert(output.key.clone())
+        {
+            continue;
+        }
+        if output.path.is_file() {
+            // Retry indexing an already-downloaded file without another network read.
+            job(
+                app,
+                state,
+                format!("personal-cache:{}", output.key),
+                request(
+                    "POST",
+                    "local:library-register",
+                    json!({"path":output.path}),
+                ),
+            );
+        } else {
+            job(
+                app,
+                state,
+                format!("local-cache:{}", output.key),
+                request(
+                    "GET",
+                    "local:download",
+                    json!({"id":output.key,"url":output.url,
+                    "path":output.path,"intent":"cache","intent_team":""}),
+                ),
+            );
+        }
+    }
+}
+
 fn download_task(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str, intent_team: &str) {
     download_task_with_token(app, state, id, intent, intent_team, None);
 }
