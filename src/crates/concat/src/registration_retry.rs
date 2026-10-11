@@ -9,6 +9,32 @@ use std::{
 };
 use uuid::Uuid;
 const PENDING: &str = "pending-generated.json";
+const LEGACY_PENDING: &str = "pending-legacy-generated.json";
+
+/// A migration changes one existing asset; it must never create a new identity.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct LegacyMigration {
+    pub(crate) target_asset_id: String,
+    pub(crate) asset_path: PathBuf,
+    pub(crate) prepared: PreparedGenerated,
+}
+
+pub(crate) fn load_legacy_migrations(root: &Path) -> Result<Vec<LegacyMigration>, String> {
+    match fs::read(root.join(LEGACY_PENDING)) {
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|e| format!("旧资产迁移记录已损坏：{e}"))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+        Err(e) => Err(format!("无法读取旧资产迁移记录：{e}")),
+    }
+}
+
+pub(crate) fn save_legacy_migrations(
+    root: &Path,
+    entries: &[LegacyMigration],
+) -> Result<(), String> {
+    save_json(root, LEGACY_PENDING, entries)
+}
 #[derive(Clone, Serialize, Deserialize)]
 struct Entry {
     path: PathBuf,
@@ -29,6 +55,9 @@ fn load(root: &Path) -> Result<Vec<Entry>, String> {
     }
 }
 fn save(root: &Path, entries: &[Entry]) -> Result<(), String> {
+    save_json(root, PENDING, entries)
+}
+fn save_json<T: Serialize + ?Sized>(root: &Path, name: &str, entries: &T) -> Result<(), String> {
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let temporary = root.join(format!(".pending-{}.tmp", Uuid::new_v4()));
     let result = (|| {
@@ -36,7 +65,7 @@ fn save(root: &Path, entries: &[Entry]) -> Result<(), String> {
         let mut file = File::create(&temporary).map_err(|e| e.to_string())?;
         file.write_all(&bytes).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
-        fs::rename(&temporary, root.join(PENDING)).map_err(|e| e.to_string())
+        fs::rename(&temporary, root.join(name)).map_err(|e| e.to_string())
     })();
     if result.is_err() {
         let _ = fs::remove_file(temporary);
@@ -95,7 +124,8 @@ pub(crate) fn register_output(
 /// Retry snapshots only. No generation, download or wallet request is made.
 pub(crate) fn retry(root: &Path) -> Result<Outcome, String> {
     let mut entries = load(root)?;
-    if entries.is_empty() {
+    let legacy_count = load_legacy_migrations(root)?.len();
+    if entries.is_empty() && legacy_count == 0 {
         return Ok(Outcome::default());
     }
     // Older path-only entries can preserve only the bytes still available at migration time.
@@ -114,7 +144,7 @@ pub(crate) fn retry(root: &Path) -> Result<Outcome, String> {
     }
     let mut library = Library::load(root)?;
     let mut pending = Vec::new();
-    let mut completed = 0;
+    let mut completed = legacy_count;
     for entry in entries {
         if entry
             .prepared
@@ -138,7 +168,7 @@ pub(crate) fn retry(root: &Path) -> Result<Outcome, String> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        personal_library::{Library, prepare_generated},
+        personal_library::{Library, fail_next_manifest_save, prepare_generated},
         registration_retry,
     };
     use serde_json::json;
@@ -156,6 +186,289 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+    fn legacy_fixture(t: &Temp, ids: &[&str]) -> (PathBuf, PathBuf, serde_json::Value) {
+        let root = t.0.join("library");
+        let source = t.0.join("legacy.png");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, b"first migration snapshot").unwrap();
+        let source = source.canonicalize().unwrap();
+        let items = ids
+            .iter()
+            .map(|id| {
+                json!({
+                    "id": id, "name": format!("Old {id}"), "path": source.canonicalize().unwrap(),
+                    "original_path": t.0.join("original-provenance.png"), "kind": "image",
+                    "source": "generated", "created_at": 7, "trashed": true, "favorite": true,
+                    "folder_id": "old-folder"
+                })
+            })
+            .collect::<Vec<_>>();
+        let manifest = json!({"items": items, "folders": [{"id":"old-folder","name":"Old"}]});
+        fs::write(
+            root.join("library.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        (root, source, manifest)
+    }
+
+    fn fail_migration_commit(root: &std::path::Path) {
+        fail_next_manifest_save(root);
+        let error = Library::load(root)
+            .err()
+            .expect("injected index commit must fail");
+        assert_eq!(error, "test: manifest commit failed after snapshot staging");
+        let pending = registration_retry::load_legacy_migrations(root).unwrap();
+        assert!(!pending.is_empty());
+        for entry in pending {
+            assert_eq!(
+                fs::read(entry.prepared.path).unwrap(),
+                b"first migration snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_migration_commit_failure_recovers_first_bytes_and_current_metadata() {
+        let t = Temp::new();
+        let (root, source, mut manifest) = legacy_fixture(&t, &["stable-old"]);
+        let before = fs::read(root.join("library.json")).unwrap();
+        fail_migration_commit(&root);
+        assert_eq!(fs::read(root.join("library.json")).unwrap(), before);
+        let journal = fs::read(root.join(registration_retry::LEGACY_PENDING)).unwrap();
+        fs::write(&source, b"overwritten later").unwrap();
+        manifest["items"][0]["name"] = json!("Renamed while pending");
+        manifest["items"][0]["favorite"] = json!(false);
+        manifest["items"][0]["trashed"] = json!(false);
+        manifest["items"][0]["folder_id"] = json!("new-folder");
+        manifest["items"][0]["created_at"] = json!(11);
+        manifest["folders"] = json!([{"id":"new-folder","name":"New"}]);
+        fs::write(
+            root.join("library.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(&source).unwrap();
+        let outcome = registration_retry::retry(&root).unwrap();
+        assert_eq!((outcome.completed, outcome.remaining), (1, 0));
+        let library = Library::load(&root).unwrap();
+        assert_eq!(library.items().len(), 1);
+        let item = library.get("stable-old").unwrap();
+        assert_eq!(fs::read(&item.path).unwrap(), b"first migration snapshot");
+        let actual = serde_json::to_value(item).unwrap();
+        for (key, expected) in manifest["items"][0].as_object().unwrap() {
+            if key != "path" {
+                assert_eq!(&actual[key], expected, "metadata field {key}");
+            }
+        }
+        assert_eq!(library.folders()[0].id, "new-folder");
+        // Cleanup can fail after a successful commit: replay must be read-only.
+        let committed = fs::read(root.join("library.json")).unwrap();
+        fs::write(root.join(registration_retry::LEGACY_PENDING), journal).unwrap();
+        let replay = Library::load(&root).unwrap();
+        assert_eq!(replay.items(), library.items());
+        assert_eq!(fs::read(root.join("library.json")).unwrap(), committed);
+        assert!(
+            registration_retry::load_legacy_migrations(&root)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(registration_retry::retry(&root).unwrap().completed, 0);
+    }
+
+    #[test]
+    fn legacy_migration_corrupt_snapshot_keeps_old_index_and_intent() {
+        let t = Temp::new();
+        let (root, source, _) = legacy_fixture(&t, &["stable-old"]);
+        fail_migration_commit(&root);
+        let before = fs::read(root.join("library.json")).unwrap();
+        let journal = fs::read(root.join(registration_retry::LEGACY_PENDING)).unwrap();
+        let pending = registration_retry::load_legacy_migrations(&root).unwrap();
+        fs::write(&pending[0].prepared.path, b"damaged").unwrap();
+        fs::write(&source, b"different external bytes").unwrap();
+        assert!(Library::load(&root).is_err());
+        assert!(registration_retry::retry(&root).is_err());
+        assert_eq!(fs::read(root.join("library.json")).unwrap(), before);
+        assert_eq!(
+            fs::read(root.join(registration_retry::LEGACY_PENDING)).unwrap(),
+            journal
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"different external bytes");
+    }
+
+    #[test]
+    fn legacy_migration_wrong_target_or_different_version_is_not_replaced() {
+        for different_version in [false, true] {
+            let t = Temp::new();
+            let (root, source, mut manifest) = legacy_fixture(&t, &["stable-old"]);
+            fail_migration_commit(&root);
+            let journal = fs::read(root.join(registration_retry::LEGACY_PENDING)).unwrap();
+            if different_version {
+                fs::write(&source, b"another committed version").unwrap();
+                let other =
+                    prepare_generated(&root, &source, None, Some("different-version"), None)
+                        .unwrap();
+                manifest["items"][0]["path"] = json!(other.path);
+                manifest["items"][0]["version"] = json!({
+                    "sha256":other.sha256,"registration_id":other.registration_id
+                });
+            } else {
+                manifest["items"][0]["id"] = json!("different-target");
+            }
+            let before = serde_json::to_vec(&manifest).unwrap();
+            fs::write(root.join("library.json"), &before).unwrap();
+            assert!(Library::load(&root).is_err());
+            assert!(registration_retry::retry(&root).is_err());
+            assert_eq!(fs::read(root.join("library.json")).unwrap(), before);
+            assert_eq!(
+                fs::read(root.join(registration_retry::LEGACY_PENDING)).unwrap(),
+                journal
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_migrations_and_output_retry_keep_separate_identities_and_journals() {
+        let t = Temp::new();
+        let (root, source, _) = legacy_fixture(&t, &["old-one", "old-two"]);
+        fail_migration_commit(&root);
+        assert_eq!(
+            registration_retry::load_legacy_migrations(&root)
+                .unwrap()
+                .len(),
+            2
+        );
+        fs::write(&source, b"new formal output").unwrap();
+        fail_next_manifest_save(&root);
+        assert!(
+            registration_retry::register_output(&root, &source, None, Some("new-output"), None)
+                .is_err()
+        );
+        assert_eq!(
+            registration_retry::load_legacy_migrations(&root)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(registration_retry::load(&root).unwrap().len(), 1);
+        fs::remove_file(&source).unwrap();
+        let outcome = registration_retry::retry(&root).unwrap();
+        assert_eq!((outcome.completed, outcome.remaining), (3, 0));
+        let library = Library::load(&root).unwrap();
+        assert_eq!(library.items().len(), 3);
+        for id in ["old-one", "old-two"] {
+            assert_eq!(
+                fs::read(&library.get(id).unwrap().path).unwrap(),
+                b"first migration snapshot"
+            );
+        }
+        assert_eq!(
+            fs::read(&library.items()[2].path).unwrap(),
+            b"new formal output"
+        );
+        assert!(
+            registration_retry::load_legacy_migrations(&root)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(registration_retry::load(&root).unwrap().is_empty());
+        assert_eq!(registration_retry::retry(&root).unwrap().completed, 0);
+    }
+
+    #[test]
+    fn first_legacy_prepare_failure_is_not_reported_as_available() {
+        for corrupt_cas in [false, true] {
+            let t = Temp::new();
+            let (root, source, _) = legacy_fixture(&t, &["stable-old"]);
+            let before = fs::read(root.join("library.json")).unwrap();
+            if corrupt_cas {
+                let prepared = prepare_generated(&root, &source, None, None, None).unwrap();
+                fs::write(prepared.path, b"corrupt existing CAS").unwrap();
+            } else {
+                fs::write(root.join("generated"), b"not a directory").unwrap();
+            }
+            let error = Library::load(&root)
+                .err()
+                .expect("present source failure must be visible");
+            assert!(error.contains("Old stable-old"));
+            assert_eq!(fs::read(root.join("library.json")).unwrap(), before);
+            assert_eq!(fs::read(&source).unwrap(), b"first migration snapshot");
+            assert!(
+                registration_retry::load_legacy_migrations(&root)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn later_legacy_prepare_failure_persists_earlier_snapshot_before_returning() {
+        let t = Temp::new();
+        let (root, source, mut manifest) = legacy_fixture(&t, &["first-old", "second-old"]);
+        let second_source = t.0.join("second.png");
+        fs::write(&second_source, b"second source bytes").unwrap();
+        manifest["items"][1]["path"] = json!(second_source.canonicalize().unwrap());
+        let before = serde_json::to_vec(&manifest).unwrap();
+        fs::write(root.join("library.json"), &before).unwrap();
+        let second = prepare_generated(&root, &second_source, None, None, None).unwrap();
+        fs::write(&second.path, b"corrupt second CAS").unwrap();
+        let error = Library::load(&root)
+            .err()
+            .expect("second prepare must fail");
+        assert!(error.contains("Old second-old"));
+        assert_eq!(fs::read(root.join("library.json")).unwrap(), before);
+        let pending = registration_retry::load_legacy_migrations(&root).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].target_asset_id, "first-old");
+        assert_eq!(
+            fs::read(&pending[0].prepared.path).unwrap(),
+            b"first migration snapshot"
+        );
+        fs::write(&source, b"overwritten while repair pending").unwrap();
+        fs::remove_file(&source).unwrap();
+        fs::remove_file(&second.path).unwrap();
+        let library = Library::load(&root).unwrap();
+        assert_eq!(library.items().len(), 2);
+        assert_eq!(
+            fs::read(&library.get("first-old").unwrap().path).unwrap(),
+            b"first migration snapshot"
+        );
+        assert_eq!(
+            fs::read(&library.get("second-old").unwrap().path).unwrap(),
+            b"second source bytes"
+        );
+        assert!(
+            registration_retry::load_legacy_migrations(&root)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn missing_legacy_source_stays_indexed_until_it_can_be_snapshotted() {
+        let t = Temp::new();
+        let (root, source, _) = legacy_fixture(&t, &["stable-old"]);
+        fs::remove_file(&source).unwrap();
+        let library = Library::load(&root).unwrap();
+        let old = library.get("stable-old").unwrap().clone();
+        assert!(old.version.is_none());
+        assert_eq!(old.path, source);
+        assert!(
+            registration_retry::load_legacy_migrations(&root)
+                .unwrap()
+                .is_empty()
+        );
+        fs::write(&source, b"source becomes available").unwrap();
+        let library = Library::load(&root).unwrap();
+        let recovered = library.get("stable-old").unwrap();
+        assert!(recovered.version.is_some());
+        assert_eq!(
+            fs::read(&recovered.path).unwrap(),
+            b"source becomes available"
+        );
+        assert_eq!(recovered.id, old.id);
+    }
+
     #[test]
     fn overwritten_external_path_creates_linked_versions_and_keeps_old_bytes() {
         let t = Temp::new();
