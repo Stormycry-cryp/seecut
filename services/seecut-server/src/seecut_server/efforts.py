@@ -7,6 +7,7 @@ from copy import deepcopy
 from itertools import product
 
 from .assistant_models import IDENTITY, model_config
+from .assistant_billing import credit_cost
 from .catalog import billing_key, public_catalog
 from .errors import ApiError
 
@@ -127,20 +128,23 @@ def public_efforts(account):
         for name in FROZEN_FIELDS:
             if name not in policy['agent']:
                 policy['agent'][name] = getattr(service.config, 'assistant_' + name)
+        # Keep legacy policy JSON and digests unchanged.
+        if service.config.assistant_rate_denominator == 1_000_000:
+            policy['agent']['rate_denominator'] = 1_000_000
         for kind, supported in available_ids.items():
             policy['generation'][kind + '_model_ids'] = [
                 identity for identity in policy['generation'][kind + '_model_ids'] if identity in supported]
         reason = capability['reason_code'] if not capability['available'] else None
         agent = policy['agent']
-        reserve = (agent['context_window'] * agent['input_rate'] +
-                   agent['max_output_tokens'] * agent['output_rate'] + 999) // 1000
+        reserve = credit_cost(agent['context_window'], agent['max_output_tokens'], agent['input_rate'],
+                              agent['output_rate'], agent.get('rate_denominator', 1000))
         if reason is None and reserve > agent['max_turn_credits']:
             reason = 'EFFORT_BUDGET_UNAVAILABLE'
         if reason is None and not any(policy['generation'].values()):
             reason = 'EFFORT_GENERATION_UNAVAILABLE'
         policy.update(available=reason is None, reason_code=reason)
         policies.append(policy)
-    return dict(effort_policy_version=1,
+    return dict(effort_policy_version=2 if any(policy['agent'].get('rate_denominator', 1000) == 1_000_000 for policy in policies) else 1,
                 default_effort_id=policies[0]['id'] if policies else None, efforts=policies)
 
 

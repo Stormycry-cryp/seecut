@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from . import assistant_contract as contract
+from .assistant_billing import capture_for_usage, rate_denominator
 from .assistant_execution_lock import execution_lock
 from .assistant_service import AssistantService, SETTLED
 from .db import Database
@@ -125,7 +126,10 @@ class LocalResolution:
             raise ApiError(409, 'ASSISTANT_RESOLUTION_SCOPE_CONFLICT', '原冻结记录不一致')
         value = {name: row[name] for name in ('user_id', 'version', 'state', 'billing_state', 'reserved_credits',
                                              'captured_credits', 'released_credits', 'pricing_version', 'input_rate', 'output_rate')}
-        value.update(operation_id=row['id'], model_id=budget['model_id'], wallet=dict(wallet), hold=dict(hold),
+        value.update(rate_denominator=rate_denominator(row['rate_denominator'] if 'rate_denominator' in row.keys() else 1000),
+                     rounding_mode=budget['rounding_mode'] if 'rounding_mode' in budget.keys() else 'legacy_operation',
+                     accrued_microcredits=budget['accrued_microcredits'] if 'accrued_microcredits' in budget.keys() else 0,
+                     operation_id=row['id'], model_id=budget['model_id'], wallet=dict(wallet), hold=dict(hold),
                      budget={name: budget[name] for name in ('id', 'model_id', 'held_credits', 'spent_credits', 'state')})
         return value
 
@@ -163,7 +167,9 @@ class LocalResolution:
                 raise ApiError(409, 'ASSISTANT_RESOLUTION_EVIDENCE_REQUIRED', '仍待核实：需要人工证据声明、引用和明确结果')
             return dict(status='unresolved', applied=False, reason='evidence_unconfirmed', before=before)
         usage = value['usage']
-        cost = (usage['input'] * row['input_rate'] + usage['output'] * row['output_rate'] + 999) // 1000
+        budget = connection.execute('SELECT * FROM assistant_turn_budgets WHERE id=? AND user_id=?',
+                                    (row['budget_id'], row['user_id'])).fetchone()
+        cost = capture_for_usage(row, budget, usage).credits
         limits = usage['input'] > row['input_token_upper_bound'] or usage['input'] + usage['output'] > row['context_window'] or usage['output'] > json.loads(row['request_json'])['maxOutputTokens']
         if not apply:
             status = 'ready' if acquired is True and not limits and cost <= row['reserved_credits'] else 'unresolved'

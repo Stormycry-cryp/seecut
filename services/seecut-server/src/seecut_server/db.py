@@ -55,6 +55,14 @@ class Database:
             for name in ('effort_id', 'policy_revision', 'policy_json', 'route_fingerprint'):
                 if budget_columns and name not in budget_columns:
                     connection.execute(f'ALTER TABLE assistant_turn_budgets ADD COLUMN {name} TEXT')
+            for table in ('assistant_quotes', 'assistant_operations'):
+                columns = {row['name'] for row in connection.execute(f'PRAGMA table_info({table})')}
+                if columns and 'rate_denominator' not in columns:
+                    connection.execute(f'ALTER TABLE {table} ADD COLUMN rate_denominator INTEGER NOT NULL DEFAULT 1000 CHECK(rate_denominator IN (1000,1000000))')
+            if budget_columns and 'rounding_mode' not in budget_columns:
+                connection.execute("ALTER TABLE assistant_turn_budgets ADD COLUMN rounding_mode TEXT NOT NULL DEFAULT 'legacy_operation' CHECK(rounding_mode IN ('legacy_operation','task_cumulative_v1'))")
+            if budget_columns and 'accrued_microcredits' not in budget_columns:
+                connection.execute('ALTER TABLE assistant_turn_budgets ADD COLUMN accrued_microcredits INTEGER NOT NULL DEFAULT 0 CHECK(accrued_microcredits >= 0)')
             email_token_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(email_tokens)")
             }

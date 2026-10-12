@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .assistant_billing import rate_denominator
+
 
 class ConfigError(ValueError):
     pass
@@ -41,6 +43,23 @@ def _assistant_integer(name: str, default: int, maximum: int) -> int:
     if not 1 <= value <= maximum:
         raise ConfigError(f"{name} must be between 1 and {maximum}")
     return value
+
+
+def _assistant_rates():
+    old = ('SECUT_ASSISTANT_INPUT_CREDITS_PER_1000', 'SECUT_ASSISTANT_OUTPUT_CREDITS_PER_1000')
+    new = ('SECUT_ASSISTANT_INPUT_CREDITS_PER_1000000', 'SECUT_ASSISTANT_OUTPUT_CREDITS_PER_1000000')
+    old_set = [bool(os.getenv(name, '').strip()) for name in old]
+    new_set = [bool(os.getenv(name, '').strip()) for name in new]
+    try:
+        denominator = rate_denominator(int(os.getenv('SECUT_ASSISTANT_RATE_DENOMINATOR', '').strip() or '1000'))
+    except ValueError as error:
+        raise ConfigError('Invalid Agent rate denominator') from error
+    if any(old_set) and any(new_set) or denominator == 1000 and any(new_set) or denominator == 1_000_000 and any(old_set):
+        raise ConfigError('Agent rate units cannot be mixed')
+    if any(new_set) and not all(new_set):
+        raise ConfigError('Both million-token Agent rates are required')
+    names = old if denominator == 1000 else new
+    return denominator, *(_assistant_integer(name, 0, 1_000_000) for name in names)
 
 
 @dataclass(frozen=True)
@@ -105,7 +124,11 @@ class Config:
     assistant_max_turn_credits: int = 0
     assistant_images: bool = False
     assistant_models: tuple = ()
+    assistant_rate_denominator: int = 1000
     efforts: tuple = ()
+
+    def __post_init__(self):
+        rate_denominator(self.assistant_rate_denominator)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -145,6 +168,7 @@ class Config:
         ):
             raise ConfigError("SMTP authentication requires TLS outside development and test")
 
+        denominator, input_rate, output_rate = _assistant_rates()
         config = cls(
             assistant_base_url=os.getenv("SECUT_ASSISTANT_BASE_URL", "").rstrip("/"),
             assistant_model=os.getenv("SECUT_ASSISTANT_MODEL", ""),
@@ -152,8 +176,9 @@ class Config:
             efforts=_effort_policies(),
             assistant_api_key=os.getenv("SECUT_ASSISTANT_API_KEY", ""),
             assistant_pricing_version=os.getenv("SECUT_ASSISTANT_PRICING_VERSION", ""),
-            assistant_input_rate=_assistant_integer("SECUT_ASSISTANT_INPUT_CREDITS_PER_1000", 0, 1_000_000),
-            assistant_output_rate=_assistant_integer("SECUT_ASSISTANT_OUTPUT_CREDITS_PER_1000", 0, 1_000_000),
+            assistant_input_rate=input_rate,
+            assistant_output_rate=output_rate,
+            assistant_rate_denominator=denominator,
             assistant_context_window=_assistant_integer("SECUT_ASSISTANT_CONTEXT_WINDOW", 32768, 1_000_000),
             assistant_max_output_tokens=_assistant_integer("SECUT_ASSISTANT_MAX_OUTPUT_TOKENS", 2048, 131072),
             assistant_max_steps=_assistant_integer("SECUT_ASSISTANT_MAX_STEPS", 8, 8),

@@ -612,7 +612,6 @@ export component AssistantPanel inherits Rectangle {
                     if !root.developer-tools: VerticalLayout {
                         spacing: 8px;
                         AssistantText { text: root.connection; color: Theme.fg-muted; }
-                        if root.budget-label != "": AssistantText { text: root.budget-label; color: Theme.fg-muted; }
                         if !root.connected && root.connect-disabled-reason != "": AssistantText { text: root.connect-disabled-reason; color: Theme.fg-muted; }
                         AppButton {
                             label: root.connect-label;
@@ -697,6 +696,12 @@ export component AssistantPanel inherits Rectangle {
                 refresh => { root.refresh-models(); }
             }
             if root.effort-visible && root.effort-reason != "": AssistantText { text: root.effort-reason; font-size: Theme.fs; color: Theme.fg-muted; }
+            AssistantText {
+                text: root.budget-label == "" ? "0" : root.budget-label;
+                color: Theme.fg-muted;
+                horizontal-alignment: right;
+                accessible-label: "当前任务实际消耗 " + self.text;
+            }
             composer := AssistantInput {
                 value <=> root.draft;
                 label: "给 Agent 的问题"; placeholder: "与 Agent 协作…";

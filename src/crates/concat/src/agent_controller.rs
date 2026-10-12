@@ -3,6 +3,7 @@
 //! Only the trusted host constructs configuration; no credential discovery or automatic retry.
 use super::agent_process::{self, BridgeError, Event, Handle, LaunchSpec};
 use serde_json::{Value, json};
+use sha2::Digest;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -206,6 +207,9 @@ pub struct Controller {
     last_model_state: Option<Value>,
     account_expired: bool,
     budget_label: String,
+    cost_turn_id: Option<String>,
+    cost_account_fingerprint: Option<Vec<u8>>,
+    cost_waiting_for_turn: bool,
     billing_fingerprint: Value,
     billing_revision: u64,
     ignore_runtime_events: bool,
@@ -241,7 +245,10 @@ impl Default for Controller {
             recovery_pending: false,
             last_model_state: None,
             account_expired: false,
-            budget_label: String::new(),
+            budget_label: "0".into(),
+            cost_turn_id: None,
+            cost_account_fingerprint: None,
+            cost_waiting_for_turn: false,
             billing_fingerprint: Value::Null,
             billing_revision: 0,
             ignore_runtime_events: false,
@@ -282,6 +289,23 @@ impl Controller {
         {
             return Err(UiError::Configuration);
         }
+        let account_fingerprint = config.provider["sessionToken"]
+            .as_str()
+            .filter(|token| !token.is_empty())
+            .map(|token| sha2::Sha256::digest(token.as_bytes()).to_vec());
+        let preserve_cost = config.restore
+            && self.session_id == config.local_session_id
+            && self.document.as_ref() == Some(&config.document)
+            && self.managed_mode
+            && config.provider["protocol"] == "seecut-managed"
+            && account_fingerprint.is_some()
+            && self.cost_account_fingerprint == account_fingerprint;
+        self.cost_account_fingerprint = account_fingerprint;
+        self.cost_waiting_for_turn = false;
+        if !preserve_cost {
+            self.cost_turn_id = None;
+            self.budget_label = "0".into();
+        }
         self.session_id = config.local_session_id;
         self.restore = config.restore;
         self.recover_existing = false;
@@ -302,7 +326,6 @@ impl Controller {
         self.account_expired = false;
         self.recovery_pending = false;
         self.last_model_state = None;
-        self.budget_label.clear();
         self.billing_fingerprint = Value::Null;
         self.secrets.retain(|value| !value.is_empty());
         let params = json!({"protocolVersion":1,"appProtocolVersion":1,"instanceId":config.document.instance_id,"clientId":config.client_id,"clientPath":config.mcp_client_path,"mcpEnvironment":config.mcp_environment,"sessionDirectory":config.session_directory,"provider":config.provider,"readToken":config.read_token,"writeToken":config.write_token});
@@ -445,6 +468,9 @@ impl Controller {
         self.outcome = None;
         self.error = None;
         self.last_result_turn = None;
+        self.cost_turn_id = None;
+        self.cost_waiting_for_turn = true;
+        self.budget_label = "0".into();
         Ok(())
     }
     /// Enqueue isn't confirmation. Phase becomes Stopping only on the real {stopping:true} reply.
@@ -503,7 +529,11 @@ impl Controller {
                 return true;
             }
             if state.revision == previous_revision {
-                return previous == value;
+                if previous != value {
+                    return false;
+                }
+                self.refresh_cost(&state);
+                return true;
             }
         }
         self.last_model_state = Some(value.clone());
@@ -511,7 +541,7 @@ impl Controller {
         self.model_unknown = state.unknown;
         // Login expiry is sticky for this runtime; only a fresh login can clear it.
         self.account_expired |= state.account_expired;
-        self.budget_label = state.budget_label;
+        self.refresh_cost(&state);
         if self.billing_fingerprint != state.billing {
             self.billing_fingerprint = state.billing;
             self.billing_revision = self.billing_revision.saturating_add(1);
@@ -536,6 +566,26 @@ impl Controller {
             }
         }
         true
+    }
+    fn refresh_cost(&mut self, state: &CheckedModelState) {
+        if self.cost_waiting_for_turn {
+            return;
+        }
+        if self.cost_turn_id.is_none() {
+            self.cost_turn_id = self.turn_id.clone().or(state.budget_turn.clone());
+        }
+        if let Some(turn) = self.cost_turn_id.as_deref() {
+            if state.budget_turn.as_deref() == Some(turn) {
+                // The server's task total replaces the display; events never add fees.
+                if let Some(spent) = state.budget_spent {
+                    self.budget_label = spent.to_string();
+                }
+            } else if let Some(captured) = state.captured_by_turn.get(turn) {
+                // A bounded operation list may omit older steps. Preserve the known total.
+                let previous = self.budget_label.parse::<u64>().unwrap_or(0);
+                self.budget_label = (*captured).max(previous).to_string();
+            }
+        }
     }
     fn blocked(&self) -> bool {
         self.unknown_latched || self.model_unknown || self.account_expired || self.recovery_pending
@@ -1040,6 +1090,18 @@ impl Controller {
                 return;
             };
             self.turn_id = Some(turn.to_owned());
+            if self.cost_waiting_for_turn || self.cost_turn_id.as_deref() != Some(turn) {
+                self.cost_turn_id = Some(turn.to_owned());
+                self.cost_waiting_for_turn = false;
+                self.budget_label = "0".into();
+            }
+            if let Some(state) = self
+                .last_model_state
+                .as_ref()
+                .and_then(|value| checked_model_state(value, &self.session_id))
+            {
+                self.refresh_cost(&state);
+            }
             self.phase = Phase::Running;
         }
         if turn.is_some() && turn != self.turn_id.as_deref() {
@@ -1272,7 +1334,9 @@ struct CheckedModelState {
     revision: u64,
     unknown: bool,
     account_expired: bool,
-    budget_label: String,
+    budget_turn: Option<String>,
+    budget_spent: Option<u64>,
+    captured_by_turn: std::collections::BTreeMap<String, u64>,
     billing: Value,
 }
 /// Check every field consumed by the host. Display only fixed labels and numeric amounts.
@@ -1300,6 +1364,7 @@ fn checked_model_state(value: &Value, session_id: &str) -> Option<CheckedModelSt
     };
     let credit = |v: &Value| v.as_u64().filter(|n| *n <= 1_000_000_000);
     let mut billing = Vec::new();
+    let mut captured_by_turn = std::collections::BTreeMap::<String, u64>::new();
     let mut ids = std::collections::BTreeSet::new();
     let mut operation_ids = std::collections::BTreeSet::new();
     for op in operations {
@@ -1362,10 +1427,19 @@ fn checked_model_state(value: &Value, session_id: &str) -> Option<CheckedModelSt
         {
             return None;
         }
+        if matches!(op["billingState"].as_str(), Some("captured" | "released")) {
+            let total = captured_by_turn
+                .entry(op["turnId"].as_str()?.to_owned())
+                .or_default();
+            *total = total
+                .checked_add(captured)
+                .filter(|value| *value <= 1_000_000_000)?;
+        }
         billing.push(json!([op["clientRequestId"], reserved, captured, released]));
     }
     let budget = value.get("budget")?;
-    let mut budget_label = String::new();
+    let mut budget_turn = None;
+    let mut budget_spent = None;
     if !budget.is_null() {
         if !id(&budget["budget_id"])
             || budget["local_session_id"].as_str() != Some(session_id)
@@ -1385,14 +1459,17 @@ fn checked_model_state(value: &Value, session_id: &str) -> Option<CheckedModelSt
         if max == 0 || held + spent > max || steps == 0 || steps > 8 || count > steps {
             return None;
         }
-        budget_label = format!("本轮已用 {spent} 积分 · 预留 {held} · 上限 {max}");
+        budget_turn = budget["turn_id"].as_str().map(str::to_owned);
+        budget_spent = Some(spent);
         billing.push(json!([budget["budget_id"], held, spent]));
     }
     Some(CheckedModelState {
         revision,
         unknown,
         account_expired,
-        budget_label,
+        budget_turn,
+        budget_spent,
+        captured_by_turn,
         billing: json!(billing),
     })
 }
@@ -2125,10 +2202,7 @@ for line in sys.stdin:
             "state":"active","max_credits":100,"held_credits":20,"spent_credits":5,"max_steps":8,"operation_count":1});
         assert!(c.apply_model_state(&state));
         let revision = c.view().billing_revision;
-        assert_eq!(
-            c.view().budget_label,
-            "本轮已用 5 积分 · 预留 20 · 上限 100"
-        );
+        assert_eq!(c.view().budget_label, "5");
         state["outcomeUnknown"] = json!(true);
         state["revision"] = json!(state["revision"].as_u64().unwrap() + 1);
         assert!(c.apply_model_state(&state));
@@ -2138,6 +2212,7 @@ for line in sys.stdin:
         state["revision"] = json!(state["revision"].as_u64().unwrap() + 1);
         assert!(c.apply_model_state(&state));
         assert_eq!(c.view().billing_revision, revision + 1);
+        assert_eq!(c.view().budget_label, "12");
         for (key, value) in [
             ("max_steps", json!(9)),
             ("held_credits", json!(101)),
@@ -2148,6 +2223,127 @@ for line in sys.stdin:
             invalid["budget"][key] = value;
             assert!(!c.apply_model_state(&invalid), "{key}");
         }
+    }
+    fn cost_state(turn: &str, spent: u64) -> Value {
+        let mut state = managed_state(false);
+        state["budget"] = json!({"budget_id":format!("budget-{turn}"),"local_session_id":"managed-test","turn_id":turn,
+            "state":"active","max_credits":100,"held_credits":0,"spent_credits":spent,"max_steps":8,"operation_count":2});
+        state
+    }
+    #[test]
+    fn numeric_cost_uses_task_snapshot_and_survives_steps_and_replays() {
+        let mut c = managed_controller();
+        assert_eq!(c.view().budget_label, "0");
+        let state = cost_state("turn-1", 1);
+        assert!(c.apply_model_state(&state));
+        assert_eq!(c.view().budget_label, "1");
+        assert!(c.apply_model_state(&state));
+        assert_eq!(c.view().budget_label, "1");
+        assert!(c.apply_model_state(&managed_state(false)));
+        assert_eq!(c.view().budget_label, "1");
+        assert!(c.apply_model_state(&cost_state("turn-1", 2)));
+        assert_eq!(c.view().budget_label, "2");
+        // A current authoritative snapshot replaces any partial-operation fallback.
+        c.budget_label = "9".into();
+        assert!(c.apply_model_state(&cost_state("turn-1", 2)));
+        assert_eq!(c.view().budget_label, "2");
+        let mut foreign = cost_state("foreign", 8);
+        foreign["budget"]["local_session_id"] = json!("other-session");
+        assert!(!c.apply_model_state(&foreign));
+        assert_eq!(c.view().budget_label, "2");
+    }
+    #[test]
+    fn numeric_cost_binds_cached_snapshot_when_turn_started_arrives_late() {
+        let mut c = managed_controller();
+        assert!(c.apply_model_state(&cost_state("old-turn", 7)));
+        c.cost_turn_id = None;
+        c.cost_waiting_for_turn = true;
+        c.budget_label = "0".into();
+        c.pending.push_back(Pending {
+            id: "send".into(),
+            request: Request::Send {
+                input_id: "input".into(),
+            },
+            since: Instant::now(),
+        });
+        let state = cost_state("new-turn", 1);
+        assert!(c.apply_model_state(&state));
+        assert_eq!(c.view().budget_label, "0");
+        c.runtime_event(&json!({"sessionId":"managed-test","seq":1,"type":"turn.started","turnId":"new-turn","data":{}}));
+        assert_eq!(c.view().budget_label, "1");
+        assert!(c.apply_model_state(&state));
+        assert_eq!(c.view().budget_label, "1");
+        let previous = cost_state("old-turn", 7);
+        assert!(c.apply_model_state(&previous));
+        assert_eq!(c.view().budget_label, "1");
+    }
+    #[test]
+    fn numeric_cost_new_question_resets_and_ignores_previous_task() {
+        let mut f = Fixture::new("finish");
+        f.ready();
+        f.controller.budget_label = "5".into();
+        f.controller.cost_turn_id = Some("previous".into());
+        f.controller.send_text("next task").unwrap();
+        assert_eq!(f.controller.view().budget_label, "0");
+        f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
+        assert_eq!(f.controller.view().budget_label, "0");
+    }
+    #[test]
+    fn numeric_cost_exit_and_restore_keep_same_scope_and_clear_pending_turn() {
+        let mut f = Fixture::with_session("managed", "managed-test", true);
+        f.until(|c| c.view().can_reconcile);
+        f.controller.reconcile().unwrap();
+        f.ready();
+        let mut state = cost_state("saved-turn", 3);
+        state["revision"] = json!(1000);
+        assert!(f.controller.apply_model_state(&state));
+        f.controller.cost_waiting_for_turn = true;
+        f.controller.disconnect();
+        f.until(|c| c.process.is_none());
+        assert!(f.controller.secrets.is_empty());
+        fn reconnect(f: &mut Fixture, token: &str, document: DocumentIdentity) {
+            let entry = f.directory.join("fixture.py");
+            f.controller.connect(ConnectionConfig {
+                launch: LaunchSpec { executable: fs::canonicalize("/usr/bin/python3").unwrap(), entrypoint: entry.clone(), environment: BTreeMap::new() },
+                document, client_id: "client-1".into(), mcp_client_path: entry,
+                mcp_environment: BTreeMap::from([("TMPDIR".into(), f.directory.to_string_lossy().into_owned())]),
+                session_directory: f.directory.clone(), local_session_id: "managed-test".into(), restore: true,
+                provider: json!({"protocol":"seecut-managed","model":"managed","sessionToken":token}),
+                read_token: "read-secret".into(), write_token: Some("write-secret".into()),
+            }).unwrap();
+        }
+        let identity = f.identity.clone();
+        reconnect(&mut f, "inference-secret", identity.clone());
+        assert_eq!(f.controller.view().budget_label, "3");
+        assert!(!f.controller.cost_waiting_for_turn);
+        f.until(|c| c.view().can_reconcile);
+        assert_eq!(f.controller.view().budget_label, "3");
+        f.controller.disconnect();
+        f.until(|c| c.process.is_none());
+        reconnect(&mut f, "different-account-token", identity.clone());
+        assert_eq!(f.controller.view().budget_label, "0");
+        // This fixture only authenticates inference-secret; a foreign token
+        // must not restore its old financial display before authentication.
+        f.controller.budget_label = "4".into();
+        f.controller.disconnect();
+        f.until(|c| c.process.is_none());
+        let mut other = identity;
+        other.project_id = "other-project".into();
+        reconnect(&mut f, "different-account-token", other);
+        assert_eq!(f.controller.view().budget_label, "0");
+    }
+    #[test]
+    fn numeric_cost_restore_adopts_explicit_budget_and_has_no_cross_session_fallback() {
+        let mut c = managed_controller();
+        assert!(c.apply_model_state(&cost_state("saved-turn", 3)));
+        assert_eq!(c.view().budget_label, "3");
+        let mut new_session = managed_controller();
+        assert!(new_session.apply_model_state(&managed_state(false)));
+        assert_eq!(new_session.view().budget_label, "0");
+        let mut old = cost_state("saved-turn", 3);
+        old["budget"]["local_session_id"] = json!("different-session");
+        assert!(!new_session.apply_model_state(&old));
+        assert_eq!(new_session.view().budget_label, "0");
     }
     #[test]
     fn malformed_operations_cannot_unlock_or_supply_display_text() {

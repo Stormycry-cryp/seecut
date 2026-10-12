@@ -239,6 +239,8 @@ CREATE TABLE IF NOT EXISTS assistant_turn_budgets (
  max_credits INTEGER NOT NULL CHECK(max_credits > 0),
  held_credits INTEGER NOT NULL DEFAULT 0 CHECK(held_credits >= 0),
  spent_credits INTEGER NOT NULL DEFAULT 0 CHECK(spent_credits >= 0),
+ rounding_mode TEXT NOT NULL DEFAULT 'legacy_operation' CHECK(rounding_mode IN ('legacy_operation','task_cumulative_v1')),
+ accrued_microcredits INTEGER NOT NULL DEFAULT 0 CHECK(accrued_microcredits >= 0),
  operation_count INTEGER NOT NULL DEFAULT 0, max_steps INTEGER NOT NULL,
  state TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
  UNIQUE(user_id,local_session_id,turn_id)
@@ -253,6 +255,7 @@ CREATE TABLE IF NOT EXISTS assistant_quotes (
  request_digest TEXT NOT NULL, pricing_version TEXT NOT NULL,
  input_token_upper_bound INTEGER NOT NULL, payload_digest TEXT NOT NULL,
  route_fingerprint TEXT NOT NULL, input_rate INTEGER NOT NULL, output_rate INTEGER NOT NULL, context_window INTEGER NOT NULL,
+ rate_denominator INTEGER NOT NULL DEFAULT 1000 CHECK(rate_denominator IN (1000,1000000)),
  max_credits INTEGER NOT NULL, expires_at INTEGER NOT NULL,
  consumed_at INTEGER, created_at INTEGER NOT NULL
 );
@@ -264,7 +267,7 @@ CREATE TABLE IF NOT EXISTS assistant_operations (
  request_digest TEXT NOT NULL, request_json TEXT NOT NULL,
  input_token_upper_bound INTEGER NOT NULL, payload_digest TEXT NOT NULL,
  pricing_version TEXT NOT NULL, input_rate INTEGER NOT NULL, output_rate INTEGER NOT NULL,
- route_fingerprint TEXT NOT NULL, context_window INTEGER NOT NULL,
+ rate_denominator INTEGER NOT NULL DEFAULT 1000 CHECK(rate_denominator IN (1000,1000000)), route_fingerprint TEXT NOT NULL, context_window INTEGER NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('queued','dispatching','running','succeeded','failed','cancelled','outcome_unknown')),
  version INTEGER NOT NULL DEFAULT 1, last_event_seq INTEGER NOT NULL DEFAULT 0,
  cancel_requested INTEGER NOT NULL DEFAULT 0,

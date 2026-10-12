@@ -11,6 +11,7 @@ from copy import copy, deepcopy
 from .efforts import FROZEN_FIELDS, public_efforts, resolve_effort, selection_pair, validate_efforts
 
 from . import assistant_contract as contract
+from .assistant_billing import capture_for_usage, credit_cost
 from .errors import ApiError
 from .security import new_id
 
@@ -62,6 +63,7 @@ class AssistantService:
         # Routing/credentials remain owned by the current provider. Only the
         # original public limits and rates are reconstructed from this budget.
         fields = {'assistant_' + name: policy['agent'][name] for name in FROZEN_FIELDS}
+        fields['assistant_rate_denominator'] = policy['agent'].get('rate_denominator', 1000)
         config = replace(self.config, **fields, assistant_models=(), efforts=())
         provider = self.provider
         if hasattr(provider, 'config'):
@@ -150,7 +152,7 @@ class AssistantService:
                     protocol_version=1, images=c.assistant_images, tools=True,
                     context_window=c.assistant_context_window, max_output_tokens=c.assistant_max_output_tokens,
                     max_steps=c.assistant_max_steps, max_turn_credits=c.assistant_max_turn_credits,
-                    pricing_version=c.assistant_pricing_version)
+                    pricing_version=c.assistant_pricing_version, rate_denominator=c.assistant_rate_denominator)
         value.update(model_id=self.model_id, label=self.label)
         if include_models:
             value['default_model_id'] = self.model_id
@@ -209,7 +211,8 @@ class AssistantService:
     def _budget_snapshot(row):
         value = {('budget_id' if key == 'id' else key): row[key] for key in (
             'id', 'local_session_id', 'turn_id', 'max_credits', 'held_credits', 'spent_credits',
-            'operation_count', 'max_steps', 'state', 'expires_at', 'model_id', 'effort_id', 'policy_revision')}
+            'operation_count', 'max_steps', 'state', 'expires_at', 'model_id', 'effort_id', 'policy_revision',
+            'rounding_mode', 'accrued_microcredits')}
         value['policy'] = json.loads(row['policy_json']) if row['policy_json'] is not None else None
         return value
 
@@ -265,7 +268,7 @@ class AssistantService:
                 target = new_id('abud')
                 connection.execute('''INSERT INTO assistant_turn_budgets
                     (id,user_id,local_session_id,turn_id,max_credits,max_steps,created_at,expires_at,model_id,
-                     effort_id,policy_revision,policy_json,route_fingerprint) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                     effort_id,policy_revision,policy_json,route_fingerprint,rounding_mode,accrued_microcredits) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'task_cumulative_v1',0)''',
                     (target, user, body['local_session_id'], body['turn_id'], self.config.assistant_max_turn_credits,
                      self.config.assistant_max_steps, self.now(), self.now() + 120, self.model_id,
                      self.effort_policy['id'] if self.effort_policy else None,
@@ -333,16 +336,17 @@ class AssistantService:
                 self._remember(connection, user, 'quote', key, digest, row['id'])
             else:
                 prepared = self.prepare(body['request'], user=user, budget_id=body['budget_id'], client_request_id=body['client_request_id'])
-                credits = (self.config.assistant_context_window * self.config.assistant_input_rate +
-                           body['request']['maxOutputTokens'] * self.config.assistant_output_rate + 999) // 1000
+                credits = credit_cost(self.config.assistant_context_window, body['request']['maxOutputTokens'],
+                                      self.config.assistant_input_rate, self.config.assistant_output_rate,
+                                      self.config.assistant_rate_denominator)
                 self._check_budget(budget, credits)
                 target = new_id('aquo')
                 connection.execute('''INSERT INTO assistant_quotes
                     (id,user_id,request_digest,pricing_version,route_fingerprint,input_rate,output_rate,context_window,
-                     input_token_upper_bound,payload_digest,max_credits,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                     input_token_upper_bound,payload_digest,max_credits,expires_at,created_at,rate_denominator) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                     (target, user, digest, self.config.assistant_pricing_version, self.route_fingerprint(), self.config.assistant_input_rate,
                      self.config.assistant_output_rate, self.config.assistant_context_window, prepared.input_token_upper_bound,
-                     hashlib.sha256(prepared.payload).hexdigest(), credits, self.now() + 120, self.now()))
+                     hashlib.sha256(prepared.payload).hexdigest(), credits, self.now() + 120, self.now(), self.config.assistant_rate_denominator))
                 # Move every alias to the one refreshed quote in the same transaction.
                 connection.execute("UPDATE assistant_idempotency SET target_id=? WHERE user_id=? AND namespace IN ('quote','quote-request') AND digest=?", (target, user, digest))
                 self._remember(connection, user, 'quote', key, digest, target)
@@ -402,7 +406,8 @@ class AssistantService:
             if not quote or quote['request_digest'] != digest or quote['consumed_at'] is not None or \
                     quote['expires_at'] <= self.now() or quote['pricing_version'] != self.config.assistant_pricing_version or \
                     quote['route_fingerprint'] != self.route_fingerprint() or quote['input_rate'] != self.config.assistant_input_rate or \
-                    quote['output_rate'] != self.config.assistant_output_rate or quote['context_window'] != self.config.assistant_context_window:
+                    quote['output_rate'] != self.config.assistant_output_rate or quote['context_window'] != self.config.assistant_context_window or \
+                    quote['rate_denominator'] != self.config.assistant_rate_denominator:
                 raise ApiError(409, 'ASSISTANT_QUOTE_MISMATCH', 'Agent 报价已过期或与请求不一致')
             prepared = self.prepare(body['request'], user=user, budget_id=body['budget_id'], client_request_id=body['client_request_id'])
             if prepared.input_token_upper_bound != quote['input_token_upper_bound'] or hashlib.sha256(prepared.payload).hexdigest() != quote['payload_digest']:
@@ -415,11 +420,11 @@ class AssistantService:
             target = new_id('aop')
             connection.execute('''INSERT INTO assistant_operations
                 (id,user_id,client_request_id,local_session_id,turn_id,step_id,budget_id,request_digest,request_json,
-                 pricing_version,input_rate,output_rate,route_fingerprint,context_window,input_token_upper_bound,payload_digest,state,reserved_credits,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'queued',?,?,?)''',
+                 pricing_version,input_rate,output_rate,route_fingerprint,context_window,input_token_upper_bound,payload_digest,rate_denominator,state,reserved_credits,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'queued',?,?,?)''',
                 (target, user, body['client_request_id'], body['local_session_id'], body['turn_id'], body['step_id'],
                  budget['id'], digest, contract.canonical(body['request']), quote['pricing_version'],
-                 quote['input_rate'], quote['output_rate'], quote['route_fingerprint'], quote['context_window'], quote['input_token_upper_bound'], quote['payload_digest'], credits, self.now(), self.now()))
+                 quote['input_rate'], quote['output_rate'], quote['route_fingerprint'], quote['context_window'], quote['input_token_upper_bound'], quote['payload_digest'], quote['rate_denominator'], credits, self.now(), self.now()))
             self._remember(connection, user, 'create', key, digest, target)
             connection.execute('UPDATE assistant_quotes SET consumed_at=? WHERE id=?', (self.now(), quote['id']))
             connection.execute('UPDATE assistant_turn_budgets SET held_credits=held_credits+?,operation_count=operation_count+1 WHERE id=?',
@@ -568,10 +573,16 @@ class AssistantService:
         if row['billing_state'] in SETTLED:
             return
         cost = None
-        if usage is not None:
-            cost = (usage['input'] * row['input_rate'] + usage['output'] * row['output_rate'] + 999) // 1000
+        capture = None
+        budget = connection.execute('SELECT * FROM assistant_turn_budgets WHERE id=? AND user_id=?',
+                                    (row['budget_id'], row['user_id'])).fetchone()
+        if budget is None:
+            raise RuntimeError('assistant budget missing')
         limits_exceeded = usage is not None and (usage['input'] > row['input_token_upper_bound'] or usage['input'] + usage['output'] > row['context_window'] or
                            usage['output'] > json.loads(row['request_json'])['maxOutputTokens'])
+        if usage is not None and not limits_exceeded:
+            capture = capture_for_usage(row, budget, usage)
+            cost = capture.credits
         if cost is None or cost > row['reserved_credits'] or limits_exceeded:
             connection.execute("""UPDATE assistant_operations SET state=?,billing_state='settlement_pending',result_json=?,usage_json=?,error_json=? WHERE id=?""",
                                (state, contract.canonical(result) if result else None, contract.canonical(usage) if usage else None,
@@ -586,8 +597,8 @@ class AssistantService:
         connection.execute('UPDATE wallets SET available_credits=available_credits+?,held_credits=held_credits-?,updated_at=? WHERE user_id=?',
                            (release, row['reserved_credits'], self.now(), row['user_id']))
         connection.execute('UPDATE wallet_holds SET state=?,updated_at=? WHERE id=?', (billing, self.now(), hold['id']))
-        connection.execute('UPDATE assistant_turn_budgets SET held_credits=held_credits-?,spent_credits=spent_credits+? WHERE id=?',
-                           (row['reserved_credits'], cost, row['budget_id']))
+        connection.execute('UPDATE assistant_turn_budgets SET held_credits=held_credits-?,spent_credits=spent_credits+?,accrued_microcredits=? WHERE id=?',
+                           (row['reserved_credits'], cost, capture.accrued_microcredits, row['budget_id']))
         if state != 'succeeded' or row['cancel_requested']:
             connection.execute("UPDATE assistant_turn_budgets SET state='closed' WHERE id=?", (row['budget_id'],))
         if cost:

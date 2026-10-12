@@ -1249,13 +1249,26 @@ fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
         return;
     };
     cloud.effort_required = !efforts.is_empty();
-    if value["effort_policy_version"] != 1 || efforts.len() > 8 {
+    if !matches!(value["effort_policy_version"].as_u64(), Some(1 | 2)) || efforts.len() > 8 {
         cloud.effort_catalog_valid = false;
         cloud.effort_required = true;
         return;
     }
     let mut ids = HashSet::new();
     for effort in efforts {
+        let unit = effort["agent"].get("rate_denominator");
+        let valid_unit = match unit {
+            None => true,
+            Some(unit) => unit.as_u64().is_some_and(|unit| {
+                matches!(unit, 1000 | 1_000_000)
+                    && (value["effort_policy_version"] == 2 || unit == 1000)
+            }),
+        };
+        if !valid_unit {
+            cloud.effort_catalog_valid = false;
+            cloud.effort_required = true;
+            return;
+        }
         let generation = &effort["generation"];
         let valid_models = ["image_model_ids", "video_model_ids"]
             .into_iter()
@@ -8855,6 +8868,34 @@ mod reference_tests {
         assert_eq!(pending.body, original_body);
         assert_eq!(pending.key, "original-key");
         assert_eq!(pending.snapshot.effort, Some(low));
+    }
+    #[test]
+    fn generation_catalog_v2_keeps_legacy_quote_raw_and_rejects_unit_drift() {
+        let old = effort_fixture("low", "v1", "image-low");
+        let mut current = old.clone();
+        current["agent"]["rate_denominator"] = json!(1_000_000);
+        let mut cloud = Cloud {
+            effort_selection: Some(old.clone()),
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":2,"default_effort_id":"low","efforts":[current.clone()]}),
+        );
+        assert_eq!(cloud.catalog_efforts, vec![current.clone()]);
+        assert_eq!(cloud.effort_selection, Some(old));
+        assert_eq!(
+            generation_effort_reason(&cloud),
+            "强度策略已更新，请重新选择"
+        );
+        for unit in [json!(true), json!("1000000"), json!(100)] {
+            current["agent"]["rate_denominator"] = unit;
+            accept_effort_catalog(
+                &mut cloud,
+                &json!({"effort_policy_version":2,"default_effort_id":"low","efforts":[current.clone()]}),
+            );
+            assert!(cloud.catalog_efforts.is_empty());
+        }
     }
     #[test]
     fn effort_generation_rejects_changed_policy_unavailable_and_missing_selection() {

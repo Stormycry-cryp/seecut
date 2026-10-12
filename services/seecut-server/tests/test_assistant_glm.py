@@ -204,7 +204,7 @@ class GLMWireTest(AssistantFixture):
         self.assertEqual(self.service.get(self.user, second['operation_id'])['state'], 'succeeded')
         payload = self.requests[1][1]; self.assertEqual(payload['messages'][2]['reasoning_content'], '内部思考')
         self.assertEqual(payload['messages'][2]['content'], ''); self.assertEqual(payload['messages'][3]['tool_call_id'], 'call-1')
-        self.wallet(98, 0)
+        self.wallet(99, 0)  # Both verified steps share one cumulative task rounding.
         for scope in ({'user_id': self.other, 'budget_id': body['budget_id'], 'client_request_id': 'scope'},
                       {'user_id': self.user, 'budget_id': 'other-budget', 'client_request_id': 'scope'}):
             with self.assertRaises(ValueError):

@@ -5,6 +5,8 @@ import json
 import re
 from dataclasses import replace
 
+from .assistant_billing import rate_denominator
+
 IDENTITY = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 LIMITS = {
     'input_rate': (0, 1_000_000), 'output_rate': (0, 1_000_000),
@@ -22,7 +24,7 @@ def parse_models(raw):
         result, seen = [], {'default'}
         for item in value:
             if not isinstance(item, dict) or not {'id', 'label', 'model'} <= item.keys() or \
-                    not item.keys() <= {'id', 'label', 'model', 'pricing_version'} | LIMITS.keys():
+                    not item.keys() <= {'id', 'label', 'model', 'pricing_version', 'rate_denominator'} | LIMITS.keys():
                 raise ValueError
             identity = item['id']
             if not isinstance(identity, str) or not IDENTITY.fullmatch(identity) or identity in seen:
@@ -38,6 +40,8 @@ def parse_models(raw):
             for key, (minimum, maximum) in LIMITS.items():
                 if key in item and (type(item[key]) is not int or not minimum <= item[key] <= maximum):
                     raise ValueError
+            if 'rate_denominator' in item:
+                rate_denominator(item['rate_denominator'])
             seen.add(identity)
             result.append(dict(item))
         return tuple(result)
@@ -46,7 +50,11 @@ def parse_models(raw):
 
 
 def model_config(config, specification):
-    fields = {'assistant_model': specification['model']}
+    # A legacy alias never silently inherits a million-token unit.
+    denominator = rate_denominator(specification.get('rate_denominator', 1000))
+    if denominator != config.assistant_rate_denominator and not {'input_rate', 'output_rate'} <= specification.keys():
+        raise ValueError('Agent alias changing rate units requires both rates')
+    fields = {'assistant_model': specification['model'], 'assistant_rate_denominator': denominator}
     for key in (*LIMITS, 'pricing_version'):
         if key in specification:
             fields['assistant_' + key] = specification[key]

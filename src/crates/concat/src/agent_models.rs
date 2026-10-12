@@ -143,6 +143,7 @@ fn policy_snapshot(value: &Value) -> Value {
         "max_steps",
         "max_turn_credits",
         "pricing_version",
+        "rate_denominator",
         "policy_revision",
         "effort_id",
     ] {
@@ -155,9 +156,17 @@ fn policy_snapshot(value: &Value) -> Value {
     }
     Value::Object(policy)
 }
+fn price_unit(value: &Value) -> Option<u64> {
+    match value.get("rate_denominator") {
+        None => Some(1000),
+        Some(value) => value
+            .as_u64()
+            .filter(|unit| matches!(*unit, 1000 | 1_000_000)),
+    }
+}
 pub(crate) fn parse(value: Value) -> Result<Directory, &'static str> {
     let invalid = "模型目录暂不可用";
-    if value["protocol_version"] != 1 {
+    if value["protocol_version"] != 1 || price_unit(&value).is_none() {
         return Err(invalid);
     }
     let Some(models) = value.get("models") else {
@@ -182,6 +191,7 @@ pub(crate) fn parse(value: Value) -> Result<Directory, &'static str> {
         .ok_or(invalid)?;
     let mut result = Vec::<Choice>::new();
     for model in models {
+        price_unit(model).ok_or(invalid)?;
         let id = model["model_id"]
             .as_str()
             .filter(|id| alias(id))
@@ -226,7 +236,7 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
             Err(invalid)
         };
     }
-    if value["effort_policy_version"] != 1 {
+    if !matches!(value["effort_policy_version"].as_u64(), Some(1 | 2)) {
         return Err(invalid);
     }
     let entries = value["efforts"]
@@ -264,6 +274,15 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
             .as_str()
             .filter(|id| models.iter().any(|model| model.id == *id))
             .ok_or(invalid)?;
+        let unit = price_unit(&entry["agent"]).ok_or(invalid)?;
+        let model_unit = models
+            .iter()
+            .find(|model| model.id == model_id)
+            .and_then(|model| price_unit(&model.policy))
+            .ok_or(invalid)?;
+        if unit != model_unit || (value["effort_policy_version"] == 1 && unit != 1000) {
+            return Err(invalid);
+        }
         let mut agent = serde_json::Map::new();
         agent.insert("model_id".into(), Value::String(model_id.into()));
         for name in ["max_output_tokens", "max_steps", "max_turn_credits"] {
@@ -286,6 +305,9 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
                 }
                 agent.insert(name.into(), field.clone());
             }
+        }
+        if let Some(unit) = entry["agent"].get("rate_denominator") {
+            agent.insert("rate_denominator".into(), unit.clone());
         }
         let mut generation = serde_json::Map::new();
         let mut reference_count = 0;
@@ -422,9 +444,41 @@ mod tests {
         assert!(parse(empty).unwrap().efforts.is_empty());
     }
     #[test]
+    fn rate_units_preserve_legacy_json_and_accept_explicit_million_v2() {
+        let legacy = parse(effort_response()).unwrap();
+        assert!(
+            legacy.efforts[0].policy()["agent"]
+                .get("rate_denominator")
+                .is_none()
+        );
+        let mut value = effort_response();
+        value["effort_policy_version"] = json!(2);
+        value["models"][1]["rate_denominator"] = json!(1_000_000);
+        value["efforts"][0]["agent"]["rate_denominator"] = json!(1_000_000);
+        let current = parse(value.clone()).unwrap();
+        assert_eq!(
+            current.efforts[0].policy()["agent"]["rate_denominator"],
+            1_000_000
+        );
+        value["effort_policy_version"] = json!(1);
+        assert!(parse(value.clone()).is_err());
+        value["effort_policy_version"] = json!(2);
+        for unit in [json!(true), json!("1000000"), json!(999), json!(1000)] {
+            value["efforts"][0]["agent"]["rate_denominator"] = unit;
+            assert!(parse(value.clone()).is_err());
+        }
+        let mut mixed = effort_response();
+        mixed["effort_policy_version"] = json!(2);
+        assert!(
+            parse(mixed).unwrap().efforts[0].policy()["agent"]
+                .get("rate_denominator")
+                .is_none()
+        );
+    }
+    #[test]
     fn effort_catalog_rejects_ambiguous_ids_revisions_and_mappings() {
         for (path, replacement) in [
-            ("/effort_policy_version", json!(2)),
+            ("/effort_policy_version", json!(3)),
             ("/default_effort_id", json!("missing")),
             ("/efforts/0/id", json!("unsafe/id")),
             ("/efforts/0/policy_revision", json!("")),
