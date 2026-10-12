@@ -16,6 +16,42 @@ pub enum Phase {
     Intent,
     Accepted,
     Finished,
+    Rejected,
+}
+/// Only a known submit refusal plus an authenticated absence check proves non-acceptance.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubmissionFailure {
+    pub status: u16,
+    pub code: String,
+    pub message: String,
+    pub original_key_absent: bool,
+}
+impl SubmissionFailure {
+    pub fn known_refusal(&self) -> bool {
+        self.status == 409
+            && matches!(
+                self.code.as_str(),
+                "QUOTE_MISMATCH" | "INSUFFICIENT_CREDITS"
+            )
+    }
+    pub fn confirmed_unaccepted(&self) -> bool {
+        self.known_refusal() && self.original_key_absent
+    }
+}
+impl From<String> for SubmissionFailure {
+    fn from(message: String) -> Self {
+        Self {
+            status: 0,
+            code: String::new(),
+            message,
+            original_key_absent: false,
+        }
+    }
+}
+impl From<&str> for SubmissionFailure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Candidate {
@@ -46,6 +82,8 @@ pub struct Attempt {
     pub selected: Option<(String, String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_failure: Option<SubmissionFailure>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Execution {
@@ -115,6 +153,15 @@ impl Execution {
             {
                 return Err("invalid frozen service request".into());
             }
+            if a.phase == Phase::Rejected
+                && (!a.tasks.is_empty()
+                    || !a
+                        .submission_failure
+                        .as_ref()
+                        .is_some_and(SubmissionFailure::confirmed_unaccepted))
+            {
+                return Err("unconfirmed submit refusal".into());
+            }
             for (id, t) in &a.tasks {
                 if id != &t.id
                     || !valid_id(id)
@@ -169,12 +216,9 @@ impl Execution {
             }
             return Err("原图片任务结果未确定，请先核账".into());
         }
-        if let Some(a) = self
-            .attempts
-            .iter()
-            .rev()
-            .find(|a| a.fingerprint == fingerprint && a.phase != Phase::Finished)
-        {
+        if let Some(a) = self.attempts.iter().rev().find(|a| {
+            a.fingerprint == fingerprint && !matches!(a.phase, Phase::Finished | Phase::Rejected)
+        }) {
             return Ok(a.id.clone());
         }
         let id = id();
@@ -190,6 +234,7 @@ impl Execution {
             tasks: BTreeMap::new(),
             selected: None,
             error: None,
+            submission_failure: None,
         });
         self.validate(&self.document_id, &self.project_id)?;
         Ok(id)
@@ -214,9 +259,26 @@ impl Execution {
         a.phase = Phase::Intent;
         Ok(())
     }
+    pub fn submission_failed(
+        &mut self,
+        id: &str,
+        scope: &Scope,
+        failure: SubmissionFailure,
+    ) -> Result<()> {
+        let a = self.attempt_mut(id)?;
+        if &a.draft.context.scope != scope || a.phase != Phase::Intent || !a.tasks.is_empty() {
+            return Err("submit failure does not belong to an unaccepted intent".into());
+        }
+        if failure.confirmed_unaccepted() {
+            a.phase = Phase::Rejected;
+        }
+        a.error = Some(format!("{}: {}", failure.code, failure.message));
+        a.submission_failure = Some(failure);
+        Ok(())
+    }
     pub fn observe(&mut self, id: &str, scope: &Scope, task: &Value) -> Result<()> {
         let a = self.attempt_mut(id)?;
-        if &a.draft.context.scope != scope || a.body.is_none() {
+        if &a.draft.context.scope != scope || a.body.is_none() || a.phase == Phase::Rejected {
             return Err("service scope changed".into());
         }
         let task_id = task["id"].as_str().ok_or("task ID missing")?;

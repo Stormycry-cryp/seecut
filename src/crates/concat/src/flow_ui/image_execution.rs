@@ -7,7 +7,7 @@ use crate::{
 use seecut_flow_core::{
     Result,
     commands::Command,
-    execution::{Execution, Phase},
+    execution::{Execution, Phase, SubmissionFailure},
     host::{AssetPickerRequest, LibraryAsset},
     runner::{Asset, Scope},
     store::Store,
@@ -42,6 +42,7 @@ enum ValueReply {
     Discovered(Vec<(Origin, Execution)>),
     Prepared(Origin, String, Value),
     Task(Origin, String, Scope, Value),
+    SubmissionFailed(Origin, String, Scope, SubmissionFailure),
     Registered(Origin, String, String, String, RegisteredImage),
     Picked(String, PathBuf, AssetPickerRequest, RegisteredImage),
     Preview(RegisteredImage),
@@ -347,7 +348,9 @@ impl Images {
     }
 }
 pub(super) fn attempt_status(a: &seecut_flow_core::execution::Attempt) -> &'static str {
-    if a.error.is_some() {
+    if a.phase == Phase::Rejected {
+        "未受理"
+    } else if a.error.is_some() {
         "待核对"
     } else if a.tasks.values().any(|t| t.status == "pending_reconcile") {
         "待核账"
@@ -356,6 +359,7 @@ pub(super) fn attempt_status(a: &seecut_flow_core::execution::Attempt) -> &'stat
             Phase::Prepared => "准备中",
             Phase::Intent => "核实提交",
             Phase::Accepted => "处理中",
+            Phase::Rejected => "未受理",
             Phase::Finished => {
                 if a.tasks
                     .values()
@@ -384,17 +388,24 @@ fn parameter_label(field: &str, value: &Value) -> String {
         _ => raw,
     }
 }
-fn save(h: &mut Host, origin: &Origin, next: Execution) -> Result<()> {
+fn save(h: &mut Host, origin: &Origin, baseline: &Execution, next: Execution) -> Result<()> {
+    if h.images
+        .sources
+        .get(&origin.path)
+        .is_some_and(|source| source.blocked)
+    {
+        return Err("执行记录写入已阻断，请重新打开工程恢复".into());
+    }
     let active = h.controller.session.as_mut().filter(|s| {
         s.path.canonicalize().ok().as_ref() == Some(&origin.path)
             && s.store.document().id == origin.document
             && s.store.document().project_id == origin.project
     });
     let persisted = if let Some(s) = active {
-        s.store.save_execution(next.clone())
+        s.store.save_execution_from(baseline, next.clone())
     } else {
         Store::open_project(&origin.path, &origin.document, &origin.project)
-            .and_then(|mut store| store.save_execution(next.clone()))
+            .and_then(|mut store| store.save_execution_from(baseline, next.clone()))
     };
     if let Err(error) = persisted {
         if let Some(source) = h.images.sources.get_mut(&origin.path) {
@@ -761,9 +772,10 @@ fn tick(app: &App, h: &mut Host) -> bool {
             match reply.result {
                 Err(error) => {
                     if let Some((origin, id)) = reply.preparation {
-                        let mut e = original(h, &origin)?;
+                        let baseline = original(h, &origin)?;
+                        let mut e = baseline.clone();
                         e.attempt_mut(&id)?.error = Some("准备失败，请重试".into());
-                        save(h, &origin, e)?;
+                        save(h, &origin, &baseline, e)?;
                     }
                     Err(error)
                 }
@@ -800,7 +812,8 @@ fn tick(app: &App, h: &mut Host) -> bool {
                     Ok(())
                 }
                 Ok(ValueReply::Task(origin, id, scope, value)) => {
-                    let mut e = original(h, &origin)?;
+                    let baseline = original(h, &origin)?;
+                    let mut e = baseline.clone();
                     let tasks = value["tasks"]
                         .as_array()
                         .cloned()
@@ -808,7 +821,7 @@ fn tick(app: &App, h: &mut Host) -> bool {
                     for task in &tasks {
                         e.observe(&id, &scope, task)?;
                     }
-                    save(h, &origin, e)?;
+                    save(h, &origin, &baseline, e)?;
                     for task in tasks {
                         h.images
                             .sources
@@ -819,8 +832,17 @@ fn tick(app: &App, h: &mut Host) -> bool {
                     }
                     Ok(())
                 }
+                Ok(ValueReply::SubmissionFailed(origin, id, scope, failure)) => {
+                    let baseline = original(h, &origin)?;
+                    let mut e = baseline.clone();
+                    let message = failure.message.clone();
+                    e.submission_failed(&id, &scope, failure)?;
+                    save(h, &origin, &baseline, e)?;
+                    Err(message)
+                }
                 Ok(ValueReply::Registered(origin, id, task, output, image)) => {
-                    let mut e = original(h, &origin)?;
+                    let baseline = original(h, &origin)?;
+                    let mut e = baseline.clone();
                     let asset = Asset {
                         id: image.asset.id.clone(),
                         version: serde_json::to_string(
@@ -831,7 +853,7 @@ fn tick(app: &App, h: &mut Host) -> bool {
                         simulated: false,
                     };
                     e.registered(&id, &task, &output, asset)?;
-                    save(h, &origin, e)?;
+                    save(h, &origin, &baseline, e)?;
                     h.images.preview(&image);
                     Ok(())
                 }
@@ -1025,7 +1047,13 @@ fn tick(app: &App, h: &mut Host) -> bool {
                 {
                     h.images.running.insert(key.clone());
                     std::thread::spawn(move || {
-                        let result = c.lookup(&a).map(|v| ValueReply::Task(o, a.id, c.scope, v));
+                        let result = match c.lookup(&a) {
+                            Ok(value) => Ok(ValueReply::Task(o, a.id, c.scope, value)),
+                            Err(failure) if failure.confirmed_unaccepted() => {
+                                Ok(ValueReply::SubmissionFailed(o, a.id, c.scope, failure))
+                            }
+                            Err(failure) => Err(format!("{}: {}", failure.code, failure.message)),
+                        };
                         let _ = tx.send(Reply {
                             key,
                             preparation: None,
@@ -1130,7 +1158,8 @@ fn tick(app: &App, h: &mut Host) -> bool {
         changed = true;
         let submitted = key.clone();
         let result = (|| -> Result<()> {
-            let mut e = original(h, &origin)?;
+            let baseline = original(h, &origin)?;
+            let mut e = baseline.clone();
             if e.paused
                 || h.images
                     .sources
@@ -1141,7 +1170,7 @@ fn tick(app: &App, h: &mut Host) -> bool {
                 return Ok(());
             }
             e.intent(&id, body)?;
-            save(h, &origin, e.clone())?;
+            save(h, &origin, &baseline, e.clone())?;
             let a = e
                 .attempts
                 .iter()
@@ -1151,9 +1180,10 @@ fn tick(app: &App, h: &mut Host) -> bool {
             let c = client.clone();
             let tx = h.images.tx.clone();
             std::thread::spawn(move || {
-                let result = c
-                    .submit(&a)
-                    .map(|v| ValueReply::Task(origin, a.id, c.scope, v));
+                let result = Ok(match c.submit(&a) {
+                    Ok(value) => ValueReply::Task(origin, a.id, c.scope, value),
+                    Err(failure) => ValueReply::SubmissionFailed(origin, a.id, c.scope, failure),
+                });
                 let _ = tx.send(Reply {
                     key,
                     preparation: None,

@@ -102,6 +102,18 @@ impl Store {
         self.execution = execution;
         Ok(())
     }
+    /// Compare against the snapshot read under this Store's writer lock, before any write.
+    pub fn save_execution_from(
+        &mut self,
+        baseline: &crate::execution::Execution,
+        next: crate::execution::Execution,
+    ) -> Result<()> {
+        self.ready()?;
+        if crate::digest(&self.execution) != crate::digest(baseline) {
+            return Err("执行记录已被其他会话更新，请重新打开工程恢复".into());
+        }
+        self.save_execution(next)
+    }
     /// Future node kinds/versions remain viewable without enabling an older writer.
     pub fn is_read_only(&self) -> bool {
         self.document

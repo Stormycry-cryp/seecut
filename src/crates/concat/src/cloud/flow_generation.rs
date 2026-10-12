@@ -7,7 +7,11 @@ use crate::personal_library::{
     Asset, AssetKind, AssetReference, Library, OutputProvenance, checked_managed_version_path,
     verify_asset_reference, with_library_write_lock,
 };
-use seecut_flow_core::{execution::Attempt, host::GenerationDraft, runner::Scope};
+use seecut_flow_core::{
+    execution::{Attempt, SubmissionFailure},
+    host::GenerationDraft,
+    runner::Scope,
+};
 use serde_json::{Value, json};
 use slint::ComponentHandle;
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
@@ -207,6 +211,17 @@ pub(crate) fn image_body(
     Ok(body)
 }
 impl ImageClient {
+    fn api_raw(
+        &self,
+        method: &str,
+        path: impl Into<String>,
+        body: Value,
+        key: Option<&str>,
+    ) -> Result<Value, super::ClientError> {
+        let mut req = request(method, path, body);
+        req.idem = key.map(str::to_owned);
+        call(&self.cloud, &req)
+    }
     fn api(
         &self,
         method: &str,
@@ -214,9 +229,8 @@ impl ImageClient {
         body: Value,
         key: Option<&str>,
     ) -> Result<Value, String> {
-        let mut req = request(method, path, body);
-        req.idem = key.map(str::to_owned);
-        call(&self.cloud, &req).map_err(|e| format!("{}: {}", e.code, e.message))
+        self.api_raw(method, path, body, key)
+            .map_err(|e| format!("{}: {}", e.code, e.message))
     }
     pub(crate) fn catalog(&self) -> Result<Value, String> {
         self.api("GET", "/api/generation/models", Value::Null, None)
@@ -289,30 +303,86 @@ impl ImageClient {
         Ok(body)
     }
     /// Called only after the owner Store successfully committed the original key/body.
-    pub(crate) fn submit(&self, attempt: &Attempt) -> Result<Value, String> {
+    pub(crate) fn submit(&self, attempt: &Attempt) -> Result<Value, SubmissionFailure> {
         if attempt.draft.context.scope != self.scope {
             return Err("账户或服务已切换".into());
         }
         for input in &attempt.draft.references {
             library_image(&input.id, Some(&input.version))?;
         }
-        self.api(
+        let result = self.api_raw(
             "POST",
             "/api/generation/images",
             attempt.body.clone().ok_or("请求尚未持久保存")?,
             Some(&attempt.key),
-        )
+        );
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let mut failure = SubmissionFailure {
+                    status: error.status,
+                    code: error.code,
+                    message: error.message,
+                    original_key_absent: false,
+                };
+                // QUOTE_MISMATCH can also arise while validating an existing task's
+                // price snapshot. Only the original-key absence check disambiguates it.
+                if failure.known_refusal() {
+                    match self.api_raw(
+                        "GET",
+                        "/api/generation/tasks/by-request",
+                        Value::Null,
+                        Some(&attempt.key),
+                    ) {
+                        Ok(task) => return Ok(task),
+                        Err(check)
+                            if check.status == 404 && check.code == "GENERATION_TASK_NOT_FOUND" =>
+                        {
+                            failure.original_key_absent = true;
+                        }
+                        Err(check) => failure
+                            .message
+                            .push_str(&format!("；原键核实未完成：{}", check.message)),
+                    }
+                }
+                Err(failure)
+            }
+        }
     }
-    pub(crate) fn lookup(&self, attempt: &Attempt) -> Result<Value, String> {
+    pub(crate) fn lookup(&self, attempt: &Attempt) -> Result<Value, SubmissionFailure> {
         if attempt.draft.context.scope != self.scope {
             return Err("账户或服务已切换".into());
         }
-        self.api(
+        self.api_raw(
             "GET",
             "/api/generation/tasks/by-request",
             Value::Null,
             Some(&attempt.key),
         )
+        .map_err(|error| {
+            if let Some(original) = attempt
+                .submission_failure
+                .as_ref()
+                .filter(|failure| failure.known_refusal())
+            {
+                let mut failure = original.clone();
+                failure.original_key_absent =
+                    error.status == 404 && error.code == "GENERATION_TASK_NOT_FOUND";
+                if !failure.original_key_absent {
+                    failure
+                        .message
+                        .push_str(&format!("；原键核实未完成：{}", error.message));
+                }
+                failure
+            } else {
+                SubmissionFailure {
+                    status: error.status,
+                    code: error.code,
+                    message: error.message,
+                    original_key_absent: false,
+                }
+            }
+        })
     }
     pub(crate) fn task(&self, task: &str) -> Result<Value, String> {
         self.api(

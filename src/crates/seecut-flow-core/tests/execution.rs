@@ -1,5 +1,5 @@
 use seecut_flow_core::{
-    execution::{Execution, Phase},
+    execution::{Execution, Phase, SubmissionFailure},
     graph::{Document, Graph, MediaKind},
     host::{Context, GenerationDraft},
     runner::{Asset, Scope},
@@ -371,4 +371,251 @@ fn remote_expiry_does_not_skip_known_output_local_registration_recovery() {
     assert_eq!(e.attempts[0].phase, Phase::Finished);
     assert_eq!(e.actual_credits(&scope()).unwrap(), 7);
     store.save_execution(e).unwrap();
+}
+
+fn refusal(code: &str, original_key_absent: bool) -> SubmissionFailure {
+    SubmissionFailure {
+        status: 409,
+        code: code.into(),
+        message: "owned refusal".into(),
+        original_key_absent,
+    }
+}
+#[test]
+fn confirmed_refusal_preserves_original_and_explicit_run_gets_new_quote_and_key() {
+    for code in ["QUOTE_MISMATCH", "INSUFFICIENT_CREDITS"] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("project");
+        let mut store = Store::create(&path, Document::new(Graph::default())).unwrap();
+        let id = intent(&mut store);
+        let frozen = store.execution().attempts[0].body.clone();
+        let mut e = store.execution().clone();
+        e.submission_failed(&id, &scope(), refusal(code, true))
+            .unwrap();
+        store.save_execution(e).unwrap();
+        drop(store);
+        let mut store = Store::open(&path).unwrap();
+        let old = &store.execution().attempts[0];
+        assert_eq!(old.phase, Phase::Rejected);
+        assert_eq!(old.key, id);
+        assert_eq!(old.body, frozen);
+        assert_eq!(old.submission_failure.as_ref().unwrap().code, code);
+        assert!(old.tasks.is_empty());
+        assert_eq!(store.execution().actual_credits(&scope()).unwrap(), 0);
+        let mut e = store.execution().clone();
+        let retry = e.begin(draft(store.document()), "a".repeat(64)).unwrap();
+        assert_ne!(retry, id);
+        assert_eq!(e.attempts[1].phase, Phase::Prepared);
+        e.intent(
+            &retry,
+            json!({"model":"model","prompt":"synthetic","quote_id":"fresh-quote"}),
+        )
+        .unwrap();
+        e.observe(&retry, &scope(), &task("gen_retry", 7)).unwrap();
+        e.registered(&retry, "gen_retry", "out_one", asset())
+            .unwrap();
+        store.save_execution(e).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.execution().attempts[0].body, frozen);
+        assert_eq!(store.execution().attempts[0].phase, Phase::Rejected);
+        assert_eq!(store.execution().attempts[1].phase, Phase::Finished);
+        assert_eq!(store.execution().actual_credits(&scope()).unwrap(), 7);
+    }
+}
+#[test]
+fn timeout_lookup404_and_unproven_refusals_keep_original_intent_without_second_post() {
+    let cases = [
+        SubmissionFailure::from("timeout"),
+        SubmissionFailure {
+            status: 404,
+            code: "GENERATION_TASK_NOT_FOUND".into(),
+            message: "lookup alone".into(),
+            original_key_absent: true,
+        },
+        refusal("IDEMPOTENCY_CONFLICT", true),
+        refusal("QUOTE_MISMATCH", false),
+        refusal("INSUFFICIENT_CREDITS", false),
+        SubmissionFailure {
+            status: 429,
+            ..refusal("INSUFFICIENT_CREDITS", true)
+        },
+    ];
+    for failure in cases {
+        let d = Document::new(Graph::default());
+        let mut e = Execution::new(d.id.clone(), d.project_id.clone());
+        let id = e.begin(draft(&d), "a".repeat(64)).unwrap();
+        let body = json!({"model":"model","prompt":"synthetic","quote_id":"quote"});
+        e.intent(&id, body.clone()).unwrap();
+        e.submission_failed(&id, &scope(), failure).unwrap();
+        for _ in 0..3 {
+            assert_eq!(e.begin(draft(&d), "a".repeat(64)).unwrap(), id);
+            assert!(e.intent(&id, body.clone()).is_err());
+        }
+        let mut changed = draft(&d);
+        changed.prompt = "changed".into();
+        assert!(e.begin(changed, "a".repeat(64)).is_err());
+        assert_eq!(e.attempts.len(), 1);
+        assert_eq!(e.attempts[0].phase, Phase::Intent);
+        assert_eq!(e.attempts[0].body.as_ref(), Some(&body));
+        e.validate(&d.id, &d.project_id).unwrap();
+        // Later original-key success still recovers the original attempt.
+        e.observe(&id, &scope(), &task("gen_original", 7)).unwrap();
+        assert_eq!(e.attempts[0].key, id);
+        assert_eq!(e.attempts[0].phase, Phase::Accepted);
+    }
+}
+#[test]
+fn refusal_cannot_terminate_an_already_accepted_task_or_wrong_scope() {
+    let d = Document::new(Graph::default());
+    let mut e = Execution::new(d.id.clone(), d.project_id.clone());
+    let id = e.begin(draft(&d), "a".repeat(64)).unwrap();
+    e.intent(&id, json!({"quote_id":"quote"})).unwrap();
+    let wrong = Scope {
+        account: "other".into(),
+        ..scope()
+    };
+    assert!(
+        e.submission_failed(&id, &wrong, refusal("QUOTE_MISMATCH", true))
+            .is_err()
+    );
+    e.observe(&id, &scope(), &task("gen_original", 7)).unwrap();
+    let before = seecut_flow_core::digest(&e);
+    assert!(
+        e.submission_failed(&id, &scope(), refusal("QUOTE_MISMATCH", true))
+            .is_err()
+    );
+    assert_eq!(seecut_flow_core::digest(&e), before);
+}
+#[test]
+fn stale_background_callback_preserves_other_process_new_attempt_then_reopens() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("project");
+    let mut a = Store::create(&path, Document::new(Graph::default())).unwrap();
+    let id = intent(&mut a);
+    let baseline = a.execution().clone();
+    drop(a);
+    let mut b = Store::open(&path).unwrap();
+    let mut next = b.execution().clone();
+    let mut other = draft(b.document());
+    other.context.node_id = "other-node".into();
+    let other_id = next.begin(other, "a".repeat(64)).unwrap();
+    b.save_execution(next).unwrap();
+    drop(b);
+    let bytes = std::fs::read(path.join("execution.json")).unwrap();
+    let mut callback = baseline.clone();
+    callback
+        .observe(&id, &scope(), &task("gen_original", 7))
+        .unwrap();
+    let mut a = Store::open(&path).unwrap();
+    assert!(
+        a.save_execution_from(&baseline, callback)
+            .unwrap_err()
+            .contains("重新打开")
+    );
+    assert_eq!(std::fs::read(path.join("execution.json")).unwrap(), bytes);
+    assert!(
+        a.execution()
+            .attempts
+            .iter()
+            .any(|attempt| attempt.id == other_id)
+    );
+    drop(a);
+    let mut reopened = Store::open(&path).unwrap();
+    let fresh = reopened.execution().clone();
+    let mut callback = fresh.clone();
+    callback
+        .observe(&id, &scope(), &task("gen_original", 7))
+        .unwrap();
+    reopened.save_execution_from(&fresh, callback).unwrap();
+    assert!(
+        reopened
+            .execution()
+            .attempts
+            .iter()
+            .any(|attempt| attempt.id == other_id)
+    );
+    assert_eq!(reopened.execution().actual_credits(&scope()).unwrap(), 7);
+}
+#[test]
+fn stale_background_callback_preserves_other_process_selected_result_byte_for_byte() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("project");
+    let mut a = Store::create(&path, Document::new(Graph::default())).unwrap();
+    let id = intent(&mut a);
+    let mut baseline = a.execution().clone();
+    baseline
+        .observe(&id, &scope(), &task("gen_original", 7))
+        .unwrap();
+    baseline
+        .registered(&id, "gen_original", "out_one", asset())
+        .unwrap();
+    a.save_execution(baseline.clone()).unwrap();
+    drop(a);
+    let mut b = Store::open(&path).unwrap();
+    let mut chosen = b.execution().clone();
+    chosen
+        .select(&id, "gen_original", "out_one", &scope())
+        .unwrap();
+    b.save_execution(chosen).unwrap();
+    drop(b);
+    let bytes = std::fs::read(path.join("execution.json")).unwrap();
+    let mut callback = baseline.clone();
+    callback
+        .observe(&id, &scope(), &task("gen_original", 7))
+        .unwrap();
+    let mut a = Store::open(&path).unwrap();
+    assert!(a.save_execution_from(&baseline, callback).is_err());
+    assert_eq!(std::fs::read(path.join("execution.json")).unwrap(), bytes);
+    assert_eq!(
+        a.execution().attempts[0].selected,
+        Some(("gen_original".into(), "out_one".into()))
+    );
+}
+#[test]
+fn uncontended_background_result_with_original_baseline_saves_and_reopens() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("project");
+    let mut a = Store::create(&path, Document::new(Graph::default())).unwrap();
+    let id = intent(&mut a);
+    let baseline = a.execution().clone();
+    drop(a);
+    let mut callback = baseline.clone();
+    callback
+        .observe(&id, &scope(), &task("gen_original", 7))
+        .unwrap();
+    callback
+        .registered(&id, "gen_original", "out_one", asset())
+        .unwrap();
+    let mut background = Store::open(&path).unwrap();
+    background.save_execution_from(&baseline, callback).unwrap();
+    drop(background);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(reopened.execution().attempts[0].phase, Phase::Finished);
+    assert_eq!(reopened.execution().actual_credits(&scope()).unwrap(), 7);
+}
+
+#[test]
+fn known_refusal_waits_for_later_authenticated_absence_without_new_post() {
+    let d = Document::new(Graph::default());
+    let mut e = Execution::new(d.id.clone(), d.project_id.clone());
+    let id = e.begin(draft(&d), "a".repeat(64)).unwrap();
+    e.intent(&id, json!({"quote_id":"original-quote"})).unwrap();
+    e.submission_failed(&id, &scope(), refusal("QUOTE_MISMATCH", false))
+        .unwrap();
+    assert_eq!(e.begin(draft(&d), "a".repeat(64)).unwrap(), id);
+    assert_eq!(e.attempts[0].phase, Phase::Intent);
+    let mut persisted =
+        serde_json::from_value::<Execution>(serde_json::to_value(&e).unwrap()).unwrap();
+    let mut confirmed = persisted.attempts[0].submission_failure.clone().unwrap();
+    confirmed.original_key_absent = true;
+    persisted
+        .submission_failed(&id, &scope(), confirmed)
+        .unwrap();
+    assert_eq!(persisted.attempts[0].phase, Phase::Rejected);
+    assert_eq!(
+        persisted.attempts[0].body.as_ref().unwrap()["quote_id"],
+        "original-quote"
+    );
+    assert_ne!(persisted.begin(draft(&d), "a".repeat(64)).unwrap(), id);
 }
