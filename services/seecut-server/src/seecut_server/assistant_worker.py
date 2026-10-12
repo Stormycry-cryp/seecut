@@ -4,6 +4,7 @@ import threading
 import hashlib
 
 from .assistant_provider import ProviderFailure
+from .assistant_execution_lock import execution_lock
 from . import assistant_contract as contract
 
 
@@ -17,7 +18,6 @@ class AssistantWorker:
     def start(self):
         if self._thread and self._thread.is_alive():
             return
-        self.service.recover_interrupted()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name='seecut-agent-worker', daemon=True)
         self._thread.start()
@@ -28,6 +28,12 @@ class AssistantWorker:
             self._thread.join(timeout=3)
 
     def process_once(self):
+        with execution_lock(self.service.db.path, required=False) as acquired:
+            if acquired is False:
+                return 0
+            return self._process_once()
+
+    def _process_once(self):
         import json
         operation = self.service.claim()
         if operation is None:
@@ -77,9 +83,17 @@ class AssistantWorker:
         return 1
 
     def _run(self):
+        recovered = False
         while not self._stop.is_set():
             try:
-                processed = self.process_once()
+                with execution_lock(self.service.db.path, required=False) as acquired:
+                    if acquired is False:
+                        processed = 0
+                    else:
+                        if not recovered:
+                            self.service.recover_interrupted()
+                            recovered = True
+                        processed = self._process_once()
             except Exception:
                 processed = 0
             if not processed:

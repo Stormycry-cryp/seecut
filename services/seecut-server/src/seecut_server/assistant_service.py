@@ -536,6 +536,12 @@ class AssistantService:
             self._event(connection, operation_id, 'model', event)
 
     def finish(self, operation_id, state, usage=None, result=None, error=None):
+        with self.db.transaction(immediate=True) as connection:
+            row = connection.execute('SELECT * FROM assistant_operations WHERE id=?', (operation_id,)).fetchone()
+            self._finish_in_transaction(connection, row, state, usage, result, error)
+
+    @staticmethod
+    def _validate_finish(row, state, usage, result):
         if state not in {'succeeded', 'failed', 'cancelled'}:
             raise ValueError('invalid terminal execution state')
         if result is not None:
@@ -544,16 +550,18 @@ class AssistantService:
                 raise ValueError('invalid final event')
         if usage is not None:
             contract.usage(usage)
-        with self.db.transaction(immediate=True) as connection:
-            row = connection.execute('SELECT * FROM assistant_operations WHERE id=?', (operation_id,)).fetchone()
-            if row['billing_state'] in SETTLED:
-                return
-            if result is not None:
-                allowed_tools = {tool['name'] for tool in json.loads(row['request_json'])['tools']}
-                if any(call['name'] not in allowed_tools for call in result['message'].get('toolCalls', [])):
-                    raise ValueError('unrequested tool call')
-            if state == 'succeeded' and result is None:
-                raise ValueError('successful execution needs a complete result')
+        if row['billing_state'] in SETTLED:
+            return
+        if result is not None:
+            allowed_tools = {tool['name'] for tool in json.loads(row['request_json'])['tools']}
+            if any(call['name'] not in allowed_tools for call in result['message'].get('toolCalls', [])):
+                raise ValueError('unrequested tool call')
+        if state == 'succeeded' and result is None:
+            raise ValueError('successful execution needs a complete result')
+
+    def _finish_in_transaction(self, connection, row, state, usage, result=None, error=None):
+        self._validate_finish(row, state, usage, result)
+        if row['billing_state'] not in SETTLED:
             self._settle(connection, row, state, usage, result, error)
 
     def _settle(self, connection, row, state, usage, result=None, error=None):
@@ -606,7 +614,7 @@ class AssistantService:
             self._event(connection, operation_id, 'terminal', {'state': 'outcome_unknown', 'billing_state': row['billing_state']})
 
     def recover_interrupted(self):
-        # Called once at startup, before this service's sole worker is started.
+        # Called once under the execution lock, before the worker dispatches.
         with self.db.connect() as connection:
             ids = [row[0] for row in connection.execute("SELECT id FROM assistant_operations WHERE state IN ('dispatching','running')")]
         for operation_id in ids:

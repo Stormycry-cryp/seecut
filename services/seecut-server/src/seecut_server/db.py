@@ -7,9 +7,10 @@ from typing import Iterator
 
 
 class Database:
-    def __init__(self, path: Path, schema_path: Path):
+    def __init__(self, path: Path, schema_path: Path, *, read_only: bool = False):
         self.path = path
         self.schema_path = schema_path
+        self.read_only = read_only
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,7 +73,8 @@ class Database:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        target = self.path.resolve().as_uri() + "?mode=ro" if self.read_only else self.path
+        connection = sqlite3.connect(target, uri=self.read_only, timeout=10, isolation_level=None)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 10000")
@@ -89,5 +91,6 @@ class Database:
                 yield connection
                 connection.execute("COMMIT")
             except Exception:
-                connection.execute("ROLLBACK")
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
                 raise

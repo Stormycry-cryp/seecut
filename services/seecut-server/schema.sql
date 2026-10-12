@@ -281,6 +281,18 @@ CREATE TABLE IF NOT EXISTS assistant_events (
 );
 CREATE INDEX IF NOT EXISTS idx_assistant_queued ON assistant_operations(state,created_at);
 
+-- Local operator declarations, atomically committed with one manual settlement.
+CREATE TABLE IF NOT EXISTS assistant_resolutions (
+ resolution_id TEXT PRIMARY KEY, input_digest TEXT NOT NULL,
+ user_id TEXT NOT NULL REFERENCES users(id),
+ operation_id TEXT NOT NULL REFERENCES assistant_operations(id),
+ operator TEXT NOT NULL, operator_authentication TEXT NOT NULL
+   CHECK(operator_authentication='local_declaration'),
+ reason TEXT NOT NULL, evidence_reference_json TEXT NOT NULL,
+ input_summary_json TEXT NOT NULL, before_json TEXT NOT NULL,
+ after_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_assistant_active_budget ON assistant_turn_budgets(user_id) WHERE state='active';
 
 -- GLM reasoning stays server-side, bound to the original settled operation.
