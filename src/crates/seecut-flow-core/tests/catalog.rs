@@ -1,6 +1,7 @@
 use seecut_flow_core::{
     catalog,
     graph::{Document, Graph, Node},
+    runner::{Outcome, Runner, Scope},
     store::Store,
 };
 use serde_json::json;
@@ -125,4 +126,132 @@ fn external_legacy_and_save_as_have_distinct_entries_and_future_nodes_keep_raw_f
     assert!(store.rename_project("changed").is_err());
     assert!(catalog::inspect(&path).unwrap().read_only);
     assert_eq!(bytes, fs::read(path.join("document.json")).unwrap());
+}
+
+#[test]
+fn large_project_is_remembered_relisted_renamed_and_recovered_without_index() {
+    let root = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let path = external.path().join("large");
+    let mut graph = Graph::default();
+    let graph_id = graph.id.clone();
+    let mut target = String::new();
+    for _ in 0..3 {
+        let node = Node::new("prompt", json!({"text": "x".repeat(6 * 1024 * 1024)}));
+        target.clone_from(&node.id);
+        graph.nodes.insert(node.id.clone(), node);
+    }
+    let store = Store::create(&path, Document::new(graph)).unwrap();
+    let mut runner = Runner::new(store, Scope::synthetic()).unwrap();
+    assert!(matches!(
+        runner.run_to(&graph_id, &target).unwrap(),
+        Outcome::Complete(_)
+    ));
+    for name in ["document.json", "runtime.json"] {
+        let size = fs::metadata(path.join(name)).unwrap().len();
+        assert!(size > 16 * 1024 * 1024 && size < 32 * 1024 * 1024);
+    }
+    let runtime = fs::read(path.join("runtime.json")).unwrap();
+    drop(runner);
+
+    let project = catalog::inspect(&path).unwrap();
+    assert_eq!(project.nodes, 3);
+    assert!(!project.read_only);
+    catalog::remember(root.path(), &project).unwrap();
+    let listing = catalog::list(root.path());
+    assert!(listing.warnings.is_empty());
+    assert_eq!(listing.projects.len(), 1);
+    assert_eq!(listing.projects[0].path, project.path);
+    let mut store = Store::open_project(&path, &project.document_id, &project.project_id).unwrap();
+    let old = store.document().clone();
+    store.rename_project("大型工程").unwrap();
+    let next = store.document();
+    assert_eq!(
+        (&next.id, &next.project_id, &next.graphs, &next.operations),
+        (&old.id, &old.project_id, &old.graphs, &old.operations)
+    );
+    assert_eq!(next.revision, old.revision + 1);
+    assert_eq!(runtime, fs::read(path.join("runtime.json")).unwrap());
+    drop(store);
+    assert_eq!(
+        Store::open(&path).unwrap().document().title.as_deref(),
+        Some("大型工程")
+    );
+    let listing = catalog::list(root.path());
+    assert!(listing.warnings.is_empty());
+    assert_eq!(listing.projects[0].title, "大型工程");
+
+    let owned = root.path().join("owned");
+    fs::create_dir(&owned).unwrap();
+    for name in ["document.json", "runtime.json"] {
+        fs::copy(path.join(name), owned.join(name)).unwrap();
+    }
+    assert_eq!(catalog::list(root.path()).projects.len(), 2);
+    fs::remove_dir_all(root.path().join(".project-catalog")).unwrap();
+    let recovered = catalog::list(root.path());
+    assert!(recovered.warnings.is_empty());
+    assert_eq!(recovered.projects.len(), 1);
+    assert_eq!(recovered.projects[0].path, owned.canonicalize().unwrap());
+    assert_eq!(recovered.projects[0].title, "大型工程");
+}
+
+#[test]
+fn catalog_and_store_accept_snapshots_at_the_32_mib_boundary() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("boundary");
+    drop(Store::create(&path, Document::new(Graph::default())).unwrap());
+    for name in ["document.json", "runtime.json"] {
+        let file = path.join(name);
+        let mut bytes = fs::read(&file).unwrap();
+        bytes.resize(32 * 1024 * 1024, b' ');
+        fs::write(file, bytes).unwrap();
+    }
+    let project = catalog::inspect(&path).unwrap();
+    catalog::remember(root.path(), &project).unwrap();
+    assert_eq!(catalog::list(root.path()).projects.len(), 1);
+    let mut store = Store::open_project(&path, &project.document_id, &project.project_id).unwrap();
+    store.rename_project("边界工程").unwrap();
+    drop(store);
+    assert_eq!(catalog::inspect(&path).unwrap().title, "边界工程");
+    assert_eq!(
+        fs::metadata(path.join("runtime.json")).unwrap().len(),
+        32 * 1024 * 1024
+    );
+}
+
+#[test]
+fn catalog_and_store_reject_each_snapshot_over_32_mib_and_preserve_files() {
+    for name in ["document.json", "runtime.json"] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("oversized");
+        drop(Store::create(&path, Document::new(Graph::default())).unwrap());
+        let project = catalog::inspect(&path).unwrap();
+        catalog::remember(root.path(), &project).unwrap();
+        let file = path.join(name);
+        let mut bytes = fs::read(&file).unwrap();
+        bytes.resize(32 * 1024 * 1024 + 1, b' ');
+        fs::write(file, &bytes).unwrap();
+        let other = if name == "document.json" {
+            "runtime.json"
+        } else {
+            "document.json"
+        };
+        let other_bytes = fs::read(path.join(other)).unwrap();
+        assert!(
+            catalog::inspect(&path)
+                .unwrap_err()
+                .contains("工程文件过大")
+        );
+        let listing = catalog::list(root.path());
+        assert!(listing.projects.is_empty());
+        assert!(!listing.warnings.is_empty());
+        assert!(
+            Store::open_project(&path, &project.document_id, &project.project_id)
+                .err()
+                .unwrap()
+                .contains("exceeds 32 MiB")
+        );
+        assert_eq!(bytes, fs::read(path.join(name)).unwrap());
+        assert_eq!(other_bytes, fs::read(path.join(other)).unwrap());
+    }
 }

@@ -6,6 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Shared format limit for project discovery, snapshot reads, and atomic writes.
+pub(crate) const MAX_SNAPSHOT_BYTES: u64 = 32 * 1024 * 1024;
+
 /// One process holds the OS lock for the entire session; a crashed process releases it.
 /// Separate graph and execution snapshots: each attempt contains immutable input data.
 pub struct Store {
@@ -172,7 +175,7 @@ fn lock(root: &Path) -> Result<File> {
 }
 fn read<T: DeserializeOwned>(root: &Path, name: &str) -> Result<T> {
     let path = root.join(name);
-    if fs::metadata(&path).map_err(|e| e.to_string())?.len() > 32 * 1024 * 1024 {
+    if fs::metadata(&path).map_err(|e| e.to_string())?.len() > MAX_SNAPSHOT_BYTES {
         return Err("Flow snapshot exceeds 32 MiB".into());
     }
     serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
@@ -180,7 +183,7 @@ fn read<T: DeserializeOwned>(root: &Path, name: &str) -> Result<T> {
 }
 pub(crate) fn atomic(root: &Path, name: &str, value: &impl Serialize) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    if bytes.len() > 32 * 1024 * 1024 {
+    if bytes.len() as u64 > MAX_SNAPSHOT_BYTES {
         return Err("Flow snapshot exceeds 32 MiB".into());
     }
     let path = root.join(format!(".{name}.{}.tmp", crate::id()));

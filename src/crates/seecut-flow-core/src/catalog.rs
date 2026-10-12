@@ -1,5 +1,5 @@
 //! Recoverable project catalogue. Listing never opens a writer or recovers runs.
-use crate::{Result, graph::Document, runner::Runtime};
+use crate::{Result, graph::Document, runner::Runtime, store::MAX_SNAPSHOT_BYTES};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,7 +9,6 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-const LIMIT: u64 = 16 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Project {
     pub path: PathBuf,
@@ -38,10 +37,10 @@ pub struct Listing {
 fn read<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let file = fs::File::open(path).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(LIMIT + 1)
+    file.take(MAX_SNAPSHOT_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > LIMIT {
+    if bytes.len() as u64 > MAX_SNAPSHOT_BYTES {
         return Err("工程文件过大，原文件已保留".into());
     }
     serde_json::from_slice(&bytes).map_err(|e| e.to_string())
