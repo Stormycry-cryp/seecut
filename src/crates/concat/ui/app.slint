@@ -19,7 +19,7 @@ import "fonts/Synonym-Medium.ttf";
 import "fonts/Synonym-SemiBold.ttf";
 
 import { Theme } from "theme/theme.slint";
-import { Flow, FlowPage, FlowDraftDialog, FlowRecoveryDialog, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter } from "flow/page.slint";
+import { Flow, FlowPage, FlowDraftDialog, FlowRecoveryDialog, FlowNameDialog, FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter } from "flow/page.slint";
 import { Bezier, Curves, Fmt, Focus, Payload } from "util.slint";
 import { EffectData } from "demo/effects-panel.slint";
 import { MediaFilter, MediaItemData, MediaKind, TextPresetData } from "workspace/media-pane.slint";
@@ -61,7 +61,7 @@ import {
 
 // Re-exported so main.rs can reach the globals and the struct.
 export {
-    Flow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter,
+    Flow, FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter,
     Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, CanvasControls, CanvasThumbs, I18n, Assistant, AssistantMessage,
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData, ParamFormat,
     DockDivider, DockSide, PaneKind, SeatBox,
@@ -190,7 +190,7 @@ export component App inherits Window {
         SeeCut.canvas-create-open = false;
         SeeCut.team-dialog = 0;
     }
-    property <bool> workflow-modal-open: Flow.confirm || Flow.recovery || Flow.picker-open || root.clip-create-open || SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
+    property <bool> workflow-modal-open: Flow.project-dialog || Flow.confirm || Flow.recovery || Flow.picker-open || root.clip-create-open || SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
     // A small set of stable opening controls can receive focus again after
     // their sheet closes. Other workflows use the window keyboard scope.
     // 1 canvas open, 2 canvas export, 3 clip assets, 4 clip export, 5 settings.
@@ -522,7 +522,7 @@ export component App inherits Window {
             if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.template-delete-id = ""; return accept; }
             if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } return accept; }
             if event.text == Key.Escape && root.settings.open { root.settings-closed(); return accept; }
-            if SeeCut.page == 8 && !root.workflow-modal-open && !root.sheet-open {
+            if SeeCut.page == 8 && Flow.open && !Flow.browsing && !root.workflow-modal-open && !root.sheet-open {
                 if !Flow.input-focused && (event.modifiers.control || event.modifiers.meta) {
                     let shortcut = event.text.to-lowercase();
                     if shortcut == "z" { Flow.action(event.modifiers.shift ? "redo" : "undo"); return accept; }
@@ -1266,6 +1266,7 @@ export component App inherits Window {
 
     FlowDraftDialog { }
     FlowRecoveryDialog { }
+    FlowNameDialog { }
 
     // Global floating UI stays above pages. Modal tasks temporarily hide the
     // panel and disable the entry; the host keeps the active-workspace rules.

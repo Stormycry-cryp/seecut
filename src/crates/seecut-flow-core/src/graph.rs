@@ -258,6 +258,9 @@ pub struct Document {
     pub revision: u64,
     pub id: String,
     pub project_id: String,
+    /// Display name only; old projects keep their directory-name fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub graphs: BTreeMap<String, Graph>,
     #[serde(default)]
     pub operations: BTreeMap<String, crate::commands::Receipt>,
@@ -271,6 +274,7 @@ impl Document {
             revision: 0,
             id: id(),
             project_id: id(),
+            title: None,
             graphs: BTreeMap::from([(graph.id.clone(), graph)]),
             operations: BTreeMap::new(),
             source_document: None,

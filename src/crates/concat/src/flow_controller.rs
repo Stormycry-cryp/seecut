@@ -58,6 +58,9 @@ impl Session {
             .is_some_and(|h| !h.redo.is_empty())
     }
     pub fn edit(&mut self, command: Command) -> Result<Vec<String>> {
+        if self.store.is_read_only() {
+            return Err("此工程含不支持的节点，当前为只读".into());
+        }
         let before = self.graph().clone();
         let viewport_only = matches!(&command, Command::Viewport { .. });
         if let Command::Viewport { viewport } = &command
@@ -134,8 +137,12 @@ struct Draft {
 }
 #[derive(Clone)]
 pub(crate) enum Intent {
+    #[cfg(test)]
     New(PathBuf),
+    NewNamed(PathBuf, String),
     Open(PathBuf),
+    OpenProject(PathBuf, String, String),
+    RenameProject(String),
     Close,
     Select(String),
     Navigate(i32),
@@ -234,12 +241,18 @@ impl Controller {
         if session.token != token {
             return Err("视口归属已改变，未写入工程".into());
         }
+        if session.store.is_read_only() {
+            return Ok(()); // ephemeral navigation is safe; do not downgrade the original.
+        }
         session.edit(Command::Viewport { viewport: view })?;
         self.pending_view = None;
         Ok(())
     }
     pub fn change_draft(&mut self, generation: &str, text: String) -> Result<()> {
         let session = self.session.as_ref().ok_or("工程已关闭")?;
+        if session.store.is_read_only() {
+            return Err("此工程为只读".into());
+        }
         let draft = self.draft.as_mut().ok_or("未选择提示词节点")?;
         if generation != draft.generation
             || draft.token != session.token
@@ -288,6 +301,25 @@ impl Controller {
             return Ok(None);
         }
         self.flush_viewport()?;
+        if let Intent::Open(path) | Intent::OpenProject(path, _, _) = &intent
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|s| same_path(&s.path, path))
+        {
+            if let Intent::OpenProject(_, document, project) = &intent {
+                let current = self
+                    .session
+                    .as_ref()
+                    .expect("session exists")
+                    .store
+                    .document();
+                if current.id != *document || current.project_id != *project {
+                    return Err("工程身份已改变".into());
+                }
+            }
+            return Ok(Some(Effect::None));
+        }
         if let Intent::Select(node) = &intent
             && self.session.as_ref().is_some_and(|s| s.selected == *node)
         {
@@ -330,6 +362,7 @@ impl Controller {
     }
     fn perform(&mut self, intent: Intent) -> Result<Effect> {
         match intent {
+            #[cfg(test)]
             Intent::New(path) => {
                 let graph = Graph {
                     viewport: [60., 64., 0.8],
@@ -337,6 +370,18 @@ impl Controller {
                 };
                 let store = Store::create(&path, Document::new(graph))?;
                 self.session = Some(Session::from_store(store, path)?);
+                self.pending_view = None;
+            }
+            Intent::NewNamed(path, name) => {
+                let title = seecut_flow_core::store::project_name(&name)?;
+                let mut document = Document::new(Graph {
+                    viewport: [60., 64., 0.8],
+                    ..Graph::default()
+                });
+                document.title = Some(title);
+                let store = Store::create(&path, document)?;
+                self.session = Some(Session::from_store(store, path)?);
+                self.pending_view = None;
             }
             Intent::Open(path) => {
                 if self
@@ -349,8 +394,24 @@ impl Controller {
                 let store = Store::open(&path)?;
                 let next = Session::from_store(store, path)?;
                 self.session = Some(next);
+                self.pending_view = None;
             }
-            Intent::Close => self.session = None,
+            Intent::OpenProject(path, document, project) => {
+                let store = Store::open_project(&path, &document, &project)?;
+                self.session = Some(Session::from_store(store, path)?);
+                self.pending_view = None;
+            }
+            Intent::RenameProject(name) => {
+                self.session
+                    .as_mut()
+                    .ok_or("工程已关闭")?
+                    .store
+                    .rename_project(&name)?;
+            }
+            Intent::Close => {
+                self.session = None;
+                self.pending_view = None;
+            }
             Intent::Select(node) => {
                 let session = self.session.as_mut().ok_or("请先打开工程")?;
                 if !node.is_empty() && !session.graph().nodes.contains_key(&node) {
@@ -681,5 +742,143 @@ mod tests {
         assert_eq!(c.prompt(), "尚未保存");
         assert_eq!(c.draft_token(), generation);
         assert_eq!(c.viewport(), Some([30., 42., 1.]));
+    }
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+    use seecut_flow_core::graph::{Edge, Node};
+    use serde_json::json;
+    fn new(c: &mut Controller, path: PathBuf, name: &str) {
+        c.request(Intent::NewNamed(path, name.into())).unwrap();
+    }
+    #[test]
+    fn project_switch_cancel_save_discard_and_same_path_reenter_keep_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        let mut c = Controller::default();
+        new(&mut c, b.clone(), "B");
+        let bd = c.session.as_ref().unwrap().store.document().clone();
+        new(&mut c, a.clone(), "A");
+        let node = Node::new("prompt", json!({"text":"原文"}));
+        let id = node.id.clone();
+        c.request(Intent::Edit(Box::new(Command::Add { node })))
+            .unwrap();
+        let token = c.draft_token().to_owned();
+        c.change_draft(&token, "保存到 A".into()).unwrap();
+        let ad = c.session.as_ref().unwrap().store.document().clone();
+        assert_eq!(
+            c.request(Intent::OpenProject(
+                a.clone(),
+                ad.id.clone(),
+                ad.project_id.clone()
+            ))
+            .unwrap(),
+            Some(Effect::None)
+        );
+        assert_eq!(c.draft_token(), token);
+        assert!(c.dirty());
+        let open_b = || Intent::OpenProject(b.clone(), bd.id.clone(), bd.project_id.clone());
+        assert_eq!(c.request(open_b()).unwrap(), None);
+        c.resolve(0).unwrap();
+        assert_eq!(c.prompt(), "保存到 A");
+        assert_eq!(c.session.as_ref().unwrap().path, a);
+        c.request(open_b()).unwrap();
+        c.resolve(2).unwrap();
+        assert_eq!(c.session.as_ref().unwrap().store.document().id, bd.id);
+        c.request(Intent::Open(a.clone())).unwrap();
+        c.request(Intent::Select(id.clone())).unwrap();
+        assert_eq!(c.prompt(), "保存到 A");
+        let token = c.draft_token().to_owned();
+        c.change_draft(&token, "放弃内容".into()).unwrap();
+        c.request(open_b()).unwrap();
+        c.resolve(1).unwrap();
+        c.request(Intent::Open(a)).unwrap();
+        c.request(Intent::Select(id)).unwrap();
+        assert_eq!(c.prompt(), "保存到 A");
+    }
+    #[test]
+    fn names_viewport_and_graph_survive_fresh_controller_without_crossed_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        let mut c = Controller::default();
+        new(&mut c, a.clone(), "A");
+        let before = c.session.as_ref().unwrap().store.document().clone();
+        let token = c.session.as_ref().unwrap().token.clone();
+        c.preview_viewport(&token, [-230., 72., 1.2]).unwrap();
+        c.request(Intent::RenameProject("重命名 A".into())).unwrap();
+        new(&mut c, b, "B");
+        assert_eq!(c.viewport(), Some([60., 64., 0.8]));
+        c.request(Intent::Close).unwrap();
+        drop(c);
+        let mut c = Controller::default();
+        c.request(Intent::OpenProject(a, before.id.clone(), before.project_id))
+            .unwrap();
+        assert_eq!(c.viewport(), Some([-230., 72., 1.2]));
+        let doc = c.session.as_ref().unwrap().store.document();
+        assert_eq!(doc.id, before.id);
+        assert_eq!(doc.title.as_deref(), Some("重命名 A"));
+    }
+    #[test]
+    fn future_node_navigation_is_ephemeral_and_old_writer_never_reserializes_raw_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("future");
+        let mut node = Node::new("prompt", json!({"text":"opaque"}));
+        node.version = 999;
+        let mut graph = Graph::default();
+        graph.nodes.insert(node.id.clone(), node);
+        drop(Store::create(&path, Document::new(graph)).unwrap());
+        let before = std::fs::read(path.join("document.json")).unwrap();
+        let mut c = Controller::default();
+        c.request(Intent::Open(path.clone())).unwrap();
+        let token = c.session.as_ref().unwrap().token.clone();
+        c.preview_viewport(&token, [1., 2., 0.4]).unwrap();
+        assert!(
+            c.request(Intent::RenameProject("forbidden".into()))
+                .is_err()
+        );
+        assert!(c.request(Intent::Edit(Box::new(Command::Arrange))).is_err());
+        c.request(Intent::Close).unwrap();
+        assert_eq!(c.viewport(), None);
+        assert_eq!(before, std::fs::read(path.join("document.json")).unwrap());
+    }
+    #[test]
+    fn duplicate_create_and_invalid_connection_leave_existing_graph_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a");
+        let mut c = Controller::default();
+        new(&mut c, path.clone(), "A");
+        let prompt = Node::new("prompt", json!({"text":"A"}));
+        let p = prompt.id.clone();
+        let image = Node::new("image_generate", json!({"model":"unconfigured","count":1}));
+        let i = image.id.clone();
+        c.request(Intent::Edit(Box::new(Command::Add { node: prompt })))
+            .unwrap();
+        c.request(Intent::Edit(Box::new(Command::Add { node: image })))
+            .unwrap();
+        let before = c.session.as_ref().unwrap().store.document().clone();
+        assert!(
+            c.request(Intent::NewNamed(path.clone(), "duplicate".into()))
+                .is_err()
+        );
+        assert!(
+            c.request(Intent::Edit(Box::new(Command::Connect {
+                edge: Edge {
+                    from: i,
+                    output: "out".into(),
+                    to: p,
+                    input: "prompt".into(),
+                    order: 0
+                }
+            })))
+            .is_err()
+        );
+        assert_eq!(&before, c.session.as_ref().unwrap().store.document());
+        c.request(Intent::Close).unwrap();
+        c.request(Intent::Open(path)).unwrap();
+        assert_eq!(c.session.as_ref().unwrap().graph().nodes.len(), 2);
     }
 }

@@ -2,10 +2,11 @@
 //! Native Flow host. Graph commands are durable; generation and asset writes stay disabled.
 use crate::{
     flow_controller::{Controller, Effect, Intent},
-    ui::{App, Flow, FlowEdgeView, FlowNodeView, SeeCut},
+    ui::{App, Flow, FlowEdgeView, FlowNodeView, FlowProjectRow, SeeCut},
 };
 use seecut_flow_core::{
     Result,
+    catalog::{self, Project},
     commands::Command,
     graph::{Edge, Node},
 };
@@ -13,7 +14,22 @@ use serde_json::json;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
 
+enum Naming {
+    New(PathBuf),
+    Rename(Project),
+}
+struct NameDialog {
+    token: String,
+    session: Option<String>,
+    mode: Naming,
+}
 struct Host {
+    browsing: bool,
+    projects: Vec<Project>,
+    project_rows: Rc<VecModel<FlowProjectRow>>,
+    search: String,
+    name_sort: bool,
+    dialog: Option<NameDialog>,
     controller: Controller,
     root: PathBuf,
     nodes: Rc<VecModel<FlowNodeView>>,
@@ -36,6 +52,13 @@ impl Host {
         if self.recovery {
             return Err("请先处理恢复对话框".into());
         }
+        let project_change = matches!(
+            &intent,
+            Intent::NewNamed(_, _)
+                | Intent::Open(_)
+                | Intent::OpenProject(_, _, _)
+                | Intent::RenameProject(_)
+        );
         let previous = self.controller.session.as_ref().map(|s| s.token.clone());
         let effect = self.controller.request(intent)?;
         if previous != self.controller.session.as_ref().map(|s| s.token.clone()) {
@@ -46,12 +69,34 @@ impl Host {
             self.connecting.clear();
         }
         self.error = false;
-        self.message = "生成、资产导入及交付尚未接通；节点编辑会自动保存".into();
+        self.message = "节点自动保存 · 执行尚未接通".into();
+        if project_change {
+            self.browsing = false;
+            if effect.is_some() {
+                self.remember_current();
+                self.refresh_projects();
+            }
+        }
+        if self.controller.session.is_none() {
+            self.browsing = true;
+        }
         Ok(effect)
     }
     fn publish(&mut self, app: &App) {
         let ui = app.global::<Flow>();
         ui.set_open(self.controller.session.is_some());
+        ui.set_browsing(self.browsing);
+        if self.browsing {
+            ui.set_input_focused(false);
+        }
+        ui.set_project_dialog(self.dialog.is_some());
+        ui.set_dialog_token(self.dialog.as_ref().map_or("", |d| d.token.as_str()).into());
+        ui.set_read_only(
+            self.controller
+                .session
+                .as_ref()
+                .is_some_and(|s| s.store.is_read_only()),
+        );
         ui.set_confirm(self.controller.pending() && !self.recovery);
         ui.set_recovery(self.recovery);
         ui.set_recovery_available(self.recovery_available);
@@ -64,11 +109,17 @@ impl Host {
         if let Some(s) = self.controller.session.as_ref() {
             ui.set_token(s.token.clone().into());
             ui.set_title(
-                s.path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
+                s.store
+                    .document()
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| {
+                        s.path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned()
+                    })
                     .into(),
             );
             ui.set_selected_id(s.selected.clone().into());
@@ -172,19 +223,140 @@ impl Host {
             .collect::<Vec<_>>();
         self.edges.set_vec(edges);
     }
+    fn remember_current(&mut self) {
+        if let Some(session) = &self.controller.session {
+            let result = catalog::inspect(&session.path).and_then(|p| {
+                if p.document_id != session.store.document().id
+                    || p.project_id != session.store.document().project_id
+                {
+                    return Err("磁盘工程身份已改变，未更新列表记录".into());
+                }
+                catalog::remember(&self.root, &p)
+            });
+            if let Err(e) = result {
+                self.message = format!("工程已保留；列表记录写入失败：{e}");
+                self.error = true;
+            }
+        }
+    }
+    fn refresh_projects(&mut self) {
+        let listing = catalog::list(&self.root);
+        self.projects = listing.projects;
+        if let Some(warning) = listing.warnings.first() {
+            self.message = format!("部分工程暂不可用，原文件已保留：{warning}");
+            self.error = true;
+        }
+        self.filter_projects();
+    }
+    fn filter_projects(&self) {
+        let search = self.search.to_lowercase();
+        let mut projects = self
+            .projects
+            .iter()
+            .filter(|p| p.title.to_lowercase().contains(&search))
+            .collect::<Vec<_>>();
+        if self.name_sort {
+            projects.sort_by(|a, b| a.title.cmp(&b.title));
+        }
+        self.project_rows.set_vec(
+            projects
+                .into_iter()
+                .map(|p| FlowProjectRow {
+                    id: p.key().into(),
+                    name: p.title.clone().into(),
+                    read_only: p.read_only,
+                    detail: format!(
+                        "{} 个节点{}",
+                        p.nodes,
+                        if p.read_only { " · 只读" } else { "" }
+                    )
+                    .into(),
+                    date: chrono::DateTime::from_timestamp(p.modified as i64, 0)
+                        .map(|v| {
+                            v.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M")
+                                .to_string()
+                        })
+                        .unwrap_or_default()
+                        .into(),
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+    fn start_naming(&mut self, mode: Naming) {
+        self.dialog = Some(NameDialog {
+            token: seecut_flow_core::id(),
+            session: self.controller.session.as_ref().map(|s| s.token.clone()),
+            mode,
+        });
+        self.error = false;
+    }
+    fn submit_name(&mut self, token: &str, name: &str) -> Result<Option<Effect>> {
+        let Some(dialog) = self.dialog.as_ref().filter(|d| d.token == token) else {
+            return Ok(None);
+        };
+        if dialog.session != self.controller.session.as_ref().map(|s| s.token.clone()) {
+            return Err("工程已切换，忽略旧名称操作".into());
+        }
+        let name = seecut_flow_core::store::project_name(name)?;
+        // Consume the fixed UUID and UI token once, including a pending draft switch.
+        let dialog = self.dialog.take().expect("validated dialog");
+        match dialog.mode {
+            Naming::New(path) => {
+                std::fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
+                self.request(Intent::NewNamed(path, name))
+            }
+            Naming::Rename(project) => {
+                if self.controller.session.as_ref().is_some_and(|s| {
+                    s.store.document().id == project.document_id
+                        && s.store.document().project_id == project.project_id
+                        && s.path.canonicalize().ok().as_ref() == Some(&project.path)
+                }) {
+                    self.request(Intent::RenameProject(name))
+                } else {
+                    let mut store = seecut_flow_core::store::Store::open_project(
+                        &project.path,
+                        &project.document_id,
+                        &project.project_id,
+                    )?;
+                    store.rename_project(&name)?;
+                    let updated = catalog::inspect(&project.path)?;
+                    if let Err(e) = catalog::remember(&self.root, &updated) {
+                        self.message = format!("名称已保存；列表记录写入失败：{e}");
+                        self.error = true;
+                    }
+                    self.refresh_projects();
+                    Ok(Some(Effect::None))
+                }
+            }
+        }
+    }
     fn action(&mut self, action: &str) -> Result<Option<Effect>> {
         self.controller.flush_viewport()?;
         match action {
-            "new" => {
-                std::fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
-                let name = format!("Flow-{}", chrono::Local::now().format("%Y%m%d-%H%M%S-%3f"));
-                self.request(Intent::New(self.root.join(name)))
+            "projects" => {
+                self.browsing = true;
+                self.refresh_projects();
+                Ok(Some(Effect::None))
+            }
+            "refresh" => {
+                self.error = false;
+                self.refresh_projects();
+                Ok(Some(Effect::None))
+            }
+            "rename" => {
+                let s = self.controller.session.as_ref().ok_or("请先打开工程")?;
+                let project = catalog::inspect(&s.path)?;
+                self.start_naming(Naming::Rename(project));
+                Ok(Some(Effect::None))
             }
             "close" => self.request(Intent::Close),
             "save" => {
                 self.controller.save_draft()?;
                 self.error = false;
                 self.message = "工程与提示词已保存".into();
+                self.remember_current();
+                self.refresh_projects();
                 Ok(Some(Effect::None))
             }
             "undo" => self.request(Intent::Undo),
@@ -206,7 +378,7 @@ impl Host {
                 })))
             }
             "fit" => {
-                let s = self.controller.session.as_mut().ok_or("请先打开工程")?;
+                let s = self.controller.session.as_ref().ok_or("请先打开工程")?;
                 let x = s
                     .graph()
                     .nodes
@@ -221,9 +393,10 @@ impl Host {
                     .map(|n| n.position[1])
                     .reduce(f64::min)
                     .unwrap_or(0.);
-                s.edit(Command::Viewport {
-                    viewport: [40. - x * 0.75, 40. - y * 0.75, 0.75],
-                })?;
+                let token = s.token.clone();
+                self.controller
+                    .preview_viewport(&token, [40. - x * 0.75, 40. - y * 0.75, 0.75])?;
+                self.controller.flush_viewport()?;
                 Ok(Some(Effect::None))
             }
             "cancel-connect" => {
@@ -280,7 +453,9 @@ fn finish(app: &App, host: &Rc<RefCell<Host>>, result: Result<Option<Effect>>) {
         let Some(app) = weak.upgrade() else {
             return;
         };
-        let was_confirm = app.global::<Flow>().get_confirm() || app.global::<Flow>().get_recovery();
+        let was_confirm = app.global::<Flow>().get_confirm()
+            || app.global::<Flow>().get_recovery()
+            || app.global::<Flow>().get_project_dialog();
         let effect = match result {
             Ok(effect) => effect,
             Err(error) => {
@@ -290,7 +465,7 @@ fn finish(app: &App, host: &Rc<RefCell<Host>>, result: Result<Option<Effect>>) {
         };
         host.borrow_mut().publish(&app);
         let ui = app.global::<Flow>();
-        if was_confirm && !ui.get_confirm() && !ui.get_recovery() {
+        if was_confirm && !ui.get_confirm() && !ui.get_recovery() && !ui.get_project_dialog() {
             ui.set_focus_token(ui.get_focus_token() + 1);
         }
         match effect {
@@ -406,6 +581,12 @@ fn pick_path(app: &App, host: &Rc<RefCell<Host>>, export: bool) {
 
 pub(crate) fn bind(app: &App, root: PathBuf) {
     let host = Rc::new(RefCell::new(Host {
+        browsing: true,
+        projects: Vec::new(),
+        project_rows: Rc::new(VecModel::default()),
+        search: String::new(),
+        name_sort: false,
+        dialog: None,
         controller: Controller::default(),
         root,
         nodes: Rc::new(VecModel::default()),
@@ -419,6 +600,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
         recovery_available: false,
     }));
     let ui = app.global::<Flow>();
+    ui.set_projects(ModelRc::from(host.borrow().project_rows.clone()));
+    host.borrow_mut().refresh_projects();
     ui.set_nodes(ModelRc::from(host.borrow().nodes.clone()));
     ui.set_edges(ModelRc::from(host.borrow().edges.clone()));
     ui.on_action({
@@ -431,7 +614,7 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
                 let Some(app) = weak.upgrade() else {
                     return;
                 };
-                if app.global::<Flow>().get_picker_open() {
+                if app.global::<Flow>().get_picker_open() || host.borrow().dialog.is_some() {
                     return;
                 }
                 if action == "recover" && host.borrow().controller.session.is_some() {
@@ -440,19 +623,111 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
                     return;
                 }
                 if host.borrow().controller.pending()
+                    || host.borrow().dialog.is_some()
                     || host.borrow().recovery
                     || app.global::<Flow>().get_recovery()
                     || app.global::<Flow>().get_picker_open()
                 {
                     return;
                 }
-                if action == "open" {
+                if action == "new" {
+                    let mut h = host.borrow_mut();
+                    let path = h.root.join(format!("Flow-{}", seecut_flow_core::id()));
+                    h.start_naming(Naming::New(path));
+                    app.global::<Flow>().set_dialog_name("未命名工程".into());
+                    app.global::<Flow>()
+                        .set_dialog_title("新建 Flow 工程".into());
+                    drop(h);
+                    finish(&app, &host, Ok(Some(Effect::None)));
+                } else if action == "rename" {
+                    let result = host.borrow_mut().action("rename");
+                    app.global::<Flow>()
+                        .set_dialog_name(app.global::<Flow>().get_title());
+                    app.global::<Flow>().set_dialog_title("重命名工程".into());
+                    finish(&app, &host, result);
+                } else if action == "open" {
                     pick_path(&app, &host, false);
                 } else {
                     let result = host.borrow_mut().action(action.as_str());
                     finish(&app, &host, result);
                 }
             });
+        }
+    });
+    ui.on_project_action({
+        let weak = app.as_weak();
+        let host = host.clone();
+        move |action, key| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let result = (|| {
+                let mut h = host.borrow_mut();
+                if h.dialog.is_some()
+                    || h.controller.pending()
+                    || h.recovery
+                    || app.global::<Flow>().get_picker_open()
+                {
+                    return Ok(None);
+                }
+                if action == "search" {
+                    h.search = key.to_string();
+                    h.filter_projects();
+                    return Ok(None);
+                }
+                if action == "sort" {
+                    h.name_sort = !h.name_sort;
+                    h.filter_projects();
+                    return Ok(None);
+                }
+                let p = h
+                    .projects
+                    .iter()
+                    .find(|p| p.key() == key.as_str())
+                    .cloned()
+                    .ok_or("工程列表已更新，请刷新")?;
+                match action.as_str() {
+                    "open" => h.request(Intent::OpenProject(p.path, p.document_id, p.project_id)),
+                    "rename" => {
+                        if p.read_only {
+                            return Err("此工程为只读".into());
+                        }
+                        app.global::<Flow>().set_dialog_name(p.title.clone().into());
+                        app.global::<Flow>().set_dialog_title("重命名工程".into());
+                        h.start_naming(Naming::Rename(p));
+                        Ok(Some(Effect::None))
+                    }
+                    _ => Err("未知工程操作".into()),
+                }
+            })();
+            finish(&app, &host, result);
+        }
+    });
+    ui.on_name_submit({
+        let weak = app.as_weak();
+        let host = host.clone();
+        move |token, name| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let result = host.borrow_mut().submit_name(token.as_str(), name.as_str());
+            finish(&app, &host, result);
+        }
+    });
+    ui.on_name_cancel({
+        let weak = app.as_weak();
+        let host = host.clone();
+        move |token| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let mut h = host.borrow_mut();
+            if h.dialog.as_ref().is_some_and(|d| d.token == token.as_str()) {
+                h.dialog = None;
+                h.error = false;
+            }
+            drop(h);
+            finish(&app, &host, Ok(Some(Effect::None)));
         }
     });
     ui.on_recover({
@@ -480,6 +755,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
                     2 => {
                         let mut h = host.borrow_mut();
                         h.controller.discard_and_close();
+                        h.browsing = true;
+                        h.refresh_projects();
                         h.preview.clear();
                         h.connecting.clear();
                         h.recovery = false;
@@ -501,7 +778,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             let Some(app) = weak.upgrade() else {
                 return;
             };
-            if host.borrow().recovery
+            if host.borrow().dialog.is_some()
+                || host.borrow().recovery
                 || app.global::<Flow>().get_recovery()
                 || app.global::<Flow>().get_picker_open()
             {
@@ -521,7 +799,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             let Some(app) = weak.upgrade() else {
                 return;
             };
-            if host.borrow().recovery
+            if host.borrow().dialog.is_some()
+                || host.borrow().recovery
                 || app.global::<Flow>().get_recovery()
                 || app.global::<Flow>().get_picker_open()
             {
@@ -546,7 +825,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             let Some(app) = weak.upgrade() else {
                 return;
             };
-            if host.borrow().recovery
+            if host.borrow().dialog.is_some()
+                || host.borrow().recovery
                 || app.global::<Flow>().get_recovery()
                 || app.global::<Flow>().get_picker_open()
             {
@@ -571,7 +851,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             let Some(app) = weak.upgrade() else {
                 return;
             };
-            if host.borrow().recovery
+            if host.borrow().dialog.is_some()
+                || host.borrow().recovery
                 || app.global::<Flow>().get_recovery()
                 || app.global::<Flow>().get_picker_open()
             {
@@ -583,6 +864,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
                 if result.is_ok() {
                     h.error = false;
                     if choice != 0 {
+                        h.remember_current();
+                        h.refresh_projects();
                         h.preview.clear();
                         h.connecting.clear();
                     }
@@ -602,7 +885,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             if app.global::<SeeCut>().get_page() != 8 || page == 8 {
                 return false;
             }
-            if host.borrow().recovery
+            if host.borrow().dialog.is_some()
+                || host.borrow().recovery
                 || app.global::<Flow>().get_recovery()
                 || app.global::<Flow>().get_picker_open()
             {
@@ -628,7 +912,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             let Some(app) = weak.upgrade() else {
                 return false;
             };
-            if host.borrow().recovery
+            if host.borrow().dialog.is_some()
+                || host.borrow().recovery
                 || app.global::<Flow>().get_recovery()
                 || app.global::<Flow>().get_picker_open()
             {
@@ -656,6 +941,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             };
             let mut h = host.borrow_mut();
             if !h.controller.token_matches(token.as_str())
+                || h.browsing
+                || h.dialog.is_some()
                 || h.controller.pending()
                 || h.recovery
                 || app.global::<Flow>().get_recovery()
@@ -694,6 +981,12 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             };
             let mut h = host.borrow_mut();
             if !h.controller.token_matches(token.as_str())
+                || h.browsing
+                || h.dialog.is_some()
+                || h.controller
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.store.is_read_only())
                 || h.controller.pending()
                 || h.recovery
                 || app.global::<Flow>().get_recovery()
@@ -743,6 +1036,12 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             };
             let mut h = host.borrow_mut();
             if !h.controller.token_matches(token.as_str())
+                || h.browsing
+                || h.dialog.is_some()
+                || h.controller
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.store.is_read_only())
                 || h.controller.pending()
                 || h.recovery
                 || app.global::<Flow>().get_recovery()
@@ -766,7 +1065,8 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             let Some(app) = weak.upgrade() else {
                 return;
             };
-            if host.borrow().recovery
+            if host.borrow().dialog.is_some()
+                || host.borrow().recovery
                 || app.global::<Flow>().get_recovery()
                 || app.global::<Flow>().get_picker_open()
             {

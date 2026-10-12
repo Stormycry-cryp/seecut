@@ -30,7 +30,7 @@ export component FlowComposer inherits Rectangle {
     out property <bool> input-focused: editor.has-focus;
     public function focus-editor() { editor.focus(); }
     min-width: 0px;
-    preferred-height: root.allow-assets || root.attachments.length > 0 ? 220px : 148px;
+    preferred-height: (root.allow-assets || root.attachments.length > 0 ? 78px : 0px) + min(170px, max(108px, editor.preferred-height + 74px));
     border-radius: 18px;
     background: Theme.field;
     border-width: 1px;
@@ -65,7 +65,7 @@ export component FlowComposer inherits Rectangle {
     }
     area := Flickable {
         x: 16px; y: root.allow-assets || root.attachments.length > 0 ? 94px : 16px;
-        width: parent.width - 32px; height: parent.height - self.y - 58px;
+        width: max(0px, parent.width - 32px); height: max(0px, parent.height - self.y - 58px);
         viewport-width: self.width; viewport-height: max(self.height, editor.preferred-height);
         editor := TextInput {
             width: parent.width; height: max(parent.height, self.preferred-height);

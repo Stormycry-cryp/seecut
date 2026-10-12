@@ -1,10 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { Theme, Glyph, IconButton, Modal } from "../primitives/primitives.slint";
-import { AppButton } from "../seecut/components.slint";
+import { FlowProjectsPage, FlowProjectRow } from "projects.slint";
+import { AppButton, CloudField } from "../seecut/components.slint";
 import { FlowWorkspace, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter } from "workspace.slint";
-export { FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter }
+export { FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter }
 export global Flow {
     in-out property <bool> open;
+    in-out property <bool> browsing: true;
+    in-out property <string> project-search;
+    in-out property <bool> project-list-view;
+    in-out property <bool> project-name-sort;
+    in-out property <bool> read-only;
+    in-out property <[FlowProjectRow]> projects;
+    in-out property <bool> project-dialog;
+    in-out property <string> dialog-token;
+    in-out property <string> dialog-name;
+    in-out property <string> dialog-title;
+    callback project-action(string, string);
+    callback name-submit(string, string);
+    callback name-cancel(string);
     in-out property <string> title;
     in-out property <string> token;
     in-out property <string> draft-token;
@@ -45,50 +59,32 @@ export global Flow {
 }
 export component FlowPage inherits Rectangle {
     in property <length> launcher-clearance: 84px;
-    property <bool> compact-header: root.width < 740px;
-    property <length> header-height: root.compact-header ? 88px : 52px;
     background: Theme.page;
     clip: true;
-    Text {
-        x: 16px; y: root.compact-header ? 8px : 0px;
-        width: root.compact-header ? parent.width - 32px : 190px;
-        height: root.compact-header ? 24px : 52px;
-        text: Flow.open ? Flow.title : "Flow 工程";
-        color: Theme.fg; font-family: Theme.font; font-size: Theme.fs-lg;
-        vertical-alignment: center; overflow: elide;
+    if Flow.browsing: FlowProjectsPage {
+        launcher-clearance: root.launcher-clearance; focus-token: Flow.focus-token;
+        projects: Flow.projects; search <=> Flow.project-search; list-view <=> Flow.project-list-view; name-sort <=> Flow.project-name-sort; message: Flow.error ? Flow.message : "";
+        action(action,key) => { Flow.project-action(action,key); }
+        new-project => { Flow.action("new"); }
+        open-existing => { Flow.action("open"); }
+        refresh => { Flow.action("refresh"); }
     }
-    HorizontalLayout {
-        x: root.compact-header ? 16px : 214px;
-        y: root.compact-header ? 40px : 6px;
-        width: parent.width - self.x - 16px; height: 40px;
-        spacing: 8px; alignment: start;
-        AppButton { label: "新建"; glyph: root.compact-header ? Glyph.none : Glyph.plus; clicked => { Flow.action("new"); } }
-        AppButton { label: "打开"; glyph: root.compact-header ? Glyph.none : Glyph.folder; clicked => { Flow.action("open"); } }
-        if Flow.open: AppButton { label: "保存"; glyph: root.compact-header ? Glyph.none : Glyph.check; clicked => { Flow.action("save"); } }
-        if Flow.open: AppButton { label: "关闭"; glyph: root.compact-header ? Glyph.none : Glyph.close; clicked => { Flow.action("close"); } }
-        if Flow.open && Flow.recovery-available: AppButton { label: "恢复选项"; clicked => { Flow.action("recover"); } }
-    }
-    if !Flow.open: VerticalLayout {
-        x: 24px; y: 100px; width: parent.width - 48px; height: 180px; spacing: 16px;
-        Text { text: "用节点组织创作步骤"; color: Theme.fg; font-family: Theme.font; font-size: Theme.fs-xl; }
-        Text { text: "可编辑节点、连线和提示词，保存后继续工作。生成、资产导入及交付尚未接通。"; color: Theme.fg-muted; font-family: Theme.font; font-size: Theme.fs-lg; wrap: word-wrap; }
-        Text { text: Flow.message; color: Flow.error ? Theme.accent : Theme.fg-dim; wrap: word-wrap; }
-    }
-    if Flow.open: workspace := FlowWorkspace {
-        y: root.header-height; width: parent.width; height: max(0px, parent.height - root.header-height);
+    if Flow.open && !Flow.browsing: workspace := FlowWorkspace {
+        width: parent.width; height: parent.height;
+        project-title: Flow.title; read-only: Flow.read-only; recovery-available: Flow.recovery-available;
         document-token: Flow.token; draft-token: Flow.draft-token;
         nodes: Flow.nodes; edges: Flow.edges;
         selected-id: Flow.selected-id; selected-title: Flow.selected-title; selected-kind: Flow.selected-kind;
-        selected-status: Flow.dirty ? "提示词未保存" : "已保存";
+        selected-status: Flow.read-only ? "只读" : Flow.dirty ? "提示词未保存" : "已保存";
         generation-prompt: Flow.generation-prompt;
         prompt-text <=> Flow.prompt;
         changed input-focused => { Flow.input-focused = self.input-focused; }
         focus-token: Flow.focus-token;
-        message: Flow.message; error: Flow.error;
+        message: Flow.read-only && !Flow.error ? "只读 · 原文已保留" : Flow.message; error: Flow.error;
         pan-x <=> Flow.pan-x; pan-y <=> Flow.pan-y; zoom <=> Flow.zoom;
         connecting-from: Flow.connecting-from;
         can-undo: Flow.can-undo; can-redo: Flow.can-redo;
-        save-label: Flow.dirty ? "未保存提示词" : "已保存";
+        save-label: Flow.read-only ? "只读" : Flow.dirty ? "未保存提示词" : "已保存";
         launcher-clearance: root.launcher-clearance;
         selected(id) => { Flow.selected(Flow.token, id); }
         draft-changed(token,text) => { Flow.draft-changed(token, text); }
@@ -133,6 +129,21 @@ export component FlowRecoveryDialog inherits Modal {
             AppButton { label: "取消"; clicked => { Flow.recover(0); } }
             AppButton { label: "导出恢复备份"; clicked => { Flow.recover(1); } }
             AppButton { label: "放弃未保存内容并关闭"; clicked => { Flow.recover(2); } }
+        }
+    }
+}
+
+export component FlowNameDialog inherits Modal {
+    open: Flow.project-dialog; title: Flow.dialog-title;
+    trap-focus: true; surface-width: 380px;
+    closed => { Flow.name-cancel(Flow.dialog-token); }
+    VerticalLayout {
+        padding: 20px; spacing: 14px;
+        CloudField { value <=> Flow.dialog-name; placeholder: "工程名称"; auto-focus: true; }
+        if Flow.error: Text { text: Flow.message; color: Theme.accent; wrap: word-wrap; }
+        HorizontalLayout { alignment: end; spacing: 8px;
+            AppButton { label: "取消"; clicked => { Flow.name-cancel(Flow.dialog-token); } }
+            AppButton { label: "保存"; primary: true; enabled: Flow.dialog-name != ""; clicked => { Flow.name-submit(Flow.dialog-token, Flow.dialog-name); } }
         }
     }
 }

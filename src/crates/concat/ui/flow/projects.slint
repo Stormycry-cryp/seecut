@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Glyph } from "../primitives/primitives.slint";
+import { AssetPreview, CloudField, WorkspaceIcon } from "../seecut/components.slint";
+export struct FlowProjectRow { id: string, name: string, date: string, detail: string, read-only: bool }
+export component FlowProjectsPage inherits Rectangle {
+    in property <length> launcher-clearance: 84px;
+    in property <[FlowProjectRow]> projects;
+    in property <string> message;
+    in-out property <bool> list-view;
+    in-out property <bool> name-sort;
+    in-out property <string> search;
+    in property <int> focus-token;
+    changed focus-token => { projects-focus.focus(); }
+    projects-focus := FocusScope { }
+    property <bool> narrow: root.width < 680px;
+    callback action(string, string);
+    callback new-project();
+    callback open-existing();
+    callback refresh();
+    background: Theme.page;
+    VerticalLayout {
+        padding-left: root.narrow ? 16px : 32px;
+        padding-right: root.narrow ? 16px : 48px;
+        padding-top: root.narrow ? 24px : 40px; padding-bottom: 24px + root.launcher-clearance; spacing: 24px;
+        HorizontalLayout {
+            height: 40px; spacing: 8px;
+            Text { text: "Flow"; font-size: 24px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
+            if !root.narrow: CloudField { width: 200px; value <=> root.search; placeholder: "搜索项目"; edited(value) => { root.action("search",value); } }
+            WorkspaceIcon { glyph: Glyph.folder; label: "打开已有 Flow 工程文件夹"; clicked => { root.open-existing(); } }
+            WorkspaceIcon { glyph: Glyph.filter; label: root.name-sort ? "按名称排序" : "按最近更新排序"; checkable: true; checked: root.name-sort; clicked => { root.name-sort = !root.name-sort; root.action("sort", ""); } }
+            WorkspaceIcon { glyph: Glyph.rows; label: root.list-view ? "网格视图" : "列表视图"; checkable: true; checked: root.list-view; clicked => { root.list-view = !root.list-view; } }
+            WorkspaceIcon { glyph: Glyph.reset; label: "刷新工程列表"; clicked => { root.refresh(); } }
+        }
+        if root.narrow: CloudField { value <=> root.search; placeholder: "搜索项目"; edited(value) => { root.action("search",value); } }
+        if root.message != "": Text { text: root.message; color: Theme.accent; font-size: Theme.fs; wrap: word-wrap; overflow: elide; max-height: 40px; }
+        ScrollView {
+            viewport-width: self.visible-width; viewport-height: grid.height;
+            horizontal-scrollbar-policy: always-off; vertical-stretch: 1; horizontal-stretch: 1;
+            grid := Rectangle {
+                x: 0px; y: 0px; width: parent.width;
+                property <int> columns: root.list-view ? 1 : max(1, floor((self.width + 24px) / 310px));
+                property <length> gap: root.list-view ? 16px : 24px;
+                property <length> card-width: (self.width - (self.columns - 1) * self.gap) / self.columns;
+                property <length> cover-width: root.list-view ? min(160px, self.width * 0.38) : self.card-width;
+                property <length> media-height: root.list-view ? 96px : self.card-width * 0.60;
+                property <length> card-height: root.list-view ? 96px : self.media-height + 64px;
+                height: ceil((root.projects.length + 1) / self.columns) * (self.card-height + self.gap) - self.gap;
+                Rectangle {
+                    x: 0px; y: 0px; width: grid.card-width; height: grid.card-height;
+                    AssetPreview { x: 0px; y: 0px; width: grid.cover-width; height: grid.media-height; fallback-glyph: Glyph.plus; interactive: true; accessible-name: "新建 Flow 工程"; activated => { root.new-project(); } }
+                    Text { x: root.list-view ? grid.cover-width + 16px : 0px; y: root.list-view ? 18px : grid.media-height + 10px; text: "新建项目"; color: Theme.fg; font-size: 14px; }
+                }
+                for project[i] in root.projects: Rectangle {
+                    x: mod(i + 1, grid.columns) * (grid.card-width + grid.gap);
+                    y: floor((i + 1) / grid.columns) * (grid.card-height + grid.gap);
+                    width: grid.card-width; height: grid.card-height;
+                    AssetPreview { x: 0px; y: 0px; width: grid.cover-width; height: grid.media-height; fallback-glyph: Glyph.workflow; interactive: true; accessible-name: "打开 Flow 工程 · " + project.name; activated => { root.action("open", project.id); } }
+                    Text { x: root.list-view ? grid.cover-width + 16px : 0px; y: root.list-view ? 18px : grid.media-height + 8px; width: max(0px, parent.width - self.x - 40px); text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
+                    Text { x: root.list-view ? grid.cover-width + 16px : 0px; y: root.list-view ? 44px : grid.media-height + 32px; width: max(0px, parent.width - self.x - 40px); text: project.date + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
+                    WorkspaceIcon { x: parent.width - 36px; y: root.list-view ? 14px : grid.media-height + 4px; side: 32px; glyph: Glyph.text-mark; label: "重命名工程 · " + project.name; enabled: !project.read-only; clicked => { root.action("rename", project.id); } }
+                }
+            }
+        }
+    }
+}

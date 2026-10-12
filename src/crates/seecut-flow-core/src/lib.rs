@@ -1,4 +1,5 @@
 //! Isolated Flow domain and deterministic simulator. No network or user project access.
+pub mod catalog;
 pub mod commands;
 pub mod graph;
 pub mod host;

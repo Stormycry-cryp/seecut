@@ -32,9 +32,20 @@ impl Store {
         })
     }
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_checked(root, None)
+    }
+    /// Check a selected catalogue identity under the writer lock, before recovery writes.
+    pub fn open_project(root: &Path, document_id: &str, project_id: &str) -> Result<Self> {
+        Self::open_checked(root, Some((document_id, project_id)))
+    }
+    fn open_checked(root: &Path, expected: Option<(&str, &str)>) -> Result<Self> {
         let lock = lock(root)?;
         let document: Document = read(root, "document.json")?;
         document.check_envelope()?; // unknown nodes remain readable, execution validates separately
+        if expected.is_some_and(|(id, project)| document.id != id || document.project_id != project)
+        {
+            return Err("Flow project identity changed; original preserved".into());
+        }
         let mut runtime: Runtime = read(root, "runtime.json")?;
         if runtime.format != 1 || runtime.document_id != document.id {
             return Err("run store identity/version mismatch".into());
@@ -64,6 +75,23 @@ impl Store {
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
     }
+    /// Future node kinds/versions remain viewable without enabling an older writer.
+    pub fn is_read_only(&self) -> bool {
+        self.document
+            .graphs
+            .values()
+            .any(|g| g.nodes.values().any(|n| n.ports().is_err()))
+    }
+    /// Rename project metadata through the existing revision and atomic write boundary.
+    pub fn rename_project(&mut self, name: &str) -> Result<()> {
+        let name = project_name(name)?;
+        if self.document.title.as_deref() == Some(name.as_str()) {
+            return Ok(());
+        }
+        let mut next = self.document.clone();
+        next.title = Some(name);
+        self.save_document(next)
+    }
     pub fn save_document(&mut self, mut document: Document) -> Result<()> {
         self.ready()?;
         document.check_envelope()?;
@@ -74,12 +102,7 @@ impl Store {
             return Err("document identity change requires save-as".into());
         }
         // Future node versions are retained for viewing but never downgraded by an older writer.
-        if self
-            .document
-            .graphs
-            .values()
-            .any(|g| g.nodes.values().any(|n| n.ports().is_err()))
-        {
+        if self.is_read_only() {
             return Err("unsupported node: document is read-only".into());
         }
         for (id, graph) in &document.graphs {
@@ -127,6 +150,14 @@ impl Store {
         Ok(())
     }
 }
+/// A compact, single-line display name; it never becomes a directory name.
+pub fn project_name(raw: &str) -> Result<String> {
+    let name = raw.trim();
+    if name.is_empty() || name.chars().count() > 160 || name.chars().any(char::is_control) {
+        return Err("请输入1–160字的单行工程名称".into());
+    }
+    Ok(name.into())
+}
 fn lock(root: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .create(true)
@@ -147,7 +178,7 @@ fn read<T: DeserializeOwned>(root: &Path, name: &str) -> Result<T> {
     serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| format!("corrupt {name}; original preserved: {e}"))
 }
-fn atomic(root: &Path, name: &str, value: &impl Serialize) -> Result<()> {
+pub(crate) fn atomic(root: &Path, name: &str, value: &impl Serialize) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
     if bytes.len() > 32 * 1024 * 1024 {
         return Err("Flow snapshot exceeds 32 MiB".into());
