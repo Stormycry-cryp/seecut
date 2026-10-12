@@ -21,9 +21,7 @@ export component SegmentedControl inherits Rectangle {
 
     property <bool> ring;
 
-    // 1px border + 2px padding, so the track insets by 3px on every side. A
-    // Slint border is drawn inside the bounds but children still measure from
-    // the outer edge, so the border has to be added in by hand.
+    // Keep the existing inset so removing the outline does not move the tabs.
     property <length> inset: root.workbench ? 0px : 3px;
     property <length> seg-w: (root.width - 2 * root.inset) / Math.max(root.options.length, 1);
 
@@ -31,7 +29,7 @@ export component SegmentedControl inherits Rectangle {
     min-width: 120px;
     horizontal-stretch: 1;
     background: root.workbench || root.text-tabs ? Colors.transparent : Theme.well;
-    border-width: root.workbench || root.text-tabs ? 0px : 1px;
+    border-width: 0px;
     border-color: Theme.line;
     border-radius: root.workbench ? 8px : Theme.r;
     opacity: root.enabled ? 1.0 : 0.45;

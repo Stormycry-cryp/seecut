@@ -356,7 +356,7 @@ component CanvasBlendButton inherits Rectangle {
     public function take-focus() { focus.focus(); }
     width: 132px; height: 30px; border-radius: Theme.r-xs;
     background: root.open ? Theme.field-active : touch.has-hover ? Theme.field-hover : Theme.field;
-    border-width: 1px;
+    border-width: root.keyboard-ring ? 1px : 0px;
     border-color: root.keyboard-ring ? Theme.focus-control : root.open ? Theme.line-strong : Theme.line;
     opacity: root.enabled ? 1 : 0.45;
     accessible-role: button;
@@ -1303,7 +1303,7 @@ export component CanvasPane inherits Rectangle {
                                 height: 18px;
                                 border-radius: Theme.r;
                                 background: root.curve-channel == t ? Theme.field-hover : Theme.field;
-                                border-width: 1px;
+                                border-width: 0px;
                                 border-color: root.curve-channel == t ? tab.tint : Theme.line;
                                 TouchArea {
                                     mouse-cursor: pointer;

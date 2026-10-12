@@ -126,6 +126,8 @@ export enum Glyph {
     save,
     // the canvas's mask chip: a circle held apart by its own diameter
     mask,
+    // the Flow entry: one node branching into two
+    workflow,
 }
 
 component Stroked inherits Path {
@@ -714,6 +716,15 @@ export component Icon inherits Rectangle {
         size: root.size; tint: root.tint;
         commands: "M 1 1 L 2 1 L 2 14 L 1 14 Z M 13 1 L 14 1 L 14 14 L 13 14 Z M 4 4"
             + " L 7 4 L 7 11 L 4 11 Z M 9 4 L 12 4 L 12 11 L 9 11 Z";
+    }
+
+    // Three rounded nodes connected by a branch on the shared 24-unit grid.
+    if root.glyph == Glyph.workflow: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M3.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1 -1.5 1.5h-3a1.5 1.5 0 0 1 -1.5 -1.5v-3a1.5 1.5 0 0 1 1.5 -1.5Z"
+            + " M17.5 2h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1 -1.5 1.5h-3a1.5 1.5 0 0 1 -1.5 -1.5v-3a1.5 1.5 0 0 1 1.5 -1.5Z"
+            + " M17.5 16h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1 -1.5 1.5h-3a1.5 1.5 0 0 1 -1.5 -1.5v-3a1.5 1.5 0 0 1 1.5 -1.5Z"
+            + " M8 12h3 M16 5h-5v14h5";
     }
 
     // hand-drawn: no library carries it

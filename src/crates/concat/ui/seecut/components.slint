@@ -23,7 +23,7 @@ export component AppButton inherits Rectangle {
     opacity: 1;
     background: !root.enabled ? Theme.well : root.danger ? (touch.pressed ? Theme.workbench-danger-pressed : touch.has-hover ? Theme.workbench-danger-hover : Theme.workbench-danger-solid) : root.selected ? Theme.accent-soft : root.subtle ? (touch.pressed ? Theme.field-hover : Colors.transparent) : root.primary ? (touch.pressed ? Theme.workbench-action-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : touch.pressed ? Theme.field-active : touch.has-hover ? Theme.field-hover : Theme.field;
-    border-width: root.subtle ? 0px : 1px;
+    border-width: 0px;
     border-color: !root.enabled ? Theme.line : root.danger ? Theme.workbench-danger-solid : root.primary || root.selected ? Theme.accent : Theme.workbench-control-border;
     animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
     property <bool> ring;
@@ -233,7 +233,7 @@ export component AppRail inherits Rectangle {
             }
         }
         NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; }
-        NavItem { label: "Flow"; glyph: Glyph.distribute; page: 8; }
+        NavItem { label: "Flow"; glyph: Glyph.workflow; page: 8; }
         NavItem { label: "画布"; glyph: Glyph.brush; page: 6; }
         NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; }
         NavItem { label: "资产库"; glyph: Glyph.folder; page: 5; }
@@ -298,7 +298,7 @@ export component MenuAction inherits Rectangle {
 
 export component WorkspaceSelect inherits Select {
     text-size: Theme.workbench-font; item-height: Theme.workbench-h; height: Theme.workbench-h;
-    border-width: self.flat ? 0px : 1px; border-color: Theme.line-strong;
+    border-width: 0px; border-color: Theme.line-strong;
 }
 
 /// Shared media well for asset, team, template, and result cards. Card callers

@@ -761,8 +761,8 @@ export component App inherits Window {
                                 Rectangle { width: 1px; height: 32px; Rectangle { y: 7px; width: 1px; height: 18px; background: Theme.line; } }
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.save; label: "保存画布工程"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp(); } }
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.copy; label: "另存画布工程"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp-as(); } }
-                                canvas-export-button := AppButton {
-                                    height: 32px; label: "导出"; enabled: Editor.canvas-has-document;
+                                canvas-export-button := WorkspaceIcon {
+                                    width: 32px; height: 32px; side: 32px; glyph: Glyph.export; label: "导出画布"; enabled: Editor.canvas-has-document;
                                     clicked => { root.focus-return = 2; SeeCut.canvas-export-open = true; }
                                 }
                                 WorkspaceIcon {
@@ -789,22 +789,15 @@ export component App inherits Window {
                     height: 100%;
                     VerticalLayout {
                     if !root.on-start: bridge-bar := EditorBridgeBar {
-                        project-name: root.project-name;
-                        project-status: root.project-status;
+                        repair-preview: root.repair-preview;
+                        repair-busy: root.repair-busy;
                         focus-request-target: root.focus-request-target;
                         focus-request-token: root.focus-request-token;
                         focus-restore-allowed: !root.assistant-ui-blocked && SeeCut.page == 0 && !root.on-start;
                         assets-clicked => { root.focus-return = 3; SeeCut.action("project-assets", ""); }
                         export-clicked => { root.focus-return = 4; root.export-clicked(); }
-                    }
-                    if root.repair-preview: Rectangle {
-                        height: 36px; background: Theme.panel;
-                        HorizontalLayout {
-                            padding-left: 16px; padding-right: 12px; spacing: 8px;
-                            Text { text: "修复预览·需另存"; color: Theme.fg; horizontal-stretch: 1; vertical-alignment: center; }
-                            WorkspaceIcon { glyph: Glyph.save; label: "另存修复工程"; enabled: !root.repair-busy; clicked => { root.relink-save-copy(); } }
-                            WorkspaceIcon { glyph: Glyph.undo; label: "取消修复"; enabled: !root.repair-busy; clicked => { root.relink-cancel-preview(); } }
-                        }
+                        save-clicked => { if root.repair-preview { root.relink-save-copy(); } else { root.app-menu-selected("save"); } }
+                        cancel-repair-clicked => { root.relink-cancel-preview(); }
                     }
                     if root.project-open-busy: Rectangle {
                         height: 40px; background: Theme.panel;

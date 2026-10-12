@@ -294,119 +294,18 @@ component CategoryRow inherits Rectangle {
 // other way round. A count derived from the width would tear down and rebuild
 // every rectangle on every frame of a splitter drag; a pitch that drifts a
 // pixel between panel sizes is not visible.
-component ImportButton inherits Rectangle {
+component ImportButton inherits IconButton {
     in property <bool> busy;
-    // Reused by the templates page as "save as template", so the words and
-    // the mark are parameters with the import ones as defaults.
-    in property <string> label: I18n.t("Import");
     in property <string> busy-label: I18n.t("Importing…");
-    in property <Glyph> glyph: Glyph.import;
-
-    callback clicked();
-
-    /// where the straight runs start, i.e. clear of the rounded corners
-    property <length> inset: Theme.r;
-    property <length> run-h: Math.max(0px, root.width - 2 * root.inset);
-    property <length> run-v: Math.max(0px, root.height - 2 * root.inset);
-
-    /// A dash and the gap after it, in pixels — the rhythm the whole outline
-    /// is cut to.
-    ///
-    /// The counts are derived from it rather than fixed. Fixed counts, say 14
-    /// across and 3 down, make the pitch whatever the button's width makes
-    /// it: on a 300px button that is a 4px gap every 20px across and a 3.7px
-    /// gap every 7.3px down — two different dashed lines meeting at the
-    /// corners, which makes the outline read as a mistake rather than as a
-    /// style. Counting instead of spacing puts both axes on one rhythm, and
-    /// the rounding spreads the remainder evenly over the run rather than
-    /// leaving it all at one end.
-    property <length> pitch: 8px;
-    property <int> dashes-h: Math.max(1, Math.round(root.run-h / root.pitch));
-    property <int> dashes-v: Math.max(1, Math.round(root.run-v / root.pitch));
-    property <length> pitch-h: root.run-h / root.dashes-h;
-    property <length> pitch-v: root.run-v / root.dashes-v;
-    // Half of it, so dash and gap are the same length on both axes — which is
-    // the whole of what "even" means in a dashed line.
-    property <length> bite-h: root.pitch-h / 2;
-    property <length> bite-v: root.pitch-v / 2;
-    property <brush> ground: (touch.has-hover && !root.busy) ? Theme.field : Theme.panel;
-
-    height: 36px;
-    border-width: 1px;
-    border-radius: Theme.r;
-    border-color: (touch.has-hover && !root.busy) ? Theme.accent : Theme.line-strong;
-    background: root.ground;
+    label: I18n.t("Import");
+    glyph: Glyph.import;
+    height: Theme.h;
+    side: Theme.h;
+    icon-size: 14px;
+    horizontal-stretch: 0;
+    enabled: !root.busy;
     opacity: root.busy ? 0.4 : 1.0;
-
-    animate background, border-color { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
-
-    HorizontalLayout {
-        alignment: center;
-        // Shoulders on the words, so a button sized to its own label — the
-        // media page's, which is one word — still reads as a zone to drop on
-        // rather than as the text with a box drawn round it.
-        padding-left: 18px;
-        padding-right: 18px;
-        spacing: 8px;
-
-        VerticalLayout {
-            alignment: center;
-            Icon {
-                glyph: root.glyph;
-                size: 14px;
-                tint: touch.has-hover ? Theme.fg : Theme.fg-muted;
-            }
-        }
-
-        Text {
-            text: root.busy ? root.busy-label : root.label;
-            color: touch.has-hover ? Theme.fg : Theme.fg-muted;
-            font-size: Theme.fs;
-            vertical-alignment: center;
-        }
-    }
-
-    // The bites. Two runs across, two down; each run is divided into equal
-    // pitches and one bite is centred in each.
-    // Both axes pinned on every bite: an element given only one coordinate is
-    // centred on the other axis by default, which drew the top run's dashes
-    // across the middle of the button.
-    for step in root.dashes-h: Rectangle {
-        x: root.inset + (step + 0.5) * root.pitch-h - root.bite-h / 2;
-        y: 0;
-        width: root.bite-h;
-        height: 1px;
-        background: root.ground;
-    }
-    for step in root.dashes-h: Rectangle {
-        x: root.inset + (step + 0.5) * root.pitch-h - root.bite-h / 2;
-        y: root.height - 1px;
-        width: root.bite-h;
-        height: 1px;
-        background: root.ground;
-    }
-    for step in root.dashes-v: Rectangle {
-        x: 0;
-        y: root.inset + (step + 0.5) * root.pitch-v - root.bite-v / 2;
-        width: 1px;
-        height: root.bite-v;
-        background: root.ground;
-    }
-    for step in root.dashes-v: Rectangle {
-        x: root.width - 1px;
-        y: root.inset + (step + 0.5) * root.pitch-v - root.bite-v / 2;
-        width: 1px;
-        height: root.bite-v;
-        background: root.ground;
-    }
-
-    touch := TouchArea {
-        enabled: !root.busy;
-        mouse-cursor: pointer;
-        clicked => {
-            root.clicked();
-        }
-    }
+    accessible-label: root.busy ? root.busy-label : root.label;
 }
 
 // ── one card ─────────────────────────────────────────────────────────────────
@@ -1852,10 +1751,7 @@ export component MediaPane inherits Rectangle {
                 if root.tab == 0: HorizontalLayout {
                     padding: 8px;
                     spacing: 8px;
-                    // Import holds the left edge at the width its own word
-                    // needs; sort and filter are pushed against the right by
-                    // the gap between, which is the only part of the row with
-                    // any give in it.
+                    // Import shares the compact icon controls in the tray.
                     ImportButton {
                         // The row holds one other control, and two controls
                         // side by side at two different heights read as two
