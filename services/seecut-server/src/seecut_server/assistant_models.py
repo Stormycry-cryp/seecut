@@ -6,6 +6,7 @@ import re
 from dataclasses import replace
 
 from .assistant_billing import rate_denominator
+from .model_pricing import billing_mode
 
 IDENTITY = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 LIMITS = {
@@ -24,7 +25,7 @@ def parse_models(raw):
         result, seen = [], {'default'}
         for item in value:
             if not isinstance(item, dict) or not {'id', 'label', 'model'} <= item.keys() or \
-                    not item.keys() <= {'id', 'label', 'model', 'pricing_version', 'rate_denominator'} | LIMITS.keys():
+                    not item.keys() <= {'id', 'label', 'model', 'pricing_version', 'rate_denominator', 'billing_mode', 'provider_id'} | LIMITS.keys():
                 raise ValueError
             identity = item['id']
             if not isinstance(identity, str) or not IDENTITY.fullmatch(identity) or identity in seen:
@@ -42,6 +43,10 @@ def parse_models(raw):
                     raise ValueError
             if 'rate_denominator' in item:
                 rate_denominator(item['rate_denominator'])
+            if 'billing_mode' in item:
+                billing_mode(item['billing_mode'])
+            if 'provider_id' in item and (not isinstance(item['provider_id'], str) or not IDENTITY.fullmatch(item['provider_id'])):
+                raise ValueError
             seen.add(identity)
             result.append(dict(item))
         return tuple(result)
@@ -54,7 +59,9 @@ def model_config(config, specification):
     denominator = rate_denominator(specification.get('rate_denominator', 1000))
     if denominator != config.assistant_rate_denominator and not {'input_rate', 'output_rate'} <= specification.keys():
         raise ValueError('Agent alias changing rate units requires both rates')
-    fields = {'assistant_model': specification['model'], 'assistant_rate_denominator': denominator}
+    fields = {'assistant_model': specification['model'], 'assistant_rate_denominator': denominator,
+              'assistant_billing_mode': billing_mode(specification.get('billing_mode', 'verified_input_v1')),
+              'assistant_provider_id': specification.get('provider_id', config.assistant_provider_id)}
     for key in (*LIMITS, 'pricing_version'):
         if key in specification:
             fields['assistant_' + key] = specification[key]

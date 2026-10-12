@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import hashlib
 
-from .assistant_provider import ProviderFailure
+from .assistant_provider import ProviderFailure, ProviderUsage, PreparedUsageInference
 from .assistant_execution_lock import execution_lock
 from . import assistant_contract as contract
 
@@ -39,23 +39,37 @@ class AssistantWorker:
         if operation is None:
             return 0
         operation_id = operation['id']
-        service = self.service.execution_service(operation)
+        try:
+            service = self.service.execution_service(operation)
+        except Exception:
+            self.service.unknown(operation_id)
+            return 1
         if operation['route_fingerprint'] != service.route_fingerprint():
             service.finish(operation_id, 'failed', {'input': 0, 'output': 0},
-                                error={'code': 'ASSISTANT_ROUTE_CHANGED', 'message': 'Agent 服务配置已变更，请重新发起请求'})
+                                error={'code': 'ASSISTANT_ROUTE_CHANGED', 'message': 'Agent 服务配置已变更，请重新发起请求'}, known_not_executed=True)
             return 1
         try:
-            prepared = service.prepare(json.loads(operation['request_json']), user=operation['user_id'], budget_id=operation['budget_id'], client_request_id=operation['client_request_id'])
-            if prepared.input_token_upper_bound != operation['input_token_upper_bound'] or hashlib.sha256(prepared.payload).hexdigest() != operation['payload_digest']:
+            if operation['billing_mode'] == 'provider_usage_capped_v1':
+                frozen = service.billing_contract
+                if frozen is None or not isinstance(operation['prepared_payload'], bytes):
+                    raise ValueError('frozen provider wire missing')
+                prepared = PreparedUsageInference(operation['prepared_payload'], frozen['usage_contract_id'])
+            else:
+                prepared = service.prepare(json.loads(operation['request_json']), user=operation['user_id'], budget_id=operation['budget_id'], client_request_id=operation['client_request_id'])
+            if (operation['billing_mode'] != 'provider_usage_capped_v1' and prepared.input_token_upper_bound != operation['input_token_upper_bound']) or hashlib.sha256(prepared.payload).hexdigest() != operation['payload_digest']:
                 raise ValueError('prepared input changed')
         except Exception:
             service.finish(operation_id, 'failed', {'input': 0, 'output': 0},
-                                error={'code': 'ASSISTANT_INPUT_CONTRACT_CHANGED', 'message': 'Agent 输入规则已变更，本次未执行'})
+                                error={'code': 'ASSISTANT_INPUT_CONTRACT_CHANGED', 'message': 'Agent 输入规则已变更，本次未执行'}, known_not_executed=True)
             return 1
-        result, count, size = None, 0, 0
+        result, evidence, count, size = None, None, 0, 0
         try:
             for event in service.provider.stream(operation_id, prepared,
                                                       lambda: service.cancelled(operation_id)):
+                if isinstance(event, ProviderUsage):
+                    service.observe_provider_usage(operation_id, event)
+                    evidence = event
+                    continue
                 contract.model_event(event)
                 count += 1
                 size += len(contract.canonical(event).encode())
@@ -67,13 +81,14 @@ class AssistantWorker:
                     service.append_model(operation_id, event)
             if result is None:
                 raise ProviderFailure()
-            service.finish(operation_id, 'succeeded', result.get('usage'), result)
+            service.finish(operation_id, 'succeeded', result.get('usage'), result, provider_usage=evidence)
         except ProviderFailure as exc:
             if exc.known_not_executed or exc.usage is not None:
                 try:
                     service.finish(operation_id, 'cancelled' if exc.cancelled else 'failed',
                         {'input': 0, 'output': 0} if exc.known_not_executed else exc.usage,
-                        error={'code': 'ASSISTANT_PROVIDER_FAILED', 'message': 'Agent 服务未完成本次请求'})
+                        error={'code': 'ASSISTANT_PROVIDER_FAILED', 'message': 'Agent 服务未完成本次请求'},
+                        provider_usage=evidence, known_not_executed=exc.known_not_executed)
                 except Exception:
                     service.unknown(operation_id)
             else:

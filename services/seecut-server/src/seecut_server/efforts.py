@@ -10,6 +10,7 @@ from .assistant_models import IDENTITY, model_config
 from .assistant_billing import credit_cost
 from .catalog import billing_key, public_catalog
 from .errors import ApiError
+from .model_pricing import price_snapshot
 
 AGENT_LIMITS = {'max_output_tokens': 131072, 'max_steps': 8, 'max_turn_credits': 1_000_000_000}
 FROZEN_FIELDS = (*AGENT_LIMITS, 'pricing_version', 'context_window', 'input_rate', 'output_rate')
@@ -84,6 +85,13 @@ def selection_pair(effort_id, policy_revision):
 
 
 def _priced(account, model):
+    if account.config.model_cost_pricing_enabled:
+        try:
+            snapshot = price_snapshot(account.config.model_price_catalog, model['provider'], model['id'], model['kind'])
+            units = {'per_image'} if model['kind'] == 'image' else {'per_second', 'per_millisecond'}
+            return any(value['unit'] in units for value in snapshot['dimensions'].values())
+        except (ValueError, KeyError, TypeError):
+            return False
     prices = account.config.model_prices
     if account.config.env in {'development', 'test'} and f"{model['kind']}:{model['id']}" in prices:
         return True
@@ -111,7 +119,7 @@ def _generation_models(account):
         provider = account.image2 if model['provider'] == 'image2' else account.xiangxin
         reason = None if provider.configured else 'GENERATION_NOT_CONFIGURED'
         if reason is None and not _priced(account, model):
-            reason = 'MODEL_PRICE_NOT_CONFIGURED'
+            reason = 'MODEL_COST_UNVERIFIED' if account.config.model_cost_pricing_enabled else 'MODEL_PRICE_NOT_CONFIGURED'
         model.update(available=reason is None, reason_code=reason)
     return models
 
@@ -131,6 +139,11 @@ def public_efforts(account):
         # Keep legacy policy JSON and digests unchanged.
         if service.config.assistant_rate_denominator == 1_000_000:
             policy['agent']['rate_denominator'] = 1_000_000
+        capped = capability.get('billing_mode') == 'provider_usage_capped_v1'
+        if capped:
+            for name in ('billing_mode', 'usage_contract_id', 'provider_id', 'upstream_model', 'pricing_snapshot', 'pricing_digest', 'context_preflight'):
+                policy['agent'][name] = deepcopy(capability[name])
+            policy['agent']['pricing_version'] = capability['pricing_version']
         for kind, supported in available_ids.items():
             policy['generation'][kind + '_model_ids'] = [
                 identity for identity in policy['generation'][kind + '_model_ids'] if identity in supported]
@@ -138,13 +151,13 @@ def public_efforts(account):
         agent = policy['agent']
         reserve = credit_cost(agent['context_window'], agent['max_output_tokens'], agent['input_rate'],
                               agent['output_rate'], agent.get('rate_denominator', 1000))
-        if reason is None and reserve > agent['max_turn_credits']:
+        if reason is None and not capped and reserve > agent['max_turn_credits']:
             reason = 'EFFORT_BUDGET_UNAVAILABLE'
-        if reason is None and not any(policy['generation'].values()):
+        if reason is None and not capped and not any(policy['generation'].values()):
             reason = 'EFFORT_GENERATION_UNAVAILABLE'
         policy.update(available=reason is None, reason_code=reason)
         policies.append(policy)
-    return dict(effort_policy_version=2 if any(policy['agent'].get('rate_denominator', 1000) == 1_000_000 for policy in policies) else 1,
+    return dict(effort_policy_version=3 if any(policy['agent'].get('billing_mode') == 'provider_usage_capped_v1' for policy in policies) else 2 if any(policy['agent'].get('rate_denominator', 1000) == 1_000_000 for policy in policies) else 1,
                 default_effort_id=policies[0]['id'] if policies else None, efforts=policies)
 
 

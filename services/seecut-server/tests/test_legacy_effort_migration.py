@@ -39,6 +39,7 @@ class LegacyEffortMigrationTest(unittest.TestCase):
                 before = snapshot()
                 self.assertNotIn('rate_denominator', columns['assistant_operations'])
                 self.assertNotIn('rounding_mode', columns['assistant_turn_budgets'])
+                self.assertNotIn('billing_mode', columns['assistant_turn_budgets'])
                 with patch.dict(os.environ, {'SECUT_ENV': 'test'}, clear=True):
                     config = Config.from_env()
                 config = replace(config, database_path=root / 'test.db', storage_path=root / 'storage',
@@ -57,6 +58,14 @@ class LegacyEffortMigrationTest(unittest.TestCase):
                 db.initialize()
                 db.initialize()
                 self.assertEqual(snapshot(), before)
+                for table in ('assistant_turn_budgets', 'assistant_quotes', 'assistant_operations'):
+                    migrated = connection.execute('SELECT billing_mode,billing_contract_json,billing_contract_digest FROM ' + table).fetchall()
+                    self.assertTrue(migrated)
+                    self.assertTrue(all(row == ('verified_input_v1', None, None) for row in migrated))
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        connection.execute("UPDATE " + table + " SET billing_mode='unknown_mode'")
+                self.assertTrue(all(row == ('0',) for row in connection.execute('SELECT accrued_numerator FROM assistant_turn_budgets')))
+                self.assertTrue(all(row == (None, None, None) for row in connection.execute('SELECT provider_usage_json,reported_numerator,uncollected_numerator FROM assistant_operations')))
                 self.assertEqual(connection.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
                 self.assertEqual(connection.execute('PRAGMA foreign_key_check').fetchall(), [])
             provider = FakeAssistant()

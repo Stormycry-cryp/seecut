@@ -34,6 +34,7 @@ mod ui {
 }
 
 mod account_ledger;
+mod agent_billing;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_components;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]

@@ -29,6 +29,20 @@ class PreparedInference:
     token_contract_id: str
 
 
+@dataclass(frozen=True)
+class PreparedUsageInference:
+    """An immutable wire request; deliberately carries no input token bound."""
+    payload: bytes
+    usage_contract_id: str
+
+
+@dataclass(frozen=True)
+class ProviderUsage:
+    """Private worker evidence, never a COTO model/tool event."""
+    raw: dict
+    classified: dict | None
+
+
 class AssistantProvider:
     # A generic compatible endpoint does not prove tokenizer/model wrapping rules.
     # A verified, model-specific adapter must provide both this identity and prepare.
@@ -185,5 +199,6 @@ class AssistantProvider:
 def make_assistant_provider(config, db):
     if config.assistant_model == 'glm-5.3-flash':
         from .assistant_glm import GLMAssistantProvider
-        return GLMAssistantProvider(config, db)
+        contract_id = 'glm-domestic-provider-usage-v1' if config.assistant_billing_mode == 'provider_usage_capped_v1' else None
+        return GLMAssistantProvider(config, db, usage_contract_id=contract_id)
     return AssistantProvider(config)

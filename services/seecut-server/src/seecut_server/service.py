@@ -22,6 +22,8 @@ from zoneinfo import ZoneInfo
 from .config import Config
 from .assistant_provider import make_assistant_provider
 from .assistant_service import AssistantService
+from .assistant_contract import digest as assistant_digest
+from .model_pricing import price_snapshot, validate_price_snapshot, generation_charge
 from .catalog import billing_key, public_catalog, validate_request
 from .db import Database
 from .emailer import EmailDeliveryError, EmailSender
@@ -1298,7 +1300,7 @@ class SeeCutService:
     @staticmethod
     def _generation_selection(request: dict[str, Any]) -> tuple[dict[str, Any], Any, Any]:
         request = dict(request)
-        if "policy" in request:
+        if "policy" in request or "model_pricing" in request:
             raise ApiError(400, "EFFORT_POLICY_INVALID", "生成策略由服务端确定")
         if ("effort_id" in request) != ("policy_revision" in request):
             raise ApiError(400, "EFFORT_POLICY_INVALID", "请选择有效的生成策略及版本")
@@ -1310,6 +1312,18 @@ class SeeCutService:
         ):
             raise ApiError(400, "EFFORT_POLICY_INVALID", "请选择有效的生成策略及版本")
         return request, effort_id, revision
+
+    @staticmethod
+    def _restore_generation_price(normalized, model, original):
+        frozen = original.get('model_pricing')
+        if frozen is None:
+            return
+        snapshot = validate_price_snapshot(frozen['snapshot'])
+        if (snapshot['provider'], snapshot['model'], snapshot['kind']) != (model['provider'], model['id'], model['kind']) or assistant_digest(snapshot) != frozen['digest']:
+            raise ApiError(409, 'QUOTE_MISMATCH', '原模型价格快照无效')
+        if generation_charge(snapshot, normalized) != frozen['charge']:
+            raise ApiError(409, 'QUOTE_MISMATCH', '原尺寸或时长价格快照不一致')
+        normalized['model_pricing'] = frozen
 
     @staticmethod
     def _freeze_generation_effort(
@@ -1337,9 +1351,20 @@ class SeeCutService:
             user_id, normalized.get("reference_asset_ids", []), model
         )
         key = billing_key(model, normalized)
-        credits = self.config.model_prices.get(key)
-        if credits is None and self.config.env in {"development", "test"}:
-            credits = self.config.model_prices.get(f"{kind}:{model['id']}")
+        if self.config.model_cost_pricing_enabled:
+            try:
+                snapshot = price_snapshot(self.config.model_price_catalog, model['provider'], model['id'], model['kind'])
+                charge = generation_charge(snapshot, normalized)
+                credits = charge['unit_credits']
+                if credits > 1_000_000_000:
+                    raise ValueError('Generation price exceeds supported limit')
+                normalized['model_pricing'] = dict(snapshot=snapshot, digest=assistant_digest(snapshot), charge=charge)
+            except (ValueError, TypeError, KeyError):
+                raise ApiError(422, 'MODEL_COST_UNVERIFIED', '该模型或尺寸时长的采购成本尚未核实') from None
+        else:
+            credits = self.config.model_prices.get(key)
+            if credits is None and self.config.env in {"development", "test"}:
+                credits = self.config.model_prices.get(f"{kind}:{model['id']}")
         if credits is None:
             raise ApiError(422, "MODEL_PRICE_NOT_CONFIGURED", "该模型或参数组合尚未配置积分价格")
         unit_credits = credits
@@ -1408,8 +1433,9 @@ class SeeCutService:
                 # dispatch under today's catalog, asset expiry or effort policy.
                 # The persisted image model selects the same parameter schema
                 # even after the server's configured image model changes.
-                _, normalized = validate_request(kind, request, existing["model"])
+                original_model, normalized = validate_request(kind, request, existing["model"])
                 self._freeze_generation_effort(normalized, effort_id, revision, stored.get("policy"))
+                self._restore_generation_price(normalized, original_model, stored)
                 canonical_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
                 if existing["request_json"] != canonical_json:
                     raise ApiError(
@@ -1445,6 +1471,7 @@ class SeeCutService:
             # Current selection was checked above; persist the original complete
             # quote snapshot even if unrelated catalog availability changed.
             self._freeze_generation_effort(normalized, effort_id, revision, quoted_request.get("policy"))
+            self._restore_generation_price(normalized, model, quoted_request)
             self._validate_generation_assets(
                 user_id, normalized.get("reference_asset_ids", []), model
             )

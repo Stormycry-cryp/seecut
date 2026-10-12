@@ -1249,7 +1249,7 @@ fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
         return;
     };
     cloud.effort_required = !efforts.is_empty();
-    if !matches!(value["effort_policy_version"].as_u64(), Some(1 | 2)) || efforts.len() > 8 {
+    if !matches!(value["effort_policy_version"].as_u64(), Some(1..=3)) || efforts.len() > 8 {
         cloud.effort_catalog_valid = false;
         cloud.effort_required = true;
         return;
@@ -1261,10 +1261,17 @@ fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
             None => true,
             Some(unit) => unit.as_u64().is_some_and(|unit| {
                 matches!(unit, 1000 | 1_000_000)
-                    && (value["effort_policy_version"] == 2 || unit == 1000)
+                    && (value["effort_policy_version"] != 1 || unit == 1000)
             }),
         };
-        if !valid_unit {
+        let billing = crate::agent_billing::validate(
+            &effort["agent"],
+            effort["available"].as_bool().unwrap_or(false),
+        );
+        if !valid_unit
+            || billing.is_err()
+            || billing == Ok(true) && value["effort_policy_version"] != 3
+        {
             cloud.effort_catalog_valid = false;
             cloud.effort_required = true;
             return;

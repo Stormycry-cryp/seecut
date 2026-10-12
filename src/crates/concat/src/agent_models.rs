@@ -154,6 +154,11 @@ fn policy_snapshot(value: &Value) -> Value {
             policy.insert(name.into(), field.clone());
         }
     }
+    for name in crate::agent_billing::FIELDS {
+        if let Some(field) = value.get(name) {
+            policy.insert(name.into(), field.clone());
+        }
+    }
     Value::Object(policy)
 }
 fn price_unit(value: &Value) -> Option<u64> {
@@ -169,6 +174,8 @@ pub(crate) fn parse(value: Value) -> Result<Directory, &'static str> {
     if value["protocol_version"] != 1 || price_unit(&value).is_none() {
         return Err(invalid);
     }
+    crate::agent_billing::validate(&value, value["available"].as_bool().unwrap_or(false))
+        .map_err(|_| invalid)?;
     let Some(models) = value.get("models") else {
         let available = value["available"].as_bool().ok_or(invalid)?;
         return Ok(Directory {
@@ -192,6 +199,8 @@ pub(crate) fn parse(value: Value) -> Result<Directory, &'static str> {
     let mut result = Vec::<Choice>::new();
     for model in models {
         price_unit(model).ok_or(invalid)?;
+        crate::agent_billing::validate(model, model["available"].as_bool().unwrap_or(false))
+            .map_err(|_| invalid)?;
         let id = model["model_id"]
             .as_str()
             .filter(|id| alias(id))
@@ -236,7 +245,7 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
             Err(invalid)
         };
     }
-    if !matches!(value["effort_policy_version"].as_u64(), Some(1 | 2)) {
+    if !matches!(value["effort_policy_version"].as_u64(), Some(1..=3)) {
         return Err(invalid);
     }
     let entries = value["efforts"]
@@ -266,6 +275,11 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
             .filter(|id| alias(id))
             .ok_or(invalid)?;
         let available = entry["available"].as_bool().ok_or(invalid)?;
+        let capped =
+            crate::agent_billing::validate(&entry["agent"], available).map_err(|_| invalid)?;
+        if capped && value["effort_policy_version"] != 3 {
+            return Err(invalid);
+        }
         let reason = &entry["reason_code"];
         if !(reason.as_str().is_some_and(alias) || available && reason.is_null()) {
             return Err(invalid);
@@ -309,6 +323,21 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
         if let Some(unit) = entry["agent"].get("rate_denominator") {
             agent.insert("rate_denominator".into(), unit.clone());
         }
+        for name in crate::agent_billing::FIELDS {
+            if let Some(field) = entry["agent"].get(name) {
+                agent.insert(name.into(), field.clone());
+            }
+        }
+        let selected = models
+            .iter()
+            .find(|model| model.id == model_id)
+            .ok_or(invalid)?;
+        if crate::agent_billing::FIELDS
+            .iter()
+            .any(|key| agent.get(*key) != selected.policy.get(*key))
+        {
+            return Err(invalid);
+        }
         let mut generation = serde_json::Map::new();
         let mut reference_count = 0;
         for name in ["image_model_ids", "video_model_ids"] {
@@ -333,7 +362,9 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
             reference_count += ids.len();
             generation.insert(name.into(), Value::Array(ids));
         }
-        if efforts.iter().any(|effort| effort.id == id) || (available && reference_count == 0) {
+        if efforts.iter().any(|effort| effort.id == id)
+            || (available && !capped && reference_count == 0)
+        {
             return Err(invalid);
         }
         let public = serde_json::json!({"id":id,"label":label,"policy_revision":revision,"available":available,"reason_code":reason,"agent":agent,"generation":generation});
@@ -386,6 +417,39 @@ pub(crate) fn fetch(base: &str, token: &str) -> Result<Directory, &'static str> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn capped_catalog_preserves_nested_prices_and_v3_policy() {
+        let value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../services/seecut-server/tests/fixtures/provider_usage_catalog.json"
+        ))
+        .unwrap();
+        let directory = super::parse(value.clone()).unwrap();
+        assert_eq!(
+            directory.choices[0].policy["pricing_snapshot"],
+            value["models"][0]["pricing_snapshot"]
+        );
+        assert_eq!(
+            directory.efforts[0].public["agent"],
+            value["efforts"][0]["agent"]
+        );
+        assert!(directory.efforts[0].available);
+        for pointer in [
+            "/billing_mode",
+            "/models/0/billing_mode",
+            "/efforts/0/agent/billing_mode",
+        ] {
+            let mut bad = value.clone();
+            *bad.pointer_mut(pointer).unwrap() = serde_json::json!("unknown");
+            assert!(super::parse(bad).is_err());
+        }
+        let mut bad = value.clone();
+        bad["effort_policy_version"] = serde_json::json!(2);
+        assert!(super::parse(bad).is_err());
+        let mut bad = value;
+        bad["models"][0]["pricing_snapshot"]["dimensions"]["cached_input"]["rate_numerator"] =
+            serde_json::json!("7000");
+        assert!(super::parse(bad).is_err());
+    }
     use super::*;
     use serde_json::json;
     fn response() -> Value {
@@ -478,7 +542,7 @@ mod tests {
     #[test]
     fn effort_catalog_rejects_ambiguous_ids_revisions_and_mappings() {
         for (path, replacement) in [
-            ("/effort_policy_version", json!(3)),
+            ("/effort_policy_version", json!(4)),
             ("/default_effort_id", json!("missing")),
             ("/efforts/0/id", json!("unsafe/id")),
             ("/efforts/0/policy_revision", json!("")),

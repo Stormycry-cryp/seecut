@@ -63,6 +63,26 @@ class Database:
                 connection.execute("ALTER TABLE assistant_turn_budgets ADD COLUMN rounding_mode TEXT NOT NULL DEFAULT 'legacy_operation' CHECK(rounding_mode IN ('legacy_operation','task_cumulative_v1'))")
             if budget_columns and 'accrued_microcredits' not in budget_columns:
                 connection.execute('ALTER TABLE assistant_turn_budgets ADD COLUMN accrued_microcredits INTEGER NOT NULL DEFAULT 0 CHECK(accrued_microcredits >= 0)')
+            # Add opt-in usage contracts without rewriting any historical row,
+            # policy JSON, price, route or operation-level rounding behavior.
+            for table in ('assistant_turn_budgets', 'assistant_quotes', 'assistant_operations'):
+                columns = {row['name'] for row in connection.execute(f'PRAGMA table_info({table})')}
+                additions = {
+                    'billing_mode': "TEXT NOT NULL DEFAULT 'verified_input_v1' CHECK(billing_mode IN ('verified_input_v1','provider_usage_capped_v1'))",
+                    'billing_contract_json': 'TEXT',
+                    'billing_contract_digest': 'TEXT',
+                }
+                if table == 'assistant_turn_budgets':
+                    # Exact numerator over the frozen pricing denominator;
+                    # TEXT avoids SQLite's signed-64-bit arithmetic coercion.
+                    additions['accrued_numerator'] = "TEXT NOT NULL DEFAULT '0'"
+                if table == 'assistant_operations':
+                    additions.update(provider_usage_json='TEXT', reported_numerator='TEXT', uncollected_numerator='TEXT')
+                if table in ('assistant_quotes', 'assistant_operations'):
+                    additions['prepared_payload'] = 'BLOB'
+                for name, declaration in additions.items():
+                    if columns and name not in columns:
+                        connection.execute(f'ALTER TABLE {table} ADD COLUMN {name} {declaration}')
             email_token_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(email_tokens)")
             }

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .assistant_billing import rate_denominator
+from .model_pricing import billing_mode, parse_price_catalog
 
 
 class ConfigError(ValueError):
@@ -125,10 +126,18 @@ class Config:
     assistant_images: bool = False
     assistant_models: tuple = ()
     assistant_rate_denominator: int = 1000
+    assistant_billing_mode: str = 'verified_input_v1'
+    assistant_provider_id: str = 'bigmodel'
+    model_price_catalog: tuple = ()
+    model_cost_pricing_enabled: bool = False
     efforts: tuple = ()
 
     def __post_init__(self):
         rate_denominator(self.assistant_rate_denominator)
+        billing_mode(self.assistant_billing_mode)
+        parse_price_catalog(json.dumps(self.model_price_catalog))
+        if type(self.model_cost_pricing_enabled) is not bool:
+            raise ValueError('Model cost pricing opt-in must be boolean')
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -173,6 +182,10 @@ class Config:
             assistant_base_url=os.getenv("SECUT_ASSISTANT_BASE_URL", "").rstrip("/"),
             assistant_model=os.getenv("SECUT_ASSISTANT_MODEL", ""),
             assistant_models=_assistant_model_catalog(),
+            assistant_billing_mode=billing_mode(os.getenv('SECUT_ASSISTANT_BILLING_MODE', 'verified_input_v1')),
+            assistant_provider_id=os.getenv('SECUT_ASSISTANT_PROVIDER_ID', 'bigmodel'),
+            model_price_catalog=parse_price_catalog(os.getenv('SECUT_MODEL_PRICE_CATALOG_JSON', '[]')),
+            model_cost_pricing_enabled=_bool('SECUT_MODEL_COST_PRICING_ENABLED', False),
             efforts=_effort_policies(),
             assistant_api_key=os.getenv("SECUT_ASSISTANT_API_KEY", ""),
             assistant_pricing_version=os.getenv("SECUT_ASSISTANT_PRICING_VERSION", ""),

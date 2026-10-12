@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import hashlib
 
-from .assistant_provider import make_assistant_provider, AssistantProvider, PreparedInference
+from .assistant_provider import make_assistant_provider, AssistantProvider, PreparedInference, PreparedUsageInference
+from . import assistant_usage_contract as usage_contract
+from .model_pricing import PriceUnavailable, capped_capture, price_snapshot, validate_price_snapshot
 from .assistant_models import model_config
 from dataclasses import replace
 from copy import copy, deepcopy
@@ -29,6 +31,7 @@ class AssistantService:
         self.model_id = model_id
         self.label = label or self.config.assistant_model[:64] or '账户模型'
         self.effort_policy = None
+        self.billing_contract = None
         self.bound_budget_id = None
         self.budget_route = None
         self.selection_applied = False
@@ -64,6 +67,7 @@ class AssistantService:
         # original public limits and rates are reconstructed from this budget.
         fields = {'assistant_' + name: policy['agent'][name] for name in FROZEN_FIELDS}
         fields['assistant_rate_denominator'] = policy['agent'].get('rate_denominator', 1000)
+        fields['assistant_billing_mode'] = policy['agent'].get('billing_mode', 'verified_input_v1')
         config = replace(self.config, **fields, assistant_models=(), efforts=())
         provider = self.provider
         if hasattr(provider, 'config'):
@@ -76,6 +80,49 @@ class AssistantService:
         frozen.budget_route = route
         frozen.selection_applied = True
         return frozen
+
+    def _with_billing_contract(self, row):
+        if row['billing_mode'] == 'verified_input_v1':
+            # Historical no-effort budgets never inherit a newly enabled mode.
+            if self.config.assistant_billing_mode == 'verified_input_v1':
+                return self
+            frozen = copy(self)
+            frozen.config = replace(self.config, assistant_billing_mode='verified_input_v1')
+            frozen.provider = copy(self.provider)
+            frozen.provider.config = frozen.config
+            if hasattr(frozen.provider, 'billing_mode'):
+                frozen.provider.billing_mode = 'verified_input_v1'
+                frozen.provider.usage_contract_id = None
+            frozen.selection_applied = True
+            return frozen
+        if row['billing_mode'] != usage_contract.MODE or row['billing_contract_json'] is None or row['billing_contract_digest'] is None:
+            raise ValueError('Missing original billing contract')
+        contract_value = usage_contract.validate(json.loads(row['billing_contract_json']),
+            expected_digest=row['billing_contract_digest'], effort_policy=self.effort_policy, check_effort=True)
+        frozen = copy(self)
+        frozen.config = usage_contract.restore_config(self.config, contract_value)
+        frozen.provider = copy(self.provider)
+        frozen.provider.config = frozen.config
+        if hasattr(frozen.provider, 'billing_mode'):
+            frozen.provider.billing_mode = usage_contract.MODE
+        frozen.billing_contract = contract_value
+        frozen.budget_route = contract_value['route_fingerprint']
+        frozen.bound_budget_id = row['id']
+        frozen.selection_applied = True
+        return frozen
+
+    def _pricing(self):
+        if self.billing_contract is not None:
+            return validate_price_snapshot(self.billing_contract['pricing_snapshot'])
+        return price_snapshot(self.config.model_price_catalog,
+                              self.config.assistant_provider_id, self.config.assistant_model)
+
+    @staticmethod
+    def _billing_snapshot(row):
+        if row['billing_mode'] == 'verified_input_v1':
+            return {}  # Preserve historical protocol JSON and digests.
+        return dict(billing_mode=row['billing_mode'], billing_contract=json.loads(row['billing_contract_json']),
+                    billing_contract_digest=row['billing_contract_digest'])
 
     def _selected(self, body, user, *, creating_budget=False):
         if not isinstance(body, dict):
@@ -113,6 +160,8 @@ class AssistantService:
             service = self._model_service(model_id)
             if policy is not None:
                 service = service._with_policy(policy)
+        if row is not None:
+            service = service._with_billing_contract(row)
         return service, {key: value for key, value in body.items() if key not in {'model_id', 'effort_id', 'policy_revision'}}
 
     def _selection_digest(self, body):
@@ -132,7 +181,7 @@ class AssistantService:
         service = self._model_service(row['model_id'], read_only=read_only)
         if row['policy_json'] is not None:
             service = service._with_policy(json.loads(row['policy_json']), budget_id=budget_id, route=row['route_fingerprint'])
-        return service
+        return service._with_billing_contract(row)
 
     def _operation_service(self, user, operation_id, *, read_only=False):
         with self.db.connect() as connection:
@@ -144,8 +193,15 @@ class AssistantService:
 
     def capabilities(self, *, include_models=True):
         c = self.config
-        available = bool(self.provider.configured and self.input_contract_ready() and c.assistant_pricing_version and
-                         c.assistant_input_rate > 0 and c.assistant_output_rate > 0 and
+        capped = c.assistant_billing_mode == usage_contract.MODE
+        price = None
+        if capped:
+            try:
+                price = self._pricing()
+            except (ValueError, KeyError, TypeError):
+                pass
+        available = bool(self.provider.configured and self.input_contract_ready() and (capped or c.assistant_pricing_version) and
+                         (price is not None if capped else c.assistant_input_rate > 0 and c.assistant_output_rate > 0) and
                          0 < c.assistant_max_output_tokens <= c.assistant_context_window and
                          0 < c.assistant_max_steps <= 8 and c.assistant_max_turn_credits > 0)
         value = dict(available=available, reason_code=None if available else ('ASSISTANT_INPUT_CONTRACT_UNAVAILABLE' if not self.input_contract_ready() else 'ASSISTANT_NOT_CONFIGURED'),
@@ -154,6 +210,15 @@ class AssistantService:
                     max_steps=c.assistant_max_steps, max_turn_credits=c.assistant_max_turn_credits,
                     pricing_version=c.assistant_pricing_version, rate_denominator=c.assistant_rate_denominator)
         value.update(model_id=self.model_id, label=self.label)
+        if capped:
+            value.update(billing_mode=usage_contract.MODE, usage_contract_id=getattr(self.provider, 'usage_contract_id', None),
+                         provider_id=c.assistant_provider_id, upstream_model=c.assistant_model,
+                         pricing_snapshot=price, pricing_digest=contract.digest(price) if price is not None else None,
+                         context_preflight='byte_bounds_only')
+            if price is not None:
+                value['pricing_version'] = price['version']
+            if price is None:
+                value['reason_code'] = 'MODEL_COST_UNVERIFIED'
         if include_models:
             value['default_model_id'] = self.model_id
             value['models'] = [value.copy()] + [child.capabilities(include_models=False) for child in self.models.values()]
@@ -161,6 +226,11 @@ class AssistantService:
         return value
 
     def input_contract_ready(self):
+        if self.config.assistant_billing_mode == usage_contract.MODE:
+            identity = getattr(self.provider, 'usage_contract_id', None)
+            return bool(isinstance(identity, str) and contract.IDENTITY.fullmatch(identity)
+                and (self.billing_contract is None or identity == self.billing_contract['usage_contract_id'])
+                and callable(getattr(self.provider, 'prepare_scoped', None)) and not self.config.assistant_images)
         identity = getattr(self.provider, 'token_contract_id', None)
         return bool(isinstance(identity, str) and contract.IDENTITY.fullmatch(identity)
                     and callable(getattr(self.provider, 'prepare', None)) and not self.config.assistant_images)
@@ -174,6 +244,11 @@ class AssistantService:
             prepared = scoped(request, dict(user_id=user, budget_id=budget_id, client_request_id=client_request_id)) if callable(scoped) else self.provider.prepare(request)
         except Exception:
             raise ApiError(503, 'ASSISTANT_INPUT_CONTRACT_UNAVAILABLE', 'Agent 输入计数规则尚未验证') from None
+        if self.config.assistant_billing_mode == usage_contract.MODE:
+            if not isinstance(prepared, PreparedUsageInference) or prepared.usage_contract_id != self.provider.usage_contract_id or \
+                    not isinstance(prepared.payload, bytes) or not 0 < len(prepared.payload) <= 2 * 1024 * 1024:
+                raise ApiError(503, 'ASSISTANT_INPUT_CONTRACT_UNAVAILABLE', 'Agent 实际用量契约无效')
+            return prepared
         if not isinstance(prepared, PreparedInference) or type(prepared.input_token_upper_bound) is not int or \
                 prepared.input_token_upper_bound < 0 or prepared.token_contract_id != self.provider.token_contract_id or \
                 not isinstance(prepared.payload, bytes) or not 0 < len(prepared.payload) <= 2 * 1024 * 1024:
@@ -183,6 +258,10 @@ class AssistantService:
         return prepared
 
     def route_fingerprint(self):
+        if self.config.assistant_billing_mode == usage_contract.MODE:
+            return contract.digest(dict(protocol='glm-provider-usage-v1', base=self.config.assistant_base_url,
+                model=self.config.assistant_model, provider_id=self.config.assistant_provider_id,
+                billing_mode=usage_contract.MODE, usage_contract=getattr(self.provider, 'usage_contract_id', None)))
         return contract.digest({'protocol': 'openai-chat-v1', 'base': self.config.assistant_base_url,
                                 'model': self.config.assistant_model, 'token_contract': getattr(self.provider, 'token_contract_id', None)})
 
@@ -214,6 +293,7 @@ class AssistantService:
             'operation_count', 'max_steps', 'state', 'expires_at', 'model_id', 'effort_id', 'policy_revision',
             'rounding_mode', 'accrued_microcredits')}
         value['policy'] = json.loads(row['policy_json']) if row['policy_json'] is not None else None
+        value.update(AssistantService._billing_snapshot(row))
         return value
 
     def _budget(self, connection, user, budget_id, scope=None):
@@ -236,6 +316,7 @@ class AssistantService:
             return service.turn_budget(user, body, key)
         body = dict(body)
         expected_policy_digest = body.pop('expected_policy_digest', None)
+        expected_pricing_digest = body.pop('expected_pricing_digest', None)
         contract.fields(body, {'client_request_id', 'local_session_id', 'turn_id'})
         for value in body.values():
             contract.identity(value)
@@ -261,6 +342,8 @@ class AssistantService:
                 elif expected_policy_digest is not None:
                     raise ApiError(400, 'EFFORT_POLICY_INVALID', '原回合未绑定强度策略')
                 self._available()
+                if expected_pricing_digest is not None and (self.config.assistant_billing_mode != usage_contract.MODE or expected_pricing_digest != contract.digest(self._pricing())):
+                    raise ApiError(409, 'EFFORT_POLICY_STALE', '模型价格已变更，请重新选择')
                 # A client-chosen session/turn cannot evade an unfinished account turn.
                 connection.execute("UPDATE assistant_turn_budgets SET state='expired' WHERE user_id=? AND state='active' AND held_credits=0 AND operation_count=0 AND expires_at<=?", (user, self.now()))
                 if connection.execute("SELECT 1 FROM assistant_turn_budgets WHERE user_id=? AND state='active'", (user,)).fetchone():
@@ -275,6 +358,11 @@ class AssistantService:
                      self.effort_policy['policy_revision'] if self.effort_policy else None,
                      contract.canonical(self.effort_policy) if self.effort_policy else None,
                      self.route_fingerprint() if self.effort_policy else None))
+                if self.config.assistant_billing_mode == usage_contract.MODE:
+                    frozen = usage_contract.freeze(self.config, self.provider.usage_contract_id,
+                        self.route_fingerprint(), self.effort_policy)
+                    connection.execute('UPDATE assistant_turn_budgets SET billing_mode=?,billing_contract_json=?,billing_contract_digest=?,route_fingerprint=? WHERE id=?',
+                        (usage_contract.MODE, contract.canonical(frozen), contract.digest(frozen), self.route_fingerprint(), target))
                 row = self._budget(connection, user, target)
             row = self._budget(connection, user, row['id'])
             if (target and target != row['id']) or (original and original != row['id']):
@@ -303,7 +391,8 @@ class AssistantService:
 
     def _check_budget(self, row, credits):
         if row['state'] != 'active' or (row['operation_count'] == 0 and row['expires_at'] <= self.now()) or row['operation_count'] >= row['max_steps'] or \
-                row['spent_credits'] + row['held_credits'] + credits > row['max_credits']:
+                row['spent_credits'] + row['held_credits'] + credits > row['max_credits'] or \
+                row['billing_mode'] == usage_contract.MODE and row['spent_credits'] + row['held_credits'] >= row['max_credits']:
             raise ApiError(409, 'ASSISTANT_BUDGET_EXCEEDED', '本轮 Agent 积分或步骤已达到上限')
 
     def quote(self, user, body, key):
@@ -332,11 +421,14 @@ class AssistantService:
                     connection.execute('UPDATE assistant_turn_budgets SET expires_at=MAX(expires_at,?) WHERE id=?', (self.now() + 120, budget['id']))
                     budget = self._budget(connection, user, budget['id'])
                 self._check_budget(budget, 0)
-            if row and (accepted or row['expires_at'] > self.now()):
+            if row and (accepted or row['expires_at'] > self.now() and
+                        (self.config.assistant_billing_mode != usage_contract.MODE or
+                         row['max_credits'] == budget['max_credits'] - budget['spent_credits'] - budget['held_credits'])):
                 self._remember(connection, user, 'quote', key, digest, row['id'])
             else:
                 prepared = self.prepare(body['request'], user=user, budget_id=body['budget_id'], client_request_id=body['client_request_id'])
-                credits = credit_cost(self.config.assistant_context_window, body['request']['maxOutputTokens'],
+                capped = budget['billing_mode'] == usage_contract.MODE
+                credits = budget['max_credits'] - budget['spent_credits'] - budget['held_credits'] if capped else credit_cost(self.config.assistant_context_window, body['request']['maxOutputTokens'],
                                       self.config.assistant_input_rate, self.config.assistant_output_rate,
                                       self.config.assistant_rate_denominator)
                 self._check_budget(budget, credits)
@@ -345,8 +437,13 @@ class AssistantService:
                     (id,user_id,request_digest,pricing_version,route_fingerprint,input_rate,output_rate,context_window,
                      input_token_upper_bound,payload_digest,max_credits,expires_at,created_at,rate_denominator) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                     (target, user, digest, self.config.assistant_pricing_version, self.route_fingerprint(), self.config.assistant_input_rate,
-                     self.config.assistant_output_rate, self.config.assistant_context_window, prepared.input_token_upper_bound,
+                     self.config.assistant_output_rate, self.config.assistant_context_window, -1 if capped else prepared.input_token_upper_bound,
                      hashlib.sha256(prepared.payload).hexdigest(), credits, self.now() + 120, self.now(), self.config.assistant_rate_denominator))
+                if capped:
+                    # -1 is an unused historical SQL field, never a token bound.
+                    # Actual capped input is the immutable wire payload below.
+                    connection.execute('UPDATE assistant_quotes SET billing_mode=?,billing_contract_json=?,billing_contract_digest=?,prepared_payload=? WHERE id=?',
+                        (usage_contract.MODE, budget['billing_contract_json'], budget['billing_contract_digest'], prepared.payload, target))
                 # Move every alias to the one refreshed quote in the same transaction.
                 connection.execute("UPDATE assistant_idempotency SET target_id=? WHERE user_id=? AND namespace IN ('quote','quote-request') AND digest=?", (target, user, digest))
                 self._remember(connection, user, 'quote', key, digest, target)
@@ -356,7 +453,7 @@ class AssistantService:
                         max_credits=row['max_credits'], expires_at=row['expires_at'],
                         effort_id=self.effort_policy['id'] if self.effort_policy else None,
                         policy_revision=self.effort_policy['policy_revision'] if self.effort_policy else None,
-                        policy=deepcopy(self.effort_policy))
+                        policy=deepcopy(self.effort_policy)) | self._billing_snapshot(row)
 
     def _owned(self, connection, user, operation_id):
         row = connection.execute('SELECT * FROM assistant_operations WHERE id=? AND user_id=?', (operation_id, user)).fetchone()
@@ -372,6 +469,7 @@ class AssistantService:
         for key in ('result', 'error', 'usage'):
             value[key] = json.loads(row[key + '_json']) if row[key + '_json'] is not None else None
         value['budget'] = self._budget_snapshot(self._budget(connection, row['user_id'], row['budget_id']))
+        value.update(self._billing_snapshot(row))
         return value
 
     def create(self, user, body, key):
@@ -402,17 +500,21 @@ class AssistantService:
                                   (user, body['local_session_id'], body['turn_id'], body['step_id'])).fetchone():
                 self._conflict()
             budget = self._budget(connection, user, body['budget_id'], body)
+            capped = budget['billing_mode'] == usage_contract.MODE
             quote = connection.execute('SELECT * FROM assistant_quotes WHERE id=? AND user_id=?', (body['quote_id'], user)).fetchone()
             if not quote or quote['request_digest'] != digest or quote['consumed_at'] is not None or \
                     quote['expires_at'] <= self.now() or quote['pricing_version'] != self.config.assistant_pricing_version or \
-                    quote['route_fingerprint'] != self.route_fingerprint() or quote['input_rate'] != self.config.assistant_input_rate or \
-                    quote['output_rate'] != self.config.assistant_output_rate or quote['context_window'] != self.config.assistant_context_window or \
-                    quote['rate_denominator'] != self.config.assistant_rate_denominator:
+                    quote['route_fingerprint'] != self.route_fingerprint() or quote['context_window'] != self.config.assistant_context_window or \
+                    quote['billing_mode'] != budget['billing_mode'] or capped and (quote['billing_contract_json'] != budget['billing_contract_json'] or quote['billing_contract_digest'] != budget['billing_contract_digest']) or \
+                    not capped and (quote['input_rate'] != self.config.assistant_input_rate or quote['output_rate'] != self.config.assistant_output_rate or quote['rate_denominator'] != self.config.assistant_rate_denominator):
                 raise ApiError(409, 'ASSISTANT_QUOTE_MISMATCH', 'Agent 报价已过期或与请求不一致')
             prepared = self.prepare(body['request'], user=user, budget_id=body['budget_id'], client_request_id=body['client_request_id'])
-            if prepared.input_token_upper_bound != quote['input_token_upper_bound'] or hashlib.sha256(prepared.payload).hexdigest() != quote['payload_digest']:
+            if (not capped and prepared.input_token_upper_bound != quote['input_token_upper_bound']) or hashlib.sha256(prepared.payload).hexdigest() != quote['payload_digest'] or \
+                    capped and prepared.payload != quote['prepared_payload']:
                 raise ApiError(409, 'ASSISTANT_QUOTE_MISMATCH', 'Agent 输入规则已变更')
             credits = quote['max_credits']
+            if capped and credits != budget['max_credits'] - budget['spent_credits'] - budget['held_credits']:
+                raise ApiError(409, 'ASSISTANT_QUOTE_MISMATCH', 'Agent 授权剩余额度已变更')
             self._check_budget(budget, credits)
             wallet = connection.execute('SELECT * FROM wallets WHERE user_id=?', (user,)).fetchone()
             if not wallet or wallet['available_credits'] < credits:
@@ -425,6 +527,9 @@ class AssistantService:
                 (target, user, body['client_request_id'], body['local_session_id'], body['turn_id'], body['step_id'],
                  budget['id'], digest, contract.canonical(body['request']), quote['pricing_version'],
                  quote['input_rate'], quote['output_rate'], quote['route_fingerprint'], quote['context_window'], quote['input_token_upper_bound'], quote['payload_digest'], quote['rate_denominator'], credits, self.now(), self.now()))
+            if capped:
+                connection.execute('UPDATE assistant_operations SET billing_mode=?,billing_contract_json=?,billing_contract_digest=?,prepared_payload=? WHERE id=?',
+                    (usage_contract.MODE, quote['billing_contract_json'], quote['billing_contract_digest'], quote['prepared_payload'], target))
             self._remember(connection, user, 'create', key, digest, target)
             connection.execute('UPDATE assistant_quotes SET consumed_at=? WHERE id=?', (self.now(), quote['id']))
             connection.execute('UPDATE assistant_turn_budgets SET held_credits=held_credits+?,operation_count=operation_count+1 WHERE id=?',
@@ -513,7 +618,7 @@ class AssistantService:
                     if latest['id'] == operation_id:
                         connection.execute("UPDATE assistant_turn_budgets SET state='closed' WHERE id=? AND held_credits=0", (row['budget_id'],))
                 if row['state'] == 'queued':
-                    self._settle(connection, row, 'cancelled', {'input': 0, 'output': 0})
+                    self._settle(connection, row, 'cancelled', {'input': 0, 'output': 0}, known_not_executed=True)
             return self._snapshot(connection, self._owned(connection, user, operation_id))
 
     def claim(self):
@@ -540,10 +645,22 @@ class AssistantService:
             connection.execute("UPDATE assistant_operations SET state='running' WHERE id=?", (operation_id,))
             self._event(connection, operation_id, 'model', event)
 
-    def finish(self, operation_id, state, usage=None, result=None, error=None):
+    def finish(self, operation_id, state, usage=None, result=None, error=None, *, provider_usage=None, known_not_executed=False):
         with self.db.transaction(immediate=True) as connection:
             row = connection.execute('SELECT * FROM assistant_operations WHERE id=?', (operation_id,)).fetchone()
-            self._finish_in_transaction(connection, row, state, usage, result, error)
+            self._finish_in_transaction(connection, row, state, usage, result, error,
+                                        provider_usage=provider_usage, known_not_executed=known_not_executed)
+
+    def observe_provider_usage(self, operation_id, evidence):
+        # Private durable evidence; never sent as an executable COTO event.
+        with self.db.transaction(immediate=True) as connection:
+            row = connection.execute('SELECT * FROM assistant_operations WHERE id=?', (operation_id,)).fetchone()
+            if row['billing_mode'] != usage_contract.MODE or row['state'] not in {'dispatching', 'running'}:
+                raise ValueError('Unexpected provider usage evidence')
+            raw = contract.canonical(evidence.raw)
+            if len(raw.encode()) > 262144:
+                raise ValueError('Provider usage evidence too large')
+            connection.execute('UPDATE assistant_operations SET provider_usage_json=? WHERE id=?', (raw, operation_id))
 
     @staticmethod
     def _validate_finish(row, state, usage, result):
@@ -564,12 +681,13 @@ class AssistantService:
         if state == 'succeeded' and result is None:
             raise ValueError('successful execution needs a complete result')
 
-    def _finish_in_transaction(self, connection, row, state, usage, result=None, error=None):
+    def _finish_in_transaction(self, connection, row, state, usage, result=None, error=None, *, provider_usage=None, known_not_executed=False):
         self._validate_finish(row, state, usage, result)
         if row['billing_state'] not in SETTLED:
-            self._settle(connection, row, state, usage, result, error)
+            self._settle(connection, row, state, usage, result, error,
+                         provider_usage=provider_usage, known_not_executed=known_not_executed)
 
-    def _settle(self, connection, row, state, usage, result=None, error=None):
+    def _settle(self, connection, row, state, usage, result=None, error=None, *, provider_usage=None, known_not_executed=False):
         if row['billing_state'] in SETTLED:
             return
         cost = None
@@ -578,17 +696,46 @@ class AssistantService:
                                     (row['budget_id'], row['user_id'])).fetchone()
         if budget is None:
             raise RuntimeError('assistant budget missing')
-        limits_exceeded = usage is not None and (usage['input'] > row['input_token_upper_bound'] or usage['input'] + usage['output'] > row['context_window'] or
+        capped = row['billing_mode'] == usage_contract.MODE
+        exact = None
+        if capped:
+            if budget['billing_mode'] != usage_contract.MODE or row['billing_contract_json'] != budget['billing_contract_json'] or row['billing_contract_digest'] != budget['billing_contract_digest']:
+                raise RuntimeError('Original billing contract mismatch')
+            frozen = usage_contract.validate(json.loads(budget['billing_contract_json']),
+                expected_digest=budget['billing_contract_digest'])
+            classified = None
+            if known_not_executed:
+                if usage != {'input': 0, 'output': 0} or result is not None:
+                    raise ValueError('Invalid known-not-executed declaration')
+                classified = dict(input=0, cached_input=0, output=0)
+            elif provider_usage is not None and provider_usage.classified is not None and usage is not None:
+                classified = provider_usage.classified
+                if (classified.get('input'), classified.get('output')) != (usage['input'], usage['output']):
+                    raise ValueError('Classified usage mismatch')
+            if classified is not None:
+                exact = capped_capture(frozen['pricing_snapshot'], int(budget['accrued_numerator']),
+                    budget['spent_credits'], budget['max_credits'], classified)
+                cost = exact['captured_credits']
+            limits_exceeded = False
+        else:
+            limits_exceeded = usage is not None and (usage['input'] > row['input_token_upper_bound'] or usage['input'] + usage['output'] > row['context_window'] or
                            usage['output'] > json.loads(row['request_json'])['maxOutputTokens'])
-        if usage is not None and not limits_exceeded:
+        if not capped and usage is not None and not limits_exceeded:
             capture = capture_for_usage(row, budget, usage)
             cost = capture.credits
         if cost is None or cost > row['reserved_credits'] or limits_exceeded:
             connection.execute("""UPDATE assistant_operations SET state=?,billing_state='settlement_pending',result_json=?,usage_json=?,error_json=? WHERE id=?""",
-                               (state, contract.canonical(result) if result else None, contract.canonical(usage) if usage else None,
+                               (state, contract.canonical(result) if result and not capped else None, contract.canonical(usage) if usage else None,
                                 contract.canonical({'code': 'ASSISTANT_USAGE_UNCONFIRMED', 'message': 'Agent 用量待核实'}), row['id']))
             self._event(connection, row['id'], 'billing.changed', {'billing_state': 'settlement_pending'})
             return
+        limit_hit = capped and (exact['exhausted'] or budget['spent_credits'] + cost >= budget['max_credits'] or
+                    usage['output'] > json.loads(row['request_json'])['maxOutputTokens'] or usage['input'] + usage['output'] > row['context_window'])
+        if capped and row['cancel_requested']:
+            state, result = 'cancelled', None
+        if limit_hit:
+            state, result = 'failed', None
+            error = dict(code='ASSISTANT_BUDGET_EXCEEDED', message='本轮 Agent 授权额度或输出已达到上限')
         release = row['reserved_credits'] - cost
         hold = connection.execute('SELECT * FROM wallet_holds WHERE task_id=?', ('assistant:' + row['id'],)).fetchone()
         if not hold or hold['state'] != 'held' or hold['credits'] != row['reserved_credits']:
@@ -598,7 +745,12 @@ class AssistantService:
                            (release, row['reserved_credits'], self.now(), row['user_id']))
         connection.execute('UPDATE wallet_holds SET state=?,updated_at=? WHERE id=?', (billing, self.now(), hold['id']))
         connection.execute('UPDATE assistant_turn_budgets SET held_credits=held_credits-?,spent_credits=spent_credits+?,accrued_microcredits=? WHERE id=?',
-                           (row['reserved_credits'], cost, capture.accrued_microcredits, row['budget_id']))
+                           (row['reserved_credits'], cost, exact['accrued_microcredits'] if capped else capture.accrued_microcredits, row['budget_id']))
+        if capped:
+            connection.execute('UPDATE assistant_turn_budgets SET accrued_numerator=? WHERE id=?', (exact['accrued_numerator'], row['budget_id']))
+            connection.execute('UPDATE assistant_operations SET reported_numerator=?,uncollected_numerator=?,provider_usage_json=COALESCE(?,provider_usage_json) WHERE id=?',
+                (exact['reported_numerator'], exact['uncollected_numerator'],
+                 contract.canonical(provider_usage.raw) if provider_usage is not None else None, row['id']))
         if state != 'succeeded' or row['cancel_requested']:
             connection.execute("UPDATE assistant_turn_budgets SET state='closed' WHERE id=?", (row['budget_id'],))
         if cost:

@@ -12,6 +12,10 @@ from . import assistant_contract as contract
 from .assistant_billing import capture_for_usage, rate_denominator
 from .assistant_execution_lock import execution_lock
 from .assistant_service import AssistantService, SETTLED
+from .assistant_provider import ProviderUsage
+from .assistant_glm import GLMAssistantProvider
+from . import assistant_usage_contract as usage_contract
+from .model_pricing import capped_capture
 from .db import Database
 from .errors import ApiError
 
@@ -25,7 +29,7 @@ class _Accounting(AssistantService):
 
 def _normalize(body):
     contract.fields(body, {'user_id', 'operation_id', 'expected_version', 'resolution_id', 'operator', 'reason'},
-                    {'evidence_reference', 'evidence_confirmed', 'outcome', 'terminal_state', 'usage', 'result'})
+                    {'evidence_reference', 'evidence_confirmed', 'outcome', 'terminal_state', 'usage', 'result', 'cached_input_tokens'})
     value = {name: contract.identity(body[name]) for name in ('user_id', 'operation_id', 'resolution_id')}
     value['expected_version'] = contract.integer(body['expected_version'], 1, 2**63 - 1)
     for name, limit in (('operator', 128), ('reason', 512)):
@@ -59,6 +63,8 @@ def _normalize(body):
         contract.invalid()
     if usage is not None:
         contract.usage(usage)
+    if 'cached_input_tokens' in body:
+        value['cached_input_tokens'] = contract.integer(body['cached_input_tokens'], 0, usage['input'] if usage is not None else 2_000_000)
     if result is not None:
         try:
             contract.model_event(result)
@@ -116,7 +122,12 @@ class LocalResolution:
         contract.identity(budget['model_id'])
         if budget['policy_json'] is not None and budget['route_fingerprint'] != row['route_fingerprint']:
             raise ApiError(409, 'ASSISTANT_RESOLUTION_SCOPE_CONFLICT', '原操作模型路由不一致')
-        if min(row['input_rate'], row['output_rate'], row['input_token_upper_bound']) < 0 or row['context_window'] <= 0 or row['reserved_credits'] <= 0:
+        capped = 'billing_mode' in row.keys() and row['billing_mode'] == usage_contract.MODE
+        if capped:
+            if row['billing_contract_json'] != budget['billing_contract_json'] or row['billing_contract_digest'] != budget['billing_contract_digest'] or row['route_fingerprint'] != budget['route_fingerprint']:
+                raise ApiError(409, 'ASSISTANT_RESOLUTION_SCOPE_CONFLICT', '原实际用量合同不一致')
+            usage_contract.validate(json.loads(budget['billing_contract_json']), expected_digest=budget['billing_contract_digest'])
+        if (not capped and min(row['input_rate'], row['output_rate'], row['input_token_upper_bound']) < 0) or row['context_window'] <= 0 or row['reserved_credits'] <= 0:
             raise ApiError(409, 'ASSISTANT_RESOLUTION_SCOPE_CONFLICT', '原冻结价格或限额无效')
         wallet = connection.execute('SELECT available_credits,held_credits FROM wallets WHERE user_id=?',
                                     (row['user_id'],)).fetchone()
@@ -131,6 +142,9 @@ class LocalResolution:
                      accrued_microcredits=budget['accrued_microcredits'] if 'accrued_microcredits' in budget.keys() else 0,
                      operation_id=row['id'], model_id=budget['model_id'], wallet=dict(wallet), hold=dict(hold),
                      budget={name: budget[name] for name in ('id', 'model_id', 'held_credits', 'spent_credits', 'state')})
+        if capped:
+            value.update(billing_mode=usage_contract.MODE, billing_contract_digest=row['billing_contract_digest'],
+                         reported_numerator=row['reported_numerator'], uncollected_numerator=row['uncollected_numerator'])
         return value
 
     def _resolve(self, connection, value, *, apply, acquired):
@@ -156,6 +170,8 @@ class LocalResolution:
             return dict(status='unresolved', applied=False, reason='prior_evidence_invalid', message=exc.message, before=before)
         complete = value['outcome'] != 'unknown' and value['evidence_confirmed'] and value['evidence_reference'] is not None
         complete = complete and value['terminal_state'] is not None and value['usage'] is not None
+        capped = 'billing_mode' in row.keys() and row['billing_mode'] == usage_contract.MODE
+        complete = complete and (not capped or value['outcome'] == 'confirmed_not_executed' or 'cached_input_tokens' in value)
         if complete:
             try:
                 self.accounting._validate_finish(row, value['terminal_state'], value['usage'], value['result'])
@@ -169,18 +185,32 @@ class LocalResolution:
         usage = value['usage']
         budget = connection.execute('SELECT * FROM assistant_turn_budgets WHERE id=? AND user_id=?',
                                     (row['budget_id'], row['user_id'])).fetchone()
-        cost = capture_for_usage(row, budget, usage).credits
-        limits = usage['input'] > row['input_token_upper_bound'] or usage['input'] + usage['output'] > row['context_window'] or usage['output'] > json.loads(row['request_json'])['maxOutputTokens']
+        provider_usage = None
+        if capped:
+            frozen = usage_contract.validate(json.loads(budget['billing_contract_json']), expected_digest=budget['billing_contract_digest'])
+            cached = 0 if value['outcome'] == 'confirmed_not_executed' else value['cached_input_tokens']
+            raw = json.loads(row['provider_usage_json']) if row['provider_usage_json'] is not None else dict(source='local_declaration')
+            prior_classified = GLMAssistantProvider._provider_usage(raw).classified
+            if prior_classified is not None and prior_classified['cached_input'] != cached:
+                raise ApiError(409, 'ASSISTANT_RESOLUTION_EVIDENCE_CONFLICT', '人工缓存用量与已保存报告矛盾')
+            provider_usage = ProviderUsage(raw, dict(input=usage['input'], cached_input=cached, output=usage['output']))
+            capture = capped_capture(frozen['pricing_snapshot'], int(budget['accrued_numerator']), budget['spent_credits'], budget['max_credits'], provider_usage.classified)
+            cost = capture['captured_credits']
+            limits = capture['exhausted'] or budget['spent_credits'] + cost >= budget['max_credits'] or usage['output'] > json.loads(row['request_json'])['maxOutputTokens'] or usage['input'] + usage['output'] > row['context_window']
+        else:
+            cost = capture_for_usage(row, budget, usage).credits
+            limits = usage['input'] > row['input_token_upper_bound'] or usage['input'] + usage['output'] > row['context_window'] or usage['output'] > json.loads(row['request_json'])['maxOutputTokens']
         if not apply:
-            status = 'ready' if acquired is True and not limits and cost <= row['reserved_credits'] else 'unresolved'
+            status = 'ready' if acquired is True and (capped or not limits) and cost <= row['reserved_credits'] else 'unresolved'
             return dict(status=status, applied=False, before=before,
-                        proposed=dict(state=value['terminal_state'], cost=cost, limits_exceeded=limits,
+                        proposed=dict(state='failed' if capped and limits else value['terminal_state'], cost=cost, limits_exceeded=limits,
                                       within_reservation=cost <= row['reserved_credits']), executor_stopped=acquired is True)
         if not has_audit:
             raise ApiError(409, 'ASSISTANT_RESOLUTION_MIGRATION_REQUIRED', '核账审计表尚未安装')
         error = None if value['terminal_state'] == 'succeeded' else {
             'code': 'ASSISTANT_MANUALLY_RESOLVED', 'message': 'Agent 操作已按人工证据收尾'}
-        self.accounting._finish_in_transaction(connection, row, value['terminal_state'], usage, value['result'], error)
+        self.accounting._finish_in_transaction(connection, row, value['terminal_state'], usage, value['result'], error,
+            provider_usage=provider_usage, known_not_executed=value['outcome'] == 'confirmed_not_executed')
         after = self._summary(connection, self.accounting._owned(connection, value['user_id'], value['operation_id']))
         result = dict(resolution_id=value['resolution_id'], status='resolved' if after['billing_state'] in SETTLED else 'unresolved',
                       applied=True, operator_authentication='local_declaration', before=before, after=after)
@@ -219,6 +249,7 @@ def main(argv=None):
     parser.add_argument('--terminal-state', choices=('failed', 'cancelled', 'succeeded'))
     parser.add_argument('--input-tokens', type=int)
     parser.add_argument('--output-tokens', type=int)
+    parser.add_argument('--cached-input-tokens', type=int, help='已核实、包含在总输入中的缓存 token 数')
     parser.add_argument('--result-file', type=Path, help='完整 done JSON；不是日志文件')
     parser.add_argument('--evidence-reference', help='非敏感类别:标识，不提供密钥、网址或日志')
     parser.add_argument('--evidence-sha256')
@@ -235,6 +266,8 @@ def main(argv=None):
             body['evidence_reference'] = dict(id=args.evidence_reference, sha256=args.evidence_sha256)
         if args.input_tokens is not None or args.output_tokens is not None:
             body['usage'] = dict(input=args.input_tokens, output=args.output_tokens)
+        if args.cached_input_tokens is not None:
+            body['cached_input_tokens'] = args.cached_input_tokens
         if args.result_file is not None:
             with args.result_file.open('rb') as handle:
                 data = handle.read(196609)

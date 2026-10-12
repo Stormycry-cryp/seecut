@@ -12,7 +12,8 @@ import urllib.parse
 import urllib.request
 
 from . import assistant_contract as contract
-from .assistant_provider import AssistantProvider, PreparedInference, ProviderFailure
+from .assistant_provider import AssistantProvider, PreparedInference, PreparedUsageInference, ProviderUsage, ProviderFailure
+from .model_pricing import billing_mode
 from .network import open_no_redirect
 from .security import new_id
 
@@ -21,17 +22,21 @@ DOMESTIC_BASE = 'https://open.bigmodel.cn/api/paas/v4'
 
 
 class GLMAssistantProvider(AssistantProvider):
-    def __init__(self, config, db, *, input_counter=None, token_contract_id=None):
+    def __init__(self, config, db, *, input_counter=None, token_contract_id=None, usage_contract_id=None):
         super().__init__(config)
         self.db = db
         self.counter = input_counter
         self.token_contract_id = token_contract_id if callable(input_counter) and isinstance(token_contract_id, str) and contract.IDENTITY.fullmatch(token_contract_id) else None
+        self.billing_mode = billing_mode(config.assistant_billing_mode)
+        self.usage_contract_id = usage_contract_id if (
+            self.billing_mode == 'provider_usage_capped_v1' and isinstance(usage_contract_id, str)
+            and contract.IDENTITY.fullmatch(usage_contract_id)) else None
         parsed = urllib.parse.urlsplit(config.assistant_base_url)
         local_fixture = config.env == 'test' and parsed.hostname in {'127.0.0.1', 'localhost'} and parsed.scheme == 'http'
         self.configured = self.configured and config.assistant_model == MODEL and not config.assistant_images and (config.assistant_base_url == DOMESTIC_BASE or local_fixture)
 
     def prepare_scoped(self, request, scope):
-        if not self.configured or not self.token_contract_id or not isinstance(scope, dict):
+        if not self.configured or not (self.usage_contract_id or self.token_contract_id) or not isinstance(scope, dict):
             raise ValueError('GLM input contract unavailable')
         if set(scope) != {'user_id', 'budget_id', 'client_request_id'}:
             raise ValueError('GLM input scope unavailable')
@@ -60,6 +65,10 @@ class GLMAssistantProvider(AssistantProvider):
                 raise ValueError('GLM tool context unavailable')
             payload['messages'][index + 1]['reasoning_content'] = row['reasoning']
         frozen = contract.canonical(payload).encode()
+        if self.billing_mode == 'provider_usage_capped_v1':
+            if not self.usage_contract_id:
+                raise ValueError('GLM provider usage contract unavailable')
+            return PreparedUsageInference(frozen, self.usage_contract_id)
         count = self.counter(frozen)
         contract.integer(count, 0, self.config.assistant_context_window)
         return PreparedInference(frozen, count, self.token_contract_id)
@@ -70,6 +79,21 @@ class GLMAssistantProvider(AssistantProvider):
         if 'total_tokens' in source and contract.integer(source['total_tokens'], 0, 2_000_000) != value['input'] + value['output']:
             raise ValueError('GLM usage mismatch')
         return value
+
+    @staticmethod
+    def _provider_usage(source):
+        from copy import deepcopy
+        classified = None
+        try:
+            total = GLMAssistantProvider._usage(source)
+            details = source.get('prompt_tokens_details')
+            if not isinstance(details, dict) or 'cached_tokens' not in details:
+                raise ValueError('Cache classification missing')
+            cached = contract.integer(details['cached_tokens'], 0, total['input'])
+            classified = dict(input=total['input'], cached_input=cached, output=total['output'])
+        except Exception:
+            pass
+        return ProviderUsage(deepcopy(source), classified)
 
     def _chunks(self, response, started):
         content_type = response.headers.get('Content-Type', '').lower()
@@ -114,12 +138,14 @@ class GLMAssistantProvider(AssistantProvider):
             raise ProviderFailure()
 
     def stream(self, operation_id, prepared, cancelled):
-        if not self.configured or not self.token_contract_id or prepared.token_contract_id != self.token_contract_id:
+        verified = self.billing_mode == 'verified_input_v1' and isinstance(prepared, PreparedInference) and prepared.token_contract_id == self.token_contract_id and self.token_contract_id
+        capped = self.billing_mode == 'provider_usage_capped_v1' and isinstance(prepared, PreparedUsageInference) and prepared.usage_contract_id == self.usage_contract_id and self.usage_contract_id
+        if not self.configured or not (verified or capped):
             raise ProviderFailure(known_not_executed=True)
         if cancelled():
             raise ProviderFailure(known_not_executed=True, cancelled=True)
         started = time.monotonic()
-        usage, ended, finish, text, reasoning, calls = None, False, None, [], [], {}
+        usage, raw_usage, ended, finish, text, reasoning, calls = None, None, False, None, [], [], {}
         reasoning_bytes = 0
         upstream = urllib.request.Request(self.config.assistant_base_url + '/chat/completions', data=prepared.payload,
             method='POST', headers={'Content-Type': 'application/json', 'Accept': 'text/event-stream',
@@ -137,6 +163,13 @@ class GLMAssistantProvider(AssistantProvider):
                     if not isinstance(chunk, dict) or chunk.get('error'):
                         raise ProviderFailure()
                     if chunk.get('usage') is not None:
+                        raw_usage = chunk['usage']
+                        if capped:
+                            # Preserve even malformed/interrupted reports. This
+                            # observation is never a confirmed billable amount;
+                            # classification is emitted only after stream end.
+                            from copy import deepcopy
+                            yield ProviderUsage(deepcopy(raw_usage), None)
                         usage = self._usage(chunk['usage'])
                     choices = chunk.get('choices', [])
                     if not isinstance(choices, list) or len(choices) > 1:
@@ -176,6 +209,8 @@ class GLMAssistantProvider(AssistantProvider):
                                 yield {'type': 'tool_delta', 'id': entry['id'], 'text': fragment}
                 if not ended or usage is None:
                     raise ProviderFailure()
+                if capped:
+                    yield self._provider_usage(raw_usage)
                 if cancelled():
                     raise ProviderFailure(usage=usage, cancelled=True)
                 if finish in {'sensitive', 'network_error', 'model_context_window_exceeded'}:
