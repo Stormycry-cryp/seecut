@@ -3,9 +3,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import copy
 import json
+from unittest.mock import MagicMock, patch
 
 from seecut_server.assistant_contract import canonical
+from seecut_server.assistant_glm import DOMESTIC_BASE, MODEL
 from seecut_server.assistant_provider import PreparedUsageInference, ProviderUsage, ProviderFailure
+from seecut_server.assistant_provider import make_assistant_provider
 from seecut_server.assistant_worker import AssistantWorker
 from seecut_server.assistant_local_resolution import LocalResolution
 from seecut_server.model_pricing import parse_price_catalog
@@ -166,6 +169,113 @@ class CappedUsageBillingTest(AssistantFixture):
         self.assertEqual(resolver.resolve(body, apply=True), resolved)
         settled = self.service.get(self.user, op['operation_id'])
         self.assertEqual((settled['captured_credits'], settled['budget']['accrued_microcredits']), (1, 200000))
+        self.wallet(99, 0)
+
+    def interrupted_glm_operation(self, raw):
+        pricing = record({'input': '20', 'output': '60'})
+        pricing.update(provider='bigmodel', model=MODEL)
+        self.config = replace(self.config, assistant_provider_id='bigmodel', assistant_model=MODEL,
+            assistant_base_url=DOMESTIC_BASE, model_price_catalog=parse_price_catalog(json.dumps([pricing])))
+        self.provider = make_assistant_provider(self.config, self.db)
+        self.provider._chunks = lambda response, started: iter([dict(usage=copy.deepcopy(raw))])
+        self.account = SeeCutService(self.config, self.db, emailer=FakeEmailSender(self.config),
+            clock=lambda: self.clock[0], assistant_provider=self.provider)
+        self.service = self.account.assistant; self.worker = AssistantWorker(self.service)
+        op = self.create()
+        response = MagicMock(); response.status = 200
+        with patch('seecut_server.assistant_glm.open_no_redirect') as opener:
+            opener.return_value.__enter__.return_value = response
+            self.assertEqual(self.worker.process_once(), 1)
+            opener.assert_called_once()
+        op = self.service.get(self.user, op['operation_id'])
+        self.assertEqual((op['state'], op['billing_state'], op['result']), ('outcome_unknown', 'held', None))
+        with self.db.connect() as connection:
+            row = connection.execute('SELECT usage_json,provider_usage_json FROM assistant_operations WHERE id=?', (op['operation_id'],)).fetchone()
+            self.assertIsNone(row['usage_json'])
+            self.assertEqual(json.loads(row['provider_usage_json']), raw)
+        self.wallet(90, 10)
+        return op
+
+    def interrupted_resolution(self, op, *, usage, cached=0, outcome='confirmed_usage'):
+        return dict(user_id=self.user, operation_id=op['operation_id'], expected_version=op['version'],
+            resolution_id='interrupted-usage-resolution', operator='fixture', reason='synthetic independently verified report',
+            outcome=outcome, terminal_state='failed', usage=usage, cached_input_tokens=cached,
+            evidence_confirmed=True, evidence_reference=dict(id='fixture:interrupted', sha256='a'*64))
+
+    def reconciliation_rows(self):
+        with self.db.connect() as connection:
+            audit = [dict(row) for row in connection.execute('SELECT * FROM assistant_resolutions ORDER BY rowid')]
+        return self.rows(), audit
+
+    def test_interrupted_valid_supplier_usage_rejects_zero_and_any_dimension_conflict_without_writes(self):
+        raw = dict(prompt_tokens=10000, completion_tokens=100, total_tokens=10100,
+                   prompt_tokens_details=dict(cached_tokens=0))
+        op = self.interrupted_glm_operation(raw)
+        resolver = LocalResolution(self.db, clock=lambda: self.clock[0])
+        before = self.reconciliation_rows()
+        declarations = [
+            self.interrupted_resolution(op, usage=dict(input=0, output=0), outcome='confirmed_not_executed'),
+            self.interrupted_resolution(op, usage=dict(input=9999, output=100)),
+            self.interrupted_resolution(op, usage=dict(input=10000, output=99)),
+            self.interrupted_resolution(op, usage=dict(input=10000, output=100), cached=1),
+        ]
+        for body in declarations:
+            for apply in (False, True):
+                with self.subTest(usage=body['usage'], cached=body['cached_input_tokens'], outcome=body['outcome'], apply=apply):
+                    self.expect_error('ASSISTANT_RESOLUTION_EVIDENCE_CONFLICT', lambda: resolver.resolve(body, apply=apply))
+                    self.assertEqual(self.reconciliation_rows(), before)
+                    self.wallet(90, 10)
+
+    def test_interrupted_valid_supplier_usage_matching_resolution_captures_once_and_keeps_raw(self):
+        raw = dict(prompt_tokens=10000, completion_tokens=100, total_tokens=10100,
+                   prompt_tokens_details=dict(cached_tokens=0))
+        op = self.interrupted_glm_operation(raw)
+        body = self.interrupted_resolution(op, usage=dict(input=10000, output=100))
+        resolver = LocalResolution(self.db, clock=lambda: self.clock[0]); before = self.reconciliation_rows()
+        self.assertEqual(resolver.resolve(body)['status'], 'ready')
+        self.assertEqual(self.reconciliation_rows(), before)
+        resolved = resolver.resolve(body, apply=True)
+        self.assertEqual(resolved['status'], 'resolved')
+        settled = self.service.get(self.user, op['operation_id'])
+        self.assertEqual((settled['captured_credits'], settled['budget']['accrued_microcredits']), (1, 206000))
+        after = self.reconciliation_rows()
+        self.assertEqual(resolver.resolve(copy.deepcopy(body), apply=True), resolved)
+        self.assertEqual(self.reconciliation_rows(), after)
+        self.assertEqual(len(after[1]), 1)
+        with self.db.connect() as connection:
+            stored = connection.execute('SELECT provider_usage_json FROM assistant_operations WHERE id=?', (op['operation_id'],)).fetchone()[0]
+            self.assertEqual(json.loads(stored), raw)
+        self.wallet(99, 0)
+
+    def test_not_executed_declaration_cannot_ignore_nonzero_cache_when_usage_is_omitted(self):
+        raw = dict(prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                   prompt_tokens_details=dict(cached_tokens=0))
+        op = self.interrupted_glm_operation(raw)
+        body = self.interrupted_resolution(op, usage=None, cached=1, outcome='confirmed_not_executed')
+        resolver = LocalResolution(self.db, clock=lambda: self.clock[0]); before = self.reconciliation_rows()
+        for apply in (False, True):
+            with self.subTest(apply=apply):
+                self.expect_error('ASSISTANT_INVALID_REQUEST', lambda: resolver.resolve(body, apply=apply))
+                self.assertEqual(self.reconciliation_rows(), before)
+                self.wallet(90, 10)
+
+    def test_interrupted_unclassifiable_raw_still_allows_independent_evidence_and_idempotent_apply(self):
+        raw = dict(prompt_tokens=10000, completion_tokens=100, total_tokens=10100,
+                   prompt_tokens_details=dict(cached_tokens='0'))
+        op = self.interrupted_glm_operation(raw)
+        body = self.interrupted_resolution(op, usage=dict(input=10000, output=100))
+        resolver = LocalResolution(self.db, clock=lambda: self.clock[0])
+        before = self.reconciliation_rows()
+        self.assertEqual(resolver.resolve(body)['status'], 'ready')
+        self.assertEqual(self.reconciliation_rows(), before)
+        resolved = resolver.resolve(body, apply=True)
+        self.assertEqual(resolved['status'], 'resolved')
+        after = self.reconciliation_rows()
+        self.assertEqual(resolver.resolve(copy.deepcopy(body), apply=True), resolved)
+        self.assertEqual(self.reconciliation_rows(), after)
+        with self.db.connect() as connection:
+            stored = connection.execute('SELECT provider_usage_json FROM assistant_operations WHERE id=?', (op['operation_id'],)).fetchone()[0]
+            self.assertEqual(json.loads(stored), raw)
         self.wallet(99, 0)
 
     def test_corrupt_contract_after_claim_is_unknown_without_dispatch(self):

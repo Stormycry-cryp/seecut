@@ -73,7 +73,8 @@ def _normalize(body):
         if result['type'] != 'done':
             raise ApiError(400, 'ASSISTANT_RESOLUTION_RESULT_INVALID', '必须提供完整 done 结果')
     if outcome == 'confirmed_not_executed':
-        if state not in (None, 'failed') or usage not in (None, {'input': 0, 'output': 0}) or result is not None:
+        if (state not in (None, 'failed') or usage not in (None, {'input': 0, 'output': 0})
+                or result is not None or value.get('cached_input_tokens', 0) != 0):
             contract.invalid('确认未执行只能按失败和零用量收尾')
         state, usage = 'failed', {'input': 0, 'output': 0}
     if result is not None and 'usage' in result and result['usage'] != usage:
@@ -191,9 +192,10 @@ class LocalResolution:
             cached = 0 if value['outcome'] == 'confirmed_not_executed' else value['cached_input_tokens']
             raw = json.loads(row['provider_usage_json']) if row['provider_usage_json'] is not None else dict(source='local_declaration')
             prior_classified = GLMAssistantProvider._provider_usage(raw).classified
-            if prior_classified is not None and prior_classified['cached_input'] != cached:
-                raise ApiError(409, 'ASSISTANT_RESOLUTION_EVIDENCE_CONFLICT', '人工缓存用量与已保存报告矛盾')
-            provider_usage = ProviderUsage(raw, dict(input=usage['input'], cached_input=cached, output=usage['output']))
+            declared_usage = dict(input=usage['input'], cached_input=cached, output=usage['output'])
+            if prior_classified is not None and prior_classified != declared_usage:
+                raise ApiError(409, 'ASSISTANT_RESOLUTION_EVIDENCE_CONFLICT', '人工用量与已保存的有效供应商报告矛盾')
+            provider_usage = ProviderUsage(raw, declared_usage)
             capture = capped_capture(frozen['pricing_snapshot'], int(budget['accrued_numerator']), budget['spent_credits'], budget['max_credits'], provider_usage.classified)
             cost = capture['captured_credits']
             limits = capture['exhausted'] or budget['spent_credits'] + cost >= budget['max_credits'] or usage['output'] > json.loads(row['request_json'])['maxOutputTokens'] or usage['input'] + usage['output'] > row['context_window']
