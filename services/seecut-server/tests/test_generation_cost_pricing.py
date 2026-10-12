@@ -1,11 +1,15 @@
 """Opt-in per-model generation procurement costs; no supplier requests."""
 from dataclasses import replace
+import io
 import json
+from unittest.mock import patch
 from seecut_server.model_pricing import parse_price_catalog, generation_charge, price_snapshot
 from seecut_server.service import SeeCutService
 from test_assistant_contract import AssistantFixture
 from test_model_pricing import record
-from test_service import FakeEmailSender, FakeImage2, FakeXiangxin
+from test_service import FakeEmailSender
+from test_generation_efforts import RecordingImage2, RecordingXiangxin
+from test_generation_robustness import PNG
 
 
 def generation_record(kind='image'):
@@ -22,7 +26,41 @@ class GenerationCostPricingTest(AssistantFixture):
         self.config = replace(self.config, model_cost_pricing_enabled=True,
             model_price_catalog=parse_price_catalog(json.dumps(records)), model_prices={'image:gpt-image-2.5-flare': 0})
         self.account = SeeCutService(self.config, self.db, emailer=FakeEmailSender(self.config),
-            image2=FakeImage2(), xiangxin=FakeXiangxin(), assistant_provider=self.provider, clock=lambda: self.clock[0])
+            image2=RecordingImage2(), xiangxin=RecordingXiangxin(), assistant_provider=self.provider, clock=lambda: self.clock[0])
+
+    def test_dispatch_keeps_price_snapshot_private_for_image_create_edit_and_video(self):
+        self.install([generation_record(), generation_record('video')])
+        upload = self.account.prepare_upload(self.user, 'generation_input', 'reference.png', 'image/png', len(PNG))
+        self.account.save_upload_stream(upload['upload_id'], io.BytesIO(PNG), len(PNG), 'image/png')
+        asset = self.account.register_generation_asset(self.user, upload['upload_id'])
+        requests = [
+            ('image', dict(model='gpt-image-2.5-flare', prompt='synthetic')),
+            ('image', dict(model='gpt-image-2.5-flare', prompt='synthetic edit', operation='edit', reference_asset_ids=[asset['id']])),
+            ('video', dict(model='sd_2.0_mini_special', prompt='synthetic video', duration=5, resolution='720p', aspect_ratio='16:9', reference_asset_ids=[asset['id']])),
+        ]
+        for index, (kind, request) in enumerate(requests):
+            with self.subTest(kind=kind, operation=request.get('operation', 'create')):
+                quote = self.account.quote_generation(self.user, dict(kind=kind, **request))
+                task = self.account.create_generation_task(self.user, kind, request | dict(quote_id=quote['quote_id']), f'outbound-{index}')
+                with self.db.connect() as connection:
+                    frozen = connection.execute('SELECT request_json FROM generation_tasks WHERE id=?', (task['id'],)).fetchone()[0]
+                self.assertEqual(json.loads(frozen)['model_pricing'], quote['request']['model_pricing'])
+                with patch.object(self.account, '_store_binary_outputs'):
+                    self.account.process_generation_task(self.account.claim_generation_tasks()[0])
+                if kind == 'video':
+                    sent = self.account.xiangxin.payloads[-1]
+                    self.assertEqual(sent['reference_images'], ['assetId://provider-asset'])
+                elif request.get('operation') == 'edit':
+                    sent, images = self.account.image2.edit_calls[-1]
+                    self.assertEqual(len(images), 1)
+                else:
+                    sent = self.account.image2.payloads[-1]
+                self.assertEqual(sent['model'], request['model'])
+                self.assertEqual(sent['prompt'], request['prompt'])
+                self.assertFalse({'model_pricing', 'effort_id', 'policy_revision', 'policy', 'operation', 'quantity', 'reference_asset_ids'} & sent.keys())
+                with self.db.connect() as connection:
+                    after = connection.execute('SELECT request_json FROM generation_tasks WHERE id=?', (task['id'],)).fetchone()[0]
+                self.assertEqual(after, frozen)
 
     def test_unknown_cost_cannot_sell_existing_zero_price(self):
         self.install([])

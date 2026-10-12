@@ -1711,7 +1711,7 @@ class SeeCutService:
         payload = json.loads(task["request_json"])
         payload.pop("operation", None)
         payload.pop("quantity", None)
-        for field in ("effort_id", "policy_revision", "policy"):
+        for field in ("effort_id", "policy_revision", "policy", "model_pricing"):
             payload.pop(field, None)
         reference_ids = payload.pop("reference_asset_ids", [])
         if reference_ids:
@@ -1759,7 +1759,7 @@ class SeeCutService:
         reference_ids = raw_payload.pop("reference_asset_ids", [])
         raw_payload.pop("operation", None)
         raw_payload.pop("quantity", None)
-        for field in ("effort_id", "policy_revision", "policy"):
+        for field in ("effort_id", "policy_revision", "policy", "model_pricing"):
             raw_payload.pop(field, None)
         if task["operation"] == "edit":
             references = self._generation_asset_files(task["user_id"], reference_ids)
