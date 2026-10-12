@@ -6962,6 +6962,7 @@ impl Studio {
         let editor = app.global::<Editor>();
         editor.set_canvas_frame(self.canvas.image.clone());
         editor.set_canvas_has_document(self.canvas.document.is_some());
+        editor.set_canvas_export_busy(self.canvas.export_busy());
         editor.set_canvas_can_undo(self.canvas.can_undo());
         editor.set_canvas_can_redo(self.canvas.can_redo());
         editor.set_canvas_modified(self.canvas.is_modified());

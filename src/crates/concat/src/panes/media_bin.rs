@@ -74,6 +74,8 @@ pub struct MediaImport {
     pub path: PathBuf,
     /// Name shown in the media bin after probing succeeds.
     pub display_name: Option<String>,
+    /// Frozen identity of a selected global-library asset.
+    pub library_reference: Option<crate::personal_library::AssetReference>,
 }
 
 /// A probed media file with its optional library display name.
@@ -81,6 +83,7 @@ pub struct MediaImport {
 pub struct NamedMediaSummary {
     summary: MediaSummary,
     display_name: Option<String>,
+    library_reference: Option<crate::personal_library::AssetReference>,
 }
 
 /// The bin's state.
@@ -122,6 +125,26 @@ fn named_media_item(named: NamedMediaSummary) -> concat_project::commands::NewMe
     let mut item = named.summary.to_new_media();
     if let Some(display_name) = named.display_name {
         item.name = display_name;
+    }
+    if let Some(reference) = named.library_reference {
+        item.extra.insert(
+            "seecutLibraryReference".into(),
+            serde_json::to_value(&reference).expect("library reference serializes"),
+        );
+        if let Some(version) = reference.version {
+            let binding = crate::project_library_relink::LibraryBinding {
+                version: 1,
+                asset_id: reference.asset_id,
+                registration_id: version.registration_id,
+                sha256: version.sha256,
+                previous_path: item.path.clone(),
+                verified_original: true,
+            };
+            item.extra.insert(
+                crate::project_library_relink::BINDING_KEY.into(),
+                serde_json::to_value(binding).expect("library binding serializes"),
+            );
+        }
     }
     item
 }
@@ -207,11 +230,19 @@ impl MediaBin {
                         imports
                             .into_iter()
                             .map(|import| {
-                                media::probe(&import.path.to_string_lossy()).map(|summary| {
-                                    NamedMediaSummary {
-                                        summary,
-                                        display_name: import.display_name,
-                                    }
+                                crate::personal_library::verify_asset_reference(
+                                    &import.path,
+                                    import.library_reference.as_ref(),
+                                )?;
+                                let summary = media::probe(&import.path.to_string_lossy())?;
+                                crate::personal_library::verify_asset_reference(
+                                    &import.path,
+                                    import.library_reference.as_ref(),
+                                )?;
+                                Ok(NamedMediaSummary {
+                                    summary,
+                                    display_name: import.display_name,
+                                    library_reference: import.library_reference,
                                 })
                             })
                             .collect::<Vec<_>>()
@@ -547,6 +578,7 @@ mod tests {
                 audio_tracks: Vec::new(),
             },
             display_name: Some("opaque-square".into()),
+            library_reference: None,
         });
         assert_eq!(imported.name, "opaque-square");
         assert!(!named_import_session_is_current(None, &original));

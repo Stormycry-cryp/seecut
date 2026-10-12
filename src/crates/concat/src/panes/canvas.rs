@@ -120,6 +120,15 @@ struct CanvasSaveData {
     document: ImageDocument,
     store: PixelStore,
     name: String,
+    view: CanvasSavedView,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CanvasSavedView {
+    zoom: f64,
+    pan: (f64, f64),
+    follows_fit: bool,
+    active_layer: Option<concat_canvas::LayerId>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -282,6 +291,8 @@ pub(crate) struct CanvasImport {
     pub(crate) path: PathBuf,
     #[serde(default)]
     pub(crate) display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) library_reference: Option<crate::personal_library::AssetReference>,
 }
 
 impl CanvasImport {
@@ -289,6 +300,7 @@ impl CanvasImport {
         Self {
             path,
             display_name: None,
+            library_reference: None,
         }
     }
 
@@ -297,7 +309,22 @@ impl CanvasImport {
         Self {
             path,
             display_name: (!display_name.is_empty()).then_some(display_name),
+            library_reference: None,
         }
+    }
+
+    pub(crate) fn from_library(asset: &serde_json::Value) -> Self {
+        let mut item = Self::named(
+            PathBuf::from(asset["path"].as_str().unwrap_or_default()),
+            asset["name"].as_str().unwrap_or_default(),
+        );
+        if let Some(id) = asset["id"].as_str().filter(|id| !id.is_empty()) {
+            item.library_reference = Some(crate::personal_library::AssetReference {
+                asset_id: id.to_owned(),
+                version: serde_json::from_value(asset["version"].clone()).ok(),
+            });
+        }
+        item
     }
 
     fn layer_name(&self) -> String {
@@ -529,6 +556,7 @@ pub struct CanvasPane {
     pub stage: (f64, f64),
     /// The open file's name, as the header readout.
     pub name: String,
+    export_operation: Option<String>,
     /// The brush the painting tools drive: diameter in pixels, opacity and
     /// hardness in 0..1, straight-alpha colour, and whether it erases.
     pub brush: BrushSettings,
@@ -640,6 +668,7 @@ impl Default for CanvasPane {
             pan: (0.0, 0.0),
             stage: (0.0, 0.0),
             name: String::new(),
+            export_operation: None,
             brush: BrushSettings {
                 diameter: 24.0,
                 opacity: 1.0,
@@ -3608,7 +3637,7 @@ impl CanvasPane {
     /// dialog. The GPU path reads its own texture back; the CPU path
     /// composites from the store.
     fn export_png(&mut self, studio: &mut Studio, to_library: bool) {
-        if self.transform_session.is_some() {
+        if self.transform_session.is_some() || self.export_operation.is_some() {
             return;
         }
         let Some(document) = self.document.clone() else {
@@ -3625,6 +3654,14 @@ impl CanvasPane {
             studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
             return;
         }
+        let snapshot = match self.save_data() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                studio.notify(&error, true);
+                return;
+            }
+        };
+        let project_path = self.project_path.clone();
         let frame = match &mut self.gpu {
             Some(gpu) => gpu.compose_frame(&document, &self.store),
             None => concat_canvas::compose(&document, &self.store),
@@ -3666,37 +3703,61 @@ impl CanvasPane {
             path
         };
         let registration_id = uuid::Uuid::new_v4().to_string();
+        let completion_id = registration_id.clone();
+        self.export_operation = Some(registration_id.clone());
         crate::host::spawn(
             move || {
                 let bytes = encode_png(&frame)?;
+                let provenance = canvas_export_provenance(&snapshot, project_path)?;
                 std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
                 let registration = crate::personal_library::with_library_write_lock(|| {
                     let dirs = concat_host::AppDirs::locate()?;
-                    crate::registration_retry::register_output(
+                    crate::registration_retry::register_output_with_provenance(
                         &dirs.data.join("personal-library"),
                         &path,
                         Some(&export_stem),
                         Some(&registration_id),
                         Some(&bytes),
+                        Some(provenance),
                     )
                 });
                 Ok::<_, String>(registration)
             },
-            move |studio, _, _, result| match result {
-                Ok(Ok(())) => {
-                    studio.notify("画布已导出并加入资产库", false);
-                    crate::host::Shell::with(|_, app| {
-                        app.global::<crate::ui::SeeCut>()
-                            .invoke_action("personal-refresh".into(), "".into());
-                    });
+            move |studio, _, _, result| {
+                if !studio.canvas.finish_export(&completion_id) {
+                    return;
                 }
-                Ok(Err(error)) => studio.notify(&format!("画布已导出，入库失败：{error}"), true),
-                Err(error) => {
-                    log::warn!("canvas: {error}");
-                    studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
+                match result {
+                    Ok(Ok(())) => {
+                        studio.notify("画布已导出并加入资产库", false);
+                        crate::host::Shell::with(|_, app| {
+                            app.global::<crate::ui::SeeCut>()
+                                .invoke_action("personal-refresh".into(), "".into());
+                        });
+                    }
+                    Ok(Err(error)) => {
+                        studio.notify(&format!("画布已导出，入库失败：{error}"), true)
+                    }
+                    Err(error) => {
+                        log::warn!("canvas: {error}");
+                        studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
+                    }
                 }
             },
         );
+    }
+
+    /// Whether the current formal export is still writing or registering its output.
+    pub fn export_busy(&self) -> bool {
+        self.export_operation.is_some()
+    }
+
+    fn finish_export(&mut self, operation: &str) -> bool {
+        if self.export_operation.as_deref() != Some(operation) {
+            return false;
+        }
+        self.export_operation = None;
+        true
     }
 
     /// The document's size, as the navigator wants it: `None` while the
@@ -4052,6 +4113,12 @@ impl CanvasPane {
                 .ok_or_else(|| tf("No image open", &[]))?,
             store: self.store.clone(),
             name: self.name.clone(),
+            view: CanvasSavedView {
+                zoom: self.nav.viewport().zoom(),
+                pan: self.nav.viewport().pan(),
+                follows_fit: self.nav.viewport().follows_fit(),
+                active_layer: self.active,
+            },
         })
     }
 
@@ -4136,6 +4203,7 @@ impl CanvasPane {
                 "width": document.width,
                 "height": document.height,
                 "document": document,
+                "view": data.view,
             })
             .to_string();
             std::fs::write(staging.join("manifest.json"), manifest)
@@ -4223,6 +4291,21 @@ impl CanvasPane {
         validate_canvas_dimensions(document.width, document.height, texture_limit)
             .map_err(|error| format!("open: {error}"))?;
         document.validate().map_err(|e| format!("open: {e}"))?;
+        let saved_view: Option<CanvasSavedView> = manifest
+            .get("view")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|error| format!("open: invalid view: {error}"))?;
+        if saved_view.as_ref().is_some_and(|view| {
+            !view.zoom.is_finite()
+                || !(0.001..=32.0).contains(&view.zoom)
+                || !view.pan.0.is_finite()
+                || !view.pan.1.is_finite()
+                || view.pan.0.abs() > 1e9
+                || view.pan.1.abs() > 1e9
+        }) {
+            return Err("open: invalid saved view".into());
+        }
 
         let mut used = Vec::new();
         document.collect_pixels(&mut used);
@@ -4322,6 +4405,23 @@ impl CanvasPane {
         let size = (f64::from(width), f64::from(height));
         self.nav.set_document(Some(size));
         self.nav.viewport_mut().fit(size);
+        if let Some(view) = saved_view {
+            if !view.follows_fit {
+                let viewport = self.nav.viewport_mut();
+                viewport.set_zoom(view.zoom, viewport.center(), size);
+                let pan = viewport.pan();
+                viewport.translate((view.pan.0 - pan.0, view.pan.1 - pan.1));
+            }
+            if let Some(active) = view.active_layer
+                && let Some(node) = self
+                    .document
+                    .as_ref()
+                    .and_then(|document| document.find(active))
+            {
+                self.active = Some(active);
+                self.layer = node_image_pixels(node);
+            }
+        }
         self.sync_view();
         Ok(())
     }
@@ -4465,7 +4565,7 @@ impl CanvasPane {
                     .map(|device| device.limits().max_texture_dimension_2d)
             });
         for item in paths {
-            if let Err(error) = decode(&item.path, texture_limit) {
+            if let Err(error) = decode_import(item, texture_limit) {
                 studio.notify(&format!("无法导入 {}：{error}", item.path.display()), true);
                 return false;
             }
@@ -4490,7 +4590,7 @@ impl CanvasPane {
             });
         let mut decoded = Vec::with_capacity(paths.len());
         for item in paths {
-            match decode(&item.path, texture_limit) {
+            match decode_import(item, texture_limit) {
                 Ok(frame) => decoded.push((item, frame)),
                 Err(error) => {
                     studio.notify(&format!("无法导入 {}：{error}", item.path.display()), true);
@@ -4499,19 +4599,19 @@ impl CanvasPane {
             }
         }
         if self.document.is_none() {
-            self.open_now(&paths[0].path, studio);
-            if self.document.is_none() {
-                return false;
-            }
-            let name = paths[0].layer_name();
+            let (first, frame) = decoded.remove(0);
+            self.open_frame(&first.path, frame, studio);
+            let name = first.layer_name();
             self.name = name.clone();
             if let Some(active) = self.active
                 && let Some(document) = self.document.as_mut()
                 && let Some(layer) = document.layer_mut(active)
             {
                 layer.name = name;
+                layer.library_asset = paths[0].library_reference.as_ref().map(|reference| {
+                    serde_json::to_value(reference).expect("library reference serializes")
+                });
             }
-            decoded.remove(0);
         }
         let (width, height) = self
             .document
@@ -4536,6 +4636,9 @@ impl CanvasPane {
             {
                 layer.transform.scale_x = fit as f32;
                 layer.transform.scale_y = fit as f32;
+                layer.library_asset = item.library_reference.as_ref().map(|reference| {
+                    serde_json::to_value(reference).expect("library reference serializes")
+                });
             }
             self.active = Some(id);
             self.layer = Some(pixels);
@@ -4546,7 +4649,22 @@ impl CanvasPane {
 
     fn request_open(&mut self, path: &Path, studio: &mut Studio) {
         match self.owns_canvas_path(path) {
-            Ok(true) => return,
+            Ok(true) => {
+                if let Some(paths) = self.pending_handoff_paths.take() {
+                    self.begin_history_mode(0);
+                    let success = self.import_layers(&paths, studio);
+                    self.commit_history();
+                    report_canvas_handoff(
+                        success,
+                        if success {
+                            ""
+                        } else {
+                            "画布素材导入失败，请重试"
+                        },
+                    );
+                }
+                return;
+            }
             Ok(false) => {}
             Err(error) => {
                 studio.notify(&tf("Could not open {0}", &[&error]), true);
@@ -4614,54 +4732,7 @@ impl CanvasPane {
         }
         match decode(path, texture_limit) {
             Ok(frame) => {
-                self.invalidate_auto_save();
-                let (width, height) = (frame.width(), frame.height());
-                let mut document = ImageDocument::new(width, height);
-                self.store = PixelStore::new();
-                self.thumbnail_cache.clear();
-                self.content_bounds.clear();
-                self.pixel_revisions.clear();
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.reset_document();
-                }
-                let pixels = self.store.put(frame);
-                let base = document.new_layer(
-                    path.file_stem().unwrap_or_default().to_string_lossy(),
-                    pixels,
-                );
-                self.document = Some(document);
-                self.layer = Some(pixels);
-                self.active = Some(base);
-                self.selection = None;
-                self.marquee = None;
-                self.undo_stack.clear();
-                self.redo_stack.clear();
-                self.pending_history = None;
-                self.revision = self.allocate_revision();
-                self.saved_revision = 0;
-                self.document_generation = self.document_generation.wrapping_add(1).max(1);
-                self.object_drag = None;
-                self.transform_session = None;
-                self.pending_transform_boundary = None;
-                self.parameter_gesture = None;
-                self.autosave_inflight = None;
-                self.autosave_pending = false;
-                self.pending_open = None;
-                self.open_confirm = false;
-                self.project_path = None;
-                self.writer_owner = None;
-                self.name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                self.failed = false;
-                self.checker = checker_image(width, height);
-                // The view starts over: fitted to what was just opened, in
-                // whatever box the pane has.
-                let size = (f64::from(width), f64::from(height));
-                self.nav.set_document(Some(size));
-                self.nav.viewport_mut().fit(size);
-                self.render(studio);
+                self.open_frame(path, frame, studio);
             }
             Err(error) => {
                 log::warn!("canvas: {error}");
@@ -4671,6 +4742,57 @@ impl CanvasPane {
                 }
             }
         }
+    }
+
+    fn open_frame(&mut self, path: &Path, frame: Frame, studio: &mut Studio) {
+        self.invalidate_auto_save();
+        let (width, height) = (frame.width(), frame.height());
+        let mut document = ImageDocument::new(width, height);
+        self.store = PixelStore::new();
+        self.thumbnail_cache.clear();
+        self.content_bounds.clear();
+        self.pixel_revisions.clear();
+        if let Some(gpu) = &mut self.gpu {
+            gpu.reset_document();
+        }
+        let pixels = self.store.put(frame);
+        let base = document.new_layer(
+            path.file_stem().unwrap_or_default().to_string_lossy(),
+            pixels,
+        );
+        self.document = Some(document);
+        self.layer = Some(pixels);
+        self.active = Some(base);
+        self.selection = None;
+        self.marquee = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.pending_history = None;
+        self.revision = self.allocate_revision();
+        self.saved_revision = 0;
+        self.document_generation = self.document_generation.wrapping_add(1).max(1);
+        self.object_drag = None;
+        self.transform_session = None;
+        self.pending_transform_boundary = None;
+        self.parameter_gesture = None;
+        self.autosave_inflight = None;
+        self.autosave_pending = false;
+        self.pending_open = None;
+        self.open_confirm = false;
+        self.project_path = None;
+        self.writer_owner = None;
+        self.name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.failed = false;
+        self.checker = checker_image(width, height);
+        // The view starts over: fitted to what was just opened, in
+        // whatever box the pane has.
+        let size = (f64::from(width), f64::from(height));
+        self.nav.set_document(Some(size));
+        self.nav.viewport_mut().fit(size);
+        self.render(studio);
     }
 
     /// Composites the document and publishes the picture. The GPU path
@@ -5873,15 +5995,88 @@ fn encode_png(frame: &Frame) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+fn canvas_export_provenance(
+    data: &CanvasSaveData,
+    project_path: Option<PathBuf>,
+) -> Result<crate::personal_library::OutputProvenance, String> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(serde_json::to_vec(&data.document).map_err(|error| error.to_string())?);
+    let mut pixels = Vec::new();
+    data.document.collect_pixels(&mut pixels);
+    pixels.sort();
+    pixels.dedup();
+    for id in pixels {
+        let frame = data
+            .store
+            .get(id)
+            .ok_or("export: source pixels are missing")?;
+        hash.update(id.as_u64().to_le_bytes());
+        hash.update(frame.width().to_le_bytes());
+        hash.update(frame.height().to_le_bytes());
+        hash.update(frame.pixels());
+    }
+    let mut inputs = Vec::new();
+    let mut layers = Vec::new();
+    for node in data.document.walk() {
+        if let LayerNode::Layer(layer) = node {
+            if let Some(value) = &layer.library_asset {
+                let reference: crate::personal_library::AssetReference =
+                    serde_json::from_value(value.clone())
+                        .map_err(|error| format!("export: invalid library reference: {error}"))?;
+                if !inputs.contains(&reference) {
+                    inputs.push(reference);
+                }
+            }
+            layers.push(
+                serde_json::json!({"layer_id": layer.id.as_u64(), "transform": layer.transform,
+                "opacity": layer.opacity, "hidden": layer.hidden}),
+            );
+        }
+    }
+    Ok(crate::personal_library::OutputProvenance {
+        kind: "canvas_export".into(),
+        project_path,
+        document_sha256: format!("{:x}", hash.finalize()),
+        inputs,
+        parameters: serde_json::json!({"format": "png", "alpha": "straight", "width": data.document.width,
+            "height": data.document.height, "layers": layers, "document": data.document}),
+    })
+}
+
+fn decode_import(item: &CanvasImport, texture_limit: Option<u32>) -> Result<Frame, String> {
+    decode_version(
+        &item.path,
+        texture_limit,
+        item.library_reference
+            .as_ref()
+            .and_then(|reference| reference.version.as_ref()),
+    )
+}
+
 /// Decodes an image file into straight-alpha RGBA. PNG through the `png`
 /// crate, which the window already keeps; everything else through `image`,
 /// whose feature set here covers the JPEG the artwork cache wanted - a
 /// format outside that set is the error, not a panic.
 fn decode(path: &Path, texture_limit: Option<u32>) -> Result<Frame, String> {
+    decode_version(path, texture_limit, None)
+}
+
+fn decode_version(
+    path: &Path,
+    texture_limit: Option<u32>,
+    version: Option<&crate::personal_library::AssetVersion>,
+) -> Result<Frame, String> {
     if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > PROJECT_FILE_LIMIT {
         return Err("image file is too large".into());
     }
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    if let Some(version) = version {
+        use sha2::{Digest, Sha256};
+        if format!("{:x}", Sha256::digest(&bytes)) != version.sha256 {
+            return Err("库内素材版本已变化，请重新选择".into());
+        }
+    }
     let name = path
         .extension()
         .map(|e| e.to_ascii_lowercase().to_string_lossy().into_owned())

@@ -762,7 +762,7 @@ export component App inherits Window {
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.save; label: "保存画布工程"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp(); } }
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.copy; label: "另存画布工程"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp-as(); } }
                                 canvas-export-button := WorkspaceIcon {
-                                    width: 32px; height: 32px; side: 32px; glyph: Glyph.export; label: "导出画布"; enabled: Editor.canvas-has-document;
+                                    width: 32px; height: 32px; side: 32px; glyph: Glyph.export; label: "导出画布"; enabled: Editor.canvas-has-document && !Editor.canvas-export-busy;
                                     clicked => { root.focus-return = 2; SeeCut.canvas-export-open = true; }
                                 }
                                 WorkspaceIcon {

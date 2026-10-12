@@ -427,6 +427,9 @@ pub struct ImageLayer {
     /// The layer's pixels, by name. Never [`PixelId::NONE`] in a document
     /// that came from `new_layer`.
     pub pixels: PixelId,
+    /// Optional reference to a global-library asset, preserved by document history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_asset: Option<serde_json::Value>,
 }
 
 /// How a layer's bitmap is sampled when the canvas draws it at a size other
@@ -457,6 +460,7 @@ impl ImageLayer {
             sampling: LayerSampling::default(),
             hidden: false,
             pixels,
+            library_asset: None,
         }
     }
 }
@@ -1103,5 +1107,31 @@ mod tests {
         let (doc, _) = document_with_tree();
         // Root + Background + Folder + Inner.
         assert_eq!(doc.node_count(), 4);
+    }
+}
+
+#[cfg(test)]
+mod f1_reference_tests {
+    use super::*;
+    #[test]
+    fn f1_layer_reference_round_trips_and_legacy_absence_remains_compatible() {
+        let mut layer = ImageLayer::new(LayerId(1), "source", PixelId::NONE);
+        let reference = serde_json::json!({"asset_id":"global-input", "version":{"registration_id":"import:input", "sha256":"a".repeat(64)}});
+        layer.library_asset = Some(reference.clone());
+        let wire = serde_json::to_value(&layer).unwrap();
+        let restored: ImageLayer = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(restored.library_asset, Some(reference));
+        assert_eq!(restored, layer);
+        let mut legacy = wire;
+        legacy.as_object_mut().unwrap().remove("library_asset");
+        let restored: ImageLayer = serde_json::from_value(legacy).unwrap();
+        assert!(restored.library_asset.is_none());
+        assert!(
+            !serde_json::to_value(restored)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("library_asset")
+        );
     }
 }

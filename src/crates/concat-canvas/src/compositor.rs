@@ -1115,6 +1115,7 @@ mod tests {
             sampling: crate::document::LayerSampling::Nearest,
             hidden: false,
             pixels: world.store.put(frame),
+            library_asset: None,
         };
         let canvas = world.compose();
         assert_eq!(canvas.at(2, 3), [255, 255, 255, 255]);

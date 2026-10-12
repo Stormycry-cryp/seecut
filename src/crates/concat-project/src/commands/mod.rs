@@ -180,8 +180,8 @@ mod double_option {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewMedia {
-    /// Absolute path on disk. Adding a path already in the bin is a no-op,
-    /// so re-imports cannot duplicate media.
+    /// Absolute path on disk. Re-importing the same path and provenance is a
+    /// no-op; path-only legacy imports retain their original duplicate rule.
     pub path: String,
     /// Display name for the bin, normally the file's basename.
     pub name: String,
@@ -208,6 +208,9 @@ pub struct NewMedia {
     /// Defaulted so a caller from before the list can still add media.
     #[serde(default)]
     pub audio_tracks: Vec<AudioTrack>,
+    /// Optional provenance carried into the existing media row and undo history.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Every edit, as the window sends it: a tagged `op` plus camelCase
@@ -648,6 +651,9 @@ pub struct Outcome {
 /// those sentences names a host can match on.
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum CommandError {
+    /// Media extensions cannot override a known field in the saved document.
+    #[error("A media extension shadows a reserved document field.")]
+    ReservedMediaExtension,
     /// [`Command::FillSlot`] named a media id no longer in the bin.
     #[error("That template slot no longer exists.")]
     SlotGone,

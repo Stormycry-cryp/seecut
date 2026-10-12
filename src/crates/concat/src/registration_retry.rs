@@ -84,14 +84,26 @@ pub(crate) fn register_output(
     operation: Option<&str>,
     bytes: Option<&[u8]>,
 ) -> Result<(), String> {
+    register_output_with_provenance(root, path, name, operation, bytes, None)
+}
+
+pub(crate) fn register_output_with_provenance(
+    root: &Path,
+    path: &Path,
+    name: Option<&str>,
+    operation: Option<&str>,
+    bytes: Option<&[u8]>,
+    provenance: Option<crate::personal_library::OutputProvenance>,
+) -> Result<(), String> {
     let mut entries = load(root)?;
-    let prepared = prepare_generated(root, path, name, operation, bytes)?;
+    let mut prepared = prepare_generated(root, path, name, operation, bytes)?;
+    prepared.provenance = provenance;
     if let Some(previous) = entries
         .iter()
         .filter_map(|entry| entry.prepared.as_ref())
         .find(|p| p.registration_id == prepared.registration_id)
     {
-        if previous.sha256 != prepared.sha256 {
+        if previous.sha256 != prepared.sha256 || previous.provenance != prepared.provenance {
             return Err("同一待入库输出的内容已变化，已保留原副本".into());
         }
     } else {

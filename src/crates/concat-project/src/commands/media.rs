@@ -8,6 +8,31 @@
 
 use super::*;
 
+fn validate_extensions(item: &NewMedia) -> Result<(), CommandError> {
+    // Extensions round-trip through MediaItem's flattened map, so they must
+    // never shadow the fields that commands and clip references actually use.
+    const FIELDS: &[&str] = &[
+        "id",
+        "path",
+        "name",
+        "duration",
+        "kind",
+        "width",
+        "height",
+        "frameRate",
+        "frameRateFraction",
+        "videoCodec",
+        "audioCodec",
+        "hasAudio",
+        "audioTracks",
+        "placeholder",
+    ];
+    if item.extra.keys().any(|key| FIELDS.contains(&key.as_str())) {
+        return Err(CommandError::ReservedMediaExtension);
+    }
+    Ok(())
+}
+
 /// Applies one of this module's commands. Any other is a routing error.
 pub(super) fn apply(
     project: &mut Project,
@@ -16,11 +41,16 @@ pub(super) fn apply(
 ) -> Result<Outcome, CommandError> {
     match command {
         Command::AddMedia { item } => {
-            if project
-                .media
-                .iter()
-                .any(|existing| existing.path == item.path)
-            {
+            validate_extensions(&item)?;
+            if project.media.iter().any(|existing| {
+                existing.path == item.path
+                    && item
+                        .extra
+                        .get("seecutLibraryReference")
+                        .is_none_or(|reference| {
+                            existing.extra.get("seecutLibraryReference") == Some(reference)
+                        })
+            }) {
                 return Ok(Outcome::default());
             }
             let id = mint.next("m");
@@ -39,7 +69,7 @@ pub(super) fn apply(
                 has_audio: item.has_audio,
                 audio_tracks: item.audio_tracks,
                 placeholder: false,
-                extra: Default::default(),
+                extra: item.extra,
             });
             Ok(Outcome {
                 created_id: Some(id),
@@ -71,6 +101,7 @@ pub(super) fn apply(
             if !media.placeholder {
                 return Err(CommandError::NotASlot);
             }
+            validate_extensions(&item)?;
 
             // The slot keeps its id, so every clip that references it keeps
             // working; only the identity behind the id changes.
@@ -86,6 +117,11 @@ pub(super) fn apply(
             media.audio_codec = item.audio_codec;
             media.has_audio = item.has_audio;
             media.audio_tracks = item.audio_tracks;
+            // Keep unrelated template extensions; source identity belongs to
+            // the replacement, including when it is an ordinary local file.
+            media.extra.remove("seecutLibraryReference");
+            media.extra.remove("seecutLibraryBinding");
+            media.extra.extend(item.extra);
             media.placeholder = false;
             let kind = match item.kind {
                 MediaKind::Video => ClipKind::Video,

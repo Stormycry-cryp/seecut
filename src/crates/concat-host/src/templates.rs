@@ -475,6 +475,7 @@ mod tests {
                 audio_codec: None,
                 has_audio: false,
                 audio_tracks: Vec::new(),
+                extra: Default::default(),
             },
         }
     }

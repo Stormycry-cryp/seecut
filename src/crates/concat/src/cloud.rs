@@ -729,6 +729,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
                     source: AssetSource::Imported,
                     original_path: None,
                     recovery: None,
+                    provenance: None,
                     version: None,
                     created_at: 0,
                     trashed: false,
@@ -2155,6 +2156,7 @@ fn render_templates(app: &App, state: &Rc<RefCell<Cloud>>) {
                             source: AssetSource::Generated,
                             original_path: None,
                             recovery: None,
+                            provenance: None,
                             version: None,
                             created_at: 0,
                             trashed: false,
@@ -3035,6 +3037,7 @@ fn clip_imports(
         .map(|item| crate::panes::media_bin::MediaImport {
             path: item.path.clone(),
             display_name: item.display_name.clone(),
+            library_reference: item.library_reference.clone(),
         })
         .collect()
 }
@@ -3867,6 +3870,7 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
                         source: AssetSource::Generated,
                         original_path: None,
                         recovery: None,
+                        provenance: None,
                         version: None,
                         created_at: 0,
                         trashed: false,
@@ -5827,12 +5831,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                 "personal-project-selected" => {
                     let imports = selected
                         .iter()
-                        .map(|asset| {
-                            crate::panes::canvas::CanvasImport::named(
-                                PathBuf::from(text(asset, "path")),
-                                text(asset, "name"),
-                            )
-                        })
+                        .map(crate::panes::canvas::CanvasImport::from_library)
                         .collect();
                     begin_handoff_with_imports(app, state, "clip", imports);
                 }
@@ -5843,12 +5842,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                     }
                     let imports = selected
                         .iter()
-                        .map(|asset| {
-                            crate::panes::canvas::CanvasImport::named(
-                                PathBuf::from(text(asset, "path")),
-                                text(asset, "name"),
-                            )
-                        })
+                        .map(crate::panes::canvas::CanvasImport::from_library)
                         .collect();
                     begin_handoff_with_imports(app, state, "canvas", imports);
                 }
@@ -5952,10 +5946,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                         app,
                         state,
                         "clip",
-                        vec![crate::panes::canvas::CanvasImport::named(
-                            PathBuf::from(path),
-                            text(&asset, "name"),
-                        )],
+                        vec![crate::panes::canvas::CanvasImport::from_library(&asset)],
                     );
                 }
                 "personal-canvas" => {
@@ -5968,10 +5959,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                         app,
                         state,
                         "canvas",
-                        vec![crate::panes::canvas::CanvasImport::named(
-                            PathBuf::from(path),
-                            text(&asset, "name"),
-                        )],
+                        vec![crate::panes::canvas::CanvasImport::from_library(&asset)],
                     );
                 }
                 "personal-reference" => {
@@ -6287,6 +6275,7 @@ fn media_preview_image(path: &str, kind: &str) -> slint::Image {
                 source: crate::personal_library::AssetSource::Generated,
                 original_path: None,
                 recovery: None,
+                provenance: None,
                 version: None,
                 created_at: 0,
                 trashed: false,
@@ -7151,6 +7140,7 @@ fn import_or_queue_named(
                 vec![crate::panes::media_bin::MediaImport {
                     path,
                     display_name: Some(display_name),
+                    library_reference: None,
                 }],
             );
         } else {
@@ -7238,6 +7228,7 @@ fn completed_clip_imports(cloud: &mut Cloud, id: u64) -> Result<String, serde_js
         .map(|path| crate::panes::canvas::CanvasImport {
             path: path.clone(),
             display_name: cloud.pending_import_display_names.get(path).cloned(),
+            library_reference: None,
         })
         .collect();
     if bound {
@@ -10008,6 +9999,7 @@ mod clip_open_handoff_tests {
                 imports: vec![crate::panes::canvas::CanvasImport {
                     path: PathBuf::from("synthetic.png"),
                     display_name: Some("fixture".into()),
+                    library_reference: None,
                 }],
                 awaiting_new_project: false,
                 clip_open: Some(binding),

@@ -74,6 +74,9 @@ pub struct Asset {
     /// Explicit recovery provenance; an unknown historical file remains unverified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<AssetRecovery>,
+    /// Frozen creator context for a successful formal output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<OutputProvenance>,
     /// Creation time in milliseconds since the Unix epoch.
     pub created_at: u64,
     /// Whether the item is in the library recycle bin.
@@ -92,6 +95,42 @@ pub struct AssetVersion {
     pub registration_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_id: Option<String>,
+}
+
+/// A reference to the existing library identity, never a second asset entry.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AssetReference {
+    /// Stable global-library asset identity.
+    pub asset_id: String,
+    /// The selected immutable version; absent for an unversioned legacy asset.
+    pub version: Option<AssetVersion>,
+}
+
+pub(crate) fn verify_asset_reference(
+    path: &Path,
+    reference: Option<&AssetReference>,
+) -> Result<(), String> {
+    if let Some(version) = reference.and_then(|reference| reference.version.as_ref())
+        && file_digest(path)? != version.sha256
+    {
+        return Err("库内素材版本已变化，请重新选择".into());
+    }
+    Ok(())
+}
+
+/// Source document and parameters captured when an output is requested.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutputProvenance {
+    /// Creator operation, such as canvas_export.
+    pub kind: String,
+    /// Saved source project, when the document has one.
+    pub project_path: Option<PathBuf>,
+    /// SHA256 of the exact source document snapshot.
+    pub document_sha256: String,
+    /// Existing library inputs with their selected versions.
+    pub inputs: Vec<AssetReference>,
+    /// Output dimensions, format and layer parameters at request time.
+    pub parameters: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -114,6 +153,8 @@ pub(crate) struct PreparedGenerated {
     pub(crate) sha256: String,
     pub(crate) registration_id: String,
     pub(crate) operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provenance: Option<OutputProvenance>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -393,6 +434,16 @@ impl Library {
                 return Err(error);
             }
         }
+        let sha256 = file_digest(&temporary)?;
+        let previous_id = self
+            .items
+            .iter()
+            .rev()
+            .find(|item| {
+                item.source == AssetSource::Imported
+                    && item.original_path.as_ref() == Some(&source.0)
+            })
+            .map(|item| item.id.clone());
         if let Err(error) = fs::rename(&temporary, &destination) {
             let _ = fs::remove_file(&temporary);
             return Err(format!("保存导入素材失败：{error}"));
@@ -405,14 +456,19 @@ impl Library {
             }
         };
         let item = Asset {
-            id,
+            id: id.clone(),
             name: display_name(&source.0),
             path: canonical_destination,
             kind: source.1,
             source: AssetSource::Imported,
-            version: None,
+            version: Some(AssetVersion {
+                registration_id: format!("import:{id}:{sha256}"),
+                sha256,
+                previous_id,
+            }),
             original_path: Some(source.0),
             recovery: None,
+            provenance: None,
             created_at,
             trashed: false,
             favorite: false,
@@ -449,7 +505,7 @@ impl Library {
         for (index, item) in self.items.iter().enumerate().rev() {
             if let Some(version) = &item.version {
                 if version.registration_id == prepared.registration_id {
-                    if version.sha256 != prepared.sha256 {
+                    if version.sha256 != prepared.sha256 || item.provenance != prepared.provenance {
                         return Err("同一输出的内容已变化，已保留原版本".into());
                     }
                     return Ok(&self.items[index]);
@@ -481,6 +537,7 @@ impl Library {
             source: AssetSource::Generated,
             original_path: Some(prepared.source_path.clone()),
             recovery: None,
+            provenance: prepared.provenance.clone(),
             version: Some(AssetVersion {
                 sha256: prepared.sha256.clone(),
                 registration_id: prepared.registration_id.clone(),
@@ -953,6 +1010,7 @@ pub(crate) fn prepare_generated(
             sha256,
             registration_id,
             operation,
+            provenance: None,
         })
     })();
     if result.is_err() {
@@ -1317,7 +1375,10 @@ mod tests {
         let selected = temporary.0.join("selected.jpg");
         relink_image(&selected);
         let mut library = Library::load(temporary.0.join("library")).unwrap();
-        let expected = library.import(&selected).unwrap().clone();
+        let mut expected = library.import(&selected).unwrap().clone();
+        expected.version = None;
+        library.items[0].version = None;
+        library.save().unwrap();
         fs::remove_file(&expected.path).unwrap();
         let restored = library.relink_missing(&expected, &selected, true).unwrap();
         assert_eq!(restored.id, expected.id);
@@ -1649,6 +1710,7 @@ mod tests {
             version: None,
             original_path: None,
             recovery: None,
+            provenance: None,
             created_at: 0,
             trashed: false,
             favorite: false,
@@ -1671,5 +1733,151 @@ mod tests {
         assert_eq!(thumbnail(&audio, &root), None);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(media_dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod f1_library_tests {
+    use super::*;
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("f1-library-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn png(path: &Path, color: [u8; 4]) {
+        image::RgbaImage::from_pixel(24, 16, image::Rgba(color))
+            .save(path)
+            .unwrap();
+    }
+    fn provenance() -> OutputProvenance {
+        OutputProvenance {
+            kind: "canvas_export".into(),
+            project_path: Some(PathBuf::from("/synthetic/project.comp")),
+            document_sha256: "b".repeat(64),
+            inputs: vec![],
+            parameters: serde_json::json!({"width":24,"height":16,"format":"png","opacity":0.5}),
+        }
+    }
+    #[test]
+    fn f1_local_import_freezes_version_and_changed_source_keeps_old_bytes() {
+        let t = Temp::new();
+        let source = t.0.join("source.png");
+        png(&source, [230, 70, 25, 128]);
+        let root = t.0.join("library");
+        let mut library = Library::load(&root).unwrap();
+        let first = library.import(&source).unwrap().clone();
+        assert_eq!(
+            first.version.as_ref().unwrap().sha256,
+            file_digest(&first.path).unwrap()
+        );
+        assert_eq!(library.import(&source).unwrap().id, first.id);
+        let bytes = fs::read(&first.path).unwrap();
+        png(&source, [25, 90, 220, 64]);
+        let second = library.import(&source).unwrap().clone();
+        assert_ne!(first.id, second.id);
+        assert_eq!(
+            second.version.as_ref().unwrap().previous_id.as_ref(),
+            Some(&first.id)
+        );
+        assert_eq!(fs::read(&first.path).unwrap(), bytes);
+        assert_eq!(Library::load(&root).unwrap().items(), library.items());
+    }
+    #[test]
+    fn f1_changed_managed_bytes_fail_reference_verification() {
+        let t = Temp::new();
+        let source = t.0.join("source.png");
+        png(&source, [230, 70, 25, 128]);
+        let mut library = Library::load(t.0.join("library")).unwrap();
+        let asset = library.import(&source).unwrap().clone();
+        let reference = AssetReference {
+            asset_id: asset.id,
+            version: asset.version,
+        };
+        verify_asset_reference(&asset.path, Some(&reference)).unwrap();
+        fs::write(&asset.path, b"changed").unwrap();
+        assert!(verify_asset_reference(&asset.path, Some(&reference)).is_err());
+    }
+    #[test]
+    fn f1_output_provenance_and_operation_replay_are_immutable() {
+        let t = Temp::new();
+        let output = t.0.join("output.png");
+        png(&output, [230, 70, 25, 128]);
+        let root = t.0.join("library");
+        let bytes = fs::read(&output).unwrap();
+        let expected = provenance();
+        crate::registration_retry::register_output_with_provenance(
+            &root,
+            &output,
+            Some("result"),
+            Some("f1-output"),
+            Some(&bytes),
+            Some(expected.clone()),
+        )
+        .unwrap();
+        let first = Library::load(&root).unwrap().items()[0].clone();
+        let manifest = fs::read(root.join(MANIFEST_NAME)).unwrap();
+        assert_eq!(first.provenance, Some(expected.clone()));
+        crate::registration_retry::register_output_with_provenance(
+            &root,
+            &output,
+            Some("result"),
+            Some("f1-output"),
+            Some(&bytes),
+            Some(expected.clone()),
+        )
+        .unwrap();
+        assert_eq!(fs::read(root.join(MANIFEST_NAME)).unwrap(), manifest);
+        let mut changed = expected;
+        changed.parameters["opacity"] = serde_json::json!(0.7);
+        assert!(
+            crate::registration_retry::register_output_with_provenance(
+                &root,
+                &output,
+                None,
+                Some("f1-output"),
+                Some(&bytes),
+                Some(changed)
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(root.join(MANIFEST_NAME)).unwrap(), manifest);
+    }
+    #[test]
+    fn f1_pending_output_recovers_original_provenance_after_reload_once() {
+        let t = Temp::new();
+        let output = t.0.join("output.png");
+        png(&output, [230, 70, 25, 128]);
+        let root = t.0.join("library");
+        Library::load(&root).unwrap().save().unwrap();
+        fail_next_manifest_save(&root);
+        let bytes = fs::read(&output).unwrap();
+        let expected = provenance();
+        assert!(
+            crate::registration_retry::register_output_with_provenance(
+                &root,
+                &output,
+                None,
+                Some("f1-pending"),
+                Some(&bytes),
+                Some(expected.clone())
+            )
+            .is_err()
+        );
+        assert!(Library::load_for_relink(&root).unwrap().items().is_empty());
+        crate::registration_retry::retry(&root).unwrap();
+        let restored = Library::load(&root).unwrap();
+        assert_eq!(restored.items().len(), 1);
+        assert_eq!(restored.items()[0].provenance, Some(expected));
+        let manifest = fs::read(root.join(MANIFEST_NAME)).unwrap();
+        crate::registration_retry::retry(&root).unwrap();
+        assert_eq!(fs::read(root.join(MANIFEST_NAME)).unwrap(), manifest);
     }
 }
