@@ -82,6 +82,31 @@ class LocalResolution:
         self.now = lambda: int(clock())
         self.accounting = _Accounting(database, self.now)
 
+    def _prior_evidence(self, row):
+        try:
+            usage = contract.usage(json.loads(row['usage_json'])) if row['usage_json'] is not None else None
+            result = json.loads(row['result_json']) if row['result_json'] is not None else None
+            if row['result_json'] is not None:
+                self.accounting._validate_finish(row, 'succeeded', usage, result)
+                if result is None:
+                    raise ValueError('stored result is not done')
+                if 'usage' in result:
+                    if usage is not None and result['usage'] != usage:
+                        raise ValueError('stored evidence disagrees')
+                    usage = result['usage']
+            return usage, result
+        except (ApiError, ValueError, TypeError, KeyError, RecursionError) as exc:
+            raise ApiError(409, 'ASSISTANT_RESOLUTION_PRIOR_EVIDENCE_INVALID',
+                           '仍待核实：已有证据未通过契约，请另行核实，不能按零费用处理') from exc
+
+    @staticmethod
+    def _check_prior_evidence(value, usage, result):
+        if usage is not None and usage != value['usage']:
+            raise ApiError(409, 'ASSISTANT_RESOLUTION_EVIDENCE_CONFLICT', '人工用量与已保存的有效用量矛盾')
+        if result is not None and (value['outcome'] != 'confirmed_usage' or value['terminal_state'] != 'succeeded'
+                                   or contract.canonical(result) != contract.canonical(value['result'])):
+            raise ApiError(409, 'ASSISTANT_RESOLUTION_EVIDENCE_CONFLICT', '人工结果不能否定或覆盖已保存的完整 done 结果')
+
     def _summary(self, connection, row):
         budget = connection.execute('SELECT * FROM assistant_turn_budgets WHERE id=? AND user_id=?',
                                     (row['budget_id'], row['user_id'])).fetchone()
@@ -119,11 +144,18 @@ class LocalResolution:
             raise ApiError(409, 'ASSISTANT_RESOLUTION_VERSION_CONFLICT', '原操作版本已变化')
         if row['billing_state'] in SETTLED or not (row['state'] == 'outcome_unknown' or row['billing_state'] == 'settlement_pending'):
             raise ApiError(409, 'ASSISTANT_RESOLUTION_NOT_PENDING', '原操作不是待核实的未结算操作')
+        try:
+            prior_usage, prior_result = self._prior_evidence(row)
+        except ApiError as exc:
+            if apply:
+                raise
+            return dict(status='unresolved', applied=False, reason='prior_evidence_invalid', message=exc.message, before=before)
         complete = value['outcome'] != 'unknown' and value['evidence_confirmed'] and value['evidence_reference'] is not None
         complete = complete and value['terminal_state'] is not None and value['usage'] is not None
         if complete:
             try:
                 self.accounting._validate_finish(row, value['terminal_state'], value['usage'], value['result'])
+                self._check_prior_evidence(value, prior_usage, prior_result)
             except ValueError as exc:
                 raise ApiError(400, 'ASSISTANT_RESOLUTION_RESULT_INVALID', '收尾结果未通过既有契约') from exc
         if not complete:

@@ -259,6 +259,99 @@ class AssistantLocalResolutionTest(AssistantFixture):
         self.assertEqual(self.provider.calls, [])
         self.assertEqual(self.provider.lookups, [])
 
+    def test_prior_nonzero_pending_usage_cannot_be_zero_released_as_not_executed(self):
+        operation = self.unknown_operation(pending=True)
+        with self.db.transaction(immediate=True) as connection:
+            connection.execute('UPDATE assistant_operations SET usage_json=?,version=version+1 WHERE id=?',
+                               (json.dumps({'input': 100, 'output': 0}), operation['operation_id']))
+        operation = self.service.get(self.user, operation['operation_id'])
+        before = self.database_rows()
+        self.expect_error('ASSISTANT_RESOLUTION_EVIDENCE_CONFLICT',
+            lambda: self.resolve(self.resolution_body(operation), apply=True))
+        self.assertEqual(self.database_rows(), before)
+        self.assertEqual([row['kind'] for row in self.wallet(97, 3)], ['hold'])
+        self.assertEqual(self.audit(), [])
+
+    def test_prior_done_conflicts_and_invalid_prior_evidence_preserve_all_records(self):
+        operation = self.unknown_operation(pending=True)
+        prior_usage, prior_result = {'input': 100, 'output': 50}, done()
+        with self.db.transaction(immediate=True) as connection:
+            connection.execute("""UPDATE assistant_operations SET state='succeeded', usage_json=?,
+                result_json=?,version=version+1 WHERE id=?""",
+                (json.dumps(prior_usage), json.dumps(prior_result), operation['operation_id']))
+        operation = self.service.get(self.user, operation['operation_id'])
+        different_result = copy.deepcopy(prior_result)
+        different_result['message']['content'][0]['text'] = 'different synthetic done'
+        contradictory = [self.resolution_body(operation),
+            self.resolution_body(operation, outcome='confirmed_usage', terminal_state='failed',
+                                 usage=prior_usage),
+            self.resolution_body(operation, outcome='confirmed_usage', terminal_state='cancelled',
+                                 usage=prior_usage),
+            self.resolution_body(operation, outcome='confirmed_usage', terminal_state='succeeded',
+                                 usage=prior_usage, result=different_result)]
+        before = self.database_rows()
+        for index, body in enumerate(contradictory):
+            with self.subTest(contradiction=index):
+                self.expect_error('ASSISTANT_RESOLUTION_EVIDENCE_CONFLICT',
+                                  lambda: self.resolve(body, apply=True))
+                self.assertEqual(self.database_rows(), before)
+
+        invalid_prior = [
+            ('{invalid-json', None),
+            (json.dumps({'input': 'invalid', 'output': 0}), None),
+            (json.dumps(prior_usage), '{invalid-json'),
+            (json.dumps(prior_usage), json.dumps({'type': 'done', 'stopReason': 'stop'}))]
+        for usage_json, result_json in invalid_prior:
+            with self.subTest(usage_json=usage_json, result_json=result_json):
+                # Keep raw invalid historical evidence intact; do not decode it
+                # through AssistantService.get or reinterpret it as zero usage.
+                with self.db.transaction(immediate=True) as connection:
+                    connection.execute("""UPDATE assistant_operations SET state='failed', usage_json=?,
+                        result_json=?,version=version+1 WHERE id=?""",
+                        (usage_json, result_json, operation['operation_id']))
+                    version = connection.execute('SELECT version FROM assistant_operations WHERE id=?',
+                                                 (operation['operation_id'],)).fetchone()[0]
+                operation = operation | {'version': version}
+                body = self.resolution_body(operation)
+                before, files = self.database_rows(), self.files()
+                preview = self.resolve(body)
+                self.assertEqual((preview['status'], preview['applied'], preview['reason']),
+                                 ('unresolved', False, 'prior_evidence_invalid'))
+                self.assertEqual(self.database_rows(), before)
+                self.assertEqual(self.files(), files)
+                self.expect_error('ASSISTANT_RESOLUTION_PRIOR_EVIDENCE_INVALID',
+                                  lambda: self.resolve(body, apply=True))
+                self.assertEqual(self.database_rows(), before)
+        self.assertEqual([row['kind'] for row in self.wallet(97, 3)], ['hold'])
+        self.assertEqual(self.audit(), [])
+
+    def test_matching_persisted_usage_and_done_settle_at_frozen_price_and_replay_once(self):
+        operation = self.unknown_operation(pending=True)
+        prior_usage, prior_result = {'input': 100, 'output': 50}, done(tool=True)
+        with self.db.transaction(immediate=True) as connection:
+            connection.execute("""UPDATE assistant_operations SET state='succeeded', usage_json=?,
+                result_json=?,version=version+1 WHERE id=?""",
+                (json.dumps(prior_usage), json.dumps(prior_result), operation['operation_id']))
+        operation = self.service.get(self.user, operation['operation_id'])
+        self.service.config = replace(self.config, assistant_input_rate=9000, assistant_output_rate=9000)
+        body = self.resolution_body(operation, outcome='confirmed_usage', terminal_state='succeeded',
+                                    usage=prior_usage, result=prior_result)
+        result = self.resolve(body, apply=True)
+        self.assertEqual((result['status'], result['applied']), ('resolved', True))
+        final = self.service.get(self.user, operation['operation_id'])
+        self.assertEqual((final['state'], final['billing_state']), ('succeeded', 'captured'))
+        self.assertEqual((final['captured_credits'], final['released_credits']), (1, 2))
+        self.assertEqual((final['usage'], final['result']), (prior_usage, prior_result))
+        self.assertEqual([row['kind'] for row in self.wallet(99, 0)], ['hold', 'capture', 'release'])
+        self.assertEqual(len(self.audit()), 1)
+        before = self.database_rows()
+        self.clock[0] += 100
+        self.assertEqual(self.resolve(copy.deepcopy(body), apply=True), result)
+        self.assertEqual(self.database_rows(), before)
+        events = self.service.events(self.user, operation['operation_id'], 0)['events']
+        self.assertEqual(sum(event['type'] == 'model' and event['payload']['type'] == 'done'
+                             for event in events), 1)
+
     def test_over_limit_usage_remains_pending_and_preserves_entire_hold(self):
         operation = self.unknown_operation()
         body = self.resolution_body(operation, outcome='confirmed_usage', terminal_state='failed',
