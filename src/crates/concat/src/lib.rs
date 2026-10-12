@@ -73,6 +73,7 @@ pub use platform::{FilePicker, install_file_picker};
 mod panes;
 mod prefs;
 mod presets;
+mod project_library_relink;
 mod project_open;
 mod studio;
 mod sysinfo;
@@ -86,7 +87,6 @@ use panes::export::ExportMsg;
 use panes::media_bin::MediaMsg;
 use panes::monitor::MonitorMsg;
 use panes::project::ProjectMsg;
-use panes::relink::RelinkMsg;
 use panes::settings::SettingsMsg;
 use panes::speech::SpeechMsg;
 use panes::start::StartMsg;
@@ -1710,11 +1710,51 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
 
     app.on_relink_all(on_window!(|state| {
-        state.handle(Msg::Relink(RelinkMsg::RelinkAll));
+        state.repair_from_library();
     }));
     app.on_relink_dismiss(on_window!(|state| {
-        state.handle(Msg::Relink(RelinkMsg::Dismiss));
+        state.dismiss_library_repair();
     }));
+
+    app.on_relink_locate_folder(|| {
+        let mut request = None;
+        Shell::with(|shell, _| {
+            request = shell.studio.borrow_mut().begin_folder_relink_picker();
+        });
+        let Some(stamp) = request else { return };
+        // Release Studio before the native picker pumps the event loop.
+        let folder = platform::pick_folder("定位素材文件夹", "");
+        Shell::with(move |shell, app| {
+            shell
+                .studio
+                .borrow_mut()
+                .finish_folder_relink_picker(stamp, folder);
+            shell.studio.borrow().publish(&app, &shell.models);
+        });
+    });
+
+    app.on_relink_cancel_preview(on_window!(|state| {
+        state.cancel_repair_preview();
+    }));
+    app.on_relink_save_copy(|| {
+        let mut picker = None;
+        Shell::with(|shell, app| {
+            picker = shell.studio.borrow_mut().begin_repair_save_picker();
+            shell.studio.borrow().publish(&app, &shell.models);
+        });
+        let Some((ticket, name)) = picker else {
+            return;
+        };
+        // Native pickers pump the event loop; no Studio borrow crosses this call.
+        let path = platform::save_file("另存修复工程（新文件夹）", &name, None);
+        Shell::with(move |shell, app| {
+            shell
+                .studio
+                .borrow_mut()
+                .finish_repair_save_picker(ticket, path);
+            shell.studio.borrow().publish(&app, &shell.models);
+        });
+    });
 
     // ── the dialogs ──
     app.on_export_clicked(|| {

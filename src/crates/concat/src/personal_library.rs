@@ -793,6 +793,50 @@ fn checked_prepared_path(root: &Path, prepared: &PreparedGenerated) -> Result<Pa
     Ok(path)
 }
 
+/// Read-only validation for an explicit project binding to a managed version.
+/// Unlike loading or preparing a library entry, this never migrates or writes.
+pub(crate) fn checked_managed_version_path(root: &Path, asset: &Asset) -> Result<PathBuf, String> {
+    if asset.id.is_empty() {
+        return Err("库内资产没有稳定身份".into());
+    }
+    if asset.trashed {
+        return Err("库内版本已在回收站，请先恢复资产".into());
+    }
+    let version = asset.version.as_ref().ok_or("库内资产没有固定内容版本")?;
+    if version.sha256.len() != 64
+        || !version
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || version.registration_id.is_empty()
+    {
+        return Err("库内版本身份无效".into());
+    }
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    let folder = ["imported", "generated"]
+        .into_iter()
+        .map(|name| root.join(name))
+        .find(|folder| asset.path.parent() == Some(folder.as_path()))
+        .ok_or("库内版本不是直系受管素材")?;
+    let folder_metadata = fs::symlink_metadata(&folder).map_err(|error| error.to_string())?;
+    let metadata = fs::symlink_metadata(&asset.path).map_err(|error| error.to_string())?;
+    if folder_metadata.file_type().is_symlink()
+        || !folder_metadata.is_dir()
+        || !metadata.is_file()
+        || asset
+            .path
+            .canonicalize()
+            .map_err(|error| error.to_string())?
+            != asset.path
+    {
+        return Err("库内版本不是普通受管文件".into());
+    }
+    if file_digest(&asset.path)? != version.sha256 {
+        return Err("库内受管版本内容校验失败".into());
+    }
+    Ok(asset.path.clone())
+}
+
 fn file_digest(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let mut digest = Sha256::new();

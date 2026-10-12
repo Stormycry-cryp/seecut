@@ -797,6 +797,15 @@ export component App inherits Window {
                         assets-clicked => { root.focus-return = 3; SeeCut.action("project-assets", ""); }
                         export-clicked => { root.focus-return = 4; root.export-clicked(); }
                     }
+                    if root.repair-preview: Rectangle {
+                        height: 36px; background: Theme.panel;
+                        HorizontalLayout {
+                            padding-left: 16px; padding-right: 12px; spacing: 8px;
+                            Text { text: "修复预览·需另存"; color: Theme.fg; horizontal-stretch: 1; vertical-alignment: center; }
+                            WorkspaceIcon { glyph: Glyph.save; label: "另存修复工程"; enabled: !root.repair-busy; clicked => { root.relink-save-copy(); } }
+                            WorkspaceIcon { glyph: Glyph.undo; label: "取消修复"; enabled: !root.repair-busy; clicked => { root.relink-cancel-preview(); } }
+                        }
+                    }
                     if root.project-open-busy: Rectangle {
                         height: 40px; background: Theme.panel;
                         HorizontalLayout {
@@ -923,7 +932,12 @@ export component App inherits Window {
 
     in property <RelinkData> relink;
     callback relink-all();
+    callback relink-locate-folder();
     callback relink-dismiss();
+    in property <bool> repair-preview;
+    in property <bool> repair-busy;
+    callback relink-save-copy();
+    callback relink-cancel-preview();
 
     ProjectDialog {
         x: 0;
@@ -942,6 +956,7 @@ export component App inherits Window {
     RelinkDialog {
         data: root.relink;
         relink-all => { root.relink-all(); }
+        locate-folder => { root.relink-locate-folder(); }
         dismiss => { root.relink-dismiss(); }
     }
 

@@ -180,6 +180,17 @@ impl SaveLane {
         self.latest.fetch_add(1, Ordering::AcqRel) + 1
     }
 
+    /// Invalidates queued snapshots and waits for the previous writer to leave.
+    /// Call on a worker after freezing the UI's source session, never on the UI thread.
+    pub fn invalidate_and_wait(&self) {
+        self.next();
+        drop(
+            self.writer
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+    }
+
     /// Whether a completion still belongs to the most recently requested save.
     pub fn is_latest(&self, ticket: u64) -> bool {
         self.latest.load(Ordering::Acquire) == ticket
@@ -353,6 +364,35 @@ pub fn create_owned(
         .map(|owner| owner.identity().target().to_owned())
         .unwrap_or(root);
     finish_creation(root, name, width, height, rate_num, rate_den, owner)
+}
+
+/// Creates a full document at an exact, brand-new directory path. Unlike normal
+/// project creation, an existing empty directory is also rejected. This is the
+/// no-clobber boundary for repair previews and explicitly saved repair copies.
+/// Ownership stays held from creation through the caller's Session adoption.
+pub fn create_document_owned(
+    path: &Path,
+    settings: &concat_project::DocumentSettings,
+    document: &serde_json::Value,
+) -> Result<CreatedProject, OwnedProjectError> {
+    std::fs::create_dir(path)
+        .map_err(|error| format!("请选择尚不存在的新工程文件夹：{}：{error}", path.display()))?;
+    let owner = acquire_project_owner(path)?;
+    let root = owner
+        .as_ref()
+        .map(|owner| owner.identity().target().to_owned())
+        .unwrap_or_else(|| path.to_owned());
+    let created = finish_creation(
+        root,
+        &settings.name,
+        settings.width,
+        settings.height,
+        settings.rate_num,
+        settings.rate_den,
+        owner,
+    )?;
+    created.save(document)?;
+    Ok(created)
 }
 
 fn finish_creation(
@@ -677,6 +717,241 @@ mod tests {
         ));
         std::fs::create_dir(&root).expect("unique scratch directory");
         root
+    }
+
+    #[test]
+    fn project_relink_create_document_preserves_full_copy_and_source_manifest() {
+        let scratch = save_scratch();
+        let source =
+            create_owned(&scratch.to_string_lossy(), "Source", 1280, 720, 30000, 1001).unwrap();
+        let source_document = serde_json::json!({
+            "concat": "0.1.0", "version": 1, "name": "Source",
+            "video": {"width": 1280, "height": 720, "rateNum": 30000, "rateDen": 1001},
+            "media": [{"id": "m7", "path": "/missing/original.png", "kind": "image", "futureMedia": 7}],
+            "timelines": [{"id": "TL1", "name": "Edited timeline", "tracks": [{"id":"T1"}],
+                "clips": [{"id":"c9","mediaId":"m7","trackId":"T1","kind":"image","duration":5}]}],
+            "futureProject": {"keep": true}
+        });
+        source.save(&source_document).unwrap();
+        let source_manifest = manifest_path(Path::new(&source.info().path));
+        let source_bytes = std::fs::read(&source_manifest).unwrap();
+        let settings = concat_project::DocumentSettings {
+            name: "Explicit repair copy".into(),
+            width: 1280,
+            height: 720,
+            rate_num: 30000,
+            rate_den: 1001,
+        };
+        let mut copy_document = source_document.clone();
+        copy_document["name"] = serde_json::json!(settings.name);
+        copy_document["media"][0]["path"] = serde_json::json!("/managed/fixed.png");
+        copy_document["media"][0]["seecutLibraryBinding"] = serde_json::json!({
+            "version":1,"asset_id":"asset-1","registration_id":"operation:original",
+            "sha256":"a".repeat(64),"previous_path":"/missing/original.png","verified_original":false
+        });
+        let exact_target = scratch.join("chosen-copy-directory");
+        let created = create_document_owned(&exact_target, &settings, &copy_document).unwrap();
+        assert_eq!(
+            Path::new(&created.info().path),
+            exact_target.canonicalize().unwrap()
+        );
+        assert_eq!(created.info().name, settings.name);
+        assert_eq!(
+            (
+                created.info().width,
+                created.info().height,
+                created.info().rate_num,
+                created.info().rate_den
+            ),
+            (1280, 720, 30000, 1001)
+        );
+        assert_eq!(read_document(&created.info().path).unwrap(), copy_document);
+        assert_eq!(std::fs::read(&source_manifest).unwrap(), source_bytes);
+        assert!(
+            create_document_owned(Path::new(&source.info().path), &settings, &copy_document)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&source_manifest).unwrap(), source_bytes);
+        drop(created);
+        drop(source);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn project_relink_create_document_rejects_existing_empty_directory_and_file() {
+        let scratch = save_scratch();
+        let settings = concat_project::DocumentSettings {
+            name: "Copy".into(),
+            width: 16,
+            height: 16,
+            rate_num: 30,
+            rate_den: 1,
+        };
+        let document = serde_json::json!({"name":"Copy","futureField":true});
+        let empty = scratch.join("existing-empty");
+        std::fs::create_dir(&empty).unwrap();
+        assert!(create_document_owned(&empty, &settings, &document).is_err());
+        assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
+        let file = scratch.join("existing-file");
+        std::fs::write(&file, b"untouched existing file").unwrap();
+        assert!(create_document_owned(&file, &settings, &document).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"untouched existing file");
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_relink_create_document_rejects_existing_and_dangling_symlinks() {
+        use std::os::unix::fs::symlink;
+        let scratch = save_scratch();
+        let settings = concat_project::DocumentSettings {
+            name: "Copy".into(),
+            width: 16,
+            height: 16,
+            rate_num: 30,
+            rate_den: 1,
+        };
+        let document = serde_json::json!({"name":"Copy"});
+        let actual = scratch.join("actual-directory");
+        std::fs::create_dir(&actual).unwrap();
+        let sentinel = actual.join("sentinel");
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        let link = scratch.join("target-link");
+        symlink(&actual, &link).unwrap();
+        assert!(create_document_owned(&link, &settings, &document).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"unchanged");
+        assert!(!actual.join(MANIFEST).exists());
+        let absent = scratch.join("absent-directory");
+        let dangling = scratch.join("dangling-link");
+        symlink(&absent, &dangling).unwrap();
+        assert!(create_document_owned(&dangling, &settings, &document).is_err());
+        assert!(!absent.exists());
+        assert!(
+            std::fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn project_relink_invalidate_waits_for_dispatched_writer_and_discards_its_snapshot() {
+        let scratch = save_scratch();
+        let path = scratch.to_string_lossy().into_owned();
+        let owner = acquire_project_owner(&scratch).unwrap();
+        let original = serde_json::json!({"source":"unchanged"});
+        save_owned(&path, &original, owner.as_ref()).unwrap();
+        let before = std::fs::read(scratch.join(MANIFEST)).unwrap();
+        let lane = std::sync::Arc::new(SaveLane::default());
+        let ticket = lane.next();
+        let (entered, inside) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let writer_lane = lane.clone();
+        let writer_path = path.clone();
+        let writer_owner = owner.clone();
+        let writer = std::thread::spawn(move || {
+            writer_lane.write_with(
+                ticket,
+                &writer_path,
+                &serde_json::json!({"stale":"dispatched"}),
+                writer_owner.as_ref(),
+                || {
+                    entered.send(()).unwrap();
+                    wait.recv().unwrap();
+                },
+            )
+        });
+        inside.recv().unwrap();
+        let invalidating_lane = lane.clone();
+        let (finished, done) = std::sync::mpsc::channel();
+        let invalidation = std::thread::spawn(move || {
+            invalidating_lane.invalidate_and_wait();
+            finished.send(()).unwrap();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while lane.is_latest(ticket) && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let was_invalidated = !lane.is_latest(ticket);
+        let waited_for_writer =
+            matches!(done.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty));
+        release.send(()).unwrap();
+        let saved = writer.join().unwrap().unwrap();
+        invalidation.join().unwrap();
+        assert!(
+            was_invalidated,
+            "invalidation must reserve a newer ticket before waiting"
+        );
+        assert!(
+            waited_for_writer,
+            "invalidation must not return with an active writer"
+        );
+        assert!(!saved, "the invalidated dispatched snapshot must not write");
+        assert_eq!(std::fs::read(scratch.join(MANIFEST)).unwrap(), before);
+        assert_eq!(read_document(&path).unwrap(), original);
+        drop(owner);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn project_relink_invalidate_discards_queued_snapshot_and_accepts_later_save() {
+        let scratch = save_scratch();
+        let path = scratch.to_string_lossy().into_owned();
+        let owner = acquire_project_owner(&scratch).unwrap();
+        save_owned(
+            &path,
+            &serde_json::json!({"source":"unchanged"}),
+            owner.as_ref(),
+        )
+        .unwrap();
+        let before = std::fs::read(scratch.join(MANIFEST)).unwrap();
+        let lane = std::sync::Arc::new(SaveLane::default());
+        let ticket = lane.next();
+        let held_writer = lane.writer.lock().unwrap();
+        let queued_lane = lane.clone();
+        let queued_path = path.clone();
+        let queued_owner = owner.clone();
+        let (dispatched, started) = std::sync::mpsc::channel();
+        let queued = std::thread::spawn(move || {
+            dispatched.send(()).unwrap();
+            queued_lane.write_owned(
+                ticket,
+                &queued_path,
+                &serde_json::json!({"stale":"queued"}),
+                queued_owner.as_ref(),
+            )
+        });
+        started.recv().unwrap();
+        let invalidating_lane = lane.clone();
+        let invalidation = std::thread::spawn(move || invalidating_lane.invalidate_and_wait());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while lane.is_latest(ticket) && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let was_invalidated = !lane.is_latest(ticket);
+        drop(held_writer);
+        let saved = queued.join().unwrap().unwrap();
+        invalidation.join().unwrap();
+        assert!(was_invalidated);
+        assert!(
+            !saved,
+            "queued snapshots reserved before invalidation remain obsolete"
+        );
+        assert_eq!(std::fs::read(scratch.join(MANIFEST)).unwrap(), before);
+        let fresh = lane.next();
+        assert!(
+            lane.write_owned(
+                fresh,
+                &path,
+                &serde_json::json!({"fresh":true}),
+                owner.as_ref()
+            )
+            .unwrap()
+        );
+        assert_eq!(read_document(&path).unwrap()["fresh"], true);
+        drop(owner);
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     #[test]
