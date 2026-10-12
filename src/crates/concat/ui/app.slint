@@ -19,7 +19,7 @@ import "fonts/Synonym-Medium.ttf";
 import "fonts/Synonym-SemiBold.ttf";
 
 import { Theme } from "theme/theme.slint";
-import { Flow, FlowPage, FlowDraftDialog, FlowRecoveryDialog, FlowNameDialog, FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter } from "flow/page.slint";
+import { Flow, FlowPage, FlowDraftDialog, FlowRecoveryDialog, FlowNameDialog, FlowSettingsDialog, FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter, FlowCandidate } from "flow/page.slint";
 import { Bezier, Curves, Fmt, Focus, Payload } from "util.slint";
 import { EffectData } from "demo/effects-panel.slint";
 import { MediaFilter, MediaItemData, MediaKind, TextPresetData } from "workspace/media-pane.slint";
@@ -1267,6 +1267,7 @@ export component App inherits Window {
     FlowDraftDialog { }
     FlowRecoveryDialog { }
     FlowNameDialog { }
+    FlowSettingsDialog { }
 
     // Global floating UI stays above pages. Modal tasks temporarily hide the
     // panel and disable the entry; the host keeps the active-workspace rules.

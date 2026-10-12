@@ -2,9 +2,27 @@
 import { Theme, Glyph, IconButton, Modal } from "../primitives/primitives.slint";
 import { FlowProjectsPage, FlowProjectRow } from "projects.slint";
 import { AppButton, CloudField } from "../seecut/components.slint";
-import { FlowWorkspace, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter } from "workspace.slint";
-export { FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter }
+import { FlowWorkspace, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter, FlowCandidate } from "workspace.slint";
+import { ScrollView } from "std-widgets.slint";
+export { FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter, FlowCandidate }
 export global Flow {
+    in-out property <bool> images-enabled;
+    in-out property <bool> execution-enabled;
+    in-out property <bool> paused;
+    in-out property <bool> has-attempt;
+    in-out property <bool> selected-output;
+    in-out property <string> points: "0";
+    in-out property <[FlowAttachment]> references;
+    in-out property <[FlowCandidate]> candidates;
+    in-out property <[FlowParameter]> generation-parameters;
+    in-out property <bool> settings-open;
+    in-out property <string> setting-token;
+    in-out property <string> setting-title;
+    in-out property <[FlowParameter]> setting-rows;
+    callback image-settings(string);
+    callback setting-choice(string, string);
+    callback image-assets();
+    callback image-choose(string);
     in-out property <bool> open;
     in-out property <bool> browsing: true;
     in-out property <string> project-search;
@@ -24,6 +42,7 @@ export global Flow {
     in-out property <string> draft-token;
     in-out property <string> selected-id;
     in-out property <string> selected-title;
+    in-out property <string> selected-status;
     in-out property <string> selected-kind;
     in-out property <string> prompt;
     in-out property <string> generation-prompt;
@@ -75,8 +94,18 @@ export component FlowPage inherits Rectangle {
         document-token: Flow.token; draft-token: Flow.draft-token;
         nodes: Flow.nodes; edges: Flow.edges;
         selected-id: Flow.selected-id; selected-title: Flow.selected-title; selected-kind: Flow.selected-kind;
-        selected-status: Flow.read-only ? "只读" : Flow.dirty ? "提示词未保存" : "已保存";
+        selected-status: Flow.read-only ? "只读" : Flow.dirty ? "提示词未保存" : Flow.selected-status != "" ? Flow.selected-status : "已保存";
         generation-prompt: Flow.generation-prompt;
+        references: Flow.references; candidates: Flow.candidates; generation-parameters: Flow.generation-parameters;
+        assets-enabled: Flow.images-enabled && Flow.selected-kind != "video_generate";
+        generation-settings-enabled: Flow.images-enabled;
+        execution-enabled: Flow.execution-enabled && !Flow.read-only && Flow.selected-kind == "image_generate";
+        paused: Flow.paused; has-attempt: Flow.has-attempt; can-cancel: Flow.has-attempt && !Flow.paused;
+        points-label: Flow.points; selected-output: Flow.selected-output;
+        assets-requested(_,_) => { Flow.image-assets(); }
+        shared-generation-requested(_) => { Flow.image-settings("model"); }
+        parameter-requested(field) => { Flow.image-settings(field); }
+        choose(id) => { Flow.image-choose(id); }
         prompt-text <=> Flow.prompt;
         changed input-focused => { Flow.input-focused = self.input-focused; }
         focus-token: Flow.focus-token;
@@ -95,6 +124,17 @@ export component FlowPage inherits Rectangle {
         input-port(id, port) => { Flow.input-port(Flow.token,id,port); }
         output-port(id) => { Flow.output-port(Flow.token,id); }
         action(action) => { Flow.action(action); }
+    }
+}
+export component FlowSettingsDialog inherits Modal {
+    open: Flow.settings-open; title: Flow.setting-title; trap-focus: true; surface-width: 360px;
+    closed => { Flow.settings-open = false; Flow.focus-token += 1; }
+    ScrollView {
+        width: 360px; height: min(360px, root.height - 100px);
+        VerticalLayout { padding: 16px; spacing: 4px;
+            if Flow.setting-rows.length == 0: Text { text: "暂无可用选项"; color: Theme.fg-muted; }
+            for option in Flow.setting-rows: AppButton { label: option.label; subtle: true; clicked => { Flow.setting-choice(Flow.setting-token,option.id); } }
+        }
     }
 }
 export component FlowDraftDialog inherits Modal {

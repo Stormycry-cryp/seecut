@@ -11,6 +11,186 @@ use uuid::Uuid;
 const PENDING: &str = "pending-generated.json";
 const LEGACY_PENDING: &str = "pending-legacy-generated.json";
 
+/// Shared result receipt, referencing the existing library instead of creating another identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct GenerationIdentity {
+    pub(crate) scope: String,
+    pub(crate) task: String,
+    pub(crate) output: String,
+}
+impl GenerationIdentity {
+    fn operation(&self) -> String {
+        format!("generation:{}:{}:{}", self.scope, self.task, self.output)
+    }
+    fn filename(&self) -> String {
+        format!("{}.json", seecut_flow_core::digest(self))
+    }
+}
+#[derive(Serialize, Deserialize)]
+struct GenerationReceipt {
+    format: u32,
+    identity: GenerationIdentity,
+    reference: crate::personal_library::AssetReference,
+}
+fn generation_claim(
+    root: &Path,
+    asset: &crate::personal_library::Asset,
+) -> Result<Option<GenerationIdentity>, String> {
+    let reference = crate::personal_library::AssetReference {
+        asset_id: asset.id.clone(),
+        version: asset.version.clone(),
+    };
+    let path = root
+        .join("generation-claims")
+        .join(format!("{}.json", seecut_flow_core::digest(&reference)));
+    match fs::read(path) {
+        Ok(bytes) => {
+            let receipt: GenerationReceipt =
+                serde_json::from_slice(&bytes).map_err(|e| format!("输出归属已损坏: {e}"))?;
+            if receipt.format != 1 || receipt.reference != reference {
+                return Err("输出归属版本不匹配".into());
+            }
+            Ok(Some(receipt.identity))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("无法读取输出归属: {e}")),
+    }
+}
+pub(crate) fn generation_asset(
+    root: &Path,
+    identity: &GenerationIdentity,
+    sha: &str,
+) -> Result<Option<crate::personal_library::Asset>, String> {
+    let library = Library::load(root)?;
+    let file = root.join("generation-receipts").join(identity.filename());
+    match fs::read(file) {
+        Ok(bytes) => {
+            let receipt: GenerationReceipt =
+                serde_json::from_slice(&bytes).map_err(|e| format!("输出收据已损坏: {e}"))?;
+            if receipt.format != 1 || receipt.identity != *identity {
+                return Err("输出收据身份不匹配".into());
+            }
+            let asset = library
+                .get(&receipt.reference.asset_id)
+                .filter(|a| {
+                    a.version == receipt.reference.version
+                        && a.version.as_ref().is_some_and(|v| v.sha256 == sha)
+                })
+                .ok_or("输出收据版本已变化")?;
+            crate::personal_library::checked_managed_version_path(root, asset)?;
+            Ok(Some(asset.clone()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            for asset in library
+                .items()
+                .iter()
+                .filter(|a| a.version.as_ref().is_some_and(|v| v.sha256 == sha))
+            {
+                if asset.version.as_ref().is_some_and(|v| {
+                    v.registration_id == format!("operation:{}", identity.operation())
+                }) || generation_claim(root, asset)?.as_ref() == Some(identity)
+                {
+                    crate::personal_library::checked_managed_version_path(root, asset)?;
+                    return Ok(Some(asset.clone()));
+                }
+            }
+            Ok(None)
+        }
+        Err(e) => Err(format!("无法读取输出收据: {e}")),
+    }
+}
+/// Both the independent generator and Flow call this under the existing library lock.
+pub(crate) fn register_generation_output(
+    root: &Path,
+    path: &Path,
+    name: Option<&str>,
+    identity: &GenerationIdentity,
+    sha: &str,
+    provenance: Option<crate::personal_library::OutputProvenance>,
+) -> Result<crate::personal_library::Asset, String> {
+    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("输出缺少可信摘要".into());
+    }
+    let mut asset = generation_asset(root, identity, sha)?;
+    if asset.is_none() {
+        let reference = crate::personal_library::AssetReference {
+            asset_id: String::new(),
+            version: Some(crate::personal_library::AssetVersion {
+                sha256: sha.into(),
+                registration_id: String::new(),
+                previous_id: None,
+            }),
+        };
+        crate::personal_library::verify_asset_reference(path, Some(&reference))?;
+        let library = Library::load(root)?;
+        // Adopt a previous generator's exact verified cache registration, including trash state.
+        for previous in library.items().iter().filter(|a| {
+            a.source == crate::personal_library::AssetSource::Generated
+                && a.original_path.as_deref() == Some(path)
+                && a.version.as_ref().is_some_and(|v| {
+                    v.sha256 == sha && !v.registration_id.starts_with("operation:generation:")
+                })
+        }) {
+            if generation_claim(root, previous)?.is_none_or(|claim| claim == *identity) {
+                asset = Some(previous.clone());
+                break;
+            }
+        }
+        if asset.is_none() {
+            register_output_with_provenance(
+                root,
+                path,
+                name,
+                Some(&identity.operation()),
+                None,
+                provenance.clone(),
+            )?;
+            asset = generation_asset(root, identity, sha)?;
+        }
+    }
+    let mut asset = asset.ok_or("输出入库收据未完成")?;
+    crate::personal_library::checked_managed_version_path(root, &asset)?;
+    let reference = crate::personal_library::AssetReference {
+        asset_id: asset.id.clone(),
+        version: asset.version.clone(),
+    };
+    if generation_claim(root, &asset)?.is_some_and(|claim| claim != *identity) {
+        return Err("输出已归属其他任务或账户".into());
+    }
+    save_json(
+        &root.join("generation-claims"),
+        &format!("{}.json", seecut_flow_core::digest(&reference)),
+        &GenerationReceipt {
+            format: 1,
+            identity: identity.clone(),
+            reference,
+        },
+    )?;
+    if let Some(provenance) = provenance {
+        let mut library = Library::load(root)?;
+        library.annotate_output(
+            &asset.id,
+            asset.version.as_ref().ok_or("输出缺少版本")?,
+            provenance,
+        )?;
+        asset = library.get(&asset.id).ok_or("输出记录不可用")?.clone();
+    }
+    let receipt = GenerationReceipt {
+        format: 1,
+        identity: identity.clone(),
+        reference: crate::personal_library::AssetReference {
+            asset_id: asset.id.clone(),
+            version: asset.version.clone(),
+        },
+    };
+    save_json(
+        &root.join("generation-receipts"),
+        &identity.filename(),
+        &receipt,
+    )?;
+    Ok(asset)
+}
+
 /// A migration changes one existing asset; it must never create a new identity.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct LegacyMigration {

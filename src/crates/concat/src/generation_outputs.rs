@@ -98,6 +98,27 @@ pub(crate) fn plan(task: &Value, folder: &Path, local: &HashMap<String, String>)
         .collect()
 }
 
+/// Scope new caches while retaining explicitly bound legacy files from this account's history.
+pub(crate) fn scoped_plan(
+    task: &Value,
+    folder: &Path,
+    scope: &str,
+    local: &HashMap<String, String>,
+) -> Vec<Output> {
+    let legacy_root = folder
+        .canonicalize()
+        .unwrap_or_else(|_| folder.to_path_buf());
+    let mut outputs = plan(task, &folder.join("scopes").join(scope), local);
+    for output in &mut outputs {
+        output.legacy = local
+            .get(&output.key)
+            .or_else(|| local.get(&output.task_id))
+            .and_then(|p| Path::new(p).canonicalize().ok())
+            .filter(|p| p.is_file() && p.parent() == Some(legacy_root.as_path()));
+    }
+    outputs
+}
+
 pub(crate) fn registered(items: &[Value], path: &Path) -> bool {
     items.iter().any(|item| {
         item["path"]

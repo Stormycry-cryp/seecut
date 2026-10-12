@@ -16,6 +16,7 @@ pub struct Store {
     _lock: File,
     document: Document,
     runtime: Runtime,
+    execution: crate::execution::Execution,
     poisoned: bool,
 }
 impl Store {
@@ -24,6 +25,8 @@ impl Store {
         fs::create_dir(root).map_err(|e| e.to_string())?; // never overwrite a document
         let lock = lock(root)?;
         let runtime = Runtime::new(document.id.clone());
+        let execution =
+            crate::execution::Execution::new(document.id.clone(), document.project_id.clone());
         atomic(root, "document.json", &document)?;
         atomic(root, "runtime.json", &runtime)?;
         Ok(Self {
@@ -31,6 +34,7 @@ impl Store {
             _lock: lock,
             document,
             runtime,
+            execution,
             poisoned: false,
         })
     }
@@ -54,6 +58,12 @@ impl Store {
             return Err("run store identity/version mismatch".into());
         }
         runtime.validate()?;
+        let execution = if root.join("execution.json").exists() {
+            read(root, "execution.json")?
+        } else {
+            crate::execution::Execution::new(document.id.clone(), document.project_id.clone())
+        };
+        execution.validate(&document.id, &document.project_id)?;
         let mut recovered = false;
         for run in &mut runtime.runs {
             if run.status == "running" {
@@ -69,6 +79,7 @@ impl Store {
             _lock: lock,
             document,
             runtime,
+            execution,
             poisoned: false,
         })
     }
@@ -77,6 +88,19 @@ impl Store {
     }
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
+    }
+    pub fn execution(&self) -> &crate::execution::Execution {
+        &self.execution
+    }
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+    pub fn save_execution(&mut self, execution: crate::execution::Execution) -> Result<()> {
+        self.ready()?;
+        execution.validate(&self.document.id, &self.document.project_id)?;
+        self.write("execution.json", &execution)?;
+        self.execution = execution;
+        Ok(())
     }
     /// Future node kinds/versions remain viewable without enabling an older writer.
     pub fn is_read_only(&self) -> bool {

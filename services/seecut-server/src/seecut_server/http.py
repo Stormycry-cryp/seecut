@@ -278,6 +278,10 @@ class SeeCutHandler(BaseHTTPRequestHandler):
             return 202, self.service.create_generation_task(user_id, kind, self._json_body(), key)
         if method == "GET" and path == "/api/generation/tasks":
             return 200, {"items": self.service.list_generation_tasks(user_id)}
+        if method == "GET" and path == "/api/generation/tasks/by-request":
+            return 200, self.service.get_generation_task_by_request(
+                user_id, self.headers.get("Idempotency-Key", "")
+            )
         if method == "POST" and path == "/api/generation/tasks/trash":
             return 200, self.service.trash_generation_tasks(user_id, self._json_body().get("ids"))
         task_match = re.fullmatch(r"/api/generation/tasks/([^/]+)", path)

@@ -20,7 +20,9 @@ use std::{
 };
 use url::Url;
 
+mod flow_generation;
 mod preview_validation;
+pub(crate) use flow_generation::{RegisteredImage, library_image};
 
 /// The opt-in software-rendered fixture exercises local state transitions with
 /// a signed-out synthetic Cloud. Normal startup never invokes this entry.
@@ -778,6 +780,7 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
         })?;
         return Ok(
             json!({"id":req.body["id"],"cache_key":output.key,"task_id":output.task_id,"path":path,
+            "generation_identity":flow_generation::output_identity(c,&output.key),"sha256":output.sha256,
             "intent":req.body["intent"],"intent_team":req.body["intent_team"],"preview_token":req.body["preview_token"]}),
         );
     }
@@ -1994,7 +1997,9 @@ fn begin_asset_picker(app: &App, state: &Rc<RefCell<Cloud>>, purpose: &str, sour
     ui.set_asset_picker_purpose(purpose.into());
     ui.set_asset_picker_source(source);
     ui.set_personal_reference_search("".into());
-    let image_only = purpose == "canvas" || (purpose == "reference" && ui.get_mode() == 0);
+    let image_only = purpose == "canvas"
+        || purpose == "flow-reference"
+        || (purpose == "reference" && ui.get_mode() == 0);
     ui.set_asset_picker_personal_filter(if image_only { 1 } else { 0 });
     ui.set_asset_picker_team_search("".into());
     ui.set_asset_picker_team_filter(if image_only { 1 } else { 0 });
@@ -3712,10 +3717,19 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                         app,
                         state,
                         format!("personal-cache:{id}"),
-                        request("POST", "local:library-register", json!({"path":path})),
+                        request(
+                            "POST",
+                            "local:library-register",
+                            json!({"path":path,"generation_identity":value["generation_identity"],"sha256":value["sha256"]}),
+                        ),
                     );
                 } else {
-                    personal_job(app, state, "register", json!({"path":path}));
+                    personal_job(
+                        app,
+                        state,
+                        "register",
+                        json!({"path":path,"generation_identity":value["generation_identity"],"sha256":value["sha256"]}),
+                    );
                 }
             }
         }
@@ -4407,11 +4421,24 @@ fn library_call_unlocked(
         return library_result(&library, root, "已重新关联素材".into());
     }
     if req.path == "local:library-register" {
-        crate::registration_retry::register(
-            root,
-            Path::new(&text(&req.body, "path")),
-            req.body["name"].as_str(),
-        )?;
+        if !req.body["generation_identity"].is_null() {
+            let identity = serde_json::from_value(req.body["generation_identity"].clone())
+                .map_err(|e| format!("输出身份无效: {e}"))?;
+            crate::registration_retry::register_generation_output(
+                root,
+                Path::new(&text(&req.body, "path")),
+                req.body["name"].as_str(),
+                &identity,
+                req.body["sha256"].as_str().ok_or("输出缺少摘要")?,
+                None,
+            )?;
+        } else {
+            crate::registration_retry::register(
+                root,
+                Path::new(&text(&req.body, "path")),
+                req.body["name"].as_str(),
+            )?;
+        }
         return library_result(&Library::load(root)?, root, String::new());
     }
     let recovery = if req.path == "local:library-list" {
@@ -5481,6 +5508,10 @@ fn picker_confirm(app: &App, state: &Rc<RefCell<Cloud>>) {
         }
     };
     let purpose = ui.get_asset_picker_purpose().to_string();
+    if purpose == "flow-reference" {
+        flow_generation::accept_picker(app, &selected);
+        return;
+    }
     if state.borrow().picker_batch.is_some() {
         ui.set_error("上一批素材仍在准备，请稍候".into());
         return;
@@ -6879,7 +6910,7 @@ fn release_cache_attempt(state: &Rc<RefCell<Cloud>>, name: &str) {
 fn cache_task_outputs(app: &App, state: &Rc<RefCell<Cloud>>, task: &Value) {
     let plans = {
         let cloud = state.borrow();
-        crate::generation_outputs::plan(task, &cloud.folder, &cloud.local)
+        flow_generation::output_plans(&cloud, task)
     };
     for output in plans {
         let (registered, bound) = {
@@ -6914,7 +6945,7 @@ fn cache_task_outputs(app: &App, state: &Rc<RefCell<Cloud>>, task: &Value) {
                 request(
                     "POST",
                     "local:library-register",
-                    json!({"path":output.path}),
+                    json!({"path":output.path,"generation_identity":flow_generation::output_identity(&state.borrow(),&output.key),"sha256":output.sha256}),
                 ),
             );
         } else {
@@ -6972,9 +7003,7 @@ fn download_task_with_token(
         return;
     }
     if let Some(task) = c.tasks.iter().find(|v| text(v, "id") == id)
-        && let Some(output) = crate::generation_outputs::plan(task, &c.folder, &c.local)
-            .into_iter()
-            .next()
+        && let Some(output) = flow_generation::output_plans(&c, task).into_iter().next()
     {
         let name = if intent == "cache" {
             format!("local-cache:{}", output.key)

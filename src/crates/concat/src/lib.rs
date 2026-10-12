@@ -336,7 +336,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     let app = App::new()?;
     let account = cloud::bind(&app);
-    flow_ui::bind(&app, host.dirs.data.join("flow-projects"));
+    flow_ui::bind(&app, host.dirs.data.join("flow-projects"), account.clone());
     app.set_macos(platform::MACOS);
 
     let studio = Studio::new(host);

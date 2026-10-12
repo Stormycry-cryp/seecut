@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Native Flow host. Graph commands are durable; generation and asset writes stay disabled.
+//! Native Flow host with durable graph commands and background shared image execution.
 use crate::{
     flow_controller::{Controller, Effect, Intent},
     ui::{App, Flow, FlowEdgeView, FlowNodeView, FlowProjectRow, SeeCut},
@@ -13,6 +13,20 @@ use seecut_flow_core::{
 use serde_json::json;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
+mod image_execution;
+
+/// Preserve delegates, focus and drag state when background receipts do not change a row.
+fn sync_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
+    if model.row_count() != rows.len() {
+        model.set_vec(rows);
+        return;
+    }
+    for (index, row) in rows.into_iter().enumerate() {
+        if model.row_data(index).as_ref() != Some(&row) {
+            model.set_row_data(index, row);
+        }
+    }
+}
 
 enum Naming {
     New(PathBuf),
@@ -24,6 +38,7 @@ struct NameDialog {
     mode: Naming,
 }
 struct Host {
+    images: image_execution::Images,
     browsing: bool,
     projects: Vec<Project>,
     project_rows: Rc<VecModel<FlowProjectRow>>,
@@ -69,7 +84,7 @@ impl Host {
             self.connecting.clear();
         }
         self.error = false;
-        self.message = "节点自动保存 · 执行尚未接通".into();
+        self.message.clear();
         if project_change {
             self.browsing = false;
             if effect.is_some() {
@@ -147,11 +162,21 @@ impl Host {
                 .graph()
                 .nodes
                 .values()
-                .map(|n| {
+                .enumerate()
+                .map(|(index, n)| {
+                    let attempt = self.images.latest(&s.store, &s.graph_id, &n.id);
+                    let state = attempt
+                        .map(image_execution::attempt_status)
+                        .unwrap_or("未执行");
                     let summary = if n.kind == "prompt" {
                         n.params["text"].as_str().unwrap_or("").to_owned()
                     } else {
-                        format!("{}\n尚未接通执行", kind_label(&n.kind))
+                        match n.kind.as_str() {
+                            "image_generate" => state.to_owned(),
+                            "asset" => n.title.clone(),
+                            "select" => "选择上游图片结果".into(),
+                            _ => format!("{}\n尚未接通执行", kind_label(&n.kind)),
+                        }
                     };
                     let p = self.preview.get(&n.id).unwrap_or(&n.position);
                     FlowNodeView {
@@ -159,37 +184,51 @@ impl Host {
                         title: n.title.clone().into(),
                         kind: n.kind.clone().into(),
                         summary: summary.into(),
-                        state: "未执行".into(),
+                        state: state.into(),
                         x: p[0] as f32,
                         y: p[1] as f32,
                         preview: Default::default(),
                         has_preview: false,
-                        inputs: ModelRc::new(VecModel::from(
-                            n.ports()
-                                .map(|p| {
-                                    p.0.into_iter()
-                                        .map(|p| SharedString::from(p.name))
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default(),
-                        )),
+                        inputs: self
+                            .nodes
+                            .row_data(index)
+                            .filter(|old| old.id == n.id && old.kind == n.kind)
+                            .map(|old| old.inputs)
+                            .unwrap_or_else(|| {
+                                ModelRc::new(VecModel::from(
+                                    n.ports()
+                                        .map(|p| {
+                                            p.0.into_iter()
+                                                .map(|p| SharedString::from(p.name))
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default(),
+                                ))
+                            }),
                     }
                 })
                 .collect::<Vec<_>>();
-            self.nodes.set_vec(rows);
+            sync_rows(&self.nodes, rows);
         } else {
             ui.set_token("".into());
             ui.set_selected_id("".into());
             ui.set_selected_kind("".into());
             ui.set_can_undo(false);
             ui.set_can_redo(false);
-            self.nodes.set_vec(vec![]);
+            sync_rows(&self.nodes, vec![]);
         }
         self.publish_edges();
+        let s = self.controller.session.as_ref();
+        self.images.publish(
+            app,
+            s.map(|s| &s.store),
+            s.map(|s| s.graph()),
+            s.map_or("", |s| s.selected.as_str()),
+        );
     }
     fn publish_edges(&self) {
         let Some(s) = self.controller.session.as_ref() else {
-            self.edges.set_vec(vec![]);
+            sync_rows(&self.edges, vec![]);
             return;
         };
         let [px, py, z] = self.view;
@@ -221,7 +260,7 @@ impl Host {
                 })
             })
             .collect::<Vec<_>>();
-        self.edges.set_vec(edges);
+        sync_rows(&self.edges, edges);
     }
     fn remember_current(&mut self) {
         if let Some(session) = &self.controller.session {
@@ -579,8 +618,9 @@ fn pick_path(app: &App, host: &Rc<RefCell<Host>>, export: bool) {
     finish(app, host, Ok(None));
 }
 
-pub(crate) fn bind(app: &App, root: PathBuf) {
+pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAccess) {
     let host = Rc::new(RefCell::new(Host {
+        images: image_execution::Images::new(account, root.clone()),
         browsing: true,
         projects: Vec::new(),
         project_rows: Rc::new(VecModel::default()),
@@ -648,7 +688,14 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
                 } else if action == "open" {
                     pick_path(&app, &host, false);
                 } else {
-                    let result = host.borrow_mut().action(action.as_str());
+                    let result = {
+                        let mut h = host.borrow_mut();
+                        match image_execution::action(&app, &mut h, action.as_str()) {
+                            Ok(true) => Ok(Some(Effect::None)),
+                            Ok(false) => h.action(action.as_str()),
+                            Err(error) => Err(error),
+                        }
+                    };
                     finish(&app, &host, result);
                 }
             });
@@ -1112,5 +1159,6 @@ pub(crate) fn bind(app: &App, root: PathBuf) {
             finish(&app, &host, result);
         }
     });
+    image_execution::bind(app, &host);
     host.borrow_mut().publish(app);
 }

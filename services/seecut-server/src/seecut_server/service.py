@@ -2051,6 +2051,27 @@ class SeeCutService:
                 ),
             )
 
+    def get_generation_task_by_request(self, user_id: str, idempotency_key: str) -> dict[str, Any]:
+        """Locate only this account's original task; no quote, dispatch or settlement."""
+        if not idempotency_key or len(idempotency_key) > 128:
+            raise ApiError(400, "INVALID_IDEMPOTENCY_KEY", "请提供有效的幂等键")
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM generation_tasks WHERE user_id=? AND idempotency_key=?",
+                (user_id, idempotency_key),
+            ).fetchone()
+            if not row:
+                # Absence does not prove an unaccepted request or authorize a new key.
+                raise ApiError(404, "GENERATION_TASK_NOT_FOUND", "生成任务不存在")
+            result = self._task_dict(connection, row)
+            if row["batch_id"]:
+                rows = connection.execute(
+                    "SELECT * FROM generation_tasks WHERE user_id=? AND batch_id=? ORDER BY batch_index",
+                    (user_id, row["batch_id"]),
+                ).fetchall()
+                result["tasks"] = [self._task_dict(connection, item) for item in rows]
+            return result
+
     def get_generation_task(self, user_id: str, task_id: str, refresh: bool = False) -> dict[str, Any]:
         with self.db.connect() as connection:
             row = connection.execute(
@@ -2148,6 +2169,14 @@ class SeeCutService:
                 )
 
     def _task_dict(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+        # Generation capture consumes held credits: delta_available is zero.
+        # Read committed debit entries, never the quote or the original reservation.
+        captured_credits = connection.execute(
+            """SELECT COALESCE(SUM(-delta_held),0) FROM ledger_entries
+               WHERE user_id=? AND kind='capture' AND reference_type='generation_task'
+                 AND reference_id=? AND delta_held<0""",
+            (row["user_id"], row["id"]),
+        ).fetchone()[0]
         outputs = connection.execute(
             """SELECT id,content_type,size_bytes,sha256,expires_at,created_at
                FROM generation_outputs WHERE task_id=?""",
@@ -2179,6 +2208,7 @@ class SeeCutService:
             # context remain server-side.
             "request": request,
             "quoted_credits": row["quoted_credits"],
+            "captured_credits": captured_credits,
             "status": row["status"],
             "error": (
                 {"code": row["error_code"], "message": row["error_message"]}

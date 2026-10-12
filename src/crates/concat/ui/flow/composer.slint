@@ -14,6 +14,7 @@ export component FlowComposer inherits Rectangle {
     in property <string> placeholder: "写下这个节点的提示词…";
     in property <[FlowAttachment]> attachments;
     in property <bool> allow-assets;
+    in property <bool> allow-upload: true;
     in property <bool> read-only;
     in property <[FlowParameter]> parameters;
     in property <string> action-label: "保存提示词";
@@ -93,7 +94,7 @@ export component FlowComposer inherits Rectangle {
         viewport-height: 36px; viewport-width: max(self.width, parameters-row.preferred-width);
         parameters-row := HorizontalLayout {
             height: 36px; spacing: 6px; alignment: start;
-            if root.allow-assets: IconButton { glyph: Glyph.import; label: "上传本地素材到资产库"; side: 32px; icon-size: 18px; clicked => { root.upload-requested(); } }
+            if root.allow-assets && root.allow-upload: IconButton { glyph: Glyph.import; label: "上传本地素材到资产库"; side: 32px; icon-size: 18px; clicked => { root.upload-requested(); } }
             for parameter in root.parameters: AppButton {
                 height: 32px; label: parameter.label; glyph: Glyph.chevron-down;
                 accessible-name: "SeeCut 生成设置 · " + parameter.label;

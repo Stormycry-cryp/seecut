@@ -330,6 +330,28 @@ impl Library {
     pub fn items(&self) -> &[Asset] {
         &self.items
     }
+    /// Add creator metadata to an already registered generation result without changing its version.
+    pub(crate) fn annotate_output(
+        &mut self,
+        id: &str,
+        version: &AssetVersion,
+        provenance: OutputProvenance,
+    ) -> Result<(), String> {
+        let index = self
+            .items
+            .iter()
+            .position(|a| a.id == id && a.version.as_ref() == Some(version))
+            .ok_or("输出版本已变化")?;
+        if self.items[index].provenance.is_some() {
+            return Ok(());
+        }
+        self.items[index].provenance = Some(provenance);
+        if let Err(error) = self.save() {
+            self.items[index].provenance = None;
+            return Err(error);
+        }
+        Ok(())
+    }
 
     pub fn folders(&self) -> &[Folder] {
         &self.folders

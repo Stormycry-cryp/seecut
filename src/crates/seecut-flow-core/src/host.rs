@@ -54,8 +54,15 @@ pub fn picker_request(
     graph_id: &str,
     node_id: &str,
 ) -> Result<AssetPickerRequest> {
-    let graph = runner
-        .store
+    picker_request_for_store(&runner.store, runner.scope(), graph_id, node_id)
+}
+pub fn picker_request_for_store(
+    store: &Store,
+    scope: &Scope,
+    graph_id: &str,
+    node_id: &str,
+) -> Result<AssetPickerRequest> {
+    let graph = store
         .document()
         .graphs
         .get(graph_id)
@@ -82,11 +89,11 @@ pub fn picker_request(
         .fold(node.position[1], f64::max);
     Ok(AssetPickerRequest {
         context: Context {
-            document_id: runner.store.document().id.clone(),
+            document_id: store.document().id.clone(),
             graph_id: graph_id.into(),
             node_id: node_id.into(),
             revision: graph.revision,
-            scope: runner.scope().clone(),
+            scope: scope.clone(),
         },
         target: if node.kind == "asset" {
             AssetTarget::Replace
@@ -222,6 +229,108 @@ pub fn generation_draft(runner: &Runner, graph_id: &str, node_id: &str) -> Resul
             .into(),
         media_kind,
         prompt: prompt.ok_or("prompt missing")?,
+        parameters: node.params.clone(),
+        references,
+    })
+}
+
+/// Prepare native image inputs from business references without running the simulator.
+pub fn image_draft(
+    store: &Store,
+    scope: &Scope,
+    graph_id: &str,
+    node_id: &str,
+) -> Result<GenerationDraft> {
+    if store.is_read_only() {
+        return Err("只读工程不能运行".into());
+    }
+    let graph = store
+        .document()
+        .graphs
+        .get(graph_id)
+        .ok_or("graph missing")?;
+    graph.validate(false)?;
+    let node = graph.nodes.get(node_id).ok_or("node missing")?;
+    if node.kind != "image_generate" {
+        return Err("本包只支持图片生成".into());
+    }
+    let mut edges = graph
+        .edges
+        .iter()
+        .filter(|e| e.to == node_id)
+        .collect::<Vec<_>>();
+    edges.sort_by_key(|e| e.order);
+    let mut prompt = None;
+    let mut references = Vec::new();
+    for edge in edges {
+        let source = graph.nodes.get(&edge.from).ok_or("input node missing")?;
+        match (edge.input.as_str(), source.kind.as_str()) {
+            ("prompt", "prompt") => prompt = source.params["text"].as_str().map(str::to_owned),
+            ("references", "asset") if source.media_kind()? == MediaKind::Image => {
+                references.push(Asset {
+                    id: source.params["asset_id"]
+                        .as_str()
+                        .ok_or("asset ID missing")?
+                        .into(),
+                    version: source.params["content_version"]
+                        .as_str()
+                        .ok_or("asset version missing")?
+                        .into(),
+                    kind: MediaKind::Image,
+                    simulated: false,
+                })
+            }
+            ("references", "select") if source.media_kind()? == MediaKind::Image => {
+                let upstream = graph
+                    .edges
+                    .iter()
+                    .find(|e| e.to == source.id && e.input == "candidates")
+                    .ok_or("请连接上游图片生成节点")?;
+                let attempt = store
+                    .execution()
+                    .attempts
+                    .iter()
+                    .rev()
+                    .find(|a| {
+                        a.draft.context.node_id == upstream.from && &a.draft.context.scope == scope
+                    })
+                    .ok_or("请先生成上游图片")?;
+                let current = image_draft(store, scope, graph_id, &upstream.from)?;
+                if attempt.draft.context.graph_id != graph_id
+                    || attempt.fingerprint != crate::execution::fingerprint(&current)
+                {
+                    return Err("上游输入已变化，请生成并选用当前版本".into());
+                }
+                let (task, output) = attempt.selected.as_ref().ok_or("请先选用上游图片结果")?;
+                references.push(
+                    attempt
+                        .tasks
+                        .get(task)
+                        .and_then(|t| t.outputs.get(output))
+                        .and_then(|o| o.asset.clone())
+                        .ok_or("上游图片尚未完成入库")?,
+                );
+            }
+            _ => return Err("请连接提示词与库内图片素材".into()),
+        }
+    }
+    Ok(GenerationDraft {
+        context: Context {
+            document_id: store.document().id.clone(),
+            graph_id: graph_id.into(),
+            node_id: node_id.into(),
+            revision: graph.revision,
+            scope: scope.clone(),
+        },
+        model_id: node.params["model"].as_str().ok_or("model missing")?.into(),
+        capability_version: node.params["capability_version"]
+            .as_str()
+            .ok_or("请先选择可用模型")?
+            .into(),
+        media_kind: MediaKind::Image,
+        prompt: prompt
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("请连接非空提示词节点")?,
         parameters: node.params.clone(),
         references,
     })

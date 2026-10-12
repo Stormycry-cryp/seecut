@@ -47,6 +47,24 @@ impl Session {
     pub fn graph(&self) -> &Graph {
         &self.store.document().graphs[&self.graph_id]
     }
+    pub fn accept_asset(
+        &mut self,
+        scope: &seecut_flow_core::runner::Scope,
+        request: &seecut_flow_core::host::AssetPickerRequest,
+        asset: seecut_flow_core::host::LibraryAsset,
+    ) -> Result<()> {
+        let before = self.graph().clone();
+        seecut_flow_core::host::accept_asset(&mut self.store, scope, request, asset)?;
+        if before != *self.graph() {
+            let history = self.history.entry(self.graph_id.clone()).or_default();
+            history.undo.push(before);
+            if history.undo.len() > 100 {
+                history.undo.remove(0);
+            }
+            history.redo.clear();
+        }
+        Ok(())
+    }
     pub fn can_undo(&self) -> bool {
         self.history
             .get(&self.graph_id)
@@ -880,5 +898,56 @@ mod project_tests {
         c.request(Intent::Close).unwrap();
         c.request(Intent::Open(path)).unwrap();
         assert_eq!(c.session.as_ref().unwrap().graph().nodes.len(), 2);
+    }
+    #[test]
+    fn native_picker_edit_is_one_undo_and_rejects_stale_callback() {
+        use seecut_flow_core::{
+            graph::MediaKind,
+            host::{LibraryAsset, picker_request_for_store},
+            runner::{Asset, Scope},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = Controller::default();
+        new(&mut c, dir.path().join("picker"), "Picker");
+        let node = Node::new(
+            "asset",
+            json!({"asset_id":"old","content_version":"old-version","media_kind":"Image"}),
+        );
+        let id = node.id.clone();
+        c.request(Intent::Edit(Box::new(Command::Add { node })))
+            .unwrap();
+        let s = c.session.as_mut().unwrap();
+        let scope = Scope::synthetic();
+        let before = s.graph().clone();
+        let request = picker_request_for_store(&s.store, &scope, &s.graph_id, &id).unwrap();
+        let selected = LibraryAsset {
+            asset: Asset {
+                id: "new".into(),
+                version: "new-version".into(),
+                kind: MediaKind::Image,
+                simulated: false,
+            },
+            name: "new image".into(),
+            available: true,
+        };
+        s.accept_asset(&scope, &request, selected.clone()).unwrap();
+        let changed = s.graph().clone();
+        s.accept_asset(&scope, &request, selected).unwrap();
+        assert_eq!(changed, *s.graph());
+        s.history(false).unwrap();
+        assert_eq!(s.graph().nodes[&id], before.nodes[&id]);
+        s.history(true).unwrap();
+        assert_eq!(s.graph().nodes[&id], changed.nodes[&id]);
+        let stale = LibraryAsset {
+            asset: Asset {
+                id: "later".into(),
+                version: "later".into(),
+                kind: MediaKind::Image,
+                simulated: false,
+            },
+            name: "late".into(),
+            available: true,
+        };
+        assert!(s.accept_asset(&scope, &request, stale).is_err());
     }
 }
