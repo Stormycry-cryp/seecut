@@ -85,12 +85,7 @@ impl Host {
             .map_or(0_f64, |n| match n.kind.as_str() {
                 "prompt" => 210.,
                 "image_generate" | "video_generate" => {
-                    if s.store
-                        .execution()
-                        .attempts
-                        .iter()
-                        .any(|a| a.draft.context.node_id == n.id)
-                    {
+                    if self.images.result(&s.store, s.graph(), n).is_some() {
                         434.
                     } else {
                         342.
@@ -158,6 +153,9 @@ impl Host {
                 let y = (p[1] + 82. + 36. * i as f64) * z + py;
                 if (point[0] - x).hypot(point[1] - y) > 22. {
                     continue;
+                }
+                if let Some(old) = old.filter(|e| e.to == n.id && e.input == port.name) {
+                    return Some(old.clone());
                 }
                 let mut g = s.graph().clone();
                 if let Some(old) = old {
@@ -407,7 +405,7 @@ pub(super) fn bind(app: &App, host: &Rc<RefCell<Host>>) {
                 wire.point = point;
                 wire.target = h.wire_target(&wire.from, wire.old.as_ref(), point);
                 if phase == "end" {
-                    if let Some(new) = wire.target {
+                    if let Some(new) = wire.target.filter(|new| wire.old.as_ref() != Some(new)) {
                         let cmd = if let Some(old) = wire.old {
                             Command::Rewire { old, new }
                         } else {

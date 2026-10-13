@@ -330,20 +330,13 @@ pub fn image_draft(
                     .iter()
                     .find(|e| e.to == source.id && e.input == "candidates")
                     .ok_or("请连接上游图片生成节点")?;
-                let attempt = store
-                    .execution()
-                    .attempts
-                    .iter()
-                    .rev()
-                    .find(|a| {
-                        a.draft.context.node_id == upstream.from && &a.draft.context.scope == scope
-                    })
+                let attempt = result_attempt(store.execution(), graph, source, scope)
                     .ok_or("请先生成上游图片")?;
-                let current = image_draft(store, scope, graph_id, &upstream.from)?;
-                if attempt.draft.context.graph_id != graph_id
-                    || attempt.fingerprint != crate::execution::fingerprint(&current)
-                {
-                    return Err("上游输入已变化，请生成并选用当前版本".into());
+                if attempt.draft.context.node_id == upstream.from {
+                    let current = image_draft(store, scope, graph_id, &upstream.from)?;
+                    if attempt.fingerprint != crate::execution::fingerprint(&current) {
+                        return Err("上游输入已变化，请生成并选用当前版本".into());
+                    }
                 }
                 let (task, output) = node_choice(source, attempt).ok_or("请先选用上游图片结果")?;
                 references.push(
@@ -391,6 +384,72 @@ pub fn composed_prompt(upstream: Option<&str>, own: Option<&str>) -> Result<Stri
     Ok(pieces.join("\n\n"))
 }
 
+/// Read a node's own attempt, or the fixed historical batch retained by a copy.
+/// This never creates an attempt or transfers execution/billing ownership to a copy.
+pub fn result_attempt<'a>(
+    execution: &'a crate::execution::Execution,
+    graph: &crate::graph::Graph,
+    node: &Node,
+    scope: &Scope,
+) -> Option<&'a crate::execution::Attempt> {
+    let source = if node.kind == "select" {
+        graph
+            .edges
+            .iter()
+            .find(|e| e.to == node.id && e.input == "candidates")
+            .and_then(|e| graph.nodes.get(&e.from))
+            .unwrap_or(node)
+    } else {
+        node
+    };
+    execution
+        .attempts
+        .iter()
+        .rev()
+        .find(|a| {
+            a.draft.context.graph_id == graph.id
+                && a.draft.context.node_id == source.id
+                && &a.draft.context.scope == scope
+        })
+        .or_else(|| {
+            source.params["copied_results"]
+                .as_array()?
+                .iter()
+                .find_map(|reference| {
+                    execution.attempts.iter().find(|a| {
+                        Some(a.id.as_str()) == reference["attempt"].as_str()
+                            && a.draft.context.graph_id == graph.id
+                            && &a.draft.context.scope == scope
+                            && a.phase == crate::execution::Phase::Finished
+                    })
+                })
+        })
+}
+
+pub(crate) fn copy_result_sources(
+    execution: &crate::execution::Execution,
+    graph: &crate::graph::Graph,
+    node: &Node,
+) -> Value {
+    let mut scopes = std::collections::BTreeSet::new();
+    let mut references = Vec::new();
+    for entry in execution.attempts.iter().rev() {
+        let scope = &entry.draft.context.scope;
+        if !scopes.insert(crate::digest(scope)) {
+            continue;
+        }
+        if let Some(a) = result_attempt(execution, graph, node, scope).filter(|a| {
+            a.phase == crate::execution::Phase::Finished
+                && a.tasks
+                    .values()
+                    .any(|t| t.outputs.values().any(|o| o.asset.is_some()))
+        }) {
+            references.push(json!({"attempt": a.id, "choice": node_choice(node, a)}));
+        }
+    }
+    Value::Array(references)
+}
+
 /// Adoption belongs to the selected node, so two consumers can choose different outputs.
 /// Old documents retain their previously selected result until explicitly changed.
 pub fn node_choice(node: &Node, attempt: &crate::execution::Attempt) -> Option<(String, String)> {
@@ -402,6 +461,13 @@ pub fn node_choice(node: &Node, attempt: &crate::execution::Attempt) -> Option<(
             choice["task"].as_str()?.into(),
             choice["output"].as_str()?.into(),
         ))
+    } else if let Some(reference) = node.params["copied_results"].as_array().and_then(|refs| {
+        refs.iter()
+            .find(|r| r["attempt"].as_str() == Some(&attempt.id))
+    }) {
+        serde_json::from_value(reference["choice"].clone())
+            .ok()
+            .flatten()
     } else {
         attempt.selected.clone()
     }
@@ -410,6 +476,7 @@ fn generation_parameters(node: &Node) -> Value {
     let mut params = node.params.clone();
     if let Some(object) = params.as_object_mut() {
         object.remove("selected_output");
+        object.remove("copied_results");
     }
     params
 }

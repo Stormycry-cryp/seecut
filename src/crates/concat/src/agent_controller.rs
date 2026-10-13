@@ -2137,10 +2137,12 @@ for line in sys.stdin:
     }
     #[test]
     fn mcp_canvas_query_and_cancellation_clear_only_exact_original_write() {
-        let mut controller = Controller::default();
-        controller.session_id = "session".into();
-        controller.turn_id = Some("turn".into());
-        controller.phase = Phase::Running;
+        let mut controller = Controller {
+            session_id: "session".into(),
+            turn_id: Some("turn".into()),
+            phase: Phase::Running,
+            ..Default::default()
+        };
         let mut sequence = 0;
         let mut event = |controller: &mut Controller, kind: &str, data: Value| {
             sequence += 1;

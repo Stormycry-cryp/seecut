@@ -219,7 +219,7 @@ impl Host {
                 .values()
                 .enumerate()
                 .map(|(index, n)| {
-                    let attempt = self.images.latest(&s.store, &s.graph_id, &n.id);
+                    let attempt = self.images.result(&s.store, s.graph(), n);
                     let preview = self.images.node_preview(&s.store, s.graph(), n);
                     let has_preview = preview.is_some();
                     let state = match n.kind.as_str() {

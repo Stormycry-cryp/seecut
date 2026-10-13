@@ -171,18 +171,18 @@ impl Images {
             .unwrap_or_default();
         self.previews.insert(key, preview);
     }
-    pub(super) fn latest<'a>(
+    pub(super) fn result<'a>(
         &self,
         store: &'a Store,
-        graph: &str,
-        node: &str,
+        graph: &seecut_flow_core::graph::Graph,
+        node: &seecut_flow_core::graph::Node,
     ) -> Option<&'a seecut_flow_core::execution::Attempt> {
-        let scope = self.account.flow_scope();
-        store.execution().attempts.iter().rev().find(|a| {
-            a.draft.context.graph_id == graph
-                && a.draft.context.node_id == node
-                && a.draft.context.scope == scope
-        })
+        seecut_flow_core::host::result_attempt(
+            store.execution(),
+            graph,
+            node,
+            &self.account.flow_scope(),
+        )
     }
     pub(super) fn publish(
         &mut self,
@@ -293,16 +293,19 @@ impl Images {
         } else {
             node
         };
-        if let Some(attempt) = self.latest(store, &graph.id, image_node) {
+        if let Some(attempt) = self.result(store, graph, selected) {
             ui.set_selected_output(
                 seecut_flow_core::host::node_choice(selected, attempt).is_some(),
             );
-            ui.set_has_attempt(true);
+            let owns_attempt = attempt.draft.context.node_id == image_node;
+            ui.set_has_attempt(owns_attempt);
             ui.set_selected_status(attempt_status(attempt).into());
             let mut rows = Vec::new();
             let mut credits = 0_u64;
             for task in attempt.tasks.values() {
-                credits = credits.saturating_add(task.captured_credits);
+                if owns_attempt {
+                    credits = credits.saturating_add(task.captured_credits);
+                }
                 for output in task.outputs.values() {
                     if let Some(asset) = &output.asset {
                         self.load_preview(&asset.id, &asset.version);
@@ -343,17 +346,7 @@ impl Images {
                 node.params["content_version"].as_str()?.to_owned(),
             ))
         } else {
-            let id = if node.kind == "select" {
-                graph
-                    .edges
-                    .iter()
-                    .find(|e| e.to == node.id && e.input == "candidates")
-                    .map(|e| e.from.as_str())
-                    .unwrap_or(&node.id)
-            } else {
-                &node.id
-            };
-            self.latest(store, &graph.id, id)
+            self.result(store, graph, node)
                 .and_then(|a| {
                     seecut_flow_core::host::node_choice(node, a)
                         .and_then(|(t, o)| a.tasks.get(&t)?.outputs.get(&o)?.asset.as_ref())
@@ -501,19 +494,9 @@ pub(super) fn action(app: &App, h: &mut Host, action: &str) -> Result<bool> {
         "flow-canvas" | "flow-clip" => {
             let s = h.controller.session.as_ref().ok_or("请先打开工程")?;
             let selected = s.graph().nodes.get(&s.selected).ok_or("节点已切换")?;
-            let image_node = if selected.kind == "select" {
-                s.graph()
-                    .edges
-                    .iter()
-                    .find(|e| e.to == s.selected && e.input == "candidates")
-                    .map(|e| e.from.as_str())
-                    .unwrap_or(&s.selected)
-            } else {
-                &s.selected
-            };
             let a = h
                 .images
-                .latest(&s.store, &s.graph_id, image_node)
+                .result(&s.store, s.graph(), selected)
                 .ok_or("请先选用图片结果")?;
             let (task, out) =
                 seecut_flow_core::host::node_choice(selected, a).ok_or("请先选用图片结果")?;
@@ -710,22 +693,7 @@ pub(super) fn choose(h: &mut Host, value: &str) -> Result<()> {
     let scope = h.images.account.flow_scope();
     let s = h.controller.session.as_mut().ok_or("请先打开工程")?;
     let selected = s.graph().nodes.get(&s.selected).ok_or("节点已切换")?;
-    let node = if selected.kind == "select" {
-        s.graph()
-            .edges
-            .iter()
-            .find(|e| e.to == selected.id && e.input == "candidates")
-            .map(|e| e.from.as_str())
-            .unwrap_or(&s.selected)
-    } else {
-        &s.selected
-    };
-    if s.store
-        .execution()
-        .attempts
-        .iter()
-        .rev()
-        .find(|a| a.draft.context.node_id == node && a.draft.context.scope == scope)
+    if seecut_flow_core::host::result_attempt(s.store.execution(), s.graph(), selected, &scope)
         .is_none_or(|a| a.id != attempt)
     {
         return Err("结果批次已切换".into());
@@ -961,19 +929,9 @@ fn tick(app: &App, h: &mut Host) -> bool {
                         return Err("账户或服务已切换，忽略旧交付".into());
                     }
                     let selected_node = s.graph().nodes.get(&s.selected).ok_or("节点已切换")?;
-                    let image_node = if selected_node.kind == "select" {
-                        s.graph()
-                            .edges
-                            .iter()
-                            .find(|e| e.to == s.selected && e.input == "candidates")
-                            .map(|e| e.from.as_str())
-                            .ok_or("上游已切换")?
-                    } else {
-                        &s.selected
-                    };
                     let a = h
                         .images
-                        .latest(&s.store, &s.graph_id, image_node)
+                        .result(&s.store, s.graph(), selected_node)
                         .filter(|a| a.id == attempt)
                         .ok_or("结果批次已切换")?;
                     let (task, out) = seecut_flow_core::host::node_choice(selected_node, a)

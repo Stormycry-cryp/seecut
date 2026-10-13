@@ -94,7 +94,7 @@ pub fn apply(store: &mut Store, request: Request) -> Result<Receipt> {
         return Err("graph revision conflict".into());
     }
     let previous = graph.clone();
-    let created = edit(graph, &request.command)?;
+    let created = edit(graph, &request.command, store.execution())?;
     graph.validate(false)?;
     if *graph != previous {
         graph.revision = crate::next_revision(graph.revision)?;
@@ -115,7 +115,11 @@ pub fn apply(store: &mut Store, request: Request) -> Result<Receipt> {
 pub fn receipt(document: &Document, operation: &str) -> Option<Receipt> {
     document.operations.get(operation).cloned()
 }
-fn edit(graph: &mut Graph, command: &Command) -> Result<Vec<String>> {
+fn edit(
+    graph: &mut Graph,
+    command: &Command,
+    execution: &crate::execution::Execution,
+) -> Result<Vec<String>> {
     let mut created = Vec::new();
     match command {
         Command::Add { node } | Command::AddConnected { node, .. } => {
@@ -201,14 +205,16 @@ fn edit(graph: &mut Graph, command: &Command) -> Result<Vec<String>> {
             let edges = graph.edges.clone();
             for original in nodes {
                 let mut node = graph.nodes[original].clone();
+                if matches!(
+                    node.kind.as_str(),
+                    "image_generate" | "video_generate" | "select"
+                ) {
+                    node.params["copied_results"] =
+                        crate::host::copy_result_sources(execution, graph, &node);
+                }
                 node.id = remap[original].clone();
                 node.position[0] += 36.;
                 node.position[1] += 36.;
-                // Adoption is tied to the source batch, so copies require an explicit new choice.
-                if node.kind == "select" {
-                    node.params.as_object_mut().unwrap().remove("batch");
-                    node.params.as_object_mut().unwrap().remove("asset_id");
-                }
                 created.push(node.id.clone());
                 graph.nodes.insert(node.id.clone(), node);
             }
