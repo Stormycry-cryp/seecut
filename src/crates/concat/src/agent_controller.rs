@@ -468,7 +468,6 @@ impl Controller {
             && !self.session_id.is_empty()
             && !self.editor_client.is_empty()
             && self.document.is_some()
-            && !self.editor_recovery.is_empty()
     }
     pub fn view(&self) -> View<'_> {
         View {
@@ -1097,6 +1096,17 @@ impl Controller {
                     && result["capabilities"]["session_create_or_restore"].as_bool() == Some(true);
                 let method = if self.restore {
                     params["rebind"] = json!(true);
+                    if self.unknown_latched && !self.editor_recovery.is_empty() {
+                        // A durable reconciliation may have completed before
+                        // its IPC response was lost. Request only the exact
+                        // receipts still retained by this host.
+                        params["recoveryQueries"] = json!(
+                            self.editor_recovery
+                                .iter()
+                                .map(EditorRecovery::query_arguments)
+                                .collect::<Vec<_>>()
+                        );
+                    }
                     "session.restore"
                 } else {
                     if self.recover_existing {
@@ -1897,9 +1907,22 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::{fs, thread};
-    const FIXTURE: &str = r#"import sys,json,time,pathlib
+    const FIXTURE: &str = r#"import sys,json,time,pathlib,os
 scenario='finish';session='';seq=0;managed=False
 revision=0
+original_path=pathlib.Path(__file__).with_name('original-operation.json')
+def original_store(record):
+    temporary=original_path.with_suffix('.tmp')
+    with temporary.open('w') as stream:
+        json.dump(record,stream);stream.flush();os.fsync(stream.fileno())
+    os.replace(temporary,original_path)
+    directory=os.open(str(original_path.parent),os.O_RDONLY)
+    try: os.fsync(directory)
+    finally: os.close(directory)
+def original_query(record):
+    return {key:record['parameters'][key] for key in ('projectId','documentSessionId','operationId','clientSequence')}
+def recovery_state(record):
+    return {'outcomeUnknown':True,'unresolved':[],'recoveryOperations':[record],'observed':[]}
 def modelstate(unknown=False):
     global revision
     revision+=1
@@ -1919,7 +1942,7 @@ def final(status='completed',unknown=False,pending=False,failed=False):
 for line in sys.stdin:
     f=json.loads(line);p=f['params'];m=f['method']
     with pathlib.Path(__file__).with_name('methods.txt').open('a') as trace: trace.write(m+'\n')
-    if m in ('send','stop','reconcile'):
+    if m in ('send','stop','reconcile','editor.reconcile'):
         with pathlib.Path(__file__).with_name('requests.jsonl').open('a') as trace: trace.write(json.dumps({'method':m,'params':p})+'\n')
     if m=='initialize':
         assert p['protocolVersion']==1 and p['appProtocolVersion']==1
@@ -1940,6 +1963,12 @@ for line in sys.stdin:
         elif scenario=='old-runtime': assert 'rebind' not in p and 'recoverExisting' not in p
         else: assert p['rebind'] is True and p['recoverExisting'] is True
         session=p['sessionId'];time.sleep(.08)
+        if m=='session.restore' and scenario in ('exit-insert','exit-export','lost-reconcile-reply'):
+            record=json.loads(original_path.read_text())
+            if record['status']=='verified': assert p['recoveryQueries']==[original_query(record)]
+            else: assert 'recoveryQueries' not in p
+            assert record['sessionId']==session
+            reply(f,{'sessionId':session,'status':'interrupted','recoveryRequired':True,'pendingInputCount':0,'toolState':recovery_state(record)});continue
         if managed: print(json.dumps({'version':1,'type':'managed.state','sessionId':session,'modelState':modelstate(True)}),flush=True)
         status='interrupted' if scenario in ('restore-interrupted','restore-pending','create-existing-clean','create-existing-pending','create-existing-unknown') else 'idle'
         pending=scenario in ('restore-pending','create-existing-pending')
@@ -1947,6 +1976,12 @@ for line in sys.stdin:
     elif m=='reconcile':
         assert managed and p=={'sessionId':session}
         reply(f,{'modelState':modelstate(False)})
+    elif m=='editor.reconcile':
+        record=json.loads(original_path.read_text())
+        assert p=={'sessionId':session,'operationId':record['operationId']}
+        record['queries']+=1;record['status']='verified';original_store(record)
+        if scenario=='lost-reconcile-reply' and record['queries']==1: sys.exit(0)
+        reply(f,{'verified':True,'success':True,'receipt':record['result'],'session':{'sessionId':session,'pendingInputCount':0,'toolState':{'outcomeUnknown':False,'unresolved':[],'recoveryOperations':[],'observed':[]}}})
     elif m=='send':
         assert p['sessionId']==session and p['mode']=='follow_up' and p['content'][0]['type']=='text'
         if scenario=='selection-policy-rejected':
@@ -1956,6 +1991,15 @@ for line in sys.stdin:
         if scenario=='early-result':
             event('turn.started');event('text.delta',{'text':'处理中'});final();reply(f,{'inputId':p['inputId'],'status':'pending'});continue
         reply(f,{'inputId':p['inputId'],'status':'pending'});event('turn.started')
+        if scenario in ('exit-insert','exit-export','lost-reconcile-reply'):
+            name='insert_library_image' if scenario=='exit-insert' else 'export_canvas_png'
+            operation='scm2:1:8:client-1:5:doc-1:1'
+            record={'sessionId':session,'invocationId':'turn-1_canvas','toolName':name,'operationId':operation,'parameters':{'projectId':'project-1','documentSessionId':'doc-1','operationId':operation,'clientSequence':1},'binding':{'instanceId':'12345678-1234-1234-1234-123456789abc','clientId':'client-1','projectId':'project-1','documentSessionId':'doc-1'},'status':'pending','writes':1,'queries':0,'result':{'status':'ok','data':{'operationId':operation,'clientSequence':1}}}
+            original_store(record)
+            event('tool.started',{'invocationId':'turn-1_canvas','call':{'name':name}})
+            if scenario!='lost-reconcile-reply': sys.exit(0)
+            event('tool.completed',{'invocationId':'turn-1_canvas','message':{'toolName':name},'metadata':{'postVerification':'pending','operationId':operation,'clientSequence':1}})
+            print(json.dumps({'version':1,'type':'result','sessionId':session,'result':{'turnId':'turn-1','status':'interrupted','text':''},'toolState':recovery_state(record)}),flush=True);continue
         event('text.delta',{'text':'处理中 read-secret'})
         if scenario in ('approval','stop'):
             event('approval.required',{'approvalId':'approval-1','tool':'move_selected_image','arguments':{'objectId':'layer:1','deltaX':-20,'deltaY':0}})
@@ -2044,6 +2088,29 @@ for line in sys.stdin:
         }
         fn ready(&mut self) {
             self.until(|controller| controller.view().phase == Phase::Ready);
+        }
+        fn original_restore_config(&self, scenario: &str) -> ConnectionConfig {
+            let entry = self.directory.join("fixture.py");
+            ConnectionConfig {
+                launch: LaunchSpec {
+                    executable: fs::canonicalize("/usr/bin/python3").unwrap(),
+                    entrypoint: entry.clone(),
+                    environment: BTreeMap::new(),
+                },
+                document: self.identity.clone(),
+                client_id: "client-1".into(),
+                mcp_client_path: entry,
+                mcp_environment: BTreeMap::from([(
+                    "TMPDIR".into(),
+                    self.directory.to_string_lossy().into_owned(),
+                )]),
+                session_directory: self.directory.clone(),
+                local_session_id: "fixture-session".into(),
+                restore: true,
+                provider: json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"}),
+                read_token: "read-secret".into(),
+                write_token: None,
+            }
         }
         fn requests(&self) -> Vec<Value> {
             match fs::read_to_string(self.directory.join("requests.jsonl")) {
@@ -3428,6 +3495,105 @@ for line in sys.stdin:
             fixture.controller.view().error,
             Some(UiError::VerifyRequired)
         );
+    }
+    #[test]
+    fn first_canvas_write_child_exit_restores_durable_original_without_final_result() {
+        for scenario in ["exit-insert", "exit-export"] {
+            let mut f = Fixture::new(scenario);
+            f.ready();
+            f.controller.send_text("执行原画布操作").unwrap();
+            f.until(|c| c.process.is_none());
+            assert!(f.controller.editor_recovery.is_empty());
+            assert!(f.controller.unknown_latched && f.controller.write_in_flight);
+            assert!(f.controller.view().can_connect);
+            for changed in 0..6 {
+                let mut config = f.original_restore_config(scenario);
+                match changed {
+                    0 => config.restore = false,
+                    1 => config.client_id = "other-client".into(),
+                    2 => config.document.document_session_id = "other-document".into(),
+                    3 => config.local_session_id = "other-session".into(),
+                    4 => config.document.instance_id = "other-instance".into(),
+                    _ => config.document.project_id = "other-project".into(),
+                }
+                assert_eq!(f.controller.connect(config), Err(UiError::VerifyRequired));
+            }
+            // Managed recovery additionally retains the original account fingerprint.
+            f.controller.managed_mode = true;
+            f.controller.cost_account_fingerprint =
+                Some(sha2::Sha256::digest(b"original-account").to_vec());
+            let mut wrong_account = f.original_restore_config(scenario);
+            wrong_account.provider =
+                json!({"protocol":"seecut-managed","sessionToken":"other-account"});
+            assert_eq!(
+                f.controller.connect(wrong_account),
+                Err(UiError::VerifyRequired)
+            );
+            f.controller.managed_mode = false;
+            f.controller.cost_account_fingerprint = None;
+            f.controller
+                .connect(f.original_restore_config(scenario))
+                .unwrap();
+            f.until(|c| c.view().can_reconcile);
+            assert_eq!(
+                f.controller.send_text("不可重放"),
+                Err(UiError::VerifyRequired)
+            );
+            let original = f.controller.editor_recovery[0].clone();
+            f.controller.reconcile_editor(&original).unwrap();
+            f.until(|c| c.view().outcome == Some(TaskOutcome::OperationVerified));
+            let record: Value = serde_json::from_slice(
+                &fs::read(f.directory.join("original-operation.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(record["writes"], 1);
+            assert_eq!(record["queries"], 1);
+            let requests = f.requests();
+            assert_eq!(requests.iter().filter(|r| r["method"] == "send").count(), 1);
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|r| r["method"] == "editor.reconcile")
+                    .count(),
+                1
+            );
+            assert!(!f.controller.unknown_latched && !f.controller.write_in_flight);
+        }
+    }
+    #[test]
+    fn durable_reconciliation_lost_reply_restores_and_queries_same_terminal_receipt() {
+        let mut f = Fixture::new("lost-reconcile-reply");
+        f.ready();
+        f.controller.send_text("导出原画布").unwrap();
+        f.until(|c| c.view().can_reconcile);
+        let original = f.controller.editor_recovery[0].clone();
+        f.controller.reconcile_editor(&original).unwrap();
+        f.until(|c| c.process.is_none());
+        assert!(f.controller.unknown_latched && f.controller.view().can_connect);
+        f.controller
+            .connect(f.original_restore_config("lost-reconcile-reply"))
+            .unwrap();
+        f.until(|c| c.view().can_reconcile);
+        assert_eq!(
+            f.controller.editor_recovery[0].query_arguments(),
+            original.query_arguments()
+        );
+        assert!(!f.controller.editor_recovery[0].retry_registration);
+        f.controller.reconcile_editor(&original).unwrap();
+        f.until(|c| c.view().outcome == Some(TaskOutcome::OperationVerified));
+        let record: Value =
+            serde_json::from_slice(&fs::read(f.directory.join("original-operation.json")).unwrap())
+                .unwrap();
+        assert_eq!(record["writes"], 1);
+        assert_eq!(record["queries"], 2);
+        assert_eq!(
+            f.requests()
+                .iter()
+                .filter(|r| r["method"] == "send")
+                .count(),
+            1
+        );
+        assert!(!f.controller.unknown_latched && !f.controller.write_in_flight);
     }
     #[test]
     fn failed_phase_does_not_mean_process_already_reaped() {

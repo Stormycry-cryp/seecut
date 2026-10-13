@@ -109,6 +109,7 @@ impl Handle {
                     | "stop"
                     | "approve"
                     | "reconcile"
+                    | "editor.reconcile"
                     | "shutdown"
             )
         {
