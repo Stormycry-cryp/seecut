@@ -204,3 +204,32 @@ MIT is compatible with Concat's AGPL-3.0-or-later: the ported work may be
 conveyed under the AGPL, and the notice above travels with it. The port's
 plan and its scope are recorded in
 `docs/plans/2026-09-20-compositor-canvas-port-plan.md`.
+
+
+## PhotoCraft geometry reference
+
+Source: https://github.com/storytold/photocraft/tree/48c17214704d4768ad7b1f28c5d2767b1d87110c
+
+`concat-canvas/src/vector.rs` adapts the knot/control-point representation and rectangle/ellipse construction from `crates/doc/src/vector.rs` and `crates/vector/src/shapes.rs`. Changes: f32 layer-local coordinates, the existing SeeCut layer/PixelStore/history, bounded serde geometry validation, and tiny-skia cache rasterization. No PhotoCraft document, session, history, branding or assets are included. Selected license: MIT.
+
+MIT License
+
+Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

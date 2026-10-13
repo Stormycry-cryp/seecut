@@ -1689,6 +1689,39 @@ mod tests {
         CanvasGpu::new().expect("this GPU regression requires a usable wgpu adapter")
     }
 
+    #[test]
+    fn editable_shape_cache_matches_gpu_cpu_and_invalidation() {
+        use crate::vector::{Knot, ShapeKind, VectorShape};
+        let mut gpu = required_gpu();
+        let mut world = World::new();
+        world.with_layer("photo", solid(16, 16, [80, 120, 160, 255]));
+        for kind in [ShapeKind::Rectangle, ShapeKind::Ellipse, ShapeKind::Path] {
+            let mut shape = VectorShape::new(kind, [3.0, 3.0], [13.0, 12.0]);
+            if kind == ShapeKind::Path {
+                shape.knots[0].outgoing = [3.0, 12.0];
+                shape.knots.push(Knot {
+                    anchor: [13.0, 3.0],
+                    incoming: [13.0, 12.0],
+                    outgoing: [13.0, 3.0],
+                });
+            }
+            let id = world.with_layer("shape", shape.rasterize(16, 16).unwrap());
+            let layer = world.document.layer_mut(id).unwrap();
+            layer.vector = Some(shape.clone());
+            layer.opacity = 0.75;
+            layer.transform.rotation = 0.25;
+            let pixels = layer.pixels;
+            assert_parity_on(&world, &mut gpu);
+            shape.stroke_width = 1.0;
+            shape.fill = Some([120, 200, 20, 160]);
+            world.document.layer_mut(id).unwrap().vector = Some(shape.clone());
+            world
+                .store
+                .replace(pixels, shape.rasterize(16, 16).unwrap());
+            assert_parity_on(&world, &mut gpu);
+        }
+    }
+
     /// Match the editor's shared device: no optional features, real hardware.
     #[test]
     fn shared_device_without_optional_features_matches_cpu() {

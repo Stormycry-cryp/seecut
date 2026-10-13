@@ -24,6 +24,7 @@ concat-core.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 

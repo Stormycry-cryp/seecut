@@ -752,7 +752,7 @@ export component App inherits Window {
                                 WorkspaceIcon {
                                     width: 32px; height: 32px; side: 32px;
                                     glyph: Editor.canvas-transforming ? Glyph.check : Glyph.fit;
-                                    label: Editor.canvas-transforming ? "完成变换" : "自由变换";
+                                    label: CanvasControls.shape-editing ? "完成形状编辑" : Editor.canvas-transforming ? "完成变换" : "自由变换";
                                     enabled: Editor.canvas-has-document;
                                     checkable: true; checked: Editor.canvas-transforming;
                                     clicked => { if (Editor.canvas-transforming) { Editor.canvas-transform-finish(true); } else { Editor.canvas-transform-start(); } }
@@ -1203,7 +1203,7 @@ export component App inherits Window {
             VerticalLayout {
                 padding: 20px; spacing: 16px;
                 Text {
-                    text: Editor.canvas-transform-context + "前，先处理当前变换。";
+                    text: Editor.canvas-transform-context + (CanvasControls.shape-editing ? "前，先完成或取消形状编辑。" : "前，先处理当前变换。");
                     color: Theme.fg; wrap: word-wrap;
                 }
                 HorizontalLayout { spacing: 8px; alignment: end;

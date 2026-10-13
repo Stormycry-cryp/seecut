@@ -214,6 +214,9 @@ impl ImageDocument {
             let LayerNode::Layer(layer) = node else {
                 continue;
             };
+            if layer.vector.as_ref().is_some_and(|shape| !shape.validate()) {
+                return Err(DocumentError::InvalidShape(layer.id));
+            }
             let Some(source) = layer.clips_to else {
                 continue;
             };
@@ -282,6 +285,9 @@ pub const CLIP_CHAIN_LIMIT: usize = 256;
 /// Why a document cannot be drawn: a live alpha link that does not resolve.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DocumentError {
+    /// Invalid or unsupported editable geometry.
+    #[error("layer {0:?} has invalid or unsupported vector geometry")]
+    InvalidShape(LayerId),
     /// A layer clips to itself.
     #[error("layer {0:?} clips to itself")]
     SelfClip(LayerId),
@@ -430,6 +436,10 @@ pub struct ImageLayer {
     /// Optional reference to a global-library asset, preserved by document history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library_asset: Option<serde_json::Value>,
+    /// Editable shape content. When present, pixels are only a rebuildable
+    /// cache; the existing drawable layer owns all transform/mask semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<crate::vector::VectorShape>,
 }
 
 /// How a layer's bitmap is sampled when the canvas draws it at a size other
@@ -461,6 +471,7 @@ impl ImageLayer {
             hidden: false,
             pixels,
             library_asset: None,
+            vector: None,
         }
     }
 }

@@ -40,6 +40,9 @@ use slint::{ComponentHandle, SharedPixelBuffer};
 use crate::i18n::tf;
 use crate::studio::Studio;
 
+mod shapes;
+use shapes::ShapeDrag;
+
 /// What [`CanvasPane::edit_selection`] does to a selection.
 #[derive(Clone, Copy, Debug)]
 enum EditKind {
@@ -326,7 +329,17 @@ impl CanvasExportJob {
 }
 
 fn canvas_manifest(data: &CanvasSaveData) -> String {
-    serde_json::json!({"concat-project":1,"name":data.name,"width":data.document.width,"height":data.document.height,
+    let version = if data
+        .document
+        .walk()
+        .iter()
+        .any(|n| matches!(n, LayerNode::Layer(l) if l.vector.is_some()))
+    {
+        2
+    } else {
+        1
+    };
+    serde_json::json!({"concat-project":version,"name":data.name,"width":data.document.width,"height":data.document.height,
         "document":data.document,"view":data.view}).to_string()
 }
 
@@ -551,6 +564,9 @@ impl CanvasImport {
 /// Everything that can happen to the canvas.
 #[derive(Debug)]
 pub enum CanvasMsg {
+    ShapePointer(i32, f64, f64),
+    ShapeFinish(bool, bool),
+    ShapeStyle(i32, String, f32),
     /// The picker came back with files; the first image is the one opened.
     Picked(Vec<std::path::PathBuf>),
     /// Adds images to the current document as separate editable layers.
@@ -794,6 +810,8 @@ pub struct CanvasPane {
     parameter_gesture: Option<ParameterGesture>,
     object_drag: Option<ObjectDrag>,
     transform_session: Option<concat_canvas::LayerId>,
+    shape_session: Option<concat_canvas::LayerId>,
+    shape_drag: Option<ShapeDrag>,
     pending_transform_boundary: Option<PendingTransformBoundary>,
     content_bounds: HashMap<PixelId, Option<(f32, f32, f32, f32)>>,
     pub object_view: Option<(f64, f64, f64, f64, f64)>,
@@ -896,6 +914,8 @@ impl Default for CanvasPane {
             parameter_gesture: None,
             object_drag: None,
             transform_session: None,
+            shape_session: None,
+            shape_drag: None,
             pending_transform_boundary: None,
             content_bounds: HashMap::new(),
             object_view: None,
@@ -936,10 +956,18 @@ impl Default for CanvasPane {
 
 impl CanvasPane {
     fn transform_boundary_label(&mut self, msg: &CanvasMsg) -> Option<&'static str> {
-        let target = self.transform_session?;
+        let target = self.transform_session.or(self.shape_session)?;
         match msg {
+            CanvasMsg::TransformStart
+            | CanvasMsg::TransformSet(..)
+            | CanvasMsg::Nudge(..)
+            | CanvasMsg::Flip(..)
+                if self.shape_session.is_some() =>
+            {
+                Some("继续编辑画布")
+            }
             CanvasMsg::Tool(tool) => {
-                let next = ((*tool).max(0) as usize).min(6);
+                let next = ((*tool).max(0) as usize).min(10);
                 (next != self.tool).then_some("切换工具")
             }
             CanvasMsg::LayerPick(index) => self
@@ -1051,7 +1079,7 @@ impl CanvasPane {
     }
 
     pub fn defer_window_close_for_transform(&mut self) -> bool {
-        if self.transform_session.is_none() {
+        if self.transform_session.is_none() && self.shape_session.is_none() {
             return false;
         }
         self.defer_transform_boundary(CanvasBoundaryAction::WindowClose, "关闭窗口");
@@ -1059,7 +1087,7 @@ impl CanvasPane {
     }
 
     pub fn defer_navigation_for_transform(&mut self, target: i32) -> bool {
-        if self.transform_session.is_none() {
+        if self.transform_session.is_none() && self.shape_session.is_none() {
             return false;
         }
         let label = if target == 6 {
@@ -1094,11 +1122,15 @@ impl CanvasPane {
     /// the same ordered history. Pointer gestures own their transaction from
     /// press through release; immediate commands are wrapped here.
     pub fn update(&mut self, msg: CanvasMsg, studio: &mut Studio) {
+        if self.shape_session.is_some() && matches!(msg, CanvasMsg::ShapeStyle(..)) {
+            return;
+        }
         let Some(msg) = self.route_transform_boundary(msg) else {
             return;
         };
         let previous_revision = self.revision;
         let history = match &msg {
+            CanvasMsg::ShapeStyle(..) if self.transform_session.is_none() => Some(0),
             CanvasMsg::FillSelection => Some(0),
             CanvasMsg::DeleteSelection => Some(0),
             CanvasMsg::LayerToggleVisibility(_) => Some(0),
@@ -1144,6 +1176,18 @@ impl CanvasPane {
     /// submits from - the same rule the monitor's drawing keeps.
     fn update_inner(&mut self, msg: CanvasMsg, studio: &mut Studio) {
         match msg {
+            CanvasMsg::ShapePointer(event, x, y) => {
+                self.shape_pointer(event, x, y);
+                self.render(studio);
+            }
+            CanvasMsg::ShapeFinish(commit, closed) => {
+                self.shape_finish(commit, closed);
+                self.render(studio);
+            }
+            CanvasMsg::ShapeStyle(field, text, value) => {
+                self.shape_style(field, &text, value);
+                self.render(studio);
+            }
             CanvasMsg::Picked(paths) => {
                 if let Some(path) = paths.first() {
                     self.request_open(path, studio);
@@ -1712,8 +1756,8 @@ impl CanvasPane {
     /// tray has, but the number arrives over a boundary. The eraser is the
     /// brush with its erasing bit on, so the settings stay shared.
     pub fn set_tool(&mut self, tool: i32) {
-        let next = (tool.max(0) as usize).min(6);
-        if self.transform_session.is_some() && next != self.tool {
+        let next = (tool.max(0) as usize).min(10);
+        if (self.transform_session.is_some() || self.shape_session.is_some()) && next != self.tool {
             self.defer_transform_boundary(
                 CanvasBoundaryAction::Message(CanvasMsg::Tool(next as i32)),
                 "切换工具",
@@ -1970,7 +2014,11 @@ impl CanvasPane {
         let (pixels, transform) = (layer.pixels, layer.transform.canonical_for_edit());
         let frame = self.store.get(pixels)?;
         let bitmap = (frame.width() as f32, frame.height() as f32);
-        let bounds = self.bounds_for_pixel(pixels)?;
+        let bounds = if let Some(shape) = &layer.vector {
+            shape.bounds()?
+        } else {
+            self.bounds_for_pixel(pixels)?
+        };
         Some((id, transform, bounds, bitmap))
     }
 
@@ -1997,9 +2045,30 @@ impl CanvasPane {
             return None;
         }
         let composer = concat_canvas::Composer::new(document, &self.store);
-        candidates
-            .into_iter()
-            .find(|&id| composer.hit_coverage(id, dx as u32, dy as u32) > 1.0 / 255.0)
+        candidates.into_iter().find(|&id| {
+            if composer.hit_coverage(id, dx as u32, dy as u32) > 1.0 / 255.0 {
+                return true;
+            }
+            let Some(LayerNode::Layer(layer)) = document.find(id) else {
+                return false;
+            };
+            let Some(shape) = &layer.vector else {
+                return false;
+            };
+            if !shape.closed {
+                return false;
+            }
+            let size = (document.width as f32, document.height as f32);
+            let Some(p) = layer
+                .transform
+                .to_bitmap((dx as f32, dy as f32), size, size)
+            else {
+                return false;
+            };
+            shape
+                .bounds()
+                .is_some_and(|b| p.0 >= b.0 && p.0 <= b.2 && p.1 >= b.1 && p.1 <= b.3)
+        })
     }
 
     fn handle_at(&self, x: f64, y: f64) -> Option<ObjectDragKind> {
@@ -2217,6 +2286,10 @@ impl CanvasPane {
     }
 
     fn transform_finish(&mut self, commit: bool) {
+        if self.shape_session.is_some() {
+            self.shape_finish(commit, false);
+            return;
+        }
         if self.transform_session.take().is_none() {
             return;
         }
@@ -2456,6 +2529,8 @@ impl CanvasPane {
         self.parameter_gesture = None;
         self.object_drag = None;
         self.transform_session = None;
+        self.shape_session = None;
+        self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.thumbnail_cache.clear();
         self.content_bounds.clear();
@@ -2468,15 +2543,15 @@ impl CanvasPane {
 
     /// Whether the canvas toolbar should enable its history actions.
     pub fn can_undo(&self) -> bool {
-        self.stroke.is_none() && !self.undo_stack.is_empty()
+        self.stroke.is_none() && (self.shape_session.is_some() || !self.undo_stack.is_empty())
     }
 
     pub fn can_redo(&self) -> bool {
-        self.stroke.is_none() && !self.redo_stack.is_empty()
+        self.stroke.is_none() && self.shape_session.is_none() && !self.redo_stack.is_empty()
     }
 
     pub fn transform_session_active(&self) -> bool {
-        self.transform_session.is_some()
+        self.transform_session.is_some() || self.shape_session.is_some()
     }
 
     pub fn is_modified(&self) -> bool {
@@ -2498,6 +2573,7 @@ impl CanvasPane {
                 || self.parameter_gesture.is_some()
                 || self.pending_history.is_some()
                 || self.transform_session.is_some()
+                || self.shape_session.is_some()
                 || self.pending_transform_boundary.is_some()
                 || self.marquee_start.is_some(),
         )
@@ -2986,7 +3062,7 @@ impl CanvasPane {
         if self.stroke.is_some() {
             return;
         }
-        if self.transform_session.is_some() {
+        if self.transform_session.is_some() || self.shape_session.is_some() {
             self.transform_finish(false);
             return;
         }
@@ -3012,6 +3088,7 @@ impl CanvasPane {
             return;
         }
         if self.transform_session.is_some()
+            || self.shape_session.is_some()
             || self.object_drag.is_some()
             || self.parameter_gesture.is_some()
         {
@@ -3327,7 +3404,7 @@ impl CanvasPane {
         let document = self.document.as_ref()?;
         let id = self.active?;
         match document.find(id)? {
-            LayerNode::Layer(layer) => Some(layer.pixels),
+            LayerNode::Layer(layer) => layer.vector.is_none().then_some(layer.pixels),
             LayerNode::Group(_) | LayerNode::Adjustment(_) => None,
         }
     }
@@ -3586,7 +3663,13 @@ impl CanvasPane {
             .iter()
             .map(|(node, _)| {
                 let kind = match node {
-                    LayerNode::Layer(_) => 0,
+                    LayerNode::Layer(layer) => {
+                        if layer.vector.is_some() {
+                            3
+                        } else {
+                            0
+                        }
+                    }
                     LayerNode::Group(_) => 1,
                     LayerNode::Adjustment(_) => 2,
                 };
@@ -4502,6 +4585,7 @@ impl CanvasPane {
             || self.parameter_gesture.is_some()
             || self.object_drag.is_some()
             || self.transform_session.is_some()
+            || self.shape_session.is_some()
             || self.stroke.is_some()
     }
 
@@ -4527,6 +4611,9 @@ impl CanvasPane {
     }
 
     fn save_data(&self) -> Result<CanvasSaveData, String> {
+        if self.shape_session.is_some() {
+            return Err("请先完成或取消形状编辑".into());
+        }
         Ok(CanvasSaveData {
             document: self
                 .document
@@ -4688,7 +4775,10 @@ impl CanvasPane {
         let manifest_bytes = std::fs::read(manifest_path).map_err(|e| format!("open: {e}"))?;
         let manifest: serde_json::Value =
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("open: {e}"))?;
-        if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(1) {
+        if !matches!(
+            manifest.get("concat-project").and_then(|v| v.as_u64()),
+            Some(1 | 2)
+        ) {
             return Err("open: not a concat project".into());
         }
         let document: ImageDocument = serde_json::from_value(
@@ -4757,6 +4847,20 @@ impl CanvasPane {
             store.restore(*id, frame);
         }
 
+        for node in document.walk() {
+            if let LayerNode::Layer(layer) = node
+                && let Some(shape) = &layer.vector
+            {
+                if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(2) {
+                    return Err("open: vector geometry requires project version 2".into());
+                }
+                let frame = shape
+                    .rasterize(document.width, document.height)
+                    .ok_or("open: cannot rebuild shape cache")?;
+                store.replace(layer.pixels, frame);
+            }
+        }
+
         if let Some(owner) = &owner {
             owner.validate().map_err(|error| error.to_string())?;
         }
@@ -4788,6 +4892,8 @@ impl CanvasPane {
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
         self.object_drag = None;
         self.transform_session = None;
+        self.shape_session = None;
+        self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.parameter_gesture = None;
         self.autosave_inflight = None;
@@ -4946,6 +5052,8 @@ impl CanvasPane {
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
         self.object_drag = None;
         self.transform_session = None;
+        self.shape_session = None;
+        self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.parameter_gesture = None;
         self.autosave_inflight = None;
@@ -5189,6 +5297,8 @@ impl CanvasPane {
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
         self.object_drag = None;
         self.transform_session = None;
+        self.shape_session = None;
+        self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.parameter_gesture = None;
         self.autosave_inflight = None;
@@ -5539,6 +5649,9 @@ impl CanvasPane {
     /// Writes the composed canvas to `path` as PNG - the export without
     /// the save dialog, which an unattended run cannot answer.
     pub fn agent_export_png(&mut self, path: &Path) -> Result<(), String> {
+        if self.shape_session.is_some() {
+            return Err("请先完成或取消形状编辑".into());
+        }
         let Some(document) = self.document.clone() else {
             return Err(tf("No image open", &[]));
         };
@@ -5774,7 +5887,7 @@ impl CanvasPane {
         if self.owns_canvas_path(path)? {
             return Ok(());
         }
-        if self.transform_session.is_some() {
+        if self.transform_session.is_some() || self.shape_session.is_some() {
             self.defer_transform_boundary(
                 CanvasBoundaryAction::Message(CanvasMsg::Picked(vec![path.to_owned()])),
                 "打开其他画布",
@@ -5835,6 +5948,8 @@ impl CanvasPane {
                     self.document_generation = self.document_generation.wrapping_add(1).max(1);
                     self.object_drag = None;
                     self.transform_session = None;
+                    self.shape_session = None;
+                    self.shape_drag = None;
                     self.pending_transform_boundary = None;
                     self.parameter_gesture = None;
                     self.autosave_inflight = None;
@@ -6446,7 +6561,7 @@ fn canvas_export_provenance(
             }
             layers.push(
                 serde_json::json!({"layer_id": layer.id.as_u64(), "transform": layer.transform,
-                "opacity": layer.opacity, "hidden": layer.hidden}),
+                "opacity": layer.opacity, "hidden": layer.hidden, "vector": layer.vector}),
             );
         }
     }
@@ -6741,8 +6856,8 @@ mod tests {
         assert_eq!(pane.tool, 4);
         pane.set_tool(6);
         assert_eq!(pane.tool, 6);
-        pane.set_tool(9);
-        assert_eq!(pane.tool, 6, "a tool past the tray is the last one");
+        pane.set_tool(99);
+        assert_eq!(pane.tool, 10, "a tool past the tray is the last one");
         pane.set_tool(-4);
         assert_eq!(pane.tool, 0, "a tool before the tray is the first one");
     }

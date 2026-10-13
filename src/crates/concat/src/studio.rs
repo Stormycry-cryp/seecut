@@ -6969,6 +6969,7 @@ impl Studio {
     /// The canvas pane's readouts: the picture and the view Rust holds.
     /// Values, not models, so it rides in whichever publish is running.
     fn publish_canvas(&self, app: &App, models: &Models) {
+        self.canvas.publish_shape_controls(app);
         let editor = app.global::<Editor>();
         editor.set_canvas_frame(self.canvas.image.clone());
         editor.set_canvas_has_document(self.canvas.document.is_some());

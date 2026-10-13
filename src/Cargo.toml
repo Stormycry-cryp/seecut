@@ -106,3 +106,8 @@ strip = "symbols"
 # the rest of the engine is being debugged.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Shape caches rebuild during pointer gestures; keep this workspace crate
+# optimised in local preview builds as well as in release.
+[profile.dev.package.concat-canvas]
+opt-level = 2
