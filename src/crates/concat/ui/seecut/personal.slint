@@ -3,6 +3,7 @@ import { LauncherSafeArea } from "launcher-safe-area.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Modal, Tip } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
+import { AssetLibrarySwitch } from "asset-library-switch.slint";
 import { Payload } from "../util.slint";
 import { AppButton, AssetPreview, CloudField, CompactSearch, EmptyState, WorkspaceSelect, WorkspaceIcon, MenuAction } from "components.slint";
 
@@ -52,7 +53,7 @@ export component PersonalPage inherits Rectangle {
             padding: 12px; spacing: 8px;
             HorizontalLayout {
                 height: 40px; spacing: 8px;
-                Text { text: "文件夹"; font-size: 14px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
+                AssetLibrarySwitch { horizontal-stretch: 1; }
                 WorkspaceIcon { glyph: Glyph.folder-plus; label: "新建文件夹"; clicked => { SeeCut.personal-new-folder = ""; SeeCut.personal-dialog = 3; } }
             }
             folder-scroll := ScrollView {
@@ -112,7 +113,8 @@ export component PersonalPage inherits Rectangle {
         padding: 32px; padding-top: 34px; spacing: 19px;
         HorizontalLayout {
             height: Theme.workbench-h; spacing: 8px;
-            Text { text: root.width >= 1100px && SeeCut.personal-folder-names.length > SeeCut.personal-folder-filter ? SeeCut.personal-folder-names[SeeCut.personal-folder-filter] : "资产库"; font-size: 24px; color: Theme.fg; vertical-alignment: center; }
+            if root.width >= 1100px: Text { text: SeeCut.personal-folder-names.length > SeeCut.personal-folder-filter ? SeeCut.personal-folder-names[SeeCut.personal-folder-filter] : "全部素材"; font-size: 24px; color: Theme.fg; vertical-alignment: center; }
+            if root.width < 1100px: AssetLibrarySwitch { width: 148px; }
             Text { text: SeeCut.personal-assets.length + " 项"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
             CompactSearch {

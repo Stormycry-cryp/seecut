@@ -22,8 +22,10 @@ fn node(id: &str, kind: &str, params: Value) -> Node {
     n
 }
 fn graph() -> Graph {
-    let mut graph = Graph::default();
-    graph.id = "workflow".into();
+    let mut graph = Graph {
+        id: "workflow".into(),
+        ..Graph::default()
+    };
     for n in [
         node("prompt", "prompt", json!({"text":"A short scene"})),
         node(

@@ -7,6 +7,7 @@ import { AccountPage, CreditsPage } from "account.slint";
 import { TeamPage } from "team.slint";
 import { TemplatesPage, TemplateEditor } from "templates.slint";
 import { PersonalPage } from "personal.slint";
+import { AssetLibrarySwitch } from "asset-library-switch.slint";
 import { Heading, AppButton } from "components.slint";
 import { WorkflowFeedback } from "shell.slint";
 
@@ -23,11 +24,7 @@ export component CloudWorkbench inherits Rectangle {
             height: 54px; background: Theme.panel;
             HorizontalLayout {
                 padding-top: 10px; padding-bottom: 10px; padding-left: 20px; padding-right: 20px; spacing: 16px;
-                if SeeCut.page == 2: HorizontalLayout {
-                    spacing: 4px; alignment: start;
-                    AppButton { label: "资产库"; clicked => { SeeCut.action("navigate", "5"); } }
-                    AppButton { label: "团队资产"; selected: true; clicked => { SeeCut.action("navigate", "2"); } }
-                }
+                AssetLibrarySwitch { width: 148px; }
                 Rectangle { horizontal-stretch: 1; }
             }
             Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.line; }

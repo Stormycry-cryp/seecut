@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { SeeCut } from "state.slint";
+import { WorkspaceSelect } from "components.slint";
+
+export component AssetLibrarySwitch inherits WorkspaceSelect {
+    flat: true;
+    options: ["个人资产库", "团队资产库"];
+    current: SeeCut.page == 2 ? 1 : 0;
+    changed(index) => {
+        if index != (SeeCut.page == 2 ? 1 : 0) {
+            SeeCut.action("navigate", index == 1 ? "2" : "5");
+        }
+        // Navigation can open sign-in without changing the active library.
+        self.current = SeeCut.page == 2 ? 1 : 0;
+    }
+}
