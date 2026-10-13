@@ -2,7 +2,7 @@
 use super::{Host, finish, sync_rows};
 use crate::{
     cloud::{AccountAccess, RegisteredImage, library_image},
-    ui::{App, Flow, FlowAttachment, FlowCandidate, FlowParameter},
+    ui::{App, Flow, FlowAttachment, FlowCandidate, FlowParameter, SeeCut},
 };
 use seecut_flow_core::{
     Result,
@@ -235,7 +235,11 @@ impl Images {
                         .or_else(|| m["name"].as_str())
                         .or_else(|| m["id"].as_str())
                 })
-                .unwrap_or("选择模型");
+                .unwrap_or(if self.account.image_client().is_none() {
+                    "登录选择模型"
+                } else {
+                    "选择模型"
+                });
             let mut parameters = vec![FlowParameter {
                 id: "model".into(),
                 label: label.into(),
@@ -262,20 +266,13 @@ impl Images {
             .iter()
             .filter(|e| e.to == node && e.input == "references")
         {
-            if let Some(asset) = graph.nodes.get(&edge.from).filter(|n| n.kind == "asset") {
-                let id = asset.params["asset_id"].as_str().unwrap_or_default();
-                let version = asset.params["content_version"].as_str().unwrap_or_default();
-                self.load_preview(id, version);
-                let preview = self
-                    .previews
-                    .get(&asset_key(id, version))
-                    .cloned()
-                    .unwrap_or_default();
+            if let Some(source) = graph.nodes.get(&edge.from) {
+                let preview = self.node_preview(store, graph, source).unwrap_or_default();
                 references.push((
                     edge.order,
                     FlowAttachment {
-                        id: asset.id.clone().into(),
-                        label: asset.title.clone().into(),
+                        id: source.id.clone().into(),
+                        label: source.title.clone().into(),
                         preview,
                     },
                 ));
@@ -297,7 +294,9 @@ impl Images {
             node
         };
         if let Some(attempt) = self.latest(store, &graph.id, image_node) {
-            ui.set_selected_output(attempt.selected.is_some());
+            ui.set_selected_output(
+                seecut_flow_core::host::node_choice(selected, attempt).is_some(),
+            );
             ui.set_has_attempt(true);
             ui.set_selected_status(attempt_status(attempt).into());
             let mut rows = Vec::new();
@@ -319,8 +318,8 @@ impl Images {
                             .unwrap_or_default()
                             .into(),
                         label: format!("结果 {}", rows.len() + 1).into(),
-                        selected: attempt.selected.as_ref()
-                            == Some(&(task.id.clone(), output.id.clone())),
+                        selected: seecut_flow_core::host::node_choice(selected, attempt)
+                            == Some((task.id.clone(), output.id.clone())),
                         ready: output.asset.is_some(),
                         preview,
                     });
@@ -331,6 +330,44 @@ impl Images {
         } else {
             sync_rows(&self.candidates, vec![]);
         }
+    }
+    pub(super) fn node_preview(
+        &mut self,
+        store: &Store,
+        graph: &seecut_flow_core::graph::Graph,
+        node: &seecut_flow_core::graph::Node,
+    ) -> Option<slint::Image> {
+        let asset = if node.kind == "asset" {
+            Some((
+                node.params["asset_id"].as_str()?.to_owned(),
+                node.params["content_version"].as_str()?.to_owned(),
+            ))
+        } else {
+            let id = if node.kind == "select" {
+                graph
+                    .edges
+                    .iter()
+                    .find(|e| e.to == node.id && e.input == "candidates")
+                    .map(|e| e.from.as_str())
+                    .unwrap_or(&node.id)
+            } else {
+                &node.id
+            };
+            self.latest(store, &graph.id, id)
+                .and_then(|a| {
+                    seecut_flow_core::host::node_choice(node, a)
+                        .and_then(|(t, o)| a.tasks.get(&t)?.outputs.get(&o)?.asset.as_ref())
+                        .or_else(|| {
+                            a.tasks
+                                .values()
+                                .flat_map(|t| t.outputs.values())
+                                .find_map(|o| o.asset.as_ref())
+                        })
+                })
+                .map(|a| (a.id.clone(), a.version.clone()))
+        }?;
+        self.load_preview(&asset.0, &asset.1);
+        self.previews.get(&asset_key(&asset.0, &asset.1)).cloned()
     }
     fn load_preview(&mut self, id: &str, version: &str) {
         if id.is_empty()
@@ -478,11 +515,12 @@ pub(super) fn action(app: &App, h: &mut Host, action: &str) -> Result<bool> {
                 .images
                 .latest(&s.store, &s.graph_id, image_node)
                 .ok_or("请先选用图片结果")?;
-            let (task, out) = a.selected.as_ref().ok_or("请先选用图片结果")?;
+            let (task, out) =
+                seecut_flow_core::host::node_choice(selected, a).ok_or("请先选用图片结果")?;
             let asset = a
                 .tasks
-                .get(task)
-                .and_then(|t| t.outputs.get(out))
+                .get(&task)
+                .and_then(|t| t.outputs.get(&out))
                 .and_then(|o| o.asset.as_ref())
                 .ok_or("图片尚未入库")?
                 .clone();
@@ -510,13 +548,14 @@ pub(super) fn action(app: &App, h: &mut Host, action: &str) -> Result<bool> {
     }
 }
 pub(super) fn settings(app: &App, h: &mut Host, field: &str) -> Result<()> {
+    h.controller.save_draft()?;
     let s = h.controller.session.as_ref().ok_or("请先打开工程")?;
     if s.store.is_read_only() {
         return Err("只读工程不能修改模型".into());
     }
     let scope = h.images.account.flow_scope();
     if h.images.catalog_scope.as_ref() != Some(&scope) {
-        return Err("请先登录并载入模型目录".into());
+        return Err("模型目录尚未就绪，请稍后重试".into());
     }
     let node = s
         .graph()
@@ -618,8 +657,8 @@ pub(super) fn set_setting(h: &mut Host, token: &str, value: &str) -> Result<()> 
                     .find(|m| m["id"] == value && m["kind"] == "image" && m["available"] == true)
             })
             .ok_or("模型已不可用")?;
-        params =
-            json!({"model":value,"capability_version":seecut_flow_core::digest(model),"count":1});
+        let own_prompt = params["prompt"].as_str().unwrap_or("").to_owned();
+        params = json!({"model":value,"capability_version":seecut_flow_core::digest(model),"count":1,"prompt":own_prompt});
         for key in ["size", "quality", "quantity"] {
             if !model["parameters"][key].is_null() {
                 params[key] = model["parameters"][key]["default"].clone();
@@ -693,11 +732,24 @@ pub(super) fn choose(h: &mut Host, value: &str) -> Result<()> {
     }
     let mut e = s.store.execution().clone();
     e.select(&attempt, &task, &output, &scope)?;
-    s.store.save_execution(e.clone())?;
-    h.images.track(s.path.clone(), e);
+    let mut params = selected.params.clone();
+    params["selected_output"] = json!({"attempt":attempt,"task":task,"output":output});
+    s.edit(Command::Parameters {
+        node: s.selected.clone(),
+        params,
+    })?;
     Ok(())
 }
+pub(super) fn pick_new(app: &App, host: &Rc<RefCell<Host>>) -> Result<()> {
+    host.borrow_mut().select_nodes(Default::default(), false)?;
+    pick(app, host)
+}
 pub(super) fn pick(app: &App, host: &Rc<RefCell<Host>>) -> Result<()> {
+    {
+        let mut h = host.borrow_mut();
+        h.controller.save_draft()?;
+        h.controller.flush_viewport()?;
+    }
     let (account, token, path, request) = {
         let h = host.borrow();
         let s = h.controller.session.as_ref().ok_or("请先打开工程")?;
@@ -887,6 +939,10 @@ fn tick(app: &App, h: &mut Host) -> bool {
                             available: true,
                         },
                     )?;
+                    if matches!(request.target, seecut_flow_core::host::AssetTarget::Create) {
+                        let id = request.new_node_id.clone();
+                        h.select_nodes(std::collections::BTreeSet::from([id]), true)?;
+                    }
                     h.images.preview(&image);
                     Ok(())
                 }
@@ -920,11 +976,12 @@ fn tick(app: &App, h: &mut Host) -> bool {
                         .latest(&s.store, &s.graph_id, image_node)
                         .filter(|a| a.id == attempt)
                         .ok_or("结果批次已切换")?;
-                    let (task, out) = a.selected.as_ref().ok_or("结果选择已变化")?;
+                    let (task, out) = seecut_flow_core::host::node_choice(selected_node, a)
+                        .ok_or("结果选择已变化")?;
                     let selected = a
                         .tasks
-                        .get(task)
-                        .and_then(|t| t.outputs.get(out))
+                        .get(&task)
+                        .and_then(|t| t.outputs.get(&out))
                         .and_then(|o| o.asset.as_ref())
                         .ok_or("结果选择已变化")?;
                     if selected.id != image.asset.id
@@ -1216,6 +1273,11 @@ pub(super) fn bind(app: &App, host: &Rc<RefCell<Host>>) {
         let host = host.clone();
         move |field| {
             if let Some(app) = weak.upgrade() {
+                if host.borrow().images.account.image_client().is_none() {
+                    app.global::<SeeCut>()
+                        .invoke_action("auth-open".into(), "".into());
+                    return;
+                }
                 let result = settings(&app, &mut host.borrow_mut(), field.as_str());
                 finish(&app, &host, result.map(|()| None));
             }

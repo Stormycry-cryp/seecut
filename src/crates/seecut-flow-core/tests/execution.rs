@@ -619,3 +619,27 @@ fn known_refusal_waits_for_later_authenticated_absence_without_new_post() {
     );
     assert_ne!(persisted.begin(draft(&d), "a".repeat(64)).unwrap(), id);
 }
+
+#[test]
+fn independent_node_choices_do_not_overwrite_other_consumers() {
+    use seecut_flow_core::{graph::Node, host::node_choice};
+    let root = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::create(&root.path().join("doc"), Document::new(Graph::default())).unwrap();
+    let id = intent(&mut store);
+    let a = &store.execution().attempts[0];
+    let mut one = Node::new("select", json!({"media_kind":"Image"}));
+    let mut two = one.clone();
+    one.params["selected_output"] = json!({"attempt":id,"task":"gen_one","output":"out_one"});
+    two.params["selected_output"] = json!({"attempt":id,"task":"gen_two","output":"out_two"});
+    assert_eq!(
+        node_choice(&one, a),
+        Some(("gen_one".into(), "out_one".into()))
+    );
+    assert_eq!(
+        node_choice(&two, a),
+        Some(("gen_two".into(), "out_two".into()))
+    );
+    one.params["selected_output"]["attempt"] = "other".into();
+    assert!(node_choice(&one, a).is_none());
+}

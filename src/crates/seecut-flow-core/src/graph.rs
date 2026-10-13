@@ -175,7 +175,11 @@ impl Graph {
             node.ports()?;
             node.validate_params()?;
         }
+        let mut connections = BTreeSet::new();
         for edge in &self.edges {
+            if !connections.insert((&edge.from, &edge.output, &edge.to, &edge.input)) {
+                return Err("duplicate connection".into());
+            }
             let from = self.nodes.get(&edge.from).ok_or("missing source node")?;
             let to = self.nodes.get(&edge.to).ok_or("missing destination node")?;
             if edge.output != "out" {

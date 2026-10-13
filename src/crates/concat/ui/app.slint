@@ -237,7 +237,12 @@ export component App inherits Window {
         }
     }
     property <bool> handoff-keyboard-open: SeeCut.handoff-open;
-    changed handoff-keyboard-open => { if root.handoff-keyboard-open { keys.focus(); Tips.close(); } }
+    property <bool> handoff-focus-pending;
+    changed handoff-keyboard-open => { root.handoff-focus-pending = root.handoff-keyboard-open; }
+    Timer { interval: 1ms; running: root.handoff-focus-pending; triggered => {
+        root.handoff-focus-pending = false;
+        if root.handoff-keyboard-open { keys.focus(); Tips.close(); }
+    } }
     changed workflow-modal-open => {
         if root.workflow-modal-open {
             root.focus-restore-pending = false;
@@ -528,7 +533,10 @@ export component App inherits Window {
                     if shortcut == "z" { Flow.action(event.modifiers.shift ? "redo" : "undo"); return accept; }
                     if shortcut == "s" { Flow.action("save"); return accept; }
                     if shortcut == "o" { Flow.action("open"); return accept; }
+                    if shortcut == "d" {Flow.action("duplicate");return accept;}
+                    if shortcut == "a" {Flow.action("select-all");return accept;}
                 }
+                if !Flow.input-focused && (event.text == Key.Delete || event.text == Key.Backspace) {Flow.action("remove");return accept;}
                 if !Flow.input-focused && event.text == Key.Escape { Flow.action("cancel-connect"); return accept; }
                 return reject;
             }

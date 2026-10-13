@@ -20,6 +20,7 @@ pub struct Context {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AssetTarget {
+    Create,
     Replace,
     Reference,
 }
@@ -67,6 +68,37 @@ pub fn picker_request_for_store(
         .graphs
         .get(graph_id)
         .ok_or("graph missing")?;
+    if node_id.is_empty() {
+        let mut position = [
+            (80. - graph.viewport[0]) / graph.viewport[2],
+            (80. - graph.viewport[1]) / graph.viewport[2],
+        ];
+        // Keep the new card and title clear of existing nodes at the current viewport.
+        for _ in 0..=graph.nodes.len() {
+            let Some(occupied) = graph.nodes.values().find(|n| {
+                (n.position[0] - position[0]).abs() < 260.
+                    && (n.position[1] - position[1]).abs() < 230.
+            }) else {
+                break;
+            };
+            position[1] = occupied.position[1] + 230.;
+        }
+        return Ok(AssetPickerRequest {
+            context: Context {
+                document_id: store.document().id.clone(),
+                graph_id: graph_id.into(),
+                node_id: String::new(),
+                revision: graph.revision,
+                scope: scope.clone(),
+            },
+            target: AssetTarget::Create,
+            operation_id: id(),
+            allowed: vec![MediaKind::Image],
+            new_node_id: id(),
+            next_order: 0,
+            position,
+        });
+    }
     let node = graph.nodes.get(node_id).ok_or("node missing")?;
     let media_kind = match node.kind.as_str() {
         "asset" => node.media_kind()?,
@@ -126,8 +158,18 @@ pub fn accept_asset(
     {
         return Err("asset missing, unversioned, or incompatible".into());
     }
-    let params = json!({"asset_id":asset.asset.id,"content_version":asset.asset.version,"media_kind":asset.asset.kind});
+    let params = json!({"asset_id":asset.asset.id,"content_version":asset.asset.version,"media_kind":asset.asset.kind,"asset_name":asset.name.clone()});
     let command = match request.target {
+        AssetTarget::Create => Command::Add {
+            node: Node {
+                id: request.new_node_id.clone(),
+                kind: "asset".into(),
+                version: 1,
+                title: asset.name,
+                params,
+                position: request.position,
+            },
+        },
         AssetTarget::Replace => Command::Parameters {
             node: request.context.node_id.clone(),
             params,
@@ -151,7 +193,9 @@ pub fn accept_asset(
         },
         _ => return Err("incompatible asset target".into()),
     };
-    if commands::receipt(store.document(), &request.operation_id).is_none() {
+    if !matches!(request.target, AssetTarget::Create)
+        && commands::receipt(store.document(), &request.operation_id).is_none()
+    {
         let graph = store
             .document()
             .graphs
@@ -228,8 +272,8 @@ pub fn generation_draft(runner: &Runner, graph_id: &str, node_id: &str) -> Resul
             .ok_or("shared capability version required")?
             .into(),
         media_kind,
-        prompt: prompt.ok_or("prompt missing")?,
-        parameters: node.params.clone(),
+        prompt: composed_prompt(prompt.as_deref(), node.params["prompt"].as_str())?,
+        parameters: generation_parameters(node),
         references,
     })
 }
@@ -301,12 +345,12 @@ pub fn image_draft(
                 {
                     return Err("上游输入已变化，请生成并选用当前版本".into());
                 }
-                let (task, output) = attempt.selected.as_ref().ok_or("请先选用上游图片结果")?;
+                let (task, output) = node_choice(source, attempt).ok_or("请先选用上游图片结果")?;
                 references.push(
                     attempt
                         .tasks
-                        .get(task)
-                        .and_then(|t| t.outputs.get(output))
+                        .get(&task)
+                        .and_then(|t| t.outputs.get(&output))
                         .and_then(|o| o.asset.clone())
                         .ok_or("上游图片尚未完成入库")?,
                 );
@@ -328,10 +372,44 @@ pub fn image_draft(
             .ok_or("请先选择可用模型")?
             .into(),
         media_kind: MediaKind::Image,
-        prompt: prompt
-            .filter(|s| !s.trim().is_empty())
-            .ok_or("请连接非空提示词节点")?,
-        parameters: node.params.clone(),
+        prompt: composed_prompt(prompt.as_deref(), node.params["prompt"].as_str())?,
+        parameters: generation_parameters(node),
         references,
     })
+}
+
+/// Connected text is a prefix; a node's own draft is always retained independently.
+pub fn composed_prompt(upstream: Option<&str>, own: Option<&str>) -> Result<String> {
+    let pieces: Vec<_> = [upstream, own]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    if pieces.is_empty() {
+        return Err("填写提示词或连接非空文本节点".into());
+    }
+    Ok(pieces.join("\n\n"))
+}
+
+/// Adoption belongs to the selected node, so two consumers can choose different outputs.
+/// Old documents retain their previously selected result until explicitly changed.
+pub fn node_choice(node: &Node, attempt: &crate::execution::Attempt) -> Option<(String, String)> {
+    if let Some(choice) = node.params.get("selected_output") {
+        if choice["attempt"].as_str()? != attempt.id {
+            return None;
+        }
+        Some((
+            choice["task"].as_str()?.into(),
+            choice["output"].as_str()?.into(),
+        ))
+    } else {
+        attempt.selected.clone()
+    }
+}
+fn generation_parameters(node: &Node) -> Value {
+    let mut params = node.params.clone();
+    if let Some(object) = params.as_object_mut() {
+        object.remove("selected_output");
+    }
+    params
 }

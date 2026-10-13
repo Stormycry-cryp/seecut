@@ -74,7 +74,13 @@ export component CloudField inherits Rectangle {
     in property <bool> enabled: true;
     callback edited(value: string);
     in property <bool> auto-focus;
-    init => { if root.auto-focus { input.focus(); } }
+    property <bool> auto-focus-pending;
+    init => { root.auto-focus-pending = root.auto-focus; }
+    changed auto-focus => { root.auto-focus-pending = root.auto-focus; }
+    Timer { interval: 1ms; running: root.auto-focus-pending; triggered => {
+        root.auto-focus-pending = false;
+        if root.auto-focus && root.enabled && root.visible { input.focus(); }
+    } }
     callback cursor-moved(offset: int);
     callback key-event(text: string) -> bool;
     public function focus-at(offset: int) { input.focus(); input.set-selection-offsets(offset, offset); }

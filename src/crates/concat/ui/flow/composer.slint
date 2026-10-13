@@ -22,6 +22,7 @@ export component FlowComposer inherits Rectangle {
     in property <string> caption: "提示词";
     callback parameter-requested(string);
     callback attachment-requested(string);
+    callback attachment-action(string,string);
     in property <bool> busy;
     in property <bool> dirty;
     callback edited(string, string);
@@ -31,22 +32,25 @@ export component FlowComposer inherits Rectangle {
     out property <bool> input-focused: editor.has-focus;
     public function focus-editor() { editor.focus(); }
     min-width: 0px;
-    preferred-height: (root.allow-assets || root.attachments.length > 0 ? 78px : 0px) + min(170px, max(108px, editor.preferred-height + 74px));
+    preferred-height: (root.allow-assets || root.attachments.length > 0 ? 108px : 0px) + min(170px, max(108px, editor.preferred-height + 74px));
     border-radius: 18px;
     background: Theme.field;
     border-width: 1px;
     border-color: editor.has-focus ? Theme.line-strong : Theme.line;
     clip: true;
     if root.allow-assets || root.attachments.length > 0: Flickable {
-        x: 16px; y: 14px; width: parent.width - 32px; height: 66px;
-        viewport-height: 66px; viewport-width: max(self.width, root.attachments.length * 72px + (root.allow-assets ? 64px : 0px));
+        x: 16px; y: 14px; width: parent.width - 32px; height: 96px;
+        viewport-height: 96px; viewport-width: max(self.width, root.attachments.length * 72px + (root.allow-assets ? 64px : 0px));
         HorizontalLayout {
-            height: 64px; width: parent.width; alignment: start; spacing: 8px;
+            height: 94px; width: parent.width; alignment: start; spacing: 8px;
             for attachment[index] in root.attachments: Rectangle {
-                width: 64px; height: 64px; border-radius: 8px; background: Theme.well; clip: true;
+                width: 64px; height: 94px; border-radius: 8px; background: Theme.well; clip: true;
                 accessible-role: button; accessible-label: "参考 " + (index + 1) + " · " + attachment.label;
                 accessible-action-default => { root.attachment-requested(attachment.id); }
-                Image { width: parent.width; height: parent.height; source: attachment.preview; image-fit: contain; }
+                Rectangle {
+                    x: 0px; y: 0px; width: parent.width; height: 64px; clip: true;
+                    Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: attachment.preview; image-fit: contain; }
+                }
                 Rectangle {
                     x: 4px; y: 4px; width: 19px; height: 19px; border-radius: 10px; background: Theme.image-control;
                     Text { text: "" + (index + 1); color: Theme.image-control-ink; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
@@ -54,7 +58,12 @@ export component FlowComposer inherits Rectangle {
                 attachment-focus := FocusScope {
                     key-pressed(event) => { if (event.text == " " || event.text == "\n") && !event.repeat { root.attachment-requested(attachment.id); return accept; } return reject; }
                 }
-                TouchArea { mouse-cursor: pointer; clicked => { attachment-focus.focus(); root.attachment-requested(attachment.id); } }
+                TouchArea { x:0px; y:0px; width:parent.width; height:64px; mouse-cursor: pointer; clicked => { attachment-focus.focus(); root.attachment-requested(attachment.id); } }
+                HorizontalLayout {x:0px;y:66px;width:parent.width;height:28px;spacing:0px;
+                    IconButton {glyph:Glyph.chevron-left;label:"参考前移";side:21px;icon-size:12px;enabled:index>0;clicked=>{root.attachment-action(attachment.id,"earlier");}}
+                    IconButton {glyph:Glyph.close;label:"移除参考连线";side:22px;icon-size:12px;clicked=>{root.attachment-action(attachment.id,"remove");}}
+                    IconButton {glyph:Glyph.chevron-right;label:"参考后移";side:21px;icon-size:12px;enabled:index+1<root.attachments.length;clicked=>{root.attachment-action(attachment.id,"later");}}
+                }
                 FocusRing { active: attachment-focus.has-focus; radius: 8px; }
                 Tip { text: attachment.label; active: attachment-focus.has-focus; }
             }
@@ -65,7 +74,7 @@ export component FlowComposer inherits Rectangle {
         }
     }
     area := Flickable {
-        x: 16px; y: root.allow-assets || root.attachments.length > 0 ? 94px : 16px;
+        x: 16px; y: root.allow-assets || root.attachments.length > 0 ? 124px : 16px;
         width: max(0px, parent.width - 32px); height: max(0px, parent.height - self.y - 58px);
         viewport-width: self.width; viewport-height: max(self.height, editor.preferred-height);
         editor := TextInput {
@@ -84,7 +93,7 @@ export component FlowComposer inherits Rectangle {
         }
     }
     if root.value == "": Text {
-        x: 16px; y: root.allow-assets || root.attachments.length > 0 ? 94px : 16px;
+        x: 16px; y: root.allow-assets || root.attachments.length > 0 ? 124px : 16px;
         width: parent.width - 32px; text: root.placeholder;
         font-family: Theme.font; font-size: Theme.workbench-font; color: Theme.fg-muted;
         accessible-role: none;
@@ -96,7 +105,7 @@ export component FlowComposer inherits Rectangle {
             height: 36px; spacing: 6px; alignment: start;
             if root.allow-assets && root.allow-upload: IconButton { glyph: Glyph.import; label: "上传本地素材到资产库"; side: 32px; icon-size: 18px; clicked => { root.upload-requested(); } }
             for parameter in root.parameters: AppButton {
-                height: 32px; label: parameter.label; glyph: Glyph.chevron-down;
+                height: 32px; subtle: true; label: parameter.label; glyph: Glyph.chevron-down;
                 accessible-name: "SeeCut 生成设置 · " + parameter.label;
                 clicked => { root.parameter-requested(parameter.id); }
             }

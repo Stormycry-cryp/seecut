@@ -6,6 +6,23 @@ import { FlowWorkspace, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParamete
 import { ScrollView } from "std-widgets.slint";
 export { FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter, FlowCandidate }
 export global Flow {
+    in-out property <string> prompt-source-id;
+    in-out property <string> prompt-source-title;
+    in-out property <image> selected-preview;
+    in-out property <string> source-label;
+    callback reference-action(string,string);
+    in-out property <float> selected-x;
+    in-out property <float> selected-y;
+    in-out property <int> selection-count;
+    in-out property <bool> edge-selected;
+    in-out property <string> wire-path;
+    in-out property <string> wire-target;
+    callback canvas-size(float,float);
+    callback select-node(string,string,bool);
+    callback canvas-select(string,float,float,float,float,bool);
+    callback wire-gesture(string,string,string,string,float,float);
+    callback find-node(string);
+
     in-out property <bool> images-enabled;
     in-out property <bool> execution-enabled;
     in-out property <bool> paused;
@@ -93,6 +110,16 @@ export component FlowPage inherits Rectangle {
         project-title: Flow.title; read-only: Flow.read-only; recovery-available: Flow.recovery-available;
         document-token: Flow.token; draft-token: Flow.draft-token;
         nodes: Flow.nodes; edges: Flow.edges;
+        prompt-source-id: Flow.prompt-source-id; prompt-source-title: Flow.prompt-source-title;
+        selected-preview: Flow.selected-preview; source-label: Flow.source-label;
+        reference-action(id,action) => {Flow.reference-action(id,action);}
+        selected-x: Flow.selected-x; selected-y: Flow.selected-y; selection-count: Flow.selection-count; edge-selected: Flow.edge-selected;
+        wire-path: Flow.wire-path; wire-target: Flow.wire-target;
+        canvas-size(w,h) => { Flow.canvas-size(w,h); }
+        select-node(id,add) => { Flow.select-node(Flow.token,id,add); }
+        canvas-select(x,y,x2,y2,add) => { Flow.canvas-select(Flow.token,x,y,x2,y2,add); }
+        wire-gesture(id,port,phase,x,y) => { Flow.wire-gesture(Flow.token,id,port,phase,x,y); }
+        find-node(query) => { Flow.find-node(query); }
         selected-id: Flow.selected-id; selected-title: Flow.selected-title; selected-kind: Flow.selected-kind;
         selected-status: Flow.read-only ? "只读" : Flow.dirty ? "提示词未保存" : Flow.selected-status != "" ? Flow.selected-status : "已保存";
         generation-prompt: Flow.generation-prompt;
@@ -179,7 +206,7 @@ export component FlowNameDialog inherits Modal {
     closed => { Flow.name-cancel(Flow.dialog-token); }
     VerticalLayout {
         padding: 20px; spacing: 14px;
-        CloudField { value <=> Flow.dialog-name; placeholder: "工程名称"; auto-focus: true; }
+        CloudField { value <=> Flow.dialog-name; placeholder: Flow.dialog-title == "重命名节点" ? "节点名称" : "工程名称"; auto-focus: Flow.project-dialog; key-event(text) => { if text == "\n" { Flow.name-submit(Flow.dialog-token,Flow.dialog-name);return true;} return false; } }
         if Flow.error: Text { text: Flow.message; color: Theme.accent; wrap: word-wrap; }
         HorizontalLayout { alignment: end; spacing: 8px;
             AppButton { label: "取消"; clicked => { Flow.name-cancel(Flow.dialog-token); } }

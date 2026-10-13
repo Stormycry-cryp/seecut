@@ -302,11 +302,16 @@ impl Controller {
             .nodes
             .get(&draft.node)
             .ok_or("提示词节点不存在")?;
-        if node.params["text"].as_str() != Some(draft.original.as_str()) {
+        let field = if node.kind == "prompt" {
+            "text"
+        } else {
+            "prompt"
+        };
+        if node.params[field].as_str().unwrap_or("") != draft.original {
             return Err("节点内容已改变，请先保留当前草稿并重新打开".into());
         }
         let mut params = node.params.clone();
-        params["text"] = draft.text.clone().into();
+        params[field] = draft.text.clone().into();
         session.edit(Command::Parameters {
             node: draft.node,
             params,
@@ -459,10 +464,18 @@ impl Controller {
     fn reload_draft(&mut self) {
         self.draft = self.session.as_ref().and_then(|s| {
             let node = s.graph().nodes.get(&s.selected)?;
-            if node.kind != "prompt" {
+            if !matches!(
+                node.kind.as_str(),
+                "prompt" | "image_generate" | "video_generate"
+            ) {
                 return None;
             }
-            let text = node.params["text"].as_str()?.to_owned();
+            let field = if node.kind == "prompt" {
+                "text"
+            } else {
+                "prompt"
+            };
+            let text = node.params[field].as_str().unwrap_or("").to_owned();
             Some(Draft {
                 generation: id(),
                 token: s.token.clone(),
@@ -497,6 +510,40 @@ mod tests {
         c.request(Intent::Edit(Box::new(Command::Add { node: n })))
             .unwrap();
         (dir, c, id)
+    }
+    #[test]
+    fn generation_drafts_remain_independent_through_history_and_reopen() {
+        let (dir, mut c, _) = open();
+        let first = Node::new(
+            "image_generate",
+            json!({"model":"unconfigured","count":1,"prompt":"第一份"}),
+        );
+        let first_id = first.id.clone();
+        c.request(Intent::Edit(Box::new(Command::Add { node: first })))
+            .unwrap();
+        let token = c.draft_token().to_owned();
+        c.change_draft(&token, "中文\n自己的要求".into()).unwrap();
+        c.save_draft().unwrap();
+        let second = Node::new(
+            "image_generate",
+            json!({"model":"unconfigured","count":1,"prompt":"第二份"}),
+        );
+        let second_id = second.id.clone();
+        c.request(Intent::Edit(Box::new(Command::Add { node: second })))
+            .unwrap();
+        assert_eq!(c.prompt(), "第二份");
+        assert!(c.change_draft(&token, "迟到输入".into()).is_err());
+        c.request(Intent::Select(first_id.clone())).unwrap();
+        assert_eq!(c.prompt(), "中文\n自己的要求");
+        c.request(Intent::Undo).unwrap();
+        assert_eq!(c.prompt(), "中文\n自己的要求");
+        c.request(Intent::Redo).unwrap();
+        c.request(Intent::Select(second_id)).unwrap();
+        assert_eq!(c.prompt(), "第二份");
+        c.request(Intent::Close).unwrap();
+        c.request(Intent::Open(dir.path().join("one"))).unwrap();
+        c.request(Intent::Select(first_id)).unwrap();
+        assert_eq!(c.prompt(), "中文\n自己的要求");
     }
     #[test]
     fn navigation_and_quit_keep_drafts_until_the_original_intent_is_confirmed() {

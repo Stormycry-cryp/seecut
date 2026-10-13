@@ -52,10 +52,15 @@ export component Modal inherits Rectangle {
     // blocks the app underneath, and a quick reopen cancels the old exit.
     property <bool> exiting;
     property <int> close-focus-request;
+    property <bool> open-focus-pending;
+    Timer { interval: 1ms; running: root.open-focus-pending; triggered => {
+        root.open-focus-pending = false;
+        if root.open && root.trap-focus { first-tab-guard.focus(); }
+    } }
     changed open => {
         root.exiting = !root.open && !SeeCut.reduced-motion;
         root.close-focus-request = 0;
-        if root.open && root.trap-focus { first-tab-guard.focus(); }
+        root.open-focus-pending = root.open && root.trap-focus;
     }
     visible: root.open || root.exiting;
     Timer {
@@ -187,9 +192,12 @@ export component Modal inherits Rectangle {
 
                             close-focus := FocusScope {
                                 property <int> focus-request: root.close-focus-request;
-                                changed focus-request => {
-                                    if root.open && root.trap-focus && self.focus-request > 0 { self.focus(); }
-                                }
+                                property <bool> focus-pending;
+                                changed focus-request => { self.focus-pending = self.focus-request > 0; }
+                                Timer { interval: 1ms; running: close-focus.focus-pending; triggered => {
+                                    close-focus.focus-pending = false;
+                                    if root.open && root.trap-focus && close-focus.focus-request > 0 { close-focus.focus(); }
+                                } }
                                 enabled: root.open;
                                 focus-gained(reason) => {
                                     parent.ring = reason == FocusReason.tab-navigation

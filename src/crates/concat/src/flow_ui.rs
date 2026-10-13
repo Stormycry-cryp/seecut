@@ -13,6 +13,7 @@ use seecut_flow_core::{
 use serde_json::json;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
+mod editor;
 mod image_execution;
 
 /// Preserve delegates, focus and drag state when background receipts do not change a row.
@@ -31,6 +32,7 @@ fn sync_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) 
 enum Naming {
     New(PathBuf),
     Rename(Project),
+    Node(String),
 }
 struct NameDialog {
     token: String,
@@ -38,6 +40,7 @@ struct NameDialog {
     mode: Naming,
 }
 struct Host {
+    editor: editor::Editor,
     images: image_execution::Images,
     browsing: bool,
     projects: Vec<Project>,
@@ -59,7 +62,11 @@ struct Host {
 }
 impl Host {
     fn fail(&mut self, error: String) {
-        self.recovery_available |= self.controller.session.is_some();
+        self.recovery_available |= self
+            .controller
+            .session
+            .as_ref()
+            .is_some_and(|s| s.store.is_poisoned());
         self.error = true;
         self.message = error;
     }
@@ -74,12 +81,37 @@ impl Host {
                 | Intent::OpenProject(_, _, _)
                 | Intent::RenameProject(_)
         );
+        if matches!(
+            intent,
+            Intent::Select(_) | Intent::Edit(_) | Intent::Undo | Intent::Redo
+        ) {
+            self.controller.save_draft()?;
+        }
         let previous = self.controller.session.as_ref().map(|s| s.token.clone());
+        let before_nodes: std::collections::BTreeSet<_> = self
+            .controller
+            .session
+            .as_ref()
+            .map(|s| s.graph().nodes.keys().cloned().collect())
+            .unwrap_or_default();
         let effect = self.controller.request(intent)?;
+        if let Some(s) = self.controller.session.as_ref() {
+            let created: std::collections::BTreeSet<_> = s
+                .graph()
+                .nodes
+                .keys()
+                .filter(|id| !before_nodes.contains(*id))
+                .cloned()
+                .collect();
+            if !created.is_empty() {
+                self.editor.selected = created;
+            }
+        }
         if previous != self.controller.session.as_ref().map(|s| s.token.clone()) {
             self.recovery_available = false;
         }
         if effect.is_some() {
+            self.editor.edge = None;
             self.preview.clear();
             self.connecting.clear();
         }
@@ -154,6 +186,29 @@ impl Host {
                 .and_then(|n| n.params["text"].as_str())
                 .unwrap_or("");
             ui.set_generation_prompt(generation.into());
+            ui.set_source_label(
+                node.filter(|n| n.kind == "asset")
+                    .map(|n| {
+                        n.params["asset_name"]
+                            .as_str()
+                            .unwrap_or("来自资产库 · 固定版本")
+                    })
+                    .unwrap_or("")
+                    .into(),
+            );
+            let upstream = node
+                .and_then(|n| {
+                    s.graph()
+                        .edges
+                        .iter()
+                        .find(|e| e.to == n.id && e.input == "prompt")
+                })
+                .and_then(|e| s.graph().nodes.get(&e.from));
+            ui.set_prompt_source_id(upstream.map(|n| n.id.as_str()).unwrap_or("").into());
+            ui.set_prompt_source_title(upstream.map(|n| n.title.as_str()).unwrap_or("").into());
+            let selected_preview =
+                node.and_then(|n| self.images.node_preview(&s.store, s.graph(), n));
+            ui.set_selected_preview(selected_preview.unwrap_or_default());
             self.view = self.controller.viewport().unwrap_or(s.graph().viewport);
             ui.set_pan_x(self.view[0] as f32);
             ui.set_pan_y(self.view[1] as f32);
@@ -165,14 +220,24 @@ impl Host {
                 .enumerate()
                 .map(|(index, n)| {
                     let attempt = self.images.latest(&s.store, &s.graph_id, &n.id);
-                    let state = attempt
-                        .map(image_execution::attempt_status)
-                        .unwrap_or("未执行");
+                    let preview = self.images.node_preview(&s.store, s.graph(), n);
+                    let has_preview = preview.is_some();
+                    let state = match n.kind.as_str() {
+                        "prompt" => "",
+                        "asset" if has_preview => "",
+                        "asset" => "素材不可用",
+                        _ => attempt
+                            .map(image_execution::attempt_status)
+                            .unwrap_or("未执行"),
+                    };
                     let summary = if n.kind == "prompt" {
                         n.params["text"].as_str().unwrap_or("").to_owned()
                     } else {
                         match n.kind.as_str() {
-                            "image_generate" => state.to_owned(),
+                            "image_generate" => {
+                                format!("{}\n{}", n.params["prompt"].as_str().unwrap_or(""), state)
+                            }
+                            "asset" if !has_preview => "素材不可用".into(),
                             "asset" => n.title.clone(),
                             "select" => "选择上游图片结果".into(),
                             _ => format!("{}\n尚未接通执行", kind_label(&n.kind)),
@@ -187,8 +252,9 @@ impl Host {
                         state: state.into(),
                         x: p[0] as f32,
                         y: p[1] as f32,
-                        preview: Default::default(),
-                        has_preview: false,
+                        preview: preview.unwrap_or_default(),
+                        has_preview,
+                        selected: self.editor.selected.contains(&n.id) || n.id == s.selected,
                         inputs: self
                             .nodes
                             .row_data(index)
@@ -217,6 +283,7 @@ impl Host {
             ui.set_can_redo(false);
             sync_rows(&self.nodes, vec![]);
         }
+        self.publish_editor(app);
         self.publish_edges();
         let s = self.controller.session.as_ref();
         self.images.publish(
@@ -256,7 +323,11 @@ impl Host {
                         x2 - bend
                     )
                     .into(),
-                    selected: from.id == s.selected || to.id == s.selected,
+                    selected: self.editor.edge.as_ref() == Some(e),
+                    related: self.editor.selected.contains(&e.from)
+                        || self.editor.selected.contains(&e.to)
+                        || e.from == s.selected
+                        || e.to == s.selected,
                 })
             })
             .collect::<Vec<_>>();
@@ -337,10 +408,22 @@ impl Host {
         if dialog.session != self.controller.session.as_ref().map(|s| s.token.clone()) {
             return Err("工程已切换，忽略旧名称操作".into());
         }
-        let name = seecut_flow_core::store::project_name(name)?;
+        let name = if matches!(dialog.mode, Naming::Node(_)) {
+            let name = name.trim();
+            if name.is_empty() || name.chars().count() > 256 {
+                return Err("节点名称需为 1–256 个字符".into());
+            }
+            name.to_owned()
+        } else {
+            seecut_flow_core::store::project_name(name)?
+        };
         // Consume the fixed UUID and UI token once, including a pending draft switch.
         let dialog = self.dialog.take().expect("validated dialog");
         match dialog.mode {
+            Naming::Node(node) => self.request(Intent::Edit(Box::new(Command::Rename {
+                node,
+                title: name,
+            }))),
             Naming::New(path) => {
                 std::fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
                 self.request(Intent::NewNamed(path, name))
@@ -383,6 +466,14 @@ impl Host {
                 self.refresh_projects();
                 Ok(Some(Effect::None))
             }
+            "rename-node" => {
+                let s = self.controller.session.as_ref().ok_or("请先打开工程")?;
+                if self.editor.selected.len() != 1 || !s.graph().nodes.contains_key(&s.selected) {
+                    return Err("请选择一个节点".into());
+                }
+                self.start_naming(Naming::Node(s.selected.clone()));
+                Ok(Some(Effect::None))
+            }
             "rename" => {
                 let s = self.controller.session.as_ref().ok_or("请先打开工程")?;
                 let project = catalog::inspect(&s.path)?;
@@ -401,45 +492,52 @@ impl Host {
             "undo" => self.request(Intent::Undo),
             "redo" => self.request(Intent::Redo),
             "arrange" => self.request(Intent::Edit(Box::new(Command::Arrange))),
-            "duplicate" | "remove" => {
+            "duplicate" | "copy-node" | "remove" => {
                 let s = self.controller.session.as_ref().ok_or("请先打开工程")?;
-                if s.selected.is_empty() {
+                if s.selected.is_empty() && self.editor.edge.is_none() {
                     return Err("请先选择节点".into());
                 }
-                let nodes = vec![s.selected.clone()];
+                if action == "remove"
+                    && let Some(edge) = self.editor.edge.take()
+                {
+                    return self.request(Intent::Edit(Box::new(Command::Disconnect { edge })));
+                }
+                let nodes = if self.editor.selected.is_empty() {
+                    vec![s.selected.clone()]
+                } else {
+                    self.editor.selected.iter().cloned().collect()
+                };
                 self.request(Intent::Edit(Box::new(if action == "remove" {
                     Command::Remove { nodes }
                 } else {
                     Command::Duplicate {
                         nodes,
-                        incoming: true,
+                        incoming: action == "duplicate",
                     }
                 })))
             }
-            "fit" => {
-                let s = self.controller.session.as_ref().ok_or("请先打开工程")?;
-                let x = s
+            "fit" | "focus" => {
+                self.frame_selection(action == "fit")?;
+                Ok(Some(Effect::None))
+            }
+            "select-all" => {
+                let ids = self
+                    .controller
+                    .session
+                    .as_ref()
+                    .ok_or("请先打开工程")?
                     .graph()
                     .nodes
-                    .values()
-                    .map(|n| n.position[0])
-                    .reduce(f64::min)
-                    .unwrap_or(0.);
-                let y = s
-                    .graph()
-                    .nodes
-                    .values()
-                    .map(|n| n.position[1])
-                    .reduce(f64::min)
-                    .unwrap_or(0.);
-                let token = s.token.clone();
-                self.controller
-                    .preview_viewport(&token, [40. - x * 0.75, 40. - y * 0.75, 0.75])?;
-                self.controller.flush_viewport()?;
+                    .keys()
+                    .cloned()
+                    .collect();
+                self.select_nodes(ids, false)?;
                 Ok(Some(Effect::None))
             }
             "cancel-connect" => {
                 self.connecting.clear();
+                self.editor.wire = None;
+                self.preview.clear();
                 Ok(Some(Effect::None))
             }
             a if a.starts_with("add_") => {
@@ -448,7 +546,7 @@ impl Host {
                 let params = match kind {
                     "prompt" => json!({"text":""}),
                     "image_generate" | "video_generate" => {
-                        json!({"model":"unconfigured","count":1})
+                        json!({"model":"unconfigured","count":1,"prompt":""})
                     }
                     "select" => json!({"media_kind":"Image"}),
                     "select_video" => json!({"media_kind":"Video"}),
@@ -465,7 +563,9 @@ impl Host {
                 node.title = format!("{} {}", kind_label(kind), s.graph().nodes.len() + 1);
                 let count = s.graph().nodes.len() as f64;
                 node.position = [40. + (count % 3.) * 300., 40. + (count / 3.).floor() * 250.];
-                self.request(Intent::Edit(Box::new(Command::Add { node })))
+                let result = self.request(Intent::Edit(Box::new(Command::Add { node })))?;
+                self.frame_selection(false)?;
+                Ok(result)
             }
             _ => Err("该功能尚未接通".into()),
         }
@@ -620,6 +720,7 @@ fn pick_path(app: &App, host: &Rc<RefCell<Host>>, export: bool) {
 
 pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAccess) {
     let host = Rc::new(RefCell::new(Host {
+        editor: editor::Editor::default(),
         images: image_execution::Images::new(account, root.clone()),
         browsing: true,
         projects: Vec::new(),
@@ -670,7 +771,10 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
                 {
                     return;
                 }
-                if action == "new" {
+                if action == "flow-login" {
+                    app.global::<SeeCut>()
+                        .invoke_action("auth-open".into(), "".into());
+                } else if action == "new" {
                     let mut h = host.borrow_mut();
                     let path = h.root.join(format!("Flow-{}", seecut_flow_core::id()));
                     h.start_naming(Naming::New(path));
@@ -679,12 +783,21 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
                         .set_dialog_title("新建 Flow 工程".into());
                     drop(h);
                     finish(&app, &host, Ok(Some(Effect::None)));
+                } else if action == "rename-node" {
+                    let title = app.global::<Flow>().get_selected_title();
+                    let result = host.borrow_mut().action("rename-node");
+                    app.global::<Flow>().set_dialog_name(title);
+                    app.global::<Flow>().set_dialog_title("重命名节点".into());
+                    finish(&app, &host, result);
                 } else if action == "rename" {
                     let result = host.borrow_mut().action("rename");
                     app.global::<Flow>()
                         .set_dialog_name(app.global::<Flow>().get_title());
                     app.global::<Flow>().set_dialog_title("重命名工程".into());
                     finish(&app, &host, result);
+                } else if action == "add_asset" {
+                    let result = image_execution::pick_new(&app, &host);
+                    finish(&app, &host, result.map(|()| None));
                 } else if action == "open" {
                     pick_path(&app, &host, false);
                 } else {
@@ -835,7 +948,17 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
             if !host.borrow().controller.token_matches(token.as_str()) {
                 return;
             }
-            let result = host.borrow_mut().request(Intent::Select(id.to_string()));
+            let result = host
+                .borrow_mut()
+                .select_nodes(
+                    if id.is_empty() {
+                        Default::default()
+                    } else {
+                        std::collections::BTreeSet::from([id.to_string()])
+                    },
+                    !id.is_empty(),
+                )
+                .map(|()| Some(Effect::None));
             finish(&app, &host, result);
         }
     });
@@ -1042,34 +1165,54 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
                 return;
             }
             let position = [f64::from(x), f64::from(y)];
+            let Some(s) = h.controller.session.as_ref() else {
+                return;
+            };
+            let Some(original) = s.graph().nodes.get(id.as_str()) else {
+                return;
+            };
+            let delta = [
+                position[0] - original.position[0],
+                position[1] - original.position[1],
+            ];
+            let ids = if h.editor.selected.contains(id.as_str()) {
+                h.editor.selected.clone()
+            } else {
+                std::collections::BTreeSet::from([id.to_string()])
+            };
+            let positions: BTreeMap<_, _> = ids
+                .into_iter()
+                .filter_map(|key| {
+                    s.graph()
+                        .nodes
+                        .get(&key)
+                        .map(|n| (key, [n.position[0] + delta[0], n.position[1] + delta[1]]))
+                })
+                .collect();
             if commit {
                 let result = h
                     .controller
                     .session
                     .as_mut()
                     .ok_or_else(|| "工程已关闭".into())
-                    .and_then(|s| {
-                        s.edit(Command::Move {
-                            positions: BTreeMap::from([(id.to_string(), position)]),
-                        })
-                    });
+                    .and_then(|s| s.edit(Command::Move { positions }));
                 h.preview.clear();
                 if let Err(e) = result {
                     h.fail(e);
                 }
                 h.publish(&app);
             } else {
-                h.preview.insert(id.to_string(), position);
+                h.preview = positions;
                 for row in 0..h.nodes.row_count() {
                     if let Some(mut item) = h.nodes.row_data(row)
-                        && item.id == id
+                        && let Some(p) = h.preview.get(item.id.as_str())
                     {
-                        item.x = x;
-                        item.y = y;
+                        item.x = p[0] as f32;
+                        item.y = p[1] as f32;
                         h.nodes.set_row_data(row, item);
-                        break;
                     }
                 }
+                h.publish_editor(&app);
                 h.publish_edges();
             }
         }
@@ -1133,7 +1276,8 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
                         .find(|e| e.to == id.as_str() && e.input == port.as_str())
                         .ok_or("先点击输出端口，再点击此输入端口")?
                         .clone();
-                    Command::Disconnect { edge }
+                    h.editor.edge = Some(edge);
+                    return Ok(Some(Effect::None));
                 } else {
                     let order = s
                         .graph()
@@ -1159,6 +1303,7 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
             finish(&app, &host, result);
         }
     });
+    editor::bind(app, &host);
     image_execution::bind(app, &host);
     host.borrow_mut().publish(app);
 }

@@ -11,7 +11,9 @@ export component FlowProjectsPage inherits Rectangle {
     in-out property <bool> name-sort;
     in-out property <string> search;
     in property <int> focus-token;
-    changed focus-token => { projects-focus.focus(); }
+    property <bool> focus-pending;
+    changed focus-token => { root.focus-pending = true; }
+    Timer { interval: 1ms; running: root.focus-pending; triggered => { root.focus-pending = false; projects-focus.focus(); } }
     projects-focus := FocusScope { }
     property <bool> narrow: root.width < 680px;
     callback action(string, string);

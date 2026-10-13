@@ -218,3 +218,38 @@ fn no_op_move_does_not_invalidate_pending_asset_callback() {
     let scope = r.scope().clone();
     assert!(host::accept_asset(&mut r.store, &scope, &selection, library_asset()).is_ok());
 }
+
+#[test]
+fn material_can_be_created_from_an_empty_selection_and_prompt_keeps_own_text() {
+    let (_tmp, mut r, g) = fixture();
+    let scope = r.scope().clone();
+    let req = host::picker_request(&r, &g, "").unwrap();
+    assert!(
+        r.store.document().graphs[&g].nodes.values().all(|n| {
+            (n.position[0] - req.position[0]).abs() >= 260.
+                || (n.position[1] - req.position[1]).abs() >= 230.
+        }),
+        "new material must not cover existing cards"
+    );
+    host::accept_asset(&mut r.store, &scope, &req, library_asset()).unwrap();
+    assert!(
+        r.store.document().graphs[&g]
+            .nodes
+            .contains_key(&req.new_node_id)
+    );
+    assert!(
+        !r.store.document().graphs[&g]
+            .edges
+            .iter()
+            .any(|e| e.from == req.new_node_id)
+    );
+    assert_eq!(
+        host::composed_prompt(Some("前置文本"), Some("节点自己的要求")).unwrap(),
+        "前置文本\n\n节点自己的要求"
+    );
+    assert_eq!(
+        host::composed_prompt(None, Some("独立生成")).unwrap(),
+        "独立生成"
+    );
+    assert!(host::composed_prompt(Some(" "), Some("")).is_err());
+}

@@ -38,6 +38,16 @@ pub enum Command {
     Disconnect {
         edge: Edge,
     },
+    /// Atomic validated replacement; cancellation never enters the command boundary.
+    Rewire {
+        old: Edge,
+        new: Edge,
+    },
+    Reorder {
+        node: String,
+        input: String,
+        sources: Vec<String>,
+    },
     Duplicate {
         nodes: Vec<String>,
         incoming: bool,
@@ -149,6 +159,41 @@ fn edit(graph: &mut Graph, command: &Command) -> Result<Vec<String>> {
                 .position(|e| e == edge)
                 .ok_or("edge missing")?;
             graph.edges.remove(index);
+        }
+        Command::Rewire { old, new } => {
+            let index = graph
+                .edges
+                .iter()
+                .position(|e| e == old)
+                .ok_or("edge missing")?;
+            graph.edges[index] = new.clone();
+        }
+        Command::Reorder {
+            node,
+            input,
+            sources,
+        } => {
+            let current: BTreeSet<_> = graph
+                .edges
+                .iter()
+                .filter(|e| &e.to == node && &e.input == input)
+                .map(|e| e.from.clone())
+                .collect();
+            if sources.len() != current.len()
+                || sources.iter().cloned().collect::<BTreeSet<_>>() != current
+            {
+                return Err("reference selection changed".into());
+            }
+            for edge in graph
+                .edges
+                .iter_mut()
+                .filter(|e| &e.to == node && &e.input == input)
+            {
+                edge.order = sources
+                    .iter()
+                    .position(|id| id == &edge.from)
+                    .ok_or("reference missing")? as u32;
+            }
         }
         Command::Duplicate { nodes, incoming } => {
             require_nodes(graph, nodes)?;
