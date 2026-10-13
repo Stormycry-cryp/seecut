@@ -81,12 +81,7 @@ impl Host {
                 | Intent::OpenProject(_, _, _)
                 | Intent::RenameProject(_)
         );
-        if matches!(
-            intent,
-            Intent::Select(_) | Intent::Edit(_) | Intent::Undo | Intent::Redo
-        ) {
-            self.controller.save_draft()?;
-        }
+        self.controller.save_draft()?;
         let previous = self.controller.session.as_ref().map(|s| s.token.clone());
         let before_nodes: std::collections::BTreeSet<_> = self
             .controller
@@ -965,6 +960,7 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
     ui.on_draft_changed({
         let weak = app.as_weak();
         let host = host.clone();
+        let autosave = slint::Timer::default();
         move |token, text| {
             let Some(app) = weak.upgrade() else {
                 return;
@@ -981,6 +977,34 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
                 h.fail(e);
                 app.global::<Flow>()
                     .set_prompt(h.controller.prompt().into());
+            } else {
+                let weak = app.as_weak();
+                let host = host.clone();
+                autosave.start(
+                    slint::TimerMode::SingleShot,
+                    std::time::Duration::from_millis(450),
+                    move || {
+                        let Some(app) = weak.upgrade() else { return };
+                        let mut h = host.borrow_mut();
+                        if h.recovery
+                            || h.controller
+                                .session
+                                .as_ref()
+                                .is_some_and(|s| s.store.is_poisoned())
+                        {
+                            return;
+                        }
+                        match h.controller.autosave_draft(token.as_str()) {
+                            Ok(false) => return,
+                            Ok(true) => {
+                                h.error = false;
+                                h.message.clear();
+                            }
+                            Err(error) => h.fail(error),
+                        }
+                        h.publish(&app);
+                    },
+                );
             }
             let ui = app.global::<Flow>();
             ui.set_dirty(h.controller.dirty());
@@ -1062,7 +1086,7 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
             {
                 return true;
             }
-            let flush = host.borrow_mut().controller.flush_viewport();
+            let flush = host.borrow_mut().controller.save_draft();
             if let Err(e) = flush {
                 finish(&app, &host, Err(e));
                 return true;
@@ -1089,7 +1113,7 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
             {
                 return true;
             }
-            let flush = host.borrow_mut().controller.flush_viewport();
+            let flush = host.borrow_mut().controller.save_draft();
             if let Err(e) = flush {
                 finish(&app, &host, Err(e));
                 return true;

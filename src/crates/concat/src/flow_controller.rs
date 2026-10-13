@@ -319,6 +319,14 @@ impl Controller {
         self.draft.as_mut().expect("draft exists").original = draft.text;
         Ok(())
     }
+    /// A delayed save only belongs to the draft that scheduled it.
+    pub fn autosave_draft(&mut self, generation: &str) -> Result<bool> {
+        if self.pending() || generation != self.draft_token() || !self.dirty() {
+            return Ok(false);
+        }
+        self.save_draft()?;
+        Ok(true)
+    }
     pub fn request(&mut self, intent: Intent) -> Result<Option<Effect>> {
         if self.pending.is_some() {
             return Ok(None);
@@ -510,6 +518,57 @@ mod tests {
         c.request(Intent::Edit(Box::new(Command::Add { node: n })))
             .unwrap();
         (dir, c, id)
+    }
+    #[test]
+    fn autosave_persists_latest_text_once_and_survives_reopen() {
+        let (dir, mut c, node) = open();
+        let token = c.draft_token().to_owned();
+        c.change_draft(&token, "输入中".into()).unwrap();
+        c.change_draft(&token, "自动保存\n最新正文".into()).unwrap();
+        assert!(c.autosave_draft(&token).unwrap());
+        let revision = c.session.as_ref().unwrap().graph().revision;
+        assert!(!c.autosave_draft(&token).unwrap());
+        assert_eq!(c.session.as_ref().unwrap().graph().revision, revision);
+        assert!(!c.dirty());
+        c.request(Intent::Close).unwrap();
+        c.request(Intent::Open(dir.path().join("one"))).unwrap();
+        c.request(Intent::Select(node)).unwrap();
+        assert_eq!(c.prompt(), "自动保存\n最新正文");
+    }
+    #[test]
+    fn autosave_from_previous_node_never_saves_the_new_draft() {
+        let (_dir, mut c, _) = open();
+        let old = c.draft_token().to_owned();
+        let node = Node::new(
+            "image_generate",
+            json!({"model":"unconfigured","count":1,"prompt":"独立正文"}),
+        );
+        c.request(Intent::Edit(Box::new(Command::Add { node })))
+            .unwrap();
+        let current = c.draft_token().to_owned();
+        c.change_draft(&current, "新节点草稿".into()).unwrap();
+        assert!(!c.autosave_draft(&old).unwrap());
+        assert!(c.dirty());
+        assert!(c.autosave_draft(&current).unwrap());
+        // Closing before a pending debounce uses this same synchronous flush.
+        c.change_draft(&current, "退出立即保留".into()).unwrap();
+        c.save_draft().unwrap();
+        assert_eq!(c.request(Intent::Quit).unwrap(), Some(Effect::Quit));
+    }
+    #[test]
+    fn autosave_failure_preserves_draft_and_original_file() {
+        let (dir, mut c, _) = open();
+        let token = c.draft_token().to_owned();
+        c.change_draft(&token, "保存失败也要保留".into()).unwrap();
+        let file = dir.path().join("one/document.json");
+        let original = std::fs::read(&file).unwrap();
+        let backup = dir.path().join("one/backup.json");
+        std::fs::rename(&file, &backup).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert!(c.autosave_draft(&token).is_err());
+        assert!(c.dirty());
+        assert_eq!(c.prompt(), "保存失败也要保留");
+        assert_eq!(std::fs::read(backup).unwrap(), original);
     }
     #[test]
     fn generation_drafts_remain_independent_through_history_and_reopen() {
