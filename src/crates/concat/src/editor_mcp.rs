@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use concat_editor_mcp::{Method, MoveParameters, Request, Response};
+use concat_editor_mcp::{
+    CanvasAction, CanvasParameters, Method, MoveParameters, Request, Response,
+};
 use serde_json::{Value, json};
 use slint::ComponentHandle;
 
@@ -28,6 +30,15 @@ mod write_request;
 
 use write_registry::{Begin, LeaseStatus, OperationKey, RegistryError, Scope, WriteRegistry};
 use write_request::{WriteRequest, WriteRequestOutcome};
+
+#[path = "editor_mcp_canvas_policy.rs"]
+mod canvas_policy;
+use canvas_policy::{Intent, Permit, Permits, Receipts};
+#[path = "editor_mcp_canvas_execute.rs"]
+mod canvas_execute;
+use canvas_execute::{
+    dispatch_library, execute_canvas, execute_registration_retry, refresh_registration_receipt,
+};
 
 static BOUND_ENDPOINT: OnceLock<endpoint_cleanup::BoundEndpoint> = OnceLock::new();
 
@@ -318,6 +329,37 @@ fn bounded_name(name: &str) -> String {
     name.chars().take(256).collect()
 }
 
+fn canvas_image_value(layer: &concat_canvas::ImageLayer, parent: Option<String>) -> Value {
+    let reference = layer
+        .library_asset
+        .as_ref()
+        .and_then(|value| {
+            serde_json::from_value::<crate::personal_library::AssetReference>(value.clone()).ok()
+        })
+        .and_then(|reference| {
+            let version = reference.version?;
+            let version = concat_editor_mcp::AssetVersion {
+                sha256: version.sha256,
+                registration_id: version.registration_id,
+                previous_id: version.previous_id,
+            };
+            let parameters = CanvasParameters {
+                operation_id: concat_editor_mcp::operation_id("read", "read", 1).ok()?,
+                client_sequence: 1,
+                selection_revision: 0,
+                action: CanvasAction::Insert {
+                    asset_id: reference.asset_id.clone(),
+                    version: version.clone(),
+                },
+            };
+            concat_editor_mcp::validate_canvas_parameters("read", "read", &parameters).ok()?;
+            Some(json!({"assetId":reference.asset_id,"version":version}))
+        });
+    json!({"kind":"image","id":format!("layer:{}",layer.id.as_u64()),"parentId":parent,"name":bounded_name(&layer.name),
+        "hidden":layer.hidden,"opacity":layer.opacity,"blend":layer.blend,"hasMask":layer.mask.is_some(),"transform":layer.transform,
+        "clipsTo":layer.clips_to.map(|id|format!("layer:{}",id.as_u64())),"sampling":layer.sampling,"libraryReference":reference})
+}
+
 fn canvas_objects(
     document: &concat_canvas::ImageDocument,
     offset: usize,
@@ -361,14 +403,9 @@ fn canvas_objects(
             Entry::Leaf(node, parent) if included => {
                 let parent = format!("layer:{}", parent.as_u64());
                 match node {
-                    concat_canvas::LayerNode::Layer(layer) => rows.push(json!({
-                        "kind":"image", "id":format!("layer:{}", layer.id.as_u64()),
-                        "parentId":parent, "name":bounded_name(&layer.name),
-                        "hidden":layer.hidden, "opacity":layer.opacity, "blend":layer.blend,
-                        "hasMask":layer.mask.is_some(), "transform":layer.transform,
-                        "clipsTo":layer.clips_to.map(|id| format!("layer:{}", id.as_u64())),
-                        "sampling":layer.sampling,
-                    })),
+                    concat_canvas::LayerNode::Layer(layer) => {
+                        rows.push(canvas_image_value(layer, Some(parent)))
+                    }
                     concat_canvas::LayerNode::Adjustment(adjustment) => rows.push(json!({
                         "kind":"adjustment", "id":format!("layer:{}", adjustment.id.as_u64()),
                         "parentId":parent, "name":bounded_name(&adjustment.name),
@@ -473,9 +510,43 @@ fn clip_objects(
 }
 
 #[derive(Clone, Debug, PartialEq)]
+enum EditFingerprint {
+    Move(MoveFingerprint),
+    Canvas {
+        revision: u64,
+        parameters: CanvasParameters,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct MoveFingerprint {
     revision: u64,
     parameters: MoveParameters,
+}
+
+/// Compact trusted-card content, parsed with the same exact named arguments
+/// used by the native permit. No raw paths or arbitrary instructions displayed.
+pub(crate) fn canvas_approval_view(tool: &str, args: Value) -> Option<(String, String)> {
+    let intent = Intent::parse(tool, args)?;
+    Some(match intent.action {
+        Some(CanvasAction::Insert { asset_id, .. }) => {
+            ("放入画布".into(), format!("图片：{asset_id}"))
+        }
+        Some(CanvasAction::Transform {
+            object_id,
+            x,
+            y,
+            scale,
+        }) => (
+            "调整图层".into(),
+            format!("{object_id} · 位置 {x}, {y} · 缩放 {scale}"),
+        ),
+        Some(CanvasAction::Save) => ("保存画布".into(), "保存当前工程".into()),
+        Some(CanvasAction::Export) => ("导出 PNG".into(), "导出并加入资产库".into()),
+        None if intent.library.is_some() => ("查找图片".into(), intent.library?.query),
+        None if intent.retry_registration => ("重试入库".into(), "登记原 PNG".into()),
+        None => ("核对操作".into(), "读取原操作结果".into()),
+    })
 }
 
 pub(crate) struct WriteView {
@@ -500,7 +571,11 @@ pub(crate) struct BridgeUi {
     clip_ids: Option<(String, DocumentIds)>,
     active_canvas: bool,
     active_clip: bool,
-    writes: WriteRegistry<MoveFingerprint, Response>,
+    writes: WriteRegistry<EditFingerprint, Response>,
+    canvas_permits: Permits,
+    canvas_receipts: Receipts,
+    canvas_export_recoveries:
+        HashMap<(Scope, String, u64), Arc<crate::panes::canvas::CanvasExportRecovery>>,
     write_token: String,
     write_message: String,
     write_revoked: bool,
@@ -566,6 +641,12 @@ impl BridgeUi {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
         let canvas = active.as_ref().is_some_and(|(kind, _)| kind == "canvas");
+        if matches!(
+            action,
+            AssistantPermission::RevokeRead | AssistantPermission::RevokeWrite
+        ) {
+            self.canvas_permits.clear();
+        }
         let ready = if matches!(
             action,
             AssistantPermission::GrantWrite | AssistantPermission::RenewWrite
@@ -606,6 +687,101 @@ impl BridgeUi {
         Ok(())
     }
 
+    /// Only the exact frozen approval card's trusted click can issue this
+    /// named-tool permit. It never grants or renews the existing E lease.
+    pub(crate) fn assistant_tool_permit(
+        &mut self,
+        studio: &Studio,
+        app: &App,
+        tool: &str,
+        arguments: Value,
+    ) -> Result<u64, AssistantPermissionError> {
+        let intent = Intent::parse(tool, arguments).ok_or(AssistantPermissionError::NotAllowed)?;
+        let Some((kind, ids)) = self.active_ids(studio, app) else {
+            return Err(AssistantPermissionError::NotAllowed);
+        };
+        let current = self.scope(&ids);
+        if kind != "canvas"
+            || modal_busy(studio, app, true)
+            || self
+                .grants
+                .get(ASSISTANT_CLIENT_ID)
+                .is_none_or(|g| g.project != current.project || !g.media)
+        {
+            return Err(AssistantPermissionError::NotAllowed);
+        }
+        let claimed = Scope {
+            instance: self.instance_id.clone(),
+            project: intent.project.clone(),
+            session: intent.session.clone(),
+        };
+        let now = Instant::now();
+        if let Some(query) = &intent.operation {
+            if intent.retry_registration {
+                studio
+                    .canvas
+                    .mcp_writer_ready()
+                    .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
+                self.writes
+                    .authorize(
+                        &current,
+                        &current,
+                        ASSISTANT_CLIENT_ID,
+                        &self.write_token,
+                        now,
+                    )
+                    .map_err(|_| AssistantPermissionError::NotAllowed)?;
+            }
+            if !self
+                .canvas_receipts
+                .contains(&claimed, ASSISTANT_CLIENT_ID, query, now)
+            {
+                return Err(AssistantPermissionError::NotAllowed);
+            }
+        } else {
+            if claimed != current {
+                return Err(AssistantPermissionError::NotAllowed);
+            }
+            if intent.action.is_some() {
+                studio
+                    .canvas
+                    .mcp_writer_ready()
+                    .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
+                self.writes
+                    .authorize(
+                        &current,
+                        &claimed,
+                        ASSISTANT_CLIENT_ID,
+                        &self.write_token,
+                        now,
+                    )
+                    .map_err(|_| AssistantPermissionError::NotAllowed)?;
+                if intent.revision != Some(studio.canvas.mcp_state().1)
+                    || intent.selection_revision != Some(studio.mcp_selection_epoch())
+                {
+                    return Err(AssistantPermissionError::NotAllowed);
+                }
+                if let Some(CanvasAction::Transform { object_id, .. }) = &intent.action
+                    && studio
+                        .canvas
+                        .active
+                        .map(|id| format!("layer:{}", id.as_u64()))
+                        .as_deref()
+                        != Some(object_id.as_str())
+                {
+                    return Err(AssistantPermissionError::NotAllowed);
+                }
+            }
+        }
+        self.canvas_permits
+            .grant(claimed, ASSISTANT_CLIENT_ID.into(), intent, now)
+            .ok_or(AssistantPermissionError::NotAllowed)
+    }
+
+    pub(crate) fn revoke_tool_permit(&mut self, id: u64) {
+        self.canvas_permits.revoke(id);
+    }
+
     pub fn new() -> Self {
         Self {
             instance_id: uuid::Uuid::new_v4().to_string(),
@@ -617,6 +793,9 @@ impl BridgeUi {
             active_canvas: false,
             active_clip: false,
             writes: WriteRegistry::new(),
+            canvas_permits: Permits::default(),
+            canvas_receipts: Receipts::default(),
+            canvas_export_recoveries: HashMap::new(),
             write_token: String::new(),
             write_message: String::new(),
             write_revoked: false,
@@ -631,6 +810,7 @@ impl BridgeUi {
             &mut self.clip_ids
         };
         if slot.as_ref().is_none_or(|(old, _)| *old != generation) {
+            self.canvas_permits.clear();
             if let Some((_, old)) = slot.take() {
                 self.grants.retain(|_, grant| grant.project != old.project);
             }
@@ -656,6 +836,7 @@ impl BridgeUi {
                 ),
             );
         } else if let Some((_, old)) = self.canvas_ids.take() {
+            self.canvas_permits.clear();
             self.grants.retain(|_, grant| grant.project != old.project);
         }
         if studio.session.is_some() {
@@ -823,6 +1004,7 @@ impl BridgeUi {
     }
 
     pub(crate) fn revoke_move(&mut self) {
+        self.canvas_permits.clear();
         self.writes.revoke();
         self.write_token.clear();
         self.write_timer.stop();
@@ -964,6 +1146,7 @@ impl BridgeUi {
 
     pub fn revoke(&mut self) {
         self.grants.remove(self.client_draft.trim());
+        self.canvas_permits.clear();
     }
 
     pub fn grant_view(&self) -> (String, String) {
@@ -1037,7 +1220,8 @@ impl BridgeUi {
             };
             return UiReply::Response(Response::ok(json!({
                 "appInstanceId": self.instance_id,
-                "tools": ["capabilities", "context", "project", "preview", "move_selected_image"],
+                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "insert_library_image", "transform_canvas_layer", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration"],
+                "namedToolApprovalRequired":["library_images","insert_library_image","transform_canvas_layer","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
                 "permissions": ["R", "M", "E"], "readOnly": false,
                 "writeAction": "moveSelectedImage", "writeLeaseSeconds": 300,
                 "writeWorkspace": "canvas", "maxMoveDelta": 32768, "maxMovePosition": 1_000_000,
@@ -1084,6 +1268,49 @@ impl BridgeUi {
                     "dirty": dirty, "busy": if busy { Some("gesture") } else { None }}]
             })));
         }
+        if matches!(
+            request.method,
+            Method::LibraryImages | Method::CanvasOperation
+        ) {
+            if kind != "canvas" || !self.authorized(request, &ids.project, true) {
+                return UiReply::Response(Response::error("notAuthorized"));
+            }
+            let Some(claimed) = request_scope(request) else {
+                return UiReply::Response(Response::error("invalidInput"));
+            };
+            let Some(intent) = Intent::from_request(request) else {
+                return UiReply::Response(Response::error("invalidInput"));
+            };
+            let Some(permit) =
+                self.canvas_permits
+                    .claim(&claimed, &request.client_id, &intent, Instant::now())
+            else {
+                return UiReply::Response(Response::error("notAuthorized"));
+            };
+            if request.method == Method::CanvasOperation {
+                let response = self.canvas_receipts.query(
+                    &claimed,
+                    &request.client_id,
+                    request.operation_query.as_ref().expect("validated query"),
+                    Instant::now(),
+                );
+                if response.status == "partial" {
+                    return UiReply::Registration(Box::new(RegistrationReadJob {
+                        request: request.clone(),
+                        permit,
+                        response,
+                    }));
+                }
+                return UiReply::Response(response);
+            }
+            if claimed != self.scope(&ids) {
+                return UiReply::Response(Response::error("wrongProject"));
+            }
+            return UiReply::Library(Box::new(LibraryJob {
+                request: request.clone(),
+                permit,
+            }));
+        }
         if request.project_id.as_deref() != Some(&ids.project)
             || request.document_session_id.as_deref() != Some(&ids.session)
         {
@@ -1100,9 +1327,23 @@ impl BridgeUi {
             }
             let (total, objects, dimensions) = if kind == "canvas" {
                 let document = studio.canvas.document.as_ref().unwrap();
-                let (total, objects) = match canvas_objects(document, offset, limit) {
-                    Ok(page) => page,
-                    Err(()) => return UiReply::Response(Response::error("resourceLimit")),
+                let (total, objects) = if let Some(object_id) = &request.object_id {
+                    let id = concat_editor_mcp::parse_layer_id(object_id)
+                        .ok()
+                        .and_then(|id| {
+                            serde_json::from_value::<concat_canvas::LayerId>(json!(id)).ok()
+                        });
+                    let Some(concat_canvas::LayerNode::Layer(layer)) =
+                        id.and_then(|id| document.find(id))
+                    else {
+                        return UiReply::Response(Response::error("objectGone"));
+                    };
+                    (1, vec![canvas_image_value(layer, None)])
+                } else {
+                    match canvas_objects(document, offset, limit) {
+                        Ok(page) => page,
+                        Err(()) => return UiReply::Response(Response::error("resourceLimit")),
+                    }
                 };
                 (
                     total,
@@ -1110,6 +1351,9 @@ impl BridgeUi {
                     json!({"width": document.width, "height": document.height}),
                 )
             } else {
+                if request.object_id.is_some() {
+                    return UiReply::Response(Response::error("unsupportedTarget"));
+                }
                 let project = studio.session.as_ref().unwrap().project();
                 let (total, objects) = match clip_objects(project, offset, limit) {
                     Ok(page) => page,
@@ -1119,10 +1363,13 @@ impl BridgeUi {
             };
             return UiReply::Response(Response::ok(json!({
                 "projectId": ids.project, "documentSessionId": ids.session,
-                "revision": revision, "contextRevision": context_revision,
+                "revision": revision, "contextRevision": context_revision, "selectionRevision":studio.mcp_selection_epoch(),
                 "generation": generation, "total": total, "offset": offset,
                 "objects": objects, "dimensions": dimensions,
             })));
+        }
+        if request.method != Method::Preview {
+            return UiReply::Response(Response::error("notAuthorized"));
         }
         if kind != "canvas" {
             return UiReply::Response(Response::error("unsupportedPreview"));
@@ -1172,8 +1419,21 @@ struct PreviewJob {
     store: concat_canvas::PixelStore,
 }
 
+struct RegistrationReadJob {
+    request: Request,
+    permit: Permit,
+    response: Response,
+}
+
+struct LibraryJob {
+    request: Request,
+    permit: Permit,
+}
+
 enum UiReply {
     Response(Response),
+    Library(Box<LibraryJob>),
+    Registration(Box<RegistrationReadJob>),
     Preview(Box<PreviewJob>),
 }
 
@@ -1228,6 +1488,7 @@ fn canvas_status(error: &CanvasMoveError) -> &'static str {
             _ => "ownershipUnavailable",
         },
         CanvasMoveError::SelectionChanged => "selectionChanged",
+        CanvasMoveError::ResourceLimit => "resourceLimit",
         CanvasMoveError::ObjectGone | CanvasMoveError::MissingPixels => "objectGone",
         CanvasMoveError::PixelSelection
         | CanvasMoveError::MaskTarget
@@ -1300,10 +1561,10 @@ fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response,
     let Some(revision) = request.revision else {
         return (Response::error("invalidInput"), false);
     };
-    let fingerprint = MoveFingerprint {
+    let fingerprint = EditFingerprint::Move(MoveFingerprint {
         revision,
         parameters: parameters.clone(),
-    };
+    });
     let key = OperationKey {
         client: request.client_id.clone(),
         document_session: claimed.session.clone(),
@@ -1455,7 +1716,7 @@ fn request_outcome(outcome: WriteRequestOutcome<Response>) -> Response {
     }
 }
 
-fn dispatch_move(request: Request) -> Response {
+fn dispatch_write(request: Request) -> Response {
     let state = Arc::new(WriteRequest::new());
     let queued = Arc::clone(&state);
     let scheduled = slint::invoke_from_event_loop(move || {
@@ -1470,7 +1731,13 @@ fn dispatch_move(request: Request) -> Response {
                 queued.complete(Response::error("busy"));
                 return;
             };
-            let (response, changed) = execute_move(&request, &mut studio, &app);
+            let (response, changed) = if request.method == Method::MoveSelectedImage {
+                execute_move(&request, &mut studio, &app)
+            } else if request.method == Method::RetryCanvasRegistration {
+                execute_registration_retry(&request, &mut studio, &app)
+            } else {
+                execute_canvas(&request, &mut studio, &app)
+            };
             queued.complete(response);
             // Store both cache and request result before rendering can publish Settings.
             if changed {
@@ -1494,8 +1761,8 @@ fn dispatch(request: Request) -> Response {
     if concat_editor_mcp::validate_request_shape(&request).is_err() {
         return Response::error("invalidInput");
     }
-    if matches!(request.method, Method::MoveSelectedImage) {
-        return dispatch_move(request);
+    if request.method.is_write() {
+        return dispatch_write(request);
     }
     let reply = on_ui({
         let request = request.clone();
@@ -1514,6 +1781,8 @@ fn dispatch(request: Request) -> Response {
     };
     match reply {
         UiReply::Response(response) => response,
+        UiReply::Library(job) => dispatch_library(*job),
+        UiReply::Registration(job) => refresh_registration_receipt(*job),
         UiReply::Preview(job) => {
             let Ok(_slot) = preview_slot().try_lock() else {
                 return Response::error("busy");
@@ -2007,7 +2276,7 @@ mod assistant_permission_tests {
 mod tests {
     use super::*;
 
-    fn write_fixture() -> (BridgeUi, Scope, OperationKey, MoveFingerprint, Instant) {
+    fn write_fixture() -> (BridgeUi, Scope, OperationKey, EditFingerprint, Instant) {
         let mut bridge = BridgeUi::new();
         let ids = bridge.ids("canvas", "1:1".into());
         let scope = bridge.scope(&ids);
@@ -2034,10 +2303,10 @@ mod tests {
             bridge,
             scope,
             key,
-            MoveFingerprint {
+            EditFingerprint::Move(MoveFingerprint {
                 revision: 11,
                 parameters,
-            },
+            }),
             now,
         )
     }
@@ -2054,6 +2323,10 @@ mod tests {
             },
         );
         let mut request = Request {
+            object_id: None,
+            canvas_parameters: None,
+            library_query: None,
+            operation_query: None,
             instance_id: scope.instance.clone(),
             client_id: "writer".into(),
             client_token: "write-token".into(),
@@ -2130,12 +2403,15 @@ mod tests {
         assert_eq!(cached.data, original.data);
         for mutate in 0..5 {
             let mut changed = params.clone();
+            let EditFingerprint::Move(changed_move) = &mut changed else {
+                panic!("move fingerprint")
+            };
             match mutate {
-                0 => changed.revision += 1,
-                1 => changed.parameters.selection_revision += 1,
-                2 => changed.parameters.object_id = "layer:3".into(),
-                3 => changed.parameters.delta_x += 1.0,
-                _ => changed.parameters.delta_y += 1.0,
+                0 => changed_move.revision += 1,
+                1 => changed_move.parameters.selection_revision += 1,
+                2 => changed_move.parameters.object_id = "layer:3".into(),
+                3 => changed_move.parameters.delta_x += 1.0,
+                _ => changed_move.parameters.delta_y += 1.0,
             }
             assert!(matches!(
                 bridge
@@ -2458,6 +2734,10 @@ mod tests {
             },
         );
         let request = Request {
+            object_id: None,
+            canvas_parameters: None,
+            library_query: None,
+            operation_query: None,
             instance_id: bridge.instance_id.clone(),
             client_id: "reader".into(),
             client_token: "token".into(),

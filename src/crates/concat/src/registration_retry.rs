@@ -357,6 +357,66 @@ pub(crate) fn retry(root: &Path) -> Result<Outcome, String> {
     })
 }
 
+/// Retry one original prepared output only. No migration of other records,
+/// source decoding, composition or export is performed.
+pub(crate) fn retry_operation(
+    root: &Path,
+    registration_id: &str,
+    sha256: &str,
+) -> Result<crate::personal_library::AssetReference, String> {
+    let expected = format!("operation:{registration_id}");
+    if let Some(asset) = registered_operation(root, &expected, sha256)? {
+        return Ok(asset);
+    }
+    let mut entries = load(root)?;
+    let prepared = entries
+        .iter()
+        .filter_map(|entry| entry.prepared.as_ref())
+        .find(|p| p.registration_id == expected && p.sha256 == sha256)
+        .ok_or("原输出的冻结登记记录不可用")?
+        .clone();
+    let mut library = Library::load(root)?;
+    library.commit_generated(&prepared)?;
+    entries.retain(|entry| {
+        entry
+            .prepared
+            .as_ref()
+            .is_none_or(|p| p.registration_id != expected)
+    });
+    let _ = save(root, &entries);
+    registered_operation(root, &expected, sha256)?.ok_or_else(|| "原输出登记回执不可用".into())
+}
+
+pub(crate) fn registered_operation(
+    root: &Path,
+    registration_id: &str,
+    sha256: &str,
+) -> Result<Option<crate::personal_library::AssetReference>, String> {
+    // A failed first registration can have a durable prepared record before
+    // the first library index exists. Absence proves no registered receipt;
+    // corrupt or inaccessible existing indices must still fail closed.
+    match fs::symlink_metadata(root.join(crate::personal_library::MANIFEST_NAME)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("无法读取个人资产库索引：{error}")),
+        Ok(_) => {}
+    }
+    let library = Library::load_for_relink(root)?;
+    let Some(asset) = library.items().iter().find(|asset| {
+        !asset.trashed
+            && asset
+                .version
+                .as_ref()
+                .is_some_and(|v| v.registration_id == registration_id && v.sha256 == sha256)
+    }) else {
+        return Ok(None);
+    };
+    crate::personal_library::checked_managed_version_path(root, asset)?;
+    Ok(Some(crate::personal_library::AssetReference {
+        asset_id: asset.id.clone(),
+        version: asset.version.clone(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -365,6 +425,67 @@ mod tests {
     };
     use serde_json::json;
     use std::{fs, path::PathBuf};
+
+    #[test]
+    fn mcp_canvas_registration_retry_uses_only_one_original_frozen_snapshot() {
+        use sha2::{Digest, Sha256};
+        let temp = Temp::new();
+        let root = temp.0.join("library");
+        let source = temp.0.join("original.png");
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255, 0, 0, 255])
+                .unwrap();
+        }
+        fs::write(&source, &bytes).unwrap();
+        Library::load(&root).unwrap();
+        fail_next_manifest_save(&root);
+        assert!(
+            registration_retry::register_output(
+                &root,
+                &source,
+                Some("Original"),
+                Some("one"),
+                Some(&bytes)
+            )
+            .is_err()
+        );
+        fail_next_manifest_save(&root);
+        assert!(
+            registration_retry::register_output(
+                &root,
+                &source,
+                Some("Other"),
+                Some("two"),
+                Some(&bytes)
+            )
+            .is_err()
+        );
+        assert_eq!(registration_retry::load(&root).unwrap().len(), 2);
+        fs::write(&source, b"source changed after freezing").unwrap();
+        let changed = fs::read(&source).unwrap();
+        let modified = fs::metadata(&source).unwrap().modified().unwrap();
+        let sha = format!("{:x}", Sha256::digest(&bytes));
+        let first = registration_retry::retry_operation(&root, "one", &sha).unwrap();
+        assert_eq!(fs::read(&source).unwrap(), changed);
+        assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(), modified);
+        assert_eq!(first.version.as_ref().unwrap().sha256, sha);
+        assert_eq!(Library::load_for_relink(&root).unwrap().items().len(), 1);
+        assert_eq!(registration_retry::load(&root).unwrap().len(), 1);
+        assert_eq!(
+            registration_retry::retry_operation(&root, "one", &sha).unwrap(),
+            first
+        );
+        assert_eq!(Library::load_for_relink(&root).unwrap().items().len(), 1);
+        assert!(registration_retry::retry_operation(&root, "two", &"b".repeat(64)).is_err());
+        assert_eq!(registration_retry::load(&root).unwrap().len(), 1);
+    }
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Self {

@@ -7,6 +7,12 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod canvas;
+pub use canvas::{
+    AssetVersion, CanvasAction, CanvasParameters, LibraryQuery, OperationQuery,
+    validate_canvas_parameters,
+};
+
 /// A single IPC message is bounded before deserialization or allocation.
 pub const MAX_MESSAGE: usize = 1024 * 1024;
 /// IPC calls should fail promptly if the app is exiting or blocked.
@@ -48,6 +54,18 @@ pub struct Request {
     #[serde(default)]
     /// Parameters for the sole supported edit; forbidden on read requests.
     pub move_parameters: Option<MoveParameters>,
+    #[serde(default)]
+    /// Exact typed canvas write parameters.
+    pub canvas_parameters: Option<CanvasParameters>,
+    #[serde(default)]
+    /// Optional exact canvas-layer lookup instead of project pagination.
+    pub object_id: Option<String>,
+    #[serde(default)]
+    /// Bounded global-library image query.
+    pub library_query: Option<LibraryQuery>,
+    #[serde(default)]
+    /// Owner-only original-operation query.
+    pub operation_query: Option<OperationQuery>,
 }
 
 /// A single atomic translation of the current single selected image layer.
@@ -61,6 +79,7 @@ pub struct MoveParameters {
     /// Selection version observed before this operation.
     pub selection_revision: u64,
     /// Canonical stable image layer identity, `layer:<nonzero u64>`.
+    /// Optional exact canvas-layer lookup instead of project pagination.
     pub object_id: String,
     /// Horizontal translation in document pixels, finite and at most 32768 in magnitude.
     pub delta_x: f64,
@@ -69,7 +88,7 @@ pub struct MoveParameters {
 }
 
 /// The only methods on the IPC boundary.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Method {
     /// Read supported tools and limits.
@@ -82,6 +101,52 @@ pub enum Method {
     Preview,
     /// Move the current single selected image layer under a trusted UI write lease.
     MoveSelectedImage,
+    /// Read versioned images in the existing global library.
+    LibraryImages,
+    /// Insert one explicitly approved library image version.
+    InsertLibraryImage,
+    /// Set bounded position and scale of the selected canvas layer.
+    TransformCanvasLayer,
+    /// Save the existing canvas binding asynchronously.
+    SaveCanvasProject,
+    /// Formally export PNG and register it in the existing library.
+    ExportCanvasPng,
+    /// Query the original operation without replay.
+    CanvasOperation,
+    /// Retry only registration of the original frozen PNG output.
+    RetryCanvasRegistration,
+}
+
+impl Method {
+    /// Whether partial transmission can have a write outcome.
+    pub fn is_write(self) -> bool {
+        matches!(
+            self,
+            Self::MoveSelectedImage
+                | Self::InsertLibraryImage
+                | Self::TransformCanvasLayer
+                | Self::SaveCanvasProject
+                | Self::ExportCanvasPng
+                | Self::RetryCanvasRegistration
+        )
+    }
+    /// Exact fixed MCP name for the protocol method.
+    pub fn tool_name(self) -> &'static str {
+        match self {
+            Self::Capabilities => "capabilities",
+            Self::Context => "context",
+            Self::Project => "project",
+            Self::Preview => "preview",
+            Self::MoveSelectedImage => "move_selected_image",
+            Self::LibraryImages => "library_images",
+            Self::InsertLibraryImage => "insert_library_image",
+            Self::TransformCanvasLayer => "transform_canvas_layer",
+            Self::SaveCanvasProject => "save_canvas_project",
+            Self::ExportCanvasPng => "export_canvas_png",
+            Self::CanvasOperation => "canvas_operation",
+            Self::RetryCanvasRegistration => "retry_canvas_registration",
+        }
+    }
 }
 
 /// Derive the versioned operation identity using exact UTF-8 bytes and byte lengths.
@@ -141,6 +206,91 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if let Some(object_id) = &request.object_id {
+        if request.method != Method::Project || request.offset.is_some() || request.limit.is_some()
+        {
+            return Err("invalidInput: targeted project fields".into());
+        }
+        parse_layer_id(object_id)?;
+    }
+    let canvas = request.canvas_parameters.as_ref();
+    let library = request.library_query.as_ref();
+    let operation = request.operation_query.as_ref();
+    if canvas.is_some()
+        || library.is_some()
+        || operation.is_some()
+        || matches!(
+            request.method,
+            Method::LibraryImages
+                | Method::InsertLibraryImage
+                | Method::TransformCanvasLayer
+                | Method::SaveCanvasProject
+                | Method::ExportCanvasPng
+                | Method::CanvasOperation
+                | Method::RetryCanvasRegistration
+        )
+    {
+        let session = request
+            .document_session_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or("invalidInput: document identity")?;
+        if request.project_id.as_deref().is_none_or(str::is_empty)
+            || request.move_parameters.is_some()
+            || request.context_revision.is_some()
+            || request.offset.is_some()
+            || request.limit.is_some()
+            || request.max_edge.is_some()
+        {
+            return Err("invalidInput: canvas request fields".into());
+        }
+        match request.method {
+            Method::LibraryImages
+                if canvas.is_none() && operation.is_none() && request.revision.is_none() =>
+            {
+                let query = library.ok_or("invalidInput: library query")?;
+                if query.asset_id.as_ref().is_some_and(|id| {
+                    id.is_empty()
+                        || id.len() > 128
+                        || !id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                }) || query.query.chars().count() > 160
+                    || query.limit == 0
+                    || query.limit > 50
+                    || query.offset > 1_000_000
+                {
+                    return Err("invalidInput: library page".into());
+                }
+                return Ok(());
+            }
+            Method::CanvasOperation | Method::RetryCanvasRegistration
+                if canvas.is_none() && library.is_none() && request.revision.is_none() =>
+            {
+                let query = operation.ok_or("invalidInput: operation query")?;
+                return if query.operation_id
+                    == operation_id(&request.client_id, session, query.client_sequence)?
+                {
+                    Ok(())
+                } else {
+                    Err("invalidInput: operation ID mismatch".into())
+                };
+            }
+            method
+                if method.is_write()
+                    && library.is_none()
+                    && operation.is_none()
+                    && request.revision.is_some() =>
+            {
+                let parameters = canvas.ok_or("invalidInput: canvas parameters")?;
+                if parameters.action.method() != method {
+                    return Err("invalidInput: wrong action".into());
+                }
+                return validate_canvas_parameters(&request.client_id, session, parameters);
+            }
+            _ => return Err("invalidInput: unrelated canvas parameters".into()),
+        }
+    }
     if !matches!(request.method, Method::MoveSelectedImage) {
         return if request.move_parameters.is_none() {
             Ok(())
@@ -294,11 +444,7 @@ pub fn call(path: &Path, request: &Request) -> Response {
     {
         return Response::error("appUnavailable");
     }
-    exchange(
-        &mut stream,
-        &frame,
-        matches!(request.method, Method::MoveSelectedImage),
-    )
+    exchange(&mut stream, &frame, request.method.is_write())
 }
 
 // Any sent bytes make a write failure ambiguous. The adapter cannot prove that
@@ -398,6 +544,10 @@ mod tests {
 
     fn move_request() -> Request {
         Request {
+            object_id: None,
+            canvas_parameters: None,
+            library_query: None,
+            operation_query: None,
             instance_id: "app".into(),
             client_id: "client".into(),
             client_token: "write-credential".into(),
@@ -680,6 +830,10 @@ mod tests {
     #[test]
     fn preview_rejects_each_stale_axis() {
         let mut request = Request {
+            object_id: None,
+            canvas_parameters: None,
+            library_query: None,
+            operation_query: None,
             instance_id: "app".into(),
             client_id: "c".into(),
             client_token: "t".into(),
@@ -708,6 +862,10 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         let path = std::env::temp_dir().join(format!("sc-test-{}", uuid::Uuid::new_v4()));
         let first = Request {
+            object_id: None,
+            canvas_parameters: None,
+            library_query: None,
+            operation_query: None,
             instance_id: "first".into(),
             client_id: "c".into(),
             client_token: "t".into(),

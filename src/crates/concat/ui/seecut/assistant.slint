@@ -312,6 +312,7 @@ export component AssistantPanel inherits Rectangle {
     in property <bool> can-reconcile;
     in property <string> budget-label;
     in property <bool> can-connect;
+    in property <string> reconcile-label: "核实原请求";
     in property <bool> connected;
     in property <bool> can-disconnect;
     in property <string> connect-label: "连接";
@@ -475,10 +476,10 @@ export component AssistantPanel inherits Rectangle {
                 list-width: min(280px, max(120px, root.width - 100px));
                 selected(index) => { root.select-session(index); }
             }
-            IconButton {
+            if root.developer-tools: IconButton {
                 enabled: root.active;
-                side: 36px; icon-size: 20px; glyph: root.settings-open ? Glyph.chevron-left : root.developer-tools ? Glyph.sliders : Glyph.lock;
-                label: root.settings-open ? "返回对话" : root.developer-tools ? "开发设置" : "画布权限";
+                side: 36px; icon-size: 20px; glyph: root.settings-open ? Glyph.chevron-left : Glyph.sliders;
+                label: root.settings-open ? "返回对话" : "开发验收配置";
                 clicked => { root.settings-open = !root.settings-open; }
             }
             close-button := IconButton {
@@ -516,20 +517,9 @@ export component AssistantPanel inherits Rectangle {
                 alignment: start;
                 if !root.settings-open: VerticalLayout {
                     spacing: 16px;
-                    if root.messages.length == 0: VerticalLayout {
-                        spacing: 10px;
-                        AssistantText {
-                            text: "描述你想了解或调整的内容";
-                            color: Theme.fg-muted;
-                        }
-                        if !root.developer-tools: AssistantText {
-                            text: root.signed-in ? "Agent 使用账户的统一积分，画布操作需要你的授权。" : "登录后，Agent 将使用你的账户和统一积分。";
-                            font-size: Theme.fs; color: Theme.fg-muted;
-                        }
-                        if !root.developer-tools && !root.signed-in: HorizontalLayout {
-                            AppButton { label: "登录"; primary: true; enabled: root.active; clicked => { root.sign-in(); } }
-                            Rectangle { horizontal-stretch: 1; }
-                        }
+                    if !root.developer-tools && !root.signed-in: HorizontalLayout {
+                        IconButton { glyph: Glyph.lock; label: "登录账户"; enabled: root.active; clicked => { root.sign-in(); } }
+                        Rectangle { horizontal-stretch: 1; }
                     }
                     if !root.developer-tools && root.signed-in && !root.connected: VerticalLayout {
                         spacing: 8px;
@@ -540,11 +530,14 @@ export component AssistantPanel inherits Rectangle {
                             IconButton { glyph: Glyph.reset; label: "刷新模型"; enabled: root.active && !root.connecting; clicked => { root.refresh-models(); } }
                         }
                         if root.connect-disabled-reason != "": AssistantText { text: root.connect-disabled-reason; color: Theme.fg-muted; }
-                        HorizontalLayout {
-                            AppButton { label: root.connect-label; primary: true; enabled: root.active && root.can-connect && !root.connecting; clicked => { root.connect-managed(); } }
-                            if !root.read-granted: AppButton { label: "画布权限"; enabled: root.active; clicked => { root.settings-open = true; } }
-                            Rectangle { horizontal-stretch: 1; }
-                        }
+                    }
+                    if !root.developer-tools && root.signed-in: HorizontalLayout {
+                        spacing: 8px;
+                        IconButton { glyph: root.read-granted ? Glyph.eye-off : Glyph.eye; label: root.read-granted ? "撤销读取与预览" : "允许读取与预览"; enabled: root.active && (root.read-granted ? root.can-revoke-read : root.can-grant-read); clicked => { if root.read-granted { root.revoke-read(); } else { root.grant-read(); } } }
+                        IconButton { glyph: root.write-granted ? Glyph.reset : Glyph.unlock; label: root.can-renew-write ? "续期画布操作 · 5分钟" : "允许画布操作 · 5分钟"; enabled: root.active && (root.can-renew-write || root.can-grant-write); clicked => { if root.can-renew-write { root.renew-write(); } else { root.grant-write(); } } }
+                        if root.can-revoke-write: IconButton { glyph: Glyph.lock; label: "撤销画布操作权限"; enabled: root.active; clicked => { root.revoke-write(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        IconButton { glyph: root.connected ? Glyph.close : Glyph.play; label: root.connect-label; enabled: root.active && (root.connected ? root.can-disconnect : root.can-connect) && !root.connecting; clicked => { if root.connected { root.disconnect(); } else { root.connect-managed(); } } }
                     }
                     for message in root.messages: VerticalLayout {
                         spacing: 6px;
@@ -571,18 +564,19 @@ export component AssistantPanel inherits Rectangle {
                     }
                 }
                 // Keep host approval and UNKNOWN visible when viewing permissions.
-                if root.unknown: AssistantText { text: "操作结果待核实，会话已暂停"; font-size: Theme.fs; color: Theme.fg-muted; }
+                if root.unknown: AssistantText { text: root.status == "" ? "操作结果待核实，会话已暂停" : root.status; font-size: Theme.fs; color: Theme.fg-muted; }
                 if root.can-reconcile: HorizontalLayout {
-                    AppButton { label: "核实原请求"; enabled: root.active && root.can-reconcile; clicked => { root.reconcile(); } }
+                    IconButton { glyph: Glyph.search; label: root.reconcile-label; side: 32px; enabled: root.active && root.can-reconcile; clicked => { root.reconcile(); } }
                     Rectangle { horizontal-stretch: 1; }
                 }
                 if root.approval-visible: VerticalLayout {
                     spacing: 8px;
+                    AssistantText { text: root.approval-title; font-size: Theme.fs; }
                     AssistantText { text: root.approval-description; font-size: 12px; color: Theme.fg-muted; }
                     HorizontalLayout {
                         spacing: 8px;
-                        AppButton { label: "拒绝"; enabled: root.active && (root.can-reject); clicked => { root.reject(); } }
-                        AppButton { label: "允许"; primary: true; enabled: root.active && (root.can-allow); clicked => { root.allow(); } }
+                        IconButton { glyph: Glyph.close; label: "拒绝"; enabled: root.active && (root.can-reject); clicked => { root.reject(); } }
+                        IconButton { glyph: Glyph.check; label: "允许"; enabled: root.active && (root.can-allow); clicked => { root.allow(); } }
                         Rectangle { horizontal-stretch: 1; }
                     }
                 }
@@ -695,7 +689,6 @@ export component AssistantPanel inherits Rectangle {
                 selected(index) => { root.select-effort(index); }
                 refresh => { root.refresh-models(); }
             }
-            if root.effort-visible && root.effort-reason != "": AssistantText { text: root.effort-reason; font-size: Theme.fs; color: Theme.fg-muted; }
             AssistantText {
                 text: root.budget-label == "" ? "0" : root.budget-label;
                 color: Theme.fg-muted;

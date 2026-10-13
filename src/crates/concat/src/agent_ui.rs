@@ -161,6 +161,8 @@ mod desktop {
 
     #[derive(Clone, PartialEq)]
     struct FrozenApproval {
+        tool: String,
+        arguments: serde_json::Value,
         id: String,
         turn_id: String,
         object_id: Option<String>,
@@ -188,6 +190,7 @@ mod desktop {
         catalog: crate::agent_models::Catalog,
         assistant_row: Option<usize>,
         approval: Option<FrozenApproval>,
+        editor_recovery: Option<crate::agent_controller::EditorRecovery>,
     }
     impl State {
         fn can_select_model(&self) -> bool {
@@ -918,10 +921,14 @@ mod desktop {
             let history_error = *self.history_error.borrow();
             let status = if let Some(error) = history_error {
                 error
-            } else if unknown {
-                "操作结果待核实"
             } else if !state.notice.is_empty() {
                 &state.notice
+            } else if unknown && view.can_connect {
+                "恢复连接后核实原请求"
+            } else if unknown {
+                view.error
+                    .map(|error| error.message())
+                    .unwrap_or("操作结果待核实")
             } else if let Some(error) = view.error {
                 error.message()
             } else if !outcome.is_empty() {
@@ -1049,6 +1056,19 @@ mod desktop {
             );
             ui.set_can_stop(view.can_stop);
             ui.set_can_reconcile(view.can_reconcile);
+            ui.set_reconcile_label(
+                if state
+                    .controller
+                    .editor_recovery()
+                    .is_some_and(|operation| operation.retry_registration)
+                {
+                    "恢复入库"
+                } else {
+                    "核实原请求"
+                }
+                .into(),
+            );
+
             ui.set_budget_label(view.budget_label.into());
             let connected = matches!(
                 phase,
@@ -1163,19 +1183,36 @@ mod desktop {
             );
             let approval = view.approval;
             let description = approval
-                .map(|a| match (&a.object_id, a.delta_x, a.delta_y) {
-                    (Some(object), Some(dx), Some(dy)) if dx.is_finite() && dy.is_finite() => {
-                        format!("对象：{object}\n水平移动：{dx} px\n垂直移动：{dy} px")
+                .map(|a| {
+                    if a.tool != "move_selected_image" {
+                        crate::editor_mcp::canvas_approval_view(&a.tool, a.arguments.clone())
+                            .map(|(_, description)| description)
+                            .unwrap_or_else(|| "操作参数无效".into())
+                    } else {
+                        match (&a.object_id, a.delta_x, a.delta_y) {
+                            (Some(object), Some(dx), Some(dy))
+                                if dx.is_finite() && dy.is_finite() =>
+                            {
+                                format!("对象：{object}\n水平移动：{dx} px\n垂直移动：{dy} px")
+                            }
+                            _ => "移动参数不完整，无法允许此操作".into(),
+                        }
                     }
-                    _ => "移动参数不完整，无法允许此操作".into(),
                 })
                 .unwrap_or_default();
             let valid_approval = approval.is_some_and(|a| {
+                if a.tool != "move_selected_image" {
+                    return crate::editor_mcp::canvas_approval_view(&a.tool, a.arguments.clone())
+                        .is_some();
+                }
                 a.object_id.is_some()
                     && a.delta_x.is_some_and(f64::is_finite)
                     && a.delta_y.is_some_and(f64::is_finite)
             });
+            let editor_recovery = state.controller.editor_recovery().cloned();
             let frozen_approval = approval.map(|a| FrozenApproval {
+                tool: a.tool.clone(),
+                arguments: a.arguments.clone(),
                 id: a.id.clone(),
                 turn_id: a.turn_id.clone(),
                 object_id: a.object_id.clone(),
@@ -1183,7 +1220,15 @@ mod desktop {
                 delta_y: a.delta_y,
             });
             ui.set_approval_visible(approval.is_some());
-            ui.set_approval_title("移动画布对象".into());
+            ui.set_approval_title(
+                approval
+                    .and_then(|a| {
+                        crate::editor_mcp::canvas_approval_view(&a.tool, a.arguments.clone())
+                            .map(|(title, _)| title)
+                    })
+                    .unwrap_or_else(|| "移动画布对象".into())
+                    .into(),
+            );
             ui.set_approval_description(description.into());
             ui.set_can_allow(view.can_approve && valid_approval);
             ui.set_can_reject(view.can_approve);
@@ -1197,6 +1242,7 @@ mod desktop {
             );
             state.assistant_row = next_row;
             state.approval = frozen_approval;
+            state.editor_recovery = editor_recovery;
         }
         fn send(&self, app: &App, text: &str) {
             self.refresh(app);
@@ -1400,10 +1446,49 @@ mod desktop {
             let mut state = self.state.borrow_mut();
             if frozen != state.approval {
                 state.notice = "待确认操作已变化，请检查当前对象和位移".into();
-            } else if let Some(approval) = frozen
-                && let Err(error) = state.controller.approve(&approval.id, allowed)
-            {
-                state.notice = error.message().into();
+            } else if let Some(approval) = frozen {
+                let mut permit = None;
+                let authorization = if allowed && approval.tool != "move_selected_image" {
+                    let mut result = Err("当前工程无法授权此操作");
+                    Shell::with(|shell, _| {
+                        let studio = shell.studio.borrow();
+                        studio.sync_mcp_selection();
+                        result = studio
+                            .editor_mcp
+                            .borrow_mut()
+                            .assistant_tool_permit(
+                                &studio,
+                                app,
+                                &approval.tool,
+                                approval.arguments.clone(),
+                            )
+                            .map(|id| {
+                                permit = Some(id);
+                            })
+                            .map_err(|error| error.message());
+                    });
+                    result
+                } else {
+                    Ok(())
+                };
+                match authorization {
+                    Err(error) => state.notice = error.into(),
+                    Ok(()) => {
+                        if let Err(error) = state.controller.approve(&approval.id, allowed) {
+                            if let Some(id) = permit {
+                                Shell::with(|shell, _| {
+                                    shell
+                                        .studio
+                                        .borrow()
+                                        .editor_mcp
+                                        .borrow_mut()
+                                        .revoke_tool_permit(id)
+                                });
+                            }
+                            state.notice = error.message().into();
+                        }
+                    }
+                }
             }
             drop(state);
             self.refresh(app);
@@ -1448,9 +1533,55 @@ mod desktop {
             self.refresh(app);
         }
         fn reconcile(&self, app: &App) {
+            let frozen = self.state.borrow().editor_recovery.clone();
             self.refresh(app);
-            if app.global::<Assistant>().get_open() {
-                let mut state = self.state.borrow_mut();
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            if frozen != state.editor_recovery {
+                state.notice = "待核对原操作已变化，请检查当前任务".into();
+            } else if let Some(operation) = frozen {
+                let mut permission = Err("无法读取原操作回执");
+                let mut permit = None;
+                Shell::with(|shell, _| {
+                    let studio = shell.studio.borrow();
+                    permission = studio
+                        .editor_mcp
+                        .borrow_mut()
+                        .assistant_tool_permit(
+                            &studio,
+                            app,
+                            if operation.retry_registration {
+                                "retry_canvas_registration"
+                            } else {
+                                "canvas_operation"
+                            },
+                            operation.query_arguments(),
+                        )
+                        .map(|id| {
+                            permit = Some(id);
+                        })
+                        .map_err(|error| error.message());
+                });
+                if let Err(error) = permission {
+                    state.notice = error.into();
+                } else if let Err(error) = state.controller.reconcile_editor(&operation) {
+                    if let Some(id) = permit {
+                        Shell::with(|shell, _| {
+                            shell
+                                .studio
+                                .borrow()
+                                .editor_mcp
+                                .borrow_mut()
+                                .revoke_tool_permit(id)
+                        });
+                    }
+                    state.notice = error.message().into();
+                } else {
+                    state.notice.clear();
+                }
+            } else {
                 state.notice = state
                     .controller
                     .reconcile()
@@ -1458,9 +1589,9 @@ mod desktop {
                     .map(|e| e.message())
                     .unwrap_or_default()
                     .into();
-                drop(state);
-                self.refresh(app);
             }
+            drop(state);
+            self.refresh(app);
         }
         fn load_models(&self, app: &App) {
             if cfg!(feature = "assistant-local-dev") || !app.global::<Assistant>().get_open() {
@@ -1832,6 +1963,7 @@ mod desktop {
             catalog: crate::agent_models::Catalog::default(),
             assistant_row: None,
             approval: None,
+            editor_recovery: None,
         }
     }
     fn history_full(state: &State) -> bool {
@@ -2068,6 +2200,7 @@ mod desktop {
             Some(TaskOutcome::Failed) => "处理失败",
             Some(TaskOutcome::Stopped) => "已停止",
             Some(TaskOutcome::OutcomeUnknown) => "操作结果待核实",
+            Some(TaskOutcome::OperationVerified) => "原操作已核对",
             None => "",
         }
     }

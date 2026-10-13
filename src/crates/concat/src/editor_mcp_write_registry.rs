@@ -252,6 +252,47 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
         Ok(())
     }
 
+    /// Read an authenticated existing sequence without reserving a new one.
+    /// Specific canvas-tool authorization must precede allocation of a new key.
+    pub fn cached(
+        &self,
+        current: &Scope,
+        claimed: &Scope,
+        key: &OperationKey,
+        token: &str,
+        params: &P,
+        now: Instant,
+    ) -> Result<Option<R>, RegistryError> {
+        self.authorize(current, claimed, &key.client, token, now)?;
+        if key.document_session != claimed.session {
+            return Err(RegistryError::ScopeMismatch);
+        }
+        if key.client_sequence == 0 {
+            return Err(RegistryError::InvalidSequence);
+        }
+        let Some(history) = self.histories.get(&(key.client.clone(), claimed.clone())) else {
+            return Ok(None);
+        };
+        if key.client_sequence > history.highest_sequence {
+            return Ok(None);
+        }
+        let record = history
+            .records
+            .iter()
+            .find(|r| {
+                r.sequence == key.client_sequence
+                    && now.saturating_duration_since(r.recorded_at) < RESULT_TTL
+            })
+            .ok_or(RegistryError::OutcomeUnknown)?;
+        if record.params != *params {
+            return Err(RegistryError::ParameterMismatch);
+        }
+        match &record.outcome {
+            Outcome::Completed(response) => Ok(Some(response.clone())),
+            Outcome::InProgress => Err(RegistryError::OutcomeUnknown),
+        }
+    }
+
     /// Authentication and current identities precede all cache access. The
     /// caller must only check fresh revisions/selection on the New branch.
     /// Reserving a sequence immediately makes duplicate/panic retries unknown.
@@ -391,6 +432,34 @@ mod tests {
         now: Instant,
     ) -> Result<Begin<&'static str>, RegistryError> {
         registry.begin(&scope(), &scope(), &key(sequence), "token", &params(), now)
+    }
+
+    #[test]
+    fn mcp_cached_lookup_never_reserves_a_new_or_unauthenticated_sequence() {
+        let now = Instant::now();
+        let mut registry = granted(now);
+        assert_eq!(
+            registry.cached(&scope(), &scope(), &key(1), "bad", &params(), now),
+            Err(RegistryError::Unauthorized)
+        );
+        assert!(registry.histories.is_empty());
+        assert_eq!(
+            registry.cached(&scope(), &scope(), &key(1), "token", &params(), now),
+            Ok(None)
+        );
+        assert!(registry.histories.is_empty());
+        assert_eq!(begin(&mut registry, 1, now), Ok(Begin::New));
+        registry.finish(&scope(), &key(1), "done", now).unwrap();
+        assert_eq!(
+            registry.cached(&scope(), &scope(), &key(1), "token", &params(), now),
+            Ok(Some("done"))
+        );
+        let mut changed = params();
+        changed.dx += 1;
+        assert_eq!(
+            registry.cached(&scope(), &scope(), &key(1), "token", &changed, now),
+            Err(RegistryError::ParameterMismatch)
+        );
     }
 
     #[test]

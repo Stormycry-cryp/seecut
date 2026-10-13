@@ -6119,6 +6119,18 @@ impl Studio {
     pub fn publish(&self, app: &App, models: &Models) {
         #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
         self.editor_mcp.borrow_mut().sync_document(self, app);
+        self.sync_mcp_selection();
+        self.mcp_context_epoch
+            .set(self.mcp_context_epoch.get().saturating_add(1));
+        self.publish_lanes(app, models);
+        self.publish_chrome(app, models);
+        self.publish_dock(app, models);
+        self.publish_canvas(app, models);
+    }
+
+    /// Synchronize only actual selection identity before an insert receipt.
+    /// Full publish may occur later, after the operation result is cached.
+    pub(crate) fn sync_mcp_selection(&self) {
         let mut selection = self
             .selection
             .iter()
@@ -6137,12 +6149,6 @@ impl Studio {
             self.mcp_selection_epoch
                 .set(self.mcp_selection_epoch.get().saturating_add(1));
         }
-        self.mcp_context_epoch
-            .set(self.mcp_context_epoch.get().saturating_add(1));
-        self.publish_lanes(app, models);
-        self.publish_chrome(app, models);
-        self.publish_dock(app, models);
-        self.publish_canvas(app, models);
     }
 
     pub(crate) fn mcp_clip_state(&self) -> (u64, u64, bool, bool) {

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Stdio MCP adapter. The running App owns all document and permission state.
 
-use concat_editor_mcp::{Method, MoveParameters, Request, Response, call, endpoint};
+use concat_editor_mcp::{
+    AssetVersion, CanvasAction, CanvasParameters, LibraryQuery, Method, MoveParameters,
+    OperationQuery, Request, Response, call, endpoint,
+};
 use rmcp::{
     ServiceExt,
     handler::server::wrapper::Parameters,
@@ -21,8 +24,10 @@ struct Bridge {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProjectArgs {
+    #[serde(default)]
+    object_id: Option<String>,
     project_id: String,
     document_session_id: String,
     #[serde(default)]
@@ -32,7 +37,7 @@ struct ProjectArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PreviewArgs {
     project_id: String,
     document_session_id: String,
@@ -56,12 +61,75 @@ struct MoveArgs {
     delta_y: f64,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CanvasIdentityArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: u64,
+    operation_id: String,
+    client_sequence: u64,
+    selection_revision: u64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InsertArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: u64,
+    operation_id: String,
+    client_sequence: u64,
+    selection_revision: u64,
+    asset_id: String,
+    version: AssetVersion,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TransformArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: u64,
+    operation_id: String,
+    client_sequence: u64,
+    selection_revision: u64,
+    object_id: String,
+    x: f64,
+    y: f64,
+    scale: f64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LibraryArgs {
+    #[serde(default)]
+    asset_id: Option<String>,
+    project_id: String,
+    document_session_id: String,
+    #[serde(default)]
+    query: String,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OperationArgs {
+    project_id: String,
+    document_session_id: String,
+    operation_id: String,
+    client_sequence: u64,
+}
+
 impl Bridge {
     fn request(&self, method: Method) -> Request {
         Request {
+            object_id: None,
+            canvas_parameters: None,
+            library_query: None,
+            operation_query: None,
             instance_id: self.instance.clone(),
             client_id: self.client.clone(),
-            client_token: if matches!(method, Method::MoveSelectedImage) {
+            client_token: if method.is_write() {
                 self.write_token.clone().unwrap_or_default()
             } else {
                 self.token.clone()
@@ -80,6 +148,22 @@ impl Bridge {
     fn dispatch(&self, request: Request) -> String {
         serde_json::to_string(&call(&self.socket, &request))
             .unwrap_or_else(|_| "{\"status\":\"ioFailure\"}".into())
+    }
+    fn canvas_write(&self, identity: CanvasIdentityArgs, action: CanvasAction) -> String {
+        if self.write_token.is_none() {
+            return serde_json::to_string(&Response::error("notAuthorized")).unwrap_or_default();
+        }
+        let mut request = self.request(action.method());
+        request.project_id = Some(identity.project_id);
+        request.document_session_id = Some(identity.document_session_id);
+        request.revision = Some(identity.revision);
+        request.canvas_parameters = Some(CanvasParameters {
+            operation_id: identity.operation_id,
+            client_sequence: identity.client_sequence,
+            selection_revision: identity.selection_revision,
+            action,
+        });
+        self.dispatch(request)
     }
 }
 
@@ -100,14 +184,110 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Read a bounded page of the current SeeCut project structure by project and document session ID"
+        description = "Read one exact canvas layer by optional canonical objectId, or a bounded project page. Do not combine objectId with pagination. Match project and document session ID."
     )]
     fn project(&self, Parameters(args): Parameters<ProjectArgs>) -> String {
         let mut request = self.request(Method::Project);
         request.project_id = Some(args.project_id);
         request.document_session_id = Some(args.document_session_id);
+        request.object_id = args.object_id;
         request.offset = args.offset;
         request.limit = args.limit;
+        self.dispatch(request)
+    }
+
+    #[tool(
+        description = "Search a bounded page of versioned global library images by name or optional exact assetId, including retrieval of the exported output for the current canvas task. Requires explicit App media authorization. Returns assetId, immutable version, name, kind and availability; never local paths. Limit 1..50, default20. Use returned identity/version for insertion."
+    )]
+    fn library_images(&self, Parameters(args): Parameters<LibraryArgs>) -> String {
+        let mut request = self.request(Method::LibraryImages);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.library_query = Some(LibraryQuery {
+            asset_id: args.asset_id,
+            query: args.query,
+            offset: args.offset,
+            limit: args.limit.unwrap_or(20),
+        });
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Insert a specified immutable library image into the current canvas in one undo step. Requires specific trusted App authorization and current E lease. Returns createdLayerId and committed revision/selectionRevision. No paths. UNKNOWN must query canvas_operation using the original operation identity; never submit a new sequence."
+    )]
+    fn insert_library_image(&self, Parameters(args): Parameters<InsertArgs>) -> String {
+        self.canvas_write(
+            CanvasIdentityArgs {
+                project_id: args.project_id,
+                document_session_id: args.document_session_id,
+                revision: args.revision,
+                operation_id: args.operation_id,
+                client_sequence: args.client_sequence,
+                selection_revision: args.selection_revision,
+            },
+            CanvasAction::Insert {
+                asset_id: args.asset_id,
+                version: args.version,
+            },
+        )
+    }
+    #[tool(
+        description = "Set position x/y (document pixels, finite within +/-32768) and uniform scale (0.01..64) of the specified current selected canvas image layer in one undo step. Requires specific trusted App authorization and E lease; checks document/selection revisions. UNKNOWN only queries original canvas_operation."
+    )]
+    fn transform_canvas_layer(&self, Parameters(args): Parameters<TransformArgs>) -> String {
+        self.canvas_write(
+            CanvasIdentityArgs {
+                project_id: args.project_id,
+                document_session_id: args.document_session_id,
+                revision: args.revision,
+                operation_id: args.operation_id,
+                client_sequence: args.client_sequence,
+                selection_revision: args.selection_revision,
+            },
+            CanvasAction::Transform {
+                object_id: args.object_id,
+                x: args.x,
+                y: args.y,
+                scale: args.scale,
+            },
+        )
+    }
+    #[tool(
+        description = "Save the current canvas to its App-recorded project asynchronously. No path parameter. Unnamed projects stop at awaitingSelection for the existing trusted App save flow. Query the original canvas_operation for actual persisted revision; acceptance alone is not saved success."
+    )]
+    fn save_canvas_project(&self, Parameters(args): Parameters<CanvasIdentityArgs>) -> String {
+        self.canvas_write(args, CanvasAction::Save)
+    }
+    #[tool(
+        description = "Formally export the current canvas PNG asynchronously into the App managed directory and default-register it in the existing global library. No path parameter. Query original canvas_operation for file SHA and assetId/version. Written-but-unregistered is partial; retry registration through original operation, never recompose or create a second export."
+    )]
+    fn export_canvas_png(&self, Parameters(args): Parameters<CanvasIdentityArgs>) -> String {
+        self.canvas_write(args, CanvasAction::Export)
+    }
+    #[tool(
+        description = "Query an original canvas operation bound to this instance/client/project/document and original operationId/clientSequence. Requires explicit App authorization to read this client's operation receipt. Returns progress or exact layer/transform/persisted-revision/PNG-hash/library-version evidence; no arbitrary tool replay."
+    )]
+    fn canvas_operation(&self, Parameters(args): Parameters<OperationArgs>) -> String {
+        let mut request = self.request(Method::CanvasOperation);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.operation_query = Some(OperationQuery {
+            operation_id: args.operation_id,
+            client_sequence: args.client_sequence,
+        });
+        self.dispatch(request)
+    }
+
+    #[tool(
+        description = "Retry only global-library registration of an original frozen PNG from export_canvas_png. Uses its exact original operationId/clientSequence and existing bytes/provenance. No compose, PNG rewrite, new export, new sequence or path argument. Requires exact trusted App approval and current five-minute E lease. Query canvas_operation with the original identity for its final PNG SHA/asset version."
+    )]
+    fn retry_canvas_registration(&self, Parameters(args): Parameters<OperationArgs>) -> String {
+        let mut request = self.request(Method::RetryCanvasRegistration);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.operation_query = Some(OperationQuery {
+            operation_id: args.operation_id,
+            client_sequence: args.client_sequence,
+        });
         self.dispatch(request)
     }
 

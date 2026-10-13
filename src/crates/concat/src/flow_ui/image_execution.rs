@@ -983,11 +983,10 @@ fn tick(app: &App, h: &mut Host) -> bool {
                         seecut_flow_core::digest(&source.origin.path)
                     );
                     if !h.images.running.contains(&key)
-                        && !h
-                            .images
+                        && h.images
                             .cooldown
                             .get(&key)
-                            .is_some_and(|until| Instant::now() < *until)
+                            .is_none_or(|until| Instant::now() >= *until)
                     {
                         h.images.running.insert(key.clone());
                         let body = source
@@ -1006,11 +1005,10 @@ fn tick(app: &App, h: &mut Host) -> bool {
                     );
                     let tx = h.images.tx.clone();
                     if !h.images.running.contains(&key)
-                        && !h
-                            .images
+                        && h.images
                             .cooldown
                             .get(&key)
-                            .is_some_and(|until| Instant::now() < *until)
+                            .is_none_or(|until| Instant::now() >= *until)
                     {
                         h.images.running.insert(key.clone());
                         std::thread::spawn(move || {
@@ -1039,11 +1037,10 @@ fn tick(app: &App, h: &mut Host) -> bool {
                 let key = format!("{prefix}:service");
                 let tx = h.images.tx.clone();
                 if !h.images.running.contains(&key)
-                    && !h
-                        .images
+                    && h.images
                         .cooldown
                         .get(&key)
-                        .is_some_and(|until| Instant::now() < *until)
+                        .is_none_or(|until| Instant::now() >= *until)
                 {
                     h.images.running.insert(key.clone());
                     std::thread::spawn(move || {
@@ -1092,11 +1089,10 @@ fn tick(app: &App, h: &mut Host) -> bool {
                             );
                             let tx = h.images.tx.clone();
                             if !h.images.running.contains(&key)
-                                && !h
-                                    .images
+                                && h.images
                                     .cooldown
                                     .get(&key)
-                                    .is_some_and(|until| Instant::now() < *until)
+                                    .is_none_or(|until| Instant::now() >= *until)
                             {
                                 h.images.running.insert(key.clone());
                                 std::thread::spawn(move || {
@@ -1123,11 +1119,10 @@ fn tick(app: &App, h: &mut Host) -> bool {
                         let key = format!("{prefix}:poll:{task_id}");
                         let tx = h.images.tx.clone();
                         if !h.images.running.contains(&key)
-                            && !h
-                                .images
+                            && h.images
                                 .cooldown
                                 .get(&key)
-                                .is_some_and(|until| Instant::now() < *until)
+                                .is_none_or(|until| Instant::now() >= *until)
                         {
                             h.images.running.insert(key.clone());
                             std::thread::spawn(move || {

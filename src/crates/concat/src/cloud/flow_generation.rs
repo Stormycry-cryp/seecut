@@ -94,17 +94,16 @@ impl AccountAccess {
     pub(crate) fn flow_scope(&self) -> Scope {
         if let Some(state) = self.state.upgrade() {
             let cloud = state.borrow();
-            if !cloud.token.is_empty() {
-                if let Some(account) = cloud
+            if !cloud.token.is_empty()
+                && let Some(account) = cloud
                     .history_name
                     .strip_suffix("-history.json")
                     .filter(|id| !id.is_empty())
-                {
-                    return Scope {
-                        account: account.into(),
-                        service: seecut_flow_core::digest(&cloud.base),
-                    };
-                }
+            {
+                return Scope {
+                    account: account.into(),
+                    service: seecut_flow_core::digest(&cloud.base),
+                };
             }
         }
         Scope {

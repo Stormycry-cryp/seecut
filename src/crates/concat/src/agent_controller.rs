@@ -47,6 +47,7 @@ pub enum TaskOutcome {
     Failed,
     Stopped,
     OutcomeUnknown,
+    OperationVerified,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiError {
@@ -84,12 +85,28 @@ impl UiError {
     }
 }
 pub struct Approval {
+    pub tool: String,
+    pub arguments: Value,
     pub id: String,
     pub turn_id: String,
     pub object_id: Option<String>,
     pub delta_x: Option<f64>,
     pub delta_y: Option<f64>,
 }
+#[derive(Clone, PartialEq, Eq)]
+pub struct EditorRecovery {
+    pub operation_id: String,
+    pub client_sequence: u64,
+    pub project_id: String,
+    pub document_session_id: String,
+    pub retry_registration: bool,
+}
+impl EditorRecovery {
+    pub fn query_arguments(&self) -> Value {
+        json!({"projectId":self.project_id,"documentSessionId":self.document_session_id,"operationId":self.operation_id,"clientSequence":self.client_sequence})
+    }
+}
+
 pub struct View<'a> {
     pub phase: Phase,
     pub text: &'a str,
@@ -113,6 +130,13 @@ enum ToolAction {
     Preview,
     Capabilities,
     Move,
+    Library,
+    Insert,
+    Transform,
+    Save,
+    Export,
+    Operation,
+    RegistrationRetry,
 }
 impl ToolAction {
     fn from_name(name: &str) -> Option<Self> {
@@ -122,8 +146,26 @@ impl ToolAction {
             "preview" => Some(Self::Preview),
             "capabilities" => Some(Self::Capabilities),
             "move_selected_image" => Some(Self::Move),
+            "library_images" => Some(Self::Library),
+            "insert_library_image" => Some(Self::Insert),
+            "transform_canvas_layer" => Some(Self::Transform),
+            "save_canvas_project" => Some(Self::Save),
+            "export_canvas_png" => Some(Self::Export),
+            "canvas_operation" => Some(Self::Operation),
+            "retry_canvas_registration" => Some(Self::RegistrationRetry),
             _ => None,
         }
+    }
+    fn is_write(self) -> bool {
+        matches!(
+            self,
+            Self::Move
+                | Self::Insert
+                | Self::Transform
+                | Self::Save
+                | Self::Export
+                | Self::RegistrationRetry
+        )
     }
     fn label(self) -> &'static str {
         match self {
@@ -132,6 +174,13 @@ impl ToolAction {
             Self::Preview => "查看画布预览",
             Self::Capabilities => "检查可用操作",
             Self::Move => "发送移动请求",
+            Self::Library => "查找库内图片",
+            Self::Insert => "放入画布",
+            Self::Transform => "调整图层",
+            Self::Save => "保存画布",
+            Self::Export => "导出并入库",
+            Self::Operation => "核对操作结果",
+            Self::RegistrationRetry => "登记原 PNG",
         }
     }
 }
@@ -173,6 +222,7 @@ enum Request {
     Close,
     Reconcile,
     RecoveryStatus,
+    EditorReconcile { operation_id: String },
 }
 struct Pending {
     id: String,
@@ -215,7 +265,10 @@ pub struct Controller {
     ignore_runtime_events: bool,
     secrets: Vec<String>,
     write_in_flight: bool,
-    write_identity: Option<(String, String)>,
+    write_identity: Option<(String, String, String)>,
+    write_operation: Option<(String, u64)>,
+    editor_client: String,
+    editor_recovery: Vec<EditorRecovery>,
 }
 impl Default for Controller {
     fn default() -> Self {
@@ -255,13 +308,24 @@ impl Default for Controller {
             secrets: Vec::new(),
             write_in_flight: false,
             write_identity: None,
+            write_operation: None,
+            editor_client: String::new(),
+            editor_recovery: Vec::new(),
         }
     }
 }
 impl Controller {
     /// An explicit host action only. Opening or restoring never sends saved input.
     pub fn connect(&mut self, config: ConnectionConfig) -> Result<(), UiError> {
-        if self.unknown_latched {
+        let recovering = self.unknown_latched;
+        if recovering
+            && !(self.can_restore_original()
+                && config.restore
+                && config.local_session_id == self.session_id
+                && config.client_id == self.editor_client
+                && self.document.as_ref() == Some(&config.document)
+                && self.managed_mode == (config.provider["protocol"] == "seecut-managed"))
+        {
             return Err(UiError::VerifyRequired);
         }
         if self.process.is_some() {
@@ -293,6 +357,9 @@ impl Controller {
             .as_str()
             .filter(|token| !token.is_empty())
             .map(|token| sha2::Sha256::digest(token.as_bytes()).to_vec());
+        if recovering && self.managed_mode && account_fingerprint != self.cost_account_fingerprint {
+            return Err(UiError::VerifyRequired);
+        }
         let preserve_cost = config.restore
             && self.session_id == config.local_session_id
             && self.document.as_ref() == Some(&config.document)
@@ -320,6 +387,11 @@ impl Controller {
         if let Some(token) = config.provider.get("sessionToken").and_then(Value::as_str) {
             self.secrets.push(token.to_owned());
         }
+        self.editor_client = config.client_id.clone();
+        if !recovering {
+            self.editor_recovery.clear();
+            self.write_operation = None;
+        }
         self.managed_mode = config.provider["protocol"].as_str() == Some("seecut-managed");
         // A new managed runtime must supply its persisted recovery state before Ready.
         self.model_unknown = self.managed_mode && self.model_unknown;
@@ -341,8 +413,10 @@ impl Controller {
         self.turn_id = None;
         self.last_result_turn = None;
         self.last_seq = 0;
-        self.write_in_flight = false;
-        self.write_identity = None;
+        if !recovering {
+            self.write_in_flight = false;
+            self.write_identity = None;
+        }
         self.text.clear();
         self.tool_progress.clear();
         self.progress.clear();
@@ -389,11 +463,19 @@ impl Controller {
     pub fn supports_model_selection(&self) -> bool {
         self.process.is_some() && self.model_selection_supported
     }
+    fn can_restore_original(&self) -> bool {
+        self.session_opened
+            && !self.session_id.is_empty()
+            && !self.editor_client.is_empty()
+            && self.document.is_some()
+            && !self.editor_recovery.is_empty()
+    }
     pub fn view(&self) -> View<'_> {
         View {
-            can_connect: self.process.is_none() && !self.unknown_latched,
-            can_reconcile: self.managed_mode
-                && self.model_unknown
+            can_connect: self.process.is_none()
+                && (!self.unknown_latched || self.can_restore_original()),
+            can_reconcile: ((self.managed_mode && self.model_unknown)
+                || (!self.editor_recovery.is_empty() && self.unknown_latched))
                 && !self.account_expired
                 && self.process.is_some()
                 && self.turn_id.is_none()
@@ -516,6 +598,109 @@ impl Controller {
             Request::Reconcile,
         )
     }
+    pub fn editor_recovery(&self) -> Option<&EditorRecovery> {
+        if self.view().can_reconcile && !self.model_unknown {
+            self.editor_recovery.first()
+        } else {
+            None
+        }
+    }
+    pub fn reconcile_editor(&mut self, operation: &EditorRecovery) -> Result<(), UiError> {
+        if self.editor_recovery() != Some(operation) {
+            return Err(UiError::Busy);
+        }
+        self.enqueue(
+            "editor.reconcile",
+            if operation.retry_registration {
+                json!({"sessionId":self.session_id,"operationId":operation.operation_id,"retryRegistration":true})
+            } else {
+                json!({"sessionId":self.session_id,"operationId":operation.operation_id})
+            },
+            Request::EditorReconcile {
+                operation_id: operation.operation_id.clone(),
+            },
+        )
+    }
+    fn update_editor_recovery(&mut self, tools: &Value) -> bool {
+        let Some(items) = tools.get("recoveryOperations").and_then(Value::as_array) else {
+            self.editor_recovery.clear();
+            return true;
+        };
+        if items.len() > 128 {
+            return false;
+        }
+        let mut next = Vec::new();
+        for item in items {
+            if item["sessionId"].as_str() != Some(self.session_id.as_str())
+                || !matches!(
+                    item["toolName"].as_str(),
+                    Some(
+                        "insert_library_image"
+                            | "transform_canvas_layer"
+                            | "save_canvas_project"
+                            | "export_canvas_png"
+                    )
+                )
+            {
+                continue;
+            }
+            let binding = &item["binding"];
+            let parameters = &item["parameters"];
+            if binding["instanceId"].as_str()
+                != self.document.as_ref().map(|d| d.instance_id.as_str())
+                || binding["clientId"].as_str() != Some(self.editor_client.as_str())
+            {
+                continue;
+            }
+            let (Some(project), Some(session), Some(sequence), Some(operation)) = (
+                binding["projectId"].as_str(),
+                binding["documentSessionId"].as_str(),
+                parameters["clientSequence"].as_u64(),
+                parameters["operationId"].as_str(),
+            ) else {
+                return false;
+            };
+            if project.is_empty()
+                || project.len() > 1024
+                || session.is_empty()
+                || session.len() > 64
+                || sequence == 0
+                || sequence > 9_007_199_254_740_991
+                || parameters["projectId"].as_str() != Some(project)
+                || parameters["documentSessionId"].as_str() != Some(session)
+                || item["operationId"].as_str() != Some(operation)
+                || operation
+                    != format!(
+                        "scm2:1:{}:{}:{}:{}:{}",
+                        self.editor_client.len(),
+                        self.editor_client,
+                        session.len(),
+                        session,
+                        sequence
+                    )
+            {
+                return false;
+            }
+            let entry = EditorRecovery {
+                operation_id: operation.into(),
+                client_sequence: sequence,
+                project_id: project.into(),
+                document_session_id: session.into(),
+                retry_registration: item["toolName"] == "export_canvas_png"
+                    && item["result"]["status"] == "partial"
+                    && item["result"]["data"]["operationId"].as_str() == Some(operation)
+                    && item["result"]["data"]["clientSequence"].as_u64() == Some(sequence)
+                    && item["result"]["data"]["registrationPending"] == true,
+            };
+            if next.contains(&entry) {
+                return false;
+            }
+            next.push(entry);
+        }
+        self.editor_recovery = next;
+        true
+    }
+
     fn apply_model_state(&mut self, value: &Value) -> bool {
         if !self.managed_mode {
             return false;
@@ -799,7 +984,7 @@ impl Controller {
             self.unknown();
             return;
         }
-        let Some((turn, invocation)) = self.write_identity.as_ref() else {
+        let Some((turn, invocation, tool)) = self.write_identity.as_ref() else {
             return;
         };
         let data = &event["data"];
@@ -807,7 +992,7 @@ impl Controller {
             || event["turnId"].as_str() != Some(turn.as_str())
             || event["type"].as_str() != Some("tool.failed")
             || data["invocationId"].as_str() != Some(invocation.as_str())
-            || data["message"]["toolName"].as_str() != Some("move_selected_image")
+            || data["message"]["toolName"].as_str() != Some(tool.as_str())
             || data["message"]["isError"].as_bool() != Some(true)
             || data["metadata"]["appStatus"].as_str() != Some("not_sent")
         {
@@ -871,7 +1056,10 @@ impl Controller {
                     self.phase = Phase::Ready;
                     self.error = Some(error);
                 }
-                Request::Approve { .. } | Request::Stop | Request::Reconcile => {
+                Request::Approve { .. }
+                | Request::Stop
+                | Request::Reconcile
+                | Request::EditorReconcile { .. } => {
                     self.error = Some(error);
                 }
                 Request::Close => {
@@ -948,6 +1136,23 @@ impl Controller {
                     self.fail(UiError::Protocol);
                     return;
                 }
+                let original_recovery = self.editor_recovery.clone();
+                if !self.update_editor_recovery(&result["toolState"]) {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                if self.unknown_latched
+                    && self.restore
+                    && !original_recovery.iter().all(|original| {
+                        self.editor_recovery
+                            .iter()
+                            .any(|next| next.query_arguments() == original.query_arguments())
+                    })
+                {
+                    self.editor_recovery = original_recovery;
+                    self.fail(UiError::Protocol);
+                    return;
+                }
                 self.session_opened = true;
                 if restoring {
                     self.recovery_pending = result["recoveryRequired"] == true
@@ -1004,7 +1209,49 @@ impl Controller {
                     }
                 }
             }
+            Request::EditorReconcile { operation_id } => {
+                let session = &result["session"];
+                if session["sessionId"].as_str() != Some(self.session_id.as_str())
+                    || !result["verified"].is_boolean()
+                    || result["receipt"]["data"]["operationId"].as_str()
+                        != Some(operation_id.as_str())
+                    || !session["toolState"]["outcomeUnknown"].is_boolean()
+                    || !self.update_editor_recovery(&session["toolState"])
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                if self.managed_mode && !self.apply_model_state(&session["modelState"]) {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                if result["verified"] == true && session["toolState"]["outcomeUnknown"] == false {
+                    self.unknown_latched = false;
+                    self.write_in_flight = false;
+                    self.write_identity = None;
+                    self.write_operation = None;
+                    self.recovery_pending =
+                        session["pendingInputCount"].as_u64().is_none_or(|n| n > 0);
+                    self.outcome = Some(if result["success"] == true {
+                        TaskOutcome::OperationVerified
+                    } else {
+                        TaskOutcome::Failed
+                    });
+                    self.phase = if self.blocked() {
+                        Phase::OutcomeUnknown
+                    } else {
+                        Phase::Ready
+                    };
+                    self.error = self.blocking_error();
+                } else {
+                    self.unknown();
+                }
+            }
             Request::RecoveryStatus => {
+                if !self.update_editor_recovery(&result["toolState"]) {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
                 if result["sessionId"].as_str() != Some(self.session_id.as_str())
                     || !result["toolState"]["outcomeUnknown"].is_boolean()
                     || (self.managed_mode && !self.apply_model_state(&result["modelState"]))
@@ -1121,31 +1368,104 @@ impl Controller {
         }
         match kind {
             "tool.started" => {
-                if data["call"]["name"].as_str() == Some("move_selected_image") {
+                // A registration retry acts on the outstanding original export.
+                // Its fresh COTO invocation must not erase that business identity.
+                if data["call"]["name"] == "retry_canvas_registration"
+                    && self.write_in_flight
+                    && self.write_operation.as_ref().is_some_and(|(id, sequence)| {
+                        data["call"]["arguments"]["operationId"].as_str() == Some(id.as_str())
+                            && data["call"]["arguments"]["clientSequence"].as_u64()
+                                == Some(*sequence)
+                    })
+                {
+                    return;
+                }
+                if data["call"]["name"]
+                    .as_str()
+                    .and_then(ToolAction::from_name)
+                    .is_some_and(ToolAction::is_write)
+                {
                     self.write_in_flight = true;
+                    self.write_operation = None;
                     self.write_identity = turn
                         .zip(
                             data["invocationId"]
                                 .as_str()
                                 .filter(|id| !id.is_empty() && id.len() <= 128),
                         )
-                        .map(|(turn, invocation)| (turn.to_owned(), invocation.to_owned()));
+                        .map(|(turn, invocation)| {
+                            (
+                                turn.to_owned(),
+                                invocation.to_owned(),
+                                data["call"]["name"].as_str().unwrap_or_default().to_owned(),
+                            )
+                        });
                 }
             }
             "tool.completed" | "tool.failed" => {
-                if data["message"]["toolName"].as_str() == Some("move_selected_image") {
+                let owns_write = self.write_identity.as_ref().is_some_and(
+                    |(original_turn, invocation, tool)| {
+                        turn == Some(original_turn.as_str())
+                            && data["invocationId"].as_str() == Some(invocation.as_str())
+                            && data["message"]["toolName"].as_str() == Some(tool.as_str())
+                    },
+                );
+                if owns_write {
+                    if data["metadata"]["postVerification"].as_str() == Some("pending") {
+                        self.write_operation = data["metadata"]["operationId"]
+                            .as_str()
+                            .filter(|id| !id.is_empty() && id.len() <= 192)
+                            .zip(
+                                data["metadata"]["clientSequence"]
+                                    .as_u64()
+                                    .filter(|n| *n > 0 && *n <= 9_007_199_254_740_991),
+                            )
+                            .map(|(id, sequence)| (id.to_owned(), sequence));
+                        self.outcome = Some(TaskOutcome::SubmittedPendingVerification);
+                    } else {
+                        self.write_in_flight = false;
+                        self.write_identity = None;
+                    }
+                } else if matches!(
+                    data["message"]["toolName"].as_str(),
+                    Some("canvas_operation" | "retry_canvas_registration")
+                ) && data["metadata"]["postVerification"].as_str() == Some("verified")
+                    && self
+                        .write_identity
+                        .as_ref()
+                        .is_some_and(|(_, invocation, tool)| {
+                            data["metadata"]["resolvesInvocationId"].as_str()
+                                == Some(invocation.as_str())
+                                && data["metadata"]["resolvesToolName"].as_str()
+                                    == Some(tool.as_str())
+                        })
+                    && self.write_operation.as_ref().is_some_and(|(id, sequence)| {
+                        data["metadata"]["operationId"].as_str() == Some(id.as_str())
+                            && data["metadata"]["clientSequence"].as_u64() == Some(*sequence)
+                    })
+                {
                     self.write_in_flight = false;
                     self.write_identity = None;
-                    if data["metadata"]["postVerification"].as_str() == Some("pending") {
-                        self.outcome = Some(TaskOutcome::SubmittedPendingVerification);
-                    }
+                    self.write_operation = None;
                 }
             }
+
             "tool.cancelled" => {
-                if self.write_in_flight && data["executed"].as_bool() == Some(true) {
-                    self.unknown();
-                } else {
-                    self.write_in_flight = false;
+                if self
+                    .write_identity
+                    .as_ref()
+                    .is_some_and(|(original_turn, invocation, _)| {
+                        turn == Some(original_turn.as_str())
+                            && data["invocationId"].as_str() == Some(invocation.as_str())
+                    })
+                {
+                    if data["executed"].as_bool() == Some(true) {
+                        self.unknown();
+                    } else {
+                        self.write_in_flight = false;
+                        self.write_identity = None;
+                        self.write_operation = None;
+                    }
                 }
             }
             "text.delta" => {
@@ -1163,12 +1483,27 @@ impl Controller {
                     self.fail(UiError::Protocol);
                     return;
                 };
-                if id.is_empty() || id.len() > 100 || tool != "move_selected_image" {
+                if id.is_empty()
+                    || id.len() > 100
+                    || !matches!(
+                        tool,
+                        "move_selected_image"
+                            | "library_images"
+                            | "insert_library_image"
+                            | "transform_canvas_layer"
+                            | "save_canvas_project"
+                            | "export_canvas_png"
+                            | "canvas_operation"
+                            | "retry_canvas_registration"
+                    )
+                {
                     self.fail(UiError::Protocol);
                     return;
                 }
                 let args = &data["arguments"];
                 self.approval = Some(Approval {
+                    tool: tool.to_owned(),
+                    arguments: args.clone(),
                     id: id.to_owned(),
                     turn_id: turn.to_owned(),
                     object_id: args["objectId"]
@@ -1282,9 +1617,25 @@ impl Controller {
             return;
         }
         let tools = &value["toolState"];
+        if !self.update_editor_recovery(tools) {
+            self.fail(UiError::Protocol);
+            return;
+        }
         if tools["outcomeUnknown"].as_bool() == Some(true) || self.unknown_latched {
             self.unknown();
             return;
+        }
+        // Preserve the existing Move contract: a returned commit with a
+        // pending post-read is no longer an in-flight native write. Canvas
+        // jobs retain their original owner until their receipt is verified.
+        if self
+            .write_identity
+            .as_ref()
+            .is_some_and(|(_, _, tool)| tool == "move_selected_image")
+        {
+            self.write_in_flight = false;
+            self.write_identity = None;
+            self.write_operation = None;
         }
         let prefix = format!("{turn}_");
         let current: Vec<&Value> = tools["observed"]
@@ -1717,6 +2068,63 @@ for line in sys.stdin:
             fs::remove_dir_all(&self.directory).unwrap();
         }
     }
+    #[test]
+    fn mcp_canvas_query_and_cancellation_clear_only_exact_original_write() {
+        let mut controller = Controller::default();
+        controller.session_id = "session".into();
+        controller.turn_id = Some("turn".into());
+        controller.phase = Phase::Running;
+        let mut sequence = 0;
+        let mut event = |controller: &mut Controller, kind: &str, data: Value| {
+            sequence += 1;
+            let turn = controller.turn_id.clone();
+            controller.runtime_event(&json!({"sessionId":"session","turnId":turn,"seq":sequence,"type":kind,"data":data}));
+        };
+        event(
+            &mut controller,
+            "tool.started",
+            json!({"invocationId":"turn_export","call":{"name":"export_canvas_png"}}),
+        );
+        event(
+            &mut controller,
+            "tool.completed",
+            json!({"invocationId":"turn_export","message":{"toolName":"export_canvas_png"},"metadata":{"postVerification":"pending","operationId":"original","clientSequence":1}}),
+        );
+        assert!(controller.write_in_flight);
+        event(
+            &mut controller,
+            "tool.cancelled",
+            json!({"invocationId":"turn_read","executed":false}),
+        );
+        assert!(controller.write_in_flight);
+        event(
+            &mut controller,
+            "tool.completed",
+            json!({"invocationId":"turn_query","message":{"toolName":"canvas_operation"},"metadata":{"postVerification":"verified","operationId":"original","clientSequence":2,"resolvesInvocationId":"turn_export","resolvesToolName":"export_canvas_png"}}),
+        );
+        assert!(controller.write_in_flight);
+        event(
+            &mut controller,
+            "tool.completed",
+            json!({"invocationId":"turn_query_2","message":{"toolName":"canvas_operation"},"metadata":{"postVerification":"verified","operationId":"original","clientSequence":1,"resolvesInvocationId":"turn_other","resolvesToolName":"export_canvas_png"}}),
+        );
+        assert!(controller.write_in_flight);
+        controller.turn_id = Some("later-turn".into());
+        event(
+            &mut controller,
+            "tool.started",
+            json!({"invocationId":"later_retry","call":{"name":"retry_canvas_registration","arguments":{"operationId":"original","clientSequence":1}}}),
+        );
+        assert_eq!(controller.write_identity.as_ref().unwrap().1, "turn_export");
+        event(
+            &mut controller,
+            "tool.completed",
+            json!({"invocationId":"turn_query_3","message":{"toolName":"canvas_operation"},"metadata":{"postVerification":"verified","operationId":"original","clientSequence":1,"resolvesInvocationId":"turn_export","resolvesToolName":"export_canvas_png"}}),
+        );
+        assert!(!controller.write_in_flight);
+        assert!(controller.write_identity.is_none());
+    }
+
     #[test]
     fn model_selection_is_frozen_per_new_input_and_never_inherited() {
         let mut f = Fixture::new("finish");
@@ -2403,6 +2811,8 @@ for line in sys.stdin:
         c.turn_id = Some("turn-1".into());
         c.phase = Phase::AwaitingApproval;
         c.approval = Some(Approval {
+            tool: "move_selected_image".into(),
+            arguments: json!({}),
             id: "approval-1".into(),
             turn_id: "turn-1".into(),
             object_id: None,
@@ -2837,6 +3247,8 @@ for line in sys.stdin:
             let mut controller = display_controller();
             controller.phase = Phase::AwaitingApproval;
             controller.approval = Some(Approval {
+                tool: "move_selected_image".into(),
+                arguments: json!({}),
                 id: "approval-wire".into(),
                 turn_id: "display-turn".into(),
                 object_id: Some("layer:1".into()),
@@ -2936,6 +3348,74 @@ for line in sys.stdin:
         fixture.controller.disconnect();
         fixture.until(|controller| controller.process.is_none());
         assert_eq!(fixture.controller.view().phase, Phase::OutcomeUnknown);
+    }
+    #[test]
+    fn unknown_reconnect_is_original_restore_only_and_never_replays_input() {
+        let mut f = Fixture::new("finish");
+        f.ready();
+        f.controller.editor_recovery.push(EditorRecovery {
+            operation_id: "scm2:1:8:client-1:5:doc-1:1".into(),
+            client_sequence: 1,
+            project_id: f.identity.project_id.clone(),
+            document_session_id: f.identity.document_session_id.clone(),
+            retry_registration: false,
+        });
+        f.controller.write_in_flight = true;
+        f.controller.write_identity = Some((
+            "original-turn".into(),
+            "original-invocation".into(),
+            "export_canvas_png".into(),
+        ));
+        f.controller.unknown();
+        f.controller.disconnect();
+        f.until(|c| c.process.is_none());
+        assert!(f.controller.view().can_connect);
+        let config = |f: &Fixture| {
+            let entry = f.directory.join("fixture.py");
+            ConnectionConfig {
+                launch: LaunchSpec {
+                    executable: fs::canonicalize("/usr/bin/python3").unwrap(),
+                    entrypoint: entry.clone(),
+                    environment: BTreeMap::new(),
+                },
+                document: f.identity.clone(),
+                client_id: "client-1".into(),
+                mcp_client_path: entry,
+                mcp_environment: BTreeMap::from([(
+                    "TMPDIR".into(),
+                    f.directory.to_string_lossy().into_owned(),
+                )]),
+                session_directory: f.directory.clone(),
+                local_session_id: "fixture-session".into(),
+                restore: true,
+                provider: json!({"protocol":"fixture","model":"finish","apiKey":"inference-secret"}),
+                read_token: "read-secret".into(),
+                write_token: None,
+            }
+        };
+        for changed in 0..4 {
+            let mut c = config(&f);
+            match changed {
+                0 => c.restore = false,
+                1 => c.client_id = "other-client".into(),
+                2 => c.document.document_session_id = "other-document".into(),
+                _ => c.provider["protocol"] = json!("seecut-managed"),
+            }
+            assert_eq!(f.controller.connect(c), Err(UiError::VerifyRequired));
+        }
+        f.controller.connect(config(&f)).unwrap();
+        assert!(f.controller.unknown_latched && f.controller.write_in_flight);
+        assert_eq!(
+            f.controller.write_identity.as_ref().unwrap().1,
+            "original-invocation"
+        );
+        // The fixture's bare clean restore cannot prove the original operation.
+        f.until(|c| c.process.is_none());
+        assert!(f.controller.unknown_latched && !f.controller.view().can_send);
+        assert_eq!(f.controller.editor_recovery.len(), 1);
+        let methods = fs::read_to_string(f.directory.join("methods.txt")).unwrap();
+        assert!(methods.ends_with("initialize\nsession.restore\n"));
+        assert!(!methods.contains("send\n"));
     }
     #[test]
     fn runtime_exit_during_dispatched_write_is_unknown() {
