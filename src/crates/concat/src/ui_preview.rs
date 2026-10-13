@@ -311,6 +311,9 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     if std::env::var("SEECUT_UI_PREVIEW_SCENE").as_deref() == Ok("f03") {
         return run_f03(&app, directory);
     }
+    if std::env::var("SEECUT_UI_PREVIEW_SCENE").as_deref() == Ok("a02") {
+        return run_a02(&app, directory);
+    }
     let assets: Vec<_> = (0..8)
         .map(|i| CloudItem {
             id: format!("fixture-{i}").into(),
@@ -1675,12 +1678,14 @@ fn run_f03(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
     assistant.set_draft("把标题放大一些".into());
     assistant.set_messages(model(vec![
         AssistantMessage {
+            references: Default::default(),
             role: "你".into(),
             text: "制作一张橙红主题的海报".into(),
             state: "".into(),
             progress: "".into(),
         },
         AssistantMessage {
+            references: Default::default(),
             role: "Agent".into(),
             text: "海报已生成，可在画布中继续调整。".into(),
             state: "".into(),
@@ -1736,6 +1741,80 @@ fn run_f03(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
 }
 
 /// Local layout fixtures only; no controller, supplier requests or library writes.
+fn run_a02(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
+    use crate::ui::{AssistantReference, Flow};
+    let state = app.global::<SeeCut>();
+    state.set_page(8);
+    let flow = app.global::<Flow>();
+    flow.set_open(true);
+    flow.set_browsing(false);
+    flow.set_title("Agent 布局样例".into());
+    let assistant = app.global::<Assistant>();
+    assistant.set_enabled(true);
+    assistant.set_open(true);
+    assistant.set_history_ready(true);
+    assistant.set_connected(true);
+    assistant.set_can_create_session(true);
+    assistant.set_can_select_model(true);
+    assistant.set_can_select_effort(true);
+    assistant.set_can_send(true);
+    assistant.set_read_granted(true);
+    assistant.set_current_project("Agent 布局样例".into());
+    assistant.set_current_session_id("layout-only".into());
+    assistant.set_session_index(0);
+    assistant.set_model_index(0);
+    assistant.set_effort_label("均衡".into());
+    assistant.set_session_names(model(vec!["首图制作".into()]));
+    assistant.set_model_names(model(vec!["示例 Agent 模型".into()]));
+    assistant.set_provider_label("示例 Agent 模型".into());
+    assistant.set_effort_names(model(vec!["均衡".into()]));
+    assistant.set_effort_index(0);
+    assistant.set_effort_visible(true);
+    assistant.set_budget_label("2".into());
+    let reference = AssistantReference {
+        key: "layout-asset".into(),
+        label: "首图".into(),
+        node: false,
+        thumbnail: artwork(24),
+        has_image: true,
+    };
+    assistant.set_messages(model(vec![
+        AssistantMessage {
+            role: "你".into(),
+            text: "".into(),
+            state: "".into(),
+            progress: "".into(),
+            references: model(vec![reference.clone()]),
+        },
+        AssistantMessage {
+            role: "Agent".into(),
+            text: "素材已整理，可以预览或继续放入画布。".into(),
+            state: "已完成".into(),
+            progress: "读取当前页面 · 已返回\n编辑 Flow · 已完成\n查询结果 · 已返回".into(),
+            references: model(vec![reference.clone()]),
+        },
+    ]));
+    assistant.set_draft_references(model(vec![reference]));
+    assistant.set_draft("保留构图，继续调整标题".into());
+    assistant.set_geometry_set(true);
+    assistant.set_float_width(420.);
+    assistant.set_float_height(680.);
+    assistant.set_float_x(1.);
+    for (dark, theme) in [(false, "light"), (true, "dark")] {
+        app.global::<Theme>().set_dark(dark);
+        for (width, height, size) in [(1400, 900, "wide"), (900, 760, "narrow")] {
+            capture(
+                app,
+                directory,
+                &format!("a02-agent-{theme}-{size}"),
+                width,
+                height,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn run_f02(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
     use crate::ui::{Flow, FlowAttachment, FlowCandidate, FlowNodeView, FlowParameter};
     let state = app.global::<SeeCut>();

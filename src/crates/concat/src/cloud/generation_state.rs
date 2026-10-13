@@ -1,6 +1,7 @@
 //! Draft preferences and the current submission's trusted usage, independent of UI indices.
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Default)]
@@ -72,11 +73,14 @@ pub(super) struct Choices {
     pub account: String,
     pub mode: i32,
     pub effort_id: Option<String>,
+    #[serde(default)]
+    pub effort_identity: Option<String>,
     pub models: HashMap<String, String>,
 }
 pub(super) struct Resolved {
     pub mode: i32,
     pub effort: Option<Value>,
+    pub needs_confirmation: bool,
     pub models: HashMap<String, String>,
 }
 fn identity(id: &str) -> bool {
@@ -89,6 +93,10 @@ impl Choices {
             && identity(&self.account)
             && matches!(self.mode, 0 | 1)
             && self.effort_id.as_ref().is_none_or(|id| identity(id))
+            && self
+                .effort_identity
+                .as_ref()
+                .is_none_or(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
             && self.models.len() <= 2
             && self
                 .models
@@ -119,18 +127,35 @@ impl Choices {
                         && allowed(effort, kind, model["id"].as_str().unwrap_or(""))
                 })
         };
-        let effort = efforts
-            .iter()
-            .filter(available)
-            .find(|e| e["id"].as_str() == self.effort_id.as_deref())
-            .or_else(|| {
-                efforts
-                    .iter()
-                    .filter(available)
-                    .find(|e| e["id"] == default_effort)
-            })
-            .or_else(|| efforts.iter().find(available))
-            .cloned();
+        let pristine = self.effort_id.is_none() && self.models.is_empty();
+        let mut needs_confirmation = false;
+        let effort = if let Some(id) = &self.effort_id {
+            match efforts.iter().find(|e| e["id"] == *id) {
+                Some(current)
+                    if available(&current)
+                        && self.effort_identity.as_deref()
+                            == Some(policy_identity(current).as_str()) =>
+                {
+                    Some(current.clone())
+                }
+                _ => {
+                    // Retain the chosen identity. The user must explicitly accept a new
+                    // policy; a refreshed catalogue is not consent to a paid substitute.
+                    needs_confirmation = true;
+                    Some(json!({"id": id}))
+                }
+            }
+        } else if pristine {
+            efforts
+                .iter()
+                .filter(available)
+                .find(|e| e["id"] == default_effort)
+                .or_else(|| efforts.iter().find(available))
+                .cloned()
+        } else {
+            needs_confirmation = required;
+            None
+        };
         let mut selected = HashMap::new();
         for kind in ["image", "video"] {
             let candidates: Vec<&Value> = models
@@ -143,21 +168,31 @@ impl Choices {
                         })
                 })
                 .collect();
-            if let Some(model) = candidates
-                .iter()
-                .find(|m| m["id"].as_str() == self.models.get(kind).map(String::as_str))
-                .or_else(|| candidates.first())
-                && let Some(id) = model["id"].as_str()
-            {
+            if let Some(id) = self.models.get(kind) {
+                selected.insert(kind.into(), id.clone());
+            } else if pristine && let Some(id) = candidates.first().and_then(|m| m["id"].as_str()) {
                 selected.insert(kind.into(), id.into());
             }
         }
         Some(Resolved {
             mode: self.mode,
             effort,
+            needs_confirmation,
             models: selected,
         })
     }
+}
+/// Only a fingerprint is persisted; refreshed prices and policies are never accepted by identity alone.
+pub(super) fn policy_identity(effort: &Value) -> String {
+    let policy = json!({
+        "id": effort["id"], "revision": effort["policy_revision"],
+        "agent": effort["agent"], "agent_models": effort["agent_models"],
+        "generation": effort["generation"],
+    });
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&policy).expect("JSON policy"))
+    )
 }
 fn allowed(effort: &Value, kind: &str, id: &str) -> bool {
     effort["generation"][format!("{kind}_model_ids")]
@@ -218,6 +253,9 @@ mod tests {
                 account: "account1".into(),
                 mode: 0,
                 effort_id: Some("high".into()),
+                effort_identity: Some(policy_identity(
+                    &json!({"id":"high","available":true,"policy_revision":"new-high","generation":{"image_model_ids":["image-a","image-b"],"video_model_ids":["video-a"]}}),
+                )),
                 models: HashMap::from([
                     ("image".into(), "image-b".into()),
                     ("video".into(), "video-a".into()),
@@ -252,11 +290,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(selected.models, choice.models);
+        assert!(!selected.needs_confirmation);
         assert_eq!(selected.mode, 0);
         assert_eq!(selected.effort.unwrap()["policy_revision"], "new-high");
     }
     #[test]
-    fn removed_model_and_effort_fall_back_only_inside_current_allowed_set() {
+    fn removed_model_and_effort_keep_original_identity_until_explicit_reselection() {
         let (choice, mut models, mut efforts) = fixture();
         models.retain(|m| m["id"] != "image-b");
         let selected = choice
@@ -269,7 +308,8 @@ mod tests {
                 true,
             )
             .unwrap();
-        assert_eq!(selected.models["image"], "image-a");
+        assert_eq!(selected.models["image"], "image-b");
+        assert!(!selected.needs_confirmation);
         efforts.retain(|e| e["id"] != "high");
         let selected = choice
             .resolve(
@@ -281,15 +321,97 @@ mod tests {
                 true,
             )
             .unwrap();
-        assert_eq!(selected.effort.unwrap()["id"], "low");
-        assert!(!selected.models.contains_key("video"));
+        assert_eq!(selected.effort.unwrap()["id"], "high");
+        assert_eq!(selected.models, choice.models);
+        assert!(selected.needs_confirmation);
+        let empty = choice
+            .resolve(&choice.service, &choice.account, &[], &efforts, "low", true)
+            .unwrap();
+        assert_eq!(empty.models, choice.models);
+        assert!(empty.needs_confirmation);
+    }
+    #[test]
+    fn refreshed_or_restored_policy_revision_requires_explicit_reselection() {
+        let (choice, models, mut efforts) = fixture();
+        let saved: Choices =
+            serde_json::from_value(serde_json::to_value(&choice).unwrap()).unwrap();
+        efforts[1]["policy_revision"] = json!("changed-high");
+        for original in [&choice, &saved] {
+            let resolved = original
+                .resolve(
+                    &choice.service,
+                    &choice.account,
+                    &models,
+                    &efforts,
+                    "low",
+                    true,
+                )
+                .unwrap();
+            assert!(resolved.needs_confirmation);
+            assert_eq!(resolved.effort.unwrap(), json!({"id":"high"}));
+            assert_eq!(resolved.models, choice.models);
+        }
+        let mut accepted = saved;
+        accepted.effort_identity = Some(policy_identity(&efforts[1]));
+        assert!(
+            !accepted
+                .resolve(
+                    &choice.service,
+                    &choice.account,
+                    &models,
+                    &efforts,
+                    "low",
+                    true
+                )
+                .unwrap()
+                .needs_confirmation
+        );
+    }
+    #[test]
+    fn old_preferences_without_policy_proof_require_reselection_and_only_new_drafts_default() {
+        let (mut choice, models, efforts) = fixture();
+        choice.effort_identity = None;
         assert!(
             choice
-                .resolve(&choice.service, &choice.account, &[], &efforts, "low", true)
+                .resolve(
+                    &choice.service,
+                    &choice.account,
+                    &models,
+                    &efforts,
+                    "low",
+                    true
+                )
                 .unwrap()
-                .models
-                .is_empty()
+                .needs_confirmation
         );
+        choice.effort_id = None;
+        assert!(
+            choice
+                .resolve(
+                    &choice.service,
+                    &choice.account,
+                    &models,
+                    &efforts,
+                    "low",
+                    true
+                )
+                .unwrap()
+                .needs_confirmation
+        );
+        choice.models.clear();
+        let initial = choice
+            .resolve(
+                &choice.service,
+                &choice.account,
+                &models,
+                &efforts,
+                "low",
+                true,
+            )
+            .unwrap();
+        assert!(!initial.needs_confirmation);
+        assert_eq!(initial.effort.unwrap()["id"], "low");
+        assert_eq!(initial.models["image"], "image-a");
     }
     #[test]
     fn preferences_do_not_cross_account_or_service_and_invalid_version_is_ignored() {

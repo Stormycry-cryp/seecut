@@ -96,6 +96,8 @@ pub struct Execution {
     pub attempts: Vec<Attempt>,
     #[serde(default)]
     pub runs: Vec<crate::workflow::Run>,
+    #[serde(default)]
+    pub agent_operations: BTreeMap<String, Value>,
 }
 fn valid_id(v: &str) -> bool {
     !v.is_empty()
@@ -133,6 +135,7 @@ impl Execution {
             paused: false,
             attempts: vec![],
             runs: vec![],
+            agent_operations: BTreeMap::new(),
         }
     }
     pub fn validate(&self, document_id: &str, project_id: &str) -> Result<()> {
@@ -140,6 +143,9 @@ impl Execution {
             return Err("service execution identity/version mismatch".into());
         }
         self.validate_runs()?;
+        if self.agent_operations.len() > 1024 {
+            return Err("Agent operation history full".into());
+        }
         let mut ids = BTreeSet::new();
         for a in &self.attempts {
             if !valid_id(&a.id)

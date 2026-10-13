@@ -9,6 +9,7 @@ pub(crate) struct Choice {
     pub(crate) label: String,
     pub(crate) available: bool,
     pub(crate) policy: Value,
+    pub(crate) images: bool,
 }
 #[derive(Clone)]
 pub(crate) struct Effort {
@@ -217,6 +218,7 @@ pub(crate) fn parse(value: Value) -> Result<Directory, &'static str> {
                 label: "账户模型".into(),
                 available,
                 policy: policy_snapshot(&value),
+                images: value["images"].as_bool().unwrap_or(false),
             }],
             efforts: parse_efforts(&value, &[])?,
         });
@@ -255,6 +257,7 @@ pub(crate) fn parse(value: Value) -> Result<Directory, &'static str> {
             label: label.into(),
             available,
             policy: policy_snapshot(model),
+            images: model["images"].as_bool().unwrap_or(false),
         });
     }
     let index = result
@@ -520,6 +523,42 @@ pub(crate) fn fetch(base: &str, token: &str) -> Result<Directory, &'static str> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_capability_follows_each_selected_model_and_defaults_to_reference_only() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../services/seecut-server/tests/fixtures/effort_model_sets.json"
+        ))
+        .unwrap();
+        let mut catalog = fixture["catalog"].clone();
+        for (index, model) in catalog["models"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            model["images"] = serde_json::json!(index == 1);
+        }
+        let directory = super::parse(catalog.clone()).unwrap();
+        for model in catalog["models"].as_array().unwrap() {
+            let choice = directory
+                .choices
+                .iter()
+                .find(|choice| choice.id == model["model_id"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(choice.images, model["images"].as_bool().unwrap());
+        }
+        for model in catalog["models"].as_array_mut().unwrap() {
+            model.as_object_mut().unwrap().remove("images");
+        }
+        assert!(
+            super::parse(catalog)
+                .unwrap()
+                .choices
+                .iter()
+                .all(|choice| !choice.images)
+        );
+    }
+
     #[test]
     fn v4_allowed_models_match_server_frozen_json_and_digest() {
         use sha2::{Digest, Sha256};

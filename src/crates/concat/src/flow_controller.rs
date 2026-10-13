@@ -80,7 +80,6 @@ impl Session {
             return Err("此工程含不支持的节点，当前为只读".into());
         }
         let before = self.graph().clone();
-        let viewport_only = matches!(&command, Command::Viewport { .. });
         if let Command::Viewport { viewport } = &command
             && before.viewport == *viewport
         {
@@ -93,6 +92,14 @@ impl Session {
             operation: id(),
             command,
         };
+        Ok(self.edit_request(request)?.created)
+    }
+    pub fn edit_request(&mut self, request: Request) -> Result<commands::Receipt> {
+        if self.store.is_read_only() || request.graph_id != self.graph_id {
+            return Err("当前图不可编辑".into());
+        }
+        let before = self.graph().clone();
+        let viewport_only = matches!(&request.command, Command::Viewport { .. });
         let receipt = commands::apply(&mut self.store, request)?;
         if !viewport_only && before != *self.graph() {
             let history = self.history.entry(self.graph_id.clone()).or_default();
@@ -105,7 +112,7 @@ impl Session {
         if !self.selected.is_empty() && !self.graph().nodes.contains_key(&self.selected) {
             self.selected.clear();
         }
-        Ok(receipt.created)
+        Ok(receipt)
     }
     /// History is committed only after the durable graph snapshot succeeds.
     pub fn history(&mut self, redo: bool) -> Result<bool> {
@@ -219,6 +226,9 @@ impl Controller {
         self.pending_view = None;
         self.draft = None;
         self.session = None;
+    }
+    pub fn uncommitted(&self) -> bool {
+        self.dirty() || self.pending.is_some() || self.pending_view.is_some()
     }
     pub fn dirty(&self) -> bool {
         self.draft.as_ref().is_some_and(|d| d.text != d.original)
@@ -469,7 +479,7 @@ impl Controller {
         self.reload_draft();
         Ok(Effect::None)
     }
-    fn reload_draft(&mut self) {
+    pub(crate) fn reload_draft(&mut self) {
         self.draft = self.session.as_ref().and_then(|s| {
             let node = s.graph().nodes.get(&s.selected)?;
             if !matches!(
@@ -558,8 +568,10 @@ mod tests {
     #[test]
     fn autosave_persists_latest_text_once_and_survives_reopen() {
         let (dir, mut c, node) = open();
+        assert!(!c.uncommitted());
         let token = c.draft_token().to_owned();
         c.change_draft(&token, "输入中".into()).unwrap();
+        assert!(c.uncommitted());
         c.change_draft(&token, "自动保存\n最新正文".into()).unwrap();
         assert!(c.autosave_draft(&token).unwrap());
         let revision = c.session.as_ref().unwrap().graph().revision;
@@ -570,6 +582,33 @@ mod tests {
         c.request(Intent::Open(dir.path().join("one"))).unwrap();
         c.request(Intent::Select(node)).unwrap();
         assert_eq!(c.prompt(), "自动保存\n最新正文");
+    }
+    #[test]
+    fn agent_prompt_edit_refreshes_draft_and_duplicate_does_not_add_undo() {
+        let (_dir, mut c, node) = open();
+        let s = c.session.as_mut().unwrap();
+        let request = Request {
+            document_id: s.store.document().id.clone(),
+            graph_id: s.graph_id.clone(),
+            expected_revision: s.graph().revision,
+            operation: "agent-edit".into(),
+            command: Command::Parameters {
+                node: node.clone(),
+                params: json!({"text":"Agent 内容"}),
+            },
+        };
+        let first = s.edit_request(request.clone()).unwrap();
+        assert_eq!(s.edit_request(request).unwrap(), first);
+        c.reload_draft();
+        assert_eq!(c.prompt(), "Agent 内容");
+        let token = c.draft_token().to_owned();
+        c.change_draft(&token, "Agent 内容 + 手动补充".into())
+            .unwrap();
+        c.autosave_draft(&token).unwrap();
+        c.request(Intent::Undo).unwrap();
+        assert_eq!(c.prompt(), "Agent 内容");
+        c.request(Intent::Undo).unwrap();
+        assert_eq!(c.prompt(), "原文");
     }
     #[test]
     fn autosave_from_previous_node_never_saves_the_new_draft() {

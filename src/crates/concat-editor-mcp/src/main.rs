@@ -120,6 +120,14 @@ struct OperationArgs {
     client_sequence: u64,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FlowArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: Option<u64>,
+    flow: concat_editor_mcp::FlowParameters,
+}
 impl Bridge {
     fn request(&self, method: Method) -> Request {
         Request {
@@ -127,6 +135,7 @@ impl Bridge {
             canvas_parameters: None,
             library_query: None,
             operation_query: None,
+            flow: None,
             instance_id: self.instance.clone(),
             client_id: self.client.clone(),
             client_token: if method.is_write() {
@@ -149,6 +158,14 @@ impl Bridge {
         serde_json::to_string(&call(&self.socket, &request))
             .unwrap_or_else(|_| "{\"status\":\"ioFailure\"}".into())
     }
+    fn flow_request(&self, method: Method, args: FlowArgs) -> String {
+        let mut request = self.request(method);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.revision = args.revision;
+        request.flow = Some(args.flow);
+        self.dispatch(request)
+    }
     fn canvas_write(&self, identity: CanvasIdentityArgs, action: CanvasAction) -> String {
         if self.write_token.is_none() {
             return serde_json::to_string(&Response::error("notAuthorized")).unwrap_or_default();
@@ -169,6 +186,18 @@ impl Bridge {
 
 #[tool_router(server_handler)]
 impl Bridge {
+    #[tool(
+        description = "Read current Flow graph, allowed models, bounded runs with immutable asset versions, or an original operation receipt. Use graphId/accountScope/revision/selectionRevision from context. Start with action schema for node, port and command formats. action is schema/graph/models/runs/results/operation; pages use offset/limit. Reads never replay execution. No paths or credentials."
+    )]
+    fn flow_read(&self, Parameters(args): Parameters<FlowArgs>) -> String {
+        self.flow_request(Method::FlowRead, args)
+    }
+    #[tool(
+        description = "Apply one approved Flow action. edit payload: typed graph command add/add_connected/parameters/connect/disconnect/rewire/reorder/move/rename/remove. run payload: {nodeId,mode:run_to|run_node}. adopt payload: {nodeId,attempt,task,output}. pause payload: {paused:boolean}. Freeze context fields. Trusted runtime allocates operationId/clientSequence. Requires native E lease and exact approval. Run receipt proves scheduling only: read runs for actual outputs, adopt explicitly, use a deliver node for the global library, then flow_read results with optional payload.runId to verify registered output cards. UNKNOWN must query original receipt, never replay."
+    )]
+    fn flow_write(&self, Parameters(args): Parameters<FlowArgs>) -> String {
+        self.flow_request(Method::FlowWrite, args)
+    }
     #[tool(
         description = "Read the running SeeCut instance's named capabilities, current permission state and limits; tool presence alone does not authorize an edit"
     )]

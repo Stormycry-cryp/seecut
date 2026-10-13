@@ -8,10 +8,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 mod canvas;
+mod flow;
 pub use canvas::{
     AssetVersion, CanvasAction, CanvasParameters, LibraryQuery, OperationQuery,
     validate_canvas_parameters,
 };
+pub use flow::FlowParameters;
 
 /// A single IPC message is bounded before deserialization or allocation.
 pub const MAX_MESSAGE: usize = 1024 * 1024;
@@ -66,6 +68,9 @@ pub struct Request {
     #[serde(default)]
     /// Owner-only original-operation query.
     pub operation_query: Option<OperationQuery>,
+    #[serde(default)]
+    /// Typed current-Flow identity and bounded action.
+    pub flow: Option<FlowParameters>,
 }
 
 /// A single atomic translation of the current single selected image layer.
@@ -115,6 +120,10 @@ pub enum Method {
     CanvasOperation,
     /// Retry only registration of the original frozen PNG output.
     RetryCanvasRegistration,
+    /// Read the current Flow graph or original action receipt.
+    FlowRead,
+    /// Execute one approved Flow graph action.
+    FlowWrite,
 }
 
 impl Method {
@@ -128,6 +137,7 @@ impl Method {
                 | Self::SaveCanvasProject
                 | Self::ExportCanvasPng
                 | Self::RetryCanvasRegistration
+                | Self::FlowWrite
         )
     }
     /// Exact fixed MCP name for the protocol method.
@@ -145,6 +155,8 @@ impl Method {
             Self::ExportCanvasPng => "export_canvas_png",
             Self::CanvasOperation => "canvas_operation",
             Self::RetryCanvasRegistration => "retry_canvas_registration",
+            Self::FlowRead => "flow_read",
+            Self::FlowWrite => "flow_write",
         }
     }
 }
@@ -206,6 +218,9 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if request.flow.is_some() || matches!(request.method, Method::FlowRead | Method::FlowWrite) {
+        return flow::validate(request);
+    }
     if let Some(object_id) = &request.object_id {
         if request.method != Method::Project || request.offset.is_some() || request.limit.is_some()
         {
@@ -548,6 +563,7 @@ mod tests {
             canvas_parameters: None,
             library_query: None,
             operation_query: None,
+            flow: None,
             instance_id: "app".into(),
             client_id: "client".into(),
             client_token: "write-credential".into(),
@@ -834,6 +850,7 @@ mod tests {
             canvas_parameters: None,
             library_query: None,
             operation_query: None,
+            flow: None,
             instance_id: "app".into(),
             client_id: "c".into(),
             client_token: "t".into(),
@@ -866,6 +883,7 @@ mod tests {
             canvas_parameters: None,
             library_query: None,
             operation_query: None,
+            flow: None,
             instance_id: "first".into(),
             client_id: "c".into(),
             client_token: "t".into(),

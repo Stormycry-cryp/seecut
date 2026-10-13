@@ -11,6 +11,7 @@ export component AssistantDock inherits AssistantPanel {
     current-project: Assistant.current-project;
     provider-label: Assistant.provider-label;
     session-names: Assistant.session-names;
+    current-session-id: Assistant.current-session-id;
     session-index: Assistant.session-index;
     can-create-session: Assistant.can-create-session;
     history-ready: Assistant.history-ready;
@@ -41,6 +42,7 @@ export component AssistantDock inherits AssistantPanel {
     send-disabled-reason: Assistant.send-disabled-reason;
     connect-disabled-reason: Assistant.connect-disabled-reason;
     messages: Assistant.messages;
+    draft-references: Assistant.draft-references;
     scroll-token: Assistant.scroll-token;
     read-granted: Assistant.read-granted;
     write-granted: Assistant.write-granted;
@@ -75,6 +77,13 @@ export component AssistantDock inherits AssistantPanel {
     disconnect() => { Assistant.disconnect(); }
     connect-managed() => { Assistant.connect-managed(); }
     new-session() => { Assistant.new-session(); }
+    rename-session(id, title) => { Assistant.rename-session(id, title); }
+    edit-message(id, index) => { Assistant.edit-message(id, index); }
+    attach() => { Assistant.attach(); }
+    mention-node() => { Assistant.mention-node(); }
+    remove-reference(key) => { Assistant.remove-reference(key); }
+    reuse-reference(key) => { Assistant.reuse-reference(key); }
+    open-reference(key, destination) => { Assistant.open-reference(key,destination); }
     select-session(index) => { Assistant.select-session(index); }
     select-model(index) => { Assistant.model-index = index; Assistant.select-model(index); }
     select-effort(index) => { Assistant.select-effort(index); }

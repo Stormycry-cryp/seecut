@@ -9,7 +9,14 @@ import re
 
 from .errors import ApiError
 
-TOOLS = frozenset({"capabilities", "context", "project", "preview", "move_selected_image"})
+# Public transport vocabulary only. The local MCP host still authorizes every
+# read/write against the current document, selection and native approval.
+TOOLS = frozenset({
+    "capabilities", "context", "project", "preview", "move_selected_image",
+    "library_images", "insert_library_image", "transform_canvas_layer",
+    "save_canvas_project", "export_canvas_png", "canvas_operation",
+    "retry_canvas_registration", "flow_read", "flow_write",
+})
 IDENTITY = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 
 

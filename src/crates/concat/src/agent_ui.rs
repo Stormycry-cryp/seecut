@@ -94,7 +94,7 @@ mod desktop {
     };
     use crate::agent_process::LaunchSpec;
     use crate::agent_sessions::{
-        self, Archive, ContextReference, Message, Record, RequestSnapshot, Store,
+        self, Archive, ContextReference, Message, Record, Reference, RequestSnapshot, Store,
     };
     use crate::editor_mcp::{
         ASSISTANT_CLIENT_ID, AssistantPermission, AssistantPermissionError, AssistantSnapshot,
@@ -639,6 +639,178 @@ mod desktop {
             self.refresh(app);
             let _ = self.persist(true);
         }
+        fn rename_session(&self, app: &App, id: &str, title: &str) {
+            self.refresh(app);
+            let title = title.trim();
+            if !app.global::<Assistant>().get_open()
+                || title.is_empty()
+                || title.chars().count() > 64
+                || id != self.state.borrow().record.id
+                || self.persist(true).is_err()
+            {
+                return;
+            }
+            let mut archive = Archive {
+                version: agent_sessions::ARCHIVE_VERSION,
+                active_id: id.into(),
+                sessions: std::iter::once(self.state.borrow().record.clone())
+                    .chain(
+                        self.parked
+                            .borrow()
+                            .iter()
+                            .map(|state| state.record.clone()),
+                    )
+                    .collect(),
+            };
+            archive.sessions[0].rename(title);
+            let result = self
+                .store
+                .borrow()
+                .as_ref()
+                .ok_or("会话目录不可用")
+                .and_then(|store| store.save(&archive));
+            match result {
+                Ok(()) => {
+                    self.state.borrow_mut().record.rename(title);
+                    *self.last_saved.borrow_mut() =
+                        serde_json::to_vec(&archive).unwrap_or_default();
+                }
+                Err(error) => *self.history_error.borrow_mut() = Some(error),
+            }
+            self.refresh(app);
+        }
+        fn edit_message(&self, app: &App, id: &str, index: i32) {
+            self.refresh(app);
+            if !app.global::<Assistant>().get_open()
+                || app.global::<Assistant>().get_busy()
+                || app.global::<Assistant>().get_unknown()
+                || index < 0
+            {
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            if state.record.id != id {
+                return;
+            }
+            let Some(message) = state
+                .messages
+                .row_data(index as usize)
+                .filter(|m| m.role == "你")
+            else {
+                return;
+            };
+            state.record.draft = message.text.to_string();
+            state.record.draft_references = state
+                .record
+                .message_references
+                .get(&(index as usize))
+                .cloned()
+                .unwrap_or_default();
+            app.global::<Assistant>().set_draft(message.text);
+            drop(state);
+            let _ = self.persist(true);
+            self.refresh(app);
+        }
+        fn add_references(&self, app: &App, references: Vec<Reference>) {
+            let mut state = self.state.borrow_mut();
+            let mut next = state.record.draft_references.clone();
+            for reference in references {
+                if !next.contains(&reference) {
+                    next.push(reference);
+                }
+            }
+            if next.len() > 4 || next.iter().filter(|r| r.kind == "asset").count() > 2 {
+                state.notice = "最多引用两项素材与四项上下文".into();
+            } else {
+                state.record.draft_references = next;
+                state.notice.clear();
+            }
+            drop(state);
+            let _ = self.persist(true);
+            self.refresh(app);
+        }
+        fn attach(self: &Rc<Self>, app: &App) {
+            self.refresh(app);
+            if !app.global::<Assistant>().get_history_ready()
+                || app.global::<Assistant>().get_busy()
+                || app.global::<Assistant>().get_unknown()
+            {
+                return;
+            }
+            let id = self.state.borrow().record.id.clone();
+            let scope = self.scope.borrow().clone();
+            let weak = Rc::downgrade(self);
+            use seecut_flow_core::graph::MediaKind;
+            self.account.pick_flow_asset(
+                app,
+                vec![MediaKind::Image, MediaKind::Video, MediaKind::Audio],
+                Rc::new(move |app, asset| {
+                    let Some(binding) = weak.upgrade() else {
+                        return;
+                    };
+                    binding.refresh(app);
+                    if binding.state.borrow().record.id != id || *binding.scope.borrow() != scope {
+                        return;
+                    }
+                    match crate::agent_references::asset(&asset) {
+                        Ok(reference) => binding.add_references(app, vec![reference]),
+                        Err(error) => {
+                            binding.state.borrow_mut().notice = error;
+                            binding.refresh(app);
+                        }
+                    }
+                }),
+            );
+        }
+        fn mention_node(&self, app: &App) {
+            self.refresh(app);
+            if !app.global::<Assistant>().get_history_ready()
+                || app.global::<Assistant>().get_busy()
+                || app.global::<Assistant>().get_unknown()
+            {
+                return;
+            }
+            match crate::agent_references::flow() {
+                Ok(references) => self.add_references(app, references),
+                Err(error) => {
+                    self.state.borrow_mut().notice = error;
+                    self.refresh(app);
+                }
+            }
+        }
+        fn remove_reference(&self, app: &App, key: &str) {
+            self.state
+                .borrow_mut()
+                .record
+                .draft_references
+                .retain(|r| serde_json::to_string(r).is_ok_and(|s| s != key));
+            let _ = self.persist(true);
+            self.refresh(app);
+        }
+        fn retained_reference(&self, key: &str) -> Option<Reference> {
+            let state = self.state.borrow();
+            state
+                .record
+                .draft_references
+                .iter()
+                .chain(state.record.message_references.values().flatten())
+                .find(|r| serde_json::to_string(r).is_ok_and(|s| s == key))
+                .cloned()
+        }
+        fn reuse_reference(&self, app: &App, key: &str) {
+            if let Some(reference) = self.retained_reference(key) {
+                self.add_references(app, vec![reference]);
+            }
+        }
+        fn open_reference(&self, app: &App, key: &str, destination: &str) {
+            if let Some(reference) = self.retained_reference(key)
+                && let Err(error) =
+                    crate::agent_references::open(app, &self.account, &reference, destination)
+            {
+                self.state.borrow_mut().notice = error;
+                self.refresh(app);
+            }
+        }
         fn select_session(&self, app: &App, index: i32) {
             self.refresh(app);
             let Ok(index) = usize::try_from(index) else {
@@ -1056,6 +1228,25 @@ mod desktop {
                     && !history_full(&state)
                     && selection_reason.is_empty(),
             );
+            ui.set_current_session_id(state.record.id.as_str().into());
+            let keys = state
+                .record
+                .draft_references
+                .iter()
+                .map(|r| serde_json::to_string(r).unwrap_or_default())
+                .collect::<Vec<_>>();
+            if ui
+                .get_draft_references()
+                .iter()
+                .map(|r| r.key.to_string())
+                .collect::<Vec<_>>()
+                != keys
+            {
+                ui.set_draft_references(crate::agent_references::rows(
+                    &state.record.draft_references,
+                    true,
+                ));
+            }
             ui.set_can_stop(view.can_stop);
             ui.set_can_reconcile(view.can_reconcile);
             ui.set_reconcile_label(
@@ -1135,7 +1326,11 @@ mod desktop {
             ui.set_can_connect(view.can_connect && reason.is_empty());
             ui.set_connect_disabled_reason(reason.into());
             ui.set_send_disabled_reason(
-                if history_full(&state) {
+                if let Some(error) = history_error {
+                    error
+                } else if state.preparing {
+                    "正在准备连接"
+                } else if history_full(&state) {
                     "当前会话已满，请新建会话"
                 } else if unknown {
                     "核实操作结果前已暂停后续请求"
@@ -1250,7 +1445,8 @@ mod desktop {
             self.refresh(app);
             if !app.global::<Assistant>().get_open()
                 || !app.global::<Assistant>().get_can_send()
-                || text.trim().is_empty()
+                || (text.trim().is_empty()
+                    && self.state.borrow().record.draft_references.is_empty())
                 || text.len() > 32_000
             {
                 return;
@@ -1260,6 +1456,18 @@ mod desktop {
                 return;
             }
             let previous = state.record.clone();
+            let references = state.record.draft_references.clone();
+            let include_images = state.catalog.current().is_some_and(|choice| choice.images);
+            let content = match crate::agent_references::content(text, &references, include_images)
+            {
+                Ok(content) => content,
+                Err(error) => {
+                    state.notice = error;
+                    drop(state);
+                    self.refresh(app);
+                    return;
+                }
+            };
             let mut visible = text.to_owned();
             if let Some(lease) = &state.lease {
                 for token in [lease.read.as_ref(), lease.write.as_ref()]
@@ -1290,6 +1498,7 @@ mod desktop {
                 None
             };
             let request = RequestSnapshot {
+                references: state.record.draft_references.clone(),
                 session_id: state.record.id.clone(),
                 model_id: choice
                     .map(|choice| choice.id.clone())
@@ -1313,22 +1522,23 @@ mod desktop {
                 },
             };
             state.record.request_snapshots.push(request);
-            if state.record.request_snapshots.len() == 1 {
-                state.record.title = visible
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .chars()
-                    .take(24)
-                    .collect();
-            }
+            state.record.name_first_input(&visible);
             state.messages.push(AssistantMessage {
+                references: crate::agent_references::rows(&references, true),
                 role: "你".into(),
                 text: visible.into(),
                 state: "".into(),
                 progress: "".into(),
             });
+            let user_index = state.messages.row_count() - 1;
+            if !references.is_empty() {
+                state
+                    .record
+                    .message_references
+                    .insert(user_index, references.clone());
+            }
             state.messages.push(AssistantMessage {
+                references: Default::default(),
                 role: "Agent".into(),
                 text: "".into(),
                 state: "".into(),
@@ -1336,6 +1546,7 @@ mod desktop {
             });
             state.assistant_row = Some(state.messages.row_count() - 1);
             state.record.draft.clear();
+            state.record.draft_references.clear();
             state.submitting = true;
             state.record.pending = "running".into();
             drop(state);
@@ -1344,11 +1555,17 @@ mod desktop {
             let saved = self.persist(true);
             let mut state = self.state.borrow_mut();
             let result = match saved {
-                Ok(()) => if selection.is_some() {
-                    state.controller.send_text_with_selection(text, selection)
+                Ok(()) => (if references.is_empty() {
+                    if selection.is_some() {
+                        state.controller.send_text_with_selection(text, selection)
+                    } else {
+                        state.controller.send_text(text)
+                    }
                 } else {
-                    state.controller.send_text(text)
-                }
+                    state
+                        .controller
+                        .send_content_with_selection(content, selection)
+                })
                 .map_err(|error| error.message()),
                 Err(error) => Err(error),
             };
@@ -1369,7 +1586,17 @@ mod desktop {
                             .record
                             .messages
                             .iter()
-                            .map(|row| AssistantMessage {
+                            .enumerate()
+                            .map(|(index, row)| AssistantMessage {
+                                references: crate::agent_references::rows(
+                                    state
+                                        .record
+                                        .message_references
+                                        .get(&index)
+                                        .map(Vec::as_slice)
+                                        .unwrap_or(&[]),
+                                    true,
+                                ),
                                 role: row.role.as_str().into(),
                                 text: row.text.as_str().into(),
                                 state: row.state.as_str().into(),
@@ -1554,26 +1781,30 @@ mod desktop {
             } else if let Some(operation) = frozen {
                 let mut permission = Err("无法读取原操作回执");
                 let mut permit = None;
-                Shell::with(|shell, _| {
-                    let studio = shell.studio.borrow();
-                    permission = studio
-                        .editor_mcp
-                        .borrow_mut()
-                        .assistant_tool_permit(
-                            &studio,
-                            app,
-                            if operation.retry_registration {
-                                "retry_canvas_registration"
-                            } else {
-                                "canvas_operation"
-                            },
-                            operation.query_arguments(),
-                        )
-                        .map(|id| {
-                            permit = Some(id);
-                        })
-                        .map_err(|error| error.message());
-                });
+                if operation.flow {
+                    permission = Ok(());
+                } else {
+                    Shell::with(|shell, _| {
+                        let studio = shell.studio.borrow();
+                        permission = studio
+                            .editor_mcp
+                            .borrow_mut()
+                            .assistant_tool_permit(
+                                &studio,
+                                app,
+                                if operation.retry_registration {
+                                    "retry_canvas_registration"
+                                } else {
+                                    "canvas_operation"
+                                },
+                                operation.query_arguments(),
+                            )
+                            .map(|id| {
+                                permit = Some(id);
+                            })
+                            .map_err(|error| error.message());
+                    });
+                }
                 if let Err(error) = permission {
                     state.notice = error.into();
                 } else if let Err(error) = state.controller.reconcile_editor(&operation) {
@@ -1933,7 +2164,10 @@ mod desktop {
         Record {
             id: uuid::Uuid::new_v4().to_string(),
             title: "新会话".into(),
+            title_edited: false,
             draft: String::new(),
+            draft_references: Vec::new(),
+            message_references: BTreeMap::new(),
             messages: Vec::new(),
             selected_model_id: None,
             selected_effort_id: None,
@@ -1952,7 +2186,16 @@ mod desktop {
             record
                 .messages
                 .iter()
-                .map(|message| AssistantMessage {
+                .enumerate()
+                .map(|(index, message)| AssistantMessage {
+                    references: crate::agent_references::rows(
+                        record
+                            .message_references
+                            .get(&index)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        true,
+                    ),
                     role: message.role.as_str().into(),
                     text: message.text.as_str().into(),
                     state: message.state.as_str().into(),
@@ -2010,6 +2253,26 @@ mod desktop {
     }
     fn capture(state: &mut State) {
         let view = state.controller.view();
+        if !state.submitting
+            && let Some(index) = state.assistant_row
+            && !view.results.is_empty()
+        {
+            let refs = view
+                .results
+                .iter()
+                .filter_map(|v| serde_json::from_value::<Reference>(v.clone()).ok())
+                .filter(Reference::valid)
+                .collect::<Vec<_>>();
+            if !refs.is_empty() && state.record.message_references.get(&index) != Some(&refs) {
+                if let Some(mut row) = state.messages.row_data(index) {
+                    row.references = crate::agent_references::rows(&refs, true);
+                    state.messages.set_row_data(index, row);
+                }
+                state.record.message_references.insert(index, refs);
+            }
+        }
+        // Persist result references on the original row before a terminal reply
+        // releases that row. Several runtime events can arrive in one tick.
         if !state.submitting {
             state.assistant_row = update_streaming_reply(
                 &state.messages,
@@ -2116,6 +2379,58 @@ mod desktop {
         }
         callback!(on_close_requested, close);
         callback!(on_new_session, new_session);
+        callback!(on_attach, attach);
+        callback!(on_mention_node, mention_node);
+        ui.on_reuse_reference({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |key| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.reuse_reference(&app, &key);
+                    binding.schedule(&app);
+                }
+            }
+        });
+        ui.on_open_reference({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |key, destination| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.open_reference(&app, &key, &destination);
+                    binding.schedule(&app);
+                }
+            }
+        });
+        ui.on_remove_reference({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |key| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.remove_reference(&app, &key);
+                    binding.schedule(&app);
+                }
+            }
+        });
+        ui.on_rename_session({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |id, title| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.rename_session(&app, &id, &title);
+                    binding.schedule(&app);
+                }
+            }
+        });
+        ui.on_edit_message({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |id, index| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.edit_message(&app, &id, index);
+                    binding.schedule(&app);
+                }
+            }
+        });
         ui.on_select_session({
             let binding = Rc::downgrade(&binding);
             let app = app.as_weak();
@@ -2478,6 +2793,7 @@ mod desktop {
                 state.record.pending = pending.into();
                 state.record.runtime_created = true;
                 let original = RequestSnapshot {
+                    references: Vec::new(),
                     session_id: state.record.id.clone(),
                     model_id: "model-one".into(),
                     effort_id: Some("balanced".into()),
@@ -2515,12 +2831,14 @@ mod desktop {
         fn persisting_a_submitting_question_keeps_its_new_reply_row_attached() {
             let mut state = new_state(new_record(), Some(1));
             state.messages.push(AssistantMessage {
+                references: Default::default(),
                 role: "Agent".into(),
                 text: "上一轮已经完成".into(),
                 state: "已完成".into(),
                 progress: "".into(),
             });
             state.messages.push(AssistantMessage {
+                references: Default::default(),
                 role: "Agent".into(),
                 text: "".into(),
                 state: "".into(),
@@ -2613,6 +2931,7 @@ mod desktop {
         #[test]
         fn pending_tool_receipt_does_not_detach_streaming_body() {
             let messages = VecModel::from(vec![AssistantMessage {
+                references: Default::default(),
                 role: "Agent".into(),
                 text: "".into(),
                 state: "".into(),
@@ -2667,6 +2986,7 @@ mod desktop {
         #[test]
         fn completed_reply_survives_new_connection_buffer_reset() {
             let messages = VecModel::from(vec![AssistantMessage {
+                references: Default::default(),
                 role: "Agent".into(),
                 text: "".into(),
                 state: "".into(),

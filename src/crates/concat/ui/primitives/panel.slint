@@ -234,6 +234,7 @@ export component IconButton inherits Rectangle {
     property <bool> ring;
     property <bool> focused;
     out property <bool> keyboard-focus: root.focused;
+    out property <bool> keyboard-navigation-focus: root.focused && root.ring;
 
     // Fixed across, free along. A Slint layout start-aligns a fixed-size child
     // on the cross axis — there is no `align-items: center` — so the root takes

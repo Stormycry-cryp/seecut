@@ -115,6 +115,16 @@ pub fn apply(store: &mut Store, request: Request) -> Result<Receipt> {
 pub fn receipt(document: &Document, operation: &str) -> Option<Receipt> {
     document.operations.get(operation).cloned()
 }
+/// Validate the same graph mutation without touching durable state.
+pub fn validate_command(
+    graph: &Graph,
+    command: &Command,
+    execution: &crate::execution::Execution,
+) -> Result<()> {
+    let mut next = graph.clone();
+    edit(&mut next, command, execution)?;
+    next.validate(false).map(|_| ())
+}
 fn edit(
     graph: &mut Graph,
     command: &Command,

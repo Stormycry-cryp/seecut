@@ -331,3 +331,101 @@ fn single_node_does_not_schedule_missing_upstream_generation() {
     assert_eq!(e.attempts.len(), 1);
     assert_eq!(e.attempts[0].draft.context.node_id, "image1");
 }
+
+fn two_batches(e: &mut Execution, g: &Graph) -> (Choice, Asset, Choice, Asset) {
+    let first = run(e, g.clone(), "image1");
+    e.advance_run(&first, &scope()).unwrap();
+    let a = finish(e, "image1", 1).remove(0);
+    let asset_a = register(e, &a);
+    e.advance_run(&first, &scope()).unwrap();
+    let draft = e.attempts[0].draft.clone();
+    e.begin(draft, "b".repeat(64)).unwrap();
+    let b = finish(e, "image1", 1).remove(0);
+    let asset_b = register(e, &b);
+    (a, asset_a, b, asset_b)
+}
+#[test]
+fn persisted_historical_choice_survives_reopen_and_is_the_actual_downstream_reference() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::create(&temp.path().join("flow"), Document::new(graph())).unwrap();
+    let mut e = store.execution().clone();
+    let mut g = graph();
+    let (a, asset_a, _, _) = two_batches(&mut e, &g);
+    g.nodes.get_mut("pick1").unwrap().params["selected_output"] = serde_json::to_value(&a).unwrap();
+    let mut document = store.document().clone();
+    g.revision += 1;
+    document.graphs.insert(g.id.clone(), g.clone());
+    store.save_document(document).unwrap();
+    store.save_execution(e).unwrap();
+    drop(store);
+    let store = Store::open(&temp.path().join("flow")).unwrap();
+    let g = store.document().graphs["workflow"].clone();
+    let mut e = store.execution().clone();
+    let id = run(&mut e, g, "image2");
+    e.advance_run(&id, &scope()).unwrap();
+    assert_eq!(e.attempts.len(), 3);
+    assert_eq!(e.attempts[2].draft.references, vec![asset_a]);
+    assert_eq!(e.runs.last().unwrap().choices["pick1"], a);
+}
+#[test]
+fn consumers_independently_keep_historical_and_latest_batches() {
+    let mut e = execution();
+    let mut g = graph();
+    let (a, asset_a, b, asset_b) = two_batches(&mut e, &g);
+    g.nodes.get_mut("pick1").unwrap().params["selected_output"] = serde_json::to_value(&a).unwrap();
+    g.nodes.insert(
+        "pick-other".into(),
+        node(
+            "pick-other",
+            "select",
+            json!({"media_kind":"Image","selected_output":b}),
+        ),
+    );
+    for (from, to, input, order) in [
+        ("image1", "pick-other", "candidates", 0),
+        ("pick-other", "image2", "references", 1),
+    ] {
+        g.connect(Edge {
+            from: from.into(),
+            output: "out".into(),
+            to: to.into(),
+            input: input.into(),
+            order,
+        })
+        .unwrap();
+    }
+    let id = run(&mut e, g, "image2");
+    e.advance_run(&id, &scope()).unwrap();
+    assert_eq!(e.attempts[2].draft.references, vec![asset_a, asset_b]);
+    assert_eq!(e.runs.last().unwrap().choices["pick1"], a);
+    assert_eq!(e.runs.last().unwrap().choices["pick-other"], b);
+}
+#[test]
+fn changed_input_and_unresolved_submission_cannot_reuse_an_old_choice() {
+    for unresolved in [false, true] {
+        let mut e = execution();
+        let mut g = graph();
+        let (a, _, _, _) = two_batches(&mut e, &g);
+        g.nodes.get_mut("pick1").unwrap().params["selected_output"] =
+            serde_json::to_value(&a).unwrap();
+        if unresolved {
+            let draft = e.attempts[0].draft.clone();
+            let pending = e.begin(draft, "c".repeat(64)).unwrap();
+            e.intent(&pending, json!({"quote_id":"pending"})).unwrap();
+        } else {
+            g.nodes.get_mut("image1").unwrap().params["prompt"] = json!("changed input");
+        }
+        let id = run(&mut e, g, "image2");
+        e.advance_run(&id, &scope()).unwrap();
+        assert!(e.runs.last().unwrap().choices.is_empty());
+        assert!(
+            e.attempts
+                .iter()
+                .all(|a| a.draft.context.node_id != "image2")
+        );
+        assert!(
+            !e.choose_run_output("workflow", "pick1", a, &scope())
+                .unwrap_or(false)
+        );
+    }
+}

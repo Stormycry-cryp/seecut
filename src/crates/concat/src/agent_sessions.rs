@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -37,6 +37,22 @@ pub(crate) struct ContextReference {
     pub(crate) project_key: String,
     pub(crate) project_name: String,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Reference {
+    pub kind: String,
+    pub label: String,
+    pub target: serde_json::Value,
+}
+impl Reference {
+    pub fn valid(&self) -> bool {
+        matches!(self.kind.as_str(), "asset" | "flow_node")
+            && !self.label.is_empty()
+            && self.label.len() <= 512
+            && self.target.is_object()
+            && serde_json::to_vec(&self.target).is_ok_and(|v| v.len() <= 8192)
+    }
+}
 
 /// The caller constructs `policy` from allowlisted public catalog metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -47,6 +63,8 @@ pub(crate) struct RequestSnapshot {
     pub(crate) effort_id: Option<String>,
     pub(crate) policy: serde_json::Value,
     pub(crate) context: ContextReference,
+    #[serde(default)]
+    pub(crate) references: Vec<Reference>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,7 +72,13 @@ pub(crate) struct RequestSnapshot {
 pub(crate) struct Record {
     pub(crate) id: String,
     pub(crate) title: String,
+    #[serde(default)]
+    pub(crate) title_edited: bool,
     pub(crate) draft: String,
+    #[serde(default)]
+    pub(crate) draft_references: Vec<Reference>,
+    #[serde(default)]
+    pub(crate) message_references: BTreeMap<usize, Vec<Reference>>,
     pub(crate) messages: Vec<Message>,
     pub(crate) selected_model_id: Option<String>,
     #[serde(default)]
@@ -72,6 +96,29 @@ pub(crate) struct Record {
     pub(crate) request_snapshots: Vec<RequestSnapshot>,
     pub(crate) pending: String,
     pub(crate) updated_at_ms: u64,
+}
+
+impl Record {
+    pub(crate) fn rename(&mut self, title: &str) {
+        self.title = title.into();
+        self.title_edited = true;
+    }
+
+    pub(crate) fn name_first_input(&mut self, text: &str) {
+        if self.title_edited || self.request_snapshots.len() != 1 {
+            return;
+        }
+        self.title = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(24)
+            .collect();
+        if self.title.is_empty() {
+            self.title = "素材讨论".into();
+        }
+    }
 }
 
 fn selection_initialized() -> bool {
@@ -261,6 +308,20 @@ impl Store {
         }
         let mut ids = HashSet::new();
         for session in &archive.sessions {
+            if session.draft_references.len() > 4
+                || session.draft_references.iter().any(|r| !r.valid())
+                || session.message_references.iter().any(|(i, refs)| {
+                    *i >= session.messages.len()
+                        || refs.len() > 4
+                        || refs.iter().any(|r| !r.valid())
+                })
+                || session
+                    .request_snapshots
+                    .iter()
+                    .any(|s| s.references.len() > 4 || s.references.iter().any(|r| !r.valid()))
+            {
+                return Err(INVALID);
+            }
             if !valid_id(&session.id) || !ids.insert(session.id.as_str()) {
                 return Err(INVALID);
             }
@@ -413,6 +474,24 @@ mod tests {
     use serde_json::json;
     use std::os::unix::fs::symlink;
 
+    #[test]
+    fn manual_title_survives_first_input_after_archive_round_trip() {
+        let fixture = fixture();
+        let store = Store::open(fixture.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let mut saved = archive("project");
+        saved.sessions[0].rename("新会话 自定义名称");
+        store.save(&saved).unwrap();
+        let mut reopened = store.load().unwrap().unwrap();
+        reopened.sessions[0].name_first_input("这一轮消息不应该覆盖名称");
+        assert_eq!(reopened, saved);
+        let mut automatic = archive("project");
+        automatic.sessions[0].name_first_input("  整理\n素材 ");
+        assert_eq!(automatic.sessions[0].title, "整理 素材");
+        automatic.sessions[0].name_first_input("");
+        assert_eq!(automatic.sessions[0].title, "素材讨论");
+    }
+
     fn fixture() -> tempfile::TempDir {
         // macOS's ambient /var spelling includes a symlink outside our fixture.
         let temporary = fs::canonicalize(std::env::temp_dir()).unwrap();
@@ -428,7 +507,10 @@ mod tests {
             sessions: vec![Record {
                 id: "session-one".into(),
                 title: "画布调整".into(),
+                title_edited: false,
                 draft: "接着处理第二张图".into(),
+                draft_references: Vec::new(),
+                message_references: BTreeMap::new(),
                 messages: vec![Message {
                     role: "Agent".into(),
                     text: "上一条回复".into(),
@@ -443,6 +525,7 @@ mod tests {
                 selection_initialized: true,
                 runtime_created: true,
                 request_snapshots: vec![RequestSnapshot {
+                    references: Vec::new(),
                     session_id: "session-one".into(),
                     model_id: "managed-model".into(),
                     effort_id: None,
@@ -468,6 +551,8 @@ mod tests {
         let mut value = serde_json::to_value(archive("project")).unwrap();
         let session = value["sessions"][0].as_object_mut().unwrap();
         for key in [
+            "draft_references",
+            "message_references",
             "selected_effort_id",
             "selected_policy_revision",
             "selected_effort_policy",
@@ -479,9 +564,49 @@ mod tests {
         let restored: Archive = serde_json::from_value(value).unwrap();
         assert!(restored.sessions[0].selection_initialized);
         assert!(restored.sessions[0].selected_effort_id.is_none());
+        assert!(restored.sessions[0].draft_references.is_empty());
+        assert!(restored.sessions[0].message_references.is_empty());
         assert!(restored.sessions[0].selected_effort_policy.is_none());
         assert!(restored.sessions[0].generation_model_ids.is_empty());
         assert_eq!(restored.sessions[0].pending, "unknown");
+    }
+    #[test]
+    fn renamed_session_and_frozen_references_survive_without_rewriting_sent_context() {
+        let dir = fixture();
+        let store = Store::open(dir.path(), "account", "project").unwrap();
+        assert!(store.load().unwrap().is_none());
+        let mut data = archive("project");
+        let reference = Reference {
+            kind: "asset".into(),
+            label: "原素材".into(),
+            target: json!({"assetId":"asset-one","version":{"sha256":"a".repeat(64),"registration_id":"import-one"}}),
+        };
+        let session = &mut data.sessions[0];
+        session.title = "分镜讨论".into();
+        session.draft_references = vec![reference.clone()];
+        session
+            .message_references
+            .insert(0, vec![reference.clone()]);
+        session.request_snapshots[0].references = vec![reference.clone()];
+        store.save(&data).unwrap();
+        let restored = Store::open(dir.path(), "account", "project")
+            .unwrap()
+            .load()
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored, data);
+        data.sessions[0].draft_references[0].target["version"]["sha256"] = json!("b".repeat(64));
+        assert_eq!(
+            data.sessions[0].message_references[&0],
+            vec![reference.clone()]
+        );
+        assert_eq!(
+            data.sessions[0].request_snapshots[0].references,
+            vec![reference]
+        );
+        data.sessions[0].message_references.insert(10, Vec::new());
+        assert!(store.save(&data).is_err());
+        assert_eq!(store.load().unwrap().unwrap(), restored);
     }
 
     #[test]
@@ -759,10 +884,10 @@ mod tests {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        assert_eq!(keys.len(), 5);
+        assert_eq!(keys.len(), 6);
         assert!(keys.iter().all(|key| matches!(
             key.as_str(),
-            "session_id" | "model_id" | "effort_id" | "policy" | "context"
+            "session_id" | "model_id" | "effort_id" | "policy" | "context" | "references"
         )));
         request["read_token"] = json!("owned-fixture-token");
         assert!(serde_json::from_value::<Archive>(value).is_err());

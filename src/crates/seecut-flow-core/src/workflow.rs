@@ -303,19 +303,30 @@ impl Execution {
                         let draft = run.draft(&self.document_id, &node)?;
                         let fingerprint = crate::execution::fingerprint(&draft);
                         let pending = self.pending_attempt(&draft)?.map(|a| a.id.clone());
+                        let preferred = run.order.iter().find_map(|id| {
+                            let selected = run.graph.nodes.get(id)?;
+                            (selected.kind == "select"
+                                && run.graph.edges.iter().any(|e| {
+                                    e.from == node_id && e.to == *id && e.input == "candidates"
+                                }))
+                            .then(|| selected.params["selected_output"]["attempt"].as_str())
+                            .flatten()
+                        });
                         let cached = (pending.is_none()
                             && !(run.force_target && run.target == node_id))
                             .then(|| {
                                 self.attempts
                                     .iter()
                                     .rev()
-                                    .find(|a| {
+                                    .filter(|a| {
                                         a.fingerprint == fingerprint
+                                            && !a.superseded
                                             && a.phase == Phase::Finished
                                             && a.tasks.values().any(|t| {
                                                 t.outputs.values().any(|o| o.asset.is_some())
                                             })
                                     })
+                                    .min_by_key(|a| Some(a.id.as_str()) != preferred)
                                     .map(|a| a.id.clone())
                             })
                             .flatten();
@@ -364,21 +375,28 @@ impl Execution {
                         _ => None,
                     }
                     .ok_or("请连接生成结果")?;
-                    let choice = run.choices.get(&node_id).cloned().or_else(|| {
-                        crate::host::node_choice(&node, attempt).map(|(task, output)| Choice {
-                            attempt: attempt.id.clone(),
-                            task,
-                            output,
+                    let choice = run
+                        .choices
+                        .get(&node_id)
+                        .cloned()
+                        .or_else(|| {
+                            serde_json::from_value(node.params["selected_output"].clone()).ok()
                         })
-                    });
-                    let Some(choice) = choice.filter(|c| c.attempt == attempt.id) else {
+                        .or_else(|| {
+                            crate::host::node_choice(&node, attempt).map(|(task, output)| Choice {
+                                attempt: attempt.id.clone(),
+                                task,
+                                output,
+                            })
+                        });
+                    let Some((choice, asset)) = choice.and_then(|choice| {
+                        self.run_choice_asset(run, &node_id, &choice)
+                            .ok()
+                            .map(|asset| (choice, asset))
+                    }) else {
                         run.state = State::AwaitingSelection;
                         return Ok(None);
                     };
-                    let asset = chosen_asset(self, &choice, &run.scope)?;
-                    if asset.kind != node.media_kind()? {
-                        return Err("采用素材类型不匹配".into());
-                    }
                     run.choices.insert(node_id.clone(), choice);
                     Output::Media(asset)
                 }
@@ -412,39 +430,80 @@ impl Execution {
         choice: Choice,
         scope: &Scope,
     ) -> Result<bool> {
-        let asset = chosen_asset(self, &choice, scope)?;
-        let Some(run) = self.runs.iter_mut().rev().find(|r| {
+        let Some(index) = self.runs.iter().rposition(|r| {
             r.graph.id == graph
                 && &r.scope == scope
                 && !matches!(r.state, State::Complete | State::Abandoned)
         }) else {
             return Ok(false);
         };
-        let Some(selected) = run.graph.nodes.get(node).filter(|n| n.kind == "select") else {
+        let run = &self.runs[index];
+        if run.graph.nodes.get(node).is_none_or(|n| n.kind != "select") {
             return Ok(false);
-        };
-        if selected.media_kind()? != asset.kind {
-            return Err("采用素材类型不匹配".into());
         }
         if run.steps.get(node).is_some_and(|s| s.output.is_some()) {
             return Ok(false);
         }
-        let Ok(inputs) = run.inputs(node, "candidates") else {
+        if run.inputs(node, "candidates").is_err() {
             return Ok(false);
-        };
-        let live_batch =
-            matches!(inputs.first(),Some(Output::Candidates(id)) if *id == choice.attempt);
-        let copied_batch = inputs.is_empty()
-            && selected.params["copied_results"]
-                .as_array()
-                .is_some_and(|refs| refs.iter().any(|r| r["attempt"] == choice.attempt));
-        if !(live_batch || copied_batch) {
-            return Err("请选择本次运行的结果".into());
         }
+        self.run_choice_asset(run, node, &choice)?;
+        let run = &mut self.runs[index];
         run.choices.insert(node.into(), choice);
         run.state = State::Running;
         run.error = None;
         Ok(true)
+    }
+    /// A consumer may adopt a historical batch with the same frozen inputs; other
+    /// consumers keep their own choices. Unresolved submissions still take precedence.
+    pub fn run_choice_asset(&self, run: &Run, node: &str, choice: &Choice) -> Result<Asset> {
+        let selected = run
+            .graph
+            .nodes
+            .get(node)
+            .filter(|n| n.kind == "select")
+            .ok_or("采用节点已变化")?;
+        let attempt = self
+            .attempts
+            .iter()
+            .find(|a| {
+                a.id == choice.attempt
+                    && !a.superseded
+                    && a.phase == Phase::Finished
+                    && a.draft.context.document_id == self.document_id
+                    && a.draft.context.graph_id == run.graph.id
+                    && a.draft.context.scope == run.scope
+            })
+            .ok_or("结果身份或状态不匹配")?;
+        let inputs = run.inputs(node, "candidates")?;
+        if let Some(edge) = run
+            .graph
+            .edges
+            .iter()
+            .find(|e| e.to == node && e.input == "candidates")
+        {
+            if !matches!(inputs.first(), Some(Output::Candidates(_))) {
+                return Err("生成依赖尚未完成".into());
+            }
+            let source = run.graph.nodes.get(&edge.from).ok_or("生成节点缺失")?;
+            let draft = run.draft(&self.document_id, source)?;
+            if attempt.fingerprint != crate::execution::fingerprint(&draft) {
+                return Err("上游输入已变化，请选用当前版本的结果".into());
+            }
+            if self.pending_attempt(&draft)?.is_some() {
+                return Err("原任务尚未结束，请先核实原任务".into());
+            }
+        } else if !selected.params["copied_results"]
+            .as_array()
+            .is_some_and(|refs| refs.iter().any(|r| r["attempt"] == choice.attempt))
+        {
+            return Err("请选择当前节点的结果".into());
+        }
+        let asset = chosen_asset(self, choice, &run.scope)?;
+        if asset.kind != selected.media_kind()? || asset.simulated {
+            return Err("采用素材类型不匹配".into());
+        }
+        Ok(asset)
     }
     pub fn complete_delivery(&mut self, receipt: &Delivery, scope: &Scope) -> Result<()> {
         let run = self

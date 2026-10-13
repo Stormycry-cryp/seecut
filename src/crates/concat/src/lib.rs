@@ -46,9 +46,12 @@ mod agent_models;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_process;
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod agent_references;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
 mod agent_sessions;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_ui;
+mod asset_version;
 mod chips;
 mod cloud;
 mod cloud_files;
@@ -336,10 +339,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     let app = App::new()?;
     let account = cloud::bind(&app);
-    flow_ui::bind(&app, host.dirs.data.join("flow-projects"), account.clone());
+    let flow = flow_ui::bind(&app, host.dirs.data.join("flow-projects"), account.clone());
     app.set_macos(platform::MACOS);
 
-    let studio = Studio::new(host);
+    let mut studio = Studio::new(host);
+    studio.flow = Some(flow);
     let dark = studio.prefs.dark.unwrap_or(false);
     app.global::<Theme>().set_dark(dark);
 

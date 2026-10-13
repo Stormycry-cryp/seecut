@@ -20,10 +20,13 @@ pub(super) struct Intent {
     pub library: Option<LibraryQuery>,
     pub operation: Option<OperationQuery>,
     pub retry_registration: bool,
+    pub flow: Option<concat_editor_mcp::FlowParameters>,
 }
 impl Intent {
     pub fn method(&self) -> Method {
-        if let Some(action) = &self.action {
+        if self.flow.is_some() {
+            Method::FlowWrite
+        } else if let Some(action) = &self.action {
             action.method()
         } else if self.library.is_some() {
             Method::LibraryImages
@@ -41,16 +44,35 @@ impl Intent {
             selection_revision: request
                 .canvas_parameters
                 .as_ref()
-                .map(|p| p.selection_revision),
+                .map(|p| p.selection_revision)
+                .or_else(|| request.flow.as_ref().map(|p| p.selection_revision)),
             action: request.canvas_parameters.as_ref().map(|p| p.action.clone()),
             library: request.library_query.clone(),
             operation: request.operation_query.clone(),
             retry_registration: request.method == Method::RetryCanvasRegistration,
+            flow: request.flow.as_ref().map(|p| p.intent()),
         };
         (intent.method() == request.method).then_some(intent)
     }
     pub fn parse(tool: &str, args: Value) -> Option<Self> {
         let intent = match tool {
+            "flow_write" => {
+                let a: FlowArgs = serde_json::from_value(args).ok()?;
+                if a.flow.operation_id.is_some() || a.flow.client_sequence.is_some() {
+                    return None;
+                }
+                Self {
+                    project: a.project_id,
+                    session: a.document_session_id,
+                    revision: Some(a.revision),
+                    selection_revision: Some(a.flow.selection_revision),
+                    action: None,
+                    library: None,
+                    operation: None,
+                    retry_registration: false,
+                    flow: Some(a.flow),
+                }
+            }
             "library_images" => {
                 let a: LibraryArgs = serde_json::from_value(args).ok()?;
                 Self {
@@ -67,6 +89,7 @@ impl Intent {
                     }),
                     operation: None,
                     retry_registration: false,
+                    flow: None,
                 }
             }
             "canvas_operation" | "retry_canvas_registration" => {
@@ -79,6 +102,7 @@ impl Intent {
                     action: None,
                     library: None,
                     retry_registration: tool == "retry_canvas_registration",
+                    flow: None,
                     operation: Some(OperationQuery {
                         operation_id: a.operation_id,
                         client_sequence: a.client_sequence,
@@ -136,6 +160,13 @@ impl Intent {
         request.revision = intent.revision;
         request.library_query = intent.library.clone();
         request.operation_query = intent.operation.clone();
+        if let Some(p) = &intent.flow {
+            let mut p = p.clone();
+            p.client_sequence = Some(1);
+            p.operation_id =
+                Some(concat_editor_mcp::operation_id("seecut-assistant", &intent.session, 1).ok()?);
+            request.flow = Some(p);
+        }
         if let Some(action) = &intent.action {
             request.canvas_parameters = Some(CanvasParameters {
                 operation_id: concat_editor_mcp::operation_id(
@@ -168,6 +199,7 @@ impl Intent {
             library: None,
             operation: None,
             retry_registration: false,
+            flow: None,
         }
     }
 }
@@ -451,6 +483,35 @@ mod tests {
         assert!(!permits.valid(&permit, now));
     }
     #[test]
+    fn flow_permit_matches_wire_request_and_rejects_changed_selection() {
+        let args = json!({"projectId":"p","documentSessionId":"s","revision":2,
+            "flow":{"graphId":"g","accountScope":"a".repeat(64),"selectionRevision":3,
+                "action":"edit","payload":{"type":"add","node":{"id":"n","kind":"prompt",
+                    "version":1,"title":"Prompt","position":[0,0],"params":{"text":"hello"}}}}});
+        let approved = Intent::parse("flow_write", args.clone()).unwrap();
+        let mut wire = args;
+        wire["instanceId"] = json!("i");
+        wire["clientId"] = json!("c");
+        wire["clientToken"] = json!("test");
+        wire["method"] = json!("flowWrite");
+        wire["flow"]["operationId"] = json!(concat_editor_mcp::operation_id("c", "s", 1).unwrap());
+        wire["flow"]["clientSequence"] = json!(1);
+        let request: Request = serde_json::from_value(wire).unwrap();
+        let received = Intent::from_request(&request).unwrap();
+        assert_eq!(approved, received);
+        let now = Instant::now();
+        let mut permits = Permits::default();
+        permits.grant(scope(), "c".into(), approved, now).unwrap();
+        let mut changed = request.clone();
+        changed.flow.as_mut().unwrap().selection_revision += 1;
+        assert!(
+            permits
+                .claim(&scope(), "c", &Intent::from_request(&changed).unwrap(), now)
+                .is_none()
+        );
+        assert!(permits.claim(&scope(), "c", &received, now).is_some());
+    }
+    #[test]
     fn named_approval_rejects_extra_paths_and_unmanaged_operation_fields() {
         let mut a = json!({"projectId":"p","documentSessionId":"s","revision":2,"selectionRevision":3,"path":"/tmp/a"});
         assert!(Intent::parse("save_canvas_project", a.clone()).is_none());
@@ -497,4 +558,13 @@ mod tests {
             "outcomeUnknown"
         );
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FlowArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: u64,
+    flow: concat_editor_mcp::FlowParameters,
 }

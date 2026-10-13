@@ -74,6 +74,7 @@ export component AssistantFloating inherits FocusScope {
             visible: root.display-progress > 0;
             opacity: clamp((root.display-progress - 0.4) / 0.6, 0, 1);
             floating: true;
+            header-hover: drag.has-hover;
             background: transparent; border-width: 0px; border-radius: 0px;
             drop-shadow-blur: 0px; drop-shadow-offset-y: 0px; drop-shadow-color: transparent;
             active: root.visible && root.enabled && root.fully-open && !root.blocked;
@@ -100,8 +101,8 @@ export component AssistantFloating inherits FocusScope {
     drag := TouchArea {
         visible: root.fully-open && !root.blocked;
         enabled: root.enabled && root.fully-open && !root.blocked;
-        // Leave the four header buttons clear: new, switch, permissions, close.
-        x: 12px; y: 0px; width: max(0px, parent.width - 172px); height: 48px;
+        // Keep contextual rename, new, switch, and close clear of dragging.
+        x: 12px; y: 0px; width: max(0px, parent.width - (Assistant.developer-tools ? 208px : 172px)); height: 48px;
         mouse-cursor: move;
         property <length> start-pointer-x;
         property <length> start-x;

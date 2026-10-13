@@ -61,10 +61,10 @@ struct Reply {
     result: std::result::Result<ValueReply, String>,
 }
 pub(super) struct Images {
-    account: AccountAccess,
+    pub(super) account: AccountAccess,
     sources: BTreeMap<PathBuf, Source>,
-    catalog: Value,
-    catalog_scope: Option<Scope>,
+    pub(super) catalog: Value,
+    pub(super) catalog_scope: Option<Scope>,
     running: HashSet<String>,
     cooldown: HashMap<String, Instant>,
     tx: mpsc::Sender<Reply>,
@@ -422,25 +422,12 @@ impl Images {
             let mut rows = Vec::new();
             let attempts =
                 seecut_flow_core::host::result_attempts(store.execution(), graph, selected, &scope);
-            let required = store
-                .execution()
-                .runs
-                .iter()
-                .rev()
-                .find(|r| {
-                    r.graph.id == graph.id
-                        && r.scope == scope
-                        && r.state == State::AwaitingSelection
-                        && r.current.as_deref() == Some(node)
-                })
-                .and_then(|r| {
-                    r.graph
-                        .edges
-                        .iter()
-                        .find(|e| e.to == node && e.input == "candidates")
-                        .and_then(|edge| r.steps.get(&edge.from))
-                })
-                .and_then(|step| step.attempt.as_deref());
+            let required = store.execution().runs.iter().rev().find(|r| {
+                r.graph.id == graph.id
+                    && r.scope == scope
+                    && r.state == State::AwaitingSelection
+                    && r.current.as_deref() == Some(node)
+            });
             for (batch, a) in attempts.iter().enumerate() {
                 let mut count = 0;
                 for task in a.tasks.values() {
@@ -468,7 +455,21 @@ impl Images {
                             selected: a.id == attempt.id
                                 && seecut_flow_core::host::node_choice(selected, a)
                                     == Some((task.id.clone(), output.id.clone())),
-                            ready: output.asset.is_some() && required.is_none_or(|id| id == a.id),
+                            ready: output.asset.is_some()
+                                && required.is_none_or(|run| {
+                                    store
+                                        .execution()
+                                        .run_choice_asset(
+                                            run,
+                                            node,
+                                            &Choice {
+                                                attempt: a.id.clone(),
+                                                task: task.id.clone(),
+                                                output: output.id.clone(),
+                                            },
+                                        )
+                                        .is_ok()
+                                }),
                             preview,
                         });
                     }
@@ -815,7 +816,7 @@ pub(super) fn action(app: &App, h: &mut Host, action: &str) -> Result<bool> {
         }
     }
 }
-fn generation_effort_ready(effort: &Value) -> bool {
+pub(super) fn generation_effort_ready(effort: &Value) -> bool {
     if effort.get("agent_models").is_some() {
         effort["generation_available"] == true
     } else {
@@ -842,7 +843,7 @@ fn allowed_model(catalog: &Value, params: &Value, model: &Value, kind: &str) -> 
             .is_some_and(|ids| ids.contains(model))
     })
 }
-fn select_parameters(params: &mut Value, model: &Value) {
+pub(super) fn select_parameters(params: &mut Value, model: &Value) {
     // Change the next execution draft while preserving copied/selected outputs.
     params["model"] = model["id"].clone();
     params["capability_version"] = json!(seecut_flow_core::digest(model));

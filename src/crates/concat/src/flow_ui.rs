@@ -13,8 +13,11 @@ use seecut_flow_core::{
 use serde_json::json;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
+#[path = "flow_ui/agent.rs"]
+mod agent;
 mod editor;
 mod image_execution;
+pub(crate) use agent::FlowAccess;
 
 /// Preserve delegates, focus and drag state when background receipts do not change a row.
 fn sync_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
@@ -728,7 +731,7 @@ fn pick_path(app: &App, host: &Rc<RefCell<Host>>, export: bool) {
     finish(app, host, Ok(None));
 }
 
-pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAccess) {
+pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAccess) -> FlowAccess {
     let host = Rc::new(RefCell::new(Host {
         editor: editor::Editor::default(),
         images: image_execution::Images::new(account, root.clone()),
@@ -1345,4 +1348,5 @@ pub(crate) fn bind(app: &App, root: PathBuf, account: crate::cloud::AccountAcces
     editor::bind(app, &host);
     image_execution::bind(app, &host);
     host.borrow_mut().publish(app);
+    FlowAccess::new(host)
 }

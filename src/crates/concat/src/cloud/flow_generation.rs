@@ -180,14 +180,11 @@ pub(crate) fn library_asset(id: &str, version: Option<&str>) -> Result<Registere
             .filter(|a| !a.trashed)
             .ok_or("库内素材不可用")?
             .clone();
-        let current = serde_json::to_string(
-            asset
-                .version
-                .as_ref()
-                .ok_or("素材缺少不可变版本，请重新导入")?,
-        )
-        .map_err(|e| e.to_string())?;
-        if version.is_some_and(|v| v != current) {
+        let current = asset
+            .version
+            .as_ref()
+            .ok_or("素材缺少不可变版本，请重新导入")?;
+        if version.is_some_and(|v| !current.matches_json(v)) {
             return Err("库内素材版本已变化，请重新选择".into());
         }
         checked_managed_version_path(&root, &asset)?;
@@ -195,6 +192,28 @@ pub(crate) fn library_asset(id: &str, version: Option<&str>) -> Result<Registere
     })?;
     let thumbnail = crate::personal_library::thumbnail(&asset, &root);
     Ok(RegisteredAsset { asset, thumbnail })
+}
+/// Read the already registered identity without migration, import or hashing large media.
+/// Opening/using the result still resolves and verifies its immutable bytes.
+pub(crate) fn library_receipt(id: &str, version: &str) -> Result<Value, String> {
+    let root = library_root()?;
+    with_library_write_lock(|| {
+        let library = Library::load_for_relink(&root)?;
+        let asset = library
+            .get(id)
+            .filter(|a| !a.trashed)
+            .ok_or("库内素材不可用")?;
+        if !asset
+            .version
+            .as_ref()
+            .is_some_and(|current| current.matches_json(version))
+        {
+            return Err("库内素材版本已变化".into());
+        }
+        Ok(
+            json!({"assetId":asset.id,"version":asset.version,"name":asset.name,"kind":media_kind(asset.kind)}),
+        )
+    })
 }
 fn validate_references(model: &Value, assets: &[RegisteredAsset]) -> Result<(), String> {
     let references: Vec<_> = assets

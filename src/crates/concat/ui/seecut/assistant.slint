@@ -3,20 +3,148 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Icon, IconButton, FocusRing, ThinScrollbar } from "../primitives/primitives.slint";
 import { Switch } from "../inspector/controls.slint";
-import { AppButton, WorkspaceSelect } from "components.slint";
+import { AppButton, WorkspaceSelect, AssetPreview } from "components.slint";
 import { EffortSlider } from "effort-slider.slint";
 
 // Text is content only. Operation state always comes from the host separately.
-export struct AssistantMessage { role: string, text: string, state: string, progress: string }
+export struct AssistantReference { key: string, label: string, node: bool, thumbnail: image, has-image: bool }
+export struct AssistantMessage { role: string, text: string, state: string, progress: string, references: [AssistantReference] }
+
+component AgentMenuAction inherits Rectangle {
+    in property <string> text;
+    in property <Glyph> glyph;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 32px; min-width: 0px; border-radius: 6px;
+    background: touch.has-hover && root.enabled ? Theme.field-hover : transparent;
+    accessible-role: button; accessible-label: root.text; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; spacing: 8px;
+        VerticalLayout { alignment: center; Icon { glyph: root.glyph; size: 16px; tint: root.enabled ? Theme.fg-muted : Theme.fg-dim; } }
+        Text { text: root.text; font-family: Theme.font; font-size: Theme.fs; color: root.enabled ? Theme.fg : Theme.fg-dim; vertical-alignment: center; horizontal-stretch: 1; }
+    }
+    keys := FocusScope { enabled: root.enabled; key-pressed(event) => { if event.text == " " || event.text == "\n" { if !event.repeat { root.clicked(); } return EventResult.accept; } return EventResult.reject; } }
+    forward-focus: keys;
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component AssistantReferenceTile inherits Rectangle {
+    in property <AssistantReference> reference;
+    in property <bool> removable;
+    callback remove();
+    callback reuse();
+    callback open(string);
+    // Keep the owning tile alive while closing the popup before dispatch.
+    function reuse-preview() { preview.close(); root.reuse(); }
+    function open-preview(destination: string) { preview.close(); root.open(destination); }
+    width: 64px; height: 64px; border-radius: 12px; background: Theme.field;
+    border-width: 1px; border-color: Theme.line; clip: true;
+    accessible-role: button; accessible-label: root.reference.label;
+    thumbnail-hover := TouchArea {
+        mouse-cursor: pointer; clicked => { preview.show(); }
+        if root.reference.has-image: AssetPreview { width: parent.width; height: parent.height; border-radius: 12px; source: root.reference.thumbnail; fill-frame: true; }
+        if !root.reference.has-image: Icon { x: 22px; y: 22px; size: 20px; glyph: root.reference.node ? Glyph.workflow : Glyph.image; }
+        remove-action := IconButton {
+            visible: root.removable; x: 38px; y: 2px; height: 24px; side: 24px; icon-size: 12px;
+            opacity: thumbnail-hover.has-hover || self.keyboard-navigation-focus ? 1 : 0;
+            on-image: true; glyph: Glyph.close; label: "移除引用"; clicked => { root.remove(); }
+        }
+    }
+    preview := PopupWindow {
+        close-policy: close-on-click-outside;
+        width: 240px; height: 240px; x: -80px; y: -244px;
+        Rectangle {
+            background: Theme.panel; border-radius: 12px; border-width: 1px; border-color: Theme.line;
+            if root.reference.has-image: AssetPreview { x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 52px; border-radius: 12px; source: root.reference.thumbnail; }
+            if !root.reference.has-image: Text { x: 16px; y: 16px; width: parent.width - 32px; text: root.reference.label; color: Theme.fg; font-family: Theme.font; font-size: Theme.workbench-font; wrap: word-wrap; }
+            HorizontalLayout {
+                x: 8px; y: parent.height - 40px; width: parent.width - 16px; height: 32px; spacing: 4px;
+                IconButton { glyph: Glyph.plus; side: 32px; label: "引用到输入框"; clicked => { root.reuse-preview(); } }
+                Rectangle { horizontal-stretch: 1; }
+                if !root.reference.node: IconButton { glyph: Glyph.brush; side: 32px; label: "放入画布"; clicked => { root.open-preview("canvas"); } }
+                if !root.reference.node: IconButton { glyph: Glyph.film; side: 32px; label: "放入剪辑"; clicked => { root.open-preview("clip"); } }
+            }
+        }
+    }
+}
 
 component AssistantText inherits Text {
     font-family: Theme.font;
-    font-size: Theme.workbench-font;
+    font-size: Theme.workbench-font + 1px;
     color: Theme.fg;
     min-width: 0px;
     wrap: word-wrap;
     accessible-role: text;
     accessible-label: self.text;
+}
+
+component AssistantMessageRow inherits Rectangle {
+    in property <AssistantMessage> message;
+    in property <bool> can-edit;
+    callback edit();
+    callback reuse-reference(string);
+    callback open-reference(string, string);
+    property <bool> expanded;
+    height: content.preferred-height;
+    vertical-stretch: 0;
+    message-hover := TouchArea {
+    content := VerticalLayout {
+    spacing: 6px;
+    if root.message.references.length > 0: HorizontalLayout {
+        spacing: 6px;
+        if root.message.role == "你": Rectangle { horizontal-stretch: 1; }
+        for reference in root.message.references: AssistantReferenceTile {
+            reference: reference; reuse => { root.reuse-reference(reference.key); }
+            open(destination) => { root.open-reference(reference.key,destination); }
+        }
+        if root.message.role != "你": Rectangle { horizontal-stretch: 1; }
+    }
+    if root.message.role == "你" && root.message.text != "": HorizontalLayout {
+        Rectangle { min-width: 20px; horizontal-stretch: 1; }
+        Rectangle {
+            width: min(parent.width - 20px, max(80px, user-text.preferred-width + 24px));
+            height: user-text.preferred-height + 20px;
+            border-radius: 18px; background: Theme.dark ? #272729 : #eceef2;
+            user-text := AssistantText { x: 12px; y: 10px; width: max(0px, parent.width - 24px); text: root.message.text; }
+        }
+    }
+    if root.message.role != "你": VerticalLayout {
+        spacing: 6px;
+        if root.message.progress != "": Rectangle {
+            height: 26px;
+            accessible-role: button; accessible-label: root.expanded ? "收起执行过程" : "展开执行过程";
+            accessible-action-default => { root.expanded = !root.expanded; }
+            HorizontalLayout {
+                spacing: 8px;
+                VerticalLayout { alignment: center; Icon { size: 16px; glyph: Glyph.workflow; tint: Theme.fg-muted; } }
+                AssistantText { text: root.message.state == "已完成" ? "已完成的操作" : "执行过程"; font-size: Theme.fs; color: Theme.fg-muted; wrap: no-wrap; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                VerticalLayout { alignment: center; Icon { size: 12px; glyph: root.expanded ? Glyph.chevron-down : Glyph.chevron-right; tint: Theme.fg-muted; } }
+            }
+            progress-focus := FocusScope { key-pressed(event) => { if event.text == " " || event.text == "\n" { if !event.repeat { root.expanded = !root.expanded; } return EventResult.accept; } return EventResult.reject; } }
+            TouchArea { mouse-cursor: pointer; clicked => { progress-focus.focus(); root.expanded = !root.expanded; } }
+        }
+        if root.expanded: Rectangle {
+            height: progress-text.preferred-height;
+            progress-text := AssistantText { x: 24px; width: max(0px, parent.width - 24px); text: root.message.progress; font-size: Theme.fs; color: Theme.fg-muted; }
+        }
+        if root.message.text != "": AssistantText { text: root.message.text; }
+        if root.message.state != "" && root.message.state != "已完成" && root.message.state != "操作结果待核实": AssistantText { text: root.message.state; font-size: Theme.fs; color: Theme.fg-muted; }
+    }
+    if root.message.text != "" || (root.message.role == "你" && root.message.references.length > 0): Rectangle {
+        height: 24px;
+        HorizontalLayout {
+            spacing: 2px;
+            opacity: message-hover.has-hover || copy-action.keyboard-navigation-focus || edit-action.keyboard-navigation-focus ? 1 : 0;
+            if root.message.role == "你": Rectangle { horizontal-stretch: 1; }
+            copy-action := IconButton { visible: root.message.text != ""; side: 24px; height: 24px; icon-size: 14px; glyph: Glyph.copy; label: "复制消息"; clicked => { clipboard.select-all(); clipboard.copy(); } }
+            edit-action := IconButton { visible: root.message.role == "你"; side: 24px; height: 24px; icon-size: 14px; glyph: Glyph.edit; label: "编辑并重新发送"; enabled: root.can-edit; clicked => { root.edit(); } }
+            if root.message.role != "你": Rectangle { horizontal-stretch: 1; }
+        }
+        clipboard := TextInput { width: 1px; height: 1px; opacity: 0; text: root.message.text; read-only: true; accessible-role: none; }
+    }
+    }
+    }
 }
 
 // CloudField's 128px minimum and text-only key-event cannot satisfy the
@@ -26,6 +154,8 @@ component AssistantInput inherits Rectangle {
     in property <string> label;
     in property <string> placeholder;
     in property <bool> multiline;
+    in property <bool> external-toolbar;
+    in property <length> attachment-height;
     in property <bool> password;
     in property <bool> enabled: true;
     in property <bool> send-enabled;
@@ -35,25 +165,27 @@ component AssistantInput inherits Rectangle {
     in property <string> budget-label;
     callback submit();
     callback stop();
+    callback attach();
+    callback mention-node();
     property <bool> action-ready: root.busy ? root.can-stop : root.send-enabled;
     function activate-action() { if root.action-ready { if root.busy { root.stop(); } else { root.submit(); } } }
     public function take-focus() { input.focus(); }
     forward-focus: input;
     min-width: 0px;
-    min-height: root.multiline ? 96px : 40px;
-    max-height: root.multiline ? 160px : 40px;
-    preferred-height: root.multiline ? min(160px, max(96px, input.preferred-height + 64px)) : 40px;
+    min-height: root.multiline ? 112px + root.attachment-height : 40px;
+    max-height: root.multiline ? 176px + root.attachment-height : 40px;
+    preferred-height: root.multiline ? min(176px, max(112px, input.preferred-height + 72px)) + root.attachment-height : 40px;
     vertical-stretch: 0;
-    border-radius: root.multiline ? 18px : 8px;
-    background: Theme.field;
+    border-radius: root.multiline ? 22px : 8px;
+    background: root.multiline ? (Theme.dark ? #2c2c2e : #f0f1f4) : Theme.field;
     border-width: 1px;
     border-color: root.multiline ? (input.has-focus ? Theme.line-strong : Theme.line) : (input.has-focus ? Theme.focus-control : Theme.workbench-control-border);
     clip: true;
     TouchArea { enabled: root.enabled; mouse-cursor: text; clicked => { input.focus(); } }
     area := Flickable {
-        x: 12px; y: 12px;
-        width: max(0px, parent.width - 24px);
-        height: max(0px, parent.height - (root.multiline ? 60px : 24px));
+        x: 14px; y: 14px + root.attachment-height;
+        width: max(0px, parent.width - 28px);
+        height: max(0px, parent.height - root.attachment-height - (root.multiline ? 64px : 28px));
         viewport-width: root.multiline ? self.width : max(self.width, input.preferred-width);
         viewport-height: max(self.height, input.preferred-height);
         input := TextInput {
@@ -99,7 +231,7 @@ component AssistantInput inherits Rectangle {
         }
     }
     if root.value == "": AssistantText {
-        x: 12px; y: 12px; width: max(0px, parent.width - 24px);
+        x: 14px; y: 14px + root.attachment-height; width: max(0px, parent.width - 28px);
         text: root.placeholder; color: Theme.fg-muted;
         accessible-role: none;
     }
@@ -140,6 +272,9 @@ component AssistantInput inherits Rectangle {
             clicked => { root.activate-action(); }
         }
     }
+    if root.multiline && !root.external-toolbar: IconButton { x: 8px; y: parent.height - 42px; height: 32px; side: 32px; glyph: Glyph.plus; label: "引用全局资产"; enabled: root.enabled && !root.busy; clicked => { root.attach(); } }
+    if root.multiline && !root.external-toolbar: IconButton { x: 44px; y: parent.height - 42px; height: 32px; side: 32px; glyph: Glyph.workflow; label: "引用当前 Flow 节点"; enabled: root.enabled && !root.busy; clicked => { root.mention-node(); } }
+    @children
 }
 
 component AssistantPathRow inherits VerticalLayout {
@@ -290,6 +425,7 @@ export component AssistantPanel inherits Rectangle {
     in property <string> current-project;
     in property <string> provider-label;
     in property <[string]> session-names;
+    in property <string> current-session-id;
     in property <int> session-index;
     in property <bool> can-create-session;
     in property <bool> history-ready;
@@ -320,6 +456,7 @@ export component AssistantPanel inherits Rectangle {
     in property <string> send-disabled-reason;
     in property <string> connect-disabled-reason;
     in property <[AssistantMessage]> messages;
+    in property <[AssistantReference]> draft-references;
     in property <int> scroll-token;
 
     in property <bool> read-granted;
@@ -356,6 +493,13 @@ export component AssistantPanel inherits Rectangle {
     callback disconnect();
     callback connect-managed();
     callback new-session();
+    callback rename-session(string, string);
+    callback edit-message(string, int);
+    callback attach();
+    callback mention-node();
+    callback remove-reference(string);
+    callback reuse-reference(string);
+    callback open-reference(string, string);
     callback select-session(int);
     callback select-model(int);
     callback select-effort(int);
@@ -374,6 +518,21 @@ export component AssistantPanel inherits Rectangle {
 
     // Configuration drafts are local: host refreshes do not interrupt editing.
     property <string> service-url;
+    // Popup descendants hold weak parent links. Dispatch from the persistent
+    // panel so closing the popup cannot discard the action's receiver.
+    function choose-attachment(node: bool) {
+        attachments.close();
+        if node { root.mention-node(); } else { root.attach(); }
+    }
+    function choose-permission(action: int) {
+        permissions.close();
+        if action == 0 { root.sign-in(); }
+        else if action == 1 { if root.read-granted { root.revoke-read(); } else { root.grant-read(); } }
+        else if action == 2 { if root.can-renew-write { root.renew-write(); } else { root.grant-write(); } }
+        else if action == 3 { root.revoke-write(); }
+        else if action == 4 { if root.connected { root.disconnect(); } else { root.connect-managed(); } }
+        else if action == 5 { root.refresh-models(); }
+    }
     property <string> model-name;
     property <string> session-api-key;
     property <bool> images;
@@ -417,7 +576,7 @@ export component AssistantPanel inherits Rectangle {
         running: false; interval: 1ms;
         triggered => { self.stop(); if root.active { root.focus-composer(); } }
     }
-    property <bool> send-ready: root.active && !root.settings-open && root.can-send && !root.busy && !root.unknown && root.draft != "";
+    property <bool> send-ready: root.active && !root.settings-open && root.can-send && !root.busy && !root.unknown && (root.draft != "" || root.draft-references.length > 0);
     property <bool> connect-ready: root.active && root.can-connect && !root.connecting && !root.busy
         && root.service-url != "" && root.model-name != "" && root.session-api-key != "";
     init => {
@@ -438,15 +597,42 @@ export component AssistantPanel inherits Rectangle {
         else { close-button.take-focus(); }
     }
     function submit() { if root.send-ready { root.send(root.draft); } }
+    in property <bool> header-hover;
+    function rename-current-session() {
+        if !root.active || !root.history-ready { return; }
+        root.rename-target = root.current-session-id;
+        root.rename-title = root.session-index >= 0 && root.session-index < root.session-names.length ? root.session-names[root.session-index] : "Agent";
+        rename-popup.show();
+    }
+    property <string> rename-title;
+    property <string> rename-target;
+    rename-popup := PopupWindow {
+        close-policy: close-on-click-outside;
+        init => { rename-input.focus(); }
+        x: 12px; y: 42px; width: max(220px, root.width - 24px); height: 52px;
+        Rectangle {
+            background: Theme.panel; border-color: Theme.line-strong; border-width: 1px; border-radius: 10px;
+            HorizontalLayout {
+                padding: 8px; spacing: 6px;
+                rename-input := TextInput {
+                    text <=> root.rename-title; single-line: true; font-family: Theme.font; font-size: Theme.workbench-font;
+                    color: Theme.fg; horizontal-stretch: 1; vertical-alignment: center;
+                    accessible-label: "会话名称";
+                    accepted => { root.rename-session(root.rename-target, root.rename-title); rename-popup.close(); }
+                }
+                IconButton { side: 32px; glyph: Glyph.check; label: "保存会话名称"; clicked => { root.rename-session(root.rename-target, root.rename-title); rename-popup.close(); } }
+            }
+        }
+    }
 
     preferred-width: 344px;
     min-width: 300px;
     max-width: 480px;
     min-height: 0px;
-    background: root.floating ? Theme.assistant-floating-surface : Theme.panel;
+    background: root.floating ? (Theme.dark ? #1b1b1d : #fafafb) : Theme.panel;
     border-radius: root.floating ? 20px : 0px;
     border-width: root.floating ? 1px : 0px;
-    border-color: Theme.line-strong;
+    border-color: Theme.line;
     drop-shadow-blur: root.floating ? 20px : 0px;
     drop-shadow-offset-y: root.floating ? 6px : 0px;
     drop-shadow-color: Theme.image-control;
@@ -464,6 +650,16 @@ export component AssistantPanel inherits Rectangle {
                 text: root.session-index >= 0 && root.session-index < root.session-names.length ? root.session-names[root.session-index] : "Agent";
                 font-weight: Theme.weight-title; vertical-alignment: center; horizontal-stretch: 1;
                 wrap: no-wrap; overflow: elide;
+                title-hover := TouchArea {
+                    enabled: root.history-ready; mouse-cursor: pointer;
+                    clicked => { root.rename-current-session(); }
+                }
+            }
+            IconButton {
+                enabled: root.active && root.history-ready;
+                side: 36px; icon-size: 16px; glyph: Glyph.edit; label: "重命名会话";
+                opacity: root.header-hover || title-hover.has-hover || self.lit || self.keyboard-navigation-focus ? 1 : 0;
+                clicked => { root.rename-current-session(); }
             }
             IconButton {
                 enabled: root.active && root.can-create-session;
@@ -512,50 +708,16 @@ export component AssistantPanel inherits Rectangle {
             }
             VerticalLayout {
                 width: body.visible-width;
-                padding: 12px;
-                spacing: 12px;
+                padding: 18px;
+                spacing: 20px;
                 alignment: start;
                 if !root.settings-open: VerticalLayout {
-                    spacing: 16px;
-                    if !root.developer-tools && !root.signed-in: HorizontalLayout {
-                        IconButton { glyph: Glyph.lock; label: "登录账户"; enabled: root.active; clicked => { root.sign-in(); } }
-                        Rectangle { horizontal-stretch: 1; }
-                    }
-                    if !root.developer-tools && root.signed-in && !root.connected: VerticalLayout {
-                        spacing: 8px;
-                        HorizontalLayout {
-                            spacing: 8px;
-                            IconButton { glyph: Glyph.reset; label: "刷新模型"; enabled: root.active && !root.connecting; clicked => { root.refresh-models(); } }
-                        }
-                        if root.connect-disabled-reason != "": AssistantText { text: root.connect-disabled-reason; color: Theme.fg-muted; }
-                    }
-                    if !root.developer-tools && root.signed-in: HorizontalLayout {
-                        spacing: 8px;
-                        IconButton { glyph: root.read-granted ? Glyph.eye-off : Glyph.eye; label: root.read-granted ? "撤销读取与预览" : "允许读取与预览"; enabled: root.active && (root.read-granted ? root.can-revoke-read : root.can-grant-read); clicked => { if root.read-granted { root.revoke-read(); } else { root.grant-read(); } } }
-                        IconButton { glyph: root.write-granted ? Glyph.reset : Glyph.unlock; label: root.can-renew-write ? "续期画布操作 · 5分钟" : "允许画布操作 · 5分钟"; enabled: root.active && (root.can-renew-write || root.can-grant-write); clicked => { if root.can-renew-write { root.renew-write(); } else { root.grant-write(); } } }
-                        if root.can-revoke-write: IconButton { glyph: Glyph.lock; label: "撤销画布操作权限"; enabled: root.active; clicked => { root.revoke-write(); } }
-                        Rectangle { horizontal-stretch: 1; }
-                        IconButton { glyph: root.connected ? Glyph.close : Glyph.play; label: root.connect-label; enabled: root.active && (root.connected ? root.can-disconnect : root.can-connect) && !root.connecting; clicked => { if root.connected { root.disconnect(); } else { root.connect-managed(); } } }
-                    }
-                    for message in root.messages: VerticalLayout {
-                        spacing: 6px;
-                        if message.role == "你": HorizontalLayout {
-                            spacing: 0px;
-                            Rectangle { min-width: 20px; horizontal-stretch: 1; }
-                            Rectangle {
-                                width: min(parent.width - 20px, max(80px, user-text.preferred-width + 24px));
-                                height: user-text.preferred-height + 20px;
-                                border-radius: 10px;
-                                background: Theme.field;
-                                user-text := AssistantText { x: 12px; y: 10px; width: max(0px, parent.width - 24px); text: message.text; }
-                            }
-                        }
-                        if message.role != "你": VerticalLayout {
-                            spacing: 6px;
-                            if message.progress != "": AssistantText { text: message.progress; font-size: Theme.fs; color: Theme.fg-muted; }
-                            if message.text != "": AssistantText { text: message.text; }
-                            if message.state != "" && message.state != "已完成" && message.state != "操作结果待核实": AssistantText { text: message.state; font-size: Theme.fs; color: Theme.fg-muted; }
-                        }
+                    spacing: 24px;
+                    for message[index] in root.messages: AssistantMessageRow {
+                        message: message; can-edit: root.active && root.history-ready && !root.busy && !root.unknown;
+                        edit => { root.edit-message(root.current-session-id, index); composer.take-focus(); }
+                        reuse-reference(key) => { root.reuse-reference(key); }
+                        open-reference(key, destination) => { root.open-reference(key,destination); }
                     }
                     if !root.busy && !root.unknown && root.status != "" && root.status != "可以发送问题" && root.status != "已完成" && root.status != "已提交，待验证" && root.status != "处理失败" && root.status != "已停止": AssistantText {
                         text: root.status; font-size: 12px; color: Theme.fg-muted;
@@ -680,34 +842,124 @@ export component AssistantPanel inherits Rectangle {
             height: self.preferred-height;
             padding: 12px;
             spacing: 8px;
-            if !root.developer-tools && root.signed-in: WorkspaceSelect {
-                options: root.model-names; current: root.model-index; placeholder: "选择模型";
-                enabled: root.active && root.can-select-model;
-                changed(index) => { root.select-model(index); }
+            if !root.follow-tail: HorizontalLayout {
+                Rectangle { horizontal-stretch: 1; }
+                IconButton { side: 28px; glyph: Glyph.chevron-down; label: "回到最新消息"; clicked => { scroll-settled.stop(); root.follow-tail = true; body.viewport-y = min(0px, body.visible-height - body.viewport-height); } }
+                Rectangle { horizontal-stretch: 1; }
             }
-            if root.effort-visible: EffortSlider {
-                names: root.effort-names; current: root.effort-index; current-label: root.effort-label;
-                reason: root.effort-reason; enabled: root.active && root.can-select-effort;
-                can-refresh: root.active && !root.connecting;
-                selected(index) => { root.select-effort(index); }
-                refresh => { root.refresh-models(); }
-            }
-            AssistantText {
-                text: root.budget-label == "" ? "0" : root.budget-label;
-                color: Theme.fg-muted;
-                horizontal-alignment: right;
-                accessible-label: "当前任务实际消耗 " + self.text;
+            if !root.can-send && !root.busy && !root.unknown && root.send-disabled-reason != "": AssistantText {
+                text: !root.signed-in ? "登录后与 Agent 协作" : root.send-disabled-reason; font-size: Theme.fs; color: Theme.fg-muted;
             }
             composer := AssistantInput {
                 value <=> root.draft;
                 label: "给 Agent 的问题"; placeholder: "与 Agent 协作…";
-                multiline: true;
+                multiline: true; external-toolbar: true;
+                attachment-height: root.draft-references.length > 0 ? 76px : 0px;
                 // Connection and turn state gate sending, while drafts remain editable.
                 enabled: root.active && root.history-ready && !root.settings-open && !root.unknown;
                 send-enabled: root.active && (root.send-ready);
                 busy: root.busy; can-stop: root.active && !root.settings-open && root.can-stop;
                 submit => { root.submit(); }
                 stop => { root.stop(); }
+                attach => { root.attach(); }
+                mention-node => { root.mention-node(); }
+                if root.draft-references.length > 0: HorizontalLayout {
+                    x: 12px; y: 12px; height: 64px; width: parent.width - 24px; spacing: 6px;
+                    for reference in root.draft-references: AssistantReferenceTile {
+                        reference: reference; removable: true; remove => { root.remove-reference(reference.key); }
+                        reuse => { root.reuse-reference(reference.key); }
+                        open(destination) => { root.open-reference(reference.key,destination); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    x: 8px; y: parent.height - 44px; height: 36px; width: parent.width - 64px; spacing: 2px;
+                    IconButton {
+                        side: 30px; height: 36px; icon-size: 19px; glyph: Glyph.plus; label: "添加引用";
+                        enabled: root.active && root.history-ready && !root.busy && !root.unknown;
+                        clicked => { attachments.show(); }
+                        attachments := PopupWindow {
+                            close-policy: close-on-click-outside;
+                            x: 0px; y: -92px; width: 200px; height: 84px;
+                            Rectangle {
+                                background: Theme.panel; border-radius: 12px; border-width: 1px; border-color: Theme.line;
+                                VerticalLayout {
+                                    padding: 6px; spacing: 4px;
+                                    AgentMenuAction { text: "资产库素材"; glyph: Glyph.folder; clicked => { root.choose-attachment(false); } }
+                                    AgentMenuAction { text: "当前 Flow 节点"; glyph: Glyph.workflow; clicked => { root.choose-attachment(true); } }
+                                }
+                            }
+                        }
+                    }
+                    IconButton {
+                        side: 28px; height: 36px; icon-size: 16px;
+                        glyph: root.write-granted ? Glyph.unlock : Glyph.lock;
+                        label: "当前页面权限"; checked: root.read-granted; enabled: root.active;
+                        clicked => { permissions.show(); }
+                        permissions := PopupWindow {
+                            close-policy: close-on-click-outside;
+                            x: 0px; y: -self.height - 8px; width: 258px; height: root.signed-in ? 202px : 52px;
+                            Rectangle {
+                                background: Theme.panel; border-radius: 12px; border-width: 1px; border-color: Theme.line;
+                                VerticalLayout {
+                                    padding: 8px; spacing: 4px; alignment: start;
+                                    if !root.signed-in: AgentMenuAction { text: "登录账户"; glyph: Glyph.lock; clicked => { root.choose-permission(0); } }
+                                    if root.signed-in: AgentMenuAction { text: root.read-granted ? "撤销读取与预览" : "允许读取与预览"; glyph: Glyph.eye;
+                                        enabled: root.active && (root.read-granted ? root.can-revoke-read : root.can-grant-read);
+                                        clicked => { root.choose-permission(1); } }
+                                    if root.signed-in: AgentMenuAction { text: root.can-renew-write ? "续期页面操作 · 5分钟" : "允许页面操作 · 5分钟"; glyph: Glyph.unlock;
+                                        enabled: root.active && (root.can-renew-write || root.can-grant-write);
+                                        clicked => { root.choose-permission(2); } }
+                                    if root.signed-in: AgentMenuAction { text: "撤销页面操作权限"; glyph: Glyph.lock; enabled: root.can-revoke-write;
+                                        clicked => { root.choose-permission(3); } }
+                                    if root.signed-in: AgentMenuAction { text: root.connect-label; glyph: root.connected ? Glyph.close : Glyph.play;
+                                        enabled: root.active && (root.connected ? root.can-disconnect : root.can-connect) && !root.connecting;
+                                        clicked => { root.choose-permission(4); } }
+                                    if root.signed-in: AgentMenuAction { text: "刷新模型"; glyph: Glyph.reset; enabled: root.active && !root.connecting; clicked => { root.choose-permission(5); } }
+                                }
+                            }
+                        }
+                    }
+                    model-button := Rectangle {
+                        horizontal-stretch: 1; min-width: 0px; height: 36px; border-radius: 8px;
+                        background: model-touch.has-hover ? Theme.field-hover : transparent;
+                        accessible-role: button; accessible-label: root.signed-in ? "选择模型与强度" : "登录账户";
+                        accessible-enabled: root.active;
+                        accessible-action-default => { if root.active { if root.signed-in { models.show(); } else { root.sign-in(); } } }
+                        HorizontalLayout {
+                            padding-left: 6px; padding-right: 4px; spacing: 4px;
+                            Text { text: !root.signed-in ? "登录账户" : root.provider-label == "" ? "选择模型" : root.provider-label; font-family: Theme.font; font-size: Theme.fs; color: Theme.fg;
+                                vertical-alignment: center; overflow: elide; min-width: 0px; horizontal-stretch: 1; }
+                            if root.signed-in && root.effort-label != "": Text { text: root.effort-label; font-family: Theme.font; font-size: Theme.fs; color: Theme.fg-muted; vertical-alignment: center; }
+                            VerticalLayout { alignment: center; Icon { glyph: Glyph.chevron-down; size: 12px; tint: Theme.fg-muted; } }
+                        }
+                        model-focus := FocusScope {
+                            enabled: root.active;
+                            key-pressed(event) => { if event.text == " " || event.text == "\n" { if !event.repeat { if root.signed-in { models.show(); } else { root.sign-in(); } } return EventResult.accept; } return EventResult.reject; }
+                        }
+                        forward-focus: model-focus;
+                        model-touch := TouchArea { enabled: root.active; mouse-cursor: pointer; clicked => { if root.signed-in { models.show(); } else { root.sign-in(); } } }
+                        models := PopupWindow {
+                            close-policy: close-on-click-outside;
+                            x: min(0px, model-button.width - self.width); y: -self.height - 8px; width: min(300px, root.width - 28px); height: root.effort-visible ? 110px : 60px;
+                            Rectangle {
+                                background: Theme.panel; border-radius: 12px; border-width: 1px; border-color: Theme.line;
+                                VerticalLayout {
+                                    padding: 10px; spacing: 8px;
+                                    WorkspaceSelect { flat: true; options: root.model-names; current: root.model-index; placeholder: "选择模型";
+                                        enabled: root.active && root.can-select-model; changed(index) => { root.select-model(index); } }
+                                    if root.effort-visible: EffortSlider {
+                                        names: root.effort-names; current: root.effort-index; current-label: root.effort-label; reason: root.effort-reason;
+                                        enabled: root.active && root.can-select-effort; can-refresh: root.active && !root.connecting;
+                                        selected(index) => { root.select-effort(index); } refresh => { root.refresh-models(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Text { text: root.budget-label == "" ? "0" : root.budget-label; color: Theme.fg-muted; font-family: Theme.font; font-size: 11px;
+                        vertical-alignment: center; horizontal-alignment: right; min-width: 12px; accessible-label: "当前任务实际消耗 " + self.text; }
+                }
             }
             }
         }

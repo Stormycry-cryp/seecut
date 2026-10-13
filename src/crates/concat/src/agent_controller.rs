@@ -64,6 +64,7 @@ pub enum UiError {
     ServiceUnavailable,
     SessionRecoveryRequired,
     ModelSelectionUnavailable,
+    InvalidInput,
 }
 impl UiError {
     pub fn message(self) -> &'static str {
@@ -81,6 +82,7 @@ impl UiError {
             Self::ServiceUnavailable => "Agent 服务暂不可用，请稍后重试",
             Self::SessionRecoveryRequired => "会话需要恢复，请重新连接后发送新问题",
             Self::ModelSelectionUnavailable => "模型或档位已变更，请重新选择",
+            Self::InvalidInput => "当前模型无法处理这些内容，请调整文字或附件",
         }
     }
 }
@@ -100,6 +102,7 @@ pub struct EditorRecovery {
     pub project_id: String,
     pub document_session_id: String,
     pub retry_registration: bool,
+    pub flow: bool,
 }
 impl EditorRecovery {
     pub fn query_arguments(&self) -> Value {
@@ -111,6 +114,7 @@ pub struct View<'a> {
     pub phase: Phase,
     pub text: &'a str,
     pub progress: &'a str,
+    pub results: &'a [Value],
     pub approval: Option<&'a Approval>,
     pub outcome: Option<TaskOutcome>,
     pub error: Option<UiError>,
@@ -137,6 +141,8 @@ enum ToolAction {
     Export,
     Operation,
     RegistrationRetry,
+    FlowRead,
+    FlowWrite,
 }
 impl ToolAction {
     fn from_name(name: &str) -> Option<Self> {
@@ -153,6 +159,8 @@ impl ToolAction {
             "export_canvas_png" => Some(Self::Export),
             "canvas_operation" => Some(Self::Operation),
             "retry_canvas_registration" => Some(Self::RegistrationRetry),
+            "flow_read" => Some(Self::FlowRead),
+            "flow_write" => Some(Self::FlowWrite),
             _ => None,
         }
     }
@@ -165,11 +173,12 @@ impl ToolAction {
                 | Self::Save
                 | Self::Export
                 | Self::RegistrationRetry
+                | Self::FlowWrite
         )
     }
     fn label(self) -> &'static str {
         match self {
-            Self::Context => "读取当前画布",
+            Self::Context => "读取当前页面",
             Self::Project => "读取工程信息",
             Self::Preview => "查看画布预览",
             Self::Capabilities => "检查可用操作",
@@ -181,6 +190,8 @@ impl ToolAction {
             Self::Export => "导出并入库",
             Self::Operation => "核对操作结果",
             Self::RegistrationRetry => "登记原 PNG",
+            Self::FlowRead => "读取工作流",
+            Self::FlowWrite => "执行工作流操作",
         }
     }
 }
@@ -246,6 +257,7 @@ pub struct Controller {
     last_seq: u64,
     text: String,
     tool_progress: Vec<ToolProgress>,
+    results: Vec<Value>,
     progress: String,
     approval: Option<Approval>,
     outcome: Option<TaskOutcome>,
@@ -288,6 +300,7 @@ impl Default for Controller {
             last_seq: 0,
             text: String::new(),
             tool_progress: Vec::new(),
+            results: Vec::new(),
             progress: String::new(),
             approval: None,
             outcome: None,
@@ -418,6 +431,7 @@ impl Controller {
             self.write_identity = None;
         }
         self.text.clear();
+        self.results.clear();
         self.tool_progress.clear();
         self.progress.clear();
         self.approval = None;
@@ -486,6 +500,7 @@ impl Controller {
             phase: self.phase,
             text: &self.text,
             progress: &self.progress,
+            results: &self.results,
             approval: self.approval.as_ref(),
             outcome: self.outcome,
             error: self.error,
@@ -518,13 +533,44 @@ impl Controller {
         text: &str,
         selection: Option<Value>,
     ) -> Result<(), UiError> {
+        self.send_content_with_selection(vec![json!({"type":"text","text":text})], selection)
+    }
+    pub fn send_content_with_selection(
+        &mut self,
+        content: Vec<Value>,
+        selection: Option<Value>,
+    ) -> Result<(), UiError> {
         if let Some(error) = self.blocking_error() {
             return Err(error);
         }
         if !self.view().can_send {
             return Err(UiError::Busy);
         }
-        if text.trim().is_empty() || text.len() > 32_000 {
+        let text_bytes: usize = content
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .map(str::len)
+            .sum();
+        if content.is_empty()
+            || content.len() > 8
+            || text_bytes > 32_000
+            || content.iter().any(|part| match part["type"].as_str() {
+                Some("text") => part["text"]
+                    .as_str()
+                    .is_none_or(|text| text.trim().is_empty()),
+                Some("image") => {
+                    part["data"]
+                        .as_str()
+                        .is_none_or(|data| data.len() > 1_398_104)
+                        || !matches!(
+                            part["mimeType"].as_str(),
+                            Some("image/jpeg" | "image/png" | "image/webp" | "image/gif")
+                        )
+                }
+                _ => true,
+            })
+            || content.iter().filter(|p| p["type"] == "image").count() > 2
+        {
             return Err(UiError::Configuration);
         }
         if let Some(selection) = selection.as_ref() {
@@ -538,12 +584,13 @@ impl Controller {
         // IPC counters restart with the process; persisted sessions must never
         // mistake a new explicit question for an already accepted input.
         let input_id = format!("input-{}", uuid::Uuid::new_v4());
-        let mut params = json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":[{"type":"text","text":text}]});
+        let mut params = json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":content});
         if let Some(selection) = selection {
             params["modelSelection"] = selection;
         }
         self.enqueue("send", params, Request::Send { input_id })?;
         self.text.clear();
+        self.results.clear();
         self.tool_progress.clear();
         self.progress.clear();
         self.outcome = None;
@@ -638,6 +685,7 @@ impl Controller {
                             | "transform_canvas_layer"
                             | "save_canvas_project"
                             | "export_canvas_png"
+                            | "flow_write"
                     )
                 )
             {
@@ -685,6 +733,7 @@ impl Controller {
                 client_sequence: sequence,
                 project_id: project.into(),
                 document_session_id: session.into(),
+                flow: item["toolName"] == "flow_write",
                 retry_registration: item["toolName"] == "export_canvas_png"
                     && item["result"]["status"] == "partial"
                     && item["result"]["data"]["operationId"].as_str() == Some(operation)
@@ -847,6 +896,7 @@ impl Controller {
             self.disconnect();
             self.error = Some(UiError::DocumentChanged);
             self.text.clear();
+            self.results.clear();
             self.outcome = None;
         }
         for _ in 0..64 {
@@ -1106,6 +1156,14 @@ impl Controller {
                                 .map(EditorRecovery::query_arguments)
                                 .collect::<Vec<_>>()
                         );
+                    }
+                    if self.unknown_latched
+                        && self.editor_recovery.is_empty()
+                        && let Some((turn, invocation, tool)) = &self.write_identity
+                    {
+                        params["recoveryInvocations"] = json!([{
+                            "turnId":turn,"invocationId":invocation,"toolName":tool
+                        }]);
                     }
                     "session.restore"
                 } else {
@@ -1413,6 +1471,31 @@ impl Controller {
                 }
             }
             "tool.completed" | "tool.failed" => {
+                if kind == "tool.completed"
+                    && turn.is_some()
+                    && turn == self.turn_id.as_deref()
+                    && matches!(
+                        self.phase,
+                        Phase::Running | Phase::AwaitingApproval | Phase::Stopping
+                    )
+                    && !self.unknown_latched
+                    && data["message"]["toolName"] == "flow_read"
+                    && let Some(results) = data["metadata"]["flowResults"].as_array()
+                    && results.len() <= 4
+                {
+                    self.results = results
+                        .iter()
+                        .filter(|r| {
+                            r["kind"] == "asset"
+                                && r["label"].as_str().is_some_and(|s| s.len() <= 512)
+                                && r["target"]["assetId"]
+                                    .as_str()
+                                    .is_some_and(|s| s.len() <= 128)
+                                && r["target"]["version"].is_object()
+                        })
+                        .cloned()
+                        .collect();
+                }
                 let owns_write = self.write_identity.as_ref().is_some_and(
                     |(original_turn, invocation, tool)| {
                         turn == Some(original_turn.as_str())
@@ -1503,6 +1586,7 @@ impl Controller {
                             | "transform_canvas_layer"
                             | "save_canvas_project"
                             | "export_canvas_png"
+                            | "flow_write"
                             | "canvas_operation"
                             | "retry_canvas_registration"
                     )
@@ -1883,6 +1967,7 @@ fn bridge_error(error: BridgeError) -> UiError {
 }
 fn remote_error(code: &str) -> UiError {
     match code {
+        "invalid_input" | "input_limit" | "media_limit" => UiError::InvalidInput,
         "turn_settling" | "managed_busy" | "session_busy" => UiError::Busy,
         "managed_unknown" | "managed_transport" | "managed_timeout" => UiError::ModelVerifyRequired,
         "managed_protocol" | "idempotency_conflict" => UiError::Protocol,
@@ -1905,6 +1990,14 @@ fn remote_error(code: &str) -> UiError {
 #[cfg(all(test, unix, not(any(target_os = "ios", target_os = "android"))))]
 mod tests {
     use super::*;
+    #[test]
+    fn rejected_content_is_not_reported_as_a_disconnected_agent() {
+        for code in ["invalid_input", "input_limit", "media_limit"] {
+            assert_eq!(remote_error(code), UiError::InvalidInput);
+            assert!(!remote_error(code).message().contains("连接"));
+        }
+    }
+
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::{fs, thread};
     const FIXTURE: &str = r#"import sys,json,time,pathlib,os
@@ -1963,9 +2056,10 @@ for line in sys.stdin:
         elif scenario=='old-runtime': assert 'rebind' not in p and 'recoverExisting' not in p
         else: assert p['rebind'] is True and p['recoverExisting'] is True
         session=p['sessionId'];time.sleep(.08)
-        if m=='session.restore' and scenario in ('exit-insert','exit-export','lost-reconcile-reply'):
+        if m=='session.restore' and scenario in ('exit-insert','exit-export','first-terminal-lost','lost-reconcile-reply'):
             record=json.loads(original_path.read_text())
-            if record['status']=='verified': assert p['recoveryQueries']==[original_query(record)]
+            if scenario=='first-terminal-lost': assert p['recoveryInvocations']==[{'turnId':'turn-1','invocationId':'turn-1_canvas','toolName':record['toolName']}]
+            elif record['status']=='verified': assert p['recoveryQueries']==[original_query(record)]
             else: assert 'recoveryQueries' not in p
             assert record['sessionId']==session
             reply(f,{'sessionId':session,'status':'interrupted','recoveryRequired':True,'pendingInputCount':0,'toolState':recovery_state(record)});continue
@@ -1991,10 +2085,11 @@ for line in sys.stdin:
         if scenario=='early-result':
             event('turn.started');event('text.delta',{'text':'处理中'});final();reply(f,{'inputId':p['inputId'],'status':'pending'});continue
         reply(f,{'inputId':p['inputId'],'status':'pending'});event('turn.started')
-        if scenario in ('exit-insert','exit-export','lost-reconcile-reply'):
+        if scenario in ('exit-insert','exit-export','first-terminal-lost','lost-reconcile-reply'):
             name='insert_library_image' if scenario=='exit-insert' else 'export_canvas_png'
             operation='scm2:1:8:client-1:5:doc-1:1'
             record={'sessionId':session,'invocationId':'turn-1_canvas','toolName':name,'operationId':operation,'parameters':{'projectId':'project-1','documentSessionId':'doc-1','operationId':operation,'clientSequence':1},'binding':{'instanceId':'12345678-1234-1234-1234-123456789abc','clientId':'client-1','projectId':'project-1','documentSessionId':'doc-1'},'status':'pending','writes':1,'queries':0,'result':{'status':'ok','data':{'operationId':operation,'clientSequence':1}}}
+            if scenario=='first-terminal-lost': record['status']='verified'
             original_store(record)
             event('tool.started',{'invocationId':'turn-1_canvas','call':{'name':name}})
             if scenario!='lost-reconcile-reply': sys.exit(0)
@@ -2956,7 +3051,7 @@ for line in sys.stdin:
             "tool.started",
             json!({"invocationId":"one", "call":{"name":"context"}}),
         );
-        assert_eq!(c.view().progress, "读取当前画布…");
+        assert_eq!(c.view().progress, "读取当前页面…");
         display_event(
             &mut c,
             4,
@@ -2975,7 +3070,7 @@ for line in sys.stdin:
             "tool.failed",
             json!({"invocationId":"one", "message":{"toolName":"context"}}),
         );
-        assert_eq!(c.view().progress, "读取当前画布 · 已返回");
+        assert_eq!(c.view().progress, "读取当前页面 · 已返回");
         assert_eq!(c.tool_progress.len(), 1);
         display_event(
             &mut c,
@@ -2983,8 +3078,43 @@ for line in sys.stdin:
             "text.delta",
             json!({"text":"tool.started fake model text"}),
         );
-        assert_eq!(c.view().progress, "读取当前画布 · 已返回");
+        assert_eq!(c.view().progress, "读取当前页面 · 已返回");
         assert_eq!(c.view().text, "tool.started fake model text");
+    }
+    #[test]
+    fn flow_result_cards_survive_completion_and_final_reply_in_one_tick() {
+        let mut c = display_controller();
+        let reference = json!({"kind":"asset","label":"生成结果","target":{
+            "assetId":"registered-image","version":{"sha256":"a".repeat(64),"registration_id":"receipt"},
+            "graphId":"graph","runId":"run","nodeId":"image"}});
+        display_event(
+            &mut c,
+            1,
+            "tool.started",
+            json!({"invocationId":"results","call":{"name":"flow_read"}}),
+        );
+        display_event(
+            &mut c,
+            2,
+            "tool.completed",
+            json!({"invocationId":"results",
+            "message":{"toolName":"flow_read"},"metadata":{"flowResults":[reference.clone()]}}),
+        );
+        // tick consumes consecutive queued frames before publishing one View.
+        c.result(&json!({"sessionId":"display-session","result":{
+            "turnId":"display-turn","status":"completed","text":"已完成，可打开结果"},
+            "toolState":{"outcomeUnknown":false,"observed":[]}}));
+        assert_eq!(c.view().outcome, Some(TaskOutcome::Completed));
+        assert_eq!(c.view().results, std::slice::from_ref(&reference));
+        assert_eq!(c.view().text, "已完成，可打开结果");
+        display_event(
+            &mut c,
+            3,
+            "tool.completed",
+            json!({"invocationId":"late",
+            "message":{"toolName":"flow_read"},"metadata":{"flowResults":[]}}),
+        );
+        assert_eq!(c.view().results, &[reference]);
     }
     #[test]
     fn tool_progress_ignores_unscoped_old_duplicate_and_post_terminal_events() {
@@ -3428,6 +3558,7 @@ for line in sys.stdin:
             project_id: f.identity.project_id.clone(),
             document_session_id: f.identity.document_session_id.clone(),
             retry_registration: false,
+            flow: false,
         });
         f.controller.write_in_flight = true;
         f.controller.write_identity = Some((
@@ -3500,7 +3631,7 @@ for line in sys.stdin:
     }
     #[test]
     fn first_canvas_write_child_exit_restores_durable_original_without_final_result() {
-        for scenario in ["exit-insert", "exit-export"] {
+        for scenario in ["exit-insert", "exit-export", "first-terminal-lost"] {
             let mut f = Fixture::new(scenario);
             f.ready();
             f.controller.send_text("执行原画布操作").unwrap();

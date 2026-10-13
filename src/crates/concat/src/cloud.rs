@@ -24,7 +24,7 @@ mod flow_generation;
 mod flow_parameters;
 mod generation_state;
 mod preview_validation;
-pub(crate) use flow_generation::{RegisteredAsset, library_asset, media_kind};
+pub(crate) use flow_generation::{RegisteredAsset, library_asset, library_receipt, media_kind};
 pub(crate) use flow_parameters::{generation_fields, parameter_default, parameter_values};
 
 /// The opt-in software-rendered fixture exercises local state transitions with
@@ -1563,6 +1563,10 @@ fn current_generation_choice(cloud: &Cloud, mode: i32) -> generation_state::Choi
             .as_ref()
             .and_then(|e| e["id"].as_str())
             .map(str::to_owned),
+        effort_identity: cloud
+            .effort_selection
+            .as_ref()
+            .map(generation_state::policy_identity),
         models: cloud.selected_model_ids.clone(),
     }
 }
@@ -1773,7 +1777,7 @@ fn selected_model(ui: &SeeCut, state: &Cloud) -> String {
     {
         return id.clone();
     }
-    if state.effort_selection.is_some() && state.selected_model_ids.contains_key(kind) {
+    if state.selected_model_ids.contains_key(kind) {
         return String::new();
     }
     model_id_at_index(&state.models, ui.get_mode(), ui.get_model_index()).unwrap_or_default()
@@ -3718,6 +3722,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                         cloud.effort_required,
                     ) {
                         cloud.effort_selection = restored.effort;
+                        cloud.effort_confirmation_required = restored.needs_confirmation;
                         cloud.selected_model_ids = restored.models;
                         cloud.unavailable_model_id = None;
                         cloud.unavailable_model_kind = None;
@@ -7883,10 +7888,9 @@ fn update_model_options_inner(
             .cloned()
             .collect::<Vec<_>>();
         let desired_id = selected_id.filter(|id| !id.is_empty());
-        let unavailable = (cloud.effort_selection.is_some()
-            && desired_id
-                .as_ref()
-                .is_some_and(|id| !models.iter().any(|model| text(model, "id") == *id)))
+        let unavailable = desired_id
+            .as_ref()
+            .is_some_and(|id| !models.iter().any(|model| text(model, "id") == *id))
             || (cloud.unavailable_model_kind.as_deref() == Some(kind)
                 && cloud.unavailable_model_id.is_some()
                 && desired_id.is_none())

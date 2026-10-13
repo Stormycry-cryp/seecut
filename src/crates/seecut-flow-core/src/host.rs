@@ -421,14 +421,19 @@ pub fn result_attempt<'a>(
         })
         .and_then(|run| run.steps.get(&source.id))
         .and_then(|step| step.attempt.as_deref());
-    live.or_else(|| {
-        (node.params["selected_output"]["observed_attempts"].as_u64()
-            == Some(attempts.len() as u64))
+    let explicit = (node.kind == "select")
         .then(|| node.params["selected_output"]["attempt"].as_str())
-        .flatten()
-    })
-    .and_then(|id| attempts.iter().find(|a| a.id == id).copied())
-    .or_else(|| attempts.first().copied())
+        .flatten();
+    explicit
+        .or(live)
+        .or_else(|| {
+            (node.params["selected_output"]["observed_attempts"].as_u64()
+                == Some(attempts.len() as u64))
+            .then(|| node.params["selected_output"]["attempt"].as_str())
+            .flatten()
+        })
+        .and_then(|id| attempts.iter().find(|a| a.id == id).copied())
+        .or_else(|| attempts.first().copied())
 }
 /// All accessible historical batches, newest first. Copies retain only their frozen references.
 pub fn result_attempts<'a>(

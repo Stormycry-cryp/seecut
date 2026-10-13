@@ -89,13 +89,7 @@ pub struct Asset {
     pub folder_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AssetVersion {
-    pub sha256: String,
-    pub registration_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_id: Option<String>,
-}
+pub use crate::asset_version::AssetVersion;
 
 /// A reference to the existing library identity, never a second asset entry.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
