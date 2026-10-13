@@ -6,6 +6,7 @@ use crate::generation_templates::{GenerationTemplate, inspiration as recipes};
 pub(super) struct Draft {
     epoch: u64,
     snapshot: TaskInputSnapshot,
+    reference_versions: Vec<String>,
     template_id: String,
     template_name: String,
     warning: String,
@@ -91,7 +92,19 @@ pub(super) fn render(app: &App) {
     ui.set_inspirations(rows(cards));
 }
 
-fn replace_draft(app: &App, state: &Rc<RefCell<Cloud>>, snapshot: TaskInputSnapshot) {
+fn ensure_draft_replaceable(cloud: &Cloud) -> Result<(), String> {
+    if cloud.submission.is_some() {
+        return Err("上次生成尚未核实，请先回到创建页重试原任务".into());
+    }
+    Ok(())
+}
+
+fn replace_draft(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    snapshot: TaskInputSnapshot,
+) -> Result<(), String> {
+    ensure_draft_replaceable(&state.borrow())?;
     let ui = app.global::<SeeCut>();
     ui.set_prompt(snapshot.prompt.clone().into());
     ui.set_prompt_cursor(snapshot.prompt.len() as i32);
@@ -108,7 +121,6 @@ fn replace_draft(app: &App, state: &Rc<RefCell<Cloud>>, snapshot: TaskInputSnaps
         cloud.quote_id.clear();
         cloud.quote_credits = None;
         cloud.quote_body = Value::Null;
-        cloud.submission = None;
         cloud.pending_template_id = None;
         cloud.pending_task_refill_id = None;
     }
@@ -124,10 +136,12 @@ fn replace_draft(app: &App, state: &Rc<RefCell<Cloud>>, snapshot: TaskInputSnaps
     render_references(app, state);
     refresh_quote(app, state);
     ui.set_generation_step(0);
+    Ok(())
 }
 
 fn apply(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) -> Result<(), String> {
     let ui = app.global::<SeeCut>();
+    ensure_draft_replaceable(&state.borrow())?;
     if ui.get_working() {
         return Err("请等待当前操作完成".into());
     }
@@ -149,9 +163,12 @@ fn apply(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) -> Result<(), String> 
         &current_template_parameters(&ui, &cloud),
     )?;
     validate_configuration_references(model, &template.references, "模板")?;
+    let original = current_task_snapshot(&ui, &cloud);
+    let reference_versions = recipes::freeze_references(&original.references)?;
     let backup = Draft {
         epoch: cloud.epoch,
-        snapshot: current_task_snapshot(&ui, &cloud),
+        snapshot: original,
+        reference_versions,
         template_id: ui.get_template_id().to_string(),
         template_name: ui.get_template_name().to_string(),
         warning: ui.get_recovery_warning().to_string(),
@@ -166,8 +183,8 @@ fn apply(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) -> Result<(), String> 
     };
     drop(cloud);
     // Only after every model, parameter and byte-version check has passed.
+    replace_draft(app, state, snapshot)?;
     state.borrow_mut().inspiration_backup = Some(Box::new(backup));
-    replace_draft(app, state, snapshot);
     ui.set_template_id("".into());
     ui.set_template_name("".into());
     clear_recovery_warning(&ui);
@@ -179,6 +196,7 @@ fn apply(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) -> Result<(), String> 
 
 fn restore(app: &App, state: &Rc<RefCell<Cloud>>) -> Result<(), String> {
     let ui = app.global::<SeeCut>();
+    ensure_draft_replaceable(&state.borrow())?;
     if ui.get_working() {
         return Err("请等待当前操作完成".into());
     }
@@ -193,18 +211,26 @@ fn restore(app: &App, state: &Rc<RefCell<Cloud>>) -> Result<(), String> {
         return Err("账户已切换，原账户草稿未回填".into());
     }
     let cloud = state.borrow();
-    if !cloud
+    let model = cloud
         .models
         .iter()
-        .any(|m| text(m, "id") == backup.snapshot.model_id && m["available"] == true)
-    {
-        return Err("原模型暂不可用，草稿备份已保留".into());
-    }
+        .find(|m| text(m, "id") == backup.snapshot.model_id)
+        .ok_or("原模型暂不可用，草稿备份已保留")?;
+    recipes::prepare_draft(
+        backup.snapshot.mode,
+        &backup.snapshot.parameters,
+        &backup.snapshot.references,
+        &backup.reference_versions,
+        model,
+        &json!({}),
+    )
+    .map_err(|_| "原草稿的模型、参数或素材已变化，当前草稿和备份均已保留")?;
+    validate_configuration_references(model, &backup.snapshot.references, "原草稿")?;
     if cloud.effort_selection != backup.snapshot.effort {
         return Err("生成档位已变化，请先恢复原档位".into());
     }
     drop(cloud);
-    replace_draft(app, state, backup.snapshot);
+    replace_draft(app, state, backup.snapshot)?;
     ui.set_template_id(backup.template_id.into());
     ui.set_template_name(backup.template_name.into());
     ui.set_recovery_warning(backup.warning.into());

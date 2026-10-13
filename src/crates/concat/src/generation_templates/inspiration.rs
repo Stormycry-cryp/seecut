@@ -39,6 +39,10 @@ pub fn digest(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+pub fn freeze_references(references: &[TemplateReference]) -> Result<Vec<String>, String> {
+    references.iter().map(|r| digest(&r.path)).collect()
+}
+
 pub fn personal_metadata(references: &[TemplateReference]) -> Result<Metadata, String> {
     Ok(Metadata {
         version: 1,
@@ -52,10 +56,7 @@ pub fn personal_metadata(references: &[TemplateReference]) -> Result<Metadata, S
             "edit"
         }
         .into(),
-        reference_versions: references
-            .iter()
-            .map(|r| digest(&r.path))
-            .collect::<Result<_, _>>()?,
+        reference_versions: freeze_references(references)?,
         preview_asset_id: None,
         preview_version: None,
     })
@@ -95,38 +96,62 @@ pub fn prepare(
     if metadata.version == 0 || template.prompt.trim().is_empty() {
         return Err("模板已失效，原草稿已保留".into());
     }
+    let operation = if mode == 0 && !template.references.is_empty() {
+        "edit"
+    } else {
+        "generate"
+    };
+    if mode != template.mode || metadata.capability != operation {
+        return Err("模板能力声明无效，原草稿已保留".into());
+    }
+    prepare_draft(
+        mode,
+        &template.parameters,
+        &template.references,
+        &metadata.reference_versions,
+        model,
+        current_parameters,
+    )
+}
+
+/// Shared atomic validation for template application and original-draft restore.
+/// Empty prompts are valid drafts; restoring one must not require submitting it.
+pub fn prepare_draft(
+    mode: i32,
+    saved_parameters: &Value,
+    references: &[TemplateReference],
+    reference_versions: &[String],
+    model: &Value,
+    current_parameters: &Value,
+) -> Result<Value, String> {
     let kind = if mode == 0 { "image" } else { "video" };
-    if mode != template.mode
-        || model["kind"] != kind
+    if model["kind"] != kind
         || model["available"] != true
         || model["id"].as_str().unwrap_or_default().is_empty()
     {
         return Err("请先选择兼容的可用模型，原草稿已保留".into());
     }
-    let operation = if kind == "image" && !template.references.is_empty() {
+    let operation = if kind == "image" && !references.is_empty() {
         "edit"
     } else {
         "generate"
     };
-    if metadata.capability != operation {
-        return Err("模板能力声明无效，原草稿已保留".into());
-    }
     if !model["operations"]
         .as_array()
         .is_some_and(|ops| ops.iter().any(|op| op == operation))
     {
         return Err("当前模型不支持此模板，原草稿已保留".into());
     }
-    if metadata.reference_versions.len() != template.references.len() {
+    if reference_versions.len() != references.len() {
         return Err("模板参考素材版本不完整，请重新保存".into());
     }
-    for (reference, expected) in template.references.iter().zip(&metadata.reference_versions) {
+    for (reference, expected) in references.iter().zip(reference_versions) {
         if expected.is_empty() || digest(&reference.path)? != *expected {
             return Err("参考素材已变化，原草稿已保留".into());
         }
     }
     let mut parameters = current_parameters.clone();
-    for (key, value) in template.parameters.as_object().ok_or("模板参数无效")? {
+    for (key, value) in saved_parameters.as_object().ok_or("模板参数无效")? {
         if value.is_null() {
             continue;
         }
@@ -201,5 +226,58 @@ mod tests {
         assert!(prepare(&t, &model(), 0, &json!({})).is_err());
         std::fs::remove_file(&path).unwrap();
         assert!(prepare(&t, &model(), 0, &json!({})).is_err());
+    }
+    #[test]
+    fn original_draft_restore_requires_every_frozen_reference_and_preserves_backup() {
+        let root = std::env::temp_dir().join(format!("seecut-restore-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let references: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|name| {
+                let path = root.join(name);
+                std::fs::write(&path, name.as_bytes()).unwrap();
+                TemplateReference {
+                    path,
+                    name: name.into(),
+                    kind: "image".into(),
+                    client_id: name.into(),
+                    source_id: format!("asset-{name}"),
+                }
+            })
+            .collect();
+        let versions = freeze_references(&references).unwrap();
+        let parameters = json!({"quality":"high"});
+        let validate =
+            || prepare_draft(0, &parameters, &references, &versions, &model(), &json!({}));
+        assert_eq!(validate().unwrap(), parameters);
+        std::fs::write(&references[1].path, b"replaced").unwrap();
+        assert!(validate().is_err());
+        std::fs::remove_file(&references[1].path).unwrap();
+        assert!(validate().is_err());
+        // Reinstating the exact bytes makes the same retained backup usable.
+        std::fs::write(&references[1].path, b"second").unwrap();
+        assert_eq!(validate().unwrap(), parameters);
+        assert_eq!(freeze_references(&references).unwrap(), versions);
+        assert_eq!(references[1].source_id, "asset-second");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn original_draft_restore_rechecks_catalog_parameters_and_operations() {
+        let parameters = json!({"quality":"high"});
+        let validate = |model: &Value| prepare_draft(0, &parameters, &[], &[], model, &json!({}));
+        assert_eq!(validate(&model()).unwrap(), parameters);
+        let mut changed = model();
+        changed["parameters"]["quality"]["values"] = json!(["low"]);
+        assert!(validate(&changed).is_err());
+        changed = model();
+        changed["available"] = json!(false);
+        assert!(validate(&changed).is_err());
+        changed = model();
+        changed["operations"] = json!(["edit"]);
+        assert!(validate(&changed).is_err());
+        changed = model();
+        changed["kind"] = json!("video");
+        assert!(validate(&changed).is_err());
     }
 }
