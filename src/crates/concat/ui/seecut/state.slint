@@ -37,6 +37,7 @@ export struct AccountEntry {
     id: string,
     title: string,
     detail: string,
+    reference: string,
     value: string,
 }
 
@@ -187,6 +188,9 @@ export global SeeCut {
     in-out property <string> reference-limit;
     in-out property <int> reference-max;
     in-out property <[CloudItem]> references;
+    in-out property <[string]> generation-effort-names;
+    in-out property <int> generation-effort-index: -1;
+    in-out property <string> generation-actual-cost: "0";
     in-out property <string> quote;
     in-out property <bool> can-generate;
     in-out property <bool> insufficient-credits;
@@ -215,6 +219,15 @@ export global SeeCut {
     in-out property <int> asset-filter;
     in-out property <bool> trash-open;
     in-out property <[CreditPlan]> plans;
+    in-out property <int> account-history-tab;
+    in-out property <int> ledger-filter-index;
+    in-out property <bool> history-loading;
+    in-out property <bool> history-previous;
+    in-out property <bool> history-next;
+    in-out property <int> history-page: 1;
+    in-out property <int> history-view-revision;
+    in-out property <string> history-error;
+    in-out property <string> history-notice;
     in-out property <[AccountEntry]> ledger;
     in-out property <[AccountEntry]> orders;
 

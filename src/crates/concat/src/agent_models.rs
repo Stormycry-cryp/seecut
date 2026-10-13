@@ -27,6 +27,39 @@ impl Effort {
             "该强度暂不可用"
         }
     }
+    pub(crate) fn allows(&self, model_id: &str) -> bool {
+        self.public["agent_models"]
+            .as_array()
+            .map_or(self.model_id == model_id, |models| {
+                models.iter().any(|model| model["model_id"] == model_id)
+            })
+    }
+    pub(crate) fn model_available(&self, model_id: &str) -> bool {
+        self.public["agent_models"].as_array().map_or(
+            self.available && self.model_id == model_id,
+            |models| {
+                models
+                    .iter()
+                    .any(|model| model["model_id"] == model_id && model["available"] == true)
+            },
+        )
+    }
+    pub(crate) fn policy_for(&self, model_id: &str) -> Option<Value> {
+        if let Some(models) = self.public["agent_models"].as_array() {
+            let mut agent = models
+                .iter()
+                .find(|model| model["model_id"] == model_id)?
+                .clone();
+            let fields = agent.as_object_mut()?;
+            fields.remove("available");
+            fields.remove("reason_code");
+            return Some(
+                serde_json::json!({"policy_version":4,"id":self.id,"label":self.label,
+                "policy_revision":self.revision,"agent":agent,"generation":self.public["generation"]}),
+            );
+        }
+        (self.model_id == model_id).then(|| self.policy())
+    }
     pub(crate) fn policy(&self) -> Value {
         let mut policy = self.public.clone();
         if let Some(object) = policy.as_object_mut() {
@@ -237,6 +270,14 @@ pub(crate) fn parse(value: Value) -> Result<Directory, &'static str> {
 }
 
 fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'static str> {
+    parse_effort_entries(value, models, false)
+}
+
+fn parse_effort_entries(
+    value: &Value,
+    models: &[Choice],
+    independent: bool,
+) -> Result<Vec<Effort>, &'static str> {
     let invalid = "强度目录暂不可用";
     if value.get("effort_policy_version").is_none() {
         return if value.get("efforts").is_none() && value.get("default_effort_id").is_none() {
@@ -245,7 +286,7 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
             Err(invalid)
         };
     }
-    if !matches!(value["effort_policy_version"].as_u64(), Some(1..=3)) {
+    if !matches!(value["effort_policy_version"].as_u64(), Some(1..=4)) {
         return Err(invalid);
     }
     let entries = value["efforts"]
@@ -261,6 +302,17 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
     }
     let mut efforts: Vec<Effort> = Vec::new();
     for entry in entries {
+        if entry.get("agent_models").is_some() {
+            if value["effort_policy_version"] != 4 || independent {
+                return Err(invalid);
+            }
+            let effort = parse_allowed_effort(entry, models)?;
+            if efforts.iter().any(|other| other.id == effort.id) {
+                return Err(invalid);
+            }
+            efforts.push(effort);
+            continue;
+        }
         let id = entry["id"].as_str().filter(|id| alias(id)).ok_or(invalid)?;
         let label = entry["label"]
             .as_str()
@@ -277,7 +329,7 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
         let available = entry["available"].as_bool().ok_or(invalid)?;
         let capped =
             crate::agent_billing::validate(&entry["agent"], available).map_err(|_| invalid)?;
-        if capped && value["effort_policy_version"] != 3 {
+        if capped && value["effort_policy_version"].as_u64().unwrap_or(0) < 3 {
             return Err(invalid);
         }
         let reason = &entry["reason_code"];
@@ -363,7 +415,7 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
             generation.insert(name.into(), Value::Array(ids));
         }
         if efforts.iter().any(|effort| effort.id == id)
-            || (available && !capped && reference_count == 0)
+            || (available && !independent && !capped && reference_count == 0)
         {
             return Err(invalid);
         }
@@ -381,6 +433,57 @@ fn parse_efforts(value: &Value, models: &[Choice]) -> Result<Vec<Effort>, &'stat
         return Err(invalid);
     }
     Ok(efforts)
+}
+
+// Reuse the same single-model validator for every allowed v4 choice. Only the
+// generation dependency changes; legacy policy serialization remains untouched.
+fn parse_allowed_effort(entry: &Value, models: &[Choice]) -> Result<Effort, &'static str> {
+    let invalid = "强度目录暂不可用";
+    let rows = entry["agent_models"]
+        .as_array()
+        .filter(|rows| !rows.is_empty() && rows.len() <= 17)
+        .ok_or(invalid)?;
+    let mut normalized = Vec::new();
+    let mut default = None;
+    for row in rows {
+        if normalized
+            .iter()
+            .any(|other: &Value| other["model_id"] == row["model_id"])
+        {
+            return Err(invalid);
+        }
+        let mut agent = row.clone();
+        let fields = agent.as_object_mut().ok_or(invalid)?;
+        fields.remove("available");
+        fields.remove("reason_code");
+        let single = serde_json::json!({"id":entry["id"],"label":entry["label"],
+            "policy_revision":entry["policy_revision"],"agent":agent,"generation":entry["generation"],
+            "available":row["available"],"reason_code":row["reason_code"]});
+        let catalog = serde_json::json!({"effort_policy_version":3,"default_effort_id":entry["id"],"efforts":[single]});
+        let mut effort = parse_effort_entries(&catalog, models, true)?.remove(0);
+        let mut public_agent = effort.public["agent"].clone();
+        public_agent["available"] = row["available"].clone();
+        public_agent["reason_code"] = row["reason_code"].clone();
+        normalized.push(public_agent);
+        if effort.model_id == entry["agent"]["model_id"] {
+            if effort.public["agent"] != entry["agent"] {
+                return Err(invalid);
+            }
+            effort.available = entry["available"].as_bool().ok_or(invalid)?;
+            effort.public["available"] = entry["available"].clone();
+            effort.public["reason_code"] = entry["reason_code"].clone();
+            default = Some(effort);
+        }
+    }
+    let mut effort = default.ok_or(invalid)?;
+    if effort.available != normalized.iter().any(|row| row["available"] == true)
+        || entry["generation_available"].as_bool().is_none()
+    {
+        return Err(invalid);
+    }
+    effort.public["agent_models"] = Value::Array(normalized);
+    effort.public["generation_available"] = entry["generation_available"].clone();
+    Ok(effort)
 }
 
 /// A bounded, read-only metadata request. Credentials stay on this worker.
@@ -406,10 +509,10 @@ pub(crate) fn fetch(base: &str, token: &str) -> Result<Directory, &'static str> 
     let mut bytes = Vec::new();
     response
         .into_reader()
-        .take(65537)
+        .take(1_048_577)
         .read_to_end(&mut bytes)
         .map_err(|_| "模型目录暂不可用")?;
-    if bytes.len() > 65536 {
+    if bytes.len() > 1_048_576 {
         return Err("模型目录暂不可用");
     }
     parse(serde_json::from_slice(&bytes).map_err(|_| "模型目录暂不可用")?)
@@ -417,6 +520,55 @@ pub(crate) fn fetch(base: &str, token: &str) -> Result<Directory, &'static str> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn v4_allowed_models_match_server_frozen_json_and_digest() {
+        use sha2::{Digest, Sha256};
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../services/seecut-server/tests/fixtures/effort_model_sets.json"
+        ))
+        .unwrap();
+        let directory = super::parse(fixture["catalog"].clone()).unwrap();
+        let effort = &directory.efforts[0];
+        for model in ["fast", "quality"] {
+            let policy = effort.policy_for(model).unwrap();
+            assert_eq!(policy, fixture["snapshots"][model]);
+            assert_eq!(
+                format!("{:x}", Sha256::digest(serde_json::to_vec(&policy).unwrap())),
+                fixture["digests"][model].as_str().unwrap()
+            );
+        }
+        assert!(effort.policy_for("default").is_none());
+        let mut unavailable = fixture["catalog"].clone();
+        unavailable["efforts"][0]["agent_models"][0]["available"] = serde_json::json!(false);
+        unavailable["efforts"][0]["agent_models"][0]["reason_code"] =
+            serde_json::json!("TEMPORARY");
+        let changed = super::parse(unavailable).unwrap();
+        assert!(!changed.efforts[0].model_available("fast"));
+        assert!(changed.efforts[0].model_available("quality"));
+        assert_eq!(
+            changed.efforts[0].policy_for("fast"),
+            effort.policy_for("fast")
+        );
+        let mut mixed = fixture["catalog"].clone();
+        mixed["efforts"]
+            .as_array_mut()
+            .unwrap()
+            .push(effort_response()["efforts"][0].clone());
+        let mixed = super::parse(mixed).unwrap();
+        assert_eq!(
+            mixed.efforts[1].policy_for("fast"),
+            Some(
+                effort_response()["efforts"][0]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .filter(|(key, _)| !["available", "reason_code"].contains(&key.as_str()))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<serde_json::Map<_, _>>()
+                    .into()
+            )
+        );
+    }
     #[test]
     fn capped_catalog_preserves_nested_prices_and_v3_policy() {
         let value: serde_json::Value = serde_json::from_str(include_str!(
@@ -542,7 +694,7 @@ mod tests {
     #[test]
     fn effort_catalog_rejects_ambiguous_ids_revisions_and_mappings() {
         for (path, replacement) in [
-            ("/effort_policy_version", json!(4)),
+            ("/effort_policy_version", json!(5)),
             ("/default_effort_id", json!("missing")),
             ("/efforts/0/id", json!("unsafe/id")),
             ("/efforts/0/policy_revision", json!("")),
@@ -678,7 +830,7 @@ mod tests {
     }
     #[test]
     fn metadata_response_is_bounded_and_validated() {
-        for body in ["x".repeat(65537), "invalid JSON".into()] {
+        for body in ["x".repeat(1_048_577), "invalid JSON".into()] {
             let (url, worker) = http_fixture("200 OK", body);
             assert_eq!(
                 fetch(&url, "fixture-session").err(),

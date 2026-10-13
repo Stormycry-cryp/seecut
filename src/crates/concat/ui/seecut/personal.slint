@@ -1,9 +1,10 @@
+import { LauncherSafeArea } from "launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Modal, Tip } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
 import { Payload } from "../util.slint";
-import { AppButton, AssetPreview, CloudField, EmptyState, WorkspaceSelect, WorkspaceIcon, MenuAction } from "components.slint";
+import { AppButton, AssetPreview, CloudField, CompactSearch, EmptyState, WorkspaceSelect, WorkspaceIcon, MenuAction } from "components.slint";
 
 component AssetFilters inherits HorizontalLayout {
     horizontal-stretch: 1; spacing: Theme.workbench-gap;
@@ -114,9 +115,7 @@ export component PersonalPage inherits Rectangle {
             Text { text: root.width >= 1100px && SeeCut.personal-folder-names.length > SeeCut.personal-folder-filter ? SeeCut.personal-folder-names[SeeCut.personal-folder-filter] : "资产库"; font-size: 24px; color: Theme.fg; vertical-alignment: center; }
             Text { text: SeeCut.personal-assets.length + " 项"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
-            CloudField {
-                width: root.width >= 760px ? 232px : 1px;
-                horizontal-stretch: root.width < 760px ? 1 : 0;
+            CompactSearch {
                 value <=> SeeCut.personal-search;
                 placeholder: "搜索素材";
                 edited(value) => { SeeCut.changed("personal-search", value); }
@@ -232,9 +231,9 @@ export component PersonalPage inherits Rectangle {
                     Text { text: group.date-label + "  ·  " + group.items.length + " 项"; color: Theme.fg-muted; font-size: 13px; height: 22px; }
                     grid := Rectangle {
                         width: parent.width;
-                        property <int> columns: Math.max(1, Math.floor((self.width + 20px) / 330px));
+                        property <int> columns: Math.max(1, Math.floor((self.width + 20px) / 216px));
                         property <length> card-width: (self.width - (self.columns - 1) * 20px) / self.columns;
-                        property <length> card-height: self.card-width * 0.61 + 37px;
+                        property <length> card-height: self.card-width * 4 / 3;
                         height: Math.ceil(group.items.length / self.columns) * (self.card-height + 20px) - 20px;
                         for asset[i] in group.items: Rectangle {
                             property <bool> preview-open: SeeCut.media-preview-open;
@@ -263,7 +262,7 @@ export component PersonalPage inherits Rectangle {
                             VerticalLayout {
                                 spacing: 0px;
                                 Rectangle {
-                                    height: grid.card-width * 0.61; clip: true; border-radius: Theme.r-lg;
+                                    height: grid.card-height; clip: true; border-radius: Theme.r-lg;
                                     drag := DragArea {
                                         width: parent.width; height: parent.height;
                                         data: Payload.of(SeeCut.personal-trash || SeeCut.working ? ""
@@ -292,7 +291,7 @@ export component PersonalPage inherits Rectangle {
                                         y: parent.height - 48px; height: 48px; width: 100%; background: Theme.scrim;
                                         Text { x: 10px; width: parent.width - (asset.ready ? 20px : 62px); height: 100%; text: SeeCut.personal-relink-id == asset.id ? "正在关联…" : asset.ready ? asset.status : "文件已移动或丢失"; color: Theme.on-scrim; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
                                         if !asset.ready: WorkspaceIcon {
-                                            x: parent.width - self.width - 6px; y: (parent.height - self.height) / 2;
+                                            x: parent.width - self.width - 6px - LauncherSafeArea.trailing(parent.absolute-position.x + parent.width - 6px, parent.absolute-position.y + (parent.height + self.height) / 2); y: (parent.height - self.height) / 2;
                                             on-image: true; glyph: Glyph.folder; label: "重新关联素材";
                                             enabled: !SeeCut.working && SeeCut.personal-relink-id == "" && SeeCut.personal-dialog == 0;
                                             clicked => { SeeCut.action("personal-relink", asset.id); }
@@ -300,18 +299,9 @@ export component PersonalPage inherits Rectangle {
                                     }
                                     if SeeCut.personal-selection-mode: WorkspaceIcon { x: 8px; y: 8px; on-image: true; glyph: asset.selected ? Glyph.check : Glyph.box-select; checkable: true; checked: asset.selected; label: asset.selected ? "取消选择" : "选择素材"; clicked => { SeeCut.action("personal-select", asset.id); } }
                                     if !SeeCut.personal-selection-mode: WorkspaceIcon { x: 8px; y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.star; checkable: true; checked: asset.favorite; label: asset.favorite ? "取消收藏" : "收藏素材"; clicked => { SeeCut.action("personal-favorite", asset.id); } }
-                                    WorkspaceIcon { x: parent.width - self.width - 8px; y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.chevron-down; label: "更多素材操作"; clicked => { root.open-menu(2, asset.id, asset.name, asset.kind, asset.ready, self.absolute-position.x - root.absolute-position.x, self.absolute-position.y - root.absolute-position.y + self.height + 4px); } }
+                                    WorkspaceIcon { x: parent.width - self.width - 8px - LauncherSafeArea.trailing(parent.absolute-position.x + parent.width - 8px, parent.absolute-position.y + 8px + self.height); y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.chevron-down; label: "更多素材操作"; clicked => { root.open-menu(2, asset.id, asset.name, asset.kind, asset.ready, self.absolute-position.x - root.absolute-position.x, self.absolute-position.y - root.absolute-position.y + self.height + 4px); } }
                                 }
-                                HorizontalLayout {
-                                    padding-left: 0px; padding-right: 0px; padding-top: 6px; padding-bottom: 8px; spacing: 6px;
-                                    Rectangle {
-                                        horizontal-stretch: 1; min-width: 0px; min-height: 20px;
-                                        name-label := Text { width: 100%; height: 100%; text: asset.name; color: Theme.fg; font-size: 14px; vertical-alignment: center; overflow: elide; }
-                                        name-hover := TouchArea { }
-                                        Tip { text: asset.name; active: name-hover.has-hover && name-label.preferred-width > name-label.width; }
-                                    }
-                                    Text { max-width: 112px; text: asset.detail; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: right; overflow: elide; }
-                                }
+
                             }
                         }
                     }

@@ -244,6 +244,26 @@ impl Images {
                 id: "model".into(),
                 label: label.into(),
             }];
+            if self.catalog["efforts"]
+                .as_array()
+                .is_some_and(|efforts| !efforts.is_empty())
+            {
+                let effort = self.catalog["efforts"].as_array().and_then(|efforts| {
+                    efforts
+                        .iter()
+                        .find(|effort| effort["id"] == selected.params["effort_id"])
+                });
+                parameters.insert(
+                    0,
+                    FlowParameter {
+                        id: "effort".into(),
+                        label: effort
+                            .and_then(|effort| effort["label"].as_str())
+                            .unwrap_or("选择强度")
+                            .into(),
+                    },
+                );
+            }
             for field in ["size", "quality", "quantity"] {
                 if model.is_some_and(|m| !m["parameters"][field].is_null()) {
                     let value =
@@ -530,6 +550,42 @@ pub(super) fn action(app: &App, h: &mut Host, action: &str) -> Result<bool> {
         }
     }
 }
+fn generation_effort_ready(effort: &Value) -> bool {
+    if effort.get("agent_models").is_some() {
+        effort["generation_available"] == true
+    } else {
+        effort["available"] == true
+    }
+}
+fn allowed_image_model(catalog: &Value, params: &Value, model: &Value) -> bool {
+    let Some(efforts) = catalog["efforts"]
+        .as_array()
+        .filter(|efforts| !efforts.is_empty())
+    else {
+        return true;
+    };
+    efforts.iter().any(|effort| {
+        effort["id"] == params["effort_id"]
+            && generation_effort_ready(effort)
+            && effort["policy_revision"] == params["policy_revision"]
+            && effort["generation"]["image_model_ids"]
+                .as_array()
+                .is_some_and(|ids| ids.contains(model))
+    })
+}
+fn select_image_parameters(params: &mut Value, model: &Value) {
+    // Change the next execution draft while preserving copied/selected outputs.
+    params["model"] = model["id"].clone();
+    params["capability_version"] = json!(seecut_flow_core::digest(model));
+    for key in ["size", "quality", "quantity"] {
+        params.as_object_mut().unwrap().remove(key);
+        if !model["parameters"][key].is_null() {
+            params[key] = model["parameters"][key]["default"].clone();
+        }
+    }
+    params["count"] = json!(params["quantity"].as_u64().unwrap_or(1));
+}
+
 pub(super) fn settings(app: &App, h: &mut Host, field: &str) -> Result<()> {
     h.controller.save_draft()?;
     let s = h.controller.session.as_ref().ok_or("请先打开工程")?;
@@ -547,12 +603,30 @@ pub(super) fn settings(app: &App, h: &mut Host, field: &str) -> Result<()> {
         .filter(|n| n.kind == "image_generate")
         .ok_or("请先选择图片生成节点")?;
     let mut rows = Vec::new();
-    if field == "model" {
+    if field == "effort" {
+        for effort in h.images.catalog["efforts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|effort| generation_effort_ready(effort))
+        {
+            rows.push(FlowParameter {
+                id: serde_json::to_string(&("effort", &effort["id"]))
+                    .unwrap_or_default()
+                    .into(),
+                label: effort["label"].as_str().unwrap_or_default().into(),
+            });
+        }
+    } else if field == "model" {
         for model in h.images.catalog["models"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|m| m["kind"] == "image" && m["available"] == true)
+            .filter(|m| {
+                m["kind"] == "image"
+                    && m["available"] == true
+                    && allowed_image_model(&h.images.catalog, &node.params, &m["id"])
+            })
         {
             rows.push(FlowParameter {
                 id: serde_json::to_string(&("model", &model["id"]))
@@ -597,6 +671,7 @@ pub(super) fn settings(app: &App, h: &mut Host, field: &str) -> Result<()> {
     ui.set_setting_rows(ModelRc::new(VecModel::from(rows)));
     ui.set_setting_title(
         match field {
+            "effort" => "生成强度",
             "size" => "画面尺寸",
             "quality" => "画质",
             "quantity" => "数量",
@@ -632,33 +707,49 @@ pub(super) fn set_setting(h: &mut Host, token: &str, value: &str) -> Result<()> 
         .filter(|n| n.kind == "image_generate")
         .ok_or("节点已切换")?;
     let mut params = node.params.clone();
-    if field == "model" {
+    if field == "effort" {
+        let effort = h.images.catalog["efforts"]
+            .as_array()
+            .and_then(|efforts| {
+                efforts
+                    .iter()
+                    .find(|effort| effort["id"] == value && generation_effort_ready(effort))
+            })
+            .ok_or("强度已不可用")?;
+        params["effort_id"] = effort["id"].clone();
+        params["policy_revision"] = effort["policy_revision"].clone();
+        let models = h.images.catalog["models"]
+            .as_array()
+            .ok_or("模型目录暂不可用")?;
+        let allowed = |model: &&Value| {
+            model["kind"] == "image"
+                && model["available"] == true
+                && allowed_image_model(&h.images.catalog, &params, &model["id"])
+        };
+        let model = models
+            .iter()
+            .filter(allowed)
+            .find(|model| model["id"] == params["model"])
+            .or_else(|| models.iter().find(allowed))
+            .ok_or("该强度暂无可用图片模型")?;
+        if model["id"] != params["model"] {
+            select_image_parameters(&mut params, model);
+        } else {
+            params["capability_version"] = json!(seecut_flow_core::digest(model));
+        }
+    } else if field == "model" {
         let model = h.images.catalog["models"]
             .as_array()
-            .and_then(|v| {
-                v.iter()
-                    .find(|m| m["id"] == value && m["kind"] == "image" && m["available"] == true)
+            .and_then(|models| {
+                models.iter().find(|model| {
+                    model["id"] == value
+                        && model["kind"] == "image"
+                        && model["available"] == true
+                        && allowed_image_model(&h.images.catalog, &params, &value)
+                })
             })
-            .ok_or("模型已不可用")?;
-        let own_prompt = params["prompt"].as_str().unwrap_or("").to_owned();
-        params = json!({"model":value,"capability_version":seecut_flow_core::digest(model),"count":1,"prompt":own_prompt});
-        for key in ["size", "quality", "quantity"] {
-            if !model["parameters"][key].is_null() {
-                params[key] = model["parameters"][key]["default"].clone();
-            }
-        }
-        params["count"] = params["quantity"].as_u64().map_or(json!(1), |n| json!(n));
-        if let Some(effort) = h.images.catalog["efforts"].as_array().and_then(|v| {
-            v.iter().find(|e| {
-                e["available"] == true
-                    && e["generation"]["image_model_ids"]
-                        .as_array()
-                        .is_some_and(|ids| ids.contains(&value))
-            })
-        }) {
-            params["effort_id"] = effort["id"].clone();
-            params["policy_revision"] = effort["policy_revision"].clone();
-        }
+            .ok_or("请先选择强度及其支持的模型")?;
+        select_image_parameters(&mut params, model);
     } else {
         if !matches!(field.as_str(), "size" | "quality" | "quantity") {
             return Err("无效的生成参数".into());

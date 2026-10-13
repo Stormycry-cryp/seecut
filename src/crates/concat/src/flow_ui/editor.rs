@@ -6,6 +6,8 @@ pub(super) struct Editor {
     pub selected: BTreeSet<String>,
     pub edge: Option<Edge>,
     pub wire: Option<Wire>,
+    pub creation: Option<WireCreation>,
+    creation_rows: Rc<VecModel<crate::ui::FlowParameter>>,
     pub size: [f64; 2],
     search: String,
 }
@@ -14,6 +16,23 @@ pub(super) struct Wire {
     old: Option<Edge>,
     point: [f64; 2],
     target: Option<Edge>,
+}
+pub(super) struct WireCreation {
+    document: String,
+    graph: String,
+    revision: u64,
+    wire: Wire,
+    position: [f64; 2],
+    choices: Vec<(String, String)>,
+}
+fn connected_node(kind: &str) -> Node {
+    Node::new(
+        kind,
+        match kind {
+            "image_generate" => json!({"model":"unconfigured","count":1,"prompt":""}),
+            _ => json!({"media_kind":"Image"}),
+        },
+    )
 }
 impl Host {
     fn editable(&self, token: &str) -> bool {
@@ -143,6 +162,78 @@ impl Host {
         self.view = view;
         Ok(())
     }
+    fn offer_connected_node(&mut self, wire: Wire) -> Result<()> {
+        let s = self.controller.session.as_ref().ok_or("请先打开工程")?;
+        let [px, py, zoom] = self.view;
+        let point = wire.point;
+        if wire.old.is_some()
+            || point[0] < 0.
+            || point[1] < 0.
+            || point[0] > self.editor.size[0]
+            || point[1] > self.editor.size[1] - 64.
+            || s.graph().nodes.values().any(|node| {
+                let p = self.preview.get(&node.id).unwrap_or(&node.position);
+                point[0] >= p[0] * zoom + px - 22.
+                    && point[0] <= (p[0] + 228.) * zoom + px + 22.
+                    && point[1] >= p[1] * zoom + py - 22.
+                    && point[1] <= (p[1] + 190.) * zoom + py + 22.
+            })
+        {
+            return Ok(());
+        }
+        let source = s.graph().nodes.get(&wire.from).ok_or("来源节点已变化")?;
+        let output = source.ports()?.1;
+        let mut choices = Vec::new();
+        for kind in ["image_generate", "select"] {
+            for port in connected_node(kind).ports()?.0 {
+                if port.data == output {
+                    choices.push((kind.to_owned(), port.name.to_owned()));
+                }
+            }
+        }
+        if !choices.is_empty() {
+            self.editor.creation = Some(WireCreation {
+                document: s.token.clone(),
+                graph: s.graph_id.clone(),
+                revision: s.graph().revision,
+                position: [(point[0] - px) / zoom, (point[1] - py) / zoom],
+                wire,
+                choices,
+            });
+        }
+        Ok(())
+    }
+    fn create_connected_node(&mut self, token: &str, choice: &str) -> Result<()> {
+        if !self.editable(token) {
+            return Err("工程已切换".into());
+        }
+        let creation = self.editor.creation.take().ok_or("连线操作已结束")?;
+        let selected: (String, String) =
+            serde_json::from_str(choice).map_err(|_| "节点类型无效")?;
+        if !creation.choices.contains(&selected) {
+            return Err("节点类型不兼容".into());
+        }
+        self.controller.save_draft()?;
+        let s = self.controller.session.as_ref().ok_or("请先打开工程")?;
+        if s.token != creation.document
+            || s.graph_id != creation.graph
+            || s.graph().revision != creation.revision
+        {
+            return Err("图已变化，请重新连接".into());
+        }
+        let mut node = connected_node(&selected.0);
+        node.title = format!("{} {}", kind_label(&selected.0), s.graph().nodes.len() + 1);
+        node.position = creation.position;
+        let edge = Edge {
+            from: creation.wire.from,
+            output: "out".into(),
+            to: node.id.clone(),
+            input: selected.1,
+            order: 0,
+        };
+        self.request(Intent::Edit(Box::new(Command::AddConnected { node, edge })))?;
+        Ok(())
+    }
     fn wire_target(&self, from: &str, old: Option<&Edge>, point: [f64; 2]) -> Option<Edge> {
         let s = self.controller.session.as_ref()?;
         let [px, py, z] = self.view;
@@ -252,12 +343,45 @@ impl Host {
             self.editor.selected.clear();
             self.editor.edge = None;
             self.editor.wire = None;
+            self.editor.creation = None;
         }
+        if self.editor.creation.as_ref().is_some_and(|creation| {
+            self.controller.session.as_ref().is_none_or(|s| {
+                s.token != creation.document
+                    || s.graph_id != creation.graph
+                    || s.graph().revision != creation.revision
+            })
+        }) {
+            self.editor.creation = None;
+        }
+        let choices = self
+            .editor
+            .creation
+            .as_ref()
+            .map(|creation| {
+                ui.set_wire_create_x(creation.wire.point[0] as f32);
+                ui.set_wire_create_y(creation.wire.point[1] as f32 + 64.);
+                creation
+                    .choices
+                    .iter()
+                    .map(|choice| crate::ui::FlowParameter {
+                        id: serde_json::to_string(choice).unwrap_or_default().into(),
+                        label: kind_label(&choice.0).into(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        sync_rows(&self.editor.creation_rows, choices);
+        ui.set_wire_create_choices(ModelRc::from(self.editor.creation_rows.clone()));
         ui.set_selection_count(self.editor.selected.len() as i32);
         ui.set_edge_selected(self.editor.edge.is_some());
         let mut path = String::new();
         let mut target = String::new();
-        if let Some(w) = &self.editor.wire
+        if let Some(w) = self
+            .editor
+            .wire
+            .as_ref()
+            .or_else(|| self.editor.creation.as_ref().map(|creation| &creation.wire))
             && let Some(n) = self
                 .controller
                 .session
@@ -281,6 +405,17 @@ impl Host {
 }
 pub(super) fn bind(app: &App, host: &Rc<RefCell<Host>>) {
     let ui = app.global::<Flow>();
+    ui.on_connected_choice({
+        let host = host.clone();
+        let weak = app.as_weak();
+        move |token, choice| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let result = host.borrow_mut().create_connected_node(&token, &choice);
+            finish(&app, &host, result.map(|()| None));
+        }
+    });
     ui.on_canvas_size({
         let host = host.clone();
         move |w, h| {
@@ -367,6 +502,7 @@ pub(super) fn bind(app: &App, host: &Rc<RefCell<Host>>) {
             }
             let point = [f64::from(x), f64::from(y)];
             if phase == "start" {
+                h.editor.creation = None;
                 let old = if port.is_empty() {
                     None
                 } else {
@@ -401,11 +537,16 @@ pub(super) fn bind(app: &App, host: &Rc<RefCell<Host>>) {
                 }
             } else if phase == "cancel" {
                 h.editor.wire = None;
+                h.editor.creation = None;
             } else if let Some(mut wire) = h.editor.wire.take() {
                 wire.point = point;
                 wire.target = h.wire_target(&wire.from, wire.old.as_ref(), point);
                 if phase == "end" {
-                    if let Some(new) = wire.target.filter(|new| wire.old.as_ref() != Some(new)) {
+                    if let Some(new) = wire
+                        .target
+                        .take()
+                        .filter(|new| wire.old.as_ref() != Some(new))
+                    {
                         let cmd = if let Some(old) = wire.old {
                             Command::Rewire { old, new }
                         } else {
@@ -418,6 +559,12 @@ pub(super) fn bind(app: &App, host: &Rc<RefCell<Host>>) {
                         {
                             h.fail(e);
                         }
+                    } else if let Err(error) = h
+                        .controller
+                        .save_draft()
+                        .and_then(|()| h.offer_connected_node(wire))
+                    {
+                        h.fail(error);
                     }
                 } else {
                     h.editor.wire = Some(wire);

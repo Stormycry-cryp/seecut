@@ -2,9 +2,9 @@
 //! Deterministic UI captures using synthetic data and Slint's own software renderer.
 //! Opt in with SEECUT_UI_PREVIEW_DIR; normal startup never enters this module.
 use crate::ui::{
-    App, CanvasControls, CanvasLayerData, CanvasThumbs, CloudItem, Editor, GenerationBatch,
-    GenerationTemplate, I18n, Payload, PersonalAssetGroup, RecentProjectData, SeeCut, StartData,
-    Theme,
+    AccountEntry, App, Assistant, AssistantMessage, CanvasControls, CanvasLayerData, CanvasThumbs,
+    CloudItem, Editor, GenerationBatch, GenerationTemplate, I18n, Payload, PersonalAssetGroup,
+    RecentProjectData, SeeCut, StartData, Theme,
 };
 use slint::platform::{
     Platform, WindowAdapter,
@@ -305,6 +305,9 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_reference_max(4);
     state.set_accepts_references(true);
     state.set_reference_limit("最多 4 张参考图片".into());
+    if std::env::var("SEECUT_UI_PREVIEW_SCENE").as_deref() == Ok("f03") {
+        return run_f03(&app, directory);
+    }
     let assets: Vec<_> = (0..8)
         .map(|i| CloudItem {
             id: format!("fixture-{i}").into(),
@@ -1587,5 +1590,144 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_personal_folder_filter(0);
     crate::cloud::validate_preview_state(&app, directory).map_err(slint::PlatformError::Other)?;
     app.hide()?;
+    Ok(())
+}
+
+// These values are synthetic layout data; no network or billing callbacks run.
+fn run_f03(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
+    let state = app.global::<SeeCut>();
+    let assistant = app.global::<Assistant>();
+    state.set_email("creator@example.test".into());
+    state.set_account_label("C".into());
+    state.set_balance("128".into());
+    state.set_frozen("2".into());
+    state.set_payment_enabled(false);
+    state.set_account_history_tab(0);
+    state.set_ledger_filter_index(0);
+    state.set_history_previous(true);
+    state.set_history_next(true);
+    state.set_history_page(2);
+    state.set_ledger(model(vec![
+        AccountEntry {
+            id: "fixture-consume".into(),
+            title: "图片生成".into(),
+            detail: "2026-10-13 10:26".into(),
+            reference: "任务 fixture-generation".into(),
+            value: "-2".into(),
+        },
+        AccountEntry {
+            id: "fixture-topup".into(),
+            title: "充值积分".into(),
+            detail: "2026-10-13 10:20".into(),
+            reference: "订单 fixture-order".into(),
+            value: "+100".into(),
+        },
+        AccountEntry {
+            id: "fixture-return".into(),
+            title: "退回积分".into(),
+            detail: "2026-10-13 10:18".into(),
+            reference: "任务 fixture-cancelled".into(),
+            value: "+3".into(),
+        },
+    ]));
+    state.set_orders(model(vec![AccountEntry {
+        id: "fixture-order".into(),
+        title: "100 积分".into(),
+        detail: "2026-10-13 10:20".into(),
+        reference: "订单 fixture-order".into(),
+        value: "已完成".into(),
+    }]));
+    state.set_model_names(model(vec![
+        "演示图像模型 A".into(),
+        "演示图像模型 B".into(),
+    ]));
+    state.set_model_index(1);
+    state.set_generation_effort_names(model(vec!["标准".into(), "精细".into()]));
+    state.set_generation_effort_index(1);
+    state.set_generation_actual_cost("0".into());
+    assistant.set_enabled(true);
+    assistant.set_reduced_motion(true);
+    assistant.set_history_ready(true);
+    assistant.set_connected(true);
+    assistant.set_can_disconnect(true);
+    assistant.set_can_create_session(true);
+    assistant.set_can_select_model(true);
+    assistant.set_can_select_effort(true);
+    assistant.set_can_send(true);
+    assistant.set_read_granted(true);
+    assistant.set_can_revoke_read(true);
+    assistant.set_current_project("示例画布".into());
+    assistant.set_session_names(model(vec!["海报创作".into(), "新会话".into()]));
+    assistant.set_model_names(model(vec![
+        "演示 Agent 模型 A".into(),
+        "演示 Agent 模型 B".into(),
+    ]));
+    assistant.set_model_index(0);
+    assistant.set_provider_label("演示 Agent 模型 A".into());
+    assistant.set_effort_names(model(vec!["快速".into(), "均衡".into(), "深入".into()]));
+    assistant.set_effort_visible(true);
+    assistant.set_effort_index(1);
+    assistant.set_effort_label("均衡".into());
+    assistant.set_budget_label("2".into());
+    assistant.set_draft("把标题放大一些".into());
+    assistant.set_messages(model(vec![
+        AssistantMessage {
+            role: "你".into(),
+            text: "制作一张橙红主题的海报".into(),
+            state: "".into(),
+            progress: "".into(),
+        },
+        AssistantMessage {
+            role: "Agent".into(),
+            text: "海报已生成，可在画布中继续调整。".into(),
+            state: "".into(),
+            progress: "".into(),
+        },
+    ]));
+    assistant.set_geometry_set(true);
+    assistant.set_float_width(420.0);
+    assistant.set_float_height(680.0);
+    assistant.set_float_x(1.0);
+    for (dark, theme) in [(false, "light"), (true, "dark")] {
+        app.global::<Theme>().set_dark(dark);
+        for (width, height, size) in [(1400, 900, "wide"), (900, 640, "narrow")] {
+            assistant.set_open(false);
+            state.set_page(3);
+            state.set_account_history_tab(0);
+            state.set_history_view_revision(state.get_history_view_revision() + 1);
+            capture(
+                app,
+                directory,
+                &format!("f03-ledger-{theme}-{size}"),
+                width,
+                height,
+            )?;
+            state.set_account_history_tab(1);
+            state.set_history_view_revision(state.get_history_view_revision() + 1);
+            capture(
+                app,
+                directory,
+                &format!("f03-orders-{theme}-{size}"),
+                width,
+                height,
+            )?;
+            state.set_page(1);
+            capture(
+                app,
+                directory,
+                &format!("f03-generation-{theme}-{size}"),
+                width,
+                height,
+            )?;
+            assistant.set_open(true);
+            capture(
+                app,
+                directory,
+                &format!("f03-agent-{theme}-{size}"),
+                width,
+                height,
+            )?;
+        }
+    }
     Ok(())
 }

@@ -25,6 +25,7 @@ class Database:
                 "lease_owner": "ALTER TABLE generation_tasks ADD COLUMN lease_owner TEXT",
                 "lease_expires_at": "ALTER TABLE generation_tasks ADD COLUMN lease_expires_at INTEGER",
                 "batch_id": "ALTER TABLE generation_tasks ADD COLUMN batch_id TEXT",
+                "billing_id": "ALTER TABLE generation_tasks ADD COLUMN billing_id TEXT REFERENCES generation_billings(id)",
                 "batch_index": "ALTER TABLE generation_tasks ADD COLUMN batch_index INTEGER NOT NULL DEFAULT 0",
                 "batch_size": "ALTER TABLE generation_tasks ADD COLUMN batch_size INTEGER NOT NULL DEFAULT 1",
                 "trashed_at": "ALTER TABLE generation_tasks ADD COLUMN trashed_at INTEGER",
@@ -47,6 +48,8 @@ class Database:
                     "ALTER TABLE generation_outputs ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0"
                 )
             quote_columns = {row["name"] for row in connection.execute("PRAGMA table_info(generation_quotes)")}
+            if "rounding_mode" not in quote_columns:
+                connection.execute("ALTER TABLE generation_quotes ADD COLUMN rounding_mode TEXT NOT NULL DEFAULT 'legacy_item' CHECK(rounding_mode IN ('legacy_item','batch_cumulative_v1'))")
             if "effort_policy_fingerprint" not in quote_columns:
                 connection.execute("ALTER TABLE generation_quotes ADD COLUMN effort_policy_fingerprint TEXT")
             budget_columns = {row["name"] for row in connection.execute("PRAGMA table_info(assistant_turn_budgets)")}

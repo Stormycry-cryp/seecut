@@ -44,6 +44,21 @@ class AssistantHTTPTest(AssistantFixture):
         finally:
             connection.close()
 
+    def test_history_routes_use_authenticated_paging_and_balance_only(self):
+        with self.db.transaction() as c:
+            for i in range(3):
+                c.execute("INSERT INTO ledger_entries(id,user_id,kind,delta_available,delta_held,reference_type,reference_id,idempotency_key,created_at) VALUES(?,?,'capture',0,-1,'generation_task',?,?,1000)",
+                    (f'history-{i}',self.user,f'task-{i}',f'key-{i}'))
+        status, first=self.request('GET','/api/wallet/ledger?category=spend&limit=2',token=self.token)
+        self.assertEqual(status,200)
+        self.assertEqual(len(first['items']),2)
+        status,second=self.request('GET','/api/wallet/ledger?category=spend&limit=2&cursor='+first['next_cursor'],token=self.token)
+        self.assertEqual(status,200)
+        self.assertEqual(len(second['items']),1)
+        self.assertEqual(self.request('GET','/api/wallet?balance_only=1',token=self.token)[1]['ledger'],[])
+        self.assertEqual(self.request('GET','/api/orders?limit=2',token=self.token)[1],dict(items=[],next_cursor=None))
+        self.assertEqual(self.request('GET','/api/wallet/ledger')[0],401)
+
     def test_real_login_authentication_expiry_revocation_and_owner(self):
         path = '/api/assistant/capabilities'
         self.assertEqual(self.request('GET', path)[0], 401)

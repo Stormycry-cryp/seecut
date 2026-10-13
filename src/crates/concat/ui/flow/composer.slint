@@ -1,3 +1,4 @@
+import { LauncherSafeArea } from "../seecut/launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { Theme, Icon, IconButton, Glyph, FocusRing, Tip } from "../primitives/primitives.slint";
 import { AppButton } from "../seecut/components.slint";
@@ -36,8 +37,9 @@ export component FlowComposer inherits Rectangle {
     out property <bool> input-focused: editor.has-focus;
     public function focus-editor() { editor.focus(); }
     min-width: 0px;
-    property <length> reference-height: root.attachments.length > 0 ? 94px : root.allow-assets || root.source-id != "" ? 32px : 0px;
+    property <length> reference-height: root.attachments.length > 0 || root.allow-assets || root.source-id != "" ? 72px : 0px;
     property <length> content-top: root.reference-height > 0px ? root.reference-height + 28px : 16px;
+    property <length> action-clearance: LauncherSafeArea.trailing(root.absolute-position.x + root.width - 12px, root.absolute-position.y + root.height - 12px);
     property <bool> has-controls: root.show-action || root.parameters.length > 0;
     preferred-height: (root.reference-height > 0px ? root.reference-height + 14px : 0px) + min(170px, max(108px, editor.preferred-height + (root.has-controls ? 74px : 32px)));
     border-radius: 18px;
@@ -51,21 +53,27 @@ export component FlowComposer inherits Rectangle {
         reference-row := HorizontalLayout {
             height: root.reference-height; alignment: start; spacing: 8px;
             if root.source-id != "": Rectangle {
-                width: min(168px, root.width - 80px); height: root.reference-height;
-                AppButton {
-                    width: parent.width; height: 32px; label: root.source-title; glyph: Glyph.text-mark; elide-label: true;
-                    accessible-name: "查看引用提示词 · " + root.source-title;
-                    background: Theme.well;
-                    clicked => { root.attachment-requested(root.source-id); }
+                width: 72px; height: 72px; border-radius: 8px;
+                background: Theme.well; border-width: 1px; border-color: Theme.line;
+                accessible-role: button; accessible-label: "查看引用提示词 · " + root.source-title;
+                accessible-action-default => { root.attachment-requested(root.source-id); }
+                Icon { x: 26px; y: 12px; size: 20px; glyph: Glyph.text-mark; tint: Theme.fg-muted; }
+                Text { x: 4px; y: 42px; width: 64px; height: 18px; text: root.source-title; font-size: 11px; color: Theme.fg; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                source-focus := FocusScope {
+                    key-pressed(event) => { if (event.text == " " || event.text == "\n") && !event.repeat { root.attachment-requested(root.source-id); return accept; } return reject; }
                 }
+                source-touch := TouchArea { mouse-cursor: pointer; clicked => { source-focus.focus(); root.attachment-requested(root.source-id); } }
+                FocusRing { active: source-focus.has-focus; radius: 8px; }
+                Tip { text: root.source-title; active: source-touch.has-hover || source-focus.has-focus; }
             }
             for attachment[index] in root.attachments: Rectangle {
-                width: 64px; height: 94px; border-radius: 8px; background: Theme.well; clip: true;
+                width: 72px; height: 72px; border-radius: 8px; background: Theme.well; clip: true;
+                border-width: 1px; border-color: Theme.line;
                 accessible-role: button; accessible-label: "参考 " + (index + 1) + " · " + attachment.label;
                 accessible-action-default => { root.attachment-requested(attachment.id); }
                 Rectangle {
-                    x: 0px; y: 0px; width: parent.width; height: 64px; clip: true;
-                    Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: attachment.preview; image-fit: contain; }
+                    x: 0px; y: 0px; width: parent.width; height: parent.height; clip: true;
+                    Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: attachment.preview; image-fit: cover; }
                 }
                 Rectangle {
                     x: 4px; y: 4px; width: 19px; height: 19px; border-radius: 10px; background: Theme.image-control;
@@ -74,18 +82,21 @@ export component FlowComposer inherits Rectangle {
                 attachment-focus := FocusScope {
                     key-pressed(event) => { if (event.text == " " || event.text == "\n") && !event.repeat { root.attachment-requested(attachment.id); return accept; } return reject; }
                 }
-                TouchArea { x:0px; y:0px; width:parent.width; height:64px; mouse-cursor: pointer; clicked => { attachment-focus.focus(); root.attachment-requested(attachment.id); } }
-                HorizontalLayout {x:0px;y:66px;width:parent.width;height:28px;spacing:0px;
-                    IconButton {glyph:Glyph.chevron-left;label:"参考前移";side:21px;icon-size:12px;enabled:index>0;clicked=>{root.attachment-action(attachment.id,"earlier");}}
-                    IconButton {glyph:Glyph.close;label:"移除参考连线";side:22px;icon-size:12px;clicked=>{root.attachment-action(attachment.id,"remove");}}
-                    IconButton {glyph:Glyph.chevron-right;label:"参考后移";side:21px;icon-size:12px;enabled:index+1<root.attachments.length;clicked=>{root.attachment-action(attachment.id,"later");}}
+                TouchArea { x:0px; y:0px; width:parent.width; height:48px; mouse-cursor: pointer; clicked => { attachment-focus.focus(); root.attachment-requested(attachment.id); } }
+                Rectangle {
+                    x: 0px; y: parent.height - 24px; width: parent.width; height: 24px; background: Theme.image-control;
+                    HorizontalLayout { spacing: 0px;
+                        IconButton { glyph: Glyph.chevron-left; label: "参考前移"; side: 24px; icon-size: 12px; on-image: true; enabled: index > 0; clicked => { root.attachment-action(attachment.id,"earlier"); } }
+                        IconButton { glyph: Glyph.close; label: "移除参考连线"; side: 24px; icon-size: 12px; on-image: true; clicked => { root.attachment-action(attachment.id,"remove"); } }
+                        IconButton { glyph: Glyph.chevron-right; label: "参考后移"; side: 24px; icon-size: 12px; on-image: true; enabled: index + 1 < root.attachments.length; clicked => { root.attachment-action(attachment.id,"later"); } }
+                    }
                 }
                 FocusRing { active: attachment-focus.has-focus; radius: 8px; }
                 Tip { text: attachment.label; active: attachment-focus.has-focus; }
             }
             if root.allow-assets: Rectangle {
-                width: root.attachments.length > 0 ? 64px : 32px; height: root.reference-height;
-                IconButton { width: parent.width; height: root.attachments.length > 0 ? 64px : 32px; glyph: Glyph.plus; label: "从资产库添加参考素材"; icon-size: 19px; side: 32px; clicked => { root.library-requested(); } }
+                width: 72px; height: 72px; border-radius: 8px; border-width: 1px; border-color: Theme.line;
+                IconButton { width: parent.width; height: parent.height; glyph: Glyph.plus; label: "从资产库添加参考素材"; icon-size: 19px; side: 32px; clicked => { root.library-requested(); } }
             }
         }
     }
@@ -115,7 +126,7 @@ export component FlowComposer inherits Rectangle {
         accessible-role: none;
     }
     if root.has-controls: Flickable {
-        x: 12px; y: parent.height - 48px; height: 36px; width: max(0px, parent.width - (root.show-action ? 76px : 24px) - (root.points-label != "" ? 44px : 0px));
+        x: 12px; y: parent.height - 48px; height: 36px; width: max(0px, parent.width - (root.show-action ? 76px : 24px) - (root.points-label != "" ? 44px : 0px) - root.action-clearance);
         viewport-height: 36px; viewport-width: max(self.width, parameters-row.preferred-width);
         parameters-row := HorizontalLayout {
             height: 36px; spacing: 6px; alignment: start;
@@ -129,13 +140,13 @@ export component FlowComposer inherits Rectangle {
         }
     }
     if root.points-label != "": Rectangle {
-        x: parent.width - 96px; y: parent.height - 48px; width: 40px; height: 36px;
+        x: parent.width - 96px - root.action-clearance; y: parent.height - 48px; width: 40px; height: 36px;
         accessible-role: text; accessible-label: "本次消耗 " + root.points-label + " 积分";
         Text { width: parent.width; height: parent.height; text: root.points-label; color: Theme.fg-muted; font-size: Theme.fs; horizontal-alignment: center; vertical-alignment: center; }
         TouchArea { Tip { text: "本次消耗积分"; active: parent.has-hover; } }
     }
     if root.show-action: Rectangle {
-        x: parent.width - 48px; y: parent.height - 48px; width: 36px; height: 36px; border-radius: 18px;
+        x: parent.width - 48px - root.action-clearance; y: parent.height - 48px; width: 36px; height: 36px; border-radius: 18px;
         background: root.busy ? Theme.field-active : touch.pressed ? Theme.workbench-action-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent;
         accessible-role: button; accessible-label: root.action-label; accessible-enabled: !root.busy;
         accessible-action-default => { if !root.busy { root.commit(root.identity-token, root.value); } }

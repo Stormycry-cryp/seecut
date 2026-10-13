@@ -532,6 +532,7 @@ impl Host {
             "cancel-connect" => {
                 self.connecting.clear();
                 self.editor.wire = None;
+                self.editor.creation = None;
                 self.preview.clear();
                 Ok(Some(Effect::None))
             }

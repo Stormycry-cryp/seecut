@@ -525,8 +525,6 @@ export component AssistantPanel inherits Rectangle {
                         spacing: 8px;
                         HorizontalLayout {
                             spacing: 8px;
-                            if !root.effort-visible: WorkspaceSelect { options: root.model-names; current: root.model-index; placeholder: "账户模型"; enabled: root.active && root.can-select-model; horizontal-stretch: 1; changed(index) => { root.select-model(index); } }
-                            if root.effort-visible: AssistantText { text: root.provider-label == "" ? "账户模型" : root.provider-label; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; wrap: no-wrap; overflow: elide; }
                             IconButton { glyph: Glyph.reset; label: "刷新模型"; enabled: root.active && !root.connecting; clicked => { root.refresh-models(); } }
                         }
                         if root.connect-disabled-reason != "": AssistantText { text: root.connect-disabled-reason; color: Theme.fg-muted; }
@@ -682,6 +680,11 @@ export component AssistantPanel inherits Rectangle {
             height: self.preferred-height;
             padding: 12px;
             spacing: 8px;
+            if !root.developer-tools && root.signed-in: WorkspaceSelect {
+                options: root.model-names; current: root.model-index; placeholder: "选择模型";
+                enabled: root.active && root.can-select-model;
+                changed(index) => { root.select-model(index); }
+            }
             if root.effort-visible: EffortSlider {
                 names: root.effort-names; current: root.effort-index; current-label: root.effort-label;
                 reason: root.effort-reason; enabled: root.active && root.can-select-effort;

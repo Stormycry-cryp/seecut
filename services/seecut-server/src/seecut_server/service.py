@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -23,12 +24,12 @@ from .config import Config
 from .assistant_provider import make_assistant_provider
 from .assistant_service import AssistantService
 from .assistant_contract import digest as assistant_digest
-from .model_pricing import price_snapshot, validate_price_snapshot, generation_charge
+from .model_pricing import price_snapshot, validate_price_snapshot, generation_charge, NANOCREDITS, ceil_ratio
 from .catalog import billing_key, public_catalog, validate_request
 from .db import Database
 from .emailer import EmailDeliveryError, EmailSender
 from .errors import ApiError
-from .efforts import configured_policy_fingerprint, generation_catalog, resolve_generation_effort
+from .efforts import configured_policy_fingerprint, generation_catalog, resolve_generation_effort, public_policy_snapshot
 from .security import (
     email_token_digest,
     hash_password,
@@ -899,19 +900,58 @@ class SeeCutService:
 
     # Wallets, credit plans and Alipay notifications
 
-    def wallet(self, user_id: str) -> dict[str, Any]:
+    def wallet(self, user_id: str, *, include_history=True) -> dict[str, Any]:
         with self.db.connect() as connection:
             wallet = connection.execute("SELECT * FROM wallets WHERE user_id=?", (user_id,)).fetchone()
             ledger = connection.execute(
                 """SELECT id,kind,delta_available,delta_held,reference_type,reference_id,created_at
-                   FROM ledger_entries WHERE user_id=? ORDER BY created_at DESC LIMIT 100""",
-                (user_id,),
+                   FROM ledger_entries WHERE user_id=? AND ? ORDER BY created_at DESC LIMIT 100""",
+                (user_id, int(include_history)),
             ).fetchall()
         return {
             "available_credits": wallet["available_credits"],
             "held_credits": wallet["held_credits"],
             "ledger": [dict(row) for row in ledger],
         }
+
+    @staticmethod
+    def _history_page(connection, user_id, table, fields, *, cursor='', limit=50, condition='1', parameters=()):
+        try:
+            if isinstance(limit, bool) or not 1 <= int(limit) <= 100:
+                raise ValueError
+            limit = int(limit)
+            if not isinstance(cursor, str) or len(cursor) > 1024:
+                raise ValueError
+            position = None
+            if cursor:
+                position = json.loads(base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
+                if (not isinstance(position, list) or len(position) != 2 or type(position[0]) is not int
+                        or not isinstance(position[1], str) or not 1 <= len(position[1]) <= 256):
+                    raise ValueError
+        except (ValueError, TypeError, OverflowError):
+            raise ApiError(400, 'INVALID_HISTORY_CURSOR', '记录页无效，请刷新列表') from None
+        keyset = ' AND (created_at<? OR (created_at=? AND id<?))' if position else ''
+        values = (user_id, *parameters, *((position[0], position[0], position[1]) if position else ()), limit + 1)
+        records = connection.execute(f'SELECT {fields} FROM {table} WHERE user_id=? AND ({condition})'
+                                     + keyset + ' ORDER BY created_at DESC,id DESC LIMIT ?', values).fetchall()
+        more = len(records) > limit
+        records = records[:limit]
+        next_cursor = base64.urlsafe_b64encode(json.dumps([records[-1]['created_at'], records[-1]['id']],
+            separators=(',', ':')).encode()).decode().rstrip('=') if more else None
+        return dict(items=[dict(row) for row in records], next_cursor=next_cursor)
+
+    def wallet_ledger(self, user_id: str, *, category='all', cursor='', limit=50):
+        kinds = {'all': ('purchase', 'capture', 'release', 'adjustment'), 'topup': ('purchase',),
+                 'spend': ('capture',), 'refund': ('release',)}
+        if category not in kinds:
+            raise ApiError(400, 'INVALID_HISTORY_CATEGORY', '记录分类无效')
+        selected = kinds[category]
+        with self.db.connect() as connection:
+            page = self._history_page(connection, user_id, 'ledger_entries',
+                'id,kind,delta_available,delta_held,reference_type,reference_id,created_at',
+                cursor=cursor, limit=limit, condition='kind IN (' + ','.join('?' for _ in selected) + ')',
+                parameters=selected)
+        return page | dict(category=category)
 
     def list_plans(self) -> list[dict[str, Any]]:
         with self.db.connect() as connection:
@@ -1033,13 +1073,10 @@ class SeeCutService:
             raise ApiError(404, "ORDER_NOT_FOUND", "订单不存在")
         return dict(row)
 
-    def orders(self, user_id: str) -> dict[str, Any]:
+    def orders(self, user_id: str, *, cursor='', limit=50) -> dict[str, Any]:
         with self.db.connect() as connection:
-            rows = connection.execute(
-                "SELECT id,provider,amount_fen,credits,status,paid_at,created_at,expires_at FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
-                (user_id,),
-            ).fetchall()
-        return {"items": [dict(row) for row in rows]}
+            return self._history_page(connection, user_id, 'orders',
+                'id,provider,amount_fen,credits,status,paid_at,created_at,expires_at', cursor=cursor, limit=limit)
 
     def refresh_order(self, user_id: str, order_id: str) -> dict[str, Any]:
         order = self.order(user_id, order_id)
@@ -1368,15 +1405,17 @@ class SeeCutService:
         if credits is None:
             raise ApiError(422, "MODEL_PRICE_NOT_CONFIGURED", "该模型或参数组合尚未配置积分价格")
         unit_credits = credits
-        credits *= normalized.get("quantity", 1)
+        unit = (Fraction(int(charge['reported_numerator']), int(charge['denominator']))
+                if self.config.model_cost_pricing_enabled else Fraction(credits * NANOCREDITS))
+        credits = ceil_ratio(unit.numerator * normalized.get("quantity", 1), unit.denominator * NANOCREDITS)
         now = self.now()
         quote_id = new_id("quote")
         expires_at = now + 600
         with self.db.transaction() as connection:
             connection.execute(
                 """INSERT INTO generation_quotes
-                   (id,user_id,kind,model,canonical_json,billing_key,credits,expires_at,created_at,effort_policy_fingerprint)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                   (id,user_id,kind,model,canonical_json,billing_key,credits,expires_at,created_at,effort_policy_fingerprint,rounding_mode)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,'batch_cumulative_v1')""",
                 (
                     quote_id,
                     user_id,
@@ -1399,8 +1438,8 @@ class SeeCutService:
             "billing_key": key,
             "effort_id": effort_id,
             "policy_revision": revision,
-            "policy": policy,
-            "request": normalized,
+            "policy": public_policy_snapshot(policy),
+            "request": self._public_generation_request(normalized),
         }
 
     def create_generation_task(
@@ -1483,26 +1522,40 @@ class SeeCutService:
             if quote["model"] != model["id"] or quote["canonical_json"] != canonical_json:
                 raise ApiError(409, "QUOTE_MISMATCH", "报价已过期或与当前参数不一致")
             credits = quote["credits"]
+            cumulative = quote['rounding_mode'] == 'batch_cumulative_v1'
+            billing_id = (batch_id or task_id) if cumulative else None
             unit_credits = credits // quantity
-            if unit_credits * quantity != credits:
+            if cumulative and normalized.get('model_pricing') is not None:
+                charge = normalized['model_pricing']['charge']
+                unit = Fraction(int(charge['reported_numerator']), int(charge['denominator']))
+                unit_credits = charge['unit_credits']
+            else:
+                unit = Fraction(unit_credits * NANOCREDITS)
+            if (ceil_ratio(unit.numerator * quantity, unit.denominator * NANOCREDITS) != credits
+                    or not cumulative and unit_credits * quantity != credits):
                 raise ApiError(409, "QUOTE_MISMATCH", "报价数量与当前请求不一致")
             wallet = connection.execute(
                 "SELECT * FROM wallets WHERE user_id=?", (user_id,)
             ).fetchone()
             if wallet["available_credits"] < credits:
                 raise ApiError(409, "INSUFFICIENT_CREDITS", "积分不足，请先充值")
+            if cumulative:
+                connection.execute("""INSERT INTO generation_billings
+                    (id,user_id,quote_id,quantity,unit_numerator,unit_denominator,reserved_credits,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?)""", (billing_id, user_id, quote_id, quantity,
+                    str(unit.numerator), str(unit.denominator), credits, now, now))
             task_ids = [task_id, *(new_id("gen") for _ in range(quantity - 1))]
             for index, current_id in enumerate(task_ids):
                 connection.execute(
                     """INSERT INTO generation_tasks
                        (id,user_id,kind,provider,operation,model,prompt,request_json,batch_id,batch_index,batch_size,idempotency_key,
-                        quoted_credits,status,created_at,updated_at,next_attempt_at,attempt_count)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                        quoted_credits,status,created_at,updated_at,next_attempt_at,attempt_count,billing_id)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)""",
                     (
                         current_id, user_id, kind, model["provider"], operation, model["id"],
                         normalized["prompt"], canonical_json, batch_id, index, quantity,
                         idempotency_key if index == 0 else f"{idempotency_key}:{batch_id}:{index}",
-                        unit_credits, "queued", now, now, now,
+                        unit_credits, "queued", now, now, now, billing_id,
                     ),
                 )
             consumed = connection.execute(
@@ -1515,16 +1568,18 @@ class SeeCutService:
                 "UPDATE wallets SET available_credits=available_credits-?,held_credits=held_credits+?,updated_at=? WHERE user_id=?",
                 (credits, credits, now, user_id),
             )
-            for current_id in task_ids:
+            for current_id in ([billing_id] if cumulative else task_ids):
+                held = credits if cumulative else unit_credits
+                reference = 'generation_batch' if cumulative else 'generation_task'
                 connection.execute(
                     "INSERT INTO wallet_holds(id,user_id,task_id,credits,state,created_at,updated_at) VALUES(?,?,?,?, 'held',?,?)",
-                    (new_id("hold"), user_id, current_id, unit_credits, now, now),
+                    (new_id("hold"), user_id, current_id, held, now, now),
                 )
                 connection.execute(
                     """INSERT INTO ledger_entries
                        (id,user_id,kind,delta_available,delta_held,reference_type,reference_id,idempotency_key,created_at)
-                       VALUES(?,?,'hold',?,?,'generation_task',?,?,?)""",
-                    (new_id("led"), user_id, -unit_credits, unit_credits, current_id, f"hold:{current_id}", now),
+                       VALUES(?,?,'hold',?,?,?,?,?,?)""",
+                    (new_id("led"), user_id, -held, held, reference, current_id, f"hold:{current_id}", now),
                 )
 
         result = self.get_generation_task(user_id, task_id)
@@ -1851,7 +1906,7 @@ class SeeCutService:
         with self.db.transaction(immediate=True) as connection:
             task = connection.execute("SELECT * FROM generation_tasks WHERE id=?", (task_id,)).fetchone()
             hold = connection.execute("SELECT * FROM wallet_holds WHERE task_id=?", (task_id,)).fetchone()
-            if not task or task["status"] == "succeeded":
+            if not task or task["status"] in {"succeeded", "failed", "expired"}:
                 return
             for content, content_type in zip(contents, content_types):
                 output_id = new_id("out")
@@ -1879,7 +1934,9 @@ class SeeCutService:
                    lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=?""",
                 (now, task_id),
             )
-            if hold and hold["state"] == "held":
+            if task['billing_id'] is not None:
+                self._settle_generation_billing(connection, task, succeeded=True)
+            elif hold and hold["state"] == "held":
                 connection.execute("UPDATE wallet_holds SET state='captured',updated_at=? WHERE id=?", (now, hold["id"]))
                 connection.execute("UPDATE wallets SET held_credits=held_credits-?,updated_at=? WHERE user_id=?", (hold["credits"], now, hold["user_id"]))
                 connection.execute(
@@ -2137,14 +2194,16 @@ class SeeCutService:
         with self.db.transaction(immediate=True) as connection:
             task = connection.execute("SELECT * FROM generation_tasks WHERE id=?", (task_id,)).fetchone()
             hold = connection.execute("SELECT * FROM wallet_holds WHERE task_id=?", (task_id,)).fetchone()
-            if not task or task["status"] in {"succeeded", "failed"}:
+            if not task or task["status"] in {"succeeded", "failed", "expired"}:
                 return
             connection.execute(
                 """UPDATE generation_tasks SET status='failed',error_code=?,error_message=?,
                    upstream_response_json=COALESCE(?,upstream_response_json),updated_at=? WHERE id=?""",
                 (code, message, json.dumps(upstream) if upstream else None, now, task_id),
             )
-            if hold and hold["state"] == "held":
+            if task['billing_id'] is not None:
+                self._settle_generation_billing(connection, task, succeeded=False)
+            elif hold and hold["state"] == "held":
                 connection.execute(
                     "UPDATE wallet_holds SET state='released',updated_at=? WHERE id=?", (now, hold["id"])
                 )
@@ -2167,6 +2226,40 @@ class SeeCutService:
                         now,
                     ),
                 )
+
+    def _settle_generation_billing(self, connection, task, *, succeeded):
+        """Called once on a child's terminal transition within BEGIN IMMEDIATE."""
+        bill = connection.execute('SELECT * FROM generation_billings WHERE id=? AND user_id=?',
+                                  (task['billing_id'], task['user_id'])).fetchone()
+        if bill is None:
+            raise ValueError('Missing generation billing')
+        successes = bill['succeeded_count'] + int(succeeded)
+        failures = bill['failed_count'] + int(not succeeded)
+        numerator = int(bill['unit_numerator'])
+        denominator = int(bill['unit_denominator']) * NANOCREDITS
+        captured = ceil_ratio(numerator * successes, denominator)
+        released = bill['reserved_credits'] - ceil_ratio(numerator * (bill['quantity'] - failures), denominator)
+        debit, refund = captured - bill['captured_credits'], released - bill['released_credits']
+        if successes + failures > bill['quantity'] or min(debit, refund) < 0 or captured + released > bill['reserved_credits']:
+            raise ValueError('Invalid generation billing transition')
+        now = self.now()
+        connection.execute("""UPDATE wallets SET available_credits=available_credits+?,
+            held_credits=held_credits-?,updated_at=? WHERE user_id=?""", (refund, debit + refund, now, task['user_id']))
+        connection.execute("""UPDATE generation_billings SET captured_credits=?,released_credits=?,
+            succeeded_count=?,failed_count=?,updated_at=? WHERE id=?""", (captured, released, successes, failures, now, bill['id']))
+        if debit:
+            connection.execute("""INSERT INTO ledger_entries
+                (id,user_id,kind,delta_available,delta_held,reference_type,reference_id,idempotency_key,created_at)
+                VALUES(?,?,'capture',0,?,'generation_task',?,?,?)""",
+                (new_id('led'), task['user_id'], -debit, task['id'], f"capture:{task['id']}", now))
+        if refund:
+            connection.execute("""INSERT INTO ledger_entries
+                (id,user_id,kind,delta_available,delta_held,reference_type,reference_id,idempotency_key,created_at)
+                VALUES(?,?,'release',?,?,'generation_batch',?,?,?)""",
+                (new_id('led'), task['user_id'], refund, -refund, bill['id'], f"release:generation-batch:{task['id']}", now))
+        if successes + failures == bill['quantity']:
+            connection.execute('UPDATE wallet_holds SET state=?,updated_at=? WHERE task_id=?',
+                               ('captured' if captured else 'released', now, bill['id']))
 
     def _task_dict(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         # Generation capture consumes held credits: delta_available is zero.
@@ -2193,6 +2286,8 @@ class SeeCutService:
             request = None
         else:
             request = self._public_generation_request(stored_request)
+        billing = connection.execute('SELECT captured_credits,reserved_credits FROM generation_billings WHERE id=?',
+                                     (row['billing_id'],)).fetchone() if row['billing_id'] else None
         return {
             "id": row["id"],
             "batch_id": row["batch_id"],
@@ -2209,6 +2304,8 @@ class SeeCutService:
             "request": request,
             "quoted_credits": row["quoted_credits"],
             "captured_credits": captured_credits,
+            **(dict(billing_id=row['billing_id'], billing_captured_credits=billing['captured_credits'],
+                    billing_reserved_credits=billing['reserved_credits']) if billing else {}),
             "status": row["status"],
             "error": (
                 {"code": row["error_code"], "message": row["error_message"]}
@@ -2240,4 +2337,7 @@ class SeeCutService:
             "policy_revision",
             "policy",
         )
-        return {key: request[key] for key in public_fields if key in request}
+        value = {key: request[key] for key in public_fields if key in request}
+        if "policy" in value:
+            value["policy"] = public_policy_snapshot(value["policy"])
+        return value

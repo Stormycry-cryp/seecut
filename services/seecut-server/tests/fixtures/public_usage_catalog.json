@@ -1,0 +1,155 @@
+{
+  "available": true,
+  "billing_mode": "provider_usage_capped_v1",
+  "context_preflight": "byte_bounds_only",
+  "context_window": 1000000,
+  "default_effort_id": "synthetic-effort",
+  "default_model_id": "default",
+  "effort_policy_version": 3,
+  "efforts": [
+    {
+      "agent": {
+        "billing_mode": "provider_usage_capped_v1",
+        "context_preflight": "byte_bounds_only",
+        "context_window": 1000000,
+        "input_rate": 2,
+        "max_output_tokens": 100,
+        "max_steps": 2,
+        "max_turn_credits": 8,
+        "model_id": "default",
+        "output_rate": 5,
+        "pricing_digest": "053d3bccadca01b5d16d5a1138ede8f7dae3935025338a7f9b23c039cad51c2b",
+        "pricing_snapshot": {
+          "denominator": "1",
+          "dimensions": {
+            "cached_input": {
+              "rate_numerator": "6900",
+              "selectors": {},
+              "unit": "per_million_tokens"
+            },
+            "input": {
+              "rate_numerator": "20000",
+              "selectors": {},
+              "unit": "per_million_tokens"
+            },
+            "output": {
+              "rate_numerator": "60000",
+              "selectors": {},
+              "unit": "per_million_tokens"
+            }
+          },
+          "kind": "agent",
+          "model": "synthetic-exact",
+          "provider": "synthetic",
+          "schema_version": 2,
+          "unit": "nanocredits",
+          "version": "synthetic-cost-v1"
+        },
+        "pricing_version": "synthetic-cost-v1",
+        "provider_id": "synthetic",
+        "upstream_model": "synthetic-exact",
+        "usage_contract_id": "synthetic-provider-usage-v1"
+      },
+      "available": true,
+      "generation": {
+        "image_model_ids": [],
+        "video_model_ids": []
+      },
+      "id": "synthetic-effort",
+      "label": "合成测试",
+      "policy_revision": "synthetic-v3",
+      "reason_code": null
+    }
+  ],
+  "images": false,
+  "label": "synthetic-exact",
+  "max_output_tokens": 200,
+  "max_steps": 8,
+  "max_turn_credits": 10,
+  "model_id": "default",
+  "models": [
+    {
+      "available": true,
+      "billing_mode": "provider_usage_capped_v1",
+      "context_preflight": "byte_bounds_only",
+      "context_window": 1000000,
+      "default_model_id": "default",
+      "images": false,
+      "label": "synthetic-exact",
+      "max_output_tokens": 200,
+      "max_steps": 8,
+      "max_turn_credits": 10,
+      "model_id": "default",
+      "pricing_digest": "053d3bccadca01b5d16d5a1138ede8f7dae3935025338a7f9b23c039cad51c2b",
+      "pricing_snapshot": {
+        "denominator": "1",
+        "dimensions": {
+          "cached_input": {
+            "rate_numerator": "6900",
+            "selectors": {},
+            "unit": "per_million_tokens"
+          },
+          "input": {
+            "rate_numerator": "20000",
+            "selectors": {},
+            "unit": "per_million_tokens"
+          },
+          "output": {
+            "rate_numerator": "60000",
+            "selectors": {},
+            "unit": "per_million_tokens"
+          }
+        },
+        "kind": "agent",
+        "model": "synthetic-exact",
+        "provider": "synthetic",
+        "schema_version": 2,
+        "unit": "nanocredits",
+        "version": "synthetic-cost-v1"
+      },
+      "pricing_version": "synthetic-cost-v1",
+      "protocol_version": 1,
+      "provider_id": "synthetic",
+      "rate_denominator": 1000,
+      "reason_code": null,
+      "tools": true,
+      "upstream_model": "synthetic-exact",
+      "usage_contract_id": "synthetic-provider-usage-v1"
+    }
+  ],
+  "pricing_digest": "053d3bccadca01b5d16d5a1138ede8f7dae3935025338a7f9b23c039cad51c2b",
+  "pricing_snapshot": {
+    "denominator": "1",
+    "dimensions": {
+      "cached_input": {
+        "rate_numerator": "6900",
+        "selectors": {},
+        "unit": "per_million_tokens"
+      },
+      "input": {
+        "rate_numerator": "20000",
+        "selectors": {},
+        "unit": "per_million_tokens"
+      },
+      "output": {
+        "rate_numerator": "60000",
+        "selectors": {},
+        "unit": "per_million_tokens"
+      }
+    },
+    "kind": "agent",
+    "model": "synthetic-exact",
+    "provider": "synthetic",
+    "schema_version": 2,
+    "unit": "nanocredits",
+    "version": "synthetic-cost-v1"
+  },
+  "pricing_version": "synthetic-cost-v1",
+  "protocol_version": 1,
+  "provider_id": "synthetic",
+  "rate_denominator": 1000,
+  "reason_code": null,
+  "tools": true,
+  "upstream_model": "synthetic-exact",
+  "usage_contract_id": "synthetic-provider-usage-v1"
+}

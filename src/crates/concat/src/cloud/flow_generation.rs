@@ -256,7 +256,7 @@ impl ImageClient {
                     .and_then(|v| {
                         v.iter().find(|e| {
                             e["id"] == id
-                                && e["available"] == true
+                                && super::generation_effort_available(e)
                                 && e["policy_revision"] == draft.parameters["policy_revision"]
                         })
                     })

@@ -520,6 +520,42 @@ mod tests {
         (dir, c, id)
     }
     #[test]
+    fn connected_new_target_is_one_undo_and_persists_on_reopen() {
+        let (dir, mut c, prompt) = open();
+        let mut node = Node::new(
+            "image_generate",
+            json!({"model":"unconfigured","count":1,"prompt":""}),
+        );
+        node.position = [460., 240.];
+        let id = node.id.clone();
+        let edge = seecut_flow_core::graph::Edge {
+            from: prompt,
+            output: "out".into(),
+            to: id.clone(),
+            input: "prompt".into(),
+            order: 0,
+        };
+        c.request(Intent::Edit(Box::new(Command::AddConnected {
+            node,
+            edge: edge.clone(),
+        })))
+        .unwrap();
+        assert_eq!(c.session.as_ref().unwrap().graph().nodes.len(), 2);
+        assert_eq!(
+            c.session.as_ref().unwrap().graph().edges,
+            vec![edge.clone()]
+        );
+        c.request(Intent::Undo).unwrap();
+        assert_eq!(c.session.as_ref().unwrap().graph().nodes.len(), 1);
+        assert!(c.session.as_ref().unwrap().graph().edges.is_empty());
+        c.request(Intent::Redo).unwrap();
+        c.request(Intent::Close).unwrap();
+        c.request(Intent::Open(dir.path().join("one"))).unwrap();
+        let g = c.session.as_ref().unwrap().graph();
+        assert_eq!(g.nodes[&id].position, [460., 240.]);
+        assert_eq!(g.edges, vec![edge]);
+    }
+    #[test]
     fn autosave_persists_latest_text_once_and_survives_reopen() {
         let (dir, mut c, node) = open();
         let token = c.draft_token().to_owned();

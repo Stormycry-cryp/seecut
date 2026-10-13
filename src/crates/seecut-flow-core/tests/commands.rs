@@ -384,3 +384,51 @@ fn copies_keep_frozen_results_and_independent_choices_across_restart() {
         }
     }
 }
+
+#[test]
+fn new_target_connection_validates_atomically_before_saving() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (doc, g, _) = sample::document();
+    let root = tmp.path().join("doc");
+    let mut store = Store::create(&root, doc).unwrap();
+    let mut node = store.document().graphs[&g].nodes["image"].clone();
+    node.id = "new-image".into();
+    let edge = Edge {
+        from: "prompt".into(),
+        output: "out".into(),
+        to: node.id.clone(),
+        input: "references".into(),
+        order: 0,
+    };
+    let before = store.document().clone();
+    let bytes = std::fs::read(root.join("document.json")).unwrap();
+    let req = request(
+        &store,
+        &g,
+        Command::AddConnected {
+            node: node.clone(),
+            edge: edge.clone(),
+        },
+    );
+    assert!(commands::apply(&mut store, req).is_err());
+    assert_eq!(store.document(), &before);
+    assert_eq!(std::fs::read(root.join("document.json")).unwrap(), bytes);
+    let req = request(
+        &store,
+        &g,
+        Command::AddConnected {
+            node,
+            edge: Edge {
+                input: "prompt".into(),
+                ..edge
+            },
+        },
+    );
+    commands::apply(&mut store, req).unwrap();
+    drop(store);
+    assert!(
+        Store::open(&root).unwrap().document().graphs[&g]
+            .nodes
+            .contains_key("new-image")
+    );
+}

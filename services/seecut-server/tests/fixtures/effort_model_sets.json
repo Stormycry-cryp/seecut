@@ -1,0 +1,164 @@
+{
+  "catalog": {
+    "available": true,
+    "reason_code": null,
+    "protocol_version": 1,
+    "images": false,
+    "tools": true,
+    "context_window": 1000,
+    "max_output_tokens": 200,
+    "max_steps": 8,
+    "max_turn_credits": 10,
+    "pricing_version": "fixture-1",
+    "rate_denominator": 1000,
+    "model_id": "default",
+    "label": "synthetic-model",
+    "default_model_id": "default",
+    "models": [
+      {
+        "available": true,
+        "reason_code": null,
+        "protocol_version": 1,
+        "images": false,
+        "tools": true,
+        "context_window": 1000,
+        "max_output_tokens": 200,
+        "max_steps": 8,
+        "max_turn_credits": 10,
+        "pricing_version": "fixture-1",
+        "rate_denominator": 1000,
+        "model_id": "default",
+        "label": "synthetic-model",
+        "default_model_id": "default"
+      },
+      {
+        "available": true,
+        "reason_code": null,
+        "protocol_version": 1,
+        "images": false,
+        "tools": true,
+        "context_window": 1000,
+        "max_output_tokens": 200,
+        "max_steps": 8,
+        "max_turn_credits": 12,
+        "pricing_version": "fixture-1",
+        "rate_denominator": 1000,
+        "model_id": "fast",
+        "label": "快捷"
+      },
+      {
+        "available": true,
+        "reason_code": null,
+        "protocol_version": 1,
+        "images": false,
+        "tools": true,
+        "context_window": 1000,
+        "max_output_tokens": 200,
+        "max_steps": 8,
+        "max_turn_credits": 20,
+        "pricing_version": "fixture-1",
+        "rate_denominator": 1000,
+        "model_id": "quality",
+        "label": "深入"
+      }
+    ],
+    "effort_policy_version": 4,
+    "default_effort_id": "lite",
+    "efforts": [
+      {
+        "id": "lite",
+        "label": "lite",
+        "policy_revision": "policy-1",
+        "agent": {
+          "model_id": "fast",
+          "max_output_tokens": 100,
+          "max_steps": 2,
+          "max_turn_credits": 8,
+          "pricing_version": "fixture-1",
+          "context_window": 1000,
+          "input_rate": 2,
+          "output_rate": 5
+        },
+        "generation": {
+          "image_model_ids": [],
+          "video_model_ids": []
+        },
+        "agent_models": [
+          {
+            "model_id": "fast",
+            "max_output_tokens": 100,
+            "max_steps": 2,
+            "max_turn_credits": 8,
+            "pricing_version": "fixture-1",
+            "context_window": 1000,
+            "input_rate": 2,
+            "output_rate": 5,
+            "available": true,
+            "reason_code": null
+          },
+          {
+            "model_id": "quality",
+            "max_output_tokens": 200,
+            "max_steps": 4,
+            "max_turn_credits": 18,
+            "pricing_version": "fixture-1",
+            "context_window": 1000,
+            "input_rate": 2,
+            "output_rate": 5,
+            "available": true,
+            "reason_code": null
+          }
+        ],
+        "available": true,
+        "reason_code": null,
+        "generation_available": false
+      }
+    ]
+  },
+  "snapshots": {
+    "fast": {
+      "policy_version": 4,
+      "id": "lite",
+      "label": "lite",
+      "policy_revision": "policy-1",
+      "agent": {
+        "model_id": "fast",
+        "max_output_tokens": 100,
+        "max_steps": 2,
+        "max_turn_credits": 8,
+        "pricing_version": "fixture-1",
+        "context_window": 1000,
+        "input_rate": 2,
+        "output_rate": 5
+      },
+      "generation": {
+        "image_model_ids": [],
+        "video_model_ids": []
+      }
+    },
+    "quality": {
+      "policy_version": 4,
+      "id": "lite",
+      "label": "lite",
+      "policy_revision": "policy-1",
+      "agent": {
+        "model_id": "quality",
+        "max_output_tokens": 200,
+        "max_steps": 4,
+        "max_turn_credits": 18,
+        "pricing_version": "fixture-1",
+        "context_window": 1000,
+        "input_rate": 2,
+        "output_rate": 5
+      },
+      "generation": {
+        "image_model_ids": [],
+        "video_model_ids": []
+      }
+    }
+  },
+  "digests": {
+    "fast": "318c1214e977be502ccc2eb7d5735350c6d5bee95f51488ce2b9328f3a329363",
+    "quality": "3b7021b9cf440dd4e77a5f6e41e3f495f768a9d08e7f48f8a27ce1a41e9bc378"
+  }
+}

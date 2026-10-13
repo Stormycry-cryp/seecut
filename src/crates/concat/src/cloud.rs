@@ -89,8 +89,7 @@ impl AccountAccess {
             token: cloud.token.clone(),
         })
     }
-    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
-    pub(crate) fn generation_selection(&self) -> HashMap<String, String> {
+    fn generation_selection(&self) -> HashMap<String, String> {
         self.state
             .upgrade()
             .map(|state| state.borrow().selected_model_ids.clone())
@@ -98,8 +97,7 @@ impl AccountAccess {
     }
     /// Change only the next draft. Submitted bodies and their idempotency keys
     /// remain owned by their original operation, even across session switches.
-    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
-    pub(crate) fn apply_effort_selection(
+    fn apply_effort_selection(
         &self,
         app: &App,
         effort: Option<Value>,
@@ -162,6 +160,7 @@ impl AccountAccess {
                 }
             }
         }
+        publish_generation_efforts(app, &state.borrow());
         update_model_options_preserving_catalog(app, &state);
         refresh_quote(app, &state);
     }
@@ -171,7 +170,7 @@ impl AccountAccess {
                 app,
                 &state,
                 "wallet".into(),
-                request("GET", "/api/wallet", Value::Null),
+                request("GET", "/api/wallet?balance_only=1", Value::Null),
             );
         }
     }
@@ -238,6 +237,30 @@ impl From<&str> for ClientError {
 }
 
 #[derive(Clone, Default)]
+struct HistoryPage {
+    notice: String,
+    rollback: Option<Box<HistoryPage>>,
+    error: String,
+    cursor: String,
+    previous: Vec<String>,
+    next: Option<String>,
+    revision: u64,
+    loading: bool,
+}
+impl HistoryPage {
+    fn reset(&mut self) {
+        self.rollback = None;
+        self.notice.clear();
+        self.error.clear();
+        self.cursor.clear();
+        self.previous.clear();
+        self.next = None;
+        self.revision = self.revision.wrapping_add(1);
+        self.loading = false;
+    }
+}
+
+#[derive(Clone, Default)]
 struct Cloud {
     base: String,
     token: String,
@@ -295,6 +318,11 @@ struct Cloud {
     task_snapshots: HashMap<String, TaskInputSnapshot>,
     invite_id: String,
     orders: Vec<Value>,
+    ledger: Vec<Value>,
+    ledger_page: HistoryPage,
+    orders_page: HistoryPage,
+    actual_task_ids: HashSet<String>,
+    actual_task_credits: HashMap<String, i64>,
     purchase: Option<PendingPurchase>,
     purchase_uid: String,
     purchase_data: Option<PathBuf>,
@@ -864,7 +892,8 @@ fn is_auth_job(name: &str) -> bool {
 }
 
 fn is_background_job(name: &str) -> bool {
-    name.starts_with("personal-cache:")
+    name.starts_with("history:")
+        || name.starts_with("personal-cache:")
         || name.starts_with("local-cache:")
         || matches!(
             name,
@@ -1085,6 +1114,7 @@ fn poll(
                 name.trim_start_matches("personal-relink:"),
                 result,
             ),
+            result if name.starts_with("history:") => finish_history(&app, &state, &name, result),
             Ok(value) => publish(&app, &state, &name, value),
             Err(error) => {
                 let ui = app.global::<SeeCut>();
@@ -1242,6 +1272,302 @@ fn generation_model_identity(value: &Value) -> bool {
     })
 }
 
+fn account_date(value: &Value) -> String {
+    value["created_at"]
+        .as_i64()
+        .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+        .map(DateTime::<Local>::from)
+        .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
+}
+fn render_account_history(app: &App, cloud: &Cloud) {
+    let ui = app.global::<SeeCut>();
+    ui.set_ledger(rows(
+        cloud
+            .ledger
+            .iter()
+            .map(|value| AccountEntry {
+                id: text(value, "id").into(),
+                title: crate::account_ledger::title(value).into(),
+                detail: account_date(value).into(),
+                reference: text(value, "reference_id").into(),
+                value: crate::account_ledger::amount(value).into(),
+            })
+            .collect(),
+    ));
+    ui.set_orders(rows(
+        cloud
+            .orders
+            .iter()
+            .map(|value| AccountEntry {
+                id: text(value, "id").into(),
+                title: "支付宝充值".into(),
+                reference: format!(
+                    "{} 积分{}\n{}",
+                    value["credits"]
+                        .as_i64()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    value["paid_at"]
+                        .as_i64()
+                        .map(|paid| format!(
+                            " · 到账 {}",
+                            account_date(&json!({"created_at":paid}))
+                        ))
+                        .unwrap_or_default(),
+                    text(value, "id")
+                )
+                .into(),
+                detail: format!(
+                    "{} · {}",
+                    account_date(value),
+                    crate::account_ledger::order_status(value, chrono::Utc::now().timestamp())
+                )
+                .into(),
+                value: format!("¥{:.2}", value["amount_fen"].as_f64().unwrap_or(0.) / 100.).into(),
+            })
+            .collect(),
+    ));
+    publish_history_navigation(&ui, cloud);
+}
+fn publish_history_navigation(ui: &SeeCut, cloud: &Cloud) {
+    let page = if ui.get_account_history_tab() == 1 {
+        &cloud.orders_page
+    } else {
+        &cloud.ledger_page
+    };
+    ui.set_history_loading(page.loading);
+    ui.set_history_previous(!page.loading && !page.previous.is_empty());
+    ui.set_history_next(!page.loading && page.next.is_some());
+    ui.set_history_page(page.rollback.as_deref().unwrap_or(page).previous.len() as i32 + 1);
+    ui.set_history_error(page.error.clone().into());
+    ui.set_history_notice(page.notice.clone().into());
+}
+fn load_history(app: &App, state: &Rc<RefCell<Cloud>>, reset: bool) {
+    let ui = app.global::<SeeCut>();
+    if !ui.get_signed_in() {
+        return;
+    }
+    let orders = ui.get_account_history_tab() == 1;
+    let (name, cursor) = {
+        let mut cloud = state.borrow_mut();
+        if reset {
+            if orders {
+                cloud.orders.clear();
+            } else {
+                cloud.ledger.clear();
+            }
+            render_account_history(app, &cloud);
+        }
+        let page = if orders {
+            &mut cloud.orders_page
+        } else {
+            &mut cloud.ledger_page
+        };
+        if reset {
+            page.reset();
+        }
+        page.revision = page.revision.wrapping_add(1);
+        page.error.clear();
+        page.notice.clear();
+        page.loading = true;
+        (
+            format!(
+                "history:{}:{}",
+                if orders { "orders" } else { "ledger" },
+                page.revision
+            ),
+            page.cursor.clone(),
+        )
+    };
+    publish_history_navigation(&ui, &state.borrow());
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("limit", "50")
+        .append_pair("cursor", &cursor);
+    if !orders {
+        let category = ["all", "spend", "topup", "refund"]
+            .get(ui.get_ledger_filter_index().max(0) as usize)
+            .copied()
+            .unwrap_or("all");
+        query.append_pair("category", category);
+    }
+    let path = format!(
+        "{}?{}",
+        if orders {
+            "/api/orders"
+        } else {
+            "/api/wallet/ledger"
+        },
+        query.finish()
+    );
+    job(app, state, name, request("GET", path, Value::Null));
+}
+fn history_page_action(app: &App, state: &Rc<RefCell<Cloud>>, direction: &str) {
+    let ui = app.global::<SeeCut>();
+    {
+        let mut cloud = state.borrow_mut();
+        let page = if ui.get_account_history_tab() == 1 {
+            &mut cloud.orders_page
+        } else {
+            &mut cloud.ledger_page
+        };
+        if page.loading {
+            return;
+        }
+        let prior = page.clone();
+        match direction {
+            "next" => {
+                let Some(next) = page.next.take() else {
+                    return;
+                };
+                page.previous
+                    .push(std::mem::replace(&mut page.cursor, next));
+            }
+            "previous" => {
+                let Some(previous) = page.previous.pop() else {
+                    return;
+                };
+                page.cursor = previous;
+            }
+            _ => return,
+        }
+        page.rollback = Some(Box::new(prior));
+    }
+    load_history(app, state, false);
+}
+fn finish_history(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    name: &str,
+    result: Result<Value, ClientError>,
+) {
+    let mut pieces = name.split(':');
+    if pieces.next() != Some("history") {
+        return;
+    }
+    let orders = pieces.next() == Some("orders");
+    let Some(revision) = pieces.next().and_then(|value| value.parse::<u64>().ok()) else {
+        return;
+    };
+    let legacy = pieces.next() == Some("legacy");
+    {
+        let mut cloud = state.borrow_mut();
+        let page = if orders {
+            &mut cloud.orders_page
+        } else {
+            &mut cloud.ledger_page
+        };
+        if page.revision != revision {
+            return;
+        }
+        page.loading = false;
+    }
+    match result {
+        Ok(mut value) => {
+            let mut cloud = state.borrow_mut();
+            if legacy {
+                let category = app.global::<SeeCut>().get_ledger_filter_index();
+                let records: Vec<Value> = value["ledger"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|row| {
+                        let kind = row["kind"].as_str().unwrap_or("");
+                        match category {
+                            1 => kind == "capture",
+                            2 => kind == "purchase",
+                            3 => kind == "release",
+                            _ => kind != "hold",
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                cloud.ledger_page.notice = "仅显示最近 100 条记录中的匹配项".into();
+                value = json!({"items":records,"next_cursor":null});
+            }
+            let next = value["next_cursor"].as_str().map(str::to_owned);
+            if orders {
+                cloud.orders_page.next = next;
+                cloud.orders_page.rollback = None;
+                cloud.orders = items(&value);
+            } else {
+                cloud.ledger_page.next = next;
+                cloud.ledger_page.rollback = None;
+                cloud.ledger = items(&value);
+            }
+            render_account_history(app, &cloud);
+            let ui = app.global::<SeeCut>();
+            if (ui.get_account_history_tab() == 1) == orders {
+                ui.set_history_view_revision(ui.get_history_view_revision().wrapping_add(1));
+            }
+        }
+        Err(error) => {
+            if !orders && !legacy && error.status == 404 {
+                state.borrow_mut().ledger_page.loading = true;
+                publish_history_navigation(&app.global::<SeeCut>(), &state.borrow());
+                job(
+                    app,
+                    state,
+                    format!("{name}:legacy"),
+                    request("GET", "/api/wallet", Value::Null),
+                );
+                return;
+            }
+            if session_expired(&error) {
+                clear_session(app, state, true);
+                return;
+            }
+            let mut cloud = state.borrow_mut();
+            let page = if orders {
+                &mut cloud.orders_page
+            } else {
+                &mut cloud.ledger_page
+            };
+            if let Some(prior) = page.rollback.take() {
+                *page = *prior;
+                page.revision = revision;
+            }
+            page.error = error.message;
+            page.loading = false;
+            publish_history_navigation(&app.global::<SeeCut>(), &cloud);
+        }
+    }
+}
+fn observe_actual_cost(ui: &SeeCut, cloud: &mut Cloud, tasks: &[Value]) {
+    for task in tasks {
+        let id = text(task, "id");
+        if cloud.actual_task_ids.contains(&id) {
+            if let Some(actual) = task["captured_credits"]
+                .as_i64()
+                .filter(|actual| *actual >= 0)
+            {
+                cloud
+                    .actual_task_credits
+                    .entry(id)
+                    .and_modify(|prior| *prior = (*prior).max(actual))
+                    .or_insert(actual);
+            }
+        }
+    }
+    let actual = cloud
+        .actual_task_credits
+        .values()
+        .fold(0_i64, |sum, value| sum.saturating_add(*value));
+    let verified = cloud
+        .actual_task_ids
+        .iter()
+        .all(|id| cloud.actual_task_credits.contains_key(id));
+    ui.set_generation_actual_cost(
+        if verified {
+            actual.to_string()
+        } else {
+            "—".into()
+        }
+        .into(),
+    );
+}
+
 fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
     cloud.catalog_efforts.clear();
     let legacy = ["efforts", "effort_policy_version", "default_effort_id"]
@@ -1253,7 +1579,7 @@ fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
         return;
     };
     cloud.effort_required = !efforts.is_empty();
-    if !matches!(value["effort_policy_version"].as_u64(), Some(1..=3)) || efforts.len() > 8 {
+    if !matches!(value["effort_policy_version"].as_u64(), Some(1..=4)) || efforts.len() > 8 {
         cloud.effort_catalog_valid = false;
         cloud.effort_required = true;
         return;
@@ -1270,11 +1596,15 @@ fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
         };
         let billing = crate::agent_billing::validate(
             &effort["agent"],
-            effort["available"].as_bool().unwrap_or(false),
+            if effort.get("agent_models").is_some() {
+                false
+            } else {
+                effort["available"].as_bool().unwrap_or(false)
+            },
         );
         if !valid_unit
             || billing.is_err()
-            || billing == Ok(true) && value["effort_policy_version"] != 3
+            || billing == Ok(true) && value["effort_policy_version"].as_u64().unwrap_or(0) < 3
         {
             cloud.effort_catalog_valid = false;
             cloud.effort_required = true;
@@ -1299,6 +1629,9 @@ fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
             || !effort_identity(&effort["policy_revision"])
             || effort["available"].as_bool().is_none()
             || !effort_identity(&effort["agent"]["model_id"])
+            || (effort.get("agent_models").is_some()
+                && (value["effort_policy_version"] != 4
+                    || effort["generation_available"].as_bool().is_none()))
             || !valid_models
             || !ids.insert(text(effort, "id"))
         {
@@ -1323,8 +1656,44 @@ fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
 }
 
 fn public_effort_policy(effort: &Value) -> Value {
-    json!({"id": effort["id"], "label": effort["label"], "policy_revision": effort["policy_revision"],
-        "agent": effort["agent"], "generation": effort["generation"]})
+    let mut policy = json!({"id": effort["id"], "label": effort["label"], "policy_revision": effort["policy_revision"],
+        "agent": effort["agent"], "generation": effort["generation"]});
+    if effort.get("agent_models").is_some() || effort["policy_version"] == 4 {
+        policy["policy_version"] = json!(4);
+    }
+    policy
+}
+
+fn generation_effort_available(effort: &Value) -> bool {
+    if effort.get("agent_models").is_some() {
+        effort["generation_available"] == true
+    } else {
+        effort["available"] == true
+    }
+}
+
+fn publish_generation_efforts(app: &App, cloud: &Cloud) {
+    let ui = app.global::<SeeCut>();
+    ui.set_generation_effort_names(ModelRc::new(VecModel::from(
+        cloud
+            .catalog_efforts
+            .iter()
+            .map(|effort| slint::SharedString::from(text(effort, "label")))
+            .collect::<Vec<_>>(),
+    )));
+    ui.set_generation_effort_index(
+        cloud
+            .effort_selection
+            .as_ref()
+            .and_then(|selected| {
+                cloud
+                    .catalog_efforts
+                    .iter()
+                    .position(|effort| effort["id"] == selected["id"])
+            })
+            .map(|index| index as i32)
+            .unwrap_or(-1),
+    );
 }
 
 fn generation_effort_reason(cloud: &Cloud) -> &'static str {
@@ -1358,7 +1727,7 @@ fn generation_policy_reason(cloud: &Cloud) -> &'static str {
     {
         return "强度策略已更新，请重新选择";
     }
-    if current["available"] != true || selected["available"] != true {
+    if !generation_effort_available(current) || !generation_effort_available(selected) {
         return "该强度档位暂不可用";
     }
     ""
@@ -2092,14 +2461,9 @@ fn load_page(app: &App, state: &Rc<RefCell<Cloud>>, page: i32) {
                 app,
                 state,
                 "wallet".into(),
-                request("GET", "/api/wallet", Value::Null),
+                request("GET", "/api/wallet?balance_only=1", Value::Null),
             );
-            job(
-                app,
-                state,
-                "orders".into(),
-                request("GET", "/api/orders", Value::Null),
-            );
+            load_history(app, state, false);
         }
         _ => {}
     }
@@ -3247,7 +3611,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 app,
                 state,
                 "wallet".into(),
-                request("GET", "/api/wallet", Value::Null),
+                request("GET", "/api/wallet?balance_only=1", Value::Null),
             );
             let target =
                 auth_return_target(state.borrow_mut().auth_return_page.take(), ui.get_page());
@@ -3300,19 +3664,6 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             ui.set_auth_resend_seconds(60);
         }
         "wallet" => {
-            ui.set_ledger(rows(
-                value["ledger"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|v| AccountEntry {
-                        id: text(v, "id").into(),
-                        title: crate::account_ledger::title(v).into(),
-                        detail: text(v, "reference_id").into(),
-                        value: crate::account_ledger::amount(v).into(),
-                    })
-                    .collect(),
-            ));
             ui.set_balance(
                 value["available_credits"]
                     .as_i64()
@@ -3348,6 +3699,14 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     .cloned()
                     .unwrap_or_else(|| items(&value));
                 accept_effort_catalog(&mut cloud, &value);
+                if cloud.effort_selection.is_none() {
+                    cloud.effort_selection = cloud
+                        .catalog_efforts
+                        .iter()
+                        .find(|effort| generation_effort_available(effort))
+                        .cloned();
+                }
+                publish_generation_efforts(app, &cloud);
                 filter_effort_models(&mut cloud);
             }
             update_model_options_preserving_catalog(app, state);
@@ -3443,7 +3802,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             state.borrow_mut().quote_id = text(&value, "quote_id");
             state.borrow_mut().quote_credits = Some(credits);
             state.borrow_mut().quote_body = current;
-            ui.set_quote(format!("预计消耗 {credits} 积分").into());
+            ui.set_quote("".into());
             ui.set_insufficient_credits(ui.get_balance().parse::<i64>().unwrap_or(0) < credits);
             ui.set_can_generate(
                 !ui.get_prompt().trim().is_empty()
@@ -3451,6 +3810,20 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             );
         }
         "generate" => {
+            {
+                let tasks = value["tasks"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_else(|| vec![value.clone()]);
+                let mut cloud = state.borrow_mut();
+                cloud.actual_task_ids = tasks
+                    .iter()
+                    .map(|task| text(task, "id"))
+                    .filter(|id| !id.is_empty())
+                    .collect();
+                cloud.actual_task_credits.clear();
+                observe_actual_cost(&ui, &mut cloud, &tasks);
+            }
             let submission = state.borrow_mut().submission.take();
             if let Some(submission) = submission {
                 let task_ids = value["tasks"]
@@ -3494,6 +3867,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 cloud
                     .selected_tasks
                     .retain(|id| tasks.iter().any(|task| text(task, "id") == *id));
+                observe_actual_cost(&ui, &mut cloud, &tasks);
                 cloud.tasks = tasks.clone();
             }
             render_tasks(app, state);
@@ -3513,7 +3887,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     app,
                     state,
                     "wallet".into(),
-                    request("GET", "/api/wallet", Value::Null),
+                    request("GET", "/api/wallet?balance_only=1", Value::Null),
                 );
                 refresh_quote(app, state);
             }
@@ -3582,6 +3956,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     id: text(v, "id").into(),
                     title: text(v, "email").into(),
                     detail: "".into(),
+                    reference: "".into(),
                     value: if text(v, "role") == "owner" {
                         "创建者"
                     } else {
@@ -3762,27 +4137,17 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     ui.set_error(error.into());
                     return;
                 }
-                cloud.orders.retain(|v| text(v, "id") != id);
-                cloud.orders.insert(0, value.clone());
-            }
-            ui.set_orders(rows(
-                state
-                    .borrow()
+                if let Some(order) = cloud
                     .orders
-                    .iter()
-                    .map(|v| AccountEntry {
-                        id: text(v, "id").into(),
-                        title: "支付宝充值".into(),
-                        detail: crate::account_ledger::order_status(
-                            v,
-                            chrono::Utc::now().timestamp(),
-                        )
-                        .into(),
-                        value: format!("¥{:.2}", v["amount_fen"].as_f64().unwrap_or(0.) / 100.)
-                            .into(),
-                    })
-                    .collect(),
-            ));
+                    .iter_mut()
+                    .find(|order| text(order, "id") == id)
+                {
+                    *order = value.clone();
+                } else if cloud.orders_page.cursor.is_empty() {
+                    cloud.orders.insert(0, value.clone());
+                }
+            }
+            render_account_history(app, &state.borrow());
             if name == "purchase" {
                 if let Some(raw) = purchase_payment_url(&value, chrono::Utc::now().timestamp()) {
                     open_file(raw);
@@ -3797,7 +4162,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 app,
                 state,
                 "wallet".into(),
-                request("GET", "/api/wallet", Value::Null),
+                request("GET", "/api/wallet?balance_only=1", Value::Null),
             );
         }
         "connect" | "capabilities" => {
@@ -7702,6 +8067,11 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.task_snapshots.clear();
     cloud.task_snapshot_name.clear();
     cloud.orders.clear();
+    cloud.ledger.clear();
+    cloud.ledger_page.reset();
+    cloud.orders_page.reset();
+    cloud.actual_task_ids.clear();
+    cloud.actual_task_credits.clear();
     cloud.purchase = None;
     cloud.purchase_uid.clear();
     cloud.purchase_journal = None;
@@ -7744,6 +8114,17 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
         ui.set_references(rows(vec![]));
     }
     ui.set_members(rows(vec![]));
+    ui.set_generation_actual_cost("0".into());
+    ui.set_generation_effort_names(rows(vec![]));
+    ui.set_generation_effort_index(-1);
+    ui.set_account_history_tab(0);
+    ui.set_ledger_filter_index(0);
+    ui.set_history_loading(false);
+    ui.set_history_previous(false);
+    ui.set_history_next(false);
+    ui.set_history_page(1);
+    ui.set_history_error("".into());
+    ui.set_history_notice("".into());
     ui.set_ledger(rows(vec![]));
     ui.set_orders(rows(vec![]));
     ui.set_purchase_plan_id("".into());
@@ -8223,7 +8604,9 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         "auth-verify-start" => { if let Err(error) = normalized_auth_email(ui.get_auth_email().as_str()) { ui.set_error(error.into()); } else if !ui.get_auth_busy() { switch_auth(&ui, 3); send_auth_code(&app, &shared, 3); } },
         "change-password"=>{ui.set_auth_email(ui.get_email());switch_auth(&ui,2);ui.set_auth_open(true);},
         "logout"=>job(&app,&shared,"logout".into(),request("POST","/api/auth/logout",Value::Null)),
-        "wallet-refresh"=>job(&app,&shared,"wallet".into(),request("GET","/api/wallet",Value::Null)),
+        "history-page" => history_page_action(&app, &shared, id.as_str()),
+        "history-refresh" => load_history(&app, &shared, false),
+        "wallet-refresh"=>job(&app,&shared,"wallet".into(),request("GET","/api/wallet?balance_only=1",Value::Null)),
         "tasks-refresh"=>job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null)),
         "purchase"=>{
             if !ui.get_signed_in(){show_auth(&app,&shared,Some(3));return;}
@@ -8450,6 +8833,24 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
     app.global::<SeeCut>().on_changed(move |field, _| {
         let Some(app) = weak.upgrade() else { return };
         if shared.borrow().updating_model_options {
+            return;
+        }
+        if field == "account-history-tab" || field == "ledger-filter" {
+            load_history(&app, &shared, field == "ledger-filter");
+            return;
+        }
+        if field == "generation-effort" {
+            let index = app.global::<SeeCut>().get_generation_effort_index();
+            let effort = usize::try_from(index)
+                .ok()
+                .and_then(|index| shared.borrow().catalog_efforts.get(index).cloned());
+            if let Some(effort) = effort {
+                let access = AccountAccess {
+                    state: Rc::downgrade(&shared),
+                };
+                let selections = access.generation_selection();
+                access.apply_effort_selection(&app, Some(effort), selections, true);
+            }
             return;
         }
         if field == "reduced-motion" {

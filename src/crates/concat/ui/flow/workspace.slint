@@ -1,3 +1,4 @@
+import { LauncherSafeArea } from "../seecut/launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { Theme, Icon, IconButton, Glyph, FocusRing } from "../primitives/primitives.slint";
 import { AppButton, CloudField } from "../seecut/components.slint";
@@ -86,6 +87,10 @@ export component FlowWorkspace inherits Rectangle {
     in property <bool> edge-selected;
     in property <string> wire-path;
     in property <string> wire-target;
+    in property <[FlowParameter]> wire-create-choices;
+    in property <float> wire-create-x;
+    in property <float> wire-create-y;
+    callback connected-choice(string);
     callback canvas-size(float,float);
     callback select-node(string,bool);
     callback canvas-select(float,float,float,float,bool);
@@ -111,13 +116,13 @@ export component FlowWorkspace inherits Rectangle {
     }
     resize-settled := Timer { interval: 60ms; running: root.resize-focus-pending; triggered => {
         root.resize-focus-pending = false;
-        root.canvas-size((root.width - root.launcher-clearance)/1px, root.height/1px);
+        root.canvas-size(root.width/1px, root.height/1px);
         if root.resize-document == root.document-token && root.resize-selection == root.selected-id && root.selected-id != "" && root.selection-count == 1 {
             root.action("focus");
         }
     } }
     Timer { interval: 1ms; running: !root.size-sent && root.width > 0px && root.height > 0px; triggered => {
-        root.size-sent = true; root.canvas-size((root.width - root.launcher-clearance)/1px, root.height/1px);
+        root.size-sent = true; root.canvas-size(root.width/1px, root.height/1px);
     } }
     changed width => { root.report-canvas-size(); }
     changed height => { root.report-canvas-size(); }
@@ -182,7 +187,6 @@ export component FlowWorkspace inherits Rectangle {
     in property <string> save-label: "已保存";
     callback draft-changed(string, string);
     // Host supplies the fixed launcher exclusion size when integrating into App.
-    in property <length> launcher-clearance: 104px;
     callback selected(string);
     callback move-node(string, float, float, bool);
     callback viewport-settled(string, float, float, float);
@@ -203,7 +207,7 @@ export component FlowWorkspace inherits Rectangle {
     property <bool> selection-pending;
     property <string> pending-selection;
     Timer { interval: 1ms; running: root.selection-pending; triggered => {
-        root.selection-pending = false; canvas-focus.focus(); root.selected(root.pending-selection);
+        root.selection-pending = false; canvas-focus.focus(); root.action("cancel-connect"); root.selected(root.pending-selection);
     } }
     changed pan-x => { if !root.view-dirty { root.view-document-token = root.document-token; } root.viewport-preview(root.pan-x, root.pan-y, root.zoom); root.view-dirty = true; }
     changed pan-y => { if !root.view-dirty { root.view-document-token = root.document-token; } root.viewport-preview(root.pan-x, root.pan-y, root.zoom); root.view-dirty = true; }
@@ -250,7 +254,7 @@ export component FlowWorkspace inherits Rectangle {
             property <bool> pan; property <bool> add;
             mouse-cursor: root.panning ? move : default;
             pointer-event(event) => {
-                if event.kind == PointerEventKind.down {canvas-focus.focus();self.start-x=root.pan-x;self.start-y=root.pan-y;self.pan=root.panning || event.button==PointerEventButton.middle;self.add=event.modifiers.shift;}
+                if event.kind == PointerEventKind.down {root.action("cancel-connect");canvas-focus.focus();self.start-x=root.pan-x;self.start-y=root.pan-y;self.pan=root.panning || event.button==PointerEventButton.middle;self.add=event.modifiers.shift;}
                 if event.kind == PointerEventKind.up {if self.pan {root.save-viewport();}else{root.canvas-select(self.pressed-x/1px,self.pressed-y/1px,self.mouse-x/1px,self.mouse-y/1px,self.add);}}
                 if event.kind == PointerEventKind.cancel && self.pan {root.pan-x=self.start-x;root.pan-y=self.start-y;}
             }
@@ -336,11 +340,11 @@ export component FlowWorkspace inherits Rectangle {
                 label: node.title + " · 输入 " + port;
                 enabled: !root.read-only; active: root.wire-target == node.id + ":" + port;
                 activated => { canvas-focus.focus(); root.input-port(node.id, port); }
-                gesture(phase,x,y) => {if phase == "start" {canvas-focus.focus();} root.wire-gesture(node.id,port,phase,(card.x+self.x+x)/1px,(card.y+self.y+y)/1px);}
+                gesture(phase,x,y) => {if phase == "start" {root.show-catalog=false; root.show-node-menu=false; canvas-focus.focus();} root.wire-gesture(node.id,port,phase,(card.x+self.x+x)/1px,(card.y+self.y+y)/1px);}
             }
             PortPoint { enabled: !root.read-only; x: parent.width - 14px; y: 100px * root.zoom - 14px; label: node.title + " · 输出"; active: root.connecting-from == node.id;
                 activated => { canvas-focus.focus(); root.output-port(node.id); }
-                gesture(phase,x,y) => {if phase == "start" {canvas-focus.focus();} root.wire-gesture(node.id,"",phase,(card.x+self.x+x)/1px,(card.y+self.y+y)/1px);} }
+                gesture(phase,x,y) => {if phase == "start" {root.show-catalog=false; root.show-node-menu=false; canvas-focus.focus();} root.wire-gesture(node.id,"",phase,(card.x+self.x+x)/1px,(card.y+self.y+y)/1px);} }
         }
     }
     Rectangle {
@@ -357,11 +361,11 @@ export component FlowWorkspace inherits Rectangle {
             IconButton { glyph: Glyph.save; label: "保存 Flow 工程"; enabled: !root.read-only; side: 36px; clicked => { root.action("save"); } }
             IconButton { glyph: Glyph.text-mark; label: "重命名工程"; enabled: !root.read-only; side: 36px; clicked => { root.action("rename"); } }
             if root.recovery-available: IconButton { glyph: Glyph.reset; label: "恢复选项"; side: 36px; clicked => { root.action("recover"); } }
-            IconButton { enabled: !root.read-only; glyph: Glyph.plus; label: "新建节点"; side: 36px; icon-size: 18px; clicked => { root.catalog-at-pointer = false; root.show-catalog = !root.show-catalog; root.show-node-menu = false; } }
+            IconButton { enabled: !root.read-only; glyph: Glyph.plus; label: "新建节点"; side: 36px; icon-size: 18px; clicked => { root.action("cancel-connect"); root.catalog-at-pointer = false; root.show-catalog = !root.show-catalog; root.show-node-menu = false; } }
             IconButton { enabled: !root.read-only; glyph: Glyph.distribute; label: "整理节点"; side: 36px; icon-size: 18px; clicked => { root.action("arrange"); } }
             IconButton { glyph: Glyph.undo; label: "撤销"; enabled: !root.read-only && root.can-undo; side: 36px; icon-size: 18px; clicked => { root.action("undo"); } }
             IconButton { glyph: Glyph.redo; label: "重做"; enabled: !root.read-only && root.can-redo; side: 36px; icon-size: 18px; clicked => { root.action("redo"); } }
-            IconButton { glyph: Glyph.copy; label: "节点操作 · 复制与重命名"; enabled: !root.read-only && root.selected-id != ""; side: 36px; clicked => { root.show-node-menu = !root.show-node-menu; root.show-catalog = false; } }
+            IconButton { glyph: Glyph.copy; label: "节点操作 · 复制与重命名"; enabled: !root.read-only && root.selected-id != ""; side: 36px; clicked => { root.action("cancel-connect"); root.show-node-menu = !root.show-node-menu; root.show-catalog = false; } }
             IconButton { glyph: Glyph.close; label: "删除选中节点"; enabled: !root.read-only && (root.selected-id != "" || root.edge-selected); side: 36px; clicked => { root.action("remove"); } }
             IconButton { glyph: Theme.dark ? Glyph.sun : Glyph.moon; label: Theme.dark ? "切换浅色主题" : "切换深色主题"; side: 36px; icon-size: 18px; clicked => { Theme.dark = !Theme.dark; } }
         }
@@ -398,10 +402,10 @@ export component FlowWorkspace inherits Rectangle {
             IconButton { glyph: Glyph.fit; side: 30px; label: "适合画布"; clicked => { root.action("fit"); } }
         }
     }
-    if root.selection-count == 1 && root.selected-id != "" && root.selected-kind != "prompt" && root.selected-kind != "image_generate" && root.selected-kind != "video_generate": Rectangle {
+    if root.wire-path == "" && root.selection-count == 1 && root.selected-id != "" && root.selected-kind != "prompt" && root.selected-kind != "image_generate" && root.selected-kind != "video_generate": Rectangle {
         x: root.editor-x;
         y: root.editor-y;
-        width: min(480px, max(0px, parent.width - 32px - root.launcher-clearance));
+        width: min(480px, max(0px, parent.width - 32px));
         height: min(root.selected-kind == "asset" ? 270px : root.candidates.length > 0 ? 216px : 176px, max(0px, parent.height - 144px));
         clip: true;
         border-radius: 16px; background: Theme.panel; border-width: 1px; border-color: Theme.line-strong;
@@ -436,11 +440,11 @@ export component FlowWorkspace inherits Rectangle {
             }
         }
     }
-    if root.selection-count == 1 && root.selected-id != "" && (root.selected-kind == "image_generate" || root.selected-kind == "video_generate"): generation-panel := Rectangle {
+    if root.wire-path == "" && root.selection-count == 1 && root.selected-id != "" && (root.selected-kind == "image_generate" || root.selected-kind == "video_generate"): generation-panel := Rectangle {
         property <length> actions-height: root.has-attempt || root.paused || root.can-retry || root.selected-output ? 40px : 0px;
         x: root.editor-x;
         y: root.editor-y;
-        width: min(480px, max(0px, parent.width - 32px - root.launcher-clearance)); height: min(generation-composer.preferred-height + self.actions-height + (root.error ? 24px : 0px) + (root.candidates.length > 0 ? 100px : 0px), max(0px, parent.height - 144px));
+        width: min(480px, max(0px, parent.width - 32px)); height: min(generation-composer.preferred-height + self.actions-height + (root.error ? 24px : 0px) + (root.candidates.length > 0 ? 100px : 0px), max(0px, parent.height - 144px));
         clip: true;
         background: Theme.field; border-radius: 18px; border-width: 1px;
         border-color: generation-composer.input-focused ? Theme.line-strong : Theme.line;
@@ -480,10 +484,10 @@ export component FlowWorkspace inherits Rectangle {
         }
         if root.error: Text { x: 12px; y: parent.height - 18px; width: parent.width - 24px; height: 18px; text: root.message; color: root.error ? Theme.accent : Theme.fg-dim; font-size: Theme.fs; overflow: elide; }
     }
-    if root.selection-count == 1 && root.selected-id != "" && root.selected-kind == "prompt": Rectangle {
+    if root.wire-path == "" && root.selection-count == 1 && root.selected-id != "" && root.selected-kind == "prompt": Rectangle {
         x: root.editor-x;
         y: root.editor-y;
-        width: min(480px, max(0px, parent.width - 32px - root.launcher-clearance)); height: min(prompt-composer.preferred-height, max(0px, parent.height - 144px));
+        width: min(480px, max(0px, parent.width - 32px)); height: min(prompt-composer.preferred-height, max(0px, parent.height - 144px));
         clip: true;
         background: Theme.field; border-radius: 18px; border-width: 1px;
         border-color: prompt-composer.input-focused ? Theme.line-strong : Theme.line;
@@ -507,5 +511,19 @@ export component FlowWorkspace inherits Rectangle {
             commit(token,value) => { root.prompt-commit(token,value); }
         }
     }
-    if root.selected-id == "" || root.error: Text { x: 16px; y: parent.height - 82px; width: max(0px, parent.width - 32px - root.launcher-clearance); height: 24px; text: root.message; color: Theme.fg-muted; font-size: Theme.fs; vertical-alignment: center; overflow: elide; }
+    if root.selected-id == "" || root.error: Text { x: 16px; y: parent.height - 82px; width: max(0px, parent.width - 32px); height: 24px; text: root.message; color: Theme.fg-muted; font-size: Theme.fs; vertical-alignment: center; overflow: elide; }
+    if root.wire-create-choices.length > 0: Rectangle {
+        property <length> original-x: max(16px, min(root.wire-create-x * 1px, parent.width - 216px));
+        x: self.original-x - LauncherSafeArea.trailing(parent.absolute-position.x + self.original-x + self.width, parent.absolute-position.y + self.y + self.height);
+        y: max(70px, min(root.wire-create-y * 1px, parent.height - self.height - 16px));
+        width: 200px; height: 20px + root.wire-create-choices.length * 40px;
+        border-radius: 12px; background: Theme.panel; border-width: 1px; border-color: Theme.line-strong;
+        VerticalLayout { padding: 10px; spacing: 4px;
+            for choice in root.wire-create-choices: AppButton {
+                height: 36px; label: choice.label; subtle: true;
+                clicked => { root.connected-choice(choice.id); }
+            }
+        }
+    }
+
 }

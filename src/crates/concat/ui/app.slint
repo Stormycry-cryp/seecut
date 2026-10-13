@@ -708,8 +708,7 @@ export component App inherits Window {
                 }
                 if SeeCut.page != 0 && SeeCut.page != 6 && SeeCut.page != 8: CloudWorkbench { compact-height: root.height < 800px; x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%; }
                 if SeeCut.page == 8: FlowPage {
-                    x: rail.width; width: max(0px, parent.width - rail.width - (Assistant.enabled && !root.assistant-ui-blocked && !assistant-panel.fully-closed ? assistant-panel.width + 32px : 0px)); height: 100%;
-                    launcher-clearance: Assistant.enabled && !root.assistant-ui-blocked && !assistant-panel.fully-closed ? 0px : LauncherSafeArea.inset;
+                    x: rail.width; width: max(0px, parent.width - rail.width); height: 100%;
                 }
                 if SeeCut.page == 6 && SeeCut.canvas-gallery-open: CanvasProjectsPage {
                     x: rail.width; width: Math.max(0px, parent.width - rail.width); height: 100%;
@@ -1280,7 +1279,6 @@ export component App inherits Window {
     // Global floating UI stays above pages. Modal tasks temporarily hide the
     // panel and disable the entry; the host keeps the active-workspace rules.
     assistant-panel := AssistantFloating {
-        dock-right: SeeCut.page == 8;
         room-width: root.width;
         room-height: root.height;
         animations-active: !root.minimized && Assistant.window-visible && Assistant.window-focused;
@@ -1319,13 +1317,13 @@ export component App inherits Window {
     }
     // Notices remain readable above the panel; reserve the launcher's corner.
     ToastLayer {
-        width: root.width - (Assistant.enabled ? 84px : 0px);
+        width: root.width - (Assistant.enabled ? LauncherSafeArea.inset : 0px);
         height: root.height;
         data: root.toast;
         bottom-offset: root.canvas-editor-active ? 80px : 16px;
     }
     WorkflowToast {
-        width: root.width - (Assistant.enabled ? 84px : 0px);
+        width: root.width - (Assistant.enabled ? LauncherSafeArea.inset : 0px);
         height: root.height;
         bottom-offset: root.canvas-editor-active ? 122px : 58px;
     }

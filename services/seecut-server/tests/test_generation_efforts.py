@@ -303,6 +303,6 @@ class GenerationEffortTest(AssistantFixture):
         self.reopen()
         replay = self.account.create_generation_task(self.user, 'image', payload, 'generation-1')
         self.assertEqual([item['id'] for item in replay['tasks']], [item['id'] for item in original['tasks']])
-        self.assertEqual(self.task_counts(), (2, 2, 2))
+        self.assertEqual(self.task_counts(), (2, 1, 1))
         self.assertEqual(self.account.wallet(self.user)['held_credits'], 14)
         self.assertEqual(self.image2.calls, 0)

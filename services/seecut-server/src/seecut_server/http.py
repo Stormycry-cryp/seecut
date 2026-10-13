@@ -244,7 +244,10 @@ class SeeCutHandler(BaseHTTPRequestHandler):
             return 200, self.service.restore_asset(user_id, asset_restore.group(1), asset_restore.group(2))
 
         if method == "GET" and path == "/api/wallet":
-            return 200, self.service.wallet(user_id)
+            return 200, self.service.wallet(user_id, include_history=query.get('balance_only', ['0'])[0] != '1')
+        if method == "GET" and path == "/api/wallet/ledger":
+            return 200, self.service.wallet_ledger(user_id, category=query.get('category', ['all'])[0],
+                cursor=query.get('cursor', [''])[0], limit=query.get('limit', ['50'])[0])
         if method == "GET" and path == "/api/credit-plans":
             return 200, {"items": self.service.list_plans()}
         if method == "POST" and path == "/api/orders":
@@ -253,7 +256,7 @@ class SeeCutHandler(BaseHTTPRequestHandler):
                 self.headers.get("Idempotency-Key", ""),
             )
         if method == "GET" and path == "/api/orders":
-            return 200, self.service.orders(user_id)
+            return 200, self.service.orders(user_id, cursor=query.get('cursor', [''])[0], limit=query.get('limit', ['50'])[0])
         order_match = re.fullmatch(r"/api/orders/([^/]+)", path)
         if method == "GET" and order_match:
             return 200, self.service.order(user_id, order_match.group(1))

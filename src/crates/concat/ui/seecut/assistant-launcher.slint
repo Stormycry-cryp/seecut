@@ -1,3 +1,4 @@
+import { LauncherSafeArea } from "launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { Theme, FocusRing } from "../primitives/primitives.slint";
 
@@ -9,9 +10,10 @@ export component AssistantLauncher inherits Rectangle {
     in property <int> expression;
     callback activated();
     public function take-focus() { keyboard.focus(); }
-    width: 52px;
-    height: 52px;
-    border-radius: 26px;
+    width: LauncherSafeArea.diameter;
+    height: LauncherSafeArea.diameter;
+    border-radius: self.width / 2;
+    property <float> face-scale: root.width / 52px;
     background: !root.chrome ? transparent : touch.pressed ? Theme.workbench-action-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent;
     border-width: 0px;
     drop-shadow-blur: root.chrome ? 16px : 0px;
@@ -54,11 +56,11 @@ export component AssistantLauncher inherits Rectangle {
         triggered => { root.thinking-shift = !root.thinking-shift; }
     }
     property <float> gaze-x: root.reduced-motion ? 0 : touch.has-hover
-        ? max(-2, min(2, (touch.mouse-x / 1px - 26) / 10))
+        ? max(-2, min(2, (touch.mouse-x / (1px * root.face-scale) - 26) / 10))
         : root.expression == 1 ? (root.thinking-shift ? 2 : -2)
         : root.glance == 1 ? 1.5 : root.glance == 3 ? -1.5 : 0;
     property <float> gaze-y: root.reduced-motion ? 0 : touch.has-hover
-        ? max(-1.5, min(1.5, (touch.mouse-y / 1px - 26) / 14)) : 0;
+        ? max(-1.5, min(1.5, (touch.mouse-y / (1px * root.face-scale) - 26) / 14)) : 0;
     Timer {
         running: !root.reduced-motion && root.visible && root.enabled && root.expression != 3 && root.expression != 4 && !root.celebrating;
         interval: 3400ms;
@@ -70,26 +72,27 @@ export component AssistantLauncher inherits Rectangle {
         triggered => { root.blinking = false; }
     }
     for index in 2: Rectangle {
-        x: (14 + index * 16 + root.gaze-x) * 1px;
-        y: (26 + root.gaze-y) * 1px - self.height / 2;
-        width: 9px;
-        height: root.blinking && !root.reduced-motion ? 3px : root.expression == 1 ? (index == 0 ? 11px : 7px) : root.expression == 4 ? 20px : touch.has-hover ? 20px : 17px;
-        border-radius: 5px;
+        x: (14 + index * 16 + root.gaze-x) * 1px * root.face-scale;
+        y: (26 + root.gaze-y) * 1px * root.face-scale - self.height / 2;
+        width: 9px * root.face-scale;
+        height: (root.blinking && !root.reduced-motion ? 3px : root.expression == 1 ? (index == 0 ? 11px : 7px) : root.expression == 4 ? 20px : touch.has-hover ? 20px : 17px) * root.face-scale;
+        border-radius: 5px * root.face-scale;
         background: Theme.on-accent;
         visible: !root.celebrating && root.expression != 3;
         animate x, y { duration: root.reduced-motion ? 0ms : 220ms; easing: ease-in-out; }
         animate height { duration: root.reduced-motion ? 0ms : 75ms; easing: ease-in-out; }
     }
     for index in 2: Path {
-        x: (14 + index * 16) * 1px; y: 22px;
-        width: 9px; height: 9px;
+        x: (14 + index * 16) * 1px * root.face-scale; y: 22px * root.face-scale;
+        width: 9px * root.face-scale; height: 9px * root.face-scale;
+        viewbox-width: 9; viewbox-height: 9;
         visible: root.celebrating || root.expression == 3;
         commands: root.celebrating ? "M 0 7 Q 4.5 0 9 7" : "M 0 1 L 9 9 M 9 1 L 0 9";
         stroke: Theme.on-accent; stroke-width: 2.5px;
     }
     if root.expression == 4: Rectangle {
-        x: 24.5px; y: 37px; width: 3px; height: 3px;
-        border-radius: 1.5px; background: Theme.on-accent;
+        x: 24.5px * root.face-scale; y: 37px * root.face-scale; width: 3px * root.face-scale; height: 3px * root.face-scale;
+        border-radius: 1.5px * root.face-scale; background: Theme.on-accent;
     }
     keyboard := FocusScope {
         enabled: root.enabled;

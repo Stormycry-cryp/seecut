@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     prompt TEXT NOT NULL,
     request_json TEXT NOT NULL,
     batch_id TEXT,
+    billing_id TEXT REFERENCES generation_billings(id),
     batch_index INTEGER NOT NULL DEFAULT 0,
     batch_size INTEGER NOT NULL DEFAULT 1,
     trashed_at INTEGER,
@@ -203,11 +204,32 @@ CREATE TABLE IF NOT EXISTS generation_quotes (
     model TEXT NOT NULL,
     canonical_json TEXT NOT NULL,
     effort_policy_fingerprint TEXT,
+    rounding_mode TEXT NOT NULL DEFAULT 'legacy_item' CHECK(rounding_mode IN ('legacy_item','batch_cumulative_v1')),
     billing_key TEXT NOT NULL,
     credits INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     consumed_at INTEGER,
     created_at INTEGER NOT NULL
+);
+
+-- New batches reserve and settle one exact cumulative cost. Historical tasks
+-- retain their original per-item holds through a NULL billing_id.
+CREATE TABLE IF NOT EXISTS generation_billings (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    quote_id TEXT NOT NULL UNIQUE REFERENCES generation_quotes(id),
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    unit_numerator TEXT NOT NULL,
+    unit_denominator TEXT NOT NULL,
+    reserved_credits INTEGER NOT NULL CHECK(reserved_credits >= 0),
+    captured_credits INTEGER NOT NULL DEFAULT 0 CHECK(captured_credits >= 0),
+    released_credits INTEGER NOT NULL DEFAULT 0 CHECK(released_credits >= 0),
+    succeeded_count INTEGER NOT NULL DEFAULT 0 CHECK(succeeded_count >= 0),
+    failed_count INTEGER NOT NULL DEFAULT 0 CHECK(failed_count >= 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK(succeeded_count + failed_count <= quantity),
+    CHECK(captured_credits + released_credits <= reserved_credits)
 );
 
 CREATE TABLE IF NOT EXISTS generation_assets (

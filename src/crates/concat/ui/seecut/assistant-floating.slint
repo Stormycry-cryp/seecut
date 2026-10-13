@@ -1,3 +1,4 @@
+import { LauncherSafeArea } from "launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { Theme } from "../primitives/primitives.slint";
 import { Assistant } from "assistant_state.slint";
@@ -6,7 +7,6 @@ import { AssistantLauncher } from "assistant-launcher.slint";
 import { SeeCut } from "state.slint";
 
 export component AssistantFloating inherits FocusScope {
-    in property <bool> dock-right;
     in property <length> room-width;
     in property <length> room-height;
     in property <bool> blocked;
@@ -37,12 +37,12 @@ export component AssistantFloating inherits FocusScope {
         Assistant.geometry-set ? max(320px, Assistant.float-width * 1px) : root.room-width < 1100px ? 344px : 380px);
     property <length> panel-height: min(root.room-height - 72px, max(320px, Assistant.float-height * 1px));
     property <length> travel-x: max(0px, root.room-width - root.panel-width - 40px);
-    property <length> panel-x: root.dock-right ? root.room-width - root.panel-width - 16px : 16px + root.travel-x * Assistant.float-x;
-    width: 52px + (root.panel-width - 52px) * root.display-progress;
-    height: 52px + (root.panel-height - 52px) * root.display-progress;
-    x: root.room-width - 76px + (root.panel-x - (root.room-width - 76px)) * root.display-progress;
+    property <length> panel-x: 16px + root.travel-x * Assistant.float-x;
+    width: LauncherSafeArea.diameter + (root.panel-width - LauncherSafeArea.diameter) * root.display-progress;
+    height: LauncherSafeArea.diameter + (root.panel-height - LauncherSafeArea.diameter) * root.display-progress;
+    x: root.room-width - LauncherSafeArea.edge - LauncherSafeArea.diameter + (root.panel-x - (root.room-width - LauncherSafeArea.edge - LauncherSafeArea.diameter)) * root.display-progress;
     // Both forms share the same bottom edge, including every animation frame.
-    y: root.room-height - 24px - root.height;
+    y: root.room-height - LauncherSafeArea.edge - root.height;
     focus-on-click: false;
     focus-on-tab-navigation: false;
     function remember() {
@@ -56,7 +56,7 @@ export component AssistantFloating inherits FocusScope {
     }
     Rectangle {
         width: 100%; height: 100%;
-        border-radius: 26px - 6px * root.display-progress;
+        border-radius: LauncherSafeArea.diameter / 2 + (20px - LauncherSafeArea.diameter / 2) * root.display-progress;
         background: Theme.accent.mix(Theme.assistant-floating-surface, 1 - root.display-progress);
         border-width: root.display-progress >= 1 ? 1px : 0px;
         border-color: Theme.accent.mix(Theme.line-strong, 1 - root.display-progress);
@@ -66,7 +66,7 @@ export component AssistantFloating inherits FocusScope {
     }
     Rectangle {
         width: 100%; height: 100%;
-        border-radius: 26px - 6px * root.display-progress;
+        border-radius: LauncherSafeArea.diameter / 2 + (20px - LauncherSafeArea.diameter / 2) * root.display-progress;
         clip: true;
         panel := AssistantDock {
             x: parent.width - self.width; y: parent.height - self.height;
@@ -79,7 +79,7 @@ export component AssistantFloating inherits FocusScope {
             active: root.visible && root.enabled && root.fully-open && !root.blocked;
         }
         launcher := AssistantLauncher {
-            x: parent.width - 52px; y: parent.height - 52px;
+            x: parent.width - LauncherSafeArea.diameter; y: parent.height - LauncherSafeArea.diameter;
             chrome: false;
             visible: root.display-progress < 0.25;
             opacity: max(0, 1 - root.display-progress * 4);
@@ -98,7 +98,7 @@ export component AssistantFloating inherits FocusScope {
         clicked => { root.focus(); root.toggle-requested(); }
     }
     drag := TouchArea {
-        visible: root.fully-open && !root.blocked && !root.dock-right;
+        visible: root.fully-open && !root.blocked;
         enabled: root.enabled && root.fully-open && !root.blocked;
         // Leave the four header buttons clear: new, switch, permissions, close.
         x: 12px; y: 0px; width: max(0px, parent.width - 172px); height: 48px;

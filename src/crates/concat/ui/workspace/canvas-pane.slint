@@ -1,3 +1,4 @@
+import { LauncherSafeArea, LauncherControlRow } from "../seecut/launcher-safe-area.slint";
 import { Rail } from "../inspector/controls.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
@@ -1479,43 +1480,47 @@ export component CanvasPane inherits Rectangle {
                                 HorizontalLayout {
                                     padding-left: 4px + Math.min(layer.depth, 3) * 10px; spacing: 4px;
                                     Rectangle {
-                                        width: 34px; height: 28px; border-radius: Theme.r-xs;
-                                        background: Theme.well;
-                                        border-width: layer.active && !layer.mask-paint ? 2px : 1px;
-                                        border-color: layer.active && !layer.mask-paint ? Theme.accent : Theme.line;
-                                        if layer.kind == 0 && CanvasThumbs.layer-images.length > i
-                                            && CanvasThumbs.layer-images[i].width > 0: Image {
-                                            width: parent.width; height: parent.height;
-                                            source: CanvasThumbs.layer-images[i]; image-fit: contain;
-                                        }
-                                        if layer.group: Icon {
-                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                                            glyph: Glyph.folder; size: 16px; tint: Theme.fg-muted;
-                                        }
-                                        if layer.kind == 2: Icon {
-                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                                            glyph: layer.adjustment-kind == 1 ? Glyph.moon
-                                                : layer.adjustment-kind == 2 ? Glyph.sun
-                                                : layer.adjustment-kind == 3 ? Glyph.sliders
-                                                : layer.adjustment-kind == 4 ? Glyph.sparkle
-                                                : layer.adjustment-kind == 5 ? Glyph.filter
-                                                : layer.adjustment-kind == 6 ? Glyph.rows
-                                                : layer.adjustment-kind == 7 ? Glyph.waveform : Glyph.sliders;
-                                            size: 16px; tint: Theme.fg-muted;
-                                        }
-                                        CanvasChipAction {
-                                            label: layer.group ? "选择图层组：" + layer.name
-                                                : layer.kind == 2 ? "编辑调整图层：" + layer.name
-                                                : "编辑图层图片：" + layer.name;
-                                            selected: layer.active && !layer.mask-paint;
-                                            clicked => {
-                                                root.layer-picked(i);
-                                                if (layer.kind == 2) { root.inspector-tab = 0; }
+                                        width: 34px; height: 38px;
+                                        Rectangle {
+                                            y: (parent.height - self.height) / 2;
+                                            width: 34px; height: 28px; border-radius: Theme.r-xs;
+                                            background: Theme.well;
+                                            border-width: layer.active && !layer.mask-paint ? 2px : 1px;
+                                            border-color: layer.active && !layer.mask-paint ? Theme.accent : Theme.line;
+                                            if layer.kind == 0 && CanvasThumbs.layer-images.length > i
+                                                && CanvasThumbs.layer-images[i].width > 0: Image {
+                                                width: parent.width; height: parent.height;
+                                                source: CanvasThumbs.layer-images[i]; image-fit: contain;
+                                            }
+                                            if layer.group: Icon {
+                                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                                glyph: Glyph.folder; size: 16px; tint: Theme.fg-muted;
+                                            }
+                                            if layer.kind == 2: Icon {
+                                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                                glyph: layer.adjustment-kind == 1 ? Glyph.moon
+                                                    : layer.adjustment-kind == 2 ? Glyph.sun
+                                                    : layer.adjustment-kind == 3 ? Glyph.sliders
+                                                    : layer.adjustment-kind == 4 ? Glyph.sparkle
+                                                    : layer.adjustment-kind == 5 ? Glyph.filter
+                                                    : layer.adjustment-kind == 6 ? Glyph.rows
+                                                    : layer.adjustment-kind == 7 ? Glyph.waveform : Glyph.sliders;
+                                                size: 16px; tint: Theme.fg-muted;
+                                            }
+                                            CanvasChipAction {
+                                                label: layer.group ? "选择图层组：" + layer.name
+                                                    : layer.kind == 2 ? "编辑调整图层：" + layer.name
+                                                    : "编辑图层图片：" + layer.name;
+                                                selected: layer.active && !layer.mask-paint;
+                                                clicked => {
+                                                    root.layer-picked(i);
+                                                    if (layer.kind == 2) { root.inspector-tab = 0; }
+                                                }
                                             }
                                         }
                                     }
-                                    if layer.group: WorkspaceIcon { glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right; label: layer.expanded ? "折叠图层组" : "展开图层组"; clicked => { root.layer-folded(i); } }
-                                    WorkspaceIcon { glyph: layer.hidden ? Glyph.eye-off : Glyph.eye; label: layer.hidden ? "显示图层" : "隐藏图层"; clicked => { root.layer-visibility-toggled(i); } }
+                                    if layer.group: WorkspaceIcon { height: 38px; glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right; label: layer.expanded ? "折叠图层组" : "展开图层组"; clicked => { root.layer-folded(i); } }
+                                    WorkspaceIcon { height: 38px; glyph: layer.hidden ? Glyph.eye-off : Glyph.eye; label: layer.hidden ? "显示图层" : "隐藏图层"; clicked => { root.layer-visibility-toggled(i); } }
                                     if root.renaming-row != i: Rectangle {
                                         horizontal-stretch: 1; min-width: 0px;
                                         Text {
@@ -1552,9 +1557,10 @@ export component CanvasPane inherits Rectangle {
                                         }
                                     }
                                     Rectangle {
-                                        width: 28px; height: 28px;
+                                        width: 28px; height: 38px;
                                         if layer.masked: Rectangle {
-                                            width: parent.width; height: parent.height;
+                                            y: (parent.height - self.height) / 2;
+                                            width: parent.width; height: 28px;
                                             border-radius: Theme.r-xs;
                                             background: Theme.well;
                                             border-width: layer.active && layer.mask-paint ? 2px : 1px;
@@ -1581,21 +1587,21 @@ export component CanvasPane inherits Rectangle {
                             }
                         }
                     }
-                    HorizontalLayout {
-                        height: 34px; spacing: 8px;
-                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
-                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
-                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
-                        Rectangle { horizontal-stretch: 1; }
-                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.mask; label: "添加图层蒙版"; enabled: root.active-layer >= 0 && !root.layers[root.active-layer].masked; clicked => { root.layer-mask-added(); } }
-                        layer-more-button := WorkspaceIcon {
-                            width: 32px; height: 32px; side: 32px; glyph: Glyph.more; label: "更多图层操作";
-                            clicked => {
-                                root.blend-open = false;
-                                root.layer-menu-index = root.active-layer < 0 ? 2 : root.layers[root.active-layer].kind == 1 ? 1 : 0;
-                                root.layer-more-open = !root.layer-more-open;
+                    LauncherControlRow {
+                        height: 34px; spacing: 4px;
+                            WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
+                            WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
+                            WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
+                            Rectangle { horizontal-stretch: 1; }
+                            WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.mask; label: "添加图层蒙版"; enabled: root.active-layer >= 0 && !root.layers[root.active-layer].masked; clicked => { root.layer-mask-added(); } }
+                            layer-more-button := WorkspaceIcon {
+                                width: 32px; height: 32px; side: 32px; glyph: Glyph.more; label: "更多图层操作";
+                                clicked => {
+                                    root.blend-open = false;
+                                    root.layer-menu-index = root.active-layer < 0 ? 2 : root.layers[root.active-layer].kind == 1 ? 1 : 0;
+                                    root.layer-more-open = !root.layer-more-open;
+                                }
                             }
-                        }
                     }
                 }
                 if root.blend-open || root.layer-more-open: TouchArea {

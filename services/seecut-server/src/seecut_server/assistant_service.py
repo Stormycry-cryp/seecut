@@ -6,11 +6,11 @@ import hashlib
 
 from .assistant_provider import make_assistant_provider, AssistantProvider, PreparedInference, PreparedUsageInference
 from . import assistant_usage_contract as usage_contract
-from .model_pricing import PriceUnavailable, capped_capture, price_snapshot, validate_price_snapshot
+from .model_pricing import PriceUnavailable, capped_capture, price_snapshot, validate_price_snapshot, public_price_snapshot
 from .assistant_models import model_config
 from dataclasses import replace
 from copy import copy, deepcopy
-from .efforts import FROZEN_FIELDS, public_efforts, resolve_effort, selection_pair, validate_efforts
+from .efforts import FROZEN_FIELDS, public_efforts, resolve_effort, selection_pair, validate_efforts, public_policy_snapshot
 
 from . import assistant_contract as contract
 from .assistant_billing import capture_for_usage, credit_cost
@@ -118,11 +118,13 @@ class AssistantService:
                               self.config.assistant_provider_id, self.config.assistant_model)
 
     @staticmethod
-    def _billing_snapshot(row):
+    def _billing_snapshot(row, effort_policy):
         if row['billing_mode'] == 'verified_input_v1':
             return {}  # Preserve historical protocol JSON and digests.
-        return dict(billing_mode=row['billing_mode'], billing_contract=json.loads(row['billing_contract_json']),
-                    billing_contract_digest=row['billing_contract_digest'])
+        public = usage_contract.public_snapshot(json.loads(row['billing_contract_json']),
+            expected_digest=row['billing_contract_digest'], effort_policy=effort_policy)
+        return dict(billing_mode=row['billing_mode'], billing_contract=public,
+                    billing_contract_digest=contract.digest(public))
 
     def _selected(self, body, user, *, creating_budget=False):
         if not isinstance(body, dict):
@@ -154,7 +156,7 @@ class AssistantService:
                 raise ApiError(409, 'EFFORT_POLICY_MISMATCH', '原回合未绑定强度策略')
             service = self._model_service(model_id)
         else:
-            policy = resolve_effort(self.account, body.get('effort_id'), body.get('policy_revision'))
+            policy = resolve_effort(self.account, body.get('effort_id'), body.get('policy_revision'), model_id=model_id)
             if policy is not None and model_id != policy['agent']['model_id']:
                 raise ApiError(409, 'EFFORT_POLICY_MISMATCH', 'Agent 模型与所选强度策略不一致')
             service = self._model_service(model_id)
@@ -197,7 +199,7 @@ class AssistantService:
         price = None
         if capped:
             try:
-                price = self._pricing()
+                price = public_price_snapshot(self._pricing())
             except (ValueError, KeyError, TypeError):
                 pass
         available = bool(self.provider.configured and self.input_contract_ready() and (capped or c.assistant_pricing_version) and
@@ -292,8 +294,9 @@ class AssistantService:
             'id', 'local_session_id', 'turn_id', 'max_credits', 'held_credits', 'spent_credits',
             'operation_count', 'max_steps', 'state', 'expires_at', 'model_id', 'effort_id', 'policy_revision',
             'rounding_mode', 'accrued_microcredits')}
-        value['policy'] = json.loads(row['policy_json']) if row['policy_json'] is not None else None
-        value.update(AssistantService._billing_snapshot(row))
+        policy = json.loads(row['policy_json']) if row['policy_json'] is not None else None
+        value['policy'] = public_policy_snapshot(policy)
+        value.update(AssistantService._billing_snapshot(row, policy))
         return value
 
     def _budget(self, connection, user, budget_id, scope=None):
@@ -342,7 +345,7 @@ class AssistantService:
                 elif expected_policy_digest is not None:
                     raise ApiError(400, 'EFFORT_POLICY_INVALID', '原回合未绑定强度策略')
                 self._available()
-                if expected_pricing_digest is not None and (self.config.assistant_billing_mode != usage_contract.MODE or expected_pricing_digest != contract.digest(self._pricing())):
+                if expected_pricing_digest is not None and (self.config.assistant_billing_mode != usage_contract.MODE or expected_pricing_digest != contract.digest(public_price_snapshot(self._pricing()))):
                     raise ApiError(409, 'EFFORT_POLICY_STALE', '模型价格已变更，请重新选择')
                 # A client-chosen session/turn cannot evade an unfinished account turn.
                 connection.execute("UPDATE assistant_turn_budgets SET state='expired' WHERE user_id=? AND state='active' AND held_credits=0 AND operation_count=0 AND expires_at<=?", (user, self.now()))
@@ -453,7 +456,7 @@ class AssistantService:
                         max_credits=row['max_credits'], expires_at=row['expires_at'],
                         effort_id=self.effort_policy['id'] if self.effort_policy else None,
                         policy_revision=self.effort_policy['policy_revision'] if self.effort_policy else None,
-                        policy=deepcopy(self.effort_policy)) | self._billing_snapshot(row)
+                        policy=public_policy_snapshot(self.effort_policy)) | self._billing_snapshot(row, self.effort_policy)
 
     def _owned(self, connection, user, operation_id):
         row = connection.execute('SELECT * FROM assistant_operations WHERE id=? AND user_id=?', (operation_id, user)).fetchone()
@@ -469,7 +472,7 @@ class AssistantService:
         for key in ('result', 'error', 'usage'):
             value[key] = json.loads(row[key + '_json']) if row[key + '_json'] is not None else None
         value['budget'] = self._budget_snapshot(self._budget(connection, row['user_id'], row['budget_id']))
-        value.update(self._billing_snapshot(row))
+        value.update(self._billing_snapshot(row, self.effort_policy))
         return value
 
     def create(self, user, body, key):

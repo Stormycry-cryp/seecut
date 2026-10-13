@@ -194,24 +194,38 @@ mod desktop {
     }
     impl State {
         fn can_select_model(&self) -> bool {
-            let view = self.controller.view();
-            view.can_connect
-                && matches!(view.phase, Phase::Disconnected | Phase::Failed)
-                && view.outcome != Some(TaskOutcome::OutcomeUnknown)
-                && !self.preparing
+            !cfg!(feature = "assistant-local-dev")
                 && !self.catalog.loading
-                && self.catalog.efforts.is_empty()
-                && self.record.selected_effort_id.is_none()
+                && self.catalog.metadata_reason().is_empty()
+                && !self.preparing
+                && !self.submitting
+                && (!self.controller.process_present()
+                    || self.controller.supports_model_selection())
+                && !self.model_indices().is_empty()
+        }
+        fn model_indices(&self) -> Vec<usize> {
+            let effort = self.selected_effort();
+            self.catalog
+                .choices
+                .iter()
+                .enumerate()
+                .filter(|(_, choice)| {
+                    if self.record.selected_effort_id.is_some() {
+                        effort.is_some_and(|effort| effort.allows(&choice.id))
+                    } else {
+                        self.catalog.efforts.is_empty()
+                    }
+                })
+                .map(|(index, _)| index)
+                .collect()
         }
         fn selected_effort(&self) -> Option<&crate::agent_models::Effort> {
-            self.catalog
-                .effort(
-                    self.record.selected_effort_id.as_deref()?,
-                    self.record.selected_policy_revision.as_deref()?,
-                )
-                .filter(|effort| {
-                    self.record.selected_effort_policy.as_ref() == Some(&effort.policy())
-                })
+            let effort = self.catalog.effort(
+                self.record.selected_effort_id.as_deref()?,
+                self.record.selected_policy_revision.as_deref()?,
+            )?;
+            let policy = effort.policy_for(self.record.selected_model_id.as_deref()?)?;
+            (self.record.selected_effort_policy.as_ref() == Some(&policy)).then_some(effort)
         }
         fn restore_catalog_selection(&mut self) -> bool {
             if !self.catalog.metadata_reason().is_empty() {
@@ -219,13 +233,7 @@ mod desktop {
             }
             let mut initialized_effort = false;
             if !self.record.selection_initialized {
-                if let Some(effort) = self.catalog.efforts.first() {
-                    self.record.selected_effort_id = Some(effort.id.clone());
-                    self.record.selected_policy_revision = Some(effort.revision.clone());
-                    self.record.selected_effort_policy = Some(effort.policy());
-                    self.record.selected_model_id = Some(effort.model_id.clone());
-                    initialized_effort = true;
-                }
+                initialized_effort = self.select_effort_draft(0);
                 self.record.selection_initialized = true;
             }
             if let Some(id) = &self.record.selected_model_id {
@@ -262,8 +270,18 @@ mod desktop {
                 let Some(effort) = self.selected_effort() else {
                     return "原强度策略已变更，请重新选择";
                 };
-                if self.record.selected_model_id.as_deref() != Some(effort.model_id.as_str()) {
-                    return "请选择强度";
+                if !self
+                    .record
+                    .selected_model_id
+                    .as_deref()
+                    .is_some_and(|id| effort.allows(id))
+                {
+                    return "请选择该强度支持的模型";
+                }
+                if !effort
+                    .model_available(self.record.selected_model_id.as_deref().unwrap_or_default())
+                {
+                    return "该模型在当前强度暂不可用";
                 }
                 if !effort.available {
                     return effort.reason();
@@ -300,46 +318,54 @@ mod desktop {
             let Some(effort) = self.catalog.efforts.get(index).cloned() else {
                 return false;
             };
-            self.record.selected_effort_id = Some(effort.id.clone());
-            self.record.selected_policy_revision = Some(effort.revision.clone());
-            self.record.selected_effort_policy = Some(effort.policy());
-            self.record.selected_model_id = Some(effort.model_id.clone());
-            self.record.selection_initialized = true;
-            if let Some(index) = self
+            let model_id = self
+                .record
+                .selected_model_id
+                .as_deref()
+                .filter(|id| {
+                    effort.allows(id) && self.catalog.choices.iter().any(|choice| choice.id == *id)
+                })
+                .unwrap_or(&effort.model_id)
+                .to_owned();
+            let Some(policy) = effort.policy_for(&model_id) else {
+                return false;
+            };
+            let Some(index) = self
                 .catalog
                 .choices
                 .iter()
-                .position(|choice| choice.id == effort.model_id)
-            {
-                self.catalog.select(index as i32);
-            }
-            self.provider_label = self
-                .catalog
-                .current()
-                .map(|choice| choice.label.clone())
-                .unwrap_or_default();
+                .position(|choice| choice.id == model_id)
+            else {
+                return false;
+            };
+            self.record.selected_effort_id = Some(effort.id);
+            self.record.selected_policy_revision = Some(effort.revision);
+            self.record.selected_effort_policy = Some(policy);
+            self.record.selected_model_id = Some(model_id);
+            self.record.selection_initialized = true;
+            self.catalog.selected = index;
+            self.provider_label = self.catalog.choices[index].label.clone();
             true
         }
-        fn generation_effort(&self) -> Option<serde_json::Value> {
-            if !self.catalog.metadata_reason().is_empty() {
-                return Some(json!({
-                    "id": self.record.selected_effort_id,
-                    "policy_revision": self.record.selected_policy_revision,
-                    "available": false, "reason_code": "catalog_unavailable",
-                    "generation": {"image_model_ids": [], "video_model_ids": []}
-                }));
-            }
-            self.record.selected_effort_id.as_ref().map(|id| {
-                self.selected_effort()
-                    .map(|effort| effort.public.clone())
-                    .unwrap_or_else(|| {
-                        json!({
-                            "id": id, "policy_revision": self.record.selected_policy_revision,
-                            "available": false, "reason_code": "policy_unavailable",
-                            "generation": {"image_model_ids": [], "video_model_ids": []}
-                        })
-                    })
-            })
+        fn select_model_draft(&mut self, visible_index: usize) -> bool {
+            let Some(index) = self.model_indices().get(visible_index).copied() else {
+                return false;
+            };
+            let choice = self.catalog.choices[index].clone();
+            let policy = if let Some(effort) = self.selected_effort() {
+                let Some(policy) = effort.policy_for(&choice.id) else {
+                    return false;
+                };
+                Some(policy)
+            } else {
+                None
+            };
+            self.catalog.selected = index;
+            self.record.selected_model_id = Some(choice.id);
+            self.record.selected_effort_policy = policy;
+            self.record.selection_initialized = true;
+            self.provider_label = choice.label;
+            true
         }
     }
     /// Owns the controller, stable transcript model and nonblocking UI timer.
@@ -515,24 +541,8 @@ mod desktop {
             ui.set_secret_clear_token(ui.get_secret_clear_token().wrapping_add(1));
             ui.set_scroll_token(ui.get_scroll_token().wrapping_add(1));
             drop(state);
-            self.apply_generation_selection(app, false);
         }
-        fn apply_generation_selection(&self, app: &App, explicit_change: bool) {
-            if !self.account.signed_in() {
-                return;
-            }
-            let (effort, models) = {
-                let state = self.state.borrow();
-                (
-                    state.generation_effort(),
-                    state.record.generation_model_ids.clone(),
-                )
-            };
-            self.account
-                .apply_effort_selection(app, effort, models, explicit_change);
-            self.state.borrow_mut().record.generation_model_ids =
-                self.account.generation_selection();
-        }
+
         fn persist(&self, force: bool) -> Result<(), &'static str> {
             if let Some(error) = *self.history_error.borrow() {
                 return Err(error);
@@ -545,14 +555,6 @@ mod desktop {
                 return Ok(());
             };
             let mut state = self.state.borrow_mut();
-            if self
-                .scope
-                .borrow()
-                .as_ref()
-                .is_some_and(|(account, _)| self.account.history_scope().as_ref() == Some(account))
-            {
-                state.record.generation_model_ids = self.account.generation_selection();
-            }
             let mut parked = self.parked.borrow_mut();
             capture(&mut state);
             for state in parked.iter_mut() {
@@ -720,8 +722,6 @@ mod desktop {
                 }
             }
             let mut catalog_expired = None;
-            let mut active_catalog_changed = false;
-            let mut initialize_generation_selection = false;
             for _ in 0..4 {
                 let Ok(result) = self.receiver.try_recv() else {
                     break;
@@ -757,12 +757,10 @@ mod desktop {
                         let expired =
                             result.as_ref().err() == Some(&crate::agent_models::ACCOUNT_EXPIRED);
                         if state.catalog.finish(ticket, result) {
-                            active_catalog_changed |= is_current;
                             if expired {
                                 catalog_expired = Some(account_epoch);
                             }
-                            initialize_generation_selection |=
-                                state.restore_catalog_selection() && is_current;
+                            state.restore_catalog_selection();
                         }
                     }
                     #[cfg(feature = "assistant-local-dev")]
@@ -820,9 +818,6 @@ mod desktop {
             if let Some(epoch) = catalog_expired {
                 self.account.expire_if_current(app, epoch);
                 return;
-            }
-            if active_catalog_changed {
-                self.apply_generation_selection(app, initialize_generation_selection);
             }
             let (expired, billing_changed) = {
                 let mut state = self.state.borrow_mut();
@@ -967,15 +962,22 @@ mod desktop {
             );
             ui.set_current_project(snapshot.project_name.as_str().into());
             ui.set_provider_label(state.provider_label.as_str().into());
+            let model_indices = state.model_indices();
             ui.set_model_names(ModelRc::new(VecModel::from(
-                state
-                    .catalog
-                    .choices
+                model_indices
                     .iter()
-                    .map(|choice| slint::SharedString::from(choice.label.as_str()))
+                    .map(|index| {
+                        slint::SharedString::from(state.catalog.choices[*index].label.as_str())
+                    })
                     .collect::<Vec<_>>(),
             )));
-            ui.set_model_index(state.catalog.selected as i32);
+            ui.set_model_index(
+                model_indices
+                    .iter()
+                    .position(|index| *index == state.catalog.selected)
+                    .map(|index| index as i32)
+                    .unwrap_or(-1),
+            );
             ui.set_effort_names(ModelRc::new(VecModel::from(
                 state
                     .catalog
@@ -1082,7 +1084,7 @@ mod desktop {
                         Phase::Initializing | Phase::OpeningSession | Phase::Closing
                     ),
             );
-            ui.set_can_select_model(state.can_select_model());
+            ui.set_can_select_model(history_error.is_none() && state.can_select_model());
             ui.set_can_disconnect(connected && !busy);
             ui.set_connect_label(if state.preparing || matches!(phase, Phase::Initializing | Phase::OpeningSession) { "正在连接…" } else if phase == Phase::Closing { "正在断开…" } else if connected { "断开" } else { "连接" }.into());
             let other = self.other_session_reason();
@@ -1294,7 +1296,15 @@ mod desktop {
                     .unwrap_or_else(|| state.provider_label.clone()),
                 effort_id: effort.map(|effort| effort.id.clone()),
                 policy: effort
-                    .map(|effort| effort.policy())
+                    .and_then(|effort| {
+                        effort.policy_for(
+                            state
+                                .record
+                                .selected_model_id
+                                .as_deref()
+                                .unwrap_or_default(),
+                        )
+                    })
                     .or_else(|| choice.map(|choice| choice.policy.clone()))
                     .unwrap_or_else(|| json!({})),
                 context: ContextReference {
@@ -1603,7 +1613,6 @@ mod desktop {
             let Some(ticket) = self.state.borrow_mut().catalog.begin() else {
                 return;
             };
-            self.apply_generation_selection(app, false);
             let sender = self.sender.clone();
             let session_id = self.state.borrow().record.id.clone();
             let generation = self.state.borrow().generation;
@@ -1628,16 +1637,27 @@ mod desktop {
         }
         fn select_model(&self, app: &App, index: i32) {
             self.refresh(app);
-            if !self.state.borrow().can_select_model() {
+            if !app.global::<Assistant>().get_can_select_model() {
                 return;
             }
-            {
-                let mut state = self.state.borrow_mut();
-                state.catalog.select(index);
-                state.record.selected_model_id =
-                    state.catalog.current().map(|choice| choice.id.clone());
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            let previous = self.state.borrow().record.clone();
+            let previous_index = self.state.borrow().catalog.selected;
+            if !self.state.borrow_mut().select_model_draft(index) {
+                return;
             }
-            let _ = self.persist(true);
+            if self.persist(true).is_err() {
+                let mut state = self.state.borrow_mut();
+                state.record = previous;
+                state.catalog.selected = previous_index;
+                state.provider_label = state
+                    .catalog
+                    .current()
+                    .map(|choice| choice.label.clone())
+                    .unwrap_or_default();
+            }
             self.refresh(app);
         }
         fn select_effort(&self, app: &App, index: i32) {
@@ -1659,7 +1679,6 @@ mod desktop {
                 }
                 state.notice.clear();
             }
-            self.apply_generation_selection(app, true);
             if self.persist(true).is_err() {
                 {
                     let mut state = self.state.borrow_mut();
@@ -1671,7 +1690,6 @@ mod desktop {
                         .map(|choice| choice.label.clone())
                         .unwrap_or_default();
                 }
-                self.apply_generation_selection(app, false);
             }
             self.refresh(app);
         }
@@ -2414,11 +2432,7 @@ mod desktop {
             let original = state.record.clone();
             apply_catalog(&mut state, effort_catalog(false));
             assert!(state.selected_effort().is_some());
-            assert!(
-                !state.generation_effort().unwrap()["available"]
-                    .as_bool()
-                    .unwrap()
-            );
+            assert!(!state.selected_effort().unwrap().available);
             let mut changed = effort_catalog(true);
             changed.efforts[0].public["agent"]["max_steps"] = json!(7);
             apply_catalog(&mut state, changed);
@@ -2431,7 +2445,7 @@ mod desktop {
                 state.record.selected_policy_revision,
                 original.selected_policy_revision
             );
-            assert_eq!(state.generation_effort().unwrap()["available"], false);
+            assert!(!state.selection_reason().is_empty());
             let mut restored = new_state(state.record.clone(), Some(1));
             let mut changed = effort_catalog(true);
             changed.efforts[0].public["generation"]["image_model_ids"] = json!(["another-image"]);
@@ -2443,18 +2457,18 @@ mod desktop {
             );
         }
         #[test]
-        fn catalog_refresh_error_never_exposes_old_available_policy_to_generation() {
+        fn catalog_refresh_error_blocks_a_new_request_without_rewriting_policy() {
             let mut state = new_state(new_record(), Some(1));
             apply_catalog(&mut state, effort_catalog(true));
             let original = state.record.selected_effort_policy.clone();
             state.catalog.retry();
             let ticket = state.catalog.begin().unwrap();
-            assert_eq!(state.generation_effort().unwrap()["available"], false);
+            assert!(!state.selection_reason().is_empty());
             state.catalog.finish(ticket, Err("强度目录暂不可用"));
-            assert_eq!(state.generation_effort().unwrap()["available"], false);
+            assert!(!state.selection_reason().is_empty());
             assert_eq!(state.record.selected_effort_policy, original);
             apply_catalog(&mut state, effort_catalog(true));
-            assert_eq!(state.generation_effort().unwrap()["available"], true);
+            assert!(state.selection_reason().is_empty());
         }
         #[test]
         fn pending_sessions_can_change_next_effort_without_rewriting_original_request() {

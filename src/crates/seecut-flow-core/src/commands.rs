@@ -129,8 +129,8 @@ fn edit(
             graph.nodes.insert(node.id.clone(), node.clone());
             created.push(node.id.clone());
             if let Command::AddConnected { edge, .. } = command {
-                if edge.from != node.id {
-                    return Err("new connection must originate from the added node".into());
+                if edge.from != node.id && edge.to != node.id {
+                    return Err("new connection must include the added node".into());
                 }
                 graph.edges.push(edge.clone());
             }

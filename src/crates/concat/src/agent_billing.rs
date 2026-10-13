@@ -120,99 +120,139 @@ pub(crate) fn validate(value: &Value, available: bool) -> Result<bool, ()> {
     if !available && p.is_null() && value["pricing_digest"].is_null() {
         return Ok(true);
     }
-    if !keys(
-        p,
-        &[
-            "schema_version",
-            "provider",
-            "model",
-            "kind",
-            "version",
-            "cost_status",
-            "source",
-            "verified_at",
-            "credits_per_yuan",
-            "multiplier",
-            "unit",
-            "denominator",
-            "dimensions",
-        ],
-    ) || p["schema_version"] != 1
-        || p["kind"] != "agent"
-        || p["provider"] != value["provider_id"]
-        || p["model"] != value["upstream_model"]
-        || !identity(&p["version"])
-        || p["version"] != value["pricing_version"]
-        || !matches!(
-            p["cost_status"].as_str(),
-            Some("verified" | "verified_free")
-        )
-        || !p["source"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty() && s.len() <= 2048 && !s.chars().any(char::is_control))
-        || p["verified_at"]
-            .as_str()
-            .is_none_or(|s| chrono::DateTime::parse_from_rfc3339(s).is_err())
-        || p["credits_per_yuan"] != 10
-        || p["multiplier"] != 3
-        || p["unit"] != "nanocredits"
-        || !integer_text(&p["denominator"], 19, true)
-        || p["denominator"]
-            .as_str()
-            .and_then(|s| s.parse::<u64>().ok())
-            .is_none_or(|n| n > 1_000_000_000_000_000_000)
-        || !keys(&p["dimensions"], &["input", "cached_input", "output"])
-    {
-        return Err(());
-    }
-    for name in ["input", "cached_input", "output"] {
-        let d = &p["dimensions"][name];
+    if p["schema_version"] == 2 {
         if !keys(
-            d,
+            p,
             &[
+                "schema_version",
+                "provider",
+                "model",
+                "kind",
+                "version",
                 "unit",
-                "cost_yuan",
-                "selectors",
-                "retail_source",
-                "sale_override_credits",
-                "rate_numerator",
+                "denominator",
+                "dimensions",
             ],
-        ) || d["unit"] != "per_million_tokens"
-            || !decimal(&d["cost_yuan"])
-            || !keys(&d["selectors"], &[])
-            || !integer_text(&d["rate_numerator"], 45, false)
+        ) || p["kind"] != "agent"
+            || p["provider"] != value["provider_id"]
+            || p["model"] != value["upstream_model"]
+            || !identity(&p["version"])
+            || p["version"] != value["pricing_version"]
+            || p["unit"] != "nanocredits"
+            || !integer_text(&p["denominator"], 19, true)
+            || p["denominator"]
+                .as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .is_none_or(|n| n > 1_000_000_000_000_000_000)
+            || !keys(&p["dimensions"], &["input", "cached_input", "output"])
         {
             return Err(());
         }
-        match d["retail_source"].as_str() {
-            Some("cost_times_three") if d["sale_override_credits"].is_null() => {}
-            Some("override") if decimal(&d["sale_override_credits"]) => {}
-            _ => return Err(()),
+        for name in ["input", "cached_input", "output"] {
+            let d = &p["dimensions"][name];
+            if !keys(d, &["unit", "selectors", "rate_numerator"])
+                || d["unit"] != "per_million_tokens"
+                || !keys(&d["selectors"], &[])
+                || !integer_text(&d["rate_numerator"], 45, false)
+            {
+                return Err(());
+            }
         }
-        let (cost, cost_denominator) = decimal_fraction(&d["cost_yuan"]).ok_or(())?;
-        if p["cost_status"] == "verified_free" && cost != 0 {
+    } else {
+        if !keys(
+            p,
+            &[
+                "schema_version",
+                "provider",
+                "model",
+                "kind",
+                "version",
+                "cost_status",
+                "source",
+                "verified_at",
+                "credits_per_yuan",
+                "multiplier",
+                "unit",
+                "denominator",
+                "dimensions",
+            ],
+        ) || p["schema_version"] != 1
+            || p["kind"] != "agent"
+            || p["provider"] != value["provider_id"]
+            || p["model"] != value["upstream_model"]
+            || !identity(&p["version"])
+            || p["version"] != value["pricing_version"]
+            || !matches!(
+                p["cost_status"].as_str(),
+                Some("verified" | "verified_free")
+            )
+            || !p["source"].as_str().is_some_and(|s| {
+                !s.is_empty() && s.len() <= 2048 && !s.chars().any(char::is_control)
+            })
+            || p["verified_at"]
+                .as_str()
+                .is_none_or(|s| chrono::DateTime::parse_from_rfc3339(s).is_err())
+            || p["credits_per_yuan"] != 10
+            || p["multiplier"] != 3
+            || p["unit"] != "nanocredits"
+            || !integer_text(&p["denominator"], 19, true)
+            || p["denominator"]
+                .as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .is_none_or(|n| n > 1_000_000_000_000_000_000)
+            || !keys(&p["dimensions"], &["input", "cached_input", "output"])
+        {
             return Err(());
         }
-        let (retail, denominator) = if d["retail_source"] == "override" {
-            decimal_fraction(&d["sale_override_credits"]).ok_or(())?
-        } else {
-            (cost * 30, cost_denominator)
-        };
-        // Bounded decimal origins fit u128 after reducing each fraction;
-        // cross products of the unreduced snapshot could overflow.
-        let expected = fraction(retail * 1_000_000_000, denominator * 1_000_000);
-        let reported = fraction(
-            d["rate_numerator"]
-                .as_str()
-                .and_then(|s| s.parse::<u128>().ok())
-                .ok_or(())?,
-            p["denominator"]
-                .as_str()
-                .and_then(|s| s.parse::<u128>().ok())
-                .ok_or(())?,
-        );
-        if expected != reported {
-            return Err(());
+        for name in ["input", "cached_input", "output"] {
+            let d = &p["dimensions"][name];
+            if !keys(
+                d,
+                &[
+                    "unit",
+                    "cost_yuan",
+                    "selectors",
+                    "retail_source",
+                    "sale_override_credits",
+                    "rate_numerator",
+                ],
+            ) || d["unit"] != "per_million_tokens"
+                || !decimal(&d["cost_yuan"])
+                || !keys(&d["selectors"], &[])
+                || !integer_text(&d["rate_numerator"], 45, false)
+            {
+                return Err(());
+            }
+            match d["retail_source"].as_str() {
+                Some("cost_times_three") if d["sale_override_credits"].is_null() => {}
+                Some("override") if decimal(&d["sale_override_credits"]) => {}
+                _ => return Err(()),
+            }
+            let (cost, cost_denominator) = decimal_fraction(&d["cost_yuan"]).ok_or(())?;
+            if p["cost_status"] == "verified_free" && cost != 0 {
+                return Err(());
+            }
+            let (retail, denominator) = if d["retail_source"] == "override" {
+                decimal_fraction(&d["sale_override_credits"]).ok_or(())?
+            } else {
+                (cost * 30, cost_denominator)
+            };
+            // Bounded decimal origins fit u128 after reducing each fraction;
+            // cross products of the unreduced snapshot could overflow.
+            let expected = fraction(retail * 1_000_000_000, denominator * 1_000_000);
+            let reported = fraction(
+                d["rate_numerator"]
+                    .as_str()
+                    .and_then(|s| s.parse::<u128>().ok())
+                    .ok_or(())?,
+                p["denominator"]
+                    .as_str()
+                    .and_then(|s| s.parse::<u128>().ok())
+                    .ok_or(())?,
+            );
+            if expected != reported {
+                return Err(());
+            }
         }
     }
     let expected = format!("{:x}", Sha256::digest(canonical(p).as_bytes()));
@@ -225,6 +265,16 @@ pub(crate) fn validate(value: &Value, available: bool) -> Result<bool, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_public_sale_contract_accepts_exact_digest_without_procurement() {
+        let mut value: Value = serde_json::from_str(include_str!(
+            "../../../../services/seecut-server/tests/fixtures/public_usage_catalog.json"
+        ))
+        .unwrap();
+        assert_eq!(validate(&value, true), Ok(true));
+        value["pricing_snapshot"]["dimensions"]["input"]["cost_yuan"] = serde_json::json!("1");
+        assert!(validate(&value, true).is_err());
+    }
     #[test]
     fn unknown_mode_and_opaque_price_fail_closed() {
         assert_eq!(validate(&serde_json::json!({}), true), Ok(false));

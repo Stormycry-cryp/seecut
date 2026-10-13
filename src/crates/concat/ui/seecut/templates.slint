@@ -1,3 +1,4 @@
+import { LauncherSafeArea } from "launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Modal, Glyph } from "../primitives/primitives.slint";
@@ -94,6 +95,7 @@ export component TemplatesPage inherits Rectangle {
                     Rectangle { x: 0px; y: 260px; width: 100%; height: 1px; background: Theme.line; }
                     HorizontalLayout {
                         x: 14px; y: 274px; width: parent.width - 28px; height: 34px; spacing: 6px;
+                        padding-right: LauncherSafeArea.trailing(parent.absolute-position.x + parent.width - 14px, parent.absolute-position.y + 308px);
                         AppButton { label: "应用模板"; enabled: !SeeCut.working; clicked => { SeeCut.action("template-apply", item.id); } }
                         Rectangle { horizontal-stretch: 1; }
                         AppButton { label: "更多"; subtle: true; clicked => { SeeCut.template-menu-id = item.id; root.delete-name = item.name; root.menu-x = self.absolute-position.x - root.absolute-position.x; root.menu-y = self.absolute-position.y - root.absolute-position.y + self.height + 4px; } }

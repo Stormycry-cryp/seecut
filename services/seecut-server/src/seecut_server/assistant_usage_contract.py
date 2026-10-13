@@ -3,7 +3,7 @@ from copy import deepcopy
 from dataclasses import replace
 
 from . import assistant_contract as contract
-from .model_pricing import billing_mode, price_snapshot, validate_price_snapshot
+from .model_pricing import billing_mode, price_snapshot, validate_price_snapshot, public_price_snapshot
 
 MODE = 'provider_usage_capped_v1'
 LIMITS = {'context_window': 1_000_000, 'max_output_tokens': 131072,
@@ -57,3 +57,14 @@ def restore_config(config, frozen):
         assistant_model=frozen['upstream_model'], assistant_pricing_version=frozen['pricing_snapshot']['version'],
         assistant_images=False, assistant_models=(), efforts=(),
         **{'assistant_' + name: value for name, value in frozen['limits'].items()})
+
+
+def public_snapshot(internal, *, expected_digest, effort_policy):
+    frozen = validate(internal, expected_digest=expected_digest, effort_policy=effort_policy, check_effort=True)
+    from .efforts import public_policy_snapshot
+    frozen['schema_version'] = 2
+    frozen['pricing_snapshot'] = public_price_snapshot(frozen['pricing_snapshot'])
+    frozen['pricing_digest'] = contract.digest(frozen['pricing_snapshot'])
+    policy = public_policy_snapshot(effort_policy)
+    frozen['effort_digest'] = contract.digest(policy) if policy is not None else None
+    return frozen

@@ -1,10 +1,10 @@
+import { LauncherSafeArea } from "../seecut/launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph } from "../primitives/primitives.slint";
 import { AssetPreview, CloudField, WorkspaceIcon } from "../seecut/components.slint";
 export struct FlowProjectRow { id: string, name: string, date: string, detail: string, read-only: bool }
 export component FlowProjectsPage inherits Rectangle {
-    in property <length> launcher-clearance: 84px;
     in property <[FlowProjectRow]> projects;
     in property <string> message;
     in-out property <bool> list-view;
@@ -24,7 +24,7 @@ export component FlowProjectsPage inherits Rectangle {
     VerticalLayout {
         padding-left: root.narrow ? 16px : 32px;
         padding-right: root.narrow ? 16px : 48px;
-        padding-top: root.narrow ? 24px : 40px; padding-bottom: 24px + root.launcher-clearance; spacing: 24px;
+        padding-top: root.narrow ? 24px : 40px; padding-bottom: 24px; spacing: 24px;
         HorizontalLayout {
             height: 40px; spacing: 8px;
             Text { text: "Flow"; font-size: 24px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
@@ -57,10 +57,11 @@ export component FlowProjectsPage inherits Rectangle {
                     x: mod(i + 1, grid.columns) * (grid.card-width + grid.gap);
                     y: floor((i + 1) / grid.columns) * (grid.card-height + grid.gap);
                     width: grid.card-width; height: grid.card-height;
+                    property <length> rename-clearance: LauncherSafeArea.trailing(self.absolute-position.x + self.width - 4px, self.absolute-position.y + (root.list-view ? 14px : grid.media-height + 4px) + 32px);
                     AssetPreview { x: 0px; y: 0px; width: grid.cover-width; height: grid.media-height; fallback-glyph: Glyph.workflow; interactive: true; accessible-name: "打开 Flow 工程 · " + project.name; activated => { root.action("open", project.id); } }
-                    Text { x: root.list-view ? grid.cover-width + 16px : 0px; y: root.list-view ? 18px : grid.media-height + 8px; width: max(0px, parent.width - self.x - 40px); text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
-                    Text { x: root.list-view ? grid.cover-width + 16px : 0px; y: root.list-view ? 44px : grid.media-height + 32px; width: max(0px, parent.width - self.x - 40px); text: project.date + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
-                    WorkspaceIcon { x: parent.width - 36px; y: root.list-view ? 14px : grid.media-height + 4px; side: 32px; glyph: Glyph.text-mark; label: "重命名工程 · " + project.name; enabled: !project.read-only; clicked => { root.action("rename", project.id); } }
+                    Text { x: root.list-view ? grid.cover-width + 16px : 0px; y: root.list-view ? 18px : grid.media-height + 8px; width: max(0px, parent.width - self.x - 40px - parent.rename-clearance); text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
+                    Text { x: root.list-view ? grid.cover-width + 16px : 0px; y: root.list-view ? 44px : grid.media-height + 32px; width: max(0px, parent.width - self.x - 40px - parent.rename-clearance); text: project.date + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
+                    WorkspaceIcon { x: parent.width - 36px - parent.rename-clearance; y: root.list-view ? 14px : grid.media-height + 4px; side: 32px; glyph: Glyph.text-mark; label: "重命名工程 · " + project.name; enabled: !project.read-only; clicked => { root.action("rename", project.id); } }
                 }
             }
         }

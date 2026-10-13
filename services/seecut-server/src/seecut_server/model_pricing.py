@@ -181,6 +181,33 @@ def validate_price_snapshot(snapshot):
     return deepcopy(snapshot)
 
 
+def public_price_snapshot(snapshot):
+    """Expose frozen sale rates, keeping procurement evidence on the server."""
+    fields = {'schema_version', 'provider', 'model', 'kind', 'version', 'unit', 'denominator', 'dimensions'}
+    if isinstance(snapshot, dict) and snapshot.get('schema_version') == 2:
+        if (set(snapshot) != fields or type(snapshot['schema_version']) is not int
+                or not isinstance(snapshot['provider'], str) or not IDENTITY.fullmatch(snapshot['provider'])
+                or not isinstance(snapshot['model'], str) or not 1 <= len(snapshot['model']) <= 256 or '\0' in snapshot['model']
+                or snapshot['kind'] != 'agent' or not isinstance(snapshot['version'], str) or not IDENTITY.fullmatch(snapshot['version'])
+                or snapshot['unit'] != 'nanocredits' or not isinstance(snapshot['denominator'], str)
+                or not re.fullmatch(r'[1-9][0-9]{0,18}', snapshot['denominator']) or int(snapshot['denominator']) > 10 ** 18
+                or not isinstance(snapshot['dimensions'], dict) or set(snapshot['dimensions']) != set(TOKEN_DIMENSIONS)):
+            raise ValueError('Invalid public model pricing')
+        for value in snapshot['dimensions'].values():
+            if (not isinstance(value, dict) or set(value) != {'unit', 'selectors', 'rate_numerator'}
+                    or value['unit'] != 'per_million_tokens' or value['selectors'] != {}
+                    or not isinstance(value['rate_numerator'], str) or not re.fullmatch(r'0|[1-9][0-9]{0,44}', value['rate_numerator'])):
+                raise ValueError('Invalid public price dimension')
+        return deepcopy(snapshot)
+    frozen = validate_price_snapshot(snapshot)
+    if frozen['kind'] != 'agent':
+        raise ValueError('Agent price needed')
+    return {key: (2 if key == 'schema_version' else {
+        name: {field: deepcopy(value[field]) for field in ('unit', 'selectors', 'rate_numerator')}
+        for name, value in frozen['dimensions'].items()
+    } if key == 'dimensions' else frozen[key]) for key in fields}
+
+
 def token_charge(snapshot, usage):
     snapshot = validate_price_snapshot(snapshot)
     if snapshot['kind'] != 'agent':

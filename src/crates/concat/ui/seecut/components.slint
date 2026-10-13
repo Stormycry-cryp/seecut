@@ -357,3 +357,31 @@ export component AssetPreview inherits Rectangle {
         FocusRing { active: root.ring; radius: Theme.r; }
     }
 }
+
+
+export component CompactSearch inherits Rectangle {
+    in-out property <string> value;
+    in property <string> placeholder: "搜索素材";
+    in property <bool> enabled: true;
+    callback edited(string);
+    property <bool> expanded;
+    property <bool> showing: root.expanded || root.value != "";
+    width: root.showing ? 240px : Theme.workbench-h;
+    height: Theme.workbench-h;
+    function collapse() { root.value = ""; root.edited(""); root.expanded = false; }
+    if !root.showing: WorkspaceIcon {
+        glyph: Glyph.search; label: root.placeholder; enabled: root.enabled;
+        clicked => { root.expanded = true; }
+    }
+    if root.showing: HorizontalLayout {
+        spacing: 4px;
+        CloudField {
+            horizontal-stretch: 1; min-width: 80px;
+            value <=> root.value; placeholder: root.placeholder; enabled: root.enabled;
+            auto-focus: true;
+            edited(value) => { root.edited(value); }
+            key-event(text) => { if text == Key.Escape { root.collapse(); return true; } return false; }
+        }
+        WorkspaceIcon { glyph: Glyph.close; label: "收起搜索"; clicked => { root.collapse(); } }
+    }
+}

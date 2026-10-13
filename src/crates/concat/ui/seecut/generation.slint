@@ -1,3 +1,4 @@
+import { LauncherSafeArea, LauncherControlRow } from "launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ScrollView } from "std-widgets.slint";
@@ -39,6 +40,11 @@ component GenerationForm inherits Rectangle {
                 subtle: true;
                 clicked => { SeeCut.action("creator-mode", SeeCut.creator-mode == 1 ? "0" : "1"); }
             }
+        }
+        if SeeCut.signed-in && SeeCut.generation-effort-names.length > 0: WorkspaceSelect {
+            options: SeeCut.generation-effort-names; current: SeeCut.generation-effort-index;
+            placeholder: "选择强度";
+            changed(index) => { SeeCut.generation-effort-index = index; SeeCut.changed("generation-effort", index); }
         }
         if SeeCut.recovery-warning != "": Rectangle {
             min-height: root.compact ? 32px : 54px;
@@ -422,10 +428,10 @@ component GenerationSubmitBar inherits Rectangle {
                 }
                 if SeeCut.quantities.length == 0: Text { text: "此模型暂无数量选项"; color: Theme.fg-muted; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
-                if SeeCut.quote != "": Text { text: SeeCut.quote; color: Theme.fg-muted; font-size: 12px; min-width: 0px; max-width: root.compact ? 140px : 200px; wrap: word-wrap; horizontal-alignment: right; vertical-alignment: center; }
+                Text { text: SeeCut.generation-actual-cost; accessible-label: "当前任务实际消耗 " + self.text + " 积分"; color: Theme.fg-muted; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
             }
         }
-        HorizontalLayout {
+        LauncherControlRow {
             height: Theme.workbench-h;
             spacing: 8px;
             AppButton {
@@ -592,7 +598,7 @@ component GenerationResults inherits Rectangle {
                                 }
                                 if item.ready && !SeeCut.task-selection-mode: tray := Rectangle {
                                     x: (parent.width - self.width) / 2;
-                                    y: parent.height - self.height - 16px;
+                                    y: parent.height - self.height - 16px - LauncherSafeArea.lift(parent.absolute-position.x + (parent.width + self.width) / 2, parent.absolute-position.y + parent.height - 16px);
                                     width: Math.min(parent.width - 16px, item.kind == "image" ? 224px : 184px);
                                     height: 40px;
                                     property <bool> entry-focused;
