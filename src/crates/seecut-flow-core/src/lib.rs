@@ -8,6 +8,7 @@ pub mod protocol;
 pub mod runner;
 pub mod sample;
 pub mod store;
+pub mod workflow;
 
 pub type Result<T> = std::result::Result<T, String>;
 pub(crate) fn next_revision(revision: u64) -> Result<u64> {

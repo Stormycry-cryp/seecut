@@ -80,6 +80,8 @@ pub struct Attempt {
     pub request_digest: Option<String>,
     pub tasks: BTreeMap<String, Task>,
     pub selected: Option<(String, String)>,
+    #[serde(default)]
+    pub superseded: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,6 +94,8 @@ pub struct Execution {
     pub project_id: String,
     pub paused: bool,
     pub attempts: Vec<Attempt>,
+    #[serde(default)]
+    pub runs: Vec<crate::workflow::Run>,
 }
 fn valid_id(v: &str) -> bool {
     !v.is_empty()
@@ -103,7 +107,7 @@ fn valid_digest(v: &str) -> bool {
     v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit())
 }
 pub fn fingerprint(d: &GenerationDraft) -> String {
-    digest(&(
+    let image_compatible = digest(&(
         &d.context.document_id,
         &d.context.graph_id,
         &d.context.node_id,
@@ -113,7 +117,12 @@ pub fn fingerprint(d: &GenerationDraft) -> String {
         &d.prompt,
         &d.parameters,
         &d.references,
-    ))
+    ));
+    if d.media_kind == MediaKind::Image {
+        image_compatible
+    } else {
+        digest(&(image_compatible, &d.media_kind))
+    }
 }
 impl Execution {
     pub fn new(document_id: String, project_id: String) -> Self {
@@ -123,12 +132,14 @@ impl Execution {
             project_id,
             paused: false,
             attempts: vec![],
+            runs: vec![],
         }
     }
     pub fn validate(&self, document_id: &str, project_id: &str) -> Result<()> {
         if self.format != 1 || self.document_id != document_id || self.project_id != project_id {
             return Err("service execution identity/version mismatch".into());
         }
+        self.validate_runs()?;
         let mut ids = BTreeSet::new();
         for a in &self.attempts {
             if !valid_id(&a.id)
@@ -137,9 +148,10 @@ impl Execution {
                 || a.draft.context.document_id != self.document_id
                 || a.draft.context.scope.account.is_empty()
                 || a.draft.context.scope.service.is_empty()
-                || a.draft.media_kind != MediaKind::Image
+                || !matches!(a.draft.media_kind, MediaKind::Image | MediaKind::Video)
                 || a.draft.model_id.is_empty()
                 || a.draft.capability_version.is_empty()
+                || (a.superseded && a.phase != Phase::Prepared)
                 || a.fingerprint != fingerprint(&a.draft)
                 || !valid_digest(&a.source_digest)
             {
@@ -184,7 +196,7 @@ impl Execution {
                         return Err("invalid service output".into());
                     }
                     if let Some(asset) = &o.asset {
-                        check_asset(asset, &o.sha256)?;
+                        check_asset(asset, &o.sha256, &a.draft.media_kind)?;
                     }
                 }
             }
@@ -204,21 +216,7 @@ impl Execution {
             return Err("后续步骤已暂停".into());
         }
         let fingerprint = fingerprint(&draft);
-        if let Some(a) = self.attempts.iter().rev().find(|a| {
-            a.draft.context.graph_id == draft.context.graph_id
-                && a.draft.context.node_id == draft.context.node_id
-                && a.draft.context.scope == draft.context.scope
-                && (a.phase == Phase::Intent
-                    || a.tasks.values().any(|t| t.status == "pending_reconcile"))
-        }) {
-            if a.fingerprint == fingerprint {
-                return Ok(a.id.clone());
-            }
-            return Err("原图片任务结果未确定，请先核账".into());
-        }
-        if let Some(a) = self.attempts.iter().rev().find(|a| {
-            a.fingerprint == fingerprint && !matches!(a.phase, Phase::Finished | Phase::Rejected)
-        }) {
+        if let Some(a) = self.pending_attempt(&draft)? {
             return Ok(a.id.clone());
         }
         let id = id();
@@ -233,11 +231,40 @@ impl Execution {
             request_digest: None,
             tasks: BTreeMap::new(),
             selected: None,
+            superseded: false,
             error: None,
             submission_failure: None,
         });
         self.validate(&self.document_id, &self.project_id)?;
         Ok(id)
+    }
+    /// Resolve live identity before consulting old successful results.
+    pub(crate) fn pending_attempt(&self, draft: &GenerationDraft) -> Result<Option<&Attempt>> {
+        let fingerprint = fingerprint(draft);
+        let same_node = |a: &&Attempt| {
+            !a.superseded
+                && a.draft.context.graph_id == draft.context.graph_id
+                && a.draft.context.node_id == draft.context.node_id
+                && a.draft.context.scope == draft.context.scope
+        };
+        if let Some(a) = self
+            .attempts
+            .iter()
+            .rev()
+            .filter(same_node)
+            .find(|a| matches!(a.phase, Phase::Intent | Phase::Accepted))
+        {
+            if a.fingerprint != fingerprint {
+                return Err("原任务尚未结束，请先核实原任务".into());
+            }
+            return Ok(Some(a));
+        }
+        Ok(self
+            .attempts
+            .iter()
+            .rev()
+            .filter(same_node)
+            .find(|a| a.phase == Phase::Prepared && a.fingerprint == fingerprint))
     }
     pub fn attempt_mut(&mut self, id: &str) -> Result<&mut Attempt> {
         self.attempts
@@ -248,7 +275,7 @@ impl Execution {
     /// Commit this transition before the shared client is allowed to POST.
     pub fn intent(&mut self, id: &str, body: Value) -> Result<()> {
         let a = self.attempt_mut(id)?;
-        if a.phase != Phase::Prepared {
+        if a.phase != Phase::Prepared || a.superseded {
             return Err("request already frozen; query original key".into());
         }
         if body["quote_id"].as_str().is_none_or(str::is_empty) {
@@ -284,7 +311,12 @@ impl Execution {
         let task_id = task["id"].as_str().ok_or("task ID missing")?;
         if !valid_id(task_id)
             || !task_id.starts_with("gen_")
-            || task["kind"] != "image"
+            || task["kind"]
+                != match a.draft.media_kind {
+                    MediaKind::Image => "image",
+                    MediaKind::Video => "video",
+                    MediaKind::Audio => "audio",
+                }
             || task["model"] != a.draft.model_id
         {
             return Err("task identity/model mismatch".into());
@@ -296,6 +328,10 @@ impl Execution {
             "operation",
             "size",
             "quality",
+            "resolution",
+            "duration",
+            "aspect_ratio",
+            "generate_audio",
             "quantity",
             "reference_asset_ids",
             "effort_id",
@@ -378,7 +414,7 @@ impl Execution {
             .get_mut(task)
             .and_then(|t| t.outputs.get_mut(output))
             .ok_or("output missing")?;
-        check_asset(&asset, &o.sha256)?;
+        check_asset(&asset, &o.sha256, &a.draft.media_kind)?;
         if o.asset.as_ref().is_some_and(|previous| previous != &asset) {
             return Err("registration identity changed".into());
         }
@@ -447,12 +483,12 @@ impl Attempt {
         }
     }
 }
-fn check_asset(asset: &Asset, sha: &str) -> Result<()> {
+fn check_asset(asset: &Asset, sha: &str, expected_kind: &MediaKind) -> Result<()> {
     let version: Value =
         serde_json::from_str(&asset.version).map_err(|_| "registered version missing")?;
     if asset.id.is_empty()
         || asset.simulated
-        || asset.kind != MediaKind::Image
+        || &asset.kind != expected_kind
         || version["sha256"] != sha
         || version["registration_id"]
             .as_str()

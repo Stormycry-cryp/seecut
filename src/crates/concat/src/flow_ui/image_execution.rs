@@ -1,16 +1,21 @@
 //! UI ownership and background shared-client jobs, bound to the original project/attempt.
 use super::{Host, finish, sync_rows};
 use crate::{
-    cloud::{AccountAccess, RegisteredImage, library_image},
+    cloud::{
+        AccountAccess, RegisteredAsset, generation_fields, library_asset, media_kind,
+        parameter_default, parameter_values,
+    },
     ui::{App, Flow, FlowAttachment, FlowCandidate, FlowParameter, SeeCut},
 };
 use seecut_flow_core::{
     Result,
     commands::Command,
     execution::{Execution, Phase, SubmissionFailure},
+    graph::MediaKind,
     host::{AssetPickerRequest, LibraryAsset},
     runner::{Asset, Scope},
     store::Store,
+    workflow::{Choice, Delivery, State},
 };
 use serde_json::{Value, json};
 use slint::{ComponentHandle, ModelRc, VecModel};
@@ -43,10 +48,11 @@ enum ValueReply {
     Prepared(Origin, String, Value),
     Task(Origin, String, Scope, Value),
     SubmissionFailed(Origin, String, Scope, SubmissionFailure),
-    Registered(Origin, String, String, String, RegisteredImage),
-    Picked(String, PathBuf, AssetPickerRequest, RegisteredImage),
-    Preview(RegisteredImage),
-    Deliver(String, String, Scope, String, String, RegisteredImage),
+    Registered(Origin, String, String, String, RegisteredAsset),
+    Picked(String, PathBuf, AssetPickerRequest, RegisteredAsset),
+    Preview(RegisteredAsset),
+    Deliver(String, String, Scope, String, Asset, RegisteredAsset),
+    Delivered(Origin, Scope, Delivery),
 }
 struct Reply {
     key: String,
@@ -159,7 +165,7 @@ impl Images {
             );
         }
     }
-    fn preview(&mut self, image: &RegisteredImage) {
+    fn preview(&mut self, image: &RegisteredAsset) {
         let key = asset_key(
             &image.asset.id,
             &serde_json::to_string(&image.asset.version).unwrap_or_default(),
@@ -184,6 +190,55 @@ impl Images {
             &self.account.flow_scope(),
         )
     }
+    pub(super) fn node_status(
+        &self,
+        store: &Store,
+        graph: &seecut_flow_core::graph::Graph,
+        node: &seecut_flow_core::graph::Node,
+    ) -> Option<&'static str> {
+        let scope = self.account.flow_scope();
+        if let Some(run) = store.execution().runs.iter().rev().find(|r| {
+            r.graph.id == graph.id
+                && r.scope == scope
+                && r.state != State::Abandoned
+                && r.order.contains(&node.id)
+        }) {
+            if let Some(step) = run.steps.get(&node.id).filter(|s| s.output.is_some()) {
+                return match node.kind.as_str() {
+                    "select" => Some("已采用"),
+                    "deliver" => Some("已交付"),
+                    "image_generate" | "video_generate" => Some(if step.reused {
+                        "已复用"
+                    } else {
+                        "已入库"
+                    }),
+                    _ => None,
+                };
+            }
+            if run.current.as_deref() == Some(node.id.as_str()) {
+                if store.execution().paused {
+                    return Some("已暂停");
+                }
+                return match run.state {
+                    State::AwaitingSelection => Some("等待采用"),
+                    State::Blocked => Some("待重试"),
+                    State::Running if node.kind == "deliver" => Some("确认入库"),
+                    _ => None,
+                };
+            }
+            if run.state != State::Complete {
+                return Some("等待依赖");
+            }
+        }
+        if node.kind == "select" {
+            return Some(if selected_asset(store, graph, node, &scope).is_some() {
+                "已采用"
+            } else {
+                "等待采用"
+            });
+        }
+        None
+    }
     pub(super) fn publish(
         &mut self,
         app: &App,
@@ -197,8 +252,10 @@ impl Images {
         ui.set_execution_enabled(
             self.catalog_scope.as_ref() == Some(&scope)
                 && self.catalog["models"].as_array().is_some_and(|v| {
-                    v.iter()
-                        .any(|m| m["kind"] == "image" && m["available"] == true)
+                    v.iter().any(|m| {
+                        matches!(m["kind"].as_str(), Some("image" | "video"))
+                            && m["available"] == true
+                    })
                 }),
         );
         ui.set_generation_parameters(ModelRc::from(self.parameters.clone()));
@@ -209,19 +266,55 @@ impl Images {
         ui.set_has_attempt(false);
         ui.set_selected_status("".into());
         ui.set_selected_output(false);
+        ui.set_canvas_output(false);
+        ui.set_can_retry(false);
+        ui.set_run_status("".into());
+        ui.set_run_active(false);
         let (Some(store), Some(graph)) = (store, graph) else {
             sync_rows(&self.parameters, vec![]);
             sync_rows(&self.references, vec![]);
             sync_rows(&self.candidates, vec![]);
             return;
         };
+        if let Some(run) = store
+            .execution()
+            .runs
+            .iter()
+            .rev()
+            .find(|r| r.graph.id == graph.id && r.scope == scope && r.state != State::Abandoned)
+        {
+            let status = if store.execution().paused && run.state != State::Complete {
+                "已暂停".to_string()
+            } else {
+                match run.state {
+                    State::Running => "运行中".into(),
+                    State::AwaitingSelection => format!(
+                        "待采用 · {}",
+                        run.current
+                            .as_ref()
+                            .and_then(|id| run.graph.nodes.get(id))
+                            .map_or("", |n| n.title.as_str())
+                    ),
+                    State::Blocked => run.error.clone().unwrap_or_else(|| "待重试".into()),
+                    State::Complete => "已完成".into(),
+                    State::Abandoned => String::new(),
+                }
+            };
+            ui.set_run_status(status.into());
+            ui.set_run_active(!matches!(run.state, State::Complete | State::Abandoned));
+            ui.set_can_retry(run.state == State::Blocked);
+            ui.set_points(run.actual_credits(store.execution()).to_string().into());
+        }
         let Some(selected) = graph.nodes.get(node) else {
             sync_rows(&self.parameters, vec![]);
             sync_rows(&self.references, vec![]);
             sync_rows(&self.candidates, vec![]);
             return;
         };
-        if selected.kind == "image_generate" {
+        if !matches!(selected.kind.as_str(), "image_generate" | "video_generate") {
+            ui.set_execution_enabled(!store.is_read_only());
+        }
+        if matches!(selected.kind.as_str(), "image_generate" | "video_generate") {
             let model = self
                 .catalog_scope
                 .as_ref()
@@ -264,11 +357,11 @@ impl Images {
                     },
                 );
             }
-            for field in ["size", "quality", "quantity"] {
+            for &field in generation_fields(node_media(selected)) {
                 if model.is_some_and(|m| !m["parameters"][field].is_null()) {
                     let value =
                         selected.params.get(field).cloned().unwrap_or_else(|| {
-                            model.unwrap()["parameters"][field]["default"].clone()
+                            parameter_default(&model.unwrap()["parameters"][field])
                         });
                     parameters.push(FlowParameter {
                         id: field.into(),
@@ -293,6 +386,12 @@ impl Images {
                     FlowAttachment {
                         id: source.id.clone().into(),
                         label: source.title.clone().into(),
+                        kind: match source.media_kind().ok() {
+                            Some(MediaKind::Video) => "video",
+                            Some(MediaKind::Audio) => "audio",
+                            _ => "image",
+                        }
+                        .into(),
                         preview,
                     },
                 ));
@@ -314,71 +413,118 @@ impl Images {
             node
         };
         if let Some(attempt) = self.result(store, graph, selected) {
-            ui.set_selected_output(
-                seecut_flow_core::host::node_choice(selected, attempt).is_some(),
-            );
+            let chosen = seecut_flow_core::host::node_choice(selected, attempt).is_some();
+            ui.set_selected_output(chosen);
+            ui.set_canvas_output(chosen && attempt.draft.media_kind == MediaKind::Image);
             let owns_attempt = attempt.draft.context.node_id == image_node;
             ui.set_has_attempt(owns_attempt);
             ui.set_selected_status(attempt_status(attempt).into());
             let mut rows = Vec::new();
-            let mut credits = 0_u64;
-            for task in attempt.tasks.values() {
-                if owns_attempt {
-                    credits = credits.saturating_add(task.captured_credits);
-                }
-                for output in task.outputs.values() {
-                    if let Some(asset) = &output.asset {
-                        self.load_preview(&asset.id, &asset.version);
-                    }
-                    let preview = output
-                        .asset
-                        .as_ref()
-                        .and_then(|a| self.previews.get(&asset_key(&a.id, &a.version)))
-                        .cloned()
-                        .unwrap_or_default();
-                    rows.push(FlowCandidate {
-                        id: serde_json::to_string(&(&attempt.id, &task.id, &output.id))
-                            .unwrap_or_default()
+            let attempts =
+                seecut_flow_core::host::result_attempts(store.execution(), graph, selected, &scope);
+            let required = store
+                .execution()
+                .runs
+                .iter()
+                .rev()
+                .find(|r| {
+                    r.graph.id == graph.id
+                        && r.scope == scope
+                        && r.state == State::AwaitingSelection
+                        && r.current.as_deref() == Some(node)
+                })
+                .and_then(|r| {
+                    r.graph
+                        .edges
+                        .iter()
+                        .find(|e| e.to == node && e.input == "candidates")
+                        .and_then(|edge| r.steps.get(&edge.from))
+                })
+                .and_then(|step| step.attempt.as_deref());
+            for (batch, a) in attempts.iter().enumerate() {
+                let mut count = 0;
+                for task in a.tasks.values() {
+                    for output in task.outputs.values() {
+                        count += 1;
+                        if let Some(asset) = &output.asset {
+                            self.load_preview(&asset.id, &asset.version);
+                        }
+                        let preview = output
+                            .asset
+                            .as_ref()
+                            .and_then(|a| self.previews.get(&asset_key(&a.id, &a.version)))
+                            .cloned()
+                            .unwrap_or_default();
+                        rows.push(FlowCandidate {
+                            id: serde_json::to_string(&(&a.id, &task.id, &output.id))
+                                .unwrap_or_default()
+                                .into(),
+                            label: if attempts.len() > 1 {
+                                format!("第 {} 批 · {count}", attempts.len() - batch)
+                            } else {
+                                format!("结果 {count}")
+                            }
                             .into(),
-                        label: format!("结果 {}", rows.len() + 1).into(),
-                        selected: seecut_flow_core::host::node_choice(selected, attempt)
-                            == Some((task.id.clone(), output.id.clone())),
-                        ready: output.asset.is_some(),
-                        preview,
-                    });
+                            selected: a.id == attempt.id
+                                && seecut_flow_core::host::node_choice(selected, a)
+                                    == Some((task.id.clone(), output.id.clone())),
+                            ready: output.asset.is_some() && required.is_none_or(|id| id == a.id),
+                            preview,
+                        });
+                    }
                 }
             }
-            ui.set_points(credits.to_string().into());
+            if ui.get_run_status().is_empty() {
+                ui.set_points(
+                    attempt
+                        .tasks
+                        .values()
+                        .fold(0_u64, |sum, t| sum.saturating_add(t.captured_credits))
+                        .to_string()
+                        .into(),
+                );
+            }
             sync_rows(&self.candidates, rows);
         } else {
             sync_rows(&self.candidates, vec![]);
         }
+        if let Some(status) = self.node_status(store, graph, selected) {
+            ui.set_selected_status(status.into());
+        }
+        if let Some(asset) = selected_asset(store, graph, selected, &scope) {
+            ui.set_selected_output(true);
+            ui.set_canvas_output(asset.kind == MediaKind::Image);
+        }
     }
+
     pub(super) fn node_preview(
         &mut self,
         store: &Store,
         graph: &seecut_flow_core::graph::Graph,
         node: &seecut_flow_core::graph::Node,
     ) -> Option<slint::Image> {
-        let asset = if node.kind == "asset" {
-            Some((
-                node.params["asset_id"].as_str()?.to_owned(),
-                node.params["content_version"].as_str()?.to_owned(),
-            ))
-        } else {
-            self.result(store, graph, node)
-                .and_then(|a| {
-                    seecut_flow_core::host::node_choice(node, a)
-                        .and_then(|(t, o)| a.tasks.get(&t)?.outputs.get(&o)?.asset.as_ref())
-                        .or_else(|| {
-                            a.tasks
-                                .values()
-                                .flat_map(|t| t.outputs.values())
-                                .find_map(|o| o.asset.as_ref())
-                        })
-                })
-                .map(|a| (a.id.clone(), a.version.clone()))
-        }?;
+        let asset =
+            if let Some(asset) = selected_asset(store, graph, node, &self.account.flow_scope()) {
+                Some((asset.id, asset.version))
+            } else if node.kind == "asset" {
+                Some((
+                    node.params["asset_id"].as_str()?.to_owned(),
+                    node.params["content_version"].as_str()?.to_owned(),
+                ))
+            } else {
+                self.result(store, graph, node)
+                    .and_then(|a| {
+                        seecut_flow_core::host::node_choice(node, a)
+                            .and_then(|(t, o)| a.tasks.get(&t)?.outputs.get(&o)?.asset.as_ref())
+                            .or_else(|| {
+                                a.tasks
+                                    .values()
+                                    .flat_map(|t| t.outputs.values())
+                                    .find_map(|o| o.asset.as_ref())
+                            })
+                    })
+                    .map(|a| (a.id.clone(), a.version.clone()))
+            }?;
         self.load_preview(&asset.0, &asset.1);
         self.previews.get(&asset_key(&asset.0, &asset.1)).cloned()
     }
@@ -393,7 +539,7 @@ impl Images {
         let version = version.to_owned();
         let key = format!("preview:{}", asset_key(&id, &version));
         self.spawn(key, None, move || {
-            library_image(&id, Some(&version)).map(ValueReply::Preview)
+            library_asset(&id, Some(&version)).map(ValueReply::Preview)
         });
     }
 }
@@ -423,6 +569,101 @@ pub(super) fn attempt_status(a: &seecut_flow_core::execution::Attempt) -> &'stat
         }
     }
 }
+fn node_media(node: &seecut_flow_core::graph::Node) -> &'static str {
+    if node.kind == "video_generate" {
+        "video"
+    } else {
+        "image"
+    }
+}
+fn selected_asset(
+    store: &Store,
+    graph: &seecut_flow_core::graph::Graph,
+    node: &seecut_flow_core::graph::Node,
+    scope: &Scope,
+) -> Option<Asset> {
+    if node.kind == "asset" {
+        return Some(Asset {
+            id: node.params["asset_id"].as_str()?.into(),
+            version: node.params["content_version"].as_str()?.into(),
+            kind: node.media_kind().ok()?,
+            simulated: false,
+        });
+    }
+    if node.kind == "deliver" {
+        return store
+            .execution()
+            .runs
+            .iter()
+            .rev()
+            .filter(|r| r.graph.id == graph.id && &r.scope == scope)
+            .find_map(|r| r.selected_asset(&node.id).cloned());
+    }
+    let a = seecut_flow_core::host::result_attempt(store.execution(), graph, node, scope)?;
+    let (task, output) = seecut_flow_core::host::node_choice(node, a)?;
+    a.tasks.get(&task)?.outputs.get(&output)?.asset.clone()
+}
+fn advance_workflows(h: &mut Host) -> bool {
+    let scope = h.images.account.flow_scope();
+    let sources: Vec<_> = h
+        .images
+        .sources
+        .values()
+        .filter(|s| {
+            !s.blocked
+                && !s.execution.paused
+                && s.execution
+                    .runs
+                    .iter()
+                    .any(|r| r.scope == scope && r.state == State::Running)
+        })
+        .map(|s| (s.origin.clone(), s.execution.clone()))
+        .collect();
+    let mut changed = false;
+    for (origin, baseline) in sources {
+        let mut next = baseline.clone();
+        let ids: Vec<_> = next
+            .runs
+            .iter()
+            .filter(|r| r.scope == scope && r.state == State::Running)
+            .map(|r| r.id.clone())
+            .collect();
+        let mut deliveries = Vec::new();
+        for id in ids {
+            match next.advance_run(&id, &scope) {
+                Ok(Some(d)) => deliveries.push(d),
+                Ok(None) => {}
+                Err(error) => {
+                    h.fail(error);
+                }
+            }
+        }
+        if seecut_flow_core::digest(&baseline) != seecut_flow_core::digest(&next) {
+            if let Err(error) = save(h, &origin, &baseline, next) {
+                h.fail(error);
+                continue;
+            }
+            changed = true;
+        }
+        for receipt in deliveries {
+            let origin = origin.clone();
+            let scope = scope.clone();
+            let key = format!(
+                "delivery:{}:{}",
+                seecut_flow_core::digest(&origin.path),
+                receipt.run
+            );
+            h.images.spawn(key, None, move || {
+                let asset = library_asset(&receipt.asset.id, Some(&receipt.asset.version))?;
+                if media_kind(asset.asset.kind) != receipt.asset.kind {
+                    return Err("交付素材类型不匹配".into());
+                }
+                Ok(ValueReply::Delivered(origin, scope, receipt))
+            });
+        }
+    }
+    changed
+}
 fn asset_key(id: &str, version: &str) -> String {
     seecut_flow_core::digest(&(id, version))
 }
@@ -432,7 +673,15 @@ fn parameter_label(field: &str, value: &Value) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| value.to_string());
     match field {
-        "quantity" => format!("{raw} 张"),
+        "quantity" => format!("{raw} 份"),
+        "duration" => format!("{raw} 秒"),
+        "generate_audio" => {
+            if value == true {
+                "有声".into()
+            } else {
+                "无声".into()
+            }
+        }
         "size" if raw == "auto" => "自动尺寸".into(),
         "quality" if raw == "high" => "高清".into(),
         _ => raw,
@@ -478,17 +727,41 @@ pub(super) fn action(app: &App, h: &mut Host, action: &str) -> Result<bool> {
         "run_node" | "run_to" | "retry" => {
             h.controller.save_draft()?;
             h.controller.flush_viewport()?;
-            let client = h.images.account.image_client().ok_or("请先登录")?;
+            let scope = h.images.account.flow_scope();
             let s = h.controller.session.as_mut().ok_or("请先打开工程")?;
-            let draft = seecut_flow_core::host::image_draft(
-                &s.store,
-                &client.scope,
-                &s.graph_id,
-                &s.selected,
-            )?;
+            let graph = s.graph().clone();
+            if graph.ancestors(&s.selected)?.iter().any(|id| {
+                matches!(
+                    graph.nodes[id].kind.as_str(),
+                    "image_generate" | "video_generate"
+                )
+            }) && h.images.account.image_client().is_none()
+            {
+                return Err("请先登录".into());
+            }
             let mut next = s.store.execution().clone();
-            let id = next.begin(draft, seecut_flow_core::digest(s.store.document()))?;
-            next.attempt_mut(&id)?.error = None;
+            let retry = (action == "retry")
+                .then(|| {
+                    next.runs
+                        .iter()
+                        .rev()
+                        .find(|r| {
+                            r.graph.id == graph.id && r.scope == scope && r.state == State::Blocked
+                        })
+                        .map(|r| r.id.clone())
+                })
+                .flatten();
+            if let Some(id) = retry {
+                next.retry_run(&id, &scope)?;
+            } else {
+                next.begin_run(
+                    graph,
+                    scope,
+                    s.selected.clone(),
+                    seecut_flow_core::digest(s.store.document()),
+                    action == "run_node",
+                )?;
+            }
             s.store.save_execution(next.clone())?;
             h.images.track(s.path.clone(), next);
             h.message = "".into();
@@ -514,19 +787,12 @@ pub(super) fn action(app: &App, h: &mut Host, action: &str) -> Result<bool> {
         "flow-canvas" | "flow-clip" => {
             let s = h.controller.session.as_ref().ok_or("请先打开工程")?;
             let selected = s.graph().nodes.get(&s.selected).ok_or("节点已切换")?;
-            let a = h
-                .images
-                .result(&s.store, s.graph(), selected)
-                .ok_or("请先选用图片结果")?;
-            let (task, out) =
-                seecut_flow_core::host::node_choice(selected, a).ok_or("请先选用图片结果")?;
-            let asset = a
-                .tasks
-                .get(&task)
-                .and_then(|t| t.outputs.get(&out))
-                .and_then(|o| o.asset.as_ref())
-                .ok_or("图片尚未入库")?
-                .clone();
+            let scope = h.images.account.flow_scope();
+            let asset = selected_asset(&s.store, s.graph(), selected, &scope)
+                .ok_or("请先采用已入库的结果")?;
+            if action == "flow-canvas" && asset.kind != MediaKind::Image {
+                return Err("画布仅支持图片".into());
+            }
             let kind = if action == "flow-canvas" {
                 "canvas"
             } else {
@@ -537,10 +803,9 @@ pub(super) fn action(app: &App, h: &mut Host, action: &str) -> Result<bool> {
             let token = s.token.clone();
             let scope = h.images.account.flow_scope();
             let node = s.selected.clone();
-            let attempt = a.id.clone();
             h.images.spawn(key, None, move || {
-                library_image(&asset.id, Some(&asset.version))
-                    .map(|image| ValueReply::Deliver(kind, token, scope, node, attempt, image))
+                library_asset(&asset.id, Some(&asset.version))
+                    .map(|image| ValueReply::Deliver(kind, token, scope, node, asset, image))
             });
             Ok(true)
         }
@@ -557,7 +822,7 @@ fn generation_effort_ready(effort: &Value) -> bool {
         effort["available"] == true
     }
 }
-fn allowed_image_model(catalog: &Value, params: &Value, model: &Value) -> bool {
+fn allowed_model(catalog: &Value, params: &Value, model: &Value, kind: &str) -> bool {
     let Some(efforts) = catalog["efforts"]
         .as_array()
         .filter(|efforts| !efforts.is_empty())
@@ -568,19 +833,31 @@ fn allowed_image_model(catalog: &Value, params: &Value, model: &Value) -> bool {
         effort["id"] == params["effort_id"]
             && generation_effort_ready(effort)
             && effort["policy_revision"] == params["policy_revision"]
-            && effort["generation"]["image_model_ids"]
-                .as_array()
-                .is_some_and(|ids| ids.contains(model))
+            && effort["generation"][if kind == "video" {
+                "video_model_ids"
+            } else {
+                "image_model_ids"
+            }]
+            .as_array()
+            .is_some_and(|ids| ids.contains(model))
     })
 }
-fn select_image_parameters(params: &mut Value, model: &Value) {
+fn select_parameters(params: &mut Value, model: &Value) {
     // Change the next execution draft while preserving copied/selected outputs.
     params["model"] = model["id"].clone();
     params["capability_version"] = json!(seecut_flow_core::digest(model));
-    for key in ["size", "quality", "quantity"] {
+    for key in [
+        "size",
+        "quality",
+        "quantity",
+        "resolution",
+        "duration",
+        "aspect_ratio",
+        "generate_audio",
+    ] {
         params.as_object_mut().unwrap().remove(key);
         if !model["parameters"][key].is_null() {
-            params[key] = model["parameters"][key]["default"].clone();
+            params[key] = parameter_default(&model["parameters"][key]);
         }
     }
     params["count"] = json!(params["quantity"].as_u64().unwrap_or(1));
@@ -600,8 +877,8 @@ pub(super) fn settings(app: &App, h: &mut Host, field: &str) -> Result<()> {
         .graph()
         .nodes
         .get(&s.selected)
-        .filter(|n| n.kind == "image_generate")
-        .ok_or("请先选择图片生成节点")?;
+        .filter(|n| matches!(n.kind.as_str(), "image_generate" | "video_generate"))
+        .ok_or("请先选择生成节点")?;
     let mut rows = Vec::new();
     if field == "effort" {
         for effort in h.images.catalog["efforts"]
@@ -623,9 +900,9 @@ pub(super) fn settings(app: &App, h: &mut Host, field: &str) -> Result<()> {
             .into_iter()
             .flatten()
             .filter(|m| {
-                m["kind"] == "image"
+                m["kind"] == node_media(node)
                     && m["available"] == true
-                    && allowed_image_model(&h.images.catalog, &node.params, &m["id"])
+                    && allowed_model(&h.images.catalog, &node.params, &m["id"], node_media(node))
             })
         {
             rows.push(FlowParameter {
@@ -644,11 +921,7 @@ pub(super) fn settings(app: &App, h: &mut Host, field: &str) -> Result<()> {
             .as_array()
             .and_then(|v| v.iter().find(|m| m["id"] == node.params["model"]))
             .ok_or("请先选择模型")?;
-        for value in model["parameters"][field]["values"]
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
+        for value in &parameter_values(&model["parameters"][field]) {
             rows.push(FlowParameter {
                 id: serde_json::to_string(&(field, value))
                     .unwrap_or_default()
@@ -675,7 +948,11 @@ pub(super) fn settings(app: &App, h: &mut Host, field: &str) -> Result<()> {
             "size" => "画面尺寸",
             "quality" => "画质",
             "quantity" => "数量",
-            _ => "图片模型",
+            "resolution" => "清晰度",
+            "duration" => "时长",
+            "aspect_ratio" => "画幅",
+            "generate_audio" => "生成声音",
+            _ => "生成模型",
         }
         .into(),
     );
@@ -704,7 +981,7 @@ pub(super) fn set_setting(h: &mut Host, token: &str, value: &str) -> Result<()> 
         .graph()
         .nodes
         .get(&s.selected)
-        .filter(|n| n.kind == "image_generate")
+        .filter(|n| matches!(n.kind.as_str(), "image_generate" | "video_generate"))
         .ok_or("节点已切换")?;
     let mut params = node.params.clone();
     if field == "effort" {
@@ -722,18 +999,18 @@ pub(super) fn set_setting(h: &mut Host, token: &str, value: &str) -> Result<()> 
             .as_array()
             .ok_or("模型目录暂不可用")?;
         let allowed = |model: &&Value| {
-            model["kind"] == "image"
+            model["kind"] == node_media(node)
                 && model["available"] == true
-                && allowed_image_model(&h.images.catalog, &params, &model["id"])
+                && allowed_model(&h.images.catalog, &params, &model["id"], node_media(node))
         };
         let model = models
             .iter()
             .filter(allowed)
             .find(|model| model["id"] == params["model"])
             .or_else(|| models.iter().find(allowed))
-            .ok_or("该强度暂无可用图片模型")?;
+            .ok_or("该强度暂无可用模型")?;
         if model["id"] != params["model"] {
-            select_image_parameters(&mut params, model);
+            select_parameters(&mut params, model);
         } else {
             params["capability_version"] = json!(seecut_flow_core::digest(model));
         }
@@ -743,15 +1020,15 @@ pub(super) fn set_setting(h: &mut Host, token: &str, value: &str) -> Result<()> 
             .and_then(|models| {
                 models.iter().find(|model| {
                     model["id"] == value
-                        && model["kind"] == "image"
+                        && model["kind"] == node_media(node)
                         && model["available"] == true
-                        && allowed_image_model(&h.images.catalog, &params, &value)
+                        && allowed_model(&h.images.catalog, &params, &value, node_media(node))
                 })
             })
             .ok_or("请先选择强度及其支持的模型")?;
-        select_image_parameters(&mut params, model);
+        select_parameters(&mut params, model);
     } else {
-        if !matches!(field.as_str(), "size" | "quality" | "quantity") {
+        if !generation_fields(node_media(node)).contains(&field.as_str()) {
             return Err("无效的生成参数".into());
         }
         let model = h.images.catalog["models"]
@@ -761,10 +1038,7 @@ pub(super) fn set_setting(h: &mut Host, token: &str, value: &str) -> Result<()> 
                     .find(|m| m["id"] == params["model"] && m["available"] == true)
             })
             .ok_or("模型已不可用")?;
-        if !model["parameters"][&field]["values"]
-            .as_array()
-            .is_some_and(|values| values.contains(&value))
-        {
+        if !parameter_values(&model["parameters"][&field]).contains(&value) {
             return Err("模型参数已变化".into());
         }
         params[&field] = value.clone();
@@ -784,15 +1058,30 @@ pub(super) fn choose(h: &mut Host, value: &str) -> Result<()> {
     let scope = h.images.account.flow_scope();
     let s = h.controller.session.as_mut().ok_or("请先打开工程")?;
     let selected = s.graph().nodes.get(&s.selected).ok_or("节点已切换")?;
-    if seecut_flow_core::host::result_attempt(s.store.execution(), s.graph(), selected, &scope)
-        .is_none_or(|a| a.id != attempt)
+    if !seecut_flow_core::host::result_attempts(s.store.execution(), s.graph(), selected, &scope)
+        .iter()
+        .any(|a| a.id == attempt)
     {
         return Err("结果批次已切换".into());
     }
     let mut e = s.store.execution().clone();
-    e.select(&attempt, &task, &output, &scope)?;
+    e.choose_run_output(
+        &s.graph_id,
+        &s.selected,
+        Choice {
+            attempt: attempt.clone(),
+            task: task.clone(),
+            output: output.clone(),
+        },
+        &scope,
+    )?;
     let mut params = selected.params.clone();
-    params["selected_output"] = json!({"attempt":attempt,"task":task,"output":output});
+    let observed_attempts =
+        seecut_flow_core::host::result_attempts(s.store.execution(), s.graph(), selected, &scope)
+            .len();
+    params["selected_output"] = json!({"attempt":attempt,"task":task,"output":output,"observed_attempts":observed_attempts});
+    s.store.save_execution(e.clone())?;
+    h.images.track(s.path.clone(), e);
     s.edit(Command::Parameters {
         node: s.selected.clone(),
         params,
@@ -809,7 +1098,7 @@ pub(super) fn pick(app: &App, host: &Rc<RefCell<Host>>) -> Result<()> {
         h.controller.save_draft()?;
         h.controller.flush_viewport()?;
     }
-    let (account, token, path, request) = {
+    let (account, token, path, mut request) = {
         let h = host.borrow();
         let s = h.controller.session.as_ref().ok_or("请先打开工程")?;
         (
@@ -824,9 +1113,39 @@ pub(super) fn pick(app: &App, host: &Rc<RefCell<Host>>) -> Result<()> {
             )?,
         )
     };
+    {
+        let h = host.borrow();
+        if let Some(node) = h
+            .controller
+            .session
+            .as_ref()
+            .and_then(|s| s.graph().nodes.get(&s.selected))
+            && matches!(node.kind.as_str(), "image_generate" | "video_generate")
+            && let Some(model) = h.images.catalog["models"]
+                .as_array()
+                .and_then(|models| models.iter().find(|m| m["id"] == node.params["model"]))
+        {
+            request.allowed.retain(|kind| {
+                model["parameters"]["reference_asset_ids"]["accepted_media"]
+                    .as_array()
+                    .is_some_and(|types| {
+                        let media = match kind {
+                            MediaKind::Image => "image",
+                            MediaKind::Video => "video",
+                            MediaKind::Audio => "audio",
+                        };
+                        types
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .any(|mime| mime.starts_with(&format!("{media}/")))
+                    })
+            });
+        }
+    }
     let host = host.clone();
-    account.pick_flow_image(
+    account.pick_flow_asset(
         app,
+        request.allowed.clone(),
         Rc::new(move |_, id| {
             let token = token.clone();
             let path = path.clone();
@@ -835,7 +1154,7 @@ pub(super) fn pick(app: &App, host: &Rc<RefCell<Host>>) -> Result<()> {
                 format!("pick:{}", request.operation_id),
                 None,
                 move || {
-                    library_image(&id, None)
+                    library_asset(&id, None)
                         .map(|image| ValueReply::Picked(token, path, request, image))
                 },
             );
@@ -960,7 +1279,7 @@ fn tick(app: &App, h: &mut Host) -> bool {
                             image.asset.version.as_ref().ok_or("结果版本缺失")?,
                         )
                         .map_err(|e| e.to_string())?,
-                        kind: seecut_flow_core::graph::MediaKind::Image,
+                        kind: media_kind(image.asset.kind),
                         simulated: false,
                     };
                     e.registered(&id, &task, &output, asset)?;
@@ -986,7 +1305,7 @@ fn tick(app: &App, h: &mut Host) -> bool {
                             image.asset.version.as_ref().ok_or("素材缺少版本")?,
                         )
                         .map_err(|e| e.to_string())?,
-                        kind: seecut_flow_core::graph::MediaKind::Image,
+                        kind: media_kind(image.asset.kind),
                         simulated: false,
                     };
                     s.accept_asset(
@@ -1009,7 +1328,13 @@ fn tick(app: &App, h: &mut Host) -> bool {
                     h.images.preview(&image);
                     Ok(())
                 }
-                Ok(ValueReply::Deliver(kind, token, scope, node, attempt, image)) => {
+                Ok(ValueReply::Delivered(origin, scope, receipt)) => {
+                    let baseline = original(h, &origin)?;
+                    let mut next = baseline.clone();
+                    next.complete_delivery(&receipt, &scope)?;
+                    save(h, &origin, &baseline, next)
+                }
+                Ok(ValueReply::Deliver(kind, token, scope, node, asset, image)) => {
                     let s = h
                         .controller
                         .session
@@ -1020,19 +1345,11 @@ fn tick(app: &App, h: &mut Host) -> bool {
                         return Err("账户或服务已切换，忽略旧交付".into());
                     }
                     let selected_node = s.graph().nodes.get(&s.selected).ok_or("节点已切换")?;
-                    let a = h
-                        .images
-                        .result(&s.store, s.graph(), selected_node)
-                        .filter(|a| a.id == attempt)
-                        .ok_or("结果批次已切换")?;
-                    let (task, out) = seecut_flow_core::host::node_choice(selected_node, a)
+                    let selected = selected_asset(&s.store, s.graph(), selected_node, &scope)
                         .ok_or("结果选择已变化")?;
-                    let selected = a
-                        .tasks
-                        .get(&task)
-                        .and_then(|t| t.outputs.get(&out))
-                        .and_then(|o| o.asset.as_ref())
-                        .ok_or("结果选择已变化")?;
+                    if selected != asset {
+                        return Err("结果选择已变化".into());
+                    }
                     if selected.id != image.asset.id
                         || Some(&selected.version)
                             != image
@@ -1053,6 +1370,7 @@ fn tick(app: &App, h: &mut Host) -> bool {
             h.message = error;
         }
     }
+    changed |= advance_workflows(h);
     let Some(client) = h.images.account.image_client() else {
         h.images.catalog_scope = None;
         return changed;
@@ -1082,6 +1400,7 @@ fn tick(app: &App, h: &mut Host) -> bool {
                 && !source.execution.paused
                 && !source.blocked
                 && attempt.error.is_none()
+                && source.execution.allows_scheduling(&attempt.id)
             {
                 if source.prepared.contains_key(&attempt.id) {
                     let key = format!(
@@ -1262,6 +1581,7 @@ fn tick(app: &App, h: &mut Host) -> bool {
             let baseline = original(h, &origin)?;
             let mut e = baseline.clone();
             if e.paused
+                || !e.allows_scheduling(&id)
                 || h.images
                     .sources
                     .get(&origin.path)

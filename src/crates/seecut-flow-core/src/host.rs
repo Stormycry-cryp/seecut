@@ -93,7 +93,7 @@ pub fn picker_request_for_store(
             },
             target: AssetTarget::Create,
             operation_id: id(),
-            allowed: vec![MediaKind::Image],
+            allowed: vec![MediaKind::Image, MediaKind::Video, MediaKind::Audio],
             new_node_id: id(),
             next_order: 0,
             position,
@@ -133,7 +133,11 @@ pub fn picker_request_for_store(
             AssetTarget::Reference
         },
         operation_id: id(),
-        allowed: vec![media_kind],
+        allowed: if node.kind == "video_generate" {
+            vec![MediaKind::Image, MediaKind::Video, MediaKind::Audio]
+        } else {
+            vec![media_kind]
+        },
         new_node_id: id(),
         next_order,
         position: [x, y],
@@ -174,7 +178,7 @@ pub fn accept_asset(
             node: request.context.node_id.clone(),
             params,
         },
-        AssetTarget::Reference if asset.asset.kind == MediaKind::Image => Command::AddConnected {
+        AssetTarget::Reference => Command::AddConnected {
             node: Node {
                 id: request.new_node_id.clone(),
                 kind: "asset".into(),
@@ -191,7 +195,6 @@ pub fn accept_asset(
                 order: request.next_order,
             },
         },
-        _ => return Err("incompatible asset target".into()),
     };
     if !matches!(request.target, AssetTarget::Create)
         && commands::receipt(store.document(), &request.operation_id).is_none()
@@ -209,7 +212,8 @@ pub fn accept_asset(
             AssetTarget::Replace
                 if node.kind == "asset" && node.media_kind()? == asset.asset.kind => {}
             AssetTarget::Reference
-                if node.kind == "image_generate" || node.kind == "video_generate" => {}
+                if (node.kind == "image_generate" && asset.asset.kind == MediaKind::Image)
+                    || node.kind == "video_generate" => {}
             _ => return Err("incompatible asset target".into()),
         }
     }
@@ -402,28 +406,62 @@ pub fn result_attempt<'a>(
     } else {
         node
     };
+    let attempts = result_attempts(execution, graph, node, scope);
+    let live = execution
+        .runs
+        .iter()
+        .rev()
+        .find(|run| {
+            run.graph.id == graph.id
+                && &run.scope == scope
+                && !matches!(
+                    run.state,
+                    crate::workflow::State::Complete | crate::workflow::State::Abandoned
+                )
+        })
+        .and_then(|run| run.steps.get(&source.id))
+        .and_then(|step| step.attempt.as_deref());
+    live.or_else(|| {
+        (node.params["selected_output"]["observed_attempts"].as_u64()
+            == Some(attempts.len() as u64))
+        .then(|| node.params["selected_output"]["attempt"].as_str())
+        .flatten()
+    })
+    .and_then(|id| attempts.iter().find(|a| a.id == id).copied())
+    .or_else(|| attempts.first().copied())
+}
+/// All accessible historical batches, newest first. Copies retain only their frozen references.
+pub fn result_attempts<'a>(
+    execution: &'a crate::execution::Execution,
+    graph: &crate::graph::Graph,
+    node: &Node,
+    scope: &Scope,
+) -> Vec<&'a crate::execution::Attempt> {
+    let source = if node.kind == "select" {
+        graph
+            .edges
+            .iter()
+            .find(|e| e.to == node.id && e.input == "candidates")
+            .and_then(|e| graph.nodes.get(&e.from))
+            .unwrap_or(node)
+    } else {
+        node
+    };
     execution
         .attempts
         .iter()
         .rev()
-        .find(|a| {
-            a.draft.context.graph_id == graph.id
-                && a.draft.context.node_id == source.id
+        .filter(|a| {
+            !a.superseded
+                && a.draft.context.graph_id == graph.id
                 && &a.draft.context.scope == scope
+                && (a.draft.context.node_id == source.id
+                    || (a.phase == crate::execution::Phase::Finished
+                        && source.params["copied_results"]
+                            .as_array()
+                            .is_some_and(|refs| refs.iter().any(|r| r["attempt"] == a.id))))
         })
-        .or_else(|| {
-            source.params["copied_results"]
-                .as_array()?
-                .iter()
-                .find_map(|reference| {
-                    execution.attempts.iter().find(|a| {
-                        Some(a.id.as_str()) == reference["attempt"].as_str()
-                            && a.draft.context.graph_id == graph.id
-                            && &a.draft.context.scope == scope
-                            && a.phase == crate::execution::Phase::Finished
-                    })
-                })
-        })
+        .collect()
 }
 
 pub(crate) fn copy_result_sources(

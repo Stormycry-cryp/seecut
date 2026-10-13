@@ -13,7 +13,13 @@ pub enum MediaKind {
 pub enum DataType {
     Text,
     Media(MediaKind),
+    AnyMedia,
     Set(MediaKind),
+}
+impl DataType {
+    pub fn accepts(&self, output: &Self) -> bool {
+        self == output || matches!((self, output), (Self::AnyMedia, Self::Media(_)))
+    }
 }
 #[derive(Debug, Clone)]
 pub struct Port {
@@ -77,7 +83,7 @@ impl Node {
             "video_generate" => (
                 vec![
                     port("prompt", Text, true, false),
-                    port("references", Media(Image), true, true),
+                    port("references", AnyMedia, false, true),
                 ],
                 Set(Video),
             ),
@@ -118,11 +124,13 @@ impl Node {
                     ));
                 }
             }
-            "deliver" if self.params["target"].as_str() != Some("synthetic-assets") => {
-                return Err(format!(
-                    "{}: only synthetic-assets delivery is wired",
-                    self.id
-                ));
+            "deliver"
+                if !matches!(
+                    self.params["target"].as_str(),
+                    Some("synthetic-assets" | "library")
+                ) =>
+            {
+                return Err(format!("{}: invalid delivery target", self.id));
             }
             _ => {}
         }
@@ -190,7 +198,7 @@ impl Graph {
                 .iter()
                 .find(|p| p.name == edge.input)
                 .ok_or("missing input port")?;
-            if from.ports()?.1 != port.data {
+            if !port.data.accepts(&from.ports()?.1) {
                 return Err(format!("{}: incompatible port types", to.id));
             }
             let orders = inputs

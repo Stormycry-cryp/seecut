@@ -73,9 +73,14 @@ fn document_and_graph_max_reopen_read_only_with_receipt_replay() {
 fn connect_and_history_exhaustion_preserve_graph_and_stacks() {
     let (doc, graph_id, _) = sample::document();
     let mut graph = doc.graphs[&graph_id].clone();
+    for id in ["revision-asset-one", "revision-asset-two"] {
+        let mut asset = graph.nodes["asset"].clone();
+        asset.id = id.into();
+        graph.nodes.insert(id.into(), asset);
+    }
     graph.revision = u64::MAX - 1;
     let mut edge = Edge {
-        from: "asset".into(),
+        from: "revision-asset-one".into(),
         output: "out".into(),
         to: "image".into(),
         input: "references".into(),
@@ -84,6 +89,7 @@ fn connect_and_history_exhaustion_preserve_graph_and_stacks() {
     graph.connect(edge.clone()).unwrap();
     assert_eq!(graph.revision, u64::MAX);
     let before = graph.clone();
+    edge.from = "revision-asset-two".into();
     edge.order = 2;
     assert!(
         graph

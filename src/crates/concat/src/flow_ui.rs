@@ -216,26 +216,37 @@ impl Host {
                 .map(|(index, n)| {
                     let attempt = self.images.result(&s.store, s.graph(), n);
                     let preview = self.images.node_preview(&s.store, s.graph(), n);
-                    let has_preview = preview.is_some();
-                    let state = match n.kind.as_str() {
-                        "prompt" => "",
-                        "asset" if has_preview => "",
-                        "asset" => "素材不可用",
-                        _ => attempt
-                            .map(image_execution::attempt_status)
-                            .unwrap_or("未执行"),
-                    };
+                    let available = preview.is_some();
+                    let has_preview = preview.as_ref().is_some_and(|image| image.size().width > 0);
+                    let state = self
+                        .images
+                        .node_status(&s.store, s.graph(), n)
+                        .unwrap_or_else(|| match n.kind.as_str() {
+                            "prompt" => "",
+                            "asset" if available => "",
+                            "asset" => "素材不可用",
+                            _ => attempt
+                                .map(image_execution::attempt_status)
+                                .unwrap_or("未执行"),
+                        });
                     let summary = if n.kind == "prompt" {
                         n.params["text"].as_str().unwrap_or("").to_owned()
                     } else {
                         match n.kind.as_str() {
-                            "image_generate" => {
+                            "image_generate" | "video_generate" => {
                                 format!("{}\n{}", n.params["prompt"].as_str().unwrap_or(""), state)
                             }
-                            "asset" if !has_preview => "素材不可用".into(),
+                            "asset" if !available => "素材不可用".into(),
                             "asset" => n.title.clone(),
-                            "select" => "选择上游图片结果".into(),
-                            _ => format!("{}\n尚未接通执行", kind_label(&n.kind)),
+                            "select" => {
+                                if state == "已采用" {
+                                    "已采用结果".into()
+                                } else {
+                                    "选择上游结果".into()
+                                }
+                            }
+                            "deliver" => format!("全局资产库\n{state}"),
+                            _ => state.into(),
                         }
                     };
                     let p = self.preview.get(&n.id).unwrap_or(&n.position);
@@ -546,13 +557,15 @@ impl Host {
                     }
                     "select" => json!({"media_kind":"Image"}),
                     "select_video" => json!({"media_kind":"Video"}),
+                    "deliver" => json!({"media_kind":"Image","target":"library"}),
+                    "deliver_video" => json!({"media_kind":"Video","target":"library"}),
                     _ => return Err("此节点尚未接通".into()),
                 };
                 let mut node = Node::new(
-                    if kind == "select_video" {
-                        "select"
-                    } else {
-                        kind
+                    match kind {
+                        "select_video" => "select",
+                        "deliver_video" => "deliver",
+                        _ => kind,
                     },
                     params,
                 );
@@ -575,7 +588,8 @@ fn kind_label(kind: &str) -> &str {
         "video_generate" => "视频生成",
         "select" => "采用图片",
         "select_video" => "采用视频",
-        "deliver" => "交付",
+        "deliver" => "交付图片",
+        "deliver_video" => "交付视频",
         _ => "未知节点",
     }
 }

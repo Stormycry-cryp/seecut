@@ -32,6 +32,10 @@ export global Flow {
     in-out property <bool> paused;
     in-out property <bool> has-attempt;
     in-out property <bool> selected-output;
+    in-out property <bool> canvas-output;
+    in-out property <bool> can-retry;
+    in-out property <bool> run-active;
+    in-out property <string> run-status;
     in-out property <string> points: "0";
     in-out property <[FlowAttachment]> references;
     in-out property <[FlowCandidate]> candidates;
@@ -129,10 +133,12 @@ export component FlowPage inherits Rectangle {
         selected-status: Flow.read-only ? "只读" : Flow.dirty ? "提示词未保存" : Flow.selected-status != "" ? Flow.selected-status : "已保存";
         generation-prompt: Flow.generation-prompt;
         references: Flow.references; candidates: Flow.candidates; generation-parameters: Flow.generation-parameters;
-        assets-enabled: Flow.images-enabled && Flow.selected-kind != "video_generate";
+        assets-enabled: Flow.images-enabled;
         generation-settings-enabled: Flow.images-enabled;
-        execution-enabled: Flow.execution-enabled && !Flow.read-only && Flow.selected-kind == "image_generate";
-        paused: Flow.paused; has-attempt: Flow.has-attempt; can-cancel: Flow.has-attempt && !Flow.paused;
+        execution-enabled: Flow.execution-enabled && !Flow.read-only;
+        can-retry: Flow.can-retry && !Flow.read-only; canvas-output: Flow.canvas-output;
+        run-active: Flow.run-active; run-status: Flow.run-status;
+        paused: Flow.paused; has-attempt: Flow.has-attempt; can-cancel: Flow.run-active && !Flow.paused;
         points-label: Flow.points; selected-output: Flow.selected-output;
         assets-requested(_,_) => { Flow.image-assets(); }
         shared-generation-requested(_) => { Flow.image-settings("model"); }

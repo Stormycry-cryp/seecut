@@ -27,9 +27,18 @@ pub(super) struct WireCreation {
 }
 fn connected_node(kind: &str) -> Node {
     Node::new(
-        kind,
         match kind {
-            "image_generate" => json!({"model":"unconfigured","count":1,"prompt":""}),
+            "select_video" => "select",
+            "deliver_video" => "deliver",
+            _ => kind,
+        },
+        match kind {
+            "image_generate" | "video_generate" => {
+                json!({"model":"unconfigured","count":1,"prompt":""})
+            }
+            "select_video" => json!({"media_kind":"Video"}),
+            "deliver" => json!({"media_kind":"Image","target":"library"}),
+            "deliver_video" => json!({"media_kind":"Video","target":"library"}),
             _ => json!({"media_kind":"Image"}),
         },
     )
@@ -184,9 +193,16 @@ impl Host {
         let source = s.graph().nodes.get(&wire.from).ok_or("来源节点已变化")?;
         let output = source.ports()?.1;
         let mut choices = Vec::new();
-        for kind in ["image_generate", "select"] {
+        for kind in [
+            "image_generate",
+            "video_generate",
+            "select",
+            "select_video",
+            "deliver",
+            "deliver_video",
+        ] {
             for port in connected_node(kind).ports()?.0 {
-                if port.data == output {
+                if port.data.accepts(&output) {
                     choices.push((kind.to_owned(), port.name.to_owned()));
                 }
             }

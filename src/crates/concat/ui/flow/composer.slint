@@ -3,14 +3,15 @@ import { LauncherSafeArea } from "../seecut/launcher-safe-area.slint";
 import { Theme, Icon, IconButton, Glyph, FocusRing, Tip } from "../primitives/primitives.slint";
 import { AppButton } from "../seecut/components.slint";
 export struct FlowParameter { id: string, label: string }
-export struct FlowAttachment { id: string, label: string, preview: image }
+export struct FlowAttachment { id: string, label: string, preview: image, kind: string }
 /// One input surface. Drafts stay editable while host actions are pending.
 /// Enter remains native multiline/IME editing; committing requires the named action.
 export component FlowComposer inherits Rectangle {
     in-out property <string> value;
     in property <string> identity-token;
     property <string> editing-token;
-    changed identity-token => { root.editing-token = ""; }
+    property <int> parameter-page;
+    changed identity-token => { root.editing-token = ""; root.parameter-page = 0; }
     in property <string> label: "节点提示词";
     in property <string> placeholder: "写下这个节点的提示词…";
     in property <[FlowAttachment]> attachments;
@@ -73,7 +74,8 @@ export component FlowComposer inherits Rectangle {
                 accessible-action-default => { root.attachment-requested(attachment.id); }
                 Rectangle {
                     x: 0px; y: 0px; width: parent.width; height: parent.height; clip: true;
-                    Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: attachment.preview; image-fit: cover; }
+                    if attachment.kind != "audio": Image { x: 0px; y: 0px; width: parent.width; height: parent.height; source: attachment.preview; image-fit: cover; }
+                    if attachment.kind == "audio": Icon { x: 22px; y: 18px; size: 28px; glyph: Glyph.waveform; tint: Theme.fg-muted; }
                 }
                 Rectangle {
                     x: 4px; y: 4px; width: 19px; height: 19px; border-radius: 10px; background: Theme.image-control;
@@ -125,19 +127,29 @@ export component FlowComposer inherits Rectangle {
         font-family: Theme.font; font-size: Theme.workbench-font; color: Theme.fg-muted;
         accessible-role: none;
     }
-    if root.has-controls: Flickable {
+    if root.has-controls: controls := Rectangle {
         x: 12px; y: parent.height - 48px; height: 36px; width: max(0px, parent.width - (root.show-action ? 76px : 24px) - (root.points-label != "" ? 44px : 0px) - root.action-clearance);
-        viewport-height: 36px; viewport-width: max(self.width, parameters-row.preferred-width);
-        parameters-row := HorizontalLayout {
-            height: 36px; spacing: 6px; alignment: start;
-            if root.allow-assets && root.allow-upload: IconButton { glyph: Glyph.import; label: "上传本地素材到资产库"; side: 32px; icon-size: 18px; clicked => { root.upload-requested(); } }
-            for parameter in root.parameters: AppButton {
-                height: 32px; subtle: true; label: parameter.label; glyph: Glyph.chevron-down;
+        property <int> capacity: self.width < 270px ? 1 : 2;
+        property <int> pages: max(1, Math.ceil(root.parameters.length / self.capacity));
+        property <int> page: min(max(0, root.parameter-page), self.pages - 1);
+        property <length> upload-width: root.allow-assets && root.allow-upload ? 36px : 0px;
+        if root.allow-assets && root.allow-upload: IconButton { glyph: Glyph.import; label: "上传本地素材到资产库"; side: 32px; icon-size: 18px; clicked => { root.upload-requested(); } }
+        if controls.pages > 1: IconButton { x: controls.upload-width; y: 2px; glyph: Glyph.chevron-left; side: 28px; label: "前一组生成设置"; enabled: controls.page > 0; clicked => { root.parameter-page = controls.page - 1; } }
+        parameters-area := Rectangle {
+            x: controls.upload-width + (controls.pages > 1 ? 30px : 0px); height: 36px;
+            width: max(0px, parent.width - controls.upload-width - (controls.pages > 1 ? 60px : 0px));
+            property <length> slot-width: self.width / min(controls.capacity, max(1, root.parameters.length));
+            for parameter[index] in root.parameters: AppButton {
+                visible: index >= controls.page * controls.capacity && index < (controls.page + 1) * controls.capacity;
+                x: (index - controls.page * controls.capacity) * parameters-area.slot-width;
+                width: max(0px, parameters-area.slot-width - 4px); height: 32px;
+                subtle: true; elide-label: true; label: parameter.label; glyph: Glyph.chevron-down;
                 accessible-name: "SeeCut 生成设置 · " + parameter.label;
                 clicked => { root.parameter-requested(parameter.id); }
             }
             if root.parameters.length == 0: Text { text: root.dirty ? "未保存" : root.caption; color: Theme.fg-dim; font-family: Theme.font; font-size: Theme.fs; vertical-alignment: center; }
         }
+        if controls.pages > 1: IconButton { x: parent.width - 28px; y: 2px; glyph: Glyph.chevron-right; side: 28px; label: "更多生成设置"; enabled: controls.page < controls.pages - 1; clicked => { root.parameter-page = controls.page + 1; } }
     }
     if root.points-label != "": Rectangle {
         x: parent.width - 96px - root.action-clearance; y: parent.height - 48px; width: 40px; height: 36px;

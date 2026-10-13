@@ -1,4 +1,5 @@
 //! Thin Flow adapters over the existing catalogue, transport, cache and global library.
+use super::flow_parameters::generation_body;
 use super::{
     AccountAccess, App, Cloud, PickerSelection, SeeCut, begin_asset_picker,
     begin_handoff_with_imports, call, library_root, request, text,
@@ -9,6 +10,7 @@ use crate::personal_library::{
 };
 use seecut_flow_core::{
     execution::{Attempt, SubmissionFailure},
+    graph::MediaKind,
     host::GenerationDraft,
     runner::Scope,
 };
@@ -17,14 +19,14 @@ use slint::ComponentHandle;
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 type PickerCallback = Rc<dyn Fn(&App, String)>;
-thread_local! { static FLOW_PICKER: RefCell<Option<PickerCallback>> = const { RefCell::new(None) }; }
+thread_local! { static FLOW_PICKER: RefCell<Option<(Vec<MediaKind>, PickerCallback)>> = const { RefCell::new(None) }; }
 
 #[derive(Clone)]
 pub(crate) struct ImageClient {
     cloud: Cloud,
     pub(crate) scope: Scope,
 }
-pub(crate) struct RegisteredImage {
+pub(crate) struct RegisteredAsset {
     pub(crate) asset: Asset,
     pub(crate) thumbnail: Option<PathBuf>,
 }
@@ -111,14 +113,22 @@ impl AccountAccess {
             service: "personal-library".into(),
         }
     }
-    pub(crate) fn pick_flow_image(&self, app: &App, callback: PickerCallback) {
+    pub(crate) fn pick_flow_asset(
+        &self,
+        app: &App,
+        allowed: Vec<MediaKind>,
+        callback: PickerCallback,
+    ) {
         let Some(state) = self.state.upgrade() else {
             return;
         };
-        FLOW_PICKER.with(|slot| *slot.borrow_mut() = Some(callback));
+        FLOW_PICKER.with(|slot| *slot.borrow_mut() = Some((allowed, callback)));
         begin_asset_picker(app, &state, "flow-reference", 0);
     }
     pub(crate) fn flow_handoff(&self, app: &App, kind: &str, asset: &Asset) -> Result<(), String> {
+        if kind == "canvas" && asset.kind != AssetKind::Image {
+            return Err("画布仅支持图片，请将此素材放入剪辑".into());
+        }
         let state = self.state.upgrade().ok_or("资产交付不可用")?;
         let import = crate::panes::canvas::CanvasImport::from_library(
             &serde_json::to_value(asset).map_err(|e| e.to_string())?,
@@ -127,29 +137,48 @@ impl AccountAccess {
         Ok(())
     }
 }
+pub(super) fn picker_allows(kind: &str) -> bool {
+    FLOW_PICKER.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|(allowed, _)| allowed.iter().any(|k| media_name(k) == kind))
+    })
+}
+pub(crate) fn media_kind(kind: AssetKind) -> MediaKind {
+    match kind {
+        AssetKind::Image => MediaKind::Image,
+        AssetKind::Video => MediaKind::Video,
+        AssetKind::Audio => MediaKind::Audio,
+    }
+}
+pub(crate) fn media_name(kind: &MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Image => "image",
+        MediaKind::Video => "video",
+        MediaKind::Audio => "audio",
+    }
+}
 pub(super) fn accept_picker(app: &App, selected: &[PickerSelection]) {
     let ui = app.global::<SeeCut>();
-    if ui.get_asset_picker_source() != 0
-        || selected.len() != 1
-        || !selected[0].kind.eq_ignore_ascii_case("image")
+    if ui.get_asset_picker_source() != 0 || selected.len() != 1 || !picker_allows(&selected[0].kind)
     {
-        ui.set_error("请从个人资产库选择一张图片".into());
+        ui.set_error("请选择一项当前节点支持的个人素材".into());
         return;
     }
     let callback = FLOW_PICKER.with(|slot| slot.borrow_mut().take());
     ui.set_asset_picker_open(false);
-    if let Some(callback) = callback {
+    if let Some((_, callback)) = callback {
         callback(app, selected[0].id.clone());
     }
 }
-pub(crate) fn library_image(id: &str, version: Option<&str>) -> Result<RegisteredImage, String> {
+pub(crate) fn library_asset(id: &str, version: Option<&str>) -> Result<RegisteredAsset, String> {
     let root = library_root()?;
     let asset = with_library_write_lock(|| {
         let library = Library::load(&root)?;
         let asset = library
             .get(id)
-            .filter(|a| !a.trashed && a.kind == AssetKind::Image)
-            .ok_or("库内图片不可用")?
+            .filter(|a| !a.trashed)
+            .ok_or("库内素材不可用")?
             .clone();
         let current = serde_json::to_string(
             asset
@@ -165,49 +194,45 @@ pub(crate) fn library_image(id: &str, version: Option<&str>) -> Result<Registere
         Ok::<_, String>(asset)
     })?;
     let thumbnail = crate::personal_library::thumbnail(&asset, &root);
-    Ok(RegisteredImage { asset, thumbnail })
+    Ok(RegisteredAsset { asset, thumbnail })
 }
-pub(crate) fn image_body(
-    model: &Value,
-    prompt: &str,
-    parameters: &Value,
-    ids: &[String],
-    effort: Option<&Value>,
-) -> Result<Value, String> {
-    if model["kind"] != "image" || model["available"] != true {
-        return Err("该图片模型当前不可运行".into());
-    }
-    let mut body = json!({"model":model["id"],"prompt":super::rewrite_mentions(prompt.trim(),|n|format!("第{n}张参考图片")),"operation":if ids.is_empty(){"generate"}else{"edit"}});
-    for field in ["size", "quality", "quantity"] {
-        let parameter = &model["parameters"][field];
-        if parameter.is_null() {
+fn validate_references(model: &Value, assets: &[RegisteredAsset]) -> Result<(), String> {
+    let references: Vec<_> = assets
+        .iter()
+        .map(|selected| crate::generation_templates::TemplateReference {
+            path: selected.asset.path.clone(),
+            name: selected.asset.name.clone(),
+            kind: media_name(&media_kind(selected.asset.kind)).into(),
+            client_id: selected.asset.id.clone(),
+            source_id: String::new(),
+        })
+        .collect();
+    super::validate_configuration_references(model, &references, "Flow")?;
+    let mut totals = std::collections::HashMap::<String, f64>::new();
+    for reference in &references {
+        let limits =
+            &model["parameters"]["reference_asset_ids"]["duration_seconds"][&reference.kind];
+        if limits.is_null() {
             continue;
         }
-        let selected = parameters
-            .get(field)
-            .cloned()
-            .or_else(|| {
-                (field == "quantity")
-                    .then(|| parameters["count"].clone())
-                    .filter(|v| !v.is_null())
-            })
-            .unwrap_or_else(|| parameter["default"].clone());
-        if !parameter["values"]
-            .as_array()
-            .is_some_and(|v| v.contains(&selected))
+        let seconds = concat_media::probe(&reference.path)
+            .map_err(|_| "无法读取参考素材时长")?
+            .duration
+            .map(|t| t.as_f64())
+            .filter(|v| v.is_finite() && *v > 0.)
+            .ok_or("无法读取参考素材时长")?;
+        if limits["min_per_item"].as_f64().is_some_and(|v| seconds < v)
+            || limits["max_per_item"].as_f64().is_some_and(|v| seconds > v)
         {
-            return Err(format!("{field} 不在当前模型能力中"));
+            return Err(format!("{}的时长超出模型范围", reference.name));
         }
-        body[field] = selected;
+        let total = totals.entry(reference.kind.clone()).or_default();
+        *total += seconds;
+        if limits["max_total"].as_f64().is_some_and(|v| *total > v) {
+            return Err("参考素材总时长超出模型范围".into());
+        }
     }
-    if !ids.is_empty() {
-        body["reference_asset_ids"] = json!(ids);
-    }
-    if let Some(effort) = effort {
-        body["effort_id"] = effort["id"].clone();
-        body["policy_revision"] = effort["policy_revision"].clone();
-    }
-    Ok(body)
+    Ok(())
 }
 impl ImageClient {
     fn api_raw(
@@ -242,8 +267,9 @@ impl ImageClient {
         let model = catalog["models"]
             .as_array()
             .and_then(|v| {
-                v.iter()
-                    .find(|m| m["id"] == draft.model_id && m["kind"] == "image")
+                v.iter().find(|m| {
+                    m["id"] == draft.model_id && m["kind"] == media_name(&draft.media_kind)
+                })
             })
             .ok_or("模型已不可用")?;
         if seecut_flow_core::digest(model) != draft.capability_version {
@@ -263,18 +289,45 @@ impl ImageClient {
                     .ok_or("生成策略已变化，请重新选择")?,
             )
         } else {
+            if catalog["efforts"].as_array().is_some_and(|v| !v.is_empty()) {
+                return Err("请选择当前强度档位".into());
+            }
             None
         };
+        let assets = draft
+            .references
+            .iter()
+            .map(|reference| {
+                let asset = library_asset(&reference.id, Some(&reference.version))?;
+                if media_kind(asset.asset.kind) != reference.kind {
+                    return Err("素材类型已变化".into());
+                }
+                Ok(asset)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        validate_references(model, &assets)?;
+        let prompt = if draft.media_kind == MediaKind::Image {
+            super::rewrite_mentions(&draft.prompt, |n| format!("第{n}张参考图片"))
+        } else {
+            super::rewrite_media_mentions(&draft.prompt, |kind, n| format!("{kind}{n}"))
+        };
+        // Validate all choices before upload or quote; these dummy IDs are never dispatched.
+        generation_body(
+            model,
+            &prompt,
+            &draft.parameters,
+            &vec![String::new(); assets.len()],
+            effort,
+        )?;
         let pins = tempfile::tempdir().map_err(|e| e.to_string())?;
         let mut ids = Vec::new();
-        for (index, reference) in draft.references.iter().enumerate() {
-            let selected = library_image(&reference.id, Some(&reference.version))?;
+        for (index, selected) in assets.iter().enumerate() {
             let extension = selected
                 .asset
                 .path
                 .extension()
                 .and_then(|e| e.to_str())
-                .ok_or("参考图片格式无效")?;
+                .ok_or("参考素材格式无效")?;
             let pinned = pins.path().join(format!("reference-{index}.{extension}"));
             std::fs::copy(&selected.asset.path, &pinned).map_err(|e| e.to_string())?;
             let reference = AssetReference {
@@ -291,9 +344,9 @@ impl ImageClient {
                     .to_owned(),
             );
         }
-        let mut body = image_body(model, &draft.prompt, &draft.parameters, &ids, effort)?;
+        let mut body = generation_body(model, &prompt, &draft.parameters, &ids, effort)?;
         let mut quote_body = body.clone();
-        quote_body["kind"] = json!("image");
+        quote_body["kind"] = json!(media_name(&draft.media_kind));
         let quote = self.api("POST", "/api/generation/quote", quote_body, None)?;
         body["quote_id"] = quote["quote_id"].clone();
         if body["quote_id"].as_str().is_none_or(str::is_empty) {
@@ -307,11 +360,15 @@ impl ImageClient {
             return Err("账户或服务已切换".into());
         }
         for input in &attempt.draft.references {
-            library_image(&input.id, Some(&input.version))?;
+            library_asset(&input.id, Some(&input.version))?;
         }
         let result = self.api_raw(
             "POST",
-            "/api/generation/images",
+            if attempt.draft.media_kind == MediaKind::Video {
+                "/api/generation/videos"
+            } else {
+                "/api/generation/images"
+            },
             attempt.body.clone().ok_or("请求尚未持久保存")?,
             Some(&attempt.key),
         );
@@ -396,7 +453,7 @@ impl ImageClient {
         attempt: &Attempt,
         task: &Value,
         output: &str,
-    ) -> Result<RegisteredImage, String> {
+    ) -> Result<RegisteredAsset, String> {
         if attempt.draft.context.scope != self.scope {
             return Err("账户或服务已切换".into());
         }
@@ -428,7 +485,7 @@ impl ImageClient {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let provenance = OutputProvenance {
-            kind: "flow_image".into(),
+            kind: format!("flow_{}", media_name(&attempt.draft.media_kind)),
             project_path: None,
             document_sha256: attempt.source_digest.clone(),
             inputs,
@@ -463,13 +520,17 @@ impl ImageClient {
             crate::registration_retry::register_generation_output(
                 &root,
                 &path,
-                Some("Flow 图片"),
+                Some(if attempt.draft.media_kind == MediaKind::Video {
+                    "Flow 视频"
+                } else {
+                    "Flow 图片"
+                }),
                 &identity,
                 &expected,
                 Some(provenance),
             )
         })?;
         let thumbnail = crate::personal_library::thumbnail(&asset, &root);
-        Ok(RegisteredImage { asset, thumbnail })
+        Ok(RegisteredAsset { asset, thumbnail })
     }
 }

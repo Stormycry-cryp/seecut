@@ -120,7 +120,7 @@ export component AssetPicker inherits Modal {
                     property <length> card-height: self.media-height;
                     height: Math.ceil(SeeCut.personal-references.length / self.columns) * (self.card-height + self.gap) - self.gap;
                     for asset[index] in SeeCut.personal-references: card := Rectangle {
-                        property <bool> purpose-visible: SeeCut.asset-picker-purpose == "import" || ((SeeCut.asset-picker-purpose == "canvas" || SeeCut.asset-picker-purpose == "flow-reference") && asset.kind == "image") || (SeeCut.asset-picker-purpose == "reference" && (SeeCut.mode != 0 || asset.kind == "image"));
+                        property <bool> purpose-visible: SeeCut.asset-picker-purpose == "import" || SeeCut.asset-picker-purpose == "flow-reference" || (SeeCut.asset-picker-purpose == "canvas" && asset.kind == "image") || (SeeCut.asset-picker-purpose == "reference" && (SeeCut.mode != 0 || asset.kind == "image"));
                         property <bool> card-enabled: asset.ready && !SeeCut.working && self.purpose-visible;
                         property <bool> ring;
                         x: Math.mod(index, grid.columns) * (grid.card-width + grid.gap);

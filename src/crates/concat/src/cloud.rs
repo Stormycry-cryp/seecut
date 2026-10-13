@@ -21,8 +21,11 @@ use std::{
 use url::Url;
 
 mod flow_generation;
+mod flow_parameters;
+mod generation_state;
 mod preview_validation;
-pub(crate) use flow_generation::{RegisteredImage, library_image};
+pub(crate) use flow_generation::{RegisteredAsset, library_asset, media_kind};
+pub(crate) use flow_parameters::{generation_fields, parameter_default, parameter_values};
 
 /// The opt-in software-rendered fixture exercises local state transitions with
 /// a signed-out synthetic Cloud. Normal startup never invokes this entry.
@@ -321,8 +324,8 @@ struct Cloud {
     ledger: Vec<Value>,
     ledger_page: HistoryPage,
     orders_page: HistoryPage,
-    actual_task_ids: HashSet<String>,
-    actual_task_credits: HashMap<String, i64>,
+    actual_cost: generation_state::ActualCost,
+    saved_generation_choice: Option<generation_state::Choices>,
     purchase: Option<PendingPurchase>,
     purchase_uid: String,
     purchase_data: Option<PathBuf>,
@@ -1033,6 +1036,15 @@ fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
         sync_operation_state(app, state);
         return;
     }
+    if name == "generate"
+        && !req
+            .idem
+            .as_deref()
+            .is_some_and(|key| state.borrow().actual_cost.current(key))
+    {
+        sync_operation_state(app, state);
+        return;
+    }
     if !can_start_request(ui.get_signed_in(), &req) {
         if !is_background_job(&name) && name != "logout" {
             show_auth(app, state, None);
@@ -1072,6 +1084,12 @@ fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
     sync_operation_state(app, &state);
     std::thread::spawn(move || {
         let result = call(&snapshot, &req).map(|mut value| {
+            if matches!(req.path.as_str(), "/api/generation/images" | "/api/generation/videos") {
+                value["client_submission_key"] = json!(req.idem);
+            }
+            if req.path == "/api/generation/tasks" {
+                value = json!({"items": items(&value), "client_submission_key": snapshot.actual_cost.key()});
+            }
             if req.path == "/api/generation/quote" {
                 value["client_request_body"] = request_body;
             }
@@ -1534,38 +1552,19 @@ fn finish_history(
         }
     }
 }
-fn observe_actual_cost(ui: &SeeCut, cloud: &mut Cloud, tasks: &[Value]) {
-    for task in tasks {
-        let id = text(task, "id");
-        if cloud.actual_task_ids.contains(&id) {
-            if let Some(actual) = task["captured_credits"]
-                .as_i64()
-                .filter(|actual| *actual >= 0)
-            {
-                cloud
-                    .actual_task_credits
-                    .entry(id)
-                    .and_modify(|prior| *prior = (*prior).max(actual))
-                    .or_insert(actual);
-            }
-        }
+fn current_generation_choice(cloud: &Cloud, mode: i32) -> generation_state::Choices {
+    generation_state::Choices {
+        version: 1,
+        service: cloud.base.clone(),
+        account: cloud.purchase_uid.clone(),
+        mode,
+        effort_id: cloud
+            .effort_selection
+            .as_ref()
+            .and_then(|e| e["id"].as_str())
+            .map(str::to_owned),
+        models: cloud.selected_model_ids.clone(),
     }
-    let actual = cloud
-        .actual_task_credits
-        .values()
-        .fold(0_i64, |sum, value| sum.saturating_add(*value));
-    let verified = cloud
-        .actual_task_ids
-        .iter()
-        .all(|id| cloud.actual_task_credits.contains_key(id));
-    ui.set_generation_actual_cost(
-        if verified {
-            actual.to_string()
-        } else {
-            "—".into()
-        }
-        .into(),
-    );
 }
 
 fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
@@ -2366,9 +2365,7 @@ fn begin_asset_picker(app: &App, state: &Rc<RefCell<Cloud>>, purpose: &str, sour
     ui.set_asset_picker_purpose(purpose.into());
     ui.set_asset_picker_source(source);
     ui.set_personal_reference_search("".into());
-    let image_only = purpose == "canvas"
-        || purpose == "flow-reference"
-        || (purpose == "reference" && ui.get_mode() == 0);
+    let image_only = purpose == "canvas" || (purpose == "reference" && ui.get_mode() == 0);
     ui.set_asset_picker_personal_filter(if image_only { 1 } else { 0 });
     ui.set_asset_picker_team_search("".into());
     ui.set_asset_picker_team_filter(if image_only { 1 } else { 0 });
@@ -3699,17 +3696,43 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     .cloned()
                     .unwrap_or_else(|| items(&value));
                 accept_effort_catalog(&mut cloud, &value);
-                if cloud.effort_selection.is_none() {
-                    cloud.effort_selection = cloud
-                        .catalog_efforts
-                        .iter()
-                        .find(|effort| generation_effort_available(effort))
-                        .cloned();
+                if cloud.effort_catalog_valid && !cloud.effort_confirmation_required {
+                    let current = current_generation_choice(&cloud, ui.get_mode());
+                    let choice = if cloud.effort_selection.is_some() {
+                        &current
+                    } else {
+                        cloud
+                            .saved_generation_choice
+                            .as_ref()
+                            .filter(|saved| {
+                                saved.service == cloud.base && saved.account == cloud.purchase_uid
+                            })
+                            .unwrap_or(&current)
+                    };
+                    if let Some(restored) = choice.resolve(
+                        &cloud.base,
+                        &cloud.purchase_uid,
+                        &cloud.catalog_models,
+                        &cloud.catalog_efforts,
+                        value["default_effort_id"].as_str().unwrap_or(""),
+                        cloud.effort_required,
+                    ) {
+                        cloud.effort_selection = restored.effort;
+                        cloud.selected_model_ids = restored.models;
+                        cloud.unavailable_model_id = None;
+                        cloud.unavailable_model_kind = None;
+                        cloud.generation_mode = Some(restored.mode);
+                    }
                 }
                 publish_generation_efforts(app, &cloud);
                 filter_effort_models(&mut cloud);
+                cloud.updating_model_options = true;
             }
+            let mode = state.borrow().generation_mode.unwrap_or(ui.get_mode());
+            ui.set_mode(mode);
+            state.borrow_mut().updating_model_options = false;
             update_model_options_preserving_catalog(app, state);
+            save_preferences(app, state);
             refresh_quote(app, state);
             if ui.get_page() == 7 {
                 render_templates(app, state);
@@ -3816,15 +3839,22 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     .cloned()
                     .unwrap_or_else(|| vec![value.clone()]);
                 let mut cloud = state.borrow_mut();
-                cloud.actual_task_ids = tasks
-                    .iter()
-                    .map(|task| text(task, "id"))
-                    .filter(|id| !id.is_empty())
-                    .collect();
-                cloud.actual_task_credits.clear();
-                observe_actual_cost(&ui, &mut cloud, &tasks);
+                let key = value["client_submission_key"].as_str().unwrap_or("");
+                if !cloud.actual_cost.bind(key, &tasks) {
+                    return;
+                }
+                ui.set_generation_actual_cost(cloud.actual_cost.display().into());
             }
-            let submission = state.borrow_mut().submission.take();
+            let submission = {
+                let mut cloud = state.borrow_mut();
+                if cloud.submission.as_ref().is_some_and(|s| {
+                    Some(s.key.as_str()) == value["client_submission_key"].as_str()
+                }) {
+                    cloud.submission.take()
+                } else {
+                    None
+                }
+            };
             if let Some(submission) = submission {
                 let task_ids = value["tasks"]
                     .as_array()
@@ -3867,7 +3897,11 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 cloud
                     .selected_tasks
                     .retain(|id| tasks.iter().any(|task| text(task, "id") == *id));
-                observe_actual_cost(&ui, &mut cloud, &tasks);
+                cloud.actual_cost.observe(
+                    value["client_submission_key"].as_str().unwrap_or(""),
+                    &tasks,
+                );
+                ui.set_generation_actual_cost(cloud.actual_cost.display().into());
                 cloud.tasks = tasks.clone();
             }
             render_tasks(app, state);
@@ -5476,9 +5510,13 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
             .filter(|v| {
                 !v["trashed"].as_bool().unwrap_or(false)
                     && v["available"] == true
-                    && (imports_into_project
-                        || (!opens_in_canvas && ui.get_mode() != 0)
-                        || text(v, "kind") == "image")
+                    && (if ui.get_asset_picker_purpose() == "flow-reference" {
+                        flow_generation::picker_allows(&text(v, "kind"))
+                    } else {
+                        imports_into_project
+                            || (!opens_in_canvas && ui.get_mode() != 0)
+                            || text(v, "kind") == "image"
+                    })
             })
             .filter(|v| text(v, "name").to_lowercase().contains(&reference_search))
             .filter(|v| match ui.get_asset_picker_personal_filter() {
@@ -8070,8 +8108,7 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.ledger.clear();
     cloud.ledger_page.reset();
     cloud.orders_page.reset();
-    cloud.actual_task_ids.clear();
-    cloud.actual_task_credits.clear();
+    cloud.actual_cost = generation_state::ActualCost::default();
     cloud.purchase = None;
     cloud.purchase_uid.clear();
     cloud.purchase_journal = None;
@@ -8319,8 +8356,15 @@ fn save_preferences(app: &App, state: &Rc<RefCell<Cloud>>) {
     let Some(path) = preferences_path() else {
         return;
     };
-    let c = state.borrow();
+    let mut c = state.borrow_mut();
+    if !c.token.is_empty() && c.effort_catalog_valid && !c.effort_confirmation_required {
+        let choice = current_generation_choice(&c, app.global::<SeeCut>().get_mode());
+        if choice.valid() {
+            c.saved_generation_choice = Some(choice);
+        }
+    }
     let data = json!({
+        "generation_choice": c.saved_generation_choice,
         "folder": c.folder,
         "reduced_motion": app.global::<SeeCut>().get_reduced_motion(),
         "creator_mode": app.global::<SeeCut>().get_creator_mode(),
@@ -8362,6 +8406,11 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         base,
         folder,
         purchase_data: concat_host::AppDirs::locate().ok().map(|dirs| dirs.data),
+        saved_generation_choice: serde_json::from_value::<generation_state::Choices>(
+            saved["generation_choice"].clone(),
+        )
+        .ok()
+        .filter(|choice| choice.valid()),
         ..Cloud::default()
     }));
     let account = AccountAccess {
@@ -8686,7 +8735,12 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
             let previous=shared.borrow().submission.clone();
             let key=previous.filter(|submission|submission.body==body).map(|submission|submission.key).unwrap_or_else(||uuid::Uuid::new_v4().to_string());
             let snapshot=current_task_snapshot(&ui,&shared.borrow());
-            shared.borrow_mut().submission=Some(PendingSubmission{body:body.clone(),key:key.clone(),snapshot});
+            {
+                let mut cloud = shared.borrow_mut();
+                cloud.actual_cost.begin(&key);
+                ui.set_generation_actual_cost(cloud.actual_cost.display().into());
+                cloud.submission=Some(PendingSubmission{body:body.clone(),key:key.clone(),snapshot});
+            }
             body["quote_id"]=json!(shared.borrow().quote_id.clone());
             let endpoint=if ui.get_mode()==0{"/api/generation/images"}else{"/api/generation/videos"};let mut req=request("POST",endpoint,body);req.idem=Some(key);job(&app,&shared,"generate".into(),req);
         },
@@ -8850,6 +8904,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
                 };
                 let selections = access.generation_selection();
                 access.apply_effort_selection(&app, Some(effort), selections, true);
+                save_preferences(&app, &shared);
             }
             return;
         }
@@ -8861,6 +8916,9 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         }
         if field == "model" {
             update_model_options(&app, &shared);
+        }
+        if field == "mode" || field == "model" {
+            save_preferences(&app, &shared);
         }
         if field == "prompt" || field == "prompt-cursor" {
             update_mention(&app);

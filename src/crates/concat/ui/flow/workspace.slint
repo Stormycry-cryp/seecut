@@ -160,6 +160,9 @@ export component FlowWorkspace inherits Rectangle {
     in property <bool> execution-enabled: false;
     in property <bool> paused;
     in property <bool> selected-output;
+    in property <bool> canvas-output;
+    in property <bool> run-active;
+    in property <string> run-status;
     in property <bool> assets-enabled: false;
     in property <bool> generation-settings-enabled: false;
     in property <[FlowNodeView]> nodes;
@@ -177,7 +180,7 @@ export component FlowWorkspace inherits Rectangle {
     in property <bool> can-cancel;
     in property <bool> can-retry;
     in-out property <string> prompt-text;
-    in property <string> message: "生成、资产导入及交付尚未接通";
+    in property <string> message;
     in property <bool> error;
     in-out property <float> zoom: 0.75;
     in-out property <float> pan-x: 60;
@@ -287,6 +290,7 @@ export component FlowWorkspace inherits Rectangle {
             }
             HorizontalLayout { y: 64px; height: 56px; spacing: 12px;
                 StartAction { label: "图片生成"; glyph: Glyph.image; activated => { root.action("add_image_generate"); } }
+                StartAction { label: "视频生成"; glyph: Glyph.film; activated => { root.action("add_video_generate"); } }
                 StartAction { label: "提示词"; glyph: Glyph.text-mark; activated => { root.action("add_prompt"); } }
                 StartAction { label: "导入素材"; glyph: Glyph.folder; activated => { root.action("add_asset"); } }
             }
@@ -356,7 +360,9 @@ export component FlowWorkspace inherits Rectangle {
             IconButton { glyph: Glyph.chevron-left; label: "返回 Flow 项目"; side: 36px; clicked => { root.action("projects"); } }
             IconButton { glyph: Glyph.search; label: "查找节点"; side:36px; clicked => {root.search-open=!root.search-open;} }
             Text { max-width: 180px; overflow: elide; text: root.project-title; color: Theme.fg; font-family: Theme.font; font-size: Theme.fs-xl; font-weight: 500; vertical-alignment: center; }
-            Text { text: root.save-label; color: Theme.fg-dim; font-family: Theme.font; font-size: Theme.fs; vertical-alignment: center; }
+            if root.run-status != "": Text { max-width: 220px; overflow: elide; text: root.run-status; color: Theme.fg-muted; font-family: Theme.font; font-size: Theme.fs; vertical-alignment: center; }
+            if root.run-active: IconButton { glyph: root.paused ? Glyph.play : Glyph.pause; label: root.paused ? "继续流程" : "暂停后续步骤"; side: 32px; clicked => { root.action(root.paused ? "resume" : "cancel"); } }
+            if root.can-retry: IconButton { glyph: Glyph.reset; label: "重试当前步骤"; side:32px; clicked => {root.action("retry");} }
             Rectangle { horizontal-stretch: 1; }
             IconButton { glyph: Glyph.save; label: "保存 Flow 工程"; enabled: !root.read-only; side: 36px; clicked => { root.action("save"); } }
             IconButton { glyph: Glyph.text-mark; label: "重命名工程"; enabled: !root.read-only; side: 36px; clicked => { root.action("rename"); } }
@@ -375,21 +381,22 @@ export component FlowWorkspace inherits Rectangle {
         HorizontalLayout {padding:6px;spacing:4px;CloudField {value<=>root.search-text;edited(value)=>{root.search-text=value;}placeholder:"名称、类型、正文或 ID"; auto-focus: true; key-event(text) => {if text == "\n" {root.find-node(root.search-text); return true;} if text == Key.Escape {root.search-open=false; return true;} return false;}}IconButton {glyph:Glyph.search;label:"定位下一个匹配节点";side:36px;clicked=>{root.find-node(root.search-text);}}}
     }
     if root.show-node-menu: Rectangle {
-        x: max(16px, parent.width - 252px); y: 70px; width: 228px; height: 148px; background: Theme.panel; border-radius: 12px;
+        x: max(16px, parent.width - 252px); y: 70px; width: 228px; height: 188px; background: Theme.panel; border-radius: 12px;
         VerticalLayout { padding: 8px; spacing: 4px;
             AppButton { label: "复制节点"; subtle: true; clicked => {root.show-node-menu=false;root.action("copy-node");} }
             AppButton { label: "复制节点及输入连线"; subtle: true; clicked => {root.show-node-menu=false;root.action("duplicate");} }
+            AppButton { label: "运行到此节点"; subtle: true; enabled: root.selection-count == 1 && !root.read-only; clicked => {root.show-node-menu=false;root.action("run_to");} }
             AppButton { label: "重命名节点"; subtle: true; enabled: root.selection-count == 1; clicked => {root.show-node-menu=false;root.action("rename-node");} }
         }
     }
     if root.show-catalog: Rectangle {
         x: root.catalog-at-pointer ? max(16px, min(root.catalog-x, parent.width - 216px)) : max(16px, parent.width - 420px);
-        y: root.catalog-at-pointer ? max(70px, min(root.catalog-y, parent.height - 192px)) : 70px; width: 200px; height: 176px;
+        y: root.catalog-at-pointer ? max(70px, min(root.catalog-y, parent.height - 352px)) : 70px; width: 200px; height: 336px;
         border-radius: 12px; background: Theme.panel; border-width: 1px; border-color: Theme.line-strong;
         VerticalLayout { padding: 10px; spacing: 4px;
-            for label[index] in ["提示词", "参考素材", "图像生成", "采用图片"]: AppButton {
+            for label[index] in ["提示词", "参考素材", "图像生成", "采用图片", "视频生成", "采用视频", "交付图片", "交付视频"]: AppButton {
                 height: 36px; label: label; enabled: !root.read-only; subtle: true;
-                clicked => { root.show-catalog = false; root.action("add_" + ["prompt", "asset", "image_generate", "select"][index]); }
+                clicked => { root.show-catalog = false; root.action("add_" + ["prompt", "asset", "image_generate", "select", "video_generate", "select_video", "deliver", "deliver_video"][index]); }
             }
         }
     }
@@ -420,23 +427,26 @@ export component FlowWorkspace inherits Rectangle {
             if root.error: Text { text: root.message; color: root.error ? Theme.accent : Theme.fg-muted; wrap: word-wrap; font-family: Theme.font; font-size: Theme.fs-lg; }
             if root.selected-kind == "asset": Image {height:120px;source:root.selected-preview;image-fit:contain;}
             if root.selected-kind == "asset": Text {text:root.source-label;color:Theme.fg-muted;font-size:Theme.fs;overflow:elide;}
-            if root.candidates.length > 0: HorizontalLayout {
-                spacing: 8px; alignment: start;
-                for candidate in root.candidates: CandidateButton { candidate: candidate; chosen(id) => { root.choose(id); } }
+            if root.candidates.length > 0: Flickable {
+                height: 84px; viewport-height: 84px; viewport-width: max(self.width, root.candidates.length * 100px);
+                HorizontalLayout { height: 80px; spacing: 8px; alignment: start;
+                    for candidate in root.candidates: CandidateButton { candidate: candidate; chosen(id) => { root.choose(id); } }
+                }
             }
             HorizontalLayout {
                 spacing: 8px; alignment: start;
                 if root.selected-kind == "asset": IconButton { glyph: Glyph.folder; label: "从资产库选择"; enabled: root.assets-enabled; side: 36px; icon-size: 18px; clicked => { root.assets-requested(root.selected-id, false); } }
-                if root.selected-kind == "image_generate" || root.selected-kind == "video_generate": IconButton { glyph: Glyph.sliders; label: "SeeCut 生成设置 · 尚未接通"; enabled: root.generation-settings-enabled; side: 36px; icon-size: 18px; clicked => { root.shared-generation-requested(root.selected-id); } }
-                if root.selected-output: IconButton { glyph: Glyph.brush; label: "放入画布"; side: 32px; clicked => { root.action("flow-canvas"); } }
+                if root.selected-kind == "image_generate" || root.selected-kind == "video_generate": IconButton { glyph: Glyph.sliders; label: "生成设置"; enabled: root.generation-settings-enabled; side: 36px; icon-size: 18px; clicked => { root.shared-generation-requested(root.selected-id); } }
+                if root.canvas-output: IconButton { glyph: Glyph.brush; label: "放入画布"; side: 32px; clicked => { root.action("flow-canvas"); } }
                 if root.selected-output: IconButton { glyph: Glyph.film; label: "放入剪辑"; side: 32px; clicked => { root.action("flow-clip"); } }
+                if root.paused: IconButton { glyph: Glyph.play; label: "继续流程"; side:32px; clicked => {root.action("resume");} }
                 if root.can-cancel: IconButton { glyph: Glyph.pause; label: "暂停后续步骤"; side: 32px; clicked => { root.action("cancel"); } }
                 if root.has-attempt: IconButton { glyph: Glyph.search; label: "核实结果"; side: 32px; clicked => { root.action("reconcile"); } }
                 if root.can-retry: IconButton { glyph: Glyph.reset; label: "重试"; side: 32px; clicked => { root.action("retry"); } }
                 IconButton { enabled: !root.read-only; glyph: Glyph.copy; side: 32px; label: "复制节点及输入连线"; clicked => { root.action("duplicate"); } }
                 Rectangle { horizontal-stretch: 1; }
-                if root.selected-kind != "asset": IconButton { glyph: Glyph.play; label: "运行此节点 · 尚未接通"; enabled: root.execution-enabled; side: 36px; clicked => { root.action("run_node"); } }
-                if root.selected-kind != "asset": IconButton { glyph: Glyph.skip-forward; label: "运行到这里 · 尚未接通"; enabled: root.execution-enabled; accent: true; side: 36px; clicked => { root.action("run_to"); } }
+                if root.selected-kind != "asset": IconButton { glyph: Glyph.play; label: "运行此节点"; enabled: root.execution-enabled; side: 36px; clicked => { root.action("run_node"); } }
+                if root.selected-kind != "asset": IconButton { glyph: Glyph.skip-forward; label: "运行到这里"; enabled: root.execution-enabled; accent: true; side: 36px; clicked => { root.action("run_to"); } }
             }
         }
     }
@@ -450,11 +460,11 @@ export component FlowWorkspace inherits Rectangle {
         border-color: generation-composer.input-focused ? Theme.line-strong : Theme.line;
         if generation-panel.actions-height > 0px: HorizontalLayout {
             x: 16px; y: 8px; width: parent.width - 28px; height: 28px; spacing: 8px; alignment: end;
-            if root.has-attempt && !root.paused: IconButton { glyph: Glyph.pause; label: "暂停后续步骤"; side: 28px; clicked => { root.action("cancel"); } }
+            if root.can-cancel: IconButton { glyph: Glyph.pause; label: "暂停后续步骤"; side: 28px; clicked => { root.action("cancel"); } }
             if root.paused: IconButton { glyph: Glyph.play; label: "恢复后续步骤"; side: 28px; clicked => { root.action("resume"); } }
             if root.has-attempt: IconButton { glyph: Glyph.search; label: "核实结果"; side: 28px; clicked => { root.action("reconcile"); } }
             if root.can-retry: IconButton { glyph: Glyph.reset; label: "重试"; side: 28px; clicked => { root.action("retry"); } }
-            if root.selected-output: IconButton { glyph: Glyph.brush; label: "放入画布"; side: 28px; clicked => { root.action("flow-canvas"); } }
+            if root.canvas-output: IconButton { glyph: Glyph.brush; label: "放入画布"; side: 28px; clicked => { root.action("flow-canvas"); } }
             if root.selected-output: IconButton { glyph: Glyph.film; label: "放入剪辑"; side: 28px; clicked => { root.action("flow-clip"); } }
         }
         if root.candidates.length > 0: Flickable {
@@ -474,7 +484,7 @@ export component FlowWorkspace inherits Rectangle {
             attachments: root.references; allow-assets: root.assets-enabled; allow-upload: false; busy: !root.execution-enabled || root.paused; parameters: root.generation-parameters;
             source-id: root.prompt-source-id; source-title: root.prompt-source-title;
             points-label: root.points-label;
-            action-label: "运行图片节点"; action-glyph: Glyph.play;
+            action-label: root.selected-kind == "video_generate" ? "生成视频" : "生成图片"; action-glyph: Glyph.play;
             commit(token,value) => {root.prompt-commit(token,value);root.action("run_node");}
             parameter-requested(field) => { root.parameter-requested(field); }
             attachment-requested(id) => { root.reference-action(id,"open"); }
