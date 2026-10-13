@@ -23,6 +23,7 @@ use url::Url;
 mod flow_generation;
 mod flow_parameters;
 mod generation_state;
+mod inspiration;
 mod preview_validation;
 pub(crate) use flow_generation::{RegisteredAsset, library_asset, library_receipt, media_kind};
 pub(crate) use flow_parameters::{generation_fields, parameter_default, parameter_values};
@@ -308,6 +309,7 @@ struct Cloud {
     picker_batch: Option<(String, Vec<PickerSelection>)>,
     pending_personal_references: VecDeque<(String, String)>,
     pending_template_id: Option<String>,
+    inspiration_backup: Option<Box<inspiration::Draft>>,
     pending_task_refill_id: Option<String>,
     pending_team_picker: bool,
     auth_return_page: Option<i32>,
@@ -2477,6 +2479,7 @@ fn template_root() -> Result<PathBuf, String> {
 }
 
 fn render_templates(app: &App, state: &Rc<RefCell<Cloud>>) {
+    inspiration::render(app);
     let ui = app.global::<SeeCut>();
     let library = match template_root().and_then(crate::generation_templates::Library::load) {
         Ok(library) => library,
@@ -2989,6 +2992,7 @@ fn apply_task_snapshot(
         references: snapshot.references,
         created_at: 0,
         updated_at: 0,
+        metadata: None,
     };
     apply_generation_configuration(app, state, &configuration, "历史任务", false)?;
     let ui = app.global::<SeeCut>();
@@ -5286,6 +5290,8 @@ fn finish_personal_relink(
     let ui = app.global::<SeeCut>();
     let same_view = pending.view == ui.get_personal_relink_view();
     ui.set_personal_relink_id("".into());
+    ui.set_inspiration_can_restore(false);
+    ui.set_inspiration_preview_open(false);
     if ui.get_personal_dialog() == 6 {
         ui.set_personal_dialog_busy(false);
         ui.set_personal_dialog(0);
@@ -8123,6 +8129,7 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.download_attempts.clear();
     cloud.media_preview_token = cloud.media_preview_token.wrapping_add(1);
     cloud.active_name.clear();
+    cloud.inspiration_backup = None;
     cloud.epoch += 1;
     drop(cloud);
     // Revoke the old account's App permissions synchronously, before another
@@ -8417,6 +8424,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         .filter(|choice| choice.valid()),
         ..Cloud::default()
     }));
+    inspiration::render(app);
     let account = AccountAccess {
         state: Rc::downgrade(&state),
     };
@@ -8520,6 +8528,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
     let weak = app.as_weak();
     let shared = state.clone();
     app.global::<SeeCut>().on_action(move |name, id| { let Some(app)=weak.upgrade() else{return}; let ui=app.global::<SeeCut>(); let team=team_id(&ui,&shared.borrow()); match name.as_str() {
+        name if name.starts_with("inspiration-") => inspiration::action(&app,&shared,name,id.as_str()),
         "handoff-select" => select_handoff(&app, &shared, id.as_str()),
         "handoff-cancel" => { shared.borrow_mut().pending_handoff = None; ui.set_handoff_open(false); },
         "handoff-complete" => {
@@ -8746,6 +8755,8 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
                 cloud.submission=Some(PendingSubmission{body:body.clone(),key:key.clone(),snapshot});
             }
             body["quote_id"]=json!(shared.borrow().quote_id.clone());
+            ui.set_generation_browse_tab(0);
+            ui.set_generation_step(1);
             let endpoint=if ui.get_mode()==0{"/api/generation/images"}else{"/api/generation/videos"};let mut req=request("POST",endpoint,body);req.idem=Some(key);job(&app,&shared,"generate".into(),req);
         },
         "team-create"=>job(&app,&shared,"team-create".into(),request("POST","/api/teams",json!({"name":ui.get_team_name().to_string()}))),

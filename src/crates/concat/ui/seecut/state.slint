@@ -25,6 +25,11 @@ export struct GenerationTemplate {
     prompt-preview: string, references: [CloudItem],
 }
 
+export struct InspirationItem {
+    id: string, name: string, prompt: string, preview: image, category: int,
+    purpose: string, parameters: string, provenance: string,
+}
+
 export struct CreditPlan {
     purchase-label: string,
     id: string,
@@ -95,6 +100,13 @@ export global SeeCut {
     in-out property <int> creator-mode: -1;
     in-out property <bool> references-expanded;
     in-out property <int> generation-step;
+    in-out property <int> generation-browse-tab: 1;
+    in-out property <int> inspiration-category;
+    in-out property <[InspirationItem]> inspirations;
+    in-out property <bool> inspiration-has-previews;
+    in-out property <InspirationItem> inspiration-selected;
+    in-out property <bool> inspiration-preview-open;
+    in-out property <bool> inspiration-can-restore;
     in-out property <bool> generation-parameters-open;
     in-out property <bool> result-preview-open;
     in-out property <string> prompt;

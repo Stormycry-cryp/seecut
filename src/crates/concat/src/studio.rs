@@ -803,6 +803,7 @@ pub struct Studio {
     pub prefs: Preferences,
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     pub(crate) flow: Option<crate::flow_ui::FlowAccess>,
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     pub(crate) editor_mcp: Rc<RefCell<crate::editor_mcp::BridgeUi>>,
     /// What each effect library is showing, indexed the way `SHELF_KINDS`
     /// is: 0 filters, 1 effects, 2 audio.
@@ -1602,6 +1603,7 @@ impl Studio {
             dirty: false,
             #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
             flow: None,
+            #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
             editor_mcp: Rc::new(RefCell::new(crate::editor_mcp::BridgeUi::new())),
             autosave: slint::Timer::default(),
             save_lane: None,

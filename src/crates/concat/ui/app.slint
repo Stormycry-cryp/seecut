@@ -181,7 +181,7 @@ export component App inherits Window {
     }
     changed workspace-page => {
         Flow.input-focused = false;
-        SeeCut.generation-parameters-open = false; SeeCut.result-preview-open = false; SeeCut.media-preview-open = false;
+        SeeCut.generation-parameters-open = false; SeeCut.inspiration-preview-open = false; SeeCut.result-preview-open = false; SeeCut.media-preview-open = false;
         SeeCut.personal-menu = 0;
         SeeCut.template-menu-id = "";
         root.canvas-open-menu = false;
@@ -190,7 +190,7 @@ export component App inherits Window {
         SeeCut.canvas-create-open = false;
         SeeCut.team-dialog = 0;
     }
-    property <bool> workflow-modal-open: Flow.project-dialog || Flow.confirm || Flow.recovery || Flow.picker-open || root.clip-create-open || SeeCut.generation-parameters-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
+    property <bool> workflow-modal-open: Flow.project-dialog || Flow.confirm || Flow.recovery || Flow.picker-open || root.clip-create-open || SeeCut.generation-parameters-open || SeeCut.inspiration-preview-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
     // A small set of stable opening controls can receive focus again after
     // their sheet closes. Other workflows use the window keyboard scope.
     // 1 canvas open, 2 canvas export, 3 clip assets, 4 clip export, 5 settings.
@@ -255,7 +255,7 @@ export component App inherits Window {
     }
     // The parameter section remains mounted under a viewer. If its card was
     // removed while the viewer was open, retain a working keyboard target.
-    property <bool> viewer-open: SeeCut.media-preview-open || SeeCut.result-preview-open || SeeCut.asset-picker-open || SeeCut.handoff-open;
+    property <bool> viewer-open: SeeCut.inspiration-preview-open || SeeCut.media-preview-open || SeeCut.result-preview-open || SeeCut.asset-picker-open || SeeCut.handoff-open;
     changed viewer-open => {
         if !root.viewer-open && SeeCut.page == 1 && SeeCut.generation-parameters-open && !SeeCut.focus-return-claimed
             && !SeeCut.task-delete-open && !SeeCut.export-copy-open && !root.sheet-open {
@@ -519,6 +519,7 @@ export component App inherits Window {
             if event.text == Key.Escape && SeeCut.task-delete-open { SeeCut.task-delete-open = false; SeeCut.action("task-batch-cancel-delete", ""); return accept; }
             if event.text == Key.Escape && SeeCut.clip-export-open { SeeCut.clip-export-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.media-preview-open { SeeCut.media-preview-open = false; return accept; }
+            if event.text == Key.Escape && SeeCut.inspiration-preview-open { SeeCut.inspiration-preview-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.result-preview-open { SeeCut.result-preview-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.generation-parameters-open { SeeCut.generation-parameters-open = false; return accept; }
             if event.text == Key.Escape && SeeCut.personal-menu > 0 { SeeCut.personal-menu = 0; return accept; }

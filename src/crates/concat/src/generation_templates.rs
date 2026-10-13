@@ -11,6 +11,9 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "generation_templates/inspiration.rs"]
+pub mod inspiration;
+
 pub const MANIFEST_NAME: &str = "templates.json";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -43,6 +46,8 @@ pub struct GenerationTemplate {
     pub references: Vec<TemplateReference>,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default)]
+    pub metadata: Option<inspiration::Metadata>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -99,6 +104,10 @@ impl Library {
         if model_id.is_empty() {
             return Err("当前没有可保存的生成模型".into());
         }
+        let mut metadata = inspiration::personal_metadata(&references)?;
+        if mode != 0 {
+            metadata.capability = "generate".into();
+        }
         let now = now_millis()?;
         let id = id.filter(|value| !value.is_empty());
         let previous = self.items.clone();
@@ -115,6 +124,11 @@ impl Library {
             item.parameters = parameters;
             item.references = references;
             item.updated_at = now;
+            let revision = item.metadata.as_ref().map_or(1, |m| m.version + 1);
+            item.metadata = Some(inspiration::Metadata {
+                version: revision,
+                ..metadata
+            });
             id.to_owned()
         } else {
             let id = Uuid::new_v4().to_string();
@@ -128,6 +142,7 @@ impl Library {
                 references,
                 created_at: now,
                 updated_at: now,
+                metadata: Some(metadata),
             });
             id
         };
@@ -149,6 +164,9 @@ impl Library {
         item.name = name.trim().to_owned();
         item.prompt = prompt;
         item.updated_at = now_millis()?;
+        if let Some(metadata) = item.metadata.as_mut() {
+            metadata.version += 1;
+        }
         if let Err(error) = self.save() {
             self.items = previous;
             return Err(error);

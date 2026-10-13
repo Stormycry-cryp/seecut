@@ -339,11 +339,14 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     let app = App::new()?;
     let account = cloud::bind(&app);
-    let flow = flow_ui::bind(&app, host.dirs.data.join("flow-projects"), account.clone());
+    let _flow = flow_ui::bind(&app, host.dirs.data.join("flow-projects"), account.clone());
     app.set_macos(platform::MACOS);
 
     let mut studio = Studio::new(host);
-    studio.flow = Some(flow);
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    {
+        studio.flow = Some(_flow);
+    }
     let dark = studio.prefs.dark.unwrap_or(false);
     app.global::<Theme>().set_dark(dark);
 
