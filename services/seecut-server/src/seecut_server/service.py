@@ -2247,19 +2247,19 @@ class SeeCutService:
             held_credits=held_credits-?,updated_at=? WHERE user_id=?""", (refund, debit + refund, now, task['user_id']))
         connection.execute("""UPDATE generation_billings SET captured_credits=?,released_credits=?,
             succeeded_count=?,failed_count=?,updated_at=? WHERE id=?""", (captured, released, successes, failures, now, bill['id']))
-        if debit:
+        if debit or (succeeded and bill['reserved_credits'] == 0):
             connection.execute("""INSERT INTO ledger_entries
                 (id,user_id,kind,delta_available,delta_held,reference_type,reference_id,idempotency_key,created_at)
                 VALUES(?,?,'capture',0,?,'generation_task',?,?,?)""",
                 (new_id('led'), task['user_id'], -debit, task['id'], f"capture:{task['id']}", now))
-        if refund:
+        if refund or (not succeeded and bill['reserved_credits'] == 0):
             connection.execute("""INSERT INTO ledger_entries
                 (id,user_id,kind,delta_available,delta_held,reference_type,reference_id,idempotency_key,created_at)
                 VALUES(?,?,'release',?,?,'generation_batch',?,?,?)""",
                 (new_id('led'), task['user_id'], refund, -refund, bill['id'], f"release:generation-batch:{task['id']}", now))
         if successes + failures == bill['quantity']:
             connection.execute('UPDATE wallet_holds SET state=?,updated_at=? WHERE task_id=?',
-                               ('captured' if captured else 'released', now, bill['id']))
+                               ('captured' if successes else 'released', now, bill['id']))
 
     def _task_dict(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         # Generation capture consumes held credits: delta_available is zero.

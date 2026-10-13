@@ -626,10 +626,15 @@ class GenerationRobustnessTest(unittest.TestCase):
         service.process_generation_task(service.claim_generation_tasks()[0])
 
         self.assertEqual(quote["credits"], 0)
+        service._store_binary_outputs(task["id"], [], [])
         self.assertEqual(service.get_generation_task(self.user_id, task["id"])["status"], "succeeded")
         self.assertEqual(service.wallet(self.user_id)["available_credits"], 0)
         self.assertEqual(service.wallet(self.user_id)["held_credits"], 0)
         with service.db.connect() as connection:
+            hold = connection.execute('SELECT state FROM wallet_holds WHERE task_id=?', (task['id'],)).fetchone()
+            self.assertEqual(hold['state'], 'captured')
+            bill = connection.execute('SELECT succeeded_count,failed_count FROM generation_billings WHERE id=?', (task['id'],)).fetchone()
+            self.assertEqual(tuple(bill), (1, 0))
             entries = connection.execute(
                 """SELECT kind,delta_available,delta_held FROM ledger_entries
                    WHERE reference_id=? ORDER BY rowid""",
@@ -678,10 +683,15 @@ class GenerationRobustnessTest(unittest.TestCase):
         service.process_generation_task(service.claim_generation_tasks()[0])
 
         self.assertEqual(quote["credits"], 0)
+        service._fail_and_release(task['id'], 'PROVIDER_FAILED', 'repeated terminal result')
         self.assertEqual(service.get_generation_task(self.user_id, task["id"])["status"], "failed")
         self.assertEqual(service.wallet(self.user_id)["available_credits"], 0)
         self.assertEqual(service.wallet(self.user_id)["held_credits"], 0)
         with service.db.connect() as connection:
+            hold = connection.execute('SELECT state FROM wallet_holds WHERE task_id=?', (task['id'],)).fetchone()
+            self.assertEqual(hold['state'], 'released')
+            bill = connection.execute('SELECT succeeded_count,failed_count FROM generation_billings WHERE id=?', (task['id'],)).fetchone()
+            self.assertEqual(tuple(bill), (0, 1))
             entries = connection.execute(
                 """SELECT kind,delta_available,delta_held FROM ledger_entries
                    WHERE reference_id=? ORDER BY rowid""",

@@ -2,9 +2,11 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+import json
 
 from seecut_server.assistant_provider import AssistantProvider, PreparedInference, ProviderFailure
 from seecut_server.assistant_worker import AssistantWorker
+from seecut_server.catalog import billing_key, validate_request
 from seecut_server.db import Database
 from seecut_server.service import SeeCutService
 from test_assistant_contract import AssistantFixture, FakeAssistant
@@ -161,7 +163,9 @@ class AssistantA2Test(AssistantFixture):
         root = Path(self.temp.name)
         schema = Path(__file__).parent / 'fixtures/schema-before-assistant-1e8009e.sql'
         database = Database(root/'legacy.db', schema)
-        database.initialize()
+        # Seed the historical schema before invoking any current migrations.
+        with database.connect() as connection:
+            connection.executescript(schema.read_text())
         config = replace(self.config, database_path=database.path,
                          model_prices={'image:gpt-image-2.5-flare':7})
         old = SeeCutService(config, database, emailer=FakeEmailSender(config),
@@ -172,19 +176,48 @@ class AssistantA2Test(AssistantFixture):
         with database.transaction(immediate=True) as connection:
             connection.execute('UPDATE wallets SET available_credits=100 WHERE user_id=?', (user,))
         request = {'model':'gpt-image-2.5-flare','prompt':'synthetic still'}
-        quote = old.quote_generation(user, 'image', request)
-        submitted = request | {'quote_id':quote['quote_id']}
-        generation = old.create_generation_task(user, 'image', submitted, 'old-generation')
+        model, normalized = validate_request('image', request, config.image2_model)
+        canonical = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        submitted = request | {'quote_id':'quote-legacy'}
+        generation = {'id':'gen-legacy'}
+        now = self.clock[0]
+        # Only pre-assistant columns: a pending 7-credit task and its original
+        # consumed quote/hold must survive the current schema upgrade unchanged.
+        with database.transaction(immediate=True) as connection:
+            connection.execute('''INSERT INTO generation_quotes
+                (id,user_id,kind,model,canonical_json,billing_key,credits,expires_at,consumed_at,created_at)
+                VALUES(?,?,'image',?,?,?,7,?,?,?)''',
+                ('quote-legacy', user, model['id'], canonical, billing_key(model, normalized), now+120, now, now))
+            connection.execute('''INSERT INTO generation_tasks
+                (id,user_id,kind,provider,operation,model,prompt,request_json,idempotency_key,
+                 quoted_credits,status,created_at,updated_at,next_attempt_at)
+                VALUES(?,?,'image',?,?,?, ?,?,'old-generation',7,'queued',?,?,?)''',
+                (generation['id'], user, model['provider'], normalized['operation'], model['id'],
+                 normalized['prompt'], canonical, now, now, now))
+            connection.execute('UPDATE wallets SET available_credits=93,held_credits=7 WHERE user_id=?', (user,))
+            connection.execute('''INSERT INTO wallet_holds
+                (id,user_id,task_id,credits,state,created_at,updated_at) VALUES(?,?,?,7,'held',?,?)''',
+                ('hold-legacy', user, generation['id'], now, now))
+            connection.execute('''INSERT INTO ledger_entries
+                (id,user_id,kind,delta_available,delta_held,reference_type,reference_id,idempotency_key,created_at)
+                VALUES(?,?,'hold',-7,7,'generation_task',?,?,?)''',
+                ('ledger-legacy', user, generation['id'], 'hold:gen-legacy', now))
         with database.connect() as connection:
             tables = [r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+            columns = {table:[r['name'] for r in connection.execute('PRAGMA table_info('+table+')')] for table in tables}
             before = {table:[dict(r) for r in connection.execute('SELECT * FROM '+table)] for table in tables}
             self.assertNotIn('assistant_operations', tables)
+            self.assertNotIn('generation_billings', tables)
+            self.assertNotIn('billing_id', columns['generation_tasks'])
         database.schema_path = self.db.schema_path
         database.initialize()
         database.initialize()
         with database.connect() as connection:
             for table, rows in before.items():
-                self.assertEqual([dict(r) for r in connection.execute('SELECT * FROM '+table)], rows, table)
+                selected = ','.join(columns[table])
+                self.assertEqual([dict(r) for r in connection.execute('SELECT '+selected+' FROM '+table)], rows, table)
+            self.assertIsNone(connection.execute('SELECT billing_id FROM generation_tasks').fetchone()[0])
+            self.assertEqual(connection.execute('SELECT rounding_mode FROM generation_quotes').fetchone()[0], 'legacy_item')
             self.assertEqual(connection.execute('PRAGMA foreign_key_check').fetchall(), [])
         service = SeeCutService(config, database, emailer=FakeEmailSender(config),
                                xiangxin=FakeXiangxin(), image2=FakeImage2(),
