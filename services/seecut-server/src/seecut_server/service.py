@@ -1344,8 +1344,6 @@ class SeeCutService:
     @staticmethod
     def _generation_selection(request: dict[str, Any]) -> tuple[dict[str, Any], Any, Any]:
         request = dict(request)
-        if isinstance(request.get("model"), str):
-            request["model"] = ALIASES.get(request["model"], request["model"])
         if "policy" in request or "model_pricing" in request:
             raise ApiError(400, "EFFORT_POLICY_INVALID", "生成策略由服务端确定")
         if ("effort_id" in request) != ("policy_revision" in request):
@@ -1478,7 +1476,10 @@ class SeeCutService:
             ).fetchone()
             if existing:
                 stored = json.loads(existing["request_json"])
-                if (existing["kind"] != kind or stored.get("model") != request.get("model")
+                replay_model = request.get("model")
+                if existing['provider'] == 'grsai' and isinstance(replay_model, str):
+                    replay_model = ALIASES.get(replay_model, replay_model)
+                if (existing["kind"] != kind or stored.get("model") != replay_model
                         or stored.get("effort_id") != effort_id or stored.get("policy_revision") != revision):
                     raise ApiError(409, "IDEMPOTENCY_CONFLICT", "该幂等键已用于不同的生成参数")
                 # Recovery is a read of the original task, not permission to

@@ -80,6 +80,31 @@ class GrsaiContractsTest(AssistantFixture):
                 validate_request('video', dict(model='minimax-h3', prompt='test', **extra))
         self.assertNotIn('generate_audio', next(m for m in public_catalog()['models'] if m['id'] == 'agnes-video-2.5')['parameters'])
 
+    def test_explicit_image2_fast_override_and_original_replay_never_change_provider(self):
+        from test_generation_efforts import RecordingImage2
+        price = record()
+        price.update(provider='image2', model='nano-banana-fast', kind='image',
+                     costs={'media': dict(unit='per_image', yuan='0.02', selectors={})})
+        config = replace(self.config, image2_model='nano-banana-fast',
+                         model_price_catalog=parse_price_catalog(json.dumps([price])))
+        image2 = RecordingImage2()
+        service = SeeCutService(config, self.db, emailer=FakeEmailSender(config), image2=image2,
+                                grsai=self.grsai, assistant_provider=self.provider, clock=lambda: self.clock[0])
+        model = next(m for m in service.generation_models()['models'] if m['id'] == 'nano-banana-fast')
+        self.assertEqual(model['provider'], 'image2')
+        request = dict(model='nano-banana-fast', prompt='old draft', size='1024x1024', quality='high')
+        quote = service.quote_generation(self.user, 'image', request)
+        self.assertEqual(quote['request']['model'], 'nano-banana-fast')
+        payload = request | dict(quote_id=quote['quote_id'])
+        original = service.create_generation_task(self.user, 'image', payload, 'old-image2-fast')
+        service.process_generation_task(service.claim_generation_tasks()[0])
+        self.assertEqual(image2.payloads[0]['model'], 'nano-banana-fast')
+        self.assertEqual(self.grsai.posts, [])
+        service.config = replace(config, image2_model='new-image2-route', model_price_catalog=())
+        replay = service.create_generation_task(self.user, 'image', payload, 'old-image2-fast')
+        self.assertEqual(replay['id'], original['id'])
+        self.assertEqual(replay['status'], 'succeeded')
+
     def test_unverified_cost_and_retail_override_are_unavailable_before_submission(self):
         price = record({'media': '1'})
         price.update(provider='grsai', model='nano-banana-2-lite', kind='image',

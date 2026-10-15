@@ -100,13 +100,13 @@ _BY_ID = {item["id"]: item for item in MODELS}
 def _model_for_request(kind: str, model_id: Any, image_model_id: str | None) -> dict[str, Any] | None:
     if not isinstance(model_id, str):
         return None
-    model_id = ALIASES.get(model_id, model_id)
     # Existing image2 overrides retain their original provider and schema.
     if kind == "image" and image_model_id and model_id == image_model_id:
         template = next(item for item in MODELS if item['provider'] == 'image2')
         model = deepcopy(template)
         model['id'] = image_model_id
         return model
+    model_id = ALIASES.get(model_id, model_id)
     model = _BY_ID.get(model_id)
     if model and model['provider'] == 'image2' and image_model_id and model_id != image_model_id:
         return None
