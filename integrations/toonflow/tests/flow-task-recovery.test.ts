@@ -22,3 +22,25 @@ test('replaced node record and mismatched original identity cannot receive stale
  const before=globalThis.fetch;
  try{for(const swapped of [false,true]){const f=setup();globalThis.fetch=(async()=>{if(swapped)f.node.data.seecutGeneration={...original,clientRequestId:'new-request'};return Response.json({code:200,data:{...original,clientRequestId:swapped?'original-request':'foreign-request',status:'running'}})}) as any;await expect(f.ai.recoverRecordedMedia('image','project-one','assets/image',undefined,true)).rejects.toThrow();expect(f.saves()).toBe(0);dispose();}}finally{globalThis.fetch=before;}
 });
+test('submit once, stop waiting, reopen and query completion without a second generation or capture',async()=>{
+ const before=globalThis.fetch;let submissions=0,captures=0,originalId='';
+ const stop=new AbortController();let f=setup();delete f.node.data.seecutGeneration;
+ const output={mediaType:'image',path:'assets/image/finished.png',mimeType:'image/png',source:{assetId:'original-asset',version:{sha256:'b'.repeat(64)}}};
+ globalThis.fetch=(async(url:any,options:any)=>{
+  if(url==='/api/ai/media/generate'){
+   submissions++;originalId=JSON.parse(options.body).clientRequestId;stop.abort();throw new DOMException('Stopped waiting','AbortError');
+  }
+  const parsed=new URL(url,'http://fixture');expect(parsed.pathname).toBe('/api/ai/media/recover');expect(parsed.searchParams.get('clientRequestId')).toBe(originalId);
+  return Response.json({code:200,data:{...original,clientRequestId:originalId,status:'completed',capturedCredits:2,results:[output]}});
+ }) as any;
+ try{
+  await expect(f.ai.generateImage({directory:'project-one',providerId:'seecut',modelId:'synthetic',prompt:'fixture',outputDirectory:'assets/image'},stop.signal)).rejects.toThrow();
+  expect(f.node.data.seecutGeneration.status).toBe('unknown');const saved=JSON.parse(JSON.stringify(f.node.data));dispose();
+  // The synthetic server completes the already submitted task once while closed.
+  captures++;f=setup();f.node.data=saved;
+  expect(await f.ai.recoverRecordedMedia('image','project-one','assets/image',undefined,true)).toEqual([output]);
+  expect(f.node.data.seecutGeneration.clientRequestId).toBe(originalId);expect(f.node.data.seecutGeneration.capturedCredits).toBe(2);
+  await f.ai.recoverRecordedMedia('image','project-one','assets/image',undefined,true);
+  expect({submissions,captures}).toEqual({submissions:1,captures:1});
+ }finally{globalThis.fetch=before;dispose();}
+});

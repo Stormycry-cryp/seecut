@@ -19,9 +19,11 @@ Applies to frozen public 8101e4e and private 84c020b; Jev work is separate.
   states return without silently resubmitting.
 - Formatted R2 Rust files; `cargo +1.93 fmt --all -- --check` passed.
 
-Focused evidence: 13 gate/recovery tests, 57 assertions; durable router test, 8
+Focused evidence: 14 gate/recovery tests, 67 assertions; durable router test, 8
 assertions; private cancellation/refusal/unknown-reopen tests, 7 passing. The
 unknown-reopen runtime test confirms one write and one original receipt query.
+The frontend regression also submits once, stops waiting, reopens the saved node,
+and recovers a synthetic completed result without another generation request.
 No production credentials, deployment or real model calls were used.
 
 The original R2 actual UI configuration/connection/generation/reopen chain remains
