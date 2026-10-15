@@ -1,0 +1,26 @@
+{
+  "source": "https://grsai.com/zh/dashboard/models",
+  "retrieved_at": "2026-10-15",
+  "sha256": "da313f12aef4bd03e44d733c1602b4f530ac906d4c712e306c2bf8117fa0ca5f",
+  "ids": [
+    "agnes-video-2.5",
+    "gpt-image-2",
+    "gpt-image-2-vip",
+    "gpt-image-2.5",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+    "minimax-h3",
+    "nano-banana",
+    "nano-banana-2",
+    "nano-banana-2-2k-cl",
+    "nano-banana-2-4k-cl",
+    "nano-banana-2-cl",
+    "nano-banana-2-lite",
+    "nano-banana-2.1",
+    "nano-banana-fast",
+    "nano-banana-pro",
+    "nano-banana-pro-4k-vip",
+    "nano-banana-pro-cl",
+    "nano-banana-pro-vip"
+  ]
+}

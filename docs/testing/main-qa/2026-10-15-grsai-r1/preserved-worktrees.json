@@ -1,0 +1,17 @@
+{
+  "Seecut-toonflow-embedded": {
+    "head": "6b587b67f153749ef19d133da5e2f0692b05c744",
+    "tracked_changes": 0,
+    "untracked": 0
+  },
+  "Seecut-editor-mcp-m1": {
+    "head": "1e8009ea9ea7e90c2ceb8720037711f02970b923",
+    "tracked_changes": 44,
+    "untracked": 18
+  },
+  "seecut-agent": {
+    "head": "8d61f3940b2fdc30806049e81b5e574be4b28936",
+    "tracked_changes": 7,
+    "untracked": 5
+  }
+}

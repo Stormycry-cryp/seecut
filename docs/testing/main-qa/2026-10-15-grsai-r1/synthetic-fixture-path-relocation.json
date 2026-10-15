@@ -1,0 +1,9 @@
+{
+  "reason": "Synthetic portable candidate copy retained previous candidate absolute paths; correct only copied QA data after byte-for-byte file verification. Original candidate untouched.",
+  "source_prefix": "/private/tmp/SeeCut-GrsAI-R1-8d28c8b.app/Contents/MacOS/portable/",
+  "target_prefix": "/private/tmp/SeeCut-GrsAI-R1-b826374.app/Contents/MacOS/portable/",
+  "changed": [
+    "toonflow-experiment/settings.json",
+    "personal-library/library.json"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "checked_at_utc": "2026-10-15T11:11:18Z",
+  "source": "official get_usage_limits",
+  "limit_id": "codex",
+  "window_minutes": 10080,
+  "used_percent": 31,
+  "remaining_percent": 69,
+  "resets_at": 1792649598,
+  "resets_at_utc": "2026-10-22T06:13:18Z",
+  "stop_remaining_percent": 50
+}

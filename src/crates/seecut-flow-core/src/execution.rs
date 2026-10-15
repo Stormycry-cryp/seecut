@@ -188,6 +188,9 @@ impl Execution {
                         t.status.as_str(),
                         "queued"
                             | "submitting"
+                            | "provider_accepted"
+                            | "processing"
+                            | "validating"
                             | "running"
                             | "pending_reconcile"
                             | "succeeded"

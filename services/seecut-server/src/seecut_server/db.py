@@ -33,6 +33,7 @@ class Database:
             for name, statement in migrations.items():
                 if name not in columns:
                     connection.execute(statement)
+            self._allow_grsai_provider(connection)
             upload_columns = {row["name"] for row in connection.execute("PRAGMA table_info(uploads)")}
             if "write_token" not in upload_columns:
                 connection.execute("ALTER TABLE uploads ADD COLUMN write_token TEXT")
@@ -101,6 +102,35 @@ class Database:
                 # NULL explicitly preserves that unknown state; do not invent
                 # a deadline or close an order solely from its local age.
                 connection.execute("ALTER TABLE orders ADD COLUMN expires_at INTEGER")
+
+    @staticmethod
+    def _allow_grsai_provider(connection):
+        """Transactional rebuild of the old provider CHECK, preserving all rows/FKs."""
+        sql = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='generation_tasks'").fetchone()[0]
+        old = "CHECK (provider IN ('image2', 'xiangxin'))"
+        if old not in sql:
+            return
+        objects = [row[0] for row in connection.execute("SELECT sql FROM sqlite_master WHERE tbl_name='generation_tasks' AND type IN ('index','trigger') AND sql IS NOT NULL")]
+        columns = ','.join('"' + row['name'] + '"' for row in connection.execute('PRAGMA table_info(generation_tasks)'))
+        connection.execute('PRAGMA foreign_keys=OFF')
+        try:
+            connection.execute('BEGIN IMMEDIATE')
+            replacement = sql.replace('generation_tasks', 'generation_tasks_grsai', 1).replace(old, "CHECK (provider IN ('image2', 'xiangxin', 'grsai'))")
+            connection.execute(replacement)
+            connection.execute(f'INSERT INTO generation_tasks_grsai ({columns}) SELECT {columns} FROM generation_tasks')
+            connection.execute('DROP TABLE generation_tasks')
+            connection.execute('ALTER TABLE generation_tasks_grsai RENAME TO generation_tasks')
+            for statement in objects:
+                connection.execute(statement)
+            if connection.execute('PRAGMA foreign_key_check').fetchone():
+                raise ValueError('Generation provider migration failed foreign key validation')
+            connection.execute('COMMIT')
+        except Exception:
+            if connection.in_transaction:
+                connection.execute('ROLLBACK')
+            raise
+        finally:
+            connection.execute('PRAGMA foreign_keys=ON')
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

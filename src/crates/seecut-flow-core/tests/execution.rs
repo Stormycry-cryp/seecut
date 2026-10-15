@@ -45,6 +45,45 @@ fn task(id: &str, credits: u64) -> serde_json::Value {
     json!({"id":id,"kind":"image","model":"model","request":{"model":"model","prompt":"synthetic"},
         "status":"succeeded","captured_credits":credits,"outputs":[{"id":"out_one","sha256":"b".repeat(64)}]})
 }
+#[test]
+fn asynchronous_service_states_persist_and_resume_the_original_task() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("project");
+    let mut store = Store::create(&path, Document::new(Graph::default())).unwrap();
+    let id = intent(&mut store);
+    for status in [
+        "provider_accepted",
+        "processing",
+        "validating",
+        "pending_reconcile",
+    ] {
+        let mut receipt = task("gen_original", 0);
+        receipt["status"] = json!(status);
+        receipt["outputs"] = json!([]);
+        let mut e = store.execution().clone();
+        e.observe(&id, &scope(), &receipt).unwrap();
+        store.save_execution(e).unwrap();
+        drop(store);
+        store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.execution().attempts[0].tasks["gen_original"].status,
+            status
+        );
+        assert_eq!(store.execution().attempts[0].phase, Phase::Accepted);
+        assert_eq!(store.execution().actual_credits(&scope()).unwrap(), 0);
+    }
+    let mut e = store.execution().clone();
+    e.observe(&id, &scope(), &task("gen_original", 2)).unwrap();
+    e.registered(&id, "gen_original", "out_one", asset())
+        .unwrap();
+    store.save_execution(e).unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.execution().attempts.len(), 1);
+    assert_eq!(store.execution().attempts[0].tasks.len(), 1);
+    assert_eq!(store.execution().attempts[0].phase, Phase::Finished);
+    assert_eq!(store.execution().actual_credits(&scope()).unwrap(), 2);
+}
 fn asset() -> Asset {
     Asset {
         id: "library-id".into(),

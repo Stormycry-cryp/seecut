@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+integrations/toonflow/tests/grsai-contract.test.ts:
+(pass) one canonical model with explicit policies retains both stable route IDs [2.10ms]
+(pass) actual credits use parent total once, never quote/reservation or duplicate children [0.25ms]
+
+ 2 pass
+ 0 fail
+ 10 expect() calls
+Ran 2 tests across 1 file. [403.00ms]

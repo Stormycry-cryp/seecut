@@ -1,0 +1,9 @@
+{
+  "signed_and_verified_before_runtime_copy": true,
+  "app": "/tmp/SeeCut-GrsAI-R1-clean-header.app",
+  "copied_synthetic_runtime_from": "/private/tmp/SeeCut-GrsAI-R1-b826374.app/Contents/MacOS/portable",
+  "relocated_copied_paths_after_digest_check": [
+    "toonflow-experiment/settings.json",
+    "personal-library/library.json"
+  ]
+}

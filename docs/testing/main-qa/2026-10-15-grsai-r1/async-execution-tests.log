@@ -1,0 +1,46 @@
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling memchr v2.8.3
+   Compiling bitflags v2.13.1
+   Compiling once_cell v1.21.4
+   Compiling serde_json v1.0.151
+   Compiling getrandom v0.4.3
+   Compiling cpufeatures v0.2.17
+   Compiling errno v0.3.14
+   Compiling uuid v1.26.0
+   Compiling sha2 v0.10.9
+   Compiling rustix v1.1.4
+   Compiling syn v3.0.4
+   Compiling tempfile v3.27.0
+   Compiling serde_derive v1.0.229
+   Compiling seecut-flow-core v0.1.0 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/seecut-flow-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.65s
+     Running tests/execution.rs (../.toonflow/native-target/debug/deps/execution-ef8c11ede7ba1902)
+
+running 20 tests
+test duplicate_click_and_view_revision_change_reuse_frozen_inflight_attempt ... ok
+test known_refusal_waits_for_later_authenticated_absence_without_new_post ... ok
+test refusal_cannot_terminate_an_already_accepted_task_or_wrong_scope ... ok
+test account_scope_and_frozen_request_mismatch_leave_snapshot_unchanged ... ok
+test failed_first_save_never_publishes_an_intent_authorizing_external_side_effects ... ok
+test missing_or_changed_output_checksums_and_nonactual_credit_fields_are_rejected ... ok
+test old_simulator_runtime_is_unchanged_and_real_intent_without_task_reopens ... ok
+test independent_node_choices_do_not_overwrite_other_consumers ... ok
+test registration_selection_and_restart_keep_same_asset_and_version ... ok
+test timeout_lookup404_and_unproven_refusals_keep_original_intent_without_second_post ... ok
+test unknown_original_key_is_reused_and_changed_inputs_cannot_create_another ... ok
+test downstream_requires_selected_current_semantic_upstream_version ... ok
+test changed_graph_and_paused_execution_still_accept_original_late_task ... ok
+test repeated_queries_batch_aliases_and_multiple_nodes_do_not_double_count_charges ... ok
+test asynchronous_service_states_persist_and_resume_the_original_task ... ok
+test uncontended_background_result_with_original_baseline_saves_and_reopens ... ok
+test remote_expiry_does_not_skip_known_output_local_registration_recovery ... ok
+test stale_background_callback_preserves_other_process_new_attempt_then_reopens ... ok
+test stale_background_callback_preserves_other_process_selected_result_byte_for_byte ... ok
+test confirmed_refusal_preserves_original_and_explicit_run_gets_new_quote_and_key ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
