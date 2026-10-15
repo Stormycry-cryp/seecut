@@ -1,0 +1,13 @@
+# R2 actual-window closeout, 2026-10-15
+
+Reused `/tmp/SeeCut-Prompt-Recommendations-Final.app`; no rebuild, broad tests, deployment or real provider calls. This package includes frozen R2 public `8c82ae7f091bf1c91f70adb4ddca912b884b4c44` / private `aaaeae4cb9632baa65bda42b53f0a6a6743f9f54`, plus the separately delivered recommendation code checkpoint `fa12270`. The R2 branches were not changed by this acceptance.
+
+Actual native Agent UI created text and image nodes, configured text and managed SeeCut image settings (1K, 1:1), connected the original ports, and invoked `node:generateImage` once. The node showed completed, captured synthetic credits 2. Default personal asset registration occurred without clicking Add to Library. Reopened the same project through the project list; text, connection, config, original request and completed output remained. `flow_get_task` after reopening returned the same completed request and immutable asset/version identity. Exactly one new generation task was added during this pass (two total including the earlier recommendation UI fixture task).
+
+Evidence: `01-connected-completed.png`, `02-default-library.png`, `03-reopened-completed.png`, and `synthetic-evidence.json`. The 1×1 PNG is synthetic and deduplicates against an earlier fixture image, so the library item count staying at four is expected; its matching generation provenance is recorded in JSON. Existing cup/trouser entries predate this run and are not evidence of real model calls here.
+
+Acceptance is **qualified, not a fully clean Agent turn**. The initial five-minute page lease expired during the connection approval; the tool was cancelled with `executed:false`, and reconnection cleared the pending state. A local QA-only provider continuation reused saved node IDs and observed ports. Its initial rapid polling exhausted a bounded fixture limit before the synthetic worker completed. After saving/reopening, a query-only continuation obtained a successful `flow_get_task` completed result with the original request ID and asset version, but the Agent turn then failed with `用户选择已改变，本轮编辑已停止`. This remaining end-of-turn behavior requires focused review; no product source fix or speculative rebuild was made. The query-only script permits no generation call.
+
+No actual Jev, GLM or paid media endpoint was called. Credentials were neither read nor configured. Live Jev still requires `BEATAPI_API_KEY` in server `/etc/seecut/server.env`, and GLM reuses `SECUT_ASSISTANT_*`; these remain user-managed setup items.
+
+Last official quota check: 2026-10-15 22:17:50 Asia/Shanghai, seven-day window 10080 minutes, remaining 51%, reset 2026-10-22 14:13:18 Asia/Shanghai. Stopped after the bounded acceptance pass; no new implementation scope opened.
