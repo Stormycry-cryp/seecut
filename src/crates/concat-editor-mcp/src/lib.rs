@@ -10,12 +10,12 @@ use std::time::Duration;
 mod canvas;
 mod flow;
 mod flow_workspace;
-pub use flow_workspace::FlowWorkspace;
 pub use canvas::{
     AssetVersion, CanvasAction, CanvasParameters, LibraryQuery, OperationQuery,
     validate_canvas_parameters,
 };
 pub use flow::FlowParameters;
+pub use flow_workspace::FlowWorkspace;
 
 /// A single IPC message is bounded before deserialization or allocation.
 pub const MAX_MESSAGE: usize = 1024 * 1024;
@@ -227,12 +227,29 @@ pub fn validate_move_parameters(
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
     if request.method == Method::FlowWorkspace || request.flow_workspace.is_some() {
-        return if request.method == Method::FlowWorkspace && request.flow_workspace.as_ref().is_some_and(FlowWorkspace::valid)
-            && request.flow.is_none() && request.canvas_parameters.is_none() && request.move_parameters.is_none()
-            && request.library_query.is_none() && request.operation_query.is_none()
-            && request.project_id.is_none() && request.document_session_id.is_none()
-            && request.revision.is_none() && request.context_revision.is_none() && request.object_id.is_none()
-            && request.offset.is_none() && request.limit.is_none() && request.max_edge.is_none() { Ok(()) } else { Err("invalidInput".into()) };
+        return if request.method == Method::FlowWorkspace
+            && request
+                .flow_workspace
+                .as_ref()
+                .is_some_and(FlowWorkspace::valid)
+            && request.flow.is_none()
+            && request.canvas_parameters.is_none()
+            && request.move_parameters.is_none()
+            && request.library_query.is_none()
+            && request.operation_query.is_none()
+            && request.project_id.is_none()
+            && request.document_session_id.is_none()
+            && request.revision.is_none()
+            && request.context_revision.is_none()
+            && request.object_id.is_none()
+            && request.offset.is_none()
+            && request.limit.is_none()
+            && request.max_edge.is_none()
+        {
+            Ok(())
+        } else {
+            Err("invalidInput".into())
+        };
     }
     if request.flow.is_some() || matches!(request.method, Method::FlowRead | Method::FlowWrite) {
         return flow::validate(request);

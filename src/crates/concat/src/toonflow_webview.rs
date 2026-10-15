@@ -18,8 +18,15 @@ pub(crate) fn sync() {
 }
 
 pub(crate) fn evaluate(script: &str) -> bool {
-    #[cfg(any(target_os = "macos", target_os = "windows"))] { native::evaluate(script) }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))] { let _=script; false }
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        native::evaluate(script)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = script;
+        false
+    }
 }
 
 pub(crate) fn shutdown() {
@@ -207,7 +214,12 @@ mod native {
                         {
                             Ok(webview) => {
                                 #[cfg(target_os = "macos")]
-                                { host.overlay = crate::toonflow_overlay_macos::FlowContainer::attach(&webview); }
+                                {
+                                    host.overlay =
+                                        crate::toonflow_overlay_macos::FlowContainer::attach(
+                                            &webview,
+                                        );
+                                }
                                 host.webview = Some(webview);
                                 host.bounds = Some(values);
                                 host.dark = Some(dark);
@@ -246,14 +258,16 @@ mod native {
                         log::warn!("Flow WebView zoom: {error}");
                     }
                     #[cfg(target_os = "macos")]
-                    if let Some(overlay)=&host.overlay {
-                        let ratio=scale/window.scale_factor();
-                        overlay.update(app.get_flow_overlay_visible().then(|| [
-                            f64::from(app.get_flow_overlay_x()-8.0)*ratio,
-                            f64::from(app.get_flow_overlay_y()-8.0)*ratio,
-                            f64::from(app.get_flow_overlay_width()+16.0)*ratio,
-                            f64::from(app.get_flow_overlay_height()+16.0)*ratio,
-                        ]));
+                    if let Some(overlay) = &host.overlay {
+                        let ratio = scale / window.scale_factor();
+                        overlay.update(app.get_flow_overlay_visible().then(|| {
+                            [
+                                f64::from(app.get_flow_overlay_x() - 8.0) * ratio,
+                                f64::from(app.get_flow_overlay_y() - 8.0) * ratio,
+                                f64::from(app.get_flow_overlay_width() + 16.0) * ratio,
+                                f64::from(app.get_flow_overlay_height() + 16.0) * ratio,
+                            ]
+                        }));
                     }
                     let show = visible && host.loaded && host.app_ready;
                     let assistant_open = app.global::<crate::Assistant>().get_open();
@@ -279,7 +293,14 @@ mod native {
         });
     }
 
-    pub(super) fn evaluate(script: &str) -> bool { HOST.with(|h| h.borrow().webview.as_ref().is_some_and(|w| w.evaluate_script(script).is_ok())) }
+    pub(super) fn evaluate(script: &str) -> bool {
+        HOST.with(|h| {
+            h.borrow()
+                .webview
+                .as_ref()
+                .is_some_and(|w| w.evaluate_script(script).is_ok())
+        })
+    }
     fn refresh_theme() {
         crate::host::Shell::with(|_, app| {
             HOST.with(|host| {
@@ -302,7 +323,11 @@ mod native {
         #[serde(rename = "seecut:flow-context")]
         FlowContext { context: serde_json::Value },
         #[serde(rename = "seecut:flow-result")]
-        FlowResult { id: String, result: serde_json::Value, error: Option<String> },
+        FlowResult {
+            id: String,
+            result: serde_json::Value,
+            error: Option<String>,
+        },
         #[serde(rename = "seecut:close-ready")]
         CloseReady {
             #[serde(rename = "requestId")]
@@ -378,8 +403,10 @@ mod native {
 
     fn handle_host_message(message: HostMessage) {
         match message {
-            HostMessage::FlowContext {context} => crate::toonflow_agent::update(context),
-            HostMessage::FlowResult {id,result,error} => crate::toonflow_agent::complete(id,result,error),
+            HostMessage::FlowContext { context } => crate::toonflow_agent::update(context),
+            HostMessage::FlowResult { id, result, error } => {
+                crate::toonflow_agent::complete(id, result, error)
+            }
             HostMessage::ViewReady => {
                 HOST.with(|host| host.borrow_mut().app_ready = true);
                 sync();

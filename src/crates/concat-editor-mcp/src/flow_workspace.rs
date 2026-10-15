@@ -31,7 +31,16 @@ pub struct FlowWorkspace {
 mod tests {
     use super::*;
     fn call(name: &str) -> FlowWorkspace {
-        FlowWorkspace { project_id:"project".into(), canvas_id:"canvas".into(), session_id:"opening".into(), account_scope:"account:1".into(), revision:4, name:name.into(), args:serde_json::json!({}), operation_id:None }
+        FlowWorkspace {
+            project_id: "project".into(),
+            canvas_id: "canvas".into(),
+            session_id: "opening".into(),
+            account_scope: "account:1".into(),
+            revision: 4,
+            name: name.into(),
+            args: serde_json::json!({}),
+            operation_id: None,
+        }
     }
     #[test]
     fn only_reads_can_omit_original_operation_identity() {
@@ -39,26 +48,61 @@ mod tests {
         assert!(call("flow_get_task").valid());
         assert!(!call("flow_execute_node").valid());
         assert!(!call("flow_get_operation").valid());
-        let mut query=call("flow_get_operation");query.operation_id=Some("original".into());assert!(query.valid());
+        let mut query = call("flow_get_operation");
+        query.operation_id = Some("original".into());
+        assert!(query.valid());
         assert!(!call("flow_write").valid());
     }
     #[test]
     fn rejects_unbounded_or_unrecognized_call_fields() {
-        let mut value=serde_json::to_value(call("flow_read_canvas")).unwrap();
-        value["writeToken"]=serde_json::json!("unexpected");
+        let mut value = serde_json::to_value(call("flow_read_canvas")).unwrap();
+        value["writeToken"] = serde_json::json!("unexpected");
         assert!(serde_json::from_value::<FlowWorkspace>(value).is_err());
-        let mut oversized=call("flow_read_canvas");oversized.args=serde_json::json!({"text":"x".repeat(32769)});
+        let mut oversized = call("flow_read_canvas");
+        oversized.args = serde_json::json!({"text":"x".repeat(32769)});
         assert!(!oversized.valid());
     }
 }
 impl FlowWorkspace {
     /// Whether the operation only observes current state or a saved receipt.
-    pub fn is_read(&self) -> bool { matches!(self.name.as_str(), "flow_get_workspace" | "flow_read_canvas" | "flow_list_node_types" | "flow_get_node_tools" | "flow_get_operation" | "flow_get_node_config" | "flow_get_task") }
+    pub fn is_read(&self) -> bool {
+        matches!(
+            self.name.as_str(),
+            "flow_get_workspace"
+                | "flow_read_canvas"
+                | "flow_list_node_types"
+                | "flow_get_node_tools"
+                | "flow_get_operation"
+                | "flow_get_node_config"
+                | "flow_get_task"
+        )
+    }
     /// Reject unknown tools, invalid identities and unbounded arguments.
     pub fn valid(&self) -> bool {
-        [self.project_id.as_str(), self.canvas_id.as_str(), self.session_id.as_str(), self.account_scope.as_str()].iter().all(|s| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
-        && (self.is_read() || matches!(self.name.as_str(), "flow_add_node" | "flow_update_node" | "flow_connect_nodes" | "flow_delete_nodes" | "flow_switch_canvas" | "flow_execute_node"))
-        && self.args.is_object() && self.args.to_string().len() <= 32768
-        && ((self.is_read() && self.name != "flow_get_operation") || self.operation_id.as_ref().is_some_and(|s| !s.is_empty() && s.len() <= 192))
+        [
+            self.project_id.as_str(),
+            self.canvas_id.as_str(),
+            self.session_id.as_str(),
+            self.account_scope.as_str(),
+        ]
+        .iter()
+        .all(|s| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
+            && (self.is_read()
+                || matches!(
+                    self.name.as_str(),
+                    "flow_add_node"
+                        | "flow_update_node"
+                        | "flow_connect_nodes"
+                        | "flow_delete_nodes"
+                        | "flow_switch_canvas"
+                        | "flow_execute_node"
+                ))
+            && self.args.is_object()
+            && self.args.to_string().len() <= 32768
+            && ((self.is_read() && self.name != "flow_get_operation")
+                || self
+                    .operation_id
+                    .as_ref()
+                    .is_some_and(|s| !s.is_empty() && s.len() <= 192))
     }
 }

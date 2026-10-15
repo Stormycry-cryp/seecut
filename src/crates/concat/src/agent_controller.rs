@@ -158,8 +158,15 @@ impl ToolAction {
             "export_canvas_png" => Some(Self::Export),
             "canvas_operation" => Some(Self::Operation),
             "retry_canvas_registration" => Some(Self::RegistrationRetry),
-            "flow_get_workspace" | "flow_read_canvas" | "flow_list_node_types" | "flow_get_node_tools" | "flow_get_node_config" | "flow_get_task" | "flow_get_operation" => Some(Self::FlowRead),
-            "flow_add_node" | "flow_update_node" | "flow_connect_nodes" | "flow_delete_nodes" | "flow_switch_canvas" | "flow_execute_node" => Some(Self::FlowWrite),
+            "flow_get_workspace"
+            | "flow_read_canvas"
+            | "flow_list_node_types"
+            | "flow_get_node_tools"
+            | "flow_get_node_config"
+            | "flow_get_task"
+            | "flow_get_operation" => Some(Self::FlowRead),
+            "flow_add_node" | "flow_update_node" | "flow_connect_nodes" | "flow_delete_nodes"
+            | "flow_switch_canvas" | "flow_execute_node" => Some(Self::FlowWrite),
             _ => None,
         }
     }
@@ -679,7 +686,12 @@ impl Controller {
                             | "transform_canvas_layer"
                             | "save_canvas_project"
                             | "export_canvas_png"
-                            | "flow_add_node" | "flow_update_node" | "flow_connect_nodes" | "flow_delete_nodes" | "flow_switch_canvas" | "flow_execute_node"
+                            | "flow_add_node"
+                            | "flow_update_node"
+                            | "flow_connect_nodes"
+                            | "flow_delete_nodes"
+                            | "flow_switch_canvas"
+                            | "flow_execute_node"
                     )
                 )
             {
@@ -708,7 +720,10 @@ impl Controller {
                 || sequence == 0
                 || sequence > 9_007_199_254_740_991
                 || parameters["projectId"].as_str() != Some(project)
-                || (parameters["documentSessionId"].as_str().or_else(||parameters["sessionId"].as_str())) != Some(session)
+                || (parameters["documentSessionId"]
+                    .as_str()
+                    .or_else(|| parameters["sessionId"].as_str()))
+                    != Some(session)
                 || item["operationId"].as_str() != Some(operation)
                 || operation
                     != format!(
@@ -727,7 +742,9 @@ impl Controller {
                 client_sequence: sequence,
                 project_id: project.into(),
                 document_session_id: session.into(),
-                is_flow: item["toolName"].as_str().is_some_and(|n| n.starts_with("flow_")),
+                is_flow: item["toolName"]
+                    .as_str()
+                    .is_some_and(|n| n.starts_with("flow_")),
                 retry_registration: item["toolName"] == "export_canvas_png"
                     && item["result"]["status"] == "partial"
                     && item["result"]["data"]["operationId"].as_str() == Some(operation)
@@ -1556,7 +1573,12 @@ impl Controller {
                             | "export_canvas_png"
                             | "canvas_operation"
                             | "retry_canvas_registration"
-                            | "flow_add_node" | "flow_update_node" | "flow_connect_nodes" | "flow_delete_nodes" | "flow_switch_canvas" | "flow_execute_node"
+                            | "flow_add_node"
+                            | "flow_update_node"
+                            | "flow_connect_nodes"
+                            | "flow_delete_nodes"
+                            | "flow_switch_canvas"
+                            | "flow_execute_node"
                     )
                 {
                     self.fail(UiError::Protocol);
