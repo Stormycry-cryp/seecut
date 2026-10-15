@@ -214,10 +214,12 @@ mod native {
                     let Some(webview) = host.webview.as_ref() else {
                         return;
                     };
-                    if host.bounds != Some(values) && values[2] > 0 && values[3] > 0 {
-                        if let Err(error) = webview.set_bounds(bounds(values)) {
-                            log::warn!("Flow WebView bounds: {error}");
-                        }
+                    if host.bounds != Some(values)
+                        && values[2] > 0
+                        && values[3] > 0
+                        && let Err(error) = webview.set_bounds(bounds(values))
+                    {
+                        log::warn!("Flow WebView bounds: {error}");
                     }
                     if host.dark != Some(dark) {
                         if let Err(error) = webview.set_background_color(background_rgba) {
@@ -228,10 +230,10 @@ mod native {
                             log::warn!("Flow WebView theme: {error}");
                         }
                     }
-                    if host.zoom != Some(zoom) {
-                        if let Err(error) = webview.zoom(zoom) {
-                            log::warn!("Flow WebView zoom: {error}");
-                        }
+                    if host.zoom != Some(zoom)
+                        && let Err(error) = webview.zoom(zoom)
+                    {
+                        log::warn!("Flow WebView zoom: {error}");
                     }
                     let show = visible && host.loaded && host.app_ready;
                     if host.visible != show {
