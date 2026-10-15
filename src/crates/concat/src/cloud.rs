@@ -7922,18 +7922,7 @@ fn update_model_options_inner(
     );
     if mode != 0 {
         let resolution = parameter_value(&selected_model, "resolution", resolution_index);
-        let durations = selected_model["duration_resolution_map"]
-            .as_array()
-            .and_then(|groups| {
-                groups
-                    .iter()
-                    .find(|group| {
-                        group["resolution"]
-                            .as_array()
-                            .is_some_and(|values| values.contains(&resolution))
-                    })
-                    .map(|group| group["duration"].clone())
-            });
+        let durations = flow_parameters::duration_values(&selected_model, &resolution);
         if let Some(values) = durations {
             selected_model["parameters"]["duration"]["values"] = values;
         }
@@ -8923,6 +8912,9 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
             update_model_options(&app, &shared);
         }
         if field == "model" {
+            update_model_options(&app, &shared);
+        }
+        if field == "resolution" && app.global::<SeeCut>().get_mode() != 0 {
             update_model_options(&app, &shared);
         }
         if field == "mode" || field == "model" {

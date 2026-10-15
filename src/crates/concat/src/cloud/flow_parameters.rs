@@ -30,6 +30,17 @@ pub(crate) fn parameter_default(parameter: &Value) -> Value {
             .unwrap_or(Value::Null)
     })
 }
+pub(crate) fn duration_values(model: &Value, resolution: &Value) -> Option<Value> {
+    model["duration_resolution_map"]
+        .as_array()?
+        .iter()
+        .find(|group| {
+            group["resolution"]
+                .as_array()
+                .is_some_and(|values| values.contains(resolution))
+        })
+        .map(|group| group["duration"].clone())
+}
 pub(super) fn generation_body(
     model: &Value,
     prompt: &str,
@@ -218,5 +229,18 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn minimax_duration_options_expand_again_after_leaving_1080p() {
+        let model = json!({"duration_resolution_map":[
+            {"resolution":["480p","768p"],"duration":(1..=15).collect::<Vec<_>>()},
+            {"resolution":["1080p"],"duration":(1..=10).collect::<Vec<_>>()}
+        ]});
+        for (resolution, count) in [("480p", 15), ("1080p", 10), ("480p", 15), ("768p", 15)] {
+            let values = duration_values(&model, &json!(resolution)).unwrap();
+            assert_eq!(values.as_array().unwrap().len(), count);
+            assert_eq!(values.as_array().unwrap().last(), Some(&json!(count)));
+        }
     }
 }
