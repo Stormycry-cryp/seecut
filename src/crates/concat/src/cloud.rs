@@ -24,6 +24,7 @@ mod flow_generation;
 mod flow_parameters;
 mod generation_state;
 mod inspiration;
+pub(crate) mod prompt_assistance;
 mod preview_validation;
 pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, media_kind};
 
@@ -8991,6 +8992,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
     });
     refresh_canvas_projects(app, &state);
     auth_countdown(app.as_weak());
+    prompt_assistance::start(app.as_weak(), state.clone());
     heartbeat(app.as_weak(), state);
     account
 }

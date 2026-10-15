@@ -212,6 +212,18 @@ fn validate_references(model: &Value, assets: &[RegisteredAsset]) -> Result<(), 
     Ok(())
 }
 impl ImageClient {
+    pub(crate) fn prompt_assistance(&self, operation: &str, body: Value, key: &str) -> Result<Value, crate::toonflow_bridge::RpcError> {
+        if operation == "context" {
+            let capabilities = self.bridge_cloud_json("/api/prompts/capabilities")?;
+            return Ok(json!({"capabilities": capabilities, "templates": super::prompt_assistance::candidates()}));
+        }
+        if !matches!(operation, "recommend" | "rewrite") { return Err(crate::toonflow_bridge::RpcError::new("INVALID_REQUEST", "提示词操作无效")); }
+        let response = ureq::AgentBuilder::new().redirects(0).timeout(std::time::Duration::from_secs(45)).build()
+            .post(&format!("{}/api/prompts/{}", self.cloud.base, operation))
+            .set("Authorization", &format!("Bearer {}", self.cloud.token)).set("Idempotency-Key", key)
+            .send_json(body).map_err(crate::toonflow_bridge::RpcError::from_http)?;
+        response.into_json().map_err(|_| crate::toonflow_bridge::RpcError::new("INVALID_RESPONSE", "提示词服务返回无效响应"))
+    }
     /// 只供受信任的 Bun 业务桥使用；账户凭据始终留在 Rust。
     pub(crate) fn bridge_cloud_json(
         &self,

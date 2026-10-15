@@ -143,6 +143,10 @@ class SeeCutHandler(BaseHTTPRequestHandler):
 
         user, raw_token = self._auth()
         user_id = user["id"]
+        if method == "GET" and path == "/api/prompts/capabilities":
+            return 200, self.service.prompt_assistance.capabilities()
+        if method == "POST" and path in {"/api/prompts/recommend", "/api/prompts/rewrite"}:
+            return 200, self.service.prompt_assistance.run(user_id, path.rsplit("/", 1)[1], self.headers.get("Idempotency-Key", ""), self._json_body())
         if method == "GET" and path == "/api/flow/projects":
             return 200, self.service.flow_projects.list(user_id)
         flow_match = re.fullmatch(r"/api/flow/projects/([^/]+)(/snapshot)?", path)
