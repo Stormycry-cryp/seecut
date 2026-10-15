@@ -1,2 +1,3 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+integrations/toonflow/integration.patch -text -whitespace

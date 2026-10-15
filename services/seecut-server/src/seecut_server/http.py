@@ -143,6 +143,47 @@ class SeeCutHandler(BaseHTTPRequestHandler):
 
         user, raw_token = self._auth()
         user_id = user["id"]
+        if method == "GET" and path == "/api/flow/projects":
+            return 200, self.service.flow_projects.list(user_id)
+        flow_match = re.fullmatch(r"/api/flow/projects/([^/]+)(/snapshot)?", path)
+        if flow_match:
+            query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            flow = self.service.flow_projects
+            project_id, snapshot = flow_match.groups()
+            if any(len(query.get(key, [])) > 1 for key in ("revision", "base_revision", "name")):
+                raise ApiError(400, "FLOW_INVALID_REQUEST", "Flow 请求参数重复")
+            revision = query.get("revision", [None])[0]
+            if method == "GET" and not snapshot:
+                return 200, flow.get(user_id, project_id, revision)
+            if method == "GET" and snapshot:
+                file_path, metadata = flow.download(user_id, project_id, revision)
+                self._file(file_path, "application/zip", f"{metadata['id']}-r{metadata['revision']}.zip", headers={
+                    "X-Content-SHA256": metadata["sha256"], "X-Flow-Revision": str(metadata["revision"]),
+                    "Cache-Control": "no-store", "ETag": f'"{metadata["sha256"]}"',
+                })
+                return None
+            if method == "PUT" and snapshot:
+                # This route consumes a bounded binary stream, never JSON or
+                # the media-upload purpose/ledger pipeline.
+                self.close_connection = True
+                if any(len(self.headers.get_all(header, [])) > 1 for header in ("Content-Length", "Content-Type", "X-Content-SHA256", "Idempotency-Key")):
+                    raise ApiError(400, "FLOW_INVALID_REQUEST", "Flow 上传请求头重复")
+                if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/zip":
+                    raise ApiError(415, "FLOW_CONTENT_TYPE_REQUIRED", "Flow 快照需要 application/zip")
+                if self.headers.get("Transfer-Encoding"):
+                    raise ApiError(400, "FLOW_INVALID_REQUEST", "Flow 上传需要明确的 Content-Length")
+                if not self.headers.get("Content-Length"):
+                    raise ApiError(411, "FLOW_LENGTH_REQUIRED", "Flow 上传缺少 Content-Length")
+                length = self._content_length(flow.max_snapshot_bytes)
+                old_timeout = self.connection.gettimeout()
+                self.connection.settimeout(30)
+                try:
+                    return 200, flow.save(user_id, project_id, self.rfile, length,
+                                          self.headers.get("X-Content-SHA256", ""), self.headers.get("Idempotency-Key", ""),
+                                          query.get("base_revision", [None])[0], query.get("name", [""])[0])
+                finally:
+                    self.connection.settimeout(old_timeout)
+            raise ApiError(404, "NOT_FOUND", "接口不存在")
         if path.startswith("/api/assistant/"):
             assistant = self.service.assistant
             key = self.headers.get("Idempotency-Key", "")
@@ -353,11 +394,13 @@ class SeeCutHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _file(self, path: Path, content_type: str, filename: str) -> None:
+    def _file(self, path: Path, content_type: str, filename: str, *, headers: dict[str, str] | None = None) -> None:
         size = path.stat().st_size
         self.send_response(200)
         self.send_header("Content-Type", content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream")
         self.send_header("Content-Length", str(size))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         safe_filename = Path(filename).name.replace("\r", "").replace("\n", "").replace('"', "")
         self.send_header(
             "Content-Disposition",

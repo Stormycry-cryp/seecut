@@ -233,3 +233,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Toonflow 嵌入实验
+
+本分支的 Toonflow 依赖固定于 HBAI-Ltd/Toonflow-app v2.0.6，提交
+`c6756b9c23e87aff1ecafad6ebf8dfbe015a74a2`。完整版权及 MIT 许可见
+`integrations/toonflow/LICENSE`；嵌入模式、主题和本地启动器的修改记录见
+`integrations/toonflow/SOURCE.md`。上游按固定提交加补丁准备到本地
+`external/toonflow`，不把完整上游源码纳入 SeeCut 提交。其传递依赖保留各自的许可。
+
+原生 WebView 使用 Wry 0.57.0，来源 https://github.com/tauri-apps/wry ，按其
+MIT 选项使用；对应许可随 Cargo 源码包提供。系统 WebView 由平台提供。
+实验运行时使用 Bun 1.3.14，来源 https://github.com/oven-sh/bun ，对应许可及
+第三方说明应在正式分发前与二进制一起核对。本分支的本地实验包不构成正式发布。

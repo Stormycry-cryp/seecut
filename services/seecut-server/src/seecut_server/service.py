@@ -43,6 +43,7 @@ from .security import (
 from .xiangxin import XiangxinClient, XiangxinError
 from .image2 import Image2Client, Image2Error
 from .network import open_no_redirect, read_limited
+from .flow_projects import FlowProjects
 
 
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -73,6 +74,7 @@ class SeeCutService:
         self.clock = clock
         self.assistant = AssistantService(self, assistant_provider if assistant_provider is not None else make_assistant_provider(config, self.db), providers=assistant_providers)
         self.config.storage_path.mkdir(parents=True, exist_ok=True)
+        self.flow_projects = FlowProjects(self)
 
     def now(self) -> int:
         return int(self.clock())
@@ -90,6 +92,7 @@ class SeeCutService:
                 "live_initiation_enabled": self.config.alipay_configured(),
             },
             "storage": {"provider": "local_signed_url"},
+            "flow_projects": self.flow_projects.capabilities(),
         }
 
     # Accounts and sessions

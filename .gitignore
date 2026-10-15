@@ -56,3 +56,7 @@ desktop.ini
 # FFmpeg built for a phone by src/scripts/ffmpeg-mobile.sh: sources,
 # build trees and the installed prefixes, all machine-built.
 /src/vendor/
+# 本地嵌入实验的可重建运行时与验收产物。
+/.toonflow/
+# 固定提交与适配补丁生成的上游依赖，来源见 integrations/toonflow。
+/external/toonflow/

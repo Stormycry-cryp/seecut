@@ -254,6 +254,58 @@ fn validate_references(model: &Value, assets: &[RegisteredAsset]) -> Result<(), 
     Ok(())
 }
 impl ImageClient {
+    /// 只供受信任的 Bun 业务桥使用；账户凭据始终留在 Rust。
+    pub(crate) fn bridge_cloud_json(
+        &self,
+        path: &str,
+    ) -> Result<Value, crate::toonflow_bridge::RpcError> {
+        let response = ureq::AgentBuilder::new()
+            .redirects(0)
+            .timeout(std::time::Duration::from_secs(45))
+            .build()
+            .get(&format!("{}{}", self.cloud.base, path))
+            .set("Authorization", &format!("Bearer {}", self.cloud.token))
+            .call()
+            .map_err(crate::toonflow_bridge::RpcError::from_http)?;
+        response.into_json().map_err(|_| {
+            crate::toonflow_bridge::RpcError::new("INVALID_RESPONSE", "云端返回了无效 JSON")
+        })
+    }
+    pub(crate) fn bridge_cloud_upload(
+        &self,
+        path: &str,
+        file: &std::path::Path,
+        sha256: &str,
+        key: &str,
+    ) -> Result<Value, crate::toonflow_bridge::RpcError> {
+        let source = std::fs::File::open(file).map_err(crate::toonflow_bridge::RpcError::io)?;
+        let size = source
+            .metadata()
+            .map_err(crate::toonflow_bridge::RpcError::io)?
+            .len();
+        let response = ureq::AgentBuilder::new()
+            .redirects(0)
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .put(&format!("{}{}", self.cloud.base, path))
+            .set("Authorization", &format!("Bearer {}", self.cloud.token))
+            .set("Content-Type", "application/zip")
+            .set("Content-Length", &size.to_string())
+            .set("X-Content-SHA256", sha256)
+            .set("Idempotency-Key", key)
+            .send(source)
+            .map_err(crate::toonflow_bridge::RpcError::from_http)?;
+        response.into_json().map_err(|_| {
+            crate::toonflow_bridge::RpcError::new("INVALID_RESPONSE", "云端返回了无效 JSON")
+        })
+    }
+    pub(crate) fn bridge_download(
+        &self,
+        url: &str,
+        target: &std::path::Path,
+    ) -> Result<PathBuf, String> {
+        crate::cloud_files::download(&self.cloud.base, &self.cloud.token, url, target)
+    }
     fn api_raw(
         &self,
         method: &str,
@@ -279,6 +331,12 @@ impl ImageClient {
         self.api("GET", "/api/generation/models", Value::Null, None)
     }
     pub(crate) fn prepare(&self, draft: &GenerationDraft) -> Result<Value, String> {
+        self.prepare_with_quote(draft).map(|(body, _)| body)
+    }
+    pub(crate) fn prepare_with_quote(
+        &self,
+        draft: &GenerationDraft,
+    ) -> Result<(Value, Value), String> {
         if draft.context.scope != self.scope {
             return Err("账户或服务已切换".into());
         }
@@ -371,7 +429,7 @@ impl ImageClient {
         if body["quote_id"].as_str().is_none_or(str::is_empty) {
             return Err("报价未完成".into());
         }
-        Ok(body)
+        Ok((body, quote))
     }
     /// Called only after the owner Store successfully committed the original key/body.
     pub(crate) fn submit(&self, attempt: &Attempt) -> Result<Value, SubmissionFailure> {
