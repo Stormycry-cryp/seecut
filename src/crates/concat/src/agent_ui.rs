@@ -1763,9 +1763,9 @@ mod desktop {
             if frozen != state.editor_recovery {
                 state.notice = "待核对原操作已变化，请检查当前任务".into();
             } else if let Some(operation) = frozen {
-                let mut permission = Err("无法读取原操作回执");
+                let mut permission = Ok(());
                 let mut permit = None;
-                Shell::with(|shell, _| {
+                if !operation.is_flow { Shell::with(|shell, _| {
                     let studio = shell.studio.borrow();
                     permission = studio
                         .editor_mcp
@@ -1784,7 +1784,7 @@ mod desktop {
                             permit = Some(id);
                         })
                         .map_err(|error| error.message());
-                });
+                }); }
                 if let Err(error) = permission {
                     state.notice = error.into();
                 } else if let Err(error) = state.controller.reconcile_editor(&operation) {

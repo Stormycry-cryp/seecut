@@ -71,6 +71,9 @@ mod registration_retry;
 mod toonflow_bridge;
 mod toonflow_service;
 mod toonflow_webview;
+mod toonflow_agent;
+#[cfg(target_os = "macos")]
+mod toonflow_overlay_macos;
 /// What a phone's own crate installs before the window runs: the way to
 /// the system's file picker. See `platform::pick_files_async`.
 #[cfg(any(target_os = "android", target_os = "ios"))]

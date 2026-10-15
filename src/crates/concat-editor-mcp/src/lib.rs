@@ -9,6 +9,8 @@ use std::time::Duration;
 
 mod canvas;
 mod flow;
+mod flow_workspace;
+pub use flow_workspace::FlowWorkspace;
 pub use canvas::{
     AssetVersion, CanvasAction, CanvasParameters, LibraryQuery, OperationQuery,
     validate_canvas_parameters,
@@ -71,6 +73,9 @@ pub struct Request {
     #[serde(default)]
     /// Typed current-Flow identity and bounded action.
     pub flow: Option<FlowParameters>,
+    #[serde(default)]
+    /// Account-bound embedded Flow operation.
+    pub flow_workspace: Option<FlowWorkspace>,
 }
 
 /// A single atomic translation of the current single selected image layer.
@@ -122,6 +127,8 @@ pub enum Method {
     RetryCanvasRegistration,
     /// Read the current Flow graph or original action receipt.
     FlowRead,
+    /// Controlled operation on the embedded Flow workspace.
+    FlowWorkspace,
     /// Execute one approved Flow graph action.
     FlowWrite,
 }
@@ -156,6 +163,7 @@ impl Method {
             Self::CanvasOperation => "canvas_operation",
             Self::RetryCanvasRegistration => "retry_canvas_registration",
             Self::FlowRead => "flow_read",
+            Self::FlowWorkspace => "flow_workspace",
             Self::FlowWrite => "flow_write",
         }
     }
@@ -218,6 +226,14 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if request.method == Method::FlowWorkspace || request.flow_workspace.is_some() {
+        return if request.method == Method::FlowWorkspace && request.flow_workspace.as_ref().is_some_and(FlowWorkspace::valid)
+            && request.flow.is_none() && request.canvas_parameters.is_none() && request.move_parameters.is_none()
+            && request.library_query.is_none() && request.operation_query.is_none()
+            && request.project_id.is_none() && request.document_session_id.is_none()
+            && request.revision.is_none() && request.context_revision.is_none() && request.object_id.is_none()
+            && request.offset.is_none() && request.limit.is_none() && request.max_edge.is_none() { Ok(()) } else { Err("invalidInput".into()) };
+    }
     if request.flow.is_some() || matches!(request.method, Method::FlowRead | Method::FlowWrite) {
         return flow::validate(request);
     }
@@ -564,6 +580,7 @@ mod tests {
             library_query: None,
             operation_query: None,
             flow: None,
+            flow_workspace: None,
             instance_id: "app".into(),
             client_id: "client".into(),
             client_token: "write-credential".into(),
@@ -851,6 +868,7 @@ mod tests {
             library_query: None,
             operation_query: None,
             flow: None,
+            flow_workspace: None,
             instance_id: "app".into(),
             client_id: "c".into(),
             client_token: "t".into(),
@@ -884,6 +902,7 @@ mod tests {
             library_query: None,
             operation_query: None,
             flow: None,
+            flow_workspace: None,
             instance_id: "first".into(),
             client_id: "c".into(),
             client_token: "t".into(),

@@ -102,6 +102,7 @@ pub struct EditorRecovery {
     pub project_id: String,
     pub document_session_id: String,
     pub retry_registration: bool,
+    pub is_flow: bool,
 }
 impl EditorRecovery {
     pub fn query_arguments(&self) -> Value {
@@ -139,6 +140,8 @@ enum ToolAction {
     Export,
     Operation,
     RegistrationRetry,
+    FlowRead,
+    FlowWrite,
 }
 impl ToolAction {
     fn from_name(name: &str) -> Option<Self> {
@@ -155,6 +158,8 @@ impl ToolAction {
             "export_canvas_png" => Some(Self::Export),
             "canvas_operation" => Some(Self::Operation),
             "retry_canvas_registration" => Some(Self::RegistrationRetry),
+            "flow_get_workspace" | "flow_read_canvas" | "flow_list_node_types" | "flow_get_node_tools" | "flow_get_node_config" | "flow_get_task" | "flow_get_operation" => Some(Self::FlowRead),
+            "flow_add_node" | "flow_update_node" | "flow_connect_nodes" | "flow_delete_nodes" | "flow_switch_canvas" | "flow_execute_node" => Some(Self::FlowWrite),
             _ => None,
         }
     }
@@ -167,6 +172,7 @@ impl ToolAction {
                 | Self::Save
                 | Self::Export
                 | Self::RegistrationRetry
+                | Self::FlowWrite
         )
     }
     fn label(self) -> &'static str {
@@ -183,6 +189,8 @@ impl ToolAction {
             Self::Export => "导出并入库",
             Self::Operation => "核对操作结果",
             Self::RegistrationRetry => "登记原 PNG",
+            Self::FlowRead => "读取 Flow",
+            Self::FlowWrite => "操作 Flow",
         }
     }
 }
@@ -671,6 +679,7 @@ impl Controller {
                             | "transform_canvas_layer"
                             | "save_canvas_project"
                             | "export_canvas_png"
+                            | "flow_add_node" | "flow_update_node" | "flow_connect_nodes" | "flow_delete_nodes" | "flow_switch_canvas" | "flow_execute_node"
                     )
                 )
             {
@@ -699,7 +708,7 @@ impl Controller {
                 || sequence == 0
                 || sequence > 9_007_199_254_740_991
                 || parameters["projectId"].as_str() != Some(project)
-                || parameters["documentSessionId"].as_str() != Some(session)
+                || (parameters["documentSessionId"].as_str().or_else(||parameters["sessionId"].as_str())) != Some(session)
                 || item["operationId"].as_str() != Some(operation)
                 || operation
                     != format!(
@@ -718,6 +727,7 @@ impl Controller {
                 client_sequence: sequence,
                 project_id: project.into(),
                 document_session_id: session.into(),
+                is_flow: item["toolName"].as_str().is_some_and(|n| n.starts_with("flow_")),
                 retry_registration: item["toolName"] == "export_canvas_png"
                     && item["result"]["status"] == "partial"
                     && item["result"]["data"]["operationId"].as_str() == Some(operation)
@@ -1546,6 +1556,7 @@ impl Controller {
                             | "export_canvas_png"
                             | "canvas_operation"
                             | "retry_canvas_registration"
+                            | "flow_add_node" | "flow_update_node" | "flow_connect_nodes" | "flow_delete_nodes" | "flow_switch_canvas" | "flow_execute_node"
                     )
                 {
                     self.fail(UiError::Protocol);
@@ -3480,6 +3491,7 @@ for line in sys.stdin:
             project_id: f.identity.project_id.clone(),
             document_session_id: f.identity.document_session_id.clone(),
             retry_registration: false,
+            is_flow: false,
         });
         f.controller.write_in_flight = true;
         f.controller.write_identity = Some((

@@ -91,13 +91,18 @@ export component App inherits Window {
     // delivered from until the first press landed somewhere.
     forward-focus: keys;
 
-    // 子 WebView 位于原生视图层，弹窗和助手出现时先隐藏它。
+    // Modal dialogs hide the WebView; the assistant has its own native cutout.
     out property <float> flow-host-x: flow-host.absolute-position.x / 1px;
     out property <float> flow-host-y: flow-host.absolute-position.y / 1px;
     out property <float> flow-host-width: flow-host.width / 1px;
     out property <float> flow-host-height: flow-host.height / 1px;
     out property <bool> flow-host-active: SeeCut.page == 8 && !root.assistant-ui-blocked
-        && !root.assistant-show && root.open-menu < 0 && !root.minimized && root.flow-close-error == "";
+        && (root.macos || !root.assistant-show) && root.open-menu < 0 && !root.minimized && root.flow-close-error == "";
+    out property <float> flow-overlay-x: assistant-panel.absolute-position.x / 1px;
+    out property <float> flow-overlay-y: assistant-panel.absolute-position.y / 1px;
+    out property <float> flow-overlay-width: assistant-panel.width / 1px;
+    out property <float> flow-overlay-height: assistant-panel.height / 1px;
+    out property <bool> flow-overlay-visible: Assistant.enabled && !root.assistant-ui-blocked;
     in property <string> flow-host-error;
     in property <string> flow-close-error;
     callback flow-close-retry();

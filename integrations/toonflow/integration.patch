@@ -834,6 +834,66 @@ index 0000000..b5f74d2
 +  });
 +  return router;
 +}
+diff --git a/apps/server/src/seecutFlowOperations.ts b/apps/server/src/seecutFlowOperations.ts
+new file mode 100644
+index 0000000..253a25e
+--- /dev/null
++++ b/apps/server/src/seecutFlowOperations.ts
+@@ -0,0 +1,54 @@
++import express from 'express';
++import { createHash } from 'node:crypto';
++import { mkdir, readFile, lstat } from 'node:fs/promises';
++import { join } from 'node:path';
++import { writeAtomic } from '@toonflow/file';
++import { nativeCall, type SeecutAccount } from './seecutNative';
++
++// Outside exported project ZIPs: imported project data cannot manufacture operation receipts.
++export function createSeecutFlowOperations(dataDirectory: string) {
++  const router = express.Router();
++  const root = join(dataDirectory, 'seecut-flow-operations');
++  let queue = Promise.resolve();
++  router.use(express.json({limit: '256kb'}));
++  const account = async (expected?: string) => {
++    const a = await nativeCall<SeecutAccount>('account.status');
++    const scope = `${a.signedIn ? a.scopeKey : 'local'}:${a.epoch ?? 0}`;
++    if (expected !== undefined && scope !== expected) throw new Error('FLOW_ACCOUNT_CHANGED');
++    return scope;
++  };
++  router.get('/flow/account', async (_req, res) => { res.json({ accountScope: await account() }); });
++  router.post('/flow/operation', async (req, res, next) => {
++    const run = queue.then(async () => {
++      const {call, action, result} = req.body;
++      if (!call || !['begin', 'get', 'finish'].includes(action) || typeof call.operationId !== 'string' || !call.operationId || call.operationId.length > 192
++        || typeof call.clientId !== 'string' || !call.clientId || call.clientId.length > 64 || typeof call.accountScope !== 'string' || typeof call.projectId !== 'string' || typeof call.canvasId !== 'string' || typeof call.sessionId !== 'string') throw new Error('FLOW_INVALID_OPERATION');
++      await account(call.accountScope);
++      const key = createHash('sha256').update(JSON.stringify([call.accountScope, call.clientId, call.projectId, call.operationId])).digest('hex');
++      const path = join(root, `${key}.json`);
++      const fingerprint = createHash('sha256').update(JSON.stringify(call)).digest('hex');
++      let old: any;
++      try { const stat = await lstat(path); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 512*1024) throw new Error('FLOW_INVALID_RECEIPT'); old = JSON.parse(await readFile(path, 'utf8')); }
++      catch (e: any) { if (e.code !== 'ENOENT') throw e; }
++      if (old && action !== 'get' && old.fingerprint !== fingerprint) throw new Error('FLOW_OPERATION_CONFLICT');
++      if (action === 'get') {
++        // Original operation queries need only ownership/identity; exact replays must also match arguments.
++        if (old && call.name !== 'flow_get_operation' && old.fingerprint !== fingerprint) throw new Error('FLOW_OPERATION_CONFLICT');
++        return old ?? null;
++      }
++      if (action === 'begin' && old) return old;
++      if (action === 'finish' && (!old || old.status !== 'accepted')) throw new Error('FLOW_OPERATION_CONFLICT');
++      if (action === 'finish' && (!result || !['completed','outcomeUnknown'].includes(result.status))) throw new Error('FLOW_INVALID_RECEIPT');
++      const receipt = action === 'begin' ? { operationId: call.operationId, fingerprint, status: 'accepted', binding: {projectId: call.projectId, canvasId: call.canvasId, sessionId: call.sessionId} } : {...old, ...result};
++      if (Buffer.byteLength(JSON.stringify(receipt)) > 256*1024) throw new Error('FLOW_RESULT_TOO_LARGE');
++      await mkdir(root, {recursive:true, mode:0o700});
++      await account(call.accountScope);
++      await writeAtomic(path, JSON.stringify(receipt), {mode:0o600});
++      return receipt;
++    });
++    queue = run.then(()=>{},()=>{});
++    try { res.json(await run); } catch(e) { next(e); }
++  });
++  router.use((e: any, _req: any, res: any, _next: any) => res.status(409).json({error: String(e.message || 'FLOW_OPERATION_FAILED')}));
++  return router;
++}
 diff --git a/apps/server/src/seecutGeneration.ts b/apps/server/src/seecutGeneration.ts
 new file mode 100644
 index 0000000..526ffd0
@@ -1384,10 +1444,11 @@ index 0000000..526ffd0
 +}
 diff --git a/apps/server/src/seecutHost.ts b/apps/server/src/seecutHost.ts
 new file mode 100644
-index 0000000..196c611
+index 0000000..264e06c
 --- /dev/null
 +++ b/apps/server/src/seecutHost.ts
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,101 @@
++import { createSeecutFlowOperations } from "./seecutFlowOperations";
 +import express from "express";
 +import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 +import { resolve } from "node:path";
@@ -1457,6 +1518,7 @@ index 0000000..196c611
 +});
 +
 +const projects = await createSeecutProjects(dataDirectory);
++app.use("/__seecut", createSeecutFlowOperations(dataDirectory));
 +setSeecutGenerationObserver(directory => projects.touch(projects.projectIdForDirectory(directory)));
 +setSeecutGenerationWriteBarrier(projects.withProjectWrite);
 +app.use("/__seecut", projects.router);
@@ -2401,15 +2463,18 @@ index 3615205..db1e404 100644
  }
  
 diff --git a/apps/web/src/lib/mcpControl.ts b/apps/web/src/lib/mcpControl.ts
-index 729aa59..f40dd58 100644
+index 729aa59..65781fd 100644
 --- a/apps/web/src/lib/mcpControl.ts
 +++ b/apps/web/src/lib/mcpControl.ts
-@@ -8,12 +8,17 @@ import { useWorkspaceStore } from "@/stores/workspace";
+@@ -6,14 +6,19 @@ import { invalidateNodeModels } from "@toonflow/nodes-scaffold/nodeAi";
+ import { saveSettings, settings } from "@/stores/settings";
+ import { useWorkspaceStore } from "@/stores/workspace";
  
- type ControlCall = { type: "call"; callId: string; name: string; args: Record<string, unknown>; directory?: string };
+-type ControlCall = { type: "call"; callId: string; name: string; args: Record<string, unknown>; directory?: string };
++type ControlCall = { type: "call"; callId: string; name: string; args: Record<string, unknown>; directory?: string; expectedCanvasId?: string; expectedRevision?: number };
  type WorkspaceControl = {
 -  getState(): { directory: string | null; canvasId: string | null; panel: string; tools: NodeToolInfo[]; document?: unknown };
-+  getState(): { directory: string | null; canvasId: string | null; panel: string; canvasReady?: boolean; canvasListReady?: boolean; canvasLoadError?: string; tools: NodeToolInfo[]; document?: unknown };
++  getState(): { directory: string | null; canvasId: string | null; panel: string; canvasReady?: boolean; canvasListReady?: boolean; canvasLoadError?: string; tools: NodeToolInfo[]; document?: unknown; flowRevision?: number; selectedNodeIds?: string[]; projectName?: string; flowBusy?: boolean };
    call(request: ControlCall, signal: AbortSignal): Promise<unknown>;
    flushSave(): Promise<void>;
 +  assertCanLeave(): void;
@@ -2627,6 +2692,176 @@ index 0000000..40be100
 +    window.removeEventListener("seecut-theme", receiveTheme);
 +  };
 +}
+diff --git a/apps/web/src/lib/seecutFlowControl.ts b/apps/web/src/lib/seecutFlowControl.ts
+new file mode 100644
+index 0000000..22a23b5
+--- /dev/null
++++ b/apps/web/src/lib/seecutFlowControl.ts
+@@ -0,0 +1,71 @@
++import { watch } from 'vue';
++import { getWorkspaceControl } from './mcpControl';
++import { currentSeecutProjectId, seecutOpeningProject } from './seecutWorkspaceBridge';
++import { isSeecutEmbedded } from './seecutEmbedded';
++import { createFlowGate, type FlowBinding, type FlowCall } from './seecutFlowGate';
++
++declare global { interface Window { __SEECUT_FLOW_CALL__?: (call: FlowCall) => Promise<unknown> } }
++export function installSeecutFlowControl() {
++  if (!isSeecutEmbedded) return () => {};
++  let accountScope = '';
++  let sessionId = crypto.randomUUID();
++  let bindingKey = '';
++  let lifetime = new AbortController();
++  let stopped = false;
++  const host = (message: object) => (window as Window & {ipc?:{postMessage(value:string):void}}).ipc?.postMessage(JSON.stringify(message));
++  async function request(path: string, body?: unknown) {
++    const response = await fetch(`/__seecut/flow/${path}`, {credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(10000), ...(body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {})});
++    const value = await response.json();
++    if (!response.ok) throw new Error(value.error || 'FLOW_UNAVAILABLE');
++    return value;
++  }
++  async function account(expected?: string) {
++    const value = await request('account');
++    if (typeof value.accountScope !== 'string') throw new Error('FLOW_ACCOUNT_UNAVAILABLE');
++    accountScope = value.accountScope;
++    publish();
++    if (expected !== undefined && expected !== accountScope) throw new Error('FLOW_ACCOUNT_CHANGED');
++  }
++  function binding(): FlowBinding | undefined {
++    const state = getWorkspaceControl()?.getState();
++    if (!accountScope || !currentSeecutProjectId.value || !state?.canvasReady || !state.canvasId || seecutOpeningProject.value) return;
++    return {projectId:currentSeecutProjectId.value, canvasId:state.canvasId, sessionId, accountScope, revision:state.flowRevision ?? 0};
++  }
++  function publish() {
++    if (stopped) return;
++    const state = getWorkspaceControl()?.getState();
++    const key = JSON.stringify([currentSeecutProjectId.value, state?.canvasId, accountScope, state?.canvasReady, seecutOpeningProject.value]);
++    if (key !== bindingKey) {
++      bindingKey = key; sessionId = crypto.randomUUID();
++      lifetime.abort(new Error('FLOW_BINDING_CHANGED')); lifetime = new AbortController();
++    }
++    host({type:'seecut:flow-context', context:binding() ? {...binding(), selectedNodeIds:state?.selectedNodeIds ?? [], name:state?.projectName ?? '', busy:state?.flowBusy ?? false} : null});
++  }
++  const gate = createFlowGate({ binding, account,
++    receipt:(call, action, result) => request('operation', {call, action, result}),
++    workspace:async () => {
++      const control = getWorkspaceControl()!;
++      const call = (name: string, args: Record<string,unknown>) => control.call({type:'call',callId:crypto.randomUUID(), name,args}, lifetime.signal);
++      return {...binding(), selectedNodeIds:control.getState().selectedNodeIds ?? [], canvas:await call('getCanvas',{include:['canvases','nodeTypes']}), selected:await call('findCanvasNodes',{selectedOnly:true}), edges:await call('getCanvasEdges',{limit:100})};
++    },
++    execute:async (command, signal, call) => {
++      const control = getWorkspaceControl(); if (!control) throw new Error('FLOW_UNAVAILABLE');
++      return control.call({type:'call',callId:crypto.randomUUID(), ...command, expectedCanvasId:call.canvasId, expectedRevision:call.revision}, signal);
++    },
++    flush:async () => { await getWorkspaceControl()?.flushSave(); publish(); },
++  });
++  window.__SEECUT_FLOW_CALL__ = async call => {
++    await account(call.accountScope);
++    // Capture lifetime after refreshing the account. Canvas tools also guard their exact binding.
++    const signal = AbortSignal.any([...(call.name === "flow_switch_canvas" ? [] : [lifetime.signal]), AbortSignal.timeout(125000)]);
++    return gate(call, signal);
++  };
++  const stop = watch(()=>[currentSeecutProjectId.value, seecutOpeningProject.value, getWorkspaceControl()?.getState()], publish, {deep:true, flush:'post'});
++  let checking = false;
++  const timer = setInterval(() => {
++    if (checking) return; checking = true;
++    void account().catch(()=>{accountScope=''; publish();}).finally(()=>{checking=false;});
++  }, 1000);
++  void account().catch(()=>publish());
++  return () => { stopped=true;stop();clearInterval(timer);lifetime.abort();delete window.__SEECUT_FLOW_CALL__;host({type:'seecut:flow-context',context:null}); };
++}
+diff --git a/apps/web/src/lib/seecutFlowGate.ts b/apps/web/src/lib/seecutFlowGate.ts
+new file mode 100644
+index 0000000..34cd5e2
+--- /dev/null
++++ b/apps/web/src/lib/seecutFlowGate.ts
+@@ -0,0 +1,87 @@
++/** One current-workspace gate for native Agent and MCP. Never edits JSON files. */
++export type FlowBinding = { projectId: string; canvasId: string; sessionId: string; accountScope: string; revision: number };
++export type FlowCall = FlowBinding & { name: string; args: Record<string, unknown>; operationId?: string };
++export const flowReads = new Set(['flow_get_workspace', 'flow_read_canvas', 'flow_list_node_types', 'flow_get_node_tools', 'flow_get_operation', 'flow_get_node_config', 'flow_get_task']);
++export const flowCommands: Record<string, string> = {
++  flow_get_node_config: 'nodeTools', flow_get_task: 'nodeTools',
++  flow_read_canvas: 'getCanvasNodes', flow_list_node_types: 'getCanvas', flow_get_node_tools: 'getNodeTools',
++  flow_add_node: 'addNode', flow_update_node: 'nodeTools', flow_connect_nodes: 'connectNodes',
++  flow_delete_nodes: 'deleteNodes', flow_switch_canvas: 'switchCanvas', flow_execute_node: 'nodeTools',
++};
++export function assertFlowBinding(actual: FlowBinding | undefined, expected: FlowBinding, revision = true) {
++  if (!actual || ['projectId', 'canvasId', 'sessionId', 'accountScope'].some(key => actual[key as keyof FlowBinding] !== expected[key as keyof FlowBinding])) throw new Error('FLOW_BINDING_CHANGED');
++  if (revision && actual.revision !== expected.revision) throw new Error('FLOW_STALE_REVISION');
++}
++export function flowCommand(call: FlowCall) {
++  const name = flowCommands[call.name];
++  if (!name) throw new Error('FLOW_TOOL_UNAVAILABLE');
++  const args = structuredClone(call.args);
++  if (call.name === 'flow_get_node_config' || call.name === 'flow_get_task') return {name, args:{nodeId:args.nodeId, name:call.name === 'flow_get_node_config' ? 'node:getConfig' : 'node:getRecordedGeneration', args:{}}};
++  if (call.name === 'flow_update_node' && (args.args as any)?.providerId !== undefined && (args.args as any)?.providerId !== 'seecut') throw new Error('FLOW_MANAGED_PROVIDER_REQUIRED');
++  if ('canvasId' in args && args.canvasId !== call.canvasId && call.name !== 'flow_switch_canvas') throw new Error('FLOW_BINDING_CHANGED');
++  if (call.name === 'flow_list_node_types') return { name, args: { include: ['nodeTypes', 'canvases'], ...args, canvasId: call.canvasId } };
++  if (call.name === 'flow_update_node' && !['node:setConfig', 'node:setPrompt', 'node:setText'].includes(String(args.name))) throw new Error('FLOW_TOOL_UNAVAILABLE');
++  if (call.name === 'flow_execute_node' && !['node:generateImage', 'node:generateVideo'].includes(String(args.name))) throw new Error('FLOW_TOOL_UNAVAILABLE');
++  return { name, args };
++}
++export function createFlowGate(deps: {
++  binding(): FlowBinding | undefined;
++  account(expected: string): Promise<void>;
++  receipt(call: FlowCall, action: 'begin' | 'get' | 'finish', result?: unknown): Promise<any>;
++  workspace(): Promise<unknown>;
++  execute(command: {name: string; args: Record<string, unknown>}, signal: AbortSignal, call: FlowCall): Promise<unknown>;
++  flush(): Promise<void>;
++}) {
++  let busy = false;
++  return async (call: FlowCall, signal: AbortSignal) => {
++    signal.throwIfAborted();
++    await deps.account(call.accountScope);
++    if (call.name === 'flow_get_operation') return deps.receipt(call, 'get');
++    assertFlowBinding(deps.binding(), call, false);
++    if (call.name === 'flow_get_workspace') return deps.workspace();
++    const command = flowCommand(call);
++    if (flowReads.has(call.name)) {
++      assertFlowBinding(deps.binding(), call);
++      return deps.execute(command, signal, call);
++    }
++    if (!call.operationId || call.operationId.length > 192) throw new Error('FLOW_OPERATION_REQUIRED');
++    if (busy) throw new Error('FLOW_BUSY');
++    busy = true;
++    let started = false;
++    try {
++      // Lookup comes before revision validation: a successful replay keeps its original result.
++      const existing = await deps.receipt(call, 'get');
++      if (existing) return existing;
++      await deps.account(call.accountScope);
++      assertFlowBinding(deps.binding(), call);
++      signal.throwIfAborted();
++      if (call.name === 'flow_execute_node') {
++        const config = await deps.execute({name: 'nodeTools', args: {nodeId: call.args.nodeId, name: 'node:getConfig', args: {}}}, signal, call) as any;
++        if (config?.config?.providerId !== 'seecut') throw new Error('FLOW_MANAGED_PROVIDER_REQUIRED');
++        await deps.account(call.accountScope);
++        assertFlowBinding(deps.binding(), call);
++        signal.throwIfAborted();
++      }
++      const receipt = await deps.receipt(call, 'begin');
++      if (receipt.status !== 'accepted') return receipt;
++      started = true;
++      await deps.account(call.accountScope);
++      assertFlowBinding(deps.binding(), call);
++      signal.throwIfAborted();
++      const result = await deps.execute(command, signal, call);
++      // A switch has intentionally changed canvas/session. The real canvas tool saves the old one first.
++      if (call.name !== 'flow_switch_canvas') assertFlowBinding(deps.binding(), call, false);
++      await deps.account(call.accountScope);
++      await deps.flush();
++      await deps.account(call.accountScope);
++      signal.throwIfAborted();
++      return await deps.receipt(call, 'finish', { status: 'completed', result, binding: deps.binding(), saved: true });
++    } catch (error) {
++      if (started) {
++        // A dispatched operation is never automatically attempted again, including save failures.
++        try { await deps.receipt(call, 'finish', { status: 'outcomeUnknown', error: String(error) }); } catch { /* durable accepted record remains */ }
++      }
++      throw error;
++    } finally { busy = false; }
++  };
++}
 diff --git a/apps/web/src/lib/seecutWorkspaceBridge.ts b/apps/web/src/lib/seecutWorkspaceBridge.ts
 new file mode 100644
 index 0000000..003a028
@@ -2744,10 +2979,14 @@ index 0000000..003a028
 +  }, signal);
 +}
 diff --git a/apps/web/src/main.ts b/apps/web/src/main.ts
-index 61061f8..8d78a4b 100644
+index 61061f8..c9af700 100644
 --- a/apps/web/src/main.ts
 +++ b/apps/web/src/main.ts
-@@ -4,6 +4,8 @@ import { createPinia } from "pinia";
+@@ -1,9 +1,12 @@
++import { installSeecutFlowControl } from "@/lib/seecutFlowControl";
+ import { createApp, h, nextTick, ref } from "vue";
+ import { ElButton, ElResult } from "element-plus";
+ import { createPinia } from "pinia";
  import { createPersistedState } from "pinia-plugin-persistedstate";
  import App from "./App.vue";
  import "@/assets/main.scss";
@@ -2756,7 +2995,7 @@ index 61061f8..8d78a4b 100644
  import "element-plus/es/components/message-box/style/css";
  import "element-plus/es/components/button/style/css";
  import "element-plus/es/components/result/style/css";
-@@ -15,13 +17,54 @@ import { isMobile, isDesktop, isRemoteConnection } from "@/lib/platform";
+@@ -15,13 +18,55 @@ import { isMobile, isDesktop, isRemoteConnection } from "@/lib/platform";
  import "@/lib/mobile";
  import { getMissingBrowserFeatures } from "@/lib/browserCapabilities";
  import { registerAnonymousData } from "@/lib/anonymousData";
@@ -2769,6 +3008,7 @@ index 61061f8..8d78a4b 100644
  const app = createApp(App);
 -app.onUnmount(registerLanguage());
 +app.onUnmount(registerSeecutTheme());
++app.onUnmount(installSeecutFlowControl());
 +if (isSeecutEmbedded) {
 +  let flushing: Promise<void> | undefined;
 +  const flush = () => {
@@ -2813,7 +3053,7 @@ index 61061f8..8d78a4b 100644
  const requiresWebView2Update = isDesktop && /Windows/i.test(navigator.userAgent)
    && [Map.groupBy, URL.canParse, Promise.withResolvers].some(method => typeof method !== "function");
  const requiresMobileWebViewUpdate = isMobile && getMissingBrowserFeatures().length > 0;
-@@ -42,17 +85,20 @@ async function notifyDesktopReady(failed = false) {
+@@ -42,17 +87,20 @@ async function notifyDesktopReady(failed = false) {
    ? Promise.reject(new Error("当前 Microsoft Edge WebView2 Runtime 版本过旧。请以管理员身份运行微软最新版安装器；若仍提示已安装，请修复 WebView2 或联系管理员检查更新服务。更新完成后，请完全退出 Toonflow 再重新打开。"))
    : requiresMobileWebViewUpdate
    ? Promise.reject(new Error("当前移动端浏览器内核缺少 Toonflow 所需能力。请更新 Toonflow 和系统浏览器内核；部分系统需要通过系统更新升级。更新完成后，请完全退出并重新打开 Toonflow。"))
@@ -2837,7 +3077,7 @@ index 61061f8..8d78a4b 100644
    // ACT: 隐藏的 WebView 不依赖 requestAnimationFrame；等待首页挂载和页面资源就绪。
    if (document.readyState !== "complete") {
      await new Promise<void>((resolve) => window.addEventListener("load", () => resolve(), { once: true }));
-@@ -96,6 +142,7 @@ async function notifyDesktopReady(failed = false) {
+@@ -96,6 +144,7 @@ async function notifyDesktopReady(failed = false) {
      }),
    }).mount("#app");
    await nextTick();
@@ -3109,7 +3349,7 @@ index 0000000..12db544
 +}
 +</style>
 diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
-index 61cddd7..8a780ea 100644
+index 61cddd7..75bc490 100644
 --- a/apps/web/src/pages/workspace/index.vue
 +++ b/apps/web/src/pages/workspace/index.vue
 @@ -1,5 +1,19 @@
@@ -3224,10 +3464,14 @@ index 61cddd7..8a780ea 100644
  const agentWidth = ref(0);
  const settingsVisible = ref(false);
  const helpVisible = ref(false);
-@@ -199,10 +217,14 @@ registerWorkspaceControl({
+@@ -199,16 +217,26 @@ registerWorkspaceControl({
      directory: workspaceStore.project?.directory ?? null,
      canvasId: canvasPanelRef.value?.canvasId || null,
      panel: activePanel.value,
++    flowRevision: canvasPanelRef.value?.getAgentState().revision ?? 0,
++    selectedNodeIds: canvasPanelRef.value?.getAgentState().selectedNodeIds ?? [],
++    projectName: workspaceStore.project?.name ?? "",
++    flowBusy: canvasPanelRef.value?.saveBusy ?? true,
 +    canvasReady: canvasPanelRef.value?.canvasReady ?? false,
 +    canvasListReady: canvasPanelRef.value?.canvasListReady ?? false,
 +    canvasLoadError: canvasPanelRef.value?.loadError ?? "",
@@ -3239,7 +3483,15 @@ index 61cddd7..8a780ea 100644
    async call(request, signal) {
      const directory = workspaceStore.project?.directory;
      if (!directory) throw new Error("请先打开工作区");
-@@ -237,12 +259,84 @@ registerWorkspaceControl({
+     const callSignal = AbortSignal.any([signal, controlLifetime.signal]);
+     const checkDirectory = () => {
+       callSignal.throwIfAborted();
++      if (request.expectedCanvasId !== undefined && request.expectedCanvasId !== canvasPanelRef.value?.canvasId) throw new Error("FLOW_BINDING_CHANGED");
++      if (request.expectedRevision !== undefined && request.expectedRevision !== canvasPanelRef.value?.getAgentState().revision) throw new Error("FLOW_STALE_REVISION");
+       if (directory !== workspaceStore.project?.directory) throw new Error("工作区已切换，本次调用已停止");
+     };
+     checkDirectory();
+@@ -237,12 +265,84 @@ registerWorkspaceControl({
    },
  });
  
@@ -3324,7 +3576,7 @@ index 61cddd7..8a780ea 100644
    if (canvasPanelRef.value?.saveBusy) {
      ElMessage.warning("画布操作尚未完成，请稍后退出");
      return false;
-@@ -343,6 +437,20 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
+@@ -343,6 +443,20 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
    height: 100dvh;
    background-color: var(--el-bg-color);
  
@@ -3378,7 +3630,7 @@ index 70683a6..e4448ba 100644
    const transfer = event.dataTransfer;
    if (!transfer) return;
 diff --git a/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue b/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue
-index 23cb7da..9a28c72 100644
+index 23cb7da..dc8e4ea 100644
 --- a/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue
 +++ b/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue
 @@ -40,6 +40,7 @@ const activeInstance = computed(() => instances.get(activeKey.value));
@@ -3389,12 +3641,13 @@ index 23cb7da..9a28c72 100644
  const lifetime = new AbortController();
  const workspaceStore = useWorkspaceStore();
  const canvases = shallowRef<{ id: string; name: string }[]>([]);
-@@ -403,7 +404,18 @@ const mentionSource: MentionCanvasSource = {
+@@ -403,7 +404,19 @@ const mentionSource: MentionCanvasSource = {
    },
  };
  
 -defineExpose({ canvasId, canvasReady, canvasListReady, getCanvasContext, readDocumentNode, readDocumentNodes, focusDocumentNode, saveDocumentNode, mountDocumentNode, observeDocumentNode, resolveDocumentNodeFile, performFileAction, flushSave, cancelSave,
 +defineExpose({ canvasId, canvasReady, canvasListReady, loadError,
++  getAgentState: () => activeInstance.value?.getAgentState() ?? { revision: 0, selectedNodeIds: [] },
 +  getSaveState: () => {
 +    const states = [...instances.values()].map(panel => panel.getSaveState());
 +    return { conflict: states.some(state => state.conflict), dirty: states.some(state => state.dirty), error: states.find(state => state.error)?.error || "" };
@@ -3818,7 +4071,7 @@ index 0000000..cdac424
 +.previewMedia { display: block; width: 100%; max-height: 65dvh; }
 +</style>
 diff --git a/apps/web/src/pages/workspace/panels/canvas/index.vue b/apps/web/src/pages/workspace/panels/canvas/index.vue
-index 649c61b..24ee4b1 100644
+index 649c61b..bc78443 100644
 --- a/apps/web/src/pages/workspace/panels/canvas/index.vue
 +++ b/apps/web/src/pages/workspace/panels/canvas/index.vue
 @@ -66,8 +66,9 @@
@@ -3894,7 +4147,7 @@ index 649c61b..24ee4b1 100644
  let canvasController = new AbortController();
  let workspaceController = new AbortController();
  const createCanvasContext = useCanvasTools({
-@@ -288,8 +304,15 @@ function getCanvasContext() {
+@@ -288,8 +304,18 @@ function getCanvasContext() {
    return canvasId.value || canvasMenuRef.value?.initialized ? createCanvasContext(canvasId.value, canvasController.signal, workspaceController.signal) : undefined;
  }
  const canvasReady = computed(() => !!canvasId.value && !nodeListLoading.value && nodeLoads.size === 0);
@@ -3905,13 +4158,16 @@ index 649c61b..24ee4b1 100644
 +onScopeDispose(() => { if (canvasFlushHost[canvasFlushSymbol] === flushForGeneration) delete canvasFlushHost[canvasFlushSymbol]; });
  provide("canvas", getCanvasContext);
 -defineExpose({ canvasId, canvasReady, getCanvasContext, addNodeAtPointer, readDocumentNode, saveDocumentNode, mountDocumentNode, observeDocumentNode, prepareCanvasDelete, flushSave: flushCanvasSave, cancelSave: cancelCanvasSave,
++const flowAgentRevision = ref(0);
++watch(() => JSON.stringify(toObject()), () => flowAgentRevision.value++, { flush: "sync" });
 +defineExpose({ canvasId, canvasReady, getCanvasContext,
++  getAgentState: () => ({ revision: flowAgentRevision.value, selectedNodeIds: flow.getSelectedNodes.value.map(node => node.id) }),
 +  saveRecoveryCopy,
 +  getSaveState: () => ({ conflict: canvasSaveConflict.value, dirty: canvasDirty.value || [...nodeDocument.states.values()].some(state => state.dirty), error: canvasSaveError.value || [...nodeDocument.states.values()].find(state => state.error)?.error || "" }), addNodeAtPointer, readDocumentNode, saveDocumentNode, mountDocumentNode, observeDocumentNode, prepareCanvasDelete, flushSave: flushCanvasSave, cancelSave: cancelCanvasSave,
    getCanvases: (signal?: AbortSignal) => {
      if (!canvasMenuRef.value) throw new Error("画布菜单尚未就绪");
      return canvasMenuRef.value.getCanvases(signal);
-@@ -514,6 +537,56 @@ function selectFiles(position: { x: number; y: number }) {
+@@ -514,6 +540,56 @@ function selectFiles(position: { x: number; y: number }) {
    input.click();
  }
  
@@ -3968,7 +4224,7 @@ index 649c61b..24ee4b1 100644
  function openNodeMenu(event: MouseEvent) {
    if (event.target instanceof Element && event.target.classList.contains("vue-flow__pane")) nodeMenuRef.value?.openMenu(event, true);
  }
-@@ -559,14 +632,20 @@ let saveRevision = 0;
+@@ -559,14 +635,20 @@ let saveRevision = 0;
  const saveCanvas = debounce((directory: string, fileName: string) => {
    const flow = toObject();
    const revision = saveRevision;
@@ -3992,7 +4248,7 @@ index 649c61b..24ee4b1 100644
        saveError = err;
        canvasSaveError.value = axios.isAxiosError<{ message?: string }>(err) ? err.response?.data.message || err.message : err instanceof Error ? err.message : "画布保存失败";
        ElMessage.error(
-@@ -581,15 +660,16 @@ const saveCanvas = debounce((directory: string, fileName: string) => {
+@@ -581,15 +663,16 @@ const saveCanvas = debounce((directory: string, fileName: string) => {
  }, 500);
  
  function scheduleCanvasSave() {
@@ -4012,7 +4268,7 @@ index 649c61b..24ee4b1 100644
  }
  
  function scheduleCanvasChange() {
-@@ -670,6 +750,10 @@ watch(
+@@ -670,6 +753,10 @@ watch(
        canvasController.abort(new Error("画布已重新加载，本次画布调用已停止"));
        canvasController = new AbortController();
      }
@@ -4023,7 +4279,7 @@ index 649c61b..24ee4b1 100644
      if (!savePaused) saveCanvas.flush();
    },
    { flush: "sync" }
-@@ -699,7 +783,10 @@ async function saveCanvasState(action?: () => Promise<void>) {
+@@ -699,7 +786,10 @@ async function saveCanvasState(action?: () => Promise<void>) {
    await Promise.all(flow.getNodes.value.map((node) => useNodeEvent(node.id, flow).emit("save")));
    await nextTick();
    if (saveCancelled) throw new Error("画布保存已取消");
@@ -4035,7 +4291,7 @@ index 649c61b..24ee4b1 100644
    if (action) savePaused = true;
    try {
      let revision: number;
-@@ -728,6 +815,34 @@ async function saveCanvasState(action?: () => Promise<void>) {
+@@ -728,6 +818,34 @@ async function saveCanvasState(action?: () => Promise<void>) {
    }
  }
  
@@ -4070,7 +4326,7 @@ index 649c61b..24ee4b1 100644
  function cancelCanvasSave() {
    saveCancelled = true;
    savePaused = true;
-@@ -964,6 +1079,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
+@@ -964,6 +1082,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
      && shortcutPressed(event, getShortcutBindings(shortcuts.pan).filter(binding => binding !== "None").join(" / "), pressedCodes);
    updateCanvasSelection(event);
    if (event.type === "keyup" || event.defaultPrevented || event.isComposing || !inCanvas || editing) return;
@@ -4082,7 +4338,7 @@ index 649c61b..24ee4b1 100644
    const action = ([
      "group", "mergeGroup", "ungroup", "addNode", "moveTool", "handTool", "arrange", "search",
      "delete", "copy", "paste", "undo", "redo", "zoomIn", "zoomOut", "fitView",
-@@ -1005,6 +1125,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
+@@ -1005,6 +1128,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
    else void flow[action]();
  }
  
@@ -4094,7 +4350,7 @@ index 649c61b..24ee4b1 100644
  function resetCanvasKeys() {
    pressedCodes.clear();
    gestureScale = undefined;
-@@ -1012,7 +1137,7 @@ function resetCanvasKeys() {
+@@ -1012,7 +1140,7 @@ function resetCanvasKeys() {
    panKeyPressed.value = false;
    selectionKeyPressed.value = getShortcutBindings(generalSettings.value.canvasShortcuts.selection).includes("None");
    flow.multiSelectionActive.value = false;
@@ -4103,7 +4359,7 @@ index 649c61b..24ee4b1 100644
  }
  
  watch([() => props.active, () => props.settingsVisible, () => generalSettings.value.canvasShortcuts], resetCanvasKeys, { deep: true, flush: "sync", immediate: true });
-@@ -1028,6 +1153,8 @@ onMounted(() => {
+@@ -1028,6 +1156,8 @@ onMounted(() => {
    window.addEventListener("keydown", updateCanvasKeys, true);
    window.addEventListener("keyup", updateCanvasKeys, true);
    window.addEventListener("blur", resetCanvasKeys);
@@ -4112,7 +4368,7 @@ index 649c61b..24ee4b1 100644
    window.addEventListener("toonflow:plugin-installed", refreshInstalled);
    window.addEventListener("toonflow:node-config-updated", refreshNodeConfig);
    document.addEventListener("paste", pasteNode);
-@@ -1040,6 +1167,8 @@ onBeforeUnmount(() => {
+@@ -1040,6 +1170,8 @@ onBeforeUnmount(() => {
    window.removeEventListener("keydown", updateCanvasKeys, true);
    window.removeEventListener("keyup", updateCanvasKeys, true);
    window.removeEventListener("blur", resetCanvasKeys);
@@ -4121,7 +4377,7 @@ index 649c61b..24ee4b1 100644
    window.removeEventListener("toonflow:plugin-installed", refreshInstalled);
    window.removeEventListener("toonflow:node-config-updated", refreshNodeConfig);
    document.removeEventListener("paste", pasteNode);
-@@ -1181,6 +1310,17 @@ const defaultEdgeOptions = markRaw({
+@@ -1181,6 +1313,17 @@ const defaultEdgeOptions = markRaw({
  .canvas {
    width: 100%;
    height: 100%;
@@ -4791,7 +5047,7 @@ index c45117f..4b5792c 100644
      if (busy.value) {
        modelsRefreshPending = true;
 diff --git a/packages/nodes/imageGenerationNode/src/index.vue b/packages/nodes/imageGenerationNode/src/index.vue
-index 88a4df3..5beedbf 100644
+index 88a4df3..e15659f 100644
 --- a/packages/nodes/imageGenerationNode/src/index.vue
 +++ b/packages/nodes/imageGenerationNode/src/index.vue
 @@ -46,6 +46,17 @@
@@ -5008,7 +5264,18 @@ index 88a4df3..5beedbf 100644
    generation = generationState.run(() => workspace.list()
      .then(({ directory }) => {
        controller.signal.throwIfAborted();
-@@ -408,7 +490,7 @@ function getConfig() {
+@@ -404,11 +486,18 @@ function startEditor(mode: "inpaint" | "mark") {
+   editor.value?.start(mode);
+ }
+ 
++nodeTools.register({
++  name: "getRecordedGeneration",
++  description: "读取此节点持久化的原生成任务、状态、实际积分、结果和历史。只读取已保存记录，不提交新任务；生成中请稍后查询，不能重试生成。",
++  parameters: z.strictObject({}),
++  execute() { return { running: generating.value, record: savedGeneration.value ?? null, history: generationRecords.value, outputs: outputs.value }; },
++});
++
+ function getConfig() {
    return {
      config: {
        providerId: selectedModel.value?.providerId ?? "",
@@ -5017,7 +5284,7 @@ index 88a4df3..5beedbf 100644
        size: data.value.size,
        ratio: data.value.ratio,
      },
-@@ -444,13 +526,13 @@ nodeTools.register({
+@@ -444,13 +533,13 @@ nodeTools.register({
      signal?.throwIfAborted();
      if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
      const choice = args.modelId === undefined ? selectedModel.value
@@ -5034,7 +5301,7 @@ index 88a4df3..5beedbf 100644
      if (args.size !== undefined) data.value.size = args.size;
      if (args.ratio !== undefined) data.value.ratio = args.ratio;
      return getConfig();
-@@ -556,4 +638,13 @@ nodeTools.register({
+@@ -556,4 +645,13 @@ nodeTools.register({
      }
    }
  }
@@ -5171,7 +5438,7 @@ index 511e06b..22073d6 100644
        });
      }
 diff --git a/packages/nodes/videoGenerationNode/src/index.vue b/packages/nodes/videoGenerationNode/src/index.vue
-index 77a0535..eb1a953 100644
+index 77a0535..42ea7ae 100644
 --- a/packages/nodes/videoGenerationNode/src/index.vue
 +++ b/packages/nodes/videoGenerationNode/src/index.vue
 @@ -42,6 +42,17 @@
@@ -5355,7 +5622,18 @@ index 77a0535..eb1a953 100644
    generation = generationState.run(() => workspace
      .list()
      .then(({ directory }) => {
-@@ -364,7 +416,7 @@ function getConfig() {
+@@ -360,11 +412,18 @@ async function resizeVideo(event: Event) {
+   updateNodeInternals();
+ }
+ 
++nodeTools.register({
++  name: "getRecordedGeneration",
++  description: "读取此节点持久化的原生成任务、状态、实际积分、结果和历史。只读取已保存记录，不提交新任务；生成中请稍后查询，不能重试生成。",
++  parameters: z.strictObject({}),
++  execute() { return { running: generating.value, record: savedGeneration.value ?? null, history: generationRecords.value, outputs: outputs.value }; },
++});
++
+ function getConfig() {
    return {
      config: {
        providerId: selectedModel.value?.providerId ?? "",
@@ -5364,7 +5642,7 @@ index 77a0535..eb1a953 100644
        duration: data.value.duration,
        resolution: data.value.resolution,
        ratio: data.value.ratio,
-@@ -372,7 +424,7 @@ function getConfig() {
+@@ -372,7 +431,7 @@ function getConfig() {
        generateAudio: data.value.generateAudio,
      },
      models: models.value,
@@ -5373,7 +5651,7 @@ index 77a0535..eb1a953 100644
      matchingModes: matchingModes.value,
    };
  }
-@@ -397,7 +449,7 @@ nodeTools.register({
+@@ -397,7 +456,7 @@ nodeTools.register({
      modelId: z.string().min(1).optional(),
      duration: z.number().positive().optional(),
      resolution: z.string().min(1).optional(),
@@ -5382,7 +5660,7 @@ index 77a0535..eb1a953 100644
      mode: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
      generateAudio: z.boolean().optional(),
    }).refine((args) => (args.providerId === undefined) === (args.modelId === undefined), "providerId 与 modelId 必须同时提供"),
-@@ -408,17 +460,18 @@ nodeTools.register({
+@@ -408,17 +467,18 @@ nodeTools.register({
      signal?.throwIfAborted();
      if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
      const choice = args.modelId === undefined ? selectedModel.value
@@ -5403,7 +5681,7 @@ index 77a0535..eb1a953 100644
      data.value.duration = duration;
      data.value.resolution = resolution;
      if (args.ratio !== undefined) data.value.ratio = args.ratio;
-@@ -519,4 +572,12 @@ nodeTools.register({
+@@ -519,4 +579,12 @@ nodeTools.register({
      }
    }
  }
