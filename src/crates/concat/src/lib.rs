@@ -58,8 +58,6 @@ mod cloud_files;
 mod dock;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod editor_mcp;
-mod flow_controller;
-mod flow_ui;
 mod format;
 mod generation_outputs;
 mod generation_templates;

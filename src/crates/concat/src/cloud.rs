@@ -26,9 +26,8 @@ mod generation_state;
 mod inspiration;
 mod preview_validation;
 pub(crate) use flow_generation::{
-    ImageClient, RegisteredAsset, library_asset, library_receipt, media_kind,
+    ImageClient, RegisteredAsset, library_asset, media_kind,
 };
-pub(crate) use flow_parameters::{generation_fields, parameter_default, parameter_values};
 
 /// The opt-in software-rendered fixture exercises local state transitions with
 /// a signed-out synthetic Cloud. Normal startup never invokes this entry.

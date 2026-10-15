@@ -19,7 +19,6 @@ import "fonts/Synonym-Medium.ttf";
 import "fonts/Synonym-SemiBold.ttf";
 
 import { Theme } from "theme/theme.slint";
-import { Flow, FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter, FlowCandidate } from "flow/page.slint";
 import { EmbeddedFlowHost } from "flow/embedded-host.slint";
 import { Bezier, Curves, Fmt, Focus, Payload } from "util.slint";
 import { EffectData } from "demo/effects-panel.slint";
@@ -62,7 +61,6 @@ import {
 
 // Re-exported so main.rs can reach the globals and the struct.
 export {
-    Flow, FlowProjectRow, FlowNodeView, FlowEdgeView, FlowAttachment, FlowParameter,
     Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, CanvasControls, CanvasThumbs, I18n, Assistant, AssistantMessage,
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData, ParamFormat,
     DockDivider, DockSide, PaneKind, SeatBox,

@@ -166,7 +166,6 @@ component AssistantInput inherits Rectangle {
     callback submit();
     callback stop();
     callback attach();
-    callback mention-node();
     property <bool> action-ready: root.busy ? root.can-stop : root.send-enabled;
     function activate-action() { if root.action-ready { if root.busy { root.stop(); } else { root.submit(); } } }
     public function take-focus() { input.focus(); }
@@ -273,7 +272,6 @@ component AssistantInput inherits Rectangle {
         }
     }
     if root.multiline && !root.external-toolbar: IconButton { x: 8px; y: parent.height - 42px; height: 32px; side: 32px; glyph: Glyph.plus; label: "引用全局资产"; enabled: root.enabled && !root.busy; clicked => { root.attach(); } }
-    if root.multiline && !root.external-toolbar: IconButton { x: 44px; y: parent.height - 42px; height: 32px; side: 32px; glyph: Glyph.workflow; label: "引用当前 Flow 节点"; enabled: root.enabled && !root.busy; clicked => { root.mention-node(); } }
     @children
 }
 
@@ -496,7 +494,6 @@ export component AssistantPanel inherits Rectangle {
     callback rename-session(string, string);
     callback edit-message(string, int);
     callback attach();
-    callback mention-node();
     callback remove-reference(string);
     callback reuse-reference(string);
     callback open-reference(string, string);
@@ -520,9 +517,9 @@ export component AssistantPanel inherits Rectangle {
     property <string> service-url;
     // Popup descendants hold weak parent links. Dispatch from the persistent
     // panel so closing the popup cannot discard the action's receiver.
-    function choose-attachment(node: bool) {
+    function choose-attachment() {
         attachments.close();
-        if node { root.mention-node(); } else { root.attach(); }
+        root.attach();
     }
     function choose-permission(action: int) {
         permissions.close();
@@ -862,7 +859,6 @@ export component AssistantPanel inherits Rectangle {
                 submit => { root.submit(); }
                 stop => { root.stop(); }
                 attach => { root.attach(); }
-                mention-node => { root.mention-node(); }
                 if root.draft-references.length > 0: HorizontalLayout {
                     x: 12px; y: 12px; height: 64px; width: parent.width - 24px; spacing: 6px;
                     for reference in root.draft-references: AssistantReferenceTile {
@@ -885,8 +881,7 @@ export component AssistantPanel inherits Rectangle {
                                 background: Theme.panel; border-radius: 12px; border-width: 1px; border-color: Theme.line;
                                 VerticalLayout {
                                     padding: 6px; spacing: 4px;
-                                    AgentMenuAction { text: "资产库素材"; glyph: Glyph.folder; clicked => { root.choose-attachment(false); } }
-                                    AgentMenuAction { text: "当前 Flow 节点"; glyph: Glyph.workflow; clicked => { root.choose-attachment(true); } }
+                                    AgentMenuAction { text: "资产库素材"; glyph: Glyph.folder; clicked => { root.choose-attachment(); } }
                                 }
                             }
                         }

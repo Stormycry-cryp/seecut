@@ -93,26 +93,6 @@ impl AccountAccess {
         client.cloud.local = self.state.upgrade()?.borrow().local.clone();
         Some(client)
     }
-    pub(crate) fn flow_scope(&self) -> Scope {
-        if let Some(state) = self.state.upgrade() {
-            let cloud = state.borrow();
-            if !cloud.token.is_empty()
-                && let Some(account) = cloud
-                    .history_name
-                    .strip_suffix("-history.json")
-                    .filter(|id| !id.is_empty())
-            {
-                return Scope {
-                    account: account.into(),
-                    service: seecut_flow_core::digest(&cloud.base),
-                };
-            }
-        }
-        Scope {
-            account: "local".into(),
-            service: "personal-library".into(),
-        }
-    }
     pub(crate) fn pick_flow_asset(
         &self,
         app: &App,
@@ -192,28 +172,6 @@ pub(crate) fn library_asset(id: &str, version: Option<&str>) -> Result<Registere
     })?;
     let thumbnail = crate::personal_library::thumbnail(&asset, &root);
     Ok(RegisteredAsset { asset, thumbnail })
-}
-/// Read the already registered identity without migration, import or hashing large media.
-/// Opening/using the result still resolves and verifies its immutable bytes.
-pub(crate) fn library_receipt(id: &str, version: &str) -> Result<Value, String> {
-    let root = library_root()?;
-    with_library_write_lock(|| {
-        let library = Library::load_for_relink(&root)?;
-        let asset = library
-            .get(id)
-            .filter(|a| !a.trashed)
-            .ok_or("库内素材不可用")?;
-        if !asset
-            .version
-            .as_ref()
-            .is_some_and(|current| current.matches_json(version))
-        {
-            return Err("库内素材版本已变化".into());
-        }
-        Ok(
-            json!({"assetId":asset.id,"version":asset.version,"name":asset.name,"kind":media_kind(asset.kind)}),
-        )
-    })
 }
 fn validate_references(model: &Value, assets: &[RegisteredAsset]) -> Result<(), String> {
     let references: Vec<_> = assets
@@ -329,9 +287,6 @@ impl ImageClient {
     }
     pub(crate) fn catalog(&self) -> Result<Value, String> {
         self.api("GET", "/api/generation/models", Value::Null, None)
-    }
-    pub(crate) fn prepare(&self, draft: &GenerationDraft) -> Result<Value, String> {
-        self.prepare_with_quote(draft).map(|(body, _)| body)
     }
     pub(crate) fn prepare_with_quote(
         &self,

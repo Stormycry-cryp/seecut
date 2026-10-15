@@ -12,7 +12,7 @@
 | 云端 | 独立账户的项目快照、固定版本下载、SHA 和 CAS；生成记录随快照保存，导入仅恢复查询资格，不赋予重新提交资格。正式服务端部署尚未执行。 |
 | SeeCut Agent | 原生 JSONL 子进程 initialize/session.create/restore/send/approve/reconcile；目前新 Flow 的专用工具尚未注册。 |
 | Toonflow Agent | 源码能力保留，嵌入模式不挂载第二套 Agent 界面和独立供应商设置。 |
-| 既有编辑器 MCP | 原生图片画布的读取、变换、素材插入、保存与导出仍沿原协议。旧 flow_read/flow_write 没有控制新 Toonflow 图，不能把它们说成已接通。 |
+| 既有编辑器 MCP | 原生图片画布的读取、变换、素材插入、保存与导出仍沿原协议。旧原生 Flow 界面、控制器和 Agent 节点引用入口已删除；flow_read/flow_write 已从工具注册中移除，旧协议请求返回 unsupportedWorkspace。新 Toonflow 工具尚未接通。 |
 
 现有 editor_mcp 的 projectId 是文档代际/会话标识，不可当永久项目主键。Flow 工具必须使用新的持久项目 UUID、实际 canvasId、文档版本及会话身份。
 

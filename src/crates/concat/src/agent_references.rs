@@ -1,5 +1,5 @@
 //! User-selected immutable references. No paths or authority enter model content.
-use crate::{agent_sessions::Reference, host::Shell, ui::AssistantReference};
+use crate::{agent_sessions::Reference, ui::AssistantReference};
 use base64::Engine;
 use serde_json::{Value, json};
 use slint::{ModelRc, VecModel};
@@ -13,17 +13,6 @@ pub(crate) fn asset(id: &str) -> Result<Reference> {
         label: selected.asset.name,
         target: json!({"assetId":selected.asset.id,"version":selected.asset.version,"kind":crate::cloud::media_kind(selected.asset.kind)}),
     })
-}
-pub(crate) fn flow() -> Result<Vec<Reference>> {
-    let mut result = Err("请先打开 Flow 并选择节点".into());
-    Shell::with(|shell, _| {
-        if let Ok(studio) = shell.studio.try_borrow()
-            && let Some(flow) = &studio.flow
-        {
-            result = flow.references();
-        }
-    });
-    result
 }
 fn checked_asset(reference: &Reference) -> Result<crate::cloud::RegisteredAsset> {
     let id = reference.target["assetId"].as_str().ok_or("素材引用无效")?;
@@ -86,15 +75,7 @@ pub(crate) fn content(
     let mut images = 0;
     for reference in references {
         if reference.kind == "flow_node" {
-            let mut result = Err("引用的 Flow 已关闭".into());
-            Shell::with(|shell, _| {
-                if let Ok(studio) = shell.studio.try_borrow()
-                    && let Some(flow) = &studio.flow
-                {
-                    result = flow.validate_reference(&reference.target);
-                }
-            });
-            result?;
+            return Err("旧 Flow 节点引用已停用，请重新选择资产库素材".into());
         } else {
             let selected = checked_asset(reference)?;
             if include_images

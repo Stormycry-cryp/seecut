@@ -762,22 +762,6 @@ mod desktop {
                 }),
             );
         }
-        fn mention_node(&self, app: &App) {
-            self.refresh(app);
-            if !app.global::<Assistant>().get_history_ready()
-                || app.global::<Assistant>().get_busy()
-                || app.global::<Assistant>().get_unknown()
-            {
-                return;
-            }
-            match crate::agent_references::flow() {
-                Ok(references) => self.add_references(app, references),
-                Err(error) => {
-                    self.state.borrow_mut().notice = error;
-                    self.refresh(app);
-                }
-            }
-        }
         fn remove_reference(&self, app: &App, key: &str) {
             self.state
                 .borrow_mut()
@@ -1781,30 +1765,26 @@ mod desktop {
             } else if let Some(operation) = frozen {
                 let mut permission = Err("无法读取原操作回执");
                 let mut permit = None;
-                if operation.flow {
-                    permission = Ok(());
-                } else {
-                    Shell::with(|shell, _| {
-                        let studio = shell.studio.borrow();
-                        permission = studio
-                            .editor_mcp
-                            .borrow_mut()
-                            .assistant_tool_permit(
-                                &studio,
-                                app,
-                                if operation.retry_registration {
-                                    "retry_canvas_registration"
-                                } else {
-                                    "canvas_operation"
-                                },
-                                operation.query_arguments(),
-                            )
-                            .map(|id| {
-                                permit = Some(id);
-                            })
-                            .map_err(|error| error.message());
-                    });
-                }
+                Shell::with(|shell, _| {
+                    let studio = shell.studio.borrow();
+                    permission = studio
+                        .editor_mcp
+                        .borrow_mut()
+                        .assistant_tool_permit(
+                            &studio,
+                            app,
+                            if operation.retry_registration {
+                                "retry_canvas_registration"
+                            } else {
+                                "canvas_operation"
+                            },
+                            operation.query_arguments(),
+                        )
+                        .map(|id| {
+                            permit = Some(id);
+                        })
+                        .map_err(|error| error.message());
+                });
                 if let Err(error) = permission {
                     state.notice = error.into();
                 } else if let Err(error) = state.controller.reconcile_editor(&operation) {
@@ -2253,26 +2233,6 @@ mod desktop {
     }
     fn capture(state: &mut State) {
         let view = state.controller.view();
-        if !state.submitting
-            && let Some(index) = state.assistant_row
-            && !view.results.is_empty()
-        {
-            let refs = view
-                .results
-                .iter()
-                .filter_map(|v| serde_json::from_value::<Reference>(v.clone()).ok())
-                .filter(Reference::valid)
-                .collect::<Vec<_>>();
-            if !refs.is_empty() && state.record.message_references.get(&index) != Some(&refs) {
-                if let Some(mut row) = state.messages.row_data(index) {
-                    row.references = crate::agent_references::rows(&refs, true);
-                    state.messages.set_row_data(index, row);
-                }
-                state.record.message_references.insert(index, refs);
-            }
-        }
-        // Persist result references on the original row before a terminal reply
-        // releases that row. Several runtime events can arrive in one tick.
         if !state.submitting {
             state.assistant_row = update_streaming_reply(
                 &state.messages,
@@ -2380,7 +2340,6 @@ mod desktop {
         callback!(on_close_requested, close);
         callback!(on_new_session, new_session);
         callback!(on_attach, attach);
-        callback!(on_mention_node, mention_node);
         ui.on_reuse_reference({
             let binding = Rc::downgrade(&binding);
             let app = app.as_weak();

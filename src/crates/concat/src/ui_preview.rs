@@ -305,9 +305,6 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_reference_max(4);
     state.set_accepts_references(true);
     state.set_reference_limit("最多 4 张参考图片".into());
-    if std::env::var("SEECUT_UI_PREVIEW_SCENE").as_deref() == Ok("f02") {
-        return run_f02(&app, directory);
-    }
     if std::env::var("SEECUT_UI_PREVIEW_SCENE").as_deref() == Ok("f03") {
         return run_f03(&app, directory);
     }
@@ -1742,13 +1739,10 @@ fn run_f03(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
 
 /// Local layout fixtures only; no controller, supplier requests or library writes.
 fn run_a02(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
-    use crate::ui::{AssistantReference, Flow};
+    use crate::ui::AssistantReference;
     let state = app.global::<SeeCut>();
-    state.set_page(8);
-    let flow = app.global::<Flow>();
-    flow.set_open(true);
-    flow.set_browsing(false);
-    flow.set_title("Agent 布局样例".into());
+    state.set_page(6);
+    state.set_canvas_gallery_open(false);
     let assistant = app.global::<Assistant>();
     assistant.set_enabled(true);
     assistant.set_open(true);
@@ -1790,7 +1784,7 @@ fn run_a02(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
             role: "Agent".into(),
             text: "素材已整理，可以预览或继续放入画布。".into(),
             state: "已完成".into(),
-            progress: "读取当前页面 · 已返回\n编辑 Flow · 已完成\n查询结果 · 已返回".into(),
+            progress: "读取当前页面 · 已返回\n保存画布 · 已完成\n查询结果 · 已返回".into(),
             references: model(vec![reference.clone()]),
         },
     ]));
@@ -1812,165 +1806,5 @@ fn run_a02(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
             )?;
         }
     }
-    Ok(())
-}
-
-fn run_f02(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
-    use crate::ui::{Flow, FlowAttachment, FlowCandidate, FlowNodeView, FlowParameter};
-    let state = app.global::<SeeCut>();
-    state.set_page(8);
-    let flow = app.global::<Flow>();
-    let settings_log = Rc::new(RefCell::new(Vec::<String>::new()));
-    let clicked_settings = settings_log.clone();
-    flow.on_image_settings(move |field| clicked_settings.borrow_mut().push(field.to_string()));
-    flow.set_open(true);
-    flow.set_browsing(false);
-    flow.set_title("Flow 布局样例".into());
-    flow.set_token("layout-only".into());
-    flow.set_draft_token("layout-only".into());
-    flow.set_zoom(0.75);
-    flow.set_pan_x(26.);
-    flow.set_pan_y(16.);
-    flow.set_selected_id("video".into());
-    flow.set_selected_kind("video_generate".into());
-    flow.set_selected_title("视频生成".into());
-    flow.set_selected_x(30.);
-    flow.set_selected_y(24.);
-    flow.set_selection_count(1);
-    flow.set_images_enabled(true);
-    flow.set_execution_enabled(true);
-    flow.set_prompt("缓慢推进镜头，保留主体与环境声音。".into());
-    flow.set_generation_prompt("a scene".into());
-    flow.set_prompt_source_id("prompt".into());
-    flow.set_prompt_source_title("场景描述".into());
-    flow.set_generation_parameters(model(
-        [
-            ("effort", "标准"),
-            ("model", "Seedance Mini"),
-            ("resolution", "720p"),
-            ("duration", "5 秒"),
-            ("aspect_ratio", "3:4"),
-            ("generate_audio", "有声"),
-            ("quantity", "2 份"),
-        ]
-        .into_iter()
-        .map(|(id, label)| FlowParameter {
-            id: id.into(),
-            label: label.into(),
-        })
-        .collect(),
-    ));
-    flow.set_references(model(vec![
-        FlowAttachment {
-            id: "image".into(),
-            label: "图片参考".into(),
-            kind: "image".into(),
-            preview: artwork(0),
-        },
-        FlowAttachment {
-            id: "audio".into(),
-            label: "声音参考".into(),
-            kind: "audio".into(),
-            preview: Image::default(),
-        },
-    ]));
-    flow.set_nodes(model(vec![FlowNodeView {
-        id: "video".into(),
-        title: "视频生成".into(),
-        kind: "video_generate".into(),
-        summary: "未执行".into(),
-        selected: true,
-        x: 30.,
-        y: 24.,
-        inputs: model(vec!["prompt".into(), "references".into()]),
-        ..Default::default()
-    }]));
-    for dark in [false, true] {
-        app.global::<Theme>().set_dark(dark);
-        let theme = if dark { "dark" } else { "light" };
-        flow.set_candidates(model(vec![]));
-        flow.set_selected_output(false);
-        flow.set_canvas_output(false);
-        flow.set_has_attempt(false);
-        flow.set_run_active(false);
-        flow.set_run_status("".into());
-        flow.set_points("0".into());
-        for (w, h) in [(1440, 960), (980, 760)] {
-            capture(app, directory, &format!("f02-video-{theme}-{w}x{h}"), w, h)?;
-        }
-        for (page, fields) in [
-            ["resolution", "duration"].as_slice(),
-            ["aspect_ratio", "generate_audio"].as_slice(),
-            ["quantity"].as_slice(),
-        ]
-        .iter()
-        .enumerate()
-        {
-            click_fixture(app, 980, 760, 487.0, 412.0)?;
-            capture(
-                app,
-                directory,
-                &format!("f02-parameters-{theme}-page{}", page + 2),
-                980,
-                760,
-            )?;
-            for (slot, field) in fields.iter().enumerate() {
-                click_fixture(app, 980, 760, 215.0 + slot as f32 * 150.0, 412.0)?;
-                assert_eq!(
-                    settings_log.borrow().last().map(String::as_str),
-                    Some(*field)
-                );
-            }
-        }
-        for _ in 0..3 {
-            click_fixture(app, 980, 760, 155.0, 412.0)?;
-        }
-        flow.set_candidates(model(
-            (0..6)
-                .map(|i| FlowCandidate {
-                    id: format!("fixture-{i}").into(),
-                    label: format!("第 {} 批 · {}", 2 - i / 3, i % 3 + 1).into(),
-                    selected: i == 1,
-                    ready: true,
-                    preview: artwork(i * 24),
-                })
-                .collect(),
-        ));
-        flow.set_selected_output(true);
-        flow.set_canvas_output(false);
-        flow.set_run_status("已完成".into());
-        flow.set_points("4".into());
-        capture(
-            app,
-            directory,
-            &format!("f02-history-{theme}-1440x960"),
-            1440,
-            960,
-        )?;
-        flow.set_setting_title("画幅".into());
-        flow.set_setting_rows(model(
-            ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"]
-                .into_iter()
-                .map(|label| FlowParameter {
-                    id: label.into(),
-                    label: label.into(),
-                })
-                .collect(),
-        ));
-        flow.set_settings_open(true);
-        capture(
-            app,
-            directory,
-            &format!("f02-video-settings-{theme}-980x760"),
-            980,
-            760,
-        )?;
-        flow.set_settings_open(false);
-    }
-    std::fs::write(
-        directory.join("parameter-clicks.json"),
-        serde_json::to_vec_pretty(&*settings_log.borrow()).unwrap(),
-    )
-    .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
     Ok(())
 }

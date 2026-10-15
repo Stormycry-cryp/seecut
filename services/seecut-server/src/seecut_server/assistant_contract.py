@@ -15,7 +15,7 @@ TOOLS = frozenset({
     "capabilities", "context", "project", "preview", "move_selected_image",
     "library_images", "insert_library_image", "transform_canvas_layer",
     "save_canvas_project", "export_canvas_png", "canvas_operation",
-    "retry_canvas_registration", "flow_read", "flow_write",
+    "retry_canvas_registration",
 })
 IDENTITY = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 
