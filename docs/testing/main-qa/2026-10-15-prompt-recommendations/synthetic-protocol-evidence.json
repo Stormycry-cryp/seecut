@@ -1,0 +1,84 @@
+{
+  "syntheticOnly": true,
+  "realProviderCalls": 0,
+  "calls": [
+    {
+      "model": "jev-1.14-free",
+      "imageCount": 0,
+      "candidateCount": 6,
+      "requestId": "12411d52-ad34-4702-8f2e-089c6445de9a"
+    },
+    {
+      "model": "glm-5.3-flash",
+      "imageCount": 0,
+      "candidateCount": 0,
+      "requestId": "4680e1ee-234e-41a7-9d45-db8835fd2301"
+    },
+    {
+      "model": "jev-1.14-free",
+      "imageCount": 0,
+      "candidateCount": 6,
+      "requestId": "15a08a76-3868-4fe2-89d9-3e614ae5c73b"
+    },
+    {
+      "model": "jev-1.14-free",
+      "imageCount": 0,
+      "candidateCount": 6,
+      "requestId": "53838df4-5fc7-4c8e-83b4-7889c57b8e37"
+    },
+    {
+      "model": "glm-5.3-flash",
+      "imageCount": 0,
+      "candidateCount": 0,
+      "requestId": "c1de380e-1909-4742-9063-e75b496fa664"
+    },
+    {
+      "model": "jev-1.14-free",
+      "imageCount": 0,
+      "candidateCount": 6,
+      "requestId": "2f47250c-6222-400d-8600-3d8620b25983"
+    },
+    {
+      "model": "glm-5.3-flash",
+      "imageCount": 0,
+      "candidateCount": 0,
+      "requestId": "a3733830-04ec-45bd-a9ec-9f5d29fe0e9a"
+    },
+    {
+      "model": "jev-1.14-free",
+      "imageCount": 0,
+      "candidateCount": 6,
+      "requestId": "2fad95de-f2c5-4bfb-9359-71f92fb52683"
+    },
+    {
+      "model": "jev-1.14-free",
+      "imageCount": 1,
+      "candidateCount": 6,
+      "requestId": "ee14a0a3-7fb1-4bfe-b60c-3f7285fb6bd1"
+    },
+    {
+      "model": "glm-5.3-flash",
+      "imageCount": 0,
+      "candidateCount": 0,
+      "requestId": "96aef296-1c41-4b98-8b10-a80d4b498d96"
+    },
+    {
+      "model": "jev-1.14-free",
+      "imageCount": 1,
+      "candidateCount": 6,
+      "requestId": "64adf48e-d93e-4563-8ef7-ee978f9079ae"
+    },
+    {
+      "model": "jev-1.14-free",
+      "imageCount": 0,
+      "candidateCount": 6,
+      "requestId": "6252d533-ddd3-4e8e-b94d-02fba0c19ab6"
+    },
+    {
+      "model": "glm-5.3-flash",
+      "imageCount": 0,
+      "candidateCount": 0,
+      "requestId": "c9d53ffa-39bb-43b8-9271-9815880683a4"
+    }
+  ]
+}

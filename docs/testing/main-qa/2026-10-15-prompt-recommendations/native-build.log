@@ -1,0 +1,21 @@
+   Compiling wgpu-hal v29.0.4
+   Compiling softbuffer v0.4.8
+   Compiling muda v0.19.3
+   Compiling concat v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat)
+   Compiling concat-editor-mcp v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-editor-mcp)
+   Compiling wgpu-core-deps-apple v29.0.4
+   Compiling wgpu-core v29.0.4
+   Compiling wgpu v29.0.4
+   Compiling concat-render v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-render)
+   Compiling i-slint-core v1.17.1
+   Compiling concat-canvas v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-canvas)
+   Compiling concat-export v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-export)
+   Compiling concat-host v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-host)
+   Compiling concat-api v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-api)
+   Compiling i-slint-renderer-software v1.17.1
+   Compiling i-slint-renderer-skia v1.17.1
+   Compiling concat-server v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-server)
+   Compiling concat-speech v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-speech)
+   Compiling i-slint-backend-winit v1.17.1
+   Compiling i-slint-backend-selector v1.17.1
+   Compiling slint v1.17.1
