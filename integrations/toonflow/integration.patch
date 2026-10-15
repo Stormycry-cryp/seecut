@@ -3109,7 +3109,7 @@ index 0000000..12db544
 +}
 +</style>
 diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
-index 61cddd7..87f2f39 100644
+index 61cddd7..8a780ea 100644
 --- a/apps/web/src/pages/workspace/index.vue
 +++ b/apps/web/src/pages/workspace/index.vue
 @@ -1,5 +1,19 @@
@@ -3141,15 +3141,18 @@ index 61cddd7..87f2f39 100644
          v-if="activePanel === 'document'"
          :key="workspaceStore.project?.directory"
          :ref="setDocumentPanel"
-@@ -25,7 +40,7 @@
+@@ -25,9 +40,9 @@
          :fileAction="performFileAction"
          :saveNode="saveDocumentNode" />
      </keep-alive>
 -    <workspaceMenu class="workspaceMenu" @openSettings="settingsVisible = true" />
 +    <workspaceMenu v-if="!isSeecutEmbedded" class="workspaceMenu" @openSettings="settingsVisible = true" />
      <div class="workspaceTools">
-       <el-segmented :modelValue="activePanel" class="panelSwitcher" :options="panelOptions" size="small" aria-label="切换面板" @change="switchPanel">
+-      <el-segmented :modelValue="activePanel" class="panelSwitcher" :options="panelOptions" size="small" aria-label="切换面板" @change="switchPanel">
++      <el-segmented v-if="!isSeecutEmbedded" :modelValue="activePanel" class="panelSwitcher" :options="panelOptions" size="small" aria-label="切换面板" @change="switchPanel">
          <template #default="{ item }">
+           <span class="panelOption">
+             <component :is="item.icon" :size="14" aria-hidden="true" />
 @@ -54,7 +69,7 @@
                  <component :is="selectedTool === 'move' ? IconPointer : IconHandStop" :size="18" aria-hidden="true" />
                </el-button>
@@ -3437,12 +3440,14 @@ index 1cb78b6..e8f98f9 100644
  const props = defineProps<{
    canvasId: string;
 diff --git a/apps/web/src/pages/workspace/panels/canvas/components/canvasMenu.vue b/apps/web/src/pages/workspace/panels/canvas/components/canvasMenu.vue
-index 166ceed..65f7abc 100644
+index 166ceed..cdd1e70 100644
 --- a/apps/web/src/pages/workspace/panels/canvas/components/canvasMenu.vue
 +++ b/apps/web/src/pages/workspace/panels/canvas/components/canvasMenu.vue
-@@ -2,9 +2,9 @@
+@@ -1,10 +1,10 @@
+ <template>
    <panel class="canvasMenuPanel" position="top-left">
-     <el-card class="canvasMenu" shadow="never" :bodyStyle="{ padding: '3px 6px' }">
+-    <el-card class="canvasMenu" shadow="never" :bodyStyle="{ padding: '3px 6px' }">
++    <el-card v-if="!isSeecutEmbedded" class="canvasMenu" shadow="never" :bodyStyle="{ padding: '3px 6px' }">
        <div class="menuContent">
 -        <el-input v-model="projectNameDraft" class="workspaceNameInput" :style="{ '--workspaceName': JSON.stringify(projectNameDraft || ' ') }" size="small" :title="directory" :disabled="!workspaceStore.project" aria-label="项目名称"
 +        <el-input v-if="!isSeecutEmbedded" v-model="projectNameDraft" class="workspaceNameInput" :style="{ '--workspaceName': JSON.stringify(projectNameDraft || ' ') }" size="small" :title="directory" :disabled="!workspaceStore.project" aria-label="项目名称"
