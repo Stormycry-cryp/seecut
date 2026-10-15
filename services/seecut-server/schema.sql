@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id),
     kind TEXT NOT NULL CHECK (kind IN ('image', 'video')),
-    provider TEXT NOT NULL DEFAULT 'xiangxin' CHECK (provider IN ('image2', 'xiangxin')),
+    provider TEXT NOT NULL DEFAULT 'xiangxin' CHECK (provider IN ('image2', 'xiangxin', 'grsai')),
     operation TEXT NOT NULL DEFAULT 'generate' CHECK (operation IN ('generate', 'edit')),
     model TEXT NOT NULL,
     prompt TEXT NOT NULL,

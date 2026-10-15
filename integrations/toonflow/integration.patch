@@ -479,7 +479,7 @@ index 7efa4e4..984938d 100644
 +  app.use("/api/workspaces/selectDirectory", route129);
  }
 diff --git a/apps/server/src/routes/ai/media/generate.ts b/apps/server/src/routes/ai/media/generate.ts
-index 9e8e678..dd56564 100644
+index 9e8e678..68dceb4 100644
 --- a/apps/server/src/routes/ai/media/generate.ts
 +++ b/apps/server/src/routes/ai/media/generate.ts
 @@ -1,21 +1,49 @@
@@ -520,7 +520,7 @@ index 9e8e678..dd56564 100644
 -  const parsed = (mediaType === "image" ? imageGenerationSchema : mediaType === "video" ? videoGenerationSchema : audioGenerationSchema).safeParse(request, validationOptions());
 +  const schema = mediaType === "image" ? imageGenerationSchema : mediaType === "video" ? videoGenerationSchema : audioGenerationSchema;
 +  const parsed = (isSeecutGeneration() ? schema.extend({
-+    ratio: z.string().regex(/^(?:[1-9]\d{0,3}:[1-9]\d{0,3}|adaptive)$/).refine(value => mediaType === "video" || value !== "adaptive").optional(),
++    ratio: z.string().regex(/^(?:[1-9]\d{0,3}:[1-9]\d{0,3}|adaptive|auto)$/).refine(value => mediaType === "video" || value !== "adaptive").optional(),
 +    clientRequestId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/).optional(),
 +    graphId: z.string().min(1).max(256).optional(), nodeId: z.string().min(1).max(256).optional(), revision: z.number().int().nonnegative().optional(),
 +  }) : schema).safeParse(request, validationOptions());
@@ -836,10 +836,10 @@ index 0000000..b5f74d2
 +}
 diff --git a/apps/server/src/seecutGeneration.ts b/apps/server/src/seecutGeneration.ts
 new file mode 100644
-index 0000000..f157b5e
+index 0000000..526ffd0
 --- /dev/null
 +++ b/apps/server/src/seecutGeneration.ts
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,542 @@
 +import { createHash, randomUUID } from "node:crypto";
 +import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 +import { constants, copyFile, link, lstat, mkdir, open, readFile, realpath, unlink, writeAtomic } from "@toonflow/file";
@@ -850,15 +850,15 @@ index 0000000..f157b5e
 +
 +type Kind = "image" | "video";
 +type Status = "prepared" | "submitting" | "running" | "completed" | "failed" | "unknown";
-+type NativeModel = { id: string; kind: Kind; display_name?: string; available?: boolean; parameters: Record<string, { values?: unknown[]; default?: unknown; max_length?: number; max_items?: number; max_per_kind?: Record<string, number> }> };
++type NativeModel = { id: string; kind: Kind; display_name?: string; available?: boolean; duration_resolution_map?: {duration: number[]; resolution: string[]}[]; parameters: Record<string, { values?: unknown[]; default?: unknown; max_length?: number; max_items?: number; max_per_kind?: Record<string, number> }> };
 +type Effort = { id: string; label?: string; policy_revision: string; available?: boolean; generation_available?: boolean; generation: Record<string, string[]> };
 +type Catalog = { scopeKey: string; models: NativeModel[]; efforts?: Effort[] };
 +type Choice = { id: string; model: NativeModel; effort?: Effort };
 +type AssetVersion = { sha256: string; registration_id: string; previous_id?: string | null };
 +type Result = GeneratedMedia & { source: { providerId: "seecut"; attemptId: string; assetId: string; version: AssetVersion } };
 +type Journal = { version: 1; projectId: string; clientRequestId: string; fingerprint: string; scopeKey: string; attemptId?: string;
-+  mediaType: Kind; outputDirectory: string; status: Status; updatedAt: number; error?: string; results: Result[]; dispatched?: boolean; readyToSubmit?: boolean; requestDigest?: string; notSubmitted?: boolean };
-+type NativeAttempt = { attemptId: string; phase: string; scopeKey?: string; requestDigest?: string; outcomeUnknown?: boolean; readyToSubmit?: boolean; dispatched?: boolean; tasks?: { status?: string; error?: unknown }[]; error?: unknown };
++  mediaType: Kind; outputDirectory: string; status: Status; updatedAt: number; error?: string; capturedCredits?: number; results: Result[]; dispatched?: boolean; readyToSubmit?: boolean; requestDigest?: string; notSubmitted?: boolean };
++type NativeAttempt = { attemptId: string; phase: string; scopeKey?: string; requestDigest?: string; outcomeUnknown?: boolean; readyToSubmit?: boolean; dispatched?: boolean; tasks?: { id?: string; status?: string; error?: unknown; captured_credits?: number; billing_id?: string; billing_captured_credits?: number }[]; error?: unknown };
 +type Request = MediaGenerationRequest & { clientRequestId?: string; graphId?: string; nodeId?: string; revision?: number };
 +const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 +const requestIdentity = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
@@ -938,20 +938,32 @@ index 0000000..f157b5e
 +}
 +const strings = (values: unknown[] | undefined) => (values ?? []).filter((value): value is string => typeof value === "string");
 +
++function specsRatios(model: NativeModel, sizes: string[]) {
++  const ratios = strings(model.parameters.aspect_ratio?.values);
++  return ratios.length ? ratios : [...new Set(sizes.map(ratioForSize).filter((value): value is string => !!value))];
++}
++
 +export async function listSeecutMediaModels(): Promise<MediaModel[]> {
 +  const current = await account();
 +  const catalog = await nativeCall<Catalog>("generation.catalog", { expectedScopeKey: current.scopeKey });
 +  if (catalog.scopeKey !== current.scopeKey) throw fail("账户已切换，请重新加载模型", "FLOW_ACCOUNT_CHANGED", 409);
-+  return choices(catalog).map(({ id, model, effort }) => {
++  const available = choices(catalog);
++  const seen = new Set<string>();
++  return available.filter(choice => {
++    if (seen.has(choice.model.id)) return false;
++    seen.add(choice.model.id); return true;
++  }).map(({ id, model, effort }) => {
 +    const sizes = strings(model.parameters.size?.values);
 +    const refs = model.parameters.reference_asset_ids;
 +    const modes: unknown[] = ["text"];
 +    if (model.kind === "image" && refs?.max_items) modes.push("multiReference");
 +    if (model.kind === "video" && refs?.max_per_kind) modes.push(Object.entries(refs.max_per_kind).filter(([, maximum]) => maximum > 0).map(([kind, maximum]) => `${kind}Reference:${maximum}`));
 +    return { providerId: "seecut", providerLabel: "SeeCut", modelId: id,
-+      label: `${model.display_name || model.id}${effort ? ` · ${effort.label || effort.id}` : ""}`, type: model.kind, supportsPrice: false,
-+      mode: modes, ...(model.kind === "image" ? { imageSizes: sizes, imageRatios: [...new Set(sizes.map(ratioForSize).filter((value): value is string => !!value))] } : {
-+        durationResolutionMap: [{ duration: (model.parameters.duration?.values ?? []).filter((value): value is number => typeof value === "number"), resolution: strings(model.parameters.resolution?.values) }],
++      label: model.display_name || model.id,
++      seecutPolicies: available.filter(choice => choice.model.id === model.id).map(choice => ({ modelId: choice.id, label: choice.effort?.label || choice.effort?.id || "默认" })),
++      seecutIndependentRatio: Boolean(model.parameters.aspect_ratio), type: model.kind, supportsPrice: false,
++      mode: modes, ...(model.kind === "image" ? { imageSizes: sizes, imageRatios: specsRatios(model, sizes) } : {
++        durationResolutionMap: model.duration_resolution_map ?? [{ duration: (model.parameters.duration?.values ?? []).filter((value): value is number => typeof value === "number"), resolution: strings(model.parameters.resolution?.values) }],
 +        videoRatios: strings(model.parameters.aspect_ratio?.values), audio: model.parameters.generate_audio ? "optional" as const : false,
 +      }),
 +    };
@@ -1016,9 +1028,23 @@ index 0000000..f157b5e
 +  catch (error) { console.warn("生成记录已保存，云端同步待重试", messageOf(error)); }
 +}
 +
++export function actualCredits(tasks: NonNullable<NativeAttempt["tasks"]>): number {
++  const parents = new Map<string, number>();
++  const children = new Map<string, number>();
++  const valid = (n: unknown): n is number => Number.isSafeInteger(n) && Number(n) >= 0;
++  for (const task of tasks) {
++    if (task.billing_id && valid(task.billing_captured_credits)) {
++      parents.set(task.billing_id, Math.max(parents.get(task.billing_id) ?? 0, task.billing_captured_credits));
++    } else if (task.id && valid(task.captured_credits)) children.set(task.id, task.captured_credits);
++  }
++  // Do not add a child's delta to a parent total already represented here.
++  for (const task of tasks) if (task.id && task.billing_id && parents.has(task.billing_id)) children.delete(task.id);
++  return [...parents.values(), ...children.values()].reduce((sum, value) => sum + value, 0);
++}
++
 +function publicJournal(journal: Journal) {
 +  return { clientRequestId: journal.clientRequestId, outputDirectory: journal.outputDirectory, mediaType: journal.mediaType,
-+    status: journal.status, updatedAt: new Date(journal.updatedAt).toISOString(),
++    status: journal.status, capturedCredits: journal.capturedCredits ?? 0, updatedAt: new Date(journal.updatedAt).toISOString(),
 +    ...(typeof journal.dispatched === "boolean" ? { dispatched: journal.dispatched } : {}),
 +    ...(typeof journal.readyToSubmit === "boolean" ? { readyToSubmit: journal.readyToSubmit } : {}),
 +    ...(journal.error ? { error: journal.error } : {}), results: journal.status === "completed" ? journal.results : [] };
@@ -1121,6 +1147,7 @@ index 0000000..f157b5e
 +    ? await nativeCall<NativeAttempt>("generation.task", { attemptId: journal.attemptId, expectedScopeKey: journal.scopeKey }, 125000) : attempt;
 +  if (value.attemptId !== journal.attemptId) throw fail("原生任务查询回执无效", "SEECUT_JOURNAL_INVALID", 409);
 +  journal.status = nativeStatus(value);
++  journal.capturedCredits = actualCredits(value.tasks ?? []);
 +  journal.dispatched = value.dispatched;
 +  journal.readyToSubmit = value.readyToSubmit;
 +  journal.error = value.error ? messageOf(value.error) : undefined;
@@ -1214,17 +1241,21 @@ index 0000000..f157b5e
 +  select("quantity", 1);
 +  if (mediaType === "image") {
 +    let size = request.size;
-+    if (!size && request.ratio) size = strings(specs.size?.values).find(item => ratioForSize(item) === request.ratio);
++    if (!specs.aspect_ratio && !size && request.ratio) size = strings(specs.size?.values).find(item => ratioForSize(item) === request.ratio);
 +    values.size = select("size", size);
-+    if (request.ratio && ratioForSize(String(values.size)) !== request.ratio) throw fail("图片比例与实际尺寸不匹配，请选择模型支持的尺寸");
-+    values.quality = select("quality");
++    if (!specs.aspect_ratio && request.ratio && ratioForSize(String(values.size)) !== request.ratio) throw fail("图片比例与实际尺寸不匹配，请选择模型支持的尺寸");
++    if (specs.quality) values.quality = select("quality");
++    if (specs.aspect_ratio) values.aspect_ratio = select("aspect_ratio", request.ratio);
 +    if (request.videos?.length || request.audios?.length) throw fail("图片生成只支持图片参考");
 +  } else {
 +    values.resolution = select("resolution", request.resolution);
 +    values.duration = select("duration", request.duration);
 +    values.aspect_ratio = select("aspect_ratio", request.ratio);
-+    values.generate_audio = select("generate_audio", request.generateAudio);
-+    if (typeof values.generate_audio !== "boolean") throw fail("模型音频参数无效");
++    if (specs.generate_audio) {
++      values.generate_audio = select("generate_audio", request.generateAudio);
++      if (typeof values.generate_audio !== "boolean") throw fail("模型音频参数无效");
++    } else if (request.generateAudio === true) throw fail("当前模型未开放生成声音参数");
++    if (choice.model.duration_resolution_map && !choice.model.duration_resolution_map.some(item => item.resolution.includes(String(values.resolution)) && item.duration.includes(Number(values.duration)))) throw fail("所选清晰度不支持此时长");
 +  }
 +  if (choice.effort) Object.assign(values, { effort_id: choice.effort.id, policy_revision: choice.effort.policy_revision });
 +  const references: { path: string; kind: Kind | "audio" }[] = [];
@@ -1274,7 +1305,7 @@ index 0000000..f157b5e
 +      }
 +      if (journal.status === "failed") throw fail(journal.error || "原任务已失败，请修正后创建新的生成请求", "SEECUT_GENERATION_FAILED", 422);
 +      await refresh(directory, path, journal, signal);
-+      if (journal.status === "completed") return journal.results;
++      if (journal.status === "completed") return journal.results.map(result => ({ ...result, capturedCredits: journal?.capturedCredits ?? 0 }));
 +      throw fail(journal.error || "原任务尚未完成，请恢复原任务，不要重复提交", "SEECUT_GENERATION_PENDING", 409);
 +    }
 +    journal = { version: 1, projectId, clientRequestId, fingerprint, scopeKey: current.scopeKey, mediaType, outputDirectory,
@@ -1316,7 +1347,7 @@ index 0000000..f157b5e
 +      while (Date.now() < deadline) {
 +        signal?.throwIfAborted();
 +        await refresh(directory, path, journal, signal);
-+        if (journal.status === "completed") return journal.results;
++        if (journal.status === "completed") return journal.results.map(result => ({ ...result, capturedCredits: journal?.capturedCredits ?? 0 }));
 +        if (journal.status === "failed") throw fail(journal.error || "SeeCut 生成失败，请检查原任务", "SEECUT_GENERATION_FAILED", 422);
 +        if (["unknown", "prepared"].includes(journal.status)) throw fail("生成提交结果尚未确认，请恢复原任务", "SEECUT_GENERATION_UNKNOWN", 409);
 +        await new Promise<void>((yes, no) => {
@@ -4388,7 +4419,7 @@ index 5d797df..87bb27d 100644
    return core.translate(message, values, locale.value);
  }
 diff --git a/packages/nodeScaffold/src/nodeAi.ts b/packages/nodeScaffold/src/nodeAi.ts
-index 63e67ee..5d49e9d 100644
+index 63e67ee..d4e68ff 100644
 --- a/packages/nodeScaffold/src/nodeAi.ts
 +++ b/packages/nodeScaffold/src/nodeAi.ts
 @@ -1,4 +1,5 @@
@@ -4398,15 +4429,17 @@ index 63e67ee..5d49e9d 100644
  import { runAgentLoop, type AgentTool, type AgentToolResult } from "@earendil-works/pi-agent-core";
  import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Message, type Model } from "@earendil-works/pi-ai";
  import { EventSourceParserStream } from "eventsource-parser/stream";
-@@ -16,6 +17,7 @@ export type NodeAiModel = {
+@@ -16,6 +17,9 @@ export type NodeAiModel = {
  };
  export type NodeMediaModel = Omit<MediaModel, "mode"> & {
    mode?: (string | string[])[];
 +  videoRatios?: string[];
++  seecutPolicies?: { modelId: string; label: string }[];
++  seecutIndependentRatio?: boolean;
  };
  export type NodeImageRequest = {
    directory: string;
-@@ -26,10 +28,30 @@ export type NodeImageRequest = {
+@@ -26,10 +30,31 @@ export type NodeImageRequest = {
    images?: { path: string; mimeType: string }[];
    ratio?: string;
    size?: string;
@@ -4431,13 +4464,14 @@ index 63e67ee..5d49e9d 100644
 +  error?: string;
 +  dispatched?: boolean;
 +  readyToSubmit?: boolean;
++  capturedCredits?: number;
 +  results?: (NodeImageResult | NodeVideoResult)[];
 +};
 +export const generationStatusText = (status: NodeGenerationRecord["status"]) => ({ prepared: "等待提交", submitting: "正在提交", running: "生成中", completed: "已完成", failed: "已确认失败", unknown: "待核对" })[status] ?? "待核对";
  export type NodeMediaPriceRequest = (NodeImageRequest & { mediaType: "image" }) | (NodeVideoRequest & { mediaType: "video" }) | (NodeAudioRequest & { mediaType: "audio" });
  export type NodeMediaPrice = { price: string; tips: string };
  export type NodeAudioRequest = Pick<MediaGenerationRequest, "providerId" | "modelId" | "prompt" | "images" | "audios" | "voice" | "speed" | "volume" | "pitch" | "language" | "format" | "sampleRate"> & { directory: string; outputDirectory: string };
-@@ -61,7 +83,11 @@ export type NodeAiTool = {
+@@ -61,7 +86,11 @@ export type NodeAiTool = {
  
  async function readResult<T>(response: Response): Promise<T> {
    const result = await response.json();
@@ -4450,7 +4484,7 @@ index 63e67ee..5d49e9d 100644
    return result.data;
  }
  
-@@ -69,6 +95,9 @@ async function readResult<T>(response: Response): Promise<T> {
+@@ -69,6 +98,9 @@ async function readResult<T>(response: Response): Promise<T> {
  const modelCacheKey = Symbol.for("toonflow.nodeModels");
  const modelCacheHost = globalThis as typeof globalThis & { [modelCacheKey]?: Map<string, Promise<unknown[]>> };
  const modelCache = modelCacheHost[modelCacheKey] ??= new Map<string, Promise<unknown[]>>();
@@ -4460,7 +4494,7 @@ index 63e67ee..5d49e9d 100644
  
  type MediaPriceCache = {
    prices: Map<string, { expires: number; value: Promise<NodeMediaPrice | null> }>;
-@@ -90,16 +119,24 @@ const mediaPriceCache = mediaPriceCacheHost[mediaPriceCacheKey] ??= (() => {
+@@ -90,16 +122,24 @@ const mediaPriceCache = mediaPriceCacheHost[mediaPriceCacheKey] ??= (() => {
  })();
  
  export function invalidateNodeModels(type: "language" | "media") {
@@ -4487,7 +4521,7 @@ index 63e67ee..5d49e9d 100644
        throw error;
      });
      pending = request;
-@@ -168,6 +205,7 @@ async function requestModel(input: NodeAiRequest, context: Context, model: Model
+@@ -168,6 +208,7 @@ async function requestModel(input: NodeAiRequest, context: Context, model: Model
  }
  
  export function useNodeAi() {
@@ -4495,7 +4529,7 @@ index 63e67ee..5d49e9d 100644
    const controller = new AbortController();
    onScopeDispose(() => controller.abort());
    const requestSignal = (signal?: AbortSignal) => signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-@@ -176,8 +214,15 @@ export function useNodeAi() {
+@@ -176,8 +217,15 @@ export function useNodeAi() {
      return readModels<NodeAiModel>("/api/ai/models", requestSignal(signal));
    }
  
@@ -4513,7 +4547,7 @@ index 63e67ee..5d49e9d 100644
    }
  
    async function getMediaPrice(input: NodeMediaPriceRequest, signal?: AbortSignal): Promise<NodeMediaPrice | null> {
-@@ -247,13 +292,139 @@ export function useNodeAi() {
+@@ -247,13 +295,140 @@ export function useNodeAi() {
      }
    }
  
@@ -4555,7 +4589,7 @@ index 63e67ee..5d49e9d 100644
 +      const saved = await readResult<NodeGenerationRecord>(await fetch(`/api/ai/media/recover?${params}`, { headers: { "x-toonflow-workspace": "1" }, cache: "no-store", signal: waitingSignal }));
 +      if (saved.clientRequestId !== current.clientRequestId || saved.outputDirectory !== current.outputDirectory || saved.mediaType !== mediaType
 +        || !["prepared", "submitting", "running", "completed", "failed", "unknown"].includes(saved.status)) throw new Error("原任务记录与当前节点不匹配");
-+      updateMediaGeneration(outputDirectory, { status: saved.status, updatedAt: saved.updatedAt, error: saved.error, results: saved.results, dispatched: saved.dispatched, readyToSubmit: saved.readyToSubmit });
++      updateMediaGeneration(outputDirectory, { status: saved.status, updatedAt: saved.updatedAt, error: saved.error, capturedCredits: saved.capturedCredits ?? current.capturedCredits ?? 0, results: saved.results, dispatched: saved.dispatched, readyToSubmit: saved.readyToSubmit });
 +      if (saved.status === "completed") {
 +        try {
 +          const results = validateGenerationResults(saved.results, mediaType);
@@ -4592,7 +4626,7 @@ index 63e67ee..5d49e9d 100644
 +      if (saved.clientRequestId !== current.clientRequestId || saved.outputDirectory !== current.outputDirectory || saved.mediaType !== mediaType
 +        || !["prepared", "submitting", "running", "completed", "failed", "unknown"].includes(saved.status)) throw new Error("原任务记录与当前节点不匹配");
 +      updateMediaGeneration(outputDirectory, { status: saved.status, updatedAt: saved.updatedAt, error: saved.error,
-+        results: saved.results, dispatched: saved.dispatched, readyToSubmit: saved.readyToSubmit });
++        capturedCredits: saved.capturedCredits ?? current.capturedCredits ?? 0, results: saved.results, dispatched: saved.dispatched, readyToSubmit: saved.readyToSubmit });
 +      await persistCanvas();
 +    } catch (error) {
 +      updateMediaGeneration(outputDirectory, { status: "unknown", error: "继续提交结果尚未确认，请查询原任务，不会重新提交" });
@@ -4624,7 +4658,7 @@ index 63e67ee..5d49e9d 100644
 +      const now = new Date().toISOString();
 +      recorded = { clientRequestId: crypto.randomUUID(), mediaType: mediaType as "image" | "video", outputDirectory: input.outputDirectory,
 +        providerId: input.providerId, modelId: input.modelId, prompt: input.prompt, params,
-+        ...(generationContext ? { context: JSON.parse(JSON.stringify(generationContext)) } : {}), status: "prepared", createdAt: now, updatedAt: now };
++        ...(generationContext ? { context: JSON.parse(JSON.stringify(generationContext)) } : {}), status: "prepared", capturedCredits: 0, createdAt: now, updatedAt: now };
 +      data.seecutGeneration = recorded;
 +      data.seecutGenerationHistory = [...(data.seecutGenerationHistory ?? []), recorded];
 +      try { await persistCanvas(); waitingSignal.throwIfAborted(); }
@@ -4651,7 +4685,8 @@ index 63e67ee..5d49e9d 100644
 +      throw error;
 +    }
 +    if (recorded) {
-+      updateMediaGeneration(input.outputDirectory, { status: "completed", results: results as (NodeImageResult | NodeVideoResult)[], error: undefined });
++      const total = (results[0] as unknown as { capturedCredits?: number })?.capturedCredits;
++      updateMediaGeneration(input.outputDirectory, { capturedCredits: Number.isSafeInteger(total) && Number(total) >= 0 ? total : recorded.capturedCredits ?? 0, status: "completed", results: results as (NodeImageResult | NodeVideoResult)[], error: undefined });
 +      try { await persistCanvas(); }
 +      catch (error) { updateMediaGeneration(input.outputDirectory, { status: "unknown", error: "原任务已完成，本地记录保存失败，请查询原任务" }); throw error; }
 +    }
@@ -4659,7 +4694,7 @@ index 63e67ee..5d49e9d 100644
    }
  
    function generateImage(input: NodeImageRequest, signal?: AbortSignal) {
-@@ -318,5 +489,5 @@ export function useNodeAi() {
+@@ -318,5 +493,5 @@ export function useNodeAi() {
      return { text, ...(reasoning ? { reasoning } : {}) };
    }
  
@@ -4751,27 +4786,36 @@ index c45117f..4b5792c 100644
      if (busy.value) {
        modelsRefreshPending = true;
 diff --git a/packages/nodes/imageGenerationNode/src/index.vue b/packages/nodes/imageGenerationNode/src/index.vue
-index 88a4df3..5032c2b 100644
+index 88a4df3..e0474a6 100644
 --- a/packages/nodes/imageGenerationNode/src/index.vue
 +++ b/packages/nodes/imageGenerationNode/src/index.vue
-@@ -46,6 +46,16 @@
+@@ -46,6 +46,17 @@
        <div v-else-if="multiAngleVisible" ref="multiAngleTarget" />
        <el-card v-else class="promptCard" shadow="never" :bodyStyle="{ padding: '14px 16px 12px' }">
          <el-button v-if="inpaintGuideUrl && editor?.mode !== 'inpaint'" class="inpaintInfo" text :icon="IconBrush" @click="inpaintPreviewVisible = true">查看重绘标注</el-button>
 +        <div v-if="savedGeneration" class="seecutGenerationRecord">
 +          <span>{{ generationStatusText(savedGeneration.status) }}</span>
++          <span class="seecutActualCredits" aria-label="实际累计积分">{{ savedGeneration.capturedCredits ?? 0 }}</span>
 +          <el-button text size="small" :disabled="generating || deleting" @click="recoverSavedGeneration(false)">查询原任务</el-button>
 +          <el-button v-if="savedGeneration.status === 'prepared' && savedGeneration.readyToSubmit === true && savedGeneration.dispatched === false" text size="small" :disabled="generating || deleting" @click="recoverSavedGeneration(true)">继续提交原任务</el-button>
 +          <small v-if="savedGeneration.status === 'prepared' && savedGeneration.readyToSubmit === true && savedGeneration.dispatched === false">按原报价提交</small>
 +          <el-button text size="small" @click="generationRecordsExpanded = !generationRecordsExpanded">生成记录</el-button>
 +          <p v-if="generationBlocked">原任务尚未确认，查询后再生成；停止等待不会取消云端任务。</p>
 +          <p v-if="savedGeneration.error">{{ savedGeneration.error }}</p>
-+          <ol v-if="generationRecordsExpanded"><li v-for="record in generationRecords" :key="record.clientRequestId">{{ generationStatusText(record.status) }} · {{ record.modelId }}<small>{{ record.clientRequestId }}</small></li></ol>
++          <ol v-if="generationRecordsExpanded"><li v-for="record in generationRecords" :key="record.clientRequestId">{{ generationStatusText(record.status) }} · {{ record.modelId }} · {{ record.capturedCredits ?? 0 }}<small>{{ record.clientRequestId }}</small></li></ol>
 +        </div>
          <referenceItem
            v-if="refList.length"
            v-model="refList"
-@@ -63,9 +73,9 @@
+@@ -56,16 +67,16 @@
+         <div class="promptFooter">
+           <el-select
+             v-if="editor?.mode !== 'inpaint'"
+-            v-model="data.model"
++            v-model="modelSelection"
+             class="modelSelect"
+             filterable
+             :loading="modelsLoading"
              :disabled="generating || deleting"
              placeholder="选择模型"
              aria-label="生成模型"
@@ -4783,10 +4827,15 @@ index 88a4df3..5032c2b 100644
              <template #prefix><icon-sparkles :size="17" /></template>
              <el-option-group v-for="provider in modelGroups" :key="provider.id" :label="provider.label">
                <el-option
-@@ -75,8 +85,14 @@
+@@ -75,8 +86,19 @@
                  :value="JSON.stringify([item.providerId, item.modelId])" />
              </el-option-group>
            </el-select>
++          <el-select v-if="selectedModel?.seecutPolicies && selectedModel.seecutPolicies.length > 1"
++            v-model="data.model" class="modelSelect" :disabled="generating || deleting" aria-label="生成策略" placeholder="选择策略">
++            <el-option v-for="policy in selectedModel.seecutPolicies" :key="policy.modelId" :label="policy.label"
++              :value="JSON.stringify([selectedModel.providerId, policy.modelId])" />
++          </el-select>
 +          <div v-if="editor?.mode !== 'inpaint' && selectedModel?.providerId === 'seecut'" class="seecutImageSizeSettings">
 +            <el-select v-model="data.size" size="small" aria-label="图片尺寸" :disabled="generating || deleting" style="width: 156px">
 +              <el-option v-for="size in sizeOptions" :key="size" :value="size" :label="size === 'auto' ? '自动尺寸' : size" />
@@ -4799,7 +4848,7 @@ index 88a4df3..5032c2b 100644
              v-model:size="data.size"
              v-model:ratio="data.ratio"
              :sizes="sizeOptions"
-@@ -88,9 +104,9 @@
+@@ -88,9 +110,9 @@
              <el-button
                class="sendButton"
                :icon="generating ? IconPlayerStop : IconArrowUp"
@@ -4812,7 +4861,7 @@ index 88a4df3..5032c2b 100644
                @click="generating ? generationController?.abort() : startGeneration().catch((error) => showNodeError(error, '图片生成失败'))" />
            </div>
          </div>
-@@ -113,7 +129,7 @@
+@@ -113,7 +135,7 @@
  import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from "vue";
  import { ElButton, ElCard, ElSelect, ElOption, ElOptionGroup, ElLoading, ElImageViewer } from "element-plus";
  import { IconCheck, IconPhotoAi, IconSparkles, IconArrowUp, IconPlayerStop, IconTransfer, IconLayoutGrid, IconBrush, IconPencil, IconSun, IconCameraRotate, IconPanoramaHorizontal, IconChevronDown } from "@tabler/icons-vue";
@@ -4821,7 +4870,7 @@ index 88a4df3..5032c2b 100644
  import { groupNodeModels } from "@toonflow/node-shared/groupNodeModels";
  import { showNodeError } from "@toonflow/node-shared/showNodeError";
  import { useNodeGeneration } from "@toonflow/node-shared/useNodeGeneration";
-@@ -139,6 +155,7 @@ defineOptions({
+@@ -139,6 +161,7 @@ defineOptions({
    ] satisfies NodeHandle[],
  });
  const vLoading = ElLoading.directive;
@@ -4829,10 +4878,11 @@ index 88a4df3..5032c2b 100644
  const { id, node, nodeProps, nodeEvent, outputs, files, ai, updateNodeInternals } = useNode({
    label: "图片生成",
  });
-@@ -177,13 +194,58 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
+@@ -177,13 +200,66 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
  const { generating } = generationState;
  let generation: Promise<void> | undefined;
  let modelsRequest: Promise<void> | undefined;
+-const selectedModel = computed(() => models.value.find((item) => JSON.stringify([item.providerId, item.modelId]) === data.value.model));
 +const savedGeneration = computed(() => ai.getMediaGeneration(`assets/${id}`));
 +const generationRecords = computed(() => ai.getMediaGenerationHistory(`assets/${id}`));
 +const generationBlocked = computed(() => !!savedGeneration.value && !["completed", "failed"].includes(savedGeneration.value.status));
@@ -4863,7 +4913,15 @@ index 88a4df3..5032c2b 100644
 +    .finally(() => { generationController = undefined; });
 +  return generation;
 +}
- const selectedModel = computed(() => models.value.find((item) => JSON.stringify([item.providerId, item.modelId]) === data.value.model));
++const selectedModel = computed(() => models.value.find((item) => JSON.stringify([item.providerId, item.modelId]) === data.value.model
++  || item.seecutPolicies?.some(policy => JSON.stringify([item.providerId, policy.modelId]) === data.value.model)));
++const modelSelection = computed({
++  get: () => selectedModel.value ? JSON.stringify([selectedModel.value.providerId, selectedModel.value.modelId]) : data.value.model,
++  set: (value: string) => { data.value.model = value; },
++});
++const selectedRouteId = computed(() => {
++  try { return JSON.parse(data.value.model)[1] as string; } catch { return selectedModel.value?.modelId ?? ""; }
++});
  const sizeOptions = computed(() => (selectedModel.value?.imageSizes?.length ? selectedModel.value.imageSizes : ["2K"]));
 -const ratioOptions = computed(() => (selectedModel.value?.imageRatios?.length ? selectedModel.value.imageRatios : ["16:9"]));
 +function ratioFromSize(size: string) {
@@ -4875,7 +4933,7 @@ index 88a4df3..5032c2b 100644
 +  while (remainder) [divisor, remainder] = [remainder, divisor % remainder];
 +  return `${width / divisor}:${height / divisor}`;
 +}
-+const ratioOptions = computed(() => selectedModel.value?.providerId === "seecut" ? [ratioFromSize(data.value.size) ?? "auto"]
++const ratioOptions = computed(() => selectedModel.value?.providerId === "seecut" && !selectedModel.value.seecutIndependentRatio ? [ratioFromSize(data.value.size) ?? "auto"]
 +  : selectedModel.value?.imageRatios?.length ? selectedModel.value.imageRatios : ["16:9"]);
  watch(
 -  selectedModel,
@@ -4883,7 +4941,7 @@ index 88a4df3..5032c2b 100644
 +  [selectedModel, () => data.value.size],
 +  ([choice]) => {
      if (!choice) return;
-+    if (choice.providerId === "seecut") {
++    if (choice.providerId === "seecut" && !choice.seecutIndependentRatio) {
 +      if (!sizeOptions.value.includes(data.value.size)) data.value.size = sizeOptions.value[0] ?? "";
 +      data.value.ratio = ratioFromSize(data.value.size) ?? "auto";
 +      return;
@@ -4891,16 +4949,20 @@ index 88a4df3..5032c2b 100644
      // ACT: 现有分辨率使用 K 单位；出现其他单位时再统一换算，未知名称排在数值选项之后。
      if (!sizeOptions.value.includes(data.value.size)) data.value.size = sizeOptions.value.toSorted((left, right) =>
        (Number.parseFloat(left) || Infinity) - (Number.parseFloat(right) || Infinity)
-@@ -211,7 +273,7 @@ const generationInput = computed<Omit<NodeImageRequest, "directory"> | undefined
-     modelId: choice.modelId,
+@@ -208,10 +284,10 @@ const generationInput = computed<Omit<NodeImageRequest, "directory"> | undefined
+   const references = refList.value.filter(item => !inpaint || item.dataType !== "IMAGE" || item.value?.url !== inpaint.source);
+   const input = {
+     providerId: choice.providerId,
+-    modelId: choice.modelId,
++    modelId: selectedRouteId.value,
      prompt: generationPrompt.value,
      size: data.value.size,
 -    ratio: data.value.ratio,
-+    ratio: choice.providerId === "seecut" ? ratioFromSize(data.value.size) : data.value.ratio,
++    ratio: choice.providerId === "seecut" && !choice.seecutIndependentRatio ? ratioFromSize(data.value.size) : data.value.ratio,
      outputDirectory: `assets/${id}`,
      images: references.flatMap(item => item.dataType === "IMAGE" && item.value ? [{ path: item.value.url, mimeType: item.value.mimeType }] : []),
    };
-@@ -285,10 +347,10 @@ async function replaceOutput(event: Event) {
+@@ -285,10 +361,10 @@ async function replaceOutput(event: Event) {
    }
  }
  
@@ -4914,7 +4976,7 @@ index 88a4df3..5032c2b 100644
      if (disposed || generating.value || deleting.value) return;
      models.value = items.filter((item) => item.type === "image");
      // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
-@@ -317,6 +379,7 @@ async function confirmInpaint() {
+@@ -317,6 +393,7 @@ async function confirmInpaint() {
  }
  
  async function startGeneration() {
@@ -4922,7 +4984,7 @@ index 88a4df3..5032c2b 100644
    const input = generationInput.value;
    if (generating.value) throw new Error("图片正在生成，请等待完成");
    if (panorama.value?.visible) throw new Error("请先关闭全景图，再启动图片生成");
-@@ -334,7 +397,7 @@ async function startGeneration() {
+@@ -334,7 +411,7 @@ async function startGeneration() {
    const controller = new AbortController();
    const inpaintData = data.value.inpaint;
    generationController = controller;
@@ -4931,16 +4993,33 @@ index 88a4df3..5032c2b 100644
    generation = generationState.run(() => workspace.list()
      .then(({ directory }) => {
        controller.signal.throwIfAborted();
-@@ -447,7 +510,7 @@ nodeTools.register({
-       : models.value.find((item) => item.providerId === args.providerId && item.modelId === args.modelId);
+@@ -408,7 +485,7 @@ function getConfig() {
+   return {
+     config: {
+       providerId: selectedModel.value?.providerId ?? "",
+-      modelId: selectedModel.value?.modelId ?? "",
++      modelId: selectedRouteId.value,
+       size: data.value.size,
+       ratio: data.value.ratio,
+     },
+@@ -444,13 +521,13 @@ nodeTools.register({
+     signal?.throwIfAborted();
+     if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
+     const choice = args.modelId === undefined ? selectedModel.value
+-      : models.value.find((item) => item.providerId === args.providerId && item.modelId === args.modelId);
++      : models.value.find((item) => item.providerId === args.providerId && (item.modelId === args.modelId || item.seecutPolicies?.some(policy => policy.modelId === args.modelId)));
      if (!choice) throw new Error("请选择 getConfig 返回的有效图片模型");
      const sizes = choice.imageSizes?.length ? choice.imageSizes : ["2K"];
 -    const ratios = choice.imageRatios?.length ? choice.imageRatios : ["16:9"];
-+    const ratios = choice.providerId === "seecut" ? [ratioFromSize(args.size ?? data.value.size) ?? "auto"] : choice.imageRatios?.length ? choice.imageRatios : ["16:9"];
++    const ratios = choice.providerId === "seecut" && !choice.seecutIndependentRatio ? [ratioFromSize(args.size ?? data.value.size) ?? "auto"] : choice.imageRatios?.length ? choice.imageRatios : ["16:9"];
      if (args.size !== undefined && !sizes.includes(args.size)) throw new Error(`当前模型不支持分辨率 ${args.size}，可选：${sizes.join("、")}`);
      if (args.ratio !== undefined && !ratios.includes(args.ratio)) throw new Error(`当前模型不支持比例 ${args.ratio}，可选：${ratios.join("、")}`);
-     data.value.model = JSON.stringify([choice.providerId, choice.modelId]);
-@@ -556,4 +619,13 @@ nodeTools.register({
+-    data.value.model = JSON.stringify([choice.providerId, choice.modelId]);
++    data.value.model = JSON.stringify([choice.providerId, args.modelId ?? selectedRouteId.value]);
+     if (args.size !== undefined) data.value.size = args.size;
+     if (args.ratio !== undefined) data.value.ratio = args.ratio;
+     return getConfig();
+@@ -556,4 +633,13 @@ nodeTools.register({
      }
    }
  }
@@ -5077,27 +5156,36 @@ index 511e06b..22073d6 100644
        });
      }
 diff --git a/packages/nodes/videoGenerationNode/src/index.vue b/packages/nodes/videoGenerationNode/src/index.vue
-index 77a0535..b33e2de 100644
+index 77a0535..7fbec7d 100644
 --- a/packages/nodes/videoGenerationNode/src/index.vue
 +++ b/packages/nodes/videoGenerationNode/src/index.vue
-@@ -42,6 +42,16 @@
+@@ -42,6 +42,17 @@
      </div>
      <template #bottom>
        <el-card class="promptCard" shadow="never" :bodyStyle="{ padding: '14px 16px 12px' }">
 +        <div v-if="savedGeneration" class="seecutGenerationRecord">
 +          <span>{{ generationStatusText(savedGeneration.status) }}</span>
++          <span class="seecutActualCredits" aria-label="实际累计积分">{{ savedGeneration.capturedCredits ?? 0 }}</span>
 +          <el-button text size="small" :disabled="generating || deleting" @click="recoverSavedGeneration(false)">查询原任务</el-button>
 +          <el-button v-if="savedGeneration.status === 'prepared' && savedGeneration.readyToSubmit === true && savedGeneration.dispatched === false" text size="small" :disabled="generating || deleting" @click="recoverSavedGeneration(true)">继续提交原任务</el-button>
 +          <small v-if="savedGeneration.status === 'prepared' && savedGeneration.readyToSubmit === true && savedGeneration.dispatched === false">按原报价提交</small>
 +          <el-button text size="small" @click="generationRecordsExpanded = !generationRecordsExpanded">生成记录</el-button>
 +          <p v-if="generationBlocked">原任务尚未确认，查询后再生成；停止等待不会取消云端任务。</p>
 +          <p v-if="savedGeneration.error">{{ savedGeneration.error }}</p>
-+          <ol v-if="generationRecordsExpanded"><li v-for="record in generationRecords" :key="record.clientRequestId">{{ generationStatusText(record.status) }} · {{ record.modelId }}<small>{{ record.clientRequestId }}</small></li></ol>
++          <ol v-if="generationRecordsExpanded"><li v-for="record in generationRecords" :key="record.clientRequestId">{{ generationStatusText(record.status) }} · {{ record.modelId }} · {{ record.capturedCredits ?? 0 }}<small>{{ record.clientRequestId }}</small></li></ol>
 +        </div>
          <referenceItem
            v-if="refList.length"
            v-model="refList"
-@@ -60,9 +70,9 @@
+@@ -53,16 +64,16 @@
+         <promptInput v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" expandable />
+         <div class="promptFooter">
+           <el-select
+-            v-model="data.model"
++            v-model="modelSelection"
+             class="modelSelect"
+             filterable
+             :loading="modelsLoading"
              :disabled="generating || deleting"
              placeholder="选择模型"
              aria-label="生成模型"
@@ -5109,7 +5197,19 @@ index 77a0535..b33e2de 100644
              <template #prefix><icon-sparkles :size="17" /></template>
              <el-option-group v-for="provider in modelGroups" :key="provider.id" :label="provider.label">
                <el-option
-@@ -86,9 +96,9 @@
+@@ -72,6 +83,11 @@
+                 :value="JSON.stringify([item.providerId, item.modelId])" />
+             </el-option-group>
+           </el-select>
++          <el-select v-if="selectedModel?.seecutPolicies && selectedModel.seecutPolicies.length > 1"
++            v-model="data.model" class="modelSelect" :disabled="generating || deleting" aria-label="生成策略" placeholder="选择策略">
++            <el-option v-for="policy in selectedModel.seecutPolicies" :key="policy.modelId" :label="policy.label"
++              :value="JSON.stringify([selectedModel.providerId, policy.modelId])" />
++          </el-select>
+           <generationSettings
+             v-model:duration="data.duration"
+             v-model:resolution="data.resolution"
+@@ -86,9 +102,9 @@
              <el-button
                class="sendButton"
                :icon="generating ? IconPlayerStop : IconArrowUp"
@@ -5122,7 +5222,7 @@ index 77a0535..b33e2de 100644
                @click="generating ? generationController?.abort() : startGeneration().catch((error) => showNodeError(error, '视频生成失败'))" />
            </div>
          </div>
-@@ -102,7 +112,7 @@
+@@ -102,7 +118,7 @@
  import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from "vue";
  import { ElButton, ElCard, ElSelect, ElOption, ElOptionGroup, ElLoading, ElDropdown, ElDropdownMenu, ElDropdownItem } from "element-plus";
  import { IconCameraAi, IconSparkles, IconArrowUp, IconPlayerStop, IconTransfer, IconMusic, IconLayersSubtract, IconScissors, IconPhotoScan, IconPlayerSkipBack, IconPlayerSkipForward } from "@tabler/icons-vue";
@@ -5131,7 +5231,7 @@ index 77a0535..b33e2de 100644
  import { groupNodeModels } from "@toonflow/node-shared/groupNodeModels";
  import { showNodeError } from "@toonflow/node-shared/showNodeError";
  import { useNodeGeneration } from "@toonflow/node-shared/useNodeGeneration";
-@@ -124,6 +134,7 @@ defineOptions({
+@@ -124,6 +140,7 @@ defineOptions({
    ] satisfies NodeHandle[],
  });
  const vLoading = ElLoading.directive;
@@ -5139,13 +5239,22 @@ index 77a0535..b33e2de 100644
  const { id, node, nodeProps, nodeEvent, outputs, files, ai, updateNodeInternals } = useNode({
    label: "视频生成",
  });
-@@ -151,9 +162,34 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
+@@ -151,9 +168,42 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
  const { generating } = generationState;
  let generation: Promise<void> | undefined;
  let modelsRequest: Promise<void> | undefined;
 -// ACT: 供应商未声明视频比例范围，沿用界面的通用比例，具体支持范围由供应商校验。
 -const ratioOptions = ["16:9", "9:16", "1:1", "4:3", "3:4"];
- const selectedModel = computed(() => models.value.find((item) => JSON.stringify([item.providerId, item.modelId]) === data.value.model));
+-const selectedModel = computed(() => models.value.find((item) => JSON.stringify([item.providerId, item.modelId]) === data.value.model));
++const selectedModel = computed(() => models.value.find((item) => JSON.stringify([item.providerId, item.modelId]) === data.value.model
++  || item.seecutPolicies?.some(policy => JSON.stringify([item.providerId, policy.modelId]) === data.value.model)));
++const modelSelection = computed({
++  get: () => selectedModel.value ? JSON.stringify([selectedModel.value.providerId, selectedModel.value.modelId]) : data.value.model,
++  set: (value: string) => { data.value.model = value; },
++});
++const selectedRouteId = computed(() => {
++  try { return JSON.parse(data.value.model)[1] as string; } catch { return selectedModel.value?.modelId ?? ""; }
++});
 +// ACT: 优先使用模型声明的比例，旧供应商没有声明时沿用通用选项。
 +const defaultRatios = ["16:9", "9:16", "1:1", "4:3", "3:4"];
 +const ratioOptions = computed(() => selectedModel.value?.videoRatios?.length ? selectedModel.value.videoRatios : defaultRatios);
@@ -5176,7 +5285,7 @@ index 77a0535..b33e2de 100644
  const selectedMode = computed(() => selectedModel.value?.mode?.find((item) => JSON.stringify(item) === data.value.mode) as NodeVideoRequest["mode"]);
  const frameMode = computed(() => ["startEndRequired", "endFrameOptional", "startFrameOptional"].includes(String(selectedMode.value)));
  const mediaCounts = computed(() => ({
-@@ -202,7 +238,7 @@ watch([selectedModel, () => data.value.duration], ([choice]) => {
+@@ -202,7 +252,7 @@ watch([selectedModel, () => data.value.duration], ([choice]) => {
    if (!durations.includes(data.value.duration!)) data.value.duration = durations[0];
    const resolutions = getResolutions(choice, data.value.duration);
    if (!resolutions.includes(data.value.resolution)) data.value.resolution = resolutions[0] ?? "";
@@ -5185,7 +5294,16 @@ index 77a0535..b33e2de 100644
    if (choice.audio !== "optional") data.value.generateAudio = choice.audio === true;
  }, { flush: "sync" });
  const modelGroups = computed(() => groupNodeModels(models.value));
-@@ -287,10 +323,10 @@ async function replaceOutput(event: Event) {
+@@ -220,7 +270,7 @@ const generationInput = computed<Omit<NodeVideoRequest, "directory"> | undefined
+   const images = refList.value.flatMap(item => item.dataType === "IMAGE" && item.value ? [{ path: item.value.url, mimeType: item.value.mimeType }] : []);
+   return {
+     providerId: choice.providerId,
+-    modelId: choice.modelId,
++    modelId: selectedRouteId.value,
+     prompt: generationPrompt.value,
+     mode: selectedMode.value,
+     duration: data.value.duration,
+@@ -287,10 +337,10 @@ async function replaceOutput(event: Event) {
    }
  }
  
@@ -5199,7 +5317,7 @@ index 77a0535..b33e2de 100644
      if (disposed || generating.value || deleting.value) return;
      models.value = items.filter((item) => item.type === "video");
      // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
-@@ -306,6 +342,7 @@ function loadModels() {
+@@ -306,6 +356,7 @@ function loadModels() {
  }
  
  async function startGeneration() {
@@ -5207,7 +5325,7 @@ index 77a0535..b33e2de 100644
    const choice = selectedModel.value;
    const input = generationInput.value;
    if (generating.value) throw new Error("视频正在生成，请等待完成");
-@@ -318,7 +355,7 @@ async function startGeneration() {
+@@ -318,7 +369,7 @@ async function startGeneration() {
    const workspace = files.getWorkspaceFiles();
    const controller = new AbortController();
    generationController = controller;
@@ -5216,7 +5334,16 @@ index 77a0535..b33e2de 100644
    generation = generationState.run(() => workspace
      .list()
      .then(({ directory }) => {
-@@ -372,7 +409,7 @@ function getConfig() {
+@@ -364,7 +415,7 @@ function getConfig() {
+   return {
+     config: {
+       providerId: selectedModel.value?.providerId ?? "",
+-      modelId: selectedModel.value?.modelId ?? "",
++      modelId: selectedRouteId.value,
+       duration: data.value.duration,
+       resolution: data.value.resolution,
+       ratio: data.value.ratio,
+@@ -372,7 +423,7 @@ function getConfig() {
        generateAudio: data.value.generateAudio,
      },
      models: models.value,
@@ -5225,7 +5352,7 @@ index 77a0535..b33e2de 100644
      matchingModes: matchingModes.value,
    };
  }
-@@ -397,7 +434,7 @@ nodeTools.register({
+@@ -397,7 +448,7 @@ nodeTools.register({
      modelId: z.string().min(1).optional(),
      duration: z.number().positive().optional(),
      resolution: z.string().min(1).optional(),
@@ -5234,7 +5361,12 @@ index 77a0535..b33e2de 100644
      mode: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
      generateAudio: z.boolean().optional(),
    }).refine((args) => (args.providerId === undefined) === (args.modelId === undefined), "providerId 与 modelId 必须同时提供"),
-@@ -412,6 +449,7 @@ nodeTools.register({
+@@ -408,17 +459,18 @@ nodeTools.register({
+     signal?.throwIfAborted();
+     if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
+     const choice = args.modelId === undefined ? selectedModel.value
+-      : models.value.find((item) => item.providerId === args.providerId && item.modelId === args.modelId);
++      : models.value.find((item) => item.providerId === args.providerId && (item.modelId === args.modelId || item.seecutPolicies?.some(policy => policy.modelId === args.modelId)));
      if (!choice) throw new Error("请选择 getConfig 返回的有效视频模型");
      const durations = getDurations(choice);
      if (args.duration !== undefined && !durations.includes(args.duration)) throw new Error(`当前模型不支持时长 ${args.duration}，可选：${durations.join("、")}`);
@@ -5242,7 +5374,15 @@ index 77a0535..b33e2de 100644
      const duration = args.duration ?? (durations.includes(data.value.duration!) ? data.value.duration : durations[0]);
      const resolutions = getResolutions(choice, duration);
      if (args.resolution !== undefined && !resolutions.includes(args.resolution)) throw new Error(`当前时长不支持分辨率 ${args.resolution}，可选：${resolutions.join("、")}`);
-@@ -519,4 +557,12 @@ nodeTools.register({
+     const resolution = args.resolution ?? (resolutions.includes(data.value.resolution) ? data.value.resolution : resolutions[0] ?? "");
+     if (args.mode !== undefined && !getMatchingModes(choice).some((item) => JSON.stringify(item) === JSON.stringify(args.mode))) throw new Error("所选模式不受当前模型支持或不适用于当前引用，请根据模型能力及已连接素材选择");
+     if (args.generateAudio !== undefined && choice.audio !== "optional" && args.generateAudio !== (choice.audio === true)) throw new Error("当前模型不支持切换声音，请查看 getConfig 返回的 audio 能力");
+-    data.value.model = JSON.stringify([choice.providerId, choice.modelId]);
++    data.value.model = JSON.stringify([choice.providerId, args.modelId ?? selectedRouteId.value]);
+     data.value.duration = duration;
+     data.value.resolution = resolution;
+     if (args.ratio !== undefined) data.value.ratio = args.ratio;
+@@ -519,4 +571,12 @@ nodeTools.register({
      }
    }
  }

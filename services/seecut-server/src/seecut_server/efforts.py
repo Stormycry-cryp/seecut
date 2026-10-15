@@ -106,6 +106,8 @@ def _priced(account, model):
     if account.config.model_cost_pricing_enabled:
         try:
             snapshot = price_snapshot(account.config.model_price_catalog, model['provider'], model['id'], model['kind'])
+            if model['provider'] == 'grsai' and any(value['retail_source'] != 'cost_times_three' for value in snapshot['dimensions'].values()):
+                return False
             units = {'per_image'} if model['kind'] == 'image' else {'per_second', 'per_millisecond'}
             return any(value['unit'] in units for value in snapshot['dimensions'].values())
         except (ValueError, KeyError, TypeError):
@@ -134,8 +136,10 @@ def _priced(account, model):
 def _generation_models(account):
     models = public_catalog(account.config.image2_model)['models']
     for model in models:
-        provider = account.image2 if model['provider'] == 'image2' else account.xiangxin
+        provider = {'image2': account.image2, 'xiangxin': account.xiangxin, 'grsai': account.grsai}[model['provider']]
         reason = None if provider.configured else 'GENERATION_NOT_CONFIGURED'
+        if model['provider'] == 'grsai' and not account.config.model_cost_pricing_enabled:
+            reason = 'MODEL_COST_UNVERIFIED'
         if reason is None and not _priced(account, model):
             reason = 'MODEL_COST_UNVERIFIED' if account.config.model_cost_pricing_enabled else 'MODEL_PRICE_NOT_CONFIGURED'
         model.update(available=reason is None, reason_code=reason)

@@ -10,7 +10,7 @@ pub(crate) fn generation_fields(kind: &str) -> &'static [&'static str] {
             "quantity",
         ]
     } else {
-        &["size", "quality", "quantity"]
+        &["size", "quality", "aspect_ratio", "quantity"]
     }
 }
 pub(crate) fn parameter_values(parameter: &Value) -> Vec<Value> {
@@ -71,6 +71,19 @@ pub(super) fn generation_body(
             return Err(format!("{field} 不在当前模型能力中"));
         }
         body[field] = selected;
+    }
+    if let Some(groups) = model["duration_resolution_map"].as_array() {
+        let allowed = groups.iter().any(|group| {
+            group["resolution"]
+                .as_array()
+                .is_some_and(|v| v.contains(&body["resolution"]))
+                && group["duration"]
+                    .as_array()
+                    .is_some_and(|v| v.contains(&body["duration"]))
+        });
+        if !allowed {
+            return Err("当前分辨率不支持所选时长".into());
+        }
     }
     if !ids.is_empty() {
         body["reference_asset_ids"] = json!(ids);
@@ -155,6 +168,55 @@ mod tests {
         assert_eq!(
             generation_body(&model, "p", &json!({}), &[], None).unwrap()["operation"],
             "generate"
+        );
+    }
+
+    #[test]
+    fn nano_image_keeps_independent_ratio_without_inventing_quality() {
+        let model = json!({"id":"nano-banana-2.1","kind":"image","available":true,"operations":["generate"],"parameters":{
+            "size":{"values":["1K","2K","4K"],"default":"1K"},
+            "aspect_ratio":{"values":["auto","9:16"],"default":"auto"}}});
+        let body = generation_body(
+            &model,
+            "p",
+            &json!({"size":"4K","aspect_ratio":"9:16"}),
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(body["aspect_ratio"], "9:16");
+        assert_eq!(body["size"], "4K");
+        assert!(body.get("quality").is_none());
+        assert!(generation_body(&model, "p", &json!({"aspect_ratio":"8:1"}), &[], None).is_err());
+    }
+
+    #[test]
+    fn resolution_duration_combination_is_checked_before_submission() {
+        let mut model = video();
+        model["parameters"]["resolution"]["values"] = json!(["720p", "1080p"]);
+        model["duration_resolution_map"] = json!([
+            {"resolution":["720p"],"duration":[4,5,6]},
+            {"resolution":["1080p"],"duration":[4,5]}
+        ]);
+        assert!(
+            generation_body(
+                &model,
+                "p",
+                &json!({"resolution":"1080p","duration":6}),
+                &[],
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            generation_body(
+                &model,
+                "p",
+                &json!({"resolution":"720p","duration":6}),
+                &[],
+                None
+            )
+            .is_ok()
         );
     }
 }

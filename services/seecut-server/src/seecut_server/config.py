@@ -131,8 +131,12 @@ class Config:
     model_price_catalog: tuple = ()
     model_cost_pricing_enabled: bool = False
     efforts: tuple = ()
+    grsai_base_url: str = "https://grsai.dakka.com.cn"
+    grsai_api_key: str = ""
 
     def __post_init__(self):
+        if self.grsai_base_url not in {"https://grsai.dakka.com.cn", "https://grsaiapi.com"}:
+            raise ValueError("SECUT_GRSAI_BASE_URL must be an official GrsAI origin")
         rate_denominator(self.assistant_rate_denominator)
         billing_mode(self.assistant_billing_mode)
         parse_price_catalog(json.dumps(self.model_price_catalog))
@@ -228,6 +232,8 @@ class Config:
                 "SECUT_TENCENT_SES_RESET_TEMPLATE_ID"
             ),
             expose_test_tokens=_bool("SECUT_EXPOSE_TEST_TOKENS", False),
+            grsai_base_url=os.getenv("SECUT_GRSAI_BASE_URL", "https://grsai.dakka.com.cn").rstrip("/"),
+            grsai_api_key=os.getenv("SECUT_GRSAI_API_KEY", ""),
             xiangxin_base_url=os.getenv("SECUT_XIANGXIN_BASE_URL", "https://xiangxinai123.xyz").rstrip("/"),
             xiangxin_api_key=os.getenv("SECUT_XIANGXIN_API_KEY", ""),
             image2_base_url="https://qwe.g-aisc.com/v1",
@@ -250,7 +256,7 @@ class Config:
             provider_result_hosts=tuple(
                 value.strip().lower()
                 for value in os.getenv(
-                    "SECUT_PROVIDER_RESULT_HOSTS", "xiangxinai123.xyz,qwe.g-aisc.com"
+                    "SECUT_PROVIDER_RESULT_HOSTS", "xiangxinai123.xyz,qwe.g-aisc.com,file1.aitohumanize.com"
                 ).split(",")
                 if value.strip()
             ),

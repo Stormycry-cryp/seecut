@@ -1822,6 +1822,7 @@ fn parameter_draft_from_ui(ui: &SeeCut, model: &Value, mode: i32) -> Value {
         &[
             ("size", ui.get_resolution_index()),
             ("quality", ui.get_quality_index()),
+            ("aspect_ratio", ui.get_ratio_index()),
         ]
     } else {
         &[
@@ -2237,7 +2238,12 @@ fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
         }
     } else {
         body["size"] = parameter_value(&model, "size", ui.get_resolution_index());
-        body["quality"] = parameter_value(&model, "quality", ui.get_quality_index());
+        if model["parameters"].get("quality").is_some() {
+            body["quality"] = parameter_value(&model, "quality", ui.get_quality_index());
+        }
+        if model["parameters"].get("aspect_ratio").is_some() {
+            body["aspect_ratio"] = parameter_value(&model, "aspect_ratio", ui.get_ratio_index());
+        }
     }
     if model["parameters"].get("quantity").is_some() {
         body["quantity"] = parameter_value(&model, "quantity", ui.get_quantity_index());
@@ -2616,25 +2622,7 @@ fn current_template_parameters(ui: &SeeCut, state: &Cloud) -> Value {
         })
         .cloned()
         .unwrap_or_default();
-    let mut parameters = if ui.get_mode() == 0 {
-        json!({
-            "size": parameter_value(&model, "size", ui.get_resolution_index()),
-            "quality": parameter_value(&model, "quality", ui.get_quality_index()),
-        })
-    } else {
-        json!({
-            "resolution": parameter_value(&model, "resolution", ui.get_resolution_index()),
-            "duration": parameter_value(&model, "duration", ui.get_duration_index()),
-            "aspect_ratio": parameter_value(&model, "aspect_ratio", ui.get_ratio_index()),
-        })
-    };
-    if model["parameters"].get("generate_audio").is_some() {
-        parameters["generate_audio"] = json!(ui.get_generate_audio());
-    }
-    if model["parameters"].get("quantity").is_some() {
-        parameters["quantity"] = parameter_value(&model, "quantity", ui.get_quantity_index());
-    }
-    parameters
+    parameter_draft_from_ui(ui, &model, ui.get_mode())
 }
 
 fn template_references(state: &Cloud) -> Vec<crate::generation_templates::TemplateReference> {
@@ -3073,11 +3061,10 @@ fn apply_generation_configuration(
         &["resolution", "duration", "aspect_ratio", "generate_audio"]
     };
     for name in required_parameters {
-        let parameter_expected = *name != "generate_audio"
-            || model
-                .as_ref()
-                .map(|model| model["parameters"].get("generate_audio").is_some())
-                .unwrap_or(true);
+        let parameter_expected = model
+            .as_ref()
+            .map(|model| model["parameters"].get(*name).is_some())
+            .unwrap_or(true);
         if parameter_expected && configuration.parameters.get(*name).is_none() {
             warnings.push(format!("{source}缺少参数 {name}，已暂用当前模型默认值"));
         }
@@ -7922,11 +7909,35 @@ fn update_model_options_inner(
         .as_deref()
         .is_some_and(|id| !models.iter().any(|model| text(model, "id") == id) && !unavailable);
     let adjusted = std::cell::Cell::new(catalog_model_changed);
-    let selected_model = usize::try_from(selected_index)
+    let mut selected_model = usize::try_from(selected_index)
         .ok()
         .and_then(|index| models.get(index))
         .cloned()
         .unwrap_or_default();
+    let expected = |name: &str| draft.as_ref().and_then(|value| value.get(name));
+    let (resolution_index, resolution_adjusted) = option_index(
+        &selected_model,
+        if mode == 0 { "size" } else { "resolution" },
+        expected(if mode == 0 { "size" } else { "resolution" }),
+    );
+    if mode != 0 {
+        let resolution = parameter_value(&selected_model, "resolution", resolution_index);
+        let durations = selected_model["duration_resolution_map"]
+            .as_array()
+            .and_then(|groups| {
+                groups
+                    .iter()
+                    .find(|group| {
+                        group["resolution"]
+                            .as_array()
+                            .is_some_and(|values| values.contains(&resolution))
+                    })
+                    .map(|group| group["duration"].clone())
+            });
+        if let Some(values) = durations {
+            selected_model["parameters"]["duration"]["values"] = values;
+        }
+    }
     let options = |name: &str| {
         selected_model["parameters"][name]["values"]
             .as_array()
@@ -7935,21 +7946,8 @@ fn update_model_options_inner(
             .map(|value| parameter_label(name, value))
             .collect()
     };
-    let expected = |name: &str| draft.as_ref().and_then(|value| value.get(name));
-    let (ratio_index, ratio_adjusted) = option_index(
-        &selected_model,
-        "aspect_ratio",
-        if mode == 0 {
-            None
-        } else {
-            expected("aspect_ratio")
-        },
-    );
-    let (resolution_index, resolution_adjusted) = option_index(
-        &selected_model,
-        if mode == 0 { "size" } else { "resolution" },
-        expected(if mode == 0 { "size" } else { "resolution" }),
-    );
+    let (ratio_index, ratio_adjusted) =
+        option_index(&selected_model, "aspect_ratio", expected("aspect_ratio"));
     let (duration_index, duration_adjusted) =
         option_index(&selected_model, "duration", expected("duration"));
     let (quality_index, quality_adjusted) =
@@ -8010,7 +8008,9 @@ fn update_model_options_inner(
     ui.set_generate_audio(audio_value);
     ui.set_accepts_references(limit > 0);
     ui.set_reference_max(limit as i32);
-    ui.set_reference_limit(if mode != 0 {
+    ui.set_reference_limit(if selected_model["provider"] == "grsai" && mode != 0 {
+        "图片最多 9 张，音频最多 3 项；不支持视频参考".to_string()
+    } else if mode != 0 {
         format!("全能参考 · 最多 {limit} 项\n图片 PNG/JPG/WebP，视频 MP4/MOV，音频 MP3/WAV\n视频、音频各最多 3 项，各累计 2–15 秒；音频需搭配图片或视频")
     } else {
         format!("PNG / JPG / WebP · 最多 {limit} 张")

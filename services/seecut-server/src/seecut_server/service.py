@@ -42,6 +42,8 @@ from .security import (
 )
 from .xiangxin import XiangxinClient, XiangxinError
 from .image2 import Image2Client, Image2Error
+from .grsai import GrsaiClient, GrsaiError
+from .grsai_catalog import ALIASES
 from .network import open_no_redirect, read_limited
 from .flow_projects import FlowProjects
 
@@ -65,12 +67,14 @@ class SeeCutService:
         clock: Callable[[], float] = time.time,
         assistant_provider=None,
         assistant_providers=None,
+        grsai=None,
     ):
         self.config = config
         self.db = database
         self.emailer = emailer or EmailSender(config)
         self.xiangxin = xiangxin or XiangxinClient(config)
         self.image2 = image2 or Image2Client(config)
+        self.grsai = grsai or GrsaiClient(config)
         self.clock = clock
         self.assistant = AssistantService(self, assistant_provider if assistant_provider is not None else make_assistant_provider(config, self.db), providers=assistant_providers)
         self.config.storage_path.mkdir(parents=True, exist_ok=True)
@@ -83,7 +87,7 @@ class SeeCutService:
         return {
             "email": {"provider": self.config.email_provider, "configured": self.emailer.configured},
             "generation": {
-                "configured": self.xiangxin.configured or self.image2.configured,
+                "configured": self.xiangxin.configured or self.image2.configured or self.grsai.configured,
                 "catalog_version": public_catalog(self.config.image2_model)["catalog_version"],
             },
             "payment": {
@@ -1340,6 +1344,8 @@ class SeeCutService:
     @staticmethod
     def _generation_selection(request: dict[str, Any]) -> tuple[dict[str, Any], Any, Any]:
         request = dict(request)
+        if isinstance(request.get("model"), str):
+            request["model"] = ALIASES.get(request["model"], request["model"])
         if "policy" in request or "model_pricing" in request:
             raise ApiError(400, "EFFORT_POLICY_INVALID", "生成策略由服务端确定")
         if ("effort_id" in request) != ("policy_revision" in request):
@@ -1385,6 +1391,8 @@ class SeeCutService:
         request.pop("kind", None)
         request, effort_id, revision = self._generation_selection(request)
         model, normalized = validate_request(kind, request, self.config.image2_model)
+        if model['provider'] == 'grsai' and (not self.grsai.configured or not self.config.model_cost_pricing_enabled):
+            raise ApiError(422, 'GRSAI_NOT_READY', '该模型的服务配置或采购成本尚未核实')
         policy = resolve_generation_effort(self, kind, model["id"], effort_id, revision)
         self._freeze_generation_effort(normalized, effort_id, revision, policy)
         self._validate_generation_assets(
@@ -1394,6 +1402,8 @@ class SeeCutService:
         if self.config.model_cost_pricing_enabled:
             try:
                 snapshot = price_snapshot(self.config.model_price_catalog, model['provider'], model['id'], model['kind'])
+                if model['provider'] == 'grsai' and any(value['retail_source'] != 'cost_times_three' for value in snapshot['dimensions'].values()):
+                    raise ValueError('GrsAI requires cost times three pricing')
                 charge = generation_charge(snapshot, normalized)
                 credits = charge['unit_credits']
                 if credits > 1_000_000_000:
@@ -1475,7 +1485,7 @@ class SeeCutService:
                 # dispatch under today's catalog, asset expiry or effort policy.
                 # The persisted image model selects the same parameter schema
                 # even after the server's configured image model changes.
-                original_model, normalized = validate_request(kind, request, existing["model"])
+                original_model, normalized = validate_request(kind, request, existing["model"] if existing["provider"] == "image2" else None)
                 self._freeze_generation_effort(normalized, effort_id, revision, stored.get("policy"))
                 self._restore_generation_price(normalized, original_model, stored)
                 canonical_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
@@ -1726,8 +1736,8 @@ class SeeCutService:
             rows = connection.execute(
                 """SELECT * FROM generation_tasks
                    WHERE (status='queued'
-                          OR (kind='video' AND status IN ('provider_accepted','processing','validating'))
-                          OR (kind='video' AND status='pending_reconcile' AND upstream_task_id IS NOT NULL))
+                          OR ((kind='video' OR provider='grsai') AND status IN ('provider_accepted','processing','validating'))
+                          OR ((kind='video' OR provider='grsai') AND status='pending_reconcile' AND upstream_task_id IS NOT NULL))
                      AND next_attempt_at<=?
                      AND (lease_expires_at IS NULL OR lease_expires_at<?)
                    ORDER BY created_at LIMIT ?""",
@@ -1744,21 +1754,31 @@ class SeeCutService:
     def process_generation_task(self, task: dict[str, Any]) -> None:
         task_id = task["id"]
         try:
-            if task["kind"] == "image" and task["status"] == "queued":
+            if task['provider'] == 'grsai':
+                if task['status'] == 'queued':
+                    self._submit_grsai_task(task)
+                else:
+                    self._refresh_grsai_task(task)
+            elif task["kind"] == "image" and task["status"] == "queued":
                 self._submit_image_task(task)
             elif task["kind"] == "video" and task["status"] == "queued":
                 self._submit_video_task(task)
             elif task["kind"] == "video" and task["status"] in {"provider_accepted", "processing", "validating", "pending_reconcile"}:
                 self._refresh_video_by_task(task)
+        except GrsaiError as exc:
+            if not exc.retryable and task['status'] == 'queued':
+                self._fail_and_release(task_id, exc.code, exc.message)
+            else:
+                self._mark_provider_retry(task_id, exc, retry_poll=bool(task.get('upstream_task_id')))
         except (XiangxinError, Image2Error) as exc:
-            if task["kind"] == "video" and task["status"] != "queued":
+            if (task["kind"] == "video" or task["provider"] == "grsai") and task["status"] != "queued":
                 self._mark_provider_retry(task_id, exc, retry_poll=True)
             elif getattr(exc, "retryable", False):
                 self._mark_provider_retry(task_id, exc)
             else:
                 self._fail_and_release(task_id, exc.code, exc.message)
         except ApiError as exc:
-            if task["kind"] == "video" and task["status"] != "queued":
+            if (task["kind"] == "video" or task["provider"] == "grsai") and task["status"] != "queued":
                 self._mark_provider_retry(task_id, exc, retry_poll=True)
             else:
                 self._fail_and_release(task_id, exc.code, exc.message)
@@ -1810,6 +1830,55 @@ class SeeCutService:
                 if references:
                     payload[f"reference_{kind}s"] = references
         return payload
+
+    def _submit_grsai_task(self, task):
+        request = json.loads(task['request_json'])
+        if not self.grsai.configured:
+            raise GrsaiError('GRSAI_NOT_CONFIGURED', 'GrsAI 尚未配置', definitely_not_submitted=True)
+        # Revalidate only the frozen route's supported contract, not current pricing.
+        public = self._public_generation_request(request)
+        for field in ('effort_id', 'policy_revision', 'policy'):
+            public.pop(field, None)
+        model, _ = validate_request(task['kind'], public)
+        rows = self._validate_generation_assets(task['user_id'], request.get('reference_asset_ids', []), model)
+        references = []
+        for row in rows:
+            size = (self.config.storage_path / row['object_key']).stat().st_size
+            limit = 20 * 1024 * 1024 if row['media_kind'] == 'image' else 30 * 1024 * 1024
+            if size > limit:
+                raise ApiError(422, 'REFERENCE_TOO_LARGE', '参考素材超过当前模型限制')
+            path = f"/api/storage/staging/{row['upload_id']}"
+            expires = min(row['asset_expires_at'], self.now() + 86400)
+            signature = sign_path(self.config.signing_secret, path, expires)
+            url = f"{self.config.public_base_url}{path}?expires={expires}&signature={signature}"
+            if not url.startswith('https://'):
+                raise ApiError(422, 'REFERENCE_URL_UNAVAILABLE', '参考素材需要可公开访问的 HTTPS 服务')
+            references.append((row['media_kind'], url))
+        self._set_task_status(task['id'], 'submitting', keep_lease=True)
+        upstream = self.grsai.create(request, references)
+        # Persist the ID before any download. A lost response leaves submitting;
+        # lease recovery marks UNKNOWN and never dispatches another paid request.
+        with self.db.transaction() as connection:
+            connection.execute("""UPDATE generation_tasks SET status='provider_accepted',upstream_task_id=?,
+                upstream_response_json=?,next_attempt_at=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=?""",
+                (upstream['id'], json.dumps(upstream), self.now() + 10, self.now(), task['id']))
+
+    def _refresh_grsai_task(self, task):
+        previous = json.loads(task.get('upstream_response_json') or '{}')
+        # A successful receipt is immutable: retry only downloading/registering.
+        upstream = previous if previous.get('status') == 'succeeded' else self.grsai.result(task['upstream_task_id'])
+        if upstream.get('id') != task['upstream_task_id']:
+            raise GrsaiError('GRSAI_TASK_MISMATCH', '供应商回执与原任务不匹配')
+        status = upstream.get('status')
+        if status in {'running', 'queued', 'processing'}:
+            self._set_task_status(task['id'], 'processing', upstream, delay=10)
+        elif status == 'succeeded' and upstream.get('results'):
+            self._set_task_status(task['id'], 'validating', upstream, keep_lease=True)
+            outputs = [self._download_provider_result(item['url'], task['kind'], authenticate_xiangxin=False) for item in upstream['results']]
+            self._store_binary_outputs(task['id'], [data for data, _ in outputs], [mime for _, mime in outputs])
+        else:
+            self._set_task_status(task['id'], 'pending_reconcile', upstream, delay=300)
+            self._mark_provider_retry(task['id'], GrsaiError('GRSAI_SETTLEMENT_PENDING', '原任务结果或费用待核实'), retry_poll=True)
 
     def _submit_image_task(self, task: dict[str, Any]) -> None:
         self._set_task_status(task["id"], "submitting", keep_lease=True)
@@ -1874,7 +1943,7 @@ class SeeCutService:
             return
         self._mark_provider_retry(task["id"], type("ProviderError", (), {"code": "UNKNOWN_PROVIDER_STATUS", "message": "上游状态待核实"})())
 
-    def _download_provider_result(self, url: str, kind: str) -> tuple[bytes, str]:
+    def _download_provider_result(self, url: str, kind: str, *, authenticate_xiangxin: bool = True) -> tuple[bytes, str]:
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme != "https" or not parsed.hostname or not any(
             parsed.hostname == host or parsed.hostname.endswith("." + host) for host in self.config.provider_result_hosts
@@ -1882,7 +1951,7 @@ class SeeCutService:
             raise ApiError(502, "PROVIDER_RESULT_HOST_DENIED", "上游结果地址不在允许范围")
         headers = {"Accept": "image/*,video/*"}
         provider_host = urllib.parse.urlsplit(self.config.xiangxin_base_url).hostname
-        if provider_host and parsed.hostname == provider_host and self.config.xiangxin_api_key:
+        if authenticate_xiangxin and provider_host and parsed.hostname == provider_host and self.config.xiangxin_api_key:
             headers["Authorization"] = f"Bearer {self.config.xiangxin_api_key}"
         request = urllib.request.Request(url, headers=headers)
         try:

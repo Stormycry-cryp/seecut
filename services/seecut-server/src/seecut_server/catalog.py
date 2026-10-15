@@ -4,9 +4,10 @@ from copy import deepcopy
 from typing import Any
 
 from .errors import ApiError
+from .grsai_catalog import ALIASES, catalog as grsai_catalog, validate_combination
 
 
-CATALOG_VERSION = "2026-09-23.1"
+CATALOG_VERSION = "2026-10-15.grsai-1"
 
 MODELS: list[dict[str, Any]] = [
     {
@@ -92,18 +93,23 @@ MODELS: list[dict[str, Any]] = [
     },
 ]
 
+MODELS.extend(grsai_catalog())
 _BY_ID = {item["id"]: item for item in MODELS}
 
 
 def _model_for_request(kind: str, model_id: Any, image_model_id: str | None) -> dict[str, Any] | None:
-    if kind == "image" and image_model_id:
-        template = next((item for item in MODELS if item["kind"] == "image"), None)
-        if template and model_id == image_model_id:
-            model = deepcopy(template)
-            model["id"] = image_model_id
-            return model
+    if not isinstance(model_id, str):
         return None
+    model_id = ALIASES.get(model_id, model_id)
+    # Existing image2 overrides retain their original provider and schema.
+    if kind == "image" and image_model_id and model_id == image_model_id:
+        template = next(item for item in MODELS if item['provider'] == 'image2')
+        model = deepcopy(template)
+        model['id'] = image_model_id
+        return model
     model = _BY_ID.get(model_id)
+    if model and model['provider'] == 'image2' and image_model_id and model_id != image_model_id:
+        return None
     return deepcopy(model) if model else None
 
 
@@ -111,10 +117,15 @@ def public_catalog(image_model_id: str | None = None) -> dict[str, Any]:
     models = deepcopy(MODELS)
     if image_model_id:
         for model in models:
-            if model["kind"] == "image":
+            if model["provider"] == "image2":
                 model["id"] = image_model_id
                 model["display_name"] = "Flare" if image_model_id == "gpt-image-2.5-flare" else image_model_id
-    return {"catalog_version": CATALOG_VERSION, "models": models}
+    # An existing explicitly configured Image2 route owns a colliding stable ID;
+    # do not silently switch that draft to a newly introduced provider.
+    unique = {}
+    for model in models:
+        unique.setdefault(model['id'], model)
+    return {"catalog_version": CATALOG_VERSION, "models": list(unique.values())}
 
 
 def validate_request(
@@ -132,7 +143,7 @@ def validate_request(
     if unknown:
         raise ApiError(422, "UNSUPPORTED_PARAMETERS", "请求包含未开放参数", {"parameters": unknown})
 
-    normalized: dict[str, Any] = {"model": model_id, "operation": operation}
+    normalized: dict[str, Any] = {"model": model["id"], "operation": operation}
     for name, spec in model["parameters"].items():
         value = body.get(name, spec.get("default"))
         required = spec.get("required") or operation in spec.get("required_for", [])
@@ -161,6 +172,7 @@ def validate_request(
                 raise ApiError(422, "INVALID_PARAMETER", f"参数包含重复素材：{name}", {"parameter": name})
         normalized[name] = value
     normalized.update(model["fixed_parameters"])
+    validate_combination(model, normalized)
     return model, normalized
 
 
