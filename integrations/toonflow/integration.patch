@@ -1134,19 +1134,38 @@ index 0000000..f157b5e
 +}
 diff --git a/apps/server/src/seecutHost.ts b/apps/server/src/seecutHost.ts
 new file mode 100644
-index 0000000..68bb597
+index 0000000..13aa719
 --- /dev/null
 +++ b/apps/server/src/seecutHost.ts
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,97 @@
 +import express from "express";
-+import { randomBytes, timingSafeEqual } from "node:crypto";
++import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 +import { resolve } from "node:path";
-+import { writeAtomic } from "@toonflow/file";
++import { readFile, readdir, writeAtomic } from "@toonflow/file";
 +import { createApp } from "./app";
 +import { createSeecutProjects } from "./seecutProjects";
 +import { setSeecutGenerationObserver, setSeecutGenerationWriteBarrier } from "./seecutGeneration";
 +
 +const appDirectory = resolve(import.meta.dirname, "..");
++
++async function bundledPluginRevision(directory: string) {
++  const hash = createHash("sha256").update("seecut-bundled-plugins-v1\0");
++  async function visit(relativeDirectory: string) {
++    const entries = await readdir(resolve(directory, relativeDirectory), { withFileTypes: true });
++    entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
++    for (const entry of entries) {
++      const relativePath = `${relativeDirectory}/${entry.name}`;
++      if (entry.isDirectory()) await visit(relativePath);
++      else if (entry.isFile()) {
++        const content = await readFile(resolve(directory, relativePath));
++        hash.update(relativePath).update("\0").update(String(content.length)).update("\0").update(content);
++      } else throw new Error(`内置插件必须是普通文件或目录：${relativePath}`);
++    }
++  }
++  for (const root of ["nodes", "tools", "ext", "providers"]) await visit(root);
++  return hash.digest("hex");
++}
++
 +const dataDirectory = process.env.TOONFLOW_DATA_DIR;
 +const readyFile = process.env.SEECUT_TOONFLOW_READY_FILE;
 +if (!dataDirectory || !readyFile) throw new Error("缺少 SeeCut 本地服务启动参数");
@@ -1201,6 +1220,7 @@ index 0000000..68bb597
 +  extRoot: resolve(appDirectory, "ext"),
 +  providersRoot: resolve(appDirectory, "providers"),
 +  skillsRoot: resolve(appDirectory, "skills"),
++  pluginRevision: await bundledPluginRevision(appDirectory),
 +});
 +app.use(workspace);
 +const { initializeMcpRuntime, stopMcpRuntime } = await import("./utils/mcp/runtime");
@@ -3112,7 +3132,7 @@ index 166ceed..65f7abc 100644
  
  <style lang="scss" scoped>
 diff --git a/apps/web/src/pages/workspace/panels/canvas/index.vue b/apps/web/src/pages/workspace/panels/canvas/index.vue
-index 649c61b..df2dd66 100644
+index 649c61b..8dd8a53 100644
 --- a/apps/web/src/pages/workspace/panels/canvas/index.vue
 +++ b/apps/web/src/pages/workspace/panels/canvas/index.vue
 @@ -66,7 +66,7 @@
@@ -3264,6 +3284,75 @@ index 649c61b..df2dd66 100644
  function cancelCanvasSave() {
    saveCancelled = true;
    savePaused = true;
+@@ -964,6 +1018,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
+     && shortcutPressed(event, getShortcutBindings(shortcuts.pan).filter(binding => binding !== "None").join(" / "), pressedCodes);
+   updateCanvasSelection(event);
+   if (event.type === "keyup" || event.defaultPrevented || event.isComposing || !inCanvas || editing) return;
++  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.code === "KeyA") {
++    event.preventDefault();
++    window.getSelection()?.removeAllRanges();
++    return;
++  }
+   const action = ([
+     "group", "mergeGroup", "ungroup", "addNode", "moveTool", "handTool", "arrange", "search",
+     "delete", "copy", "paste", "undo", "redo", "zoomIn", "zoomOut", "fitView",
+@@ -1005,6 +1064,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
+   else void flow[action]();
+ }
+ 
++function resetCanvasSelection() {
++  flow.userSelectionActive.value = false;
++  flow.userSelectionRect.value = null;
++}
++
+ function resetCanvasKeys() {
+   pressedCodes.clear();
+   gestureScale = undefined;
+@@ -1012,7 +1076,7 @@ function resetCanvasKeys() {
+   panKeyPressed.value = false;
+   selectionKeyPressed.value = getShortcutBindings(generalSettings.value.canvasShortcuts.selection).includes("None");
+   flow.multiSelectionActive.value = false;
+-  if (!flow.userSelectionActive.value) flow.userSelectionRect.value = null;
++  resetCanvasSelection();
+ }
+ 
+ watch([() => props.active, () => props.settingsVisible, () => generalSettings.value.canvasShortcuts], resetCanvasKeys, { deep: true, flush: "sync", immediate: true });
+@@ -1028,6 +1092,8 @@ onMounted(() => {
+   window.addEventListener("keydown", updateCanvasKeys, true);
+   window.addEventListener("keyup", updateCanvasKeys, true);
+   window.addEventListener("blur", resetCanvasKeys);
++  window.addEventListener("pointercancel", resetCanvasSelection);
++  window.addEventListener("lostpointercapture", resetCanvasSelection);
+   window.addEventListener("toonflow:plugin-installed", refreshInstalled);
+   window.addEventListener("toonflow:node-config-updated", refreshNodeConfig);
+   document.addEventListener("paste", pasteNode);
+@@ -1040,6 +1106,8 @@ onBeforeUnmount(() => {
+   window.removeEventListener("keydown", updateCanvasKeys, true);
+   window.removeEventListener("keyup", updateCanvasKeys, true);
+   window.removeEventListener("blur", resetCanvasKeys);
++  window.removeEventListener("pointercancel", resetCanvasSelection);
++  window.removeEventListener("lostpointercapture", resetCanvasSelection);
+   window.removeEventListener("toonflow:plugin-installed", refreshInstalled);
+   window.removeEventListener("toonflow:node-config-updated", refreshNodeConfig);
+   document.removeEventListener("paste", pasteNode);
+@@ -1181,6 +1249,17 @@ const defaultEdgeOptions = markRaw({
+ .canvas {
+   width: 100%;
+   height: 100%;
++  -webkit-user-select: none;
++  user-select: none;
++
++  :deep(input),
++  :deep(textarea),
++  :deep([contenteditable]:not([contenteditable="false"])),
++  :deep([role="textbox"]),
++  :deep(.textNodeMarkdown) {
++    -webkit-user-select: text;
++    user-select: text;
++  }
+ 
+   &.compositingEnabled :deep(.vue-flow__transformationpane) {
+     will-change: transform;
 diff --git a/apps/web/src/pages/workspace/panels/document/index.vue b/apps/web/src/pages/workspace/panels/document/index.vue
 index b9f4130..b5f44f2 100644
 --- a/apps/web/src/pages/workspace/panels/document/index.vue
@@ -3533,7 +3622,7 @@ index 5d797df..87bb27d 100644
    return core.translate(message, values, locale.value);
  }
 diff --git a/packages/nodeScaffold/src/nodeAi.ts b/packages/nodeScaffold/src/nodeAi.ts
-index 63e67ee..001f3d1 100644
+index 63e67ee..5d49e9d 100644
 --- a/packages/nodeScaffold/src/nodeAi.ts
 +++ b/packages/nodeScaffold/src/nodeAi.ts
 @@ -1,4 +1,5 @@
@@ -3582,19 +3671,57 @@ index 63e67ee..001f3d1 100644
  export type NodeMediaPriceRequest = (NodeImageRequest & { mediaType: "image" }) | (NodeVideoRequest & { mediaType: "video" }) | (NodeAudioRequest & { mediaType: "audio" });
  export type NodeMediaPrice = { price: string; tips: string };
  export type NodeAudioRequest = Pick<MediaGenerationRequest, "providerId" | "modelId" | "prompt" | "images" | "audios" | "voice" | "speed" | "volume" | "pitch" | "language" | "format" | "sampleRate"> & { directory: string; outputDirectory: string };
-@@ -61,7 +83,10 @@ export type NodeAiTool = {
+@@ -61,7 +83,11 @@ export type NodeAiTool = {
  
  async function readResult<T>(response: Response): Promise<T> {
    const result = await response.json();
 -  if (!response.ok || result.code !== 200) throw new Error(result.message || `AI 请求失败（HTTP ${response.status}）`);
 +  if (!response.ok || result.code !== 200) throw Object.assign(new Error(result.message || `AI 请求失败（HTTP ${response.status}）`), {
++    code: typeof result.data?.code === "string" ? result.data.code : undefined,
 +    notSubmitted: result.data?.notSubmitted === true,
 +    clientRequestId: typeof result.data?.clientRequestId === "string" ? result.data.clientRequestId : undefined,
 +  });
    return result.data;
  }
  
-@@ -168,6 +193,7 @@ async function requestModel(input: NodeAiRequest, context: Context, model: Model
+@@ -69,6 +95,9 @@ async function readResult<T>(response: Response): Promise<T> {
+ const modelCacheKey = Symbol.for("toonflow.nodeModels");
+ const modelCacheHost = globalThis as typeof globalThis & { [modelCacheKey]?: Map<string, Promise<unknown[]>> };
+ const modelCache = modelCacheHost[modelCacheKey] ??= new Map<string, Promise<unknown[]>>();
++const modelFailureKey = Symbol.for("toonflow.nodeModelFailures");
++const modelFailureHost = globalThis as typeof globalThis & { [modelFailureKey]?: Map<string, { error: unknown; expires: number }> };
++const modelFailures = modelFailureHost[modelFailureKey] ??= new Map<string, { error: unknown; expires: number }>();
+ 
+ type MediaPriceCache = {
+   prices: Map<string, { expires: number; value: Promise<NodeMediaPrice | null> }>;
+@@ -90,16 +119,24 @@ const mediaPriceCache = mediaPriceCacheHost[mediaPriceCacheKey] ??= (() => {
+ })();
+ 
+ export function invalidateNodeModels(type: "language" | "media") {
+-  modelCache.delete(type === "language" ? "/api/ai/models" : "/api/ai/media/models");
++  const url = type === "language" ? "/api/ai/models" : "/api/ai/media/models";
++  modelCache.delete(url);
++  modelFailures.delete(url);
+   if (type === "media") mediaPriceCache.prices.clear();
+ }
+ 
+ async function readModels<T>(url: string, signal: AbortSignal): Promise<T[]> {
+   signal.throwIfAborted();
++  const failure = modelFailures.get(url);
++  if (failure && failure.expires > Date.now()) throw failure.error;
++  modelFailures.delete(url);
+   let pending = modelCache.get(url);
+   if (!pending) {
+     const request = fetch(url, { cache: "no-store" }).then(readResult<unknown[]>).catch(error => {
+-      if (modelCache.get(url) === request) modelCache.delete(url);
++      if (modelCache.get(url) === request) {
++        modelCache.delete(url);
++        if ((error as { code?: string }).code === "SIGNED_OUT") modelFailures.set(url, { error, expires: Date.now() + 5000 });
++      }
+       throw error;
+     });
+     pending = request;
+@@ -168,6 +205,7 @@ async function requestModel(input: NodeAiRequest, context: Context, model: Model
  }
  
  export function useNodeAi() {
@@ -3602,7 +3729,25 @@ index 63e67ee..001f3d1 100644
    const controller = new AbortController();
    onScopeDispose(() => controller.abort());
    const requestSignal = (signal?: AbortSignal) => signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-@@ -247,13 +273,139 @@ export function useNodeAi() {
+@@ -176,8 +214,15 @@ export function useNodeAi() {
+     return readModels<NodeAiModel>("/api/ai/models", requestSignal(signal));
+   }
+ 
+-  async function getMediaModels(signal?: AbortSignal) {
+-    return readModels<NodeMediaModel>("/api/ai/media/models", requestSignal(signal));
++  async function getMediaModels(signal?: AbortSignal, options: { interactive?: boolean } = {}) {
++    const waitingSignal = requestSignal(signal);
++    if (options.interactive) invalidateNodeModels("media");
++    try { return await readModels<NodeMediaModel>("/api/ai/media/models", waitingSignal); }
++    catch (error) {
++      waitingSignal.throwIfAborted();
++      if (!options.interactive && (error as { code?: string }).code === "SIGNED_OUT") return [];
++      throw error;
++    }
+   }
+ 
+   async function getMediaPrice(input: NodeMediaPriceRequest, signal?: AbortSignal): Promise<NodeMediaPrice | null> {
+@@ -247,13 +292,139 @@ export function useNodeAi() {
      }
    }
  
@@ -3748,15 +3893,42 @@ index 63e67ee..001f3d1 100644
    }
  
    function generateImage(input: NodeImageRequest, signal?: AbortSignal) {
-@@ -318,5 +470,5 @@ export function useNodeAi() {
+@@ -318,5 +489,5 @@ export function useNodeAi() {
      return { text, ...(reasoning ? { reasoning } : {}) };
    }
  
 -  return { getModels, getMediaModels, getMediaPrice, generateImage, generateVideo, generateAudio, generate };
 +  return { getModels, getMediaModels, getMediaPrice, generateImage, generateVideo, generateAudio, generate, getMediaGeneration, getMediaGenerationHistory, recoverRecordedMedia, resumeRecordedMedia };
  }
+diff --git a/packages/nodes/audioGenerationNode/src/index.vue b/packages/nodes/audioGenerationNode/src/index.vue
+index c45117f..4b5792c 100644
+--- a/packages/nodes/audioGenerationNode/src/index.vue
++++ b/packages/nodes/audioGenerationNode/src/index.vue
+@@ -35,7 +35,7 @@
+             aria-label="音频生成模型"
+             noDataText="请先在设置中添加音频模型"
+             placement="top-start"
+-            @visible-change="visible => visible && loadModels().catch(error => showNodeError(error, '模型读取失败'))">
++            @visible-change="visible => visible && loadModels(true).catch(error => showNodeError(error, '模型读取失败'))">
+             <template #prefix><icon-music-bolt :size="17" /></template>
+             <el-option-group v-for="provider in modelGroups" :key="provider.id" :label="provider.label">
+               <el-option v-for="item in provider.models" :key="item.modelId" :label="item.label" :value="JSON.stringify([item.providerId, item.modelId])" />
+@@ -171,10 +171,10 @@ async function refreshProviderModels(event?: Event) {
+   }
+ }
+ 
+-function loadModels() {
+-  if (modelsRequest) return modelsRequest;
++function loadModels(interactive = false): Promise<void> {
++  if (modelsRequest) return interactive ? modelsRequest.then(() => loadModels(true)) : modelsRequest;
+   modelsLoading.value = true;
+-  modelsRequest = ai.getMediaModels().then(items => {
++  modelsRequest = ai.getMediaModels(undefined, { interactive }).then(items => {
+     if (disposed) return;
+     if (busy.value) {
+       modelsRefreshPending = true;
 diff --git a/packages/nodes/imageGenerationNode/src/index.vue b/packages/nodes/imageGenerationNode/src/index.vue
-index 88a4df3..839667b 100644
+index 88a4df3..5032c2b 100644
 --- a/packages/nodes/imageGenerationNode/src/index.vue
 +++ b/packages/nodes/imageGenerationNode/src/index.vue
 @@ -46,6 +46,16 @@
@@ -3776,15 +3948,18 @@ index 88a4df3..839667b 100644
          <referenceItem
            v-if="refList.length"
            v-model="refList"
-@@ -63,7 +73,7 @@
+@@ -63,9 +73,9 @@
              :disabled="generating || deleting"
              placeholder="选择模型"
              aria-label="生成模型"
 -            noDataText="请先在设置中添加图片模型"
 +            :noDataText="isSeecutEmbedded ? '当前没有可用的 SeeCut 图片模型' : '请先在设置中添加图片模型'"
              placement="top-start"
-             @visible-change="(visible) => visible && loadModels().catch((error) => showNodeError(error, '模型读取失败'))">
+-            @visible-change="(visible) => visible && loadModels().catch((error) => showNodeError(error, '模型读取失败'))">
++            @visible-change="(visible) => visible && loadModels(true).catch((error) => showNodeError(error, '模型读取失败'))">
              <template #prefix><icon-sparkles :size="17" /></template>
+             <el-option-group v-for="provider in modelGroups" :key="provider.id" :label="provider.label">
+               <el-option
 @@ -75,8 +85,14 @@
                  :value="JSON.stringify([item.providerId, item.modelId])" />
              </el-option-group>
@@ -3902,6 +4077,20 @@ index 88a4df3..839667b 100644
      outputDirectory: `assets/${id}`,
      images: references.flatMap(item => item.dataType === "IMAGE" && item.value ? [{ path: item.value.url, mimeType: item.value.mimeType }] : []),
    };
+@@ -285,10 +347,10 @@ async function replaceOutput(event: Event) {
+   }
+ }
+ 
+-function loadModels() {
+-  if (modelsRequest) return modelsRequest;
++function loadModels(interactive = false): Promise<void> {
++  if (modelsRequest) return interactive ? modelsRequest.then(() => loadModels(true)) : modelsRequest;
+   modelsLoading.value = true;
+-  modelsRequest = ai.getMediaModels().then((items) => {
++  modelsRequest = ai.getMediaModels(undefined, { interactive }).then((items) => {
+     if (disposed || generating.value || deleting.value) return;
+     models.value = items.filter((item) => item.type === "image");
+     // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
 @@ -317,6 +379,7 @@ async function confirmInpaint() {
  }
  
@@ -3942,6 +4131,82 @@ index 88a4df3..839667b 100644
 +  small { display: block; overflow-wrap: anywhere; }
 +}
  </style>
+diff --git a/packages/nodes/imageNode/src/components/imageVariationGenerator.vue b/packages/nodes/imageNode/src/components/imageVariationGenerator.vue
+index 3a3d741..fbcc036 100644
+--- a/packages/nodes/imageNode/src/components/imageVariationGenerator.vue
++++ b/packages/nodes/imageNode/src/components/imageVariationGenerator.vue
+@@ -1,6 +1,6 @@
+ <template>
+   <footer class="variationFooter">
+-    <el-select v-model="settings.model" class="modelSelect" filterable :loading="modelsLoading" :disabled="busy" placeholder="选择图片模型" :aria-label="`${label}模型`" noDataText="请先在设置中添加图片模型" placement="top-start" @visible-change="visible => visible && refreshModels()">
++    <el-select v-model="settings.model" class="modelSelect" filterable :loading="modelsLoading" :disabled="busy" placeholder="选择图片模型" :aria-label="`${label}模型`" noDataText="请先在设置中添加图片模型" placement="top-start" @visible-change="visible => visible && refreshModels(true)">
+       <el-option-group v-for="provider in modelGroups" :key="provider.id" :label="provider.label">
+         <el-option v-for="model in provider.models" :key="model.modelId" :label="model.label" :value="JSON.stringify([model.providerId, model.modelId])" />
+       </el-option-group>
+@@ -53,6 +53,7 @@ let generationController: AbortController | undefined;
+ let disposed = false;
+ let inheritModelConfig = true;
+ let ratioFromSource = !props.settings.ratio;
++let modelsRequest: Promise<void> | undefined;
+ 
+ function nearestRatio() {
+   const numeric = ratioOptions.value.map(value => ({ value, number: value.split(":").map(Number).reduce((width, height) => width / height) })).filter(item => Number.isFinite(item.number) && item.number > 0);
+@@ -72,27 +73,36 @@ watch(() => [props.source?.url, props.source?.mimeType], () => generationControl
+ onMounted(refreshModels);
+ onScopeDispose(() => { disposed = true; generationController?.abort(); });
+ 
+-async function refreshModels() {
+-  if (modelsLoading.value || busy.value) return;
++async function refreshModels(interactive = false): Promise<void> {
++  if (modelsRequest) {
++    await modelsRequest;
++    if (interactive) await refreshModels(true);
++    return;
++  }
++  if (busy.value) return;
+   modelsLoading.value = true;
+-  try {
+-    const result = await ai.getMediaModels();
+-    if (disposed) return;
+-    if (inheritModelConfig) {
+-      for (const key of ["model", "size", "ratio"] as const) {
+-        const value = node.data[key];
+-        if (typeof value === "string" && value.trim()) props.settings[key] = value;
++  modelsRequest = (async () => {
++    try {
++      const result = await ai.getMediaModels(undefined, { interactive });
++      if (disposed) return;
++      if (inheritModelConfig) {
++        for (const key of ["model", "size", "ratio"] as const) {
++          const value = node.data[key];
++          if (typeof value === "string" && value.trim()) props.settings[key] = value;
++        }
++        ratioFromSource = !props.settings.ratio;
++        inheritModelConfig = false;
+       }
+-      ratioFromSource = !props.settings.ratio;
+-      inheritModelConfig = false;
+-    }
+-    models.value = result.filter(item => item.type === "image");
+-    if (!props.settings.model) {
+-      const choice = models.value[0];
+-      props.settings.model = choice ? JSON.stringify([choice.providerId, choice.modelId]) : "";
+-    }
+-  } catch (error) { if (!disposed) showNodeError(error, "模型读取失败"); }
+-  finally { modelsLoading.value = false; }
++      models.value = result.filter(item => item.type === "image");
++      if (!props.settings.model) {
++        const choice = models.value[0];
++        props.settings.model = choice ? JSON.stringify([choice.providerId, choice.modelId]) : "";
++      }
++    } catch (error) { if (!disposed) showNodeError(error, "模型读取失败"); }
++    finally { modelsLoading.value = false; }
++  })();
++  try { await modelsRequest; }
++  finally { modelsRequest = undefined; }
+ }
+ 
+ async function generate() {
 diff --git a/packages/nodes/imageNode/src/imageInpaint.ts b/packages/nodes/imageNode/src/imageInpaint.ts
 index 511e06b..22073d6 100644
 --- a/packages/nodes/imageNode/src/imageInpaint.ts
@@ -3989,7 +4254,7 @@ index 511e06b..22073d6 100644
        });
      }
 diff --git a/packages/nodes/videoGenerationNode/src/index.vue b/packages/nodes/videoGenerationNode/src/index.vue
-index 77a0535..e8ebc20 100644
+index 77a0535..b33e2de 100644
 --- a/packages/nodes/videoGenerationNode/src/index.vue
 +++ b/packages/nodes/videoGenerationNode/src/index.vue
 @@ -42,6 +42,16 @@
@@ -4009,15 +4274,18 @@ index 77a0535..e8ebc20 100644
          <referenceItem
            v-if="refList.length"
            v-model="refList"
-@@ -60,7 +70,7 @@
+@@ -60,9 +70,9 @@
              :disabled="generating || deleting"
              placeholder="选择模型"
              aria-label="生成模型"
 -            noDataText="请先在设置中添加视频模型"
 +            :noDataText="isSeecutEmbedded ? '当前没有可用的 SeeCut 视频模型' : '请先在设置中添加视频模型'"
              placement="top-start"
-             @visible-change="(visible) => visible && loadModels().catch((error) => showNodeError(error, '模型读取失败'))">
+-            @visible-change="(visible) => visible && loadModels().catch((error) => showNodeError(error, '模型读取失败'))">
++            @visible-change="(visible) => visible && loadModels(true).catch((error) => showNodeError(error, '模型读取失败'))">
              <template #prefix><icon-sparkles :size="17" /></template>
+             <el-option-group v-for="provider in modelGroups" :key="provider.id" :label="provider.label">
+               <el-option
 @@ -86,9 +96,9 @@
              <el-button
                class="sendButton"
@@ -4094,6 +4362,20 @@ index 77a0535..e8ebc20 100644
    if (choice.audio !== "optional") data.value.generateAudio = choice.audio === true;
  }, { flush: "sync" });
  const modelGroups = computed(() => groupNodeModels(models.value));
+@@ -287,10 +323,10 @@ async function replaceOutput(event: Event) {
+   }
+ }
+ 
+-function loadModels() {
+-  if (modelsRequest) return modelsRequest;
++function loadModels(interactive = false): Promise<void> {
++  if (modelsRequest) return interactive ? modelsRequest.then(() => loadModels(true)) : modelsRequest;
+   modelsLoading.value = true;
+-  modelsRequest = ai.getMediaModels().then((items) => {
++  modelsRequest = ai.getMediaModels(undefined, { interactive }).then((items) => {
+     if (disposed || generating.value || deleting.value) return;
+     models.value = items.filter((item) => item.type === "video");
+     // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
 @@ -306,6 +342,7 @@ function loadModels() {
  }
  
