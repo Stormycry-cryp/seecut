@@ -1,0 +1,7 @@
+test_explicit_image2_fast_override_and_original_replay_never_change_provider (test_grsai.GrsaiContractsTest.test_explicit_image2_fast_override_and_original_replay_never_change_provider) ... ok
+test_paid_post_once_unknown_without_id_never_requeued (test_grsai.GrsaiContractsTest.test_paid_post_once_unknown_without_id_never_requeued) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.259s
+
+OK

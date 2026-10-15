@@ -1,0 +1,83 @@
+
+running 72 tests
+test cloud::flow_parameters::tests::image_edit_keeps_reference_order_and_current_parameters ... ok
+test cloud::flow_parameters::tests::video_effort_freezes_policy_and_rejects_disallowed_model ... ok
+test cloud::flow_parameters::tests::video_request_uses_typed_catalog_defaults_and_multimedia_references ... ok
+test cloud::clip_open_handoff_tests::invalid_path_serialization_never_consumes_the_pending_batch ... ok
+test cloud::clip_open_handoff_tests::cancelled_or_failed_open_preserves_assets_for_an_explicit_retry ... ok
+test cloud::clip_open_handoff_tests::new_project_batch_needs_its_explicit_created_request ... ok
+test cloud::generation_state::tests::next_submission_starts_at_zero_and_old_poll_cannot_fill_it ... ok
+test cloud::generation_state::tests::same_unknown_key_preserves_usage_and_replies_merge_monotonically ... ok
+test cloud::generation_state::tests::preferences_do_not_cross_account_or_service_and_invalid_version_is_ignored ... ok
+test cloud::generation_state::tests::removed_model_and_effort_keep_original_identity_until_explicit_reselection ... ok
+test cloud::generation_state::tests::old_preferences_without_policy_proof_require_reselection_and_only_new_drafts_default ... ok
+test cloud::reference_tests::deleted_and_out_of_range_references_block_generation ... ok
+test cloud::reference_tests::account_forms_reject_mismatched_passwords_and_invalid_email ... ok
+test cloud::reference_tests::effort_generation_invalid_catalog_fails_closed_without_rebinding_ids ... ok
+test cloud::reference_tests::effort_generation_partial_metadata_cannot_downgrade_to_legacy ... ok
+test cloud::clip_open_handoff_tests::actual_batch_consumer_ignores_a_and_consumes_b_once ... ok
+test cloud::reference_tests::effort_generation_rejects_changed_policy_unavailable_and_missing_selection ... ok
+test cloud::reference_tests::effort_generation_accepts_opaque_provider_models_and_checks_confirmation ... ok
+test cloud::reference_tests::email_code_requests_are_bound_to_email_and_keep_leading_zeroes ... ok
+test cloud::reference_tests::effort_generation_filters_model_values_and_preserves_submitted_snapshot ... ok
+test cloud::generation_state::tests::saved_ids_survive_reopen_and_reordering_with_fresh_policy ... ok
+test cloud::reference_tests::friendly_image_labels_keep_exact_catalog_request_values ... ok
+test cloud::generation_state::tests::refreshed_or_restored_policy_revision_requires_explicit_reselection ... ok
+test cloud::reference_tests::failed_task_exposes_raw_failure_state_and_a_fallback_reason ... ok
+test cloud::reference_tests::image_and_video_catalog_indexes_are_kept_in_separate_namespaces ... ok
+test cloud::reference_tests::mention_detection_uses_utf8_cursor_and_ignores_complete_tokens ... ok
+test cloud::reference_tests::mixed_reference_numbers_follow_each_media_array ... ok
+test cloud::reference_tests::model_catalog_reorder_uses_stable_id_and_keeps_raw_parameter_value ... ok
+test cloud::reference_tests::missing_middle_reference_keeps_kind_number_for_later_mentions ... ok
+test cloud::reference_tests::pending_project_imports_dedupe_and_cancel ... ok
+test cloud::reference_tests::generation_catalog_v2_keeps_legacy_quote_raw_and_rejects_unit_drift ... ok
+test cloud::reference_tests::picker_batch_cache_hit_completes_matching_slot_without_reordering ... ok
+test cloud::reference_tests::ordinary_launch_uses_online_service_and_development_requires_override ... ok
+test cloud::reference_tests::personal_folder_drop_uses_selected_group_only_when_source_is_selected ... ok
+test cloud::reference_tests::picker_batch_request_keeps_confirmed_team_and_destination ... ok
+test cloud::reference_tests::provider_prompt_keeps_reference_numbers_and_chinese_context ... ok
+test cloud::reference_tests::expired_task_can_reference_real_local_result_but_missing_result_is_rejected ... ok
+test cloud::reference_tests::batch_copy_reports_partial_result_for_retry_without_recopying_completed_item ... ok
+[png @ 0xc2ecac380] Invalid PNG signature 0x696D706F72746564.
+[png @ 0xc2ecac380] Invalid PNG signature 0x696D706F72746564.
+[png @ 0xc2ecac700] Invalid PNG signature 0x00000000.
+[png @ 0xc2ecac380] Invalid PNG signature 0x00000000.
+[png @ 0xc2ecac700] Invalid PNG signature 0x696D706F72746564.
+[png @ 0xc2ecac380] Invalid PNG signature 0x696D706F72746564.
+test cloud::reference_tests::canvas_registration_and_import_share_one_serial_manifest ... ok
+test cloud::reference_tests::purchase_first_save_failure_produces_no_request_and_does_not_overwrite ... ok
+test cloud::reference_tests::purchase_active_or_queued_prevents_duplicate_request ... ok
+test cloud::reference_tests::purchase_other_order_cannot_retire_active_intention ... ok
+test cloud::reference_tests::purchase_without_valid_pending_payment_action_never_opens_cashier ... ok
+test cloud::reference_tests::reference_types_follow_model_catalog ... ok
+test cloud::reference_tests::refill_reference_validation_rejects_duplicates_kind_limits_and_audio_only ... ok
+test cloud::reference_tests::refresh_jobs_do_not_present_as_foreground_work ... ok
+test cloud::reference_tests::personal_library_bridge_recovers_results_and_preserves_trash_without_login ... ok
+test cloud::reference_tests::relink_queued_confirmation_does_not_depend_on_an_open_or_busy_dialog ... ok
+test cloud::reference_tests::relink_recorded_recovery_checksum_bypasses_unverified_confirmation ... ok
+test cloud::reference_tests::relink_rejects_changed_view_account_or_metadata_and_late_tokens ... ok
+test cloud::reference_tests::relink_requires_explicit_confirmation_and_submits_frozen_asset_once ... ok
+test cloud::reference_tests::purchase_expired_lost_response_recovers_id_with_same_key_before_query ... ok
+test cloud::reference_tests::removing_reference_does_not_cascade_number_replacements ... ok
+test cloud::reference_tests::result_reference_path_is_idempotent ... ok
+test cloud::reference_tests::selected_task_tracks_id_across_refresh_and_closes_when_missing ... ok
+test cloud::reference_tests::server_task_refill_recovers_known_input_and_keeps_missing_reference_slots ... ok
+test cloud::reference_tests::signed_out_cloud_requests_stop_before_authenticated_endpoints ... ok
+test cloud::reference_tests::signed_out_navigation_keeps_the_current_page_and_returns_after_login ... ok
+test cloud::reference_tests::signed_out_reference_intents_keep_multiple_unique_files ... ok
+test cloud::reference_tests::stale_unauthenticated_errors_do_not_escape_to_local_workflows ... ok
+test cloud::reference_tests::task_snapshot_round_trip_preserves_ordered_local_references ... ok
+test cloud::reference_tests::team_asset_list_rejects_late_team_and_trash_responses ... ok
+test cloud::reference_tests::video_parameters_keep_numbers_and_reject_non_catalog_options ... ok
+test cloud::reference_tests::purchase_expired_unverified_intention_queries_before_explicit_new_purchase ... ok
+test cloud::reference_tests::repeat_export_keeps_every_existing_file_and_uses_display_name ... ok
+test cloud::reference_tests::purchase_response_save_failure_keeps_original_key_and_blocks_new_request ... ok
+test cloud::reference_tests::purchase_unconfirmed_expired_query_cannot_authorize_a_new_key ... ok
+test cloud::reference_tests::purchase_lost_reply_restart_retains_key_without_automatic_request ... ok
+test cloud::reference_tests::purchase_plan_switch_and_restart_keep_both_unresolved_intentions ... ok
+test cloud::reference_tests::relink_bridge_failures_preserve_index_and_success_does_not_scan_or_migrate ... ok
+test cloud::reference_tests::purchase_epoch_reauth_retains_key_but_account_and_endpoint_are_isolated ... ok
+test cloud::reference_tests::purchase_terminal_retirement_persists_and_does_not_drop_another_plan ... ok
+
+test result: ok. 72 passed; 0 failed; 0 ignored; 0 measured; 404 filtered out; finished in 0.26s
+

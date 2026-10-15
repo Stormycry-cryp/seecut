@@ -1,0 +1,29 @@
+{
+  "tasks": [
+    {
+      "id": "gen_LmiZEBfDyQtBYoi7FTOdQQ",
+      "model": "nano-banana-2.1",
+      "status": "succeeded",
+      "upstream_task_id": "synthetic-646b5755cc2b41b7be7c48a4d9a0818a",
+      "billing_id": "gen_LmiZEBfDyQtBYoi7FTOdQQ"
+    }
+  ],
+  "billings": [
+    {
+      "id": "gen_LmiZEBfDyQtBYoi7FTOdQQ",
+      "captured_credits": 2,
+      "reserved_credits": 2,
+      "released_credits": 0
+    }
+  ],
+  "same_task_and_billing_after_recovery": true,
+  "request_parameters": [
+    {
+      "aspect_ratio": "9:16",
+      "effort_id": "high",
+      "model": "nano-banana-2.1",
+      "quantity": 1,
+      "size": "4K"
+    }
+  ]
+}

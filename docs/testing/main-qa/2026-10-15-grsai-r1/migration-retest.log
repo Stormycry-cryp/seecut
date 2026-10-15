@@ -1,0 +1,6 @@
+test_existing_provider_constraint_migrates_with_rows_and_foreign_keys (test_grsai.GrsaiContractsTest.test_existing_provider_constraint_migrates_with_rows_and_foreign_keys) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.213s
+
+OK

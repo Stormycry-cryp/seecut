@@ -1,0 +1,7 @@
+public-docs/*.md
+provider-tests.log
+rust-format.log
+native-tests.log
+server-typecheck.log
+package.log
+package-final.log

@@ -1,0 +1,60 @@
+{
+  "source_commit": "00e4af1b073d0895913ba95275d90b554ecc1e5e",
+  "native_source_commit": "b82637439fd0c9068256fd4d37ded071988cf761",
+  "base_commit": "6c9da07cc27a744783f8f38bafac62956229a881",
+  "draft_pr": "https://github.com/Stormycry-cryp/seecut/pull/9",
+  "app": "/tmp/SeeCut-GrsAI-R1-clean-header.app",
+  "created_utc": "2026-10-15T11:13:33.303960+00:00",
+  "signature": "ad-hoc verified deep/strict before portable synthetic runtime data was copied; runtime data is not signed",
+  "api_origin": "http://127.0.0.1:18741",
+  "provider_network_calls": 0,
+  "artifacts": {
+    "native_raw": {
+      "path": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/native-target/debug/concat",
+      "sha256": "65c4423fd567a58a947b819f26d93d02abde7bc1e27d0b4899257cff39b9582a",
+      "bytes": 577006104
+    },
+    "native_packaged": {
+      "path": "/tmp/SeeCut-GrsAI-R1-clean-header.app/Contents/MacOS/seecut",
+      "sha256": "4b91e24b06bfe00a0d876aaa06941607f9498ba0221d0d8a2d0f6fa20d39778a",
+      "bytes": 573669568
+    },
+    "toonflow_patch": {
+      "path": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/integrations/toonflow/integration.patch",
+      "sha256": "d2bca6e961c6c5530773bff59a3209f0eed5c5c877dfc7c28adb30c54702edbb",
+      "bytes": 316525
+    },
+    "image_node": {
+      "path": "/tmp/SeeCut-GrsAI-R1-clean-header.app/Contents/Resources/toonflow/build/nodes/imageGenerationNode.umd.js",
+      "sha256": "cc3c4c707343bb1337a7da58abb1bcec0cc06dab9188e44d6e5e3e6ccce63e1a",
+      "bytes": 543072
+    },
+    "video_node": {
+      "path": "/tmp/SeeCut-GrsAI-R1-clean-header.app/Contents/Resources/toonflow/build/nodes/videoGenerationNode.umd.js",
+      "sha256": "5cf3a2296e9ab08f8a3433579297ef4d6edcc1210904a39abfa88f064eb64900",
+      "bytes": 409101
+    },
+    "seecut_host": {
+      "path": "/tmp/SeeCut-GrsAI-R1-clean-header.app/Contents/Resources/toonflow/build/server/seecutHost.js",
+      "sha256": "1bdccc63669e1c4fcdd7b97278149d6021a1d98ae61d2e9f9ba65960318023b2",
+      "bytes": 30462441
+    }
+  },
+  "screenshots": {
+    "screenshots/01-canonical-models-zero.jpg": "e3d66b7b4dac5d76b41672a363cfe73e7bc11b5ebe1c5693a2130dc486e6be91",
+    "screenshots/02-nano-4k-portrait-zero.jpg": "1f9449d5d82598ec1245ecaa83ec0ea1859e3414d942d91e794c1def253e5621",
+    "screenshots/03-async-state-validation-blocked.jpg": "0ca6ca341483c5a60083cd4ad5baf24f98205c66ea2d3bbe665c61486e3fa484",
+    "screenshots/03-submitting-zero.jpg": "856c7f67dcacc7fe02e46cc163497090b84245fbc66e1066c6d63348f47be9a9",
+    "screenshots/04-minimax-480p-15s.jpg": "bcee4fc5483eabb164a6cb5d644673f1af657b6a366c915bffd8269b28343dd6",
+    "screenshots/05-minimax-1080p-10s.jpg": "7231ec04e504e7c68739387fcc2256dc80c4007ea5f4dc50f9a86d33689bd190",
+    "screenshots/06-minimax-return-480p-15s.jpg": "bcee4fc5483eabb164a6cb5d644673f1af657b6a366c915bffd8269b28343dd6",
+    "screenshots/07-dark-narrow-awaiting-reconciliation.jpg": "75714a67cddf0b413002931f9ece71343c4498b9abf53ca9df5d4c9a8eaaa6b3",
+    "screenshots/08-recovered-two-fixture-path-blocked.jpg": "49e74a612c3ae5861da46214ed6fa72f387f42eb2507f9f7a130e9ee5acc64eb",
+    "screenshots/09-original-task-completed-two.jpg": "908b77b08a3045121a1bdca5834ed18f39dcee7fe5da6857907fdf64d27f18bb",
+    "screenshots/10-reopened-completed-two.jpg": "23421a0d164209cb06ff7895660a9047f3d3b73b87752b33a08d3e1e04dee183",
+    "screenshots/11-dark-narrow-completed-two.jpg": "d1970c7a67e112cc8ff16c6dff800bba98fa2ca81d0c1e6c4a5d92eafaa2e7aa",
+    "screenshots/12-clean-header-light-completed.jpg": "c2d424545ccf3d1645353f89ccbb8037ba76c9f9194b294642462e339551c455",
+    "screenshots/13-clean-header-dark-completed.jpg": "5146d876ac25793b6bf3fbc8c3ec75c441b5f319d176aea84c0a54ce0c7b7b92",
+    "screenshots/14-generated-result-auto-library.jpg": "8cae7b661b2273d22da279fca42a9a3ec8ec704e5b491d8156a26feba6c77ec7"
+  }
+}

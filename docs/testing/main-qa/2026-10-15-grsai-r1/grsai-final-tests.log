@@ -1,0 +1,13 @@
+test_catalog_aliases_distinct_channels_and_maintenance (test_grsai.GrsaiContractsTest.test_catalog_aliases_distinct_channels_and_maintenance) ... ok
+test_contract_rejects_unsupported_audio_frames_and_duration (test_grsai.GrsaiContractsTest.test_contract_rejects_unsupported_audio_frames_and_duration) ... ok
+test_existing_provider_constraint_migrates_with_rows_and_foreign_keys (test_grsai.GrsaiContractsTest.test_existing_provider_constraint_migrates_with_rows_and_foreign_keys) ... ok
+test_failure_does_not_invent_refund_or_final_free_result (test_grsai.GrsaiContractsTest.test_failure_does_not_invent_refund_or_final_free_result) ... ok
+test_grsai_result_download_does_not_attach_other_provider_credentials (test_grsai.GrsaiContractsTest.test_grsai_result_download_does_not_attach_other_provider_credentials) ... ok
+test_image_async_poll_download_retry_and_actual_batch_delta (test_grsai.GrsaiContractsTest.test_image_async_poll_download_retry_and_actual_batch_delta) ... ok
+test_paid_post_once_unknown_without_id_never_requeued (test_grsai.GrsaiContractsTest.test_paid_post_once_unknown_without_id_never_requeued) ... ok
+test_transport_uses_exact_route_no_key_in_json_and_no_automatic_retry (test_grsai.GrsaiContractsTest.test_transport_uses_exact_route_no_key_in_json_and_no_automatic_retry) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.866s
+
+OK
