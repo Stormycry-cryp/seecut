@@ -836,7 +836,7 @@ index 0000000..b5f74d2
 +}
 diff --git a/apps/server/src/seecutFlowOperations.ts b/apps/server/src/seecutFlowOperations.ts
 new file mode 100644
-index 0000000..253a25e
+index 0000000..7bcc6c9
 --- /dev/null
 +++ b/apps/server/src/seecutFlowOperations.ts
 @@ -0,0 +1,54 @@
@@ -880,7 +880,7 @@ index 0000000..253a25e
 +      }
 +      if (action === 'begin' && old) return old;
 +      if (action === 'finish' && (!old || old.status !== 'accepted')) throw new Error('FLOW_OPERATION_CONFLICT');
-+      if (action === 'finish' && (!result || !['completed','outcomeUnknown'].includes(result.status))) throw new Error('FLOW_INVALID_RECEIPT');
++      if (action === 'finish' && (!result || !['completed','outcomeUnknown','notExecuted'].includes(result.status))) throw new Error('FLOW_INVALID_RECEIPT');
 +      const receipt = action === 'begin' ? { operationId: call.operationId, fingerprint, status: 'accepted', binding: {projectId: call.projectId, canvasId: call.canvasId, sessionId: call.sessionId} } : {...old, ...result};
 +      if (Buffer.byteLength(JSON.stringify(receipt)) > 256*1024) throw new Error('FLOW_RESULT_TOO_LARGE');
 +      await mkdir(root, {recursive:true, mode:0o700});
@@ -2771,10 +2771,10 @@ index 0000000..22a23b5
 +}
 diff --git a/apps/web/src/lib/seecutFlowGate.ts b/apps/web/src/lib/seecutFlowGate.ts
 new file mode 100644
-index 0000000..34cd5e2
+index 0000000..9585d7e
 --- /dev/null
 +++ b/apps/web/src/lib/seecutFlowGate.ts
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,101 @@
 +/** One current-workspace gate for native Agent and MCP. Never edits JSON files. */
 +export type FlowBinding = { projectId: string; canvasId: string; sessionId: string; accountScope: string; revision: number };
 +export type FlowCall = FlowBinding & { name: string; args: Record<string, unknown>; operationId?: string };
@@ -2811,6 +2811,8 @@ index 0000000..34cd5e2
 +}) {
 +  let busy = false;
 +  return async (call: FlowCall, signal: AbortSignal) => {
++    let started = false, dispatched = false, ownsBusy = false;
++    try {
 +    signal.throwIfAborted();
 +    await deps.account(call.accountScope);
 +    if (call.name === 'flow_get_operation') return deps.receipt(call, 'get');
@@ -2819,13 +2821,19 @@ index 0000000..34cd5e2
 +    const command = flowCommand(call);
 +    if (flowReads.has(call.name)) {
 +      assertFlowBinding(deps.binding(), call);
-+      return deps.execute(command, signal, call);
++      const result = await deps.execute(command, signal, call);
++      if (call.name === 'flow_get_task') {
++        signal.throwIfAborted();
++        assertFlowBinding(deps.binding(), call, false);
++        await deps.account(call.accountScope);
++        await deps.flush();
++        signal.throwIfAborted();
++      }
++      return result;
 +    }
 +    if (!call.operationId || call.operationId.length > 192) throw new Error('FLOW_OPERATION_REQUIRED');
 +    if (busy) throw new Error('FLOW_BUSY');
-+    busy = true;
-+    let started = false;
-+    try {
++    busy = true; ownsBusy = true;
 +      // Lookup comes before revision validation: a successful replay keeps its original result.
 +      const existing = await deps.receipt(call, 'get');
 +      if (existing) return existing;
@@ -2845,6 +2853,7 @@ index 0000000..34cd5e2
 +      await deps.account(call.accountScope);
 +      assertFlowBinding(deps.binding(), call);
 +      signal.throwIfAborted();
++      dispatched = true;
 +      const result = await deps.execute(command, signal, call);
 +      // A switch has intentionally changed canvas/session. The real canvas tool saves the old one first.
 +      if (call.name !== 'flow_switch_canvas') assertFlowBinding(deps.binding(), call, false);
@@ -2854,12 +2863,17 @@ index 0000000..34cd5e2
 +      signal.throwIfAborted();
 +      return await deps.receipt(call, 'finish', { status: 'completed', result, binding: deps.binding(), saved: true });
 +    } catch (error) {
++      if (!flowReads.has(call.name) && call.operationId && !dispatched) {
++        const result = { status: 'notExecuted', operationId: call.operationId, error: String(error) };
++        if (started) { try { await deps.receipt(call, 'finish', result); } catch { /* local caller still receives proof that execute was never entered */ } }
++        return result;
++      }
 +      if (started) {
 +        // A dispatched operation is never automatically attempted again, including save failures.
 +        try { await deps.receipt(call, 'finish', { status: 'outcomeUnknown', error: String(error) }); } catch { /* durable accepted record remains */ }
 +      }
 +      throw error;
-+    } finally { busy = false; }
++    } finally { if (ownsBusy) busy = false; }
 +  };
 +}
 diff --git a/apps/web/src/lib/seecutWorkspaceBridge.ts b/apps/web/src/lib/seecutWorkspaceBridge.ts
@@ -4680,7 +4694,7 @@ index 5d797df..87bb27d 100644
    return core.translate(message, values, locale.value);
  }
 diff --git a/packages/nodeScaffold/src/nodeAi.ts b/packages/nodeScaffold/src/nodeAi.ts
-index 63e67ee..d4e68ff 100644
+index 63e67ee..4184bb3 100644
 --- a/packages/nodeScaffold/src/nodeAi.ts
 +++ b/packages/nodeScaffold/src/nodeAi.ts
 @@ -1,4 +1,5 @@
@@ -4808,7 +4822,7 @@ index 63e67ee..d4e68ff 100644
    }
  
    async function getMediaPrice(input: NodeMediaPriceRequest, signal?: AbortSignal): Promise<NodeMediaPrice | null> {
-@@ -247,13 +295,140 @@ export function useNodeAi() {
+@@ -247,13 +295,143 @@ export function useNodeAi() {
      }
    }
  
@@ -4840,7 +4854,7 @@ index 63e67ee..d4e68ff 100644
 +    }
 +    return results;
 +  }
-+  async function recoverRecordedMedia(mediaType: "image" | "video", directory: string, outputDirectory: string, signal?: AbortSignal) {
++  async function recoverRecordedMedia(mediaType: "image" | "video", directory: string, outputDirectory: string, signal?: AbortSignal, once = false) {
 +    const current = getMediaGeneration(outputDirectory);
 +    if (!current || current.providerId !== "seecut" || current.mediaType !== mediaType || typeof current.clientRequestId !== "string" || !current.clientRequestId) throw new Error("未找到此节点的 SeeCut 生成记录");
 +    const waitingSignal = requestSignal(signal);
@@ -4850,6 +4864,8 @@ index 63e67ee..d4e68ff 100644
 +      const saved = await readResult<NodeGenerationRecord>(await fetch(`/api/ai/media/recover?${params}`, { headers: { "x-toonflow-workspace": "1" }, cache: "no-store", signal: waitingSignal }));
 +      if (saved.clientRequestId !== current.clientRequestId || saved.outputDirectory !== current.outputDirectory || saved.mediaType !== mediaType
 +        || !["prepared", "submitting", "running", "completed", "failed", "unknown"].includes(saved.status)) throw new Error("原任务记录与当前节点不匹配");
++      waitingSignal.throwIfAborted();
++      if (getMediaGeneration(outputDirectory) !== current) throw new Error("原任务所属节点已变化，未回写旧结果");
 +      updateMediaGeneration(outputDirectory, { status: saved.status, updatedAt: saved.updatedAt, error: saved.error, capturedCredits: saved.capturedCredits ?? current.capturedCredits ?? 0, results: saved.results, dispatched: saved.dispatched, readyToSubmit: saved.readyToSubmit });
 +      if (saved.status === "completed") {
 +        try {
@@ -4859,6 +4875,7 @@ index 63e67ee..d4e68ff 100644
 +        } catch (error) { updateMediaGeneration(outputDirectory, { status: "unknown", error: error instanceof Error ? error.message : "原任务结果保存失败" }); throw error; }
 +      }
 +      await persistCanvas();
++      if (once) return [];
 +      if (saved.status === "prepared") throw new Error(saved.readyToSubmit === true && saved.dispatched === false
 +        ? "原任务已按原报价准备，尚未提交；可明确选择继续提交原任务"
 +        : "原准备尚未完成，请保留原记录并稍后查询；本次不会自动提交");
@@ -4955,7 +4972,7 @@ index 63e67ee..d4e68ff 100644
    }
  
    function generateImage(input: NodeImageRequest, signal?: AbortSignal) {
-@@ -318,5 +493,5 @@ export function useNodeAi() {
+@@ -318,5 +496,5 @@ export function useNodeAi() {
      return { text, ...(reasoning ? { reasoning } : {}) };
    }
  
@@ -5047,7 +5064,7 @@ index c45117f..4b5792c 100644
      if (busy.value) {
        modelsRefreshPending = true;
 diff --git a/packages/nodes/imageGenerationNode/src/index.vue b/packages/nodes/imageGenerationNode/src/index.vue
-index 88a4df3..e15659f 100644
+index 88a4df3..438645f 100644
 --- a/packages/nodes/imageGenerationNode/src/index.vue
 +++ b/packages/nodes/imageGenerationNode/src/index.vue
 @@ -46,6 +46,17 @@
@@ -5149,7 +5166,7 @@ index 88a4df3..e15659f 100644
  const { id, node, nodeProps, nodeEvent, outputs, files, ai, updateNodeInternals } = useNode({
    label: "图片生成",
  });
-@@ -177,13 +205,66 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
+@@ -177,13 +205,74 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
  const { generating } = generationState;
  let generation: Promise<void> | undefined;
  let modelsRequest: Promise<void> | undefined;
@@ -5158,13 +5175,19 @@ index 88a4df3..e15659f 100644
 +const generationRecords = computed(() => ai.getMediaGenerationHistory(`assets/${id}`));
 +const generationBlocked = computed(() => !!savedGeneration.value && !["completed", "failed"].includes(savedGeneration.value.status));
 +const generationRecordsExpanded = ref(false);
-+async function recoverSavedGeneration(resume = false) {
++let recoveryActive = false;
++async function recoverSavedGeneration(resume = false, queryOnly = false) {
++  if (recoveryActive) return generation;
 +  if (generating.value || deleting.value || !savedGeneration.value) return;
 +  const controller = new AbortController();
 +  generationController = controller;
-+  generation = generationState.run(async () => {
++  recoveryActive = true;
++  const originalId = savedGeneration.value.clientRequestId;
++  const recover = async () => {
 +    const { directory } = await files.getWorkspaceFiles().list();
-+    const results = await (resume === true ? ai.resumeRecordedMedia : ai.recoverRecordedMedia)("image", directory, `assets/${id}`, controller.signal);
++    const results = await (resume === true ? ai.resumeRecordedMedia("image", directory, `assets/${id}`, controller.signal) : ai.recoverRecordedMedia("image", directory, `assets/${id}`, controller.signal, queryOnly));
++    if (savedGeneration.value?.clientRequestId !== originalId) throw new Error("原任务已变化，未应用旧结果");
++    if (queryOnly && !results.length) return;
 +    controller.signal.throwIfAborted();
 +    const result = results.find(item => item.mediaType === "image");
 +    if (!result) throw new Error("原任务尚无可用结果，请保留记录并查询原任务");
@@ -5175,13 +5198,15 @@ index 88a4df3..e15659f 100644
 +      { path: result.path, mimeType: result.mimeType, mediaType: "image" }))[0]! : result;
 +    controller.signal.throwIfAborted();
 +    outputs.value.image = { dataType: "IMAGE", value: { url: output.path, mimeType: output.mimeType } };
-+  }).catch(error => {
++  };
++  generation = (queryOnly ? recover() : generationState.run(recover)).catch(error => {
 +    const record = savedGeneration.value;
++    if (record?.clientRequestId !== originalId) return;
 +    if (record) record.error = record.status === "prepared" ? error instanceof Error ? error.message : "原任务尚未提交"
 +      : `恢复原任务失败：${error instanceof Error ? error.message : "无法读取原结果或本地素材"}`;
-+    if (!disposed && record?.status !== "prepared") showNodeError(error, "查询原任务失败");
++    if (!queryOnly && !disposed && record?.status !== "prepared") showNodeError(error, "查询原任务失败");
 +  })
-+    .finally(() => { generationController = undefined; });
++    .finally(() => { generationController = undefined; recoveryActive = false; });
 +  return generation;
 +}
 +const selectedModel = computed(() => models.value.find((item) => JSON.stringify([item.providerId, item.modelId]) === data.value.model
@@ -5220,7 +5245,7 @@ index 88a4df3..e15659f 100644
      // ACT: 现有分辨率使用 K 单位；出现其他单位时再统一换算，未知名称排在数值选项之后。
      if (!sizeOptions.value.includes(data.value.size)) data.value.size = sizeOptions.value.toSorted((left, right) =>
        (Number.parseFloat(left) || Infinity) - (Number.parseFloat(right) || Infinity)
-@@ -208,10 +289,10 @@ const generationInput = computed<Omit<NodeImageRequest, "directory"> | undefined
+@@ -208,10 +297,10 @@ const generationInput = computed<Omit<NodeImageRequest, "directory"> | undefined
    const references = refList.value.filter(item => !inpaint || item.dataType !== "IMAGE" || item.value?.url !== inpaint.source);
    const input = {
      providerId: choice.providerId,
@@ -5233,7 +5258,7 @@ index 88a4df3..e15659f 100644
      outputDirectory: `assets/${id}`,
      images: references.flatMap(item => item.dataType === "IMAGE" && item.value ? [{ path: item.value.url, mimeType: item.value.mimeType }] : []),
    };
-@@ -285,10 +366,10 @@ async function replaceOutput(event: Event) {
+@@ -285,10 +374,10 @@ async function replaceOutput(event: Event) {
    }
  }
  
@@ -5247,7 +5272,7 @@ index 88a4df3..e15659f 100644
      if (disposed || generating.value || deleting.value) return;
      models.value = items.filter((item) => item.type === "image");
      // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
-@@ -317,6 +398,7 @@ async function confirmInpaint() {
+@@ -317,6 +406,7 @@ async function confirmInpaint() {
  }
  
  async function startGeneration() {
@@ -5255,7 +5280,7 @@ index 88a4df3..e15659f 100644
    const input = generationInput.value;
    if (generating.value) throw new Error("图片正在生成，请等待完成");
    if (panorama.value?.visible) throw new Error("请先关闭全景图，再启动图片生成");
-@@ -334,7 +416,7 @@ async function startGeneration() {
+@@ -334,7 +424,7 @@ async function startGeneration() {
    const controller = new AbortController();
    const inpaintData = data.value.inpaint;
    generationController = controller;
@@ -5264,15 +5289,18 @@ index 88a4df3..e15659f 100644
    generation = generationState.run(() => workspace.list()
      .then(({ directory }) => {
        controller.signal.throwIfAborted();
-@@ -404,11 +486,18 @@ function startEditor(mode: "inpaint" | "mark") {
+@@ -404,11 +494,21 @@ function startEditor(mode: "inpaint" | "mark") {
    editor.value?.start(mode);
  }
  
 +nodeTools.register({
 +  name: "getRecordedGeneration",
-+  description: "读取此节点持久化的原生成任务、状态、实际积分、结果和历史。只读取已保存记录，不提交新任务；生成中请稍后查询，不能重试生成。",
++  description: "读取此节点持久化的原生成任务、状态、实际积分、结果和历史。按原请求查询并保存最新状态与结果，不提交或继续任务；生成中请稍后查询，不能重试生成。",
 +  parameters: z.strictObject({}),
-+  execute() { return { running: generating.value, record: savedGeneration.value ?? null, history: generationRecords.value, outputs: outputs.value }; },
++  async execute() {
++    if (savedGeneration.value?.providerId === "seecut") await recoverSavedGeneration(false, true);
++    return { running: generating.value, record: savedGeneration.value ?? null, history: generationRecords.value, outputs: outputs.value };
++  },
 +});
 +
  function getConfig() {
@@ -5284,7 +5312,7 @@ index 88a4df3..e15659f 100644
        size: data.value.size,
        ratio: data.value.ratio,
      },
-@@ -444,13 +533,13 @@ nodeTools.register({
+@@ -444,13 +544,13 @@ nodeTools.register({
      signal?.throwIfAborted();
      if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
      const choice = args.modelId === undefined ? selectedModel.value
@@ -5301,7 +5329,7 @@ index 88a4df3..e15659f 100644
      if (args.size !== undefined) data.value.size = args.size;
      if (args.ratio !== undefined) data.value.ratio = args.ratio;
      return getConfig();
-@@ -556,4 +645,13 @@ nodeTools.register({
+@@ -556,4 +656,13 @@ nodeTools.register({
      }
    }
  }
@@ -5438,7 +5466,7 @@ index 511e06b..22073d6 100644
        });
      }
 diff --git a/packages/nodes/videoGenerationNode/src/index.vue b/packages/nodes/videoGenerationNode/src/index.vue
-index 77a0535..42ea7ae 100644
+index 77a0535..18bf244 100644
 --- a/packages/nodes/videoGenerationNode/src/index.vue
 +++ b/packages/nodes/videoGenerationNode/src/index.vue
 @@ -42,6 +42,17 @@
@@ -5527,7 +5555,7 @@ index 77a0535..42ea7ae 100644
  const { id, node, nodeProps, nodeEvent, outputs, files, ai, updateNodeInternals } = useNode({
    label: "视频生成",
  });
-@@ -151,9 +169,42 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
+@@ -151,9 +169,50 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
  const { generating } = generationState;
  let generation: Promise<void> | undefined;
  let modelsRequest: Promise<void> | undefined;
@@ -5550,30 +5578,38 @@ index 77a0535..42ea7ae 100644
 +const generationRecords = computed(() => ai.getMediaGenerationHistory(`assets/${id}`));
 +const generationBlocked = computed(() => !!savedGeneration.value && !["completed", "failed"].includes(savedGeneration.value.status));
 +const generationRecordsExpanded = ref(false);
-+async function recoverSavedGeneration(resume = false) {
++let recoveryActive = false;
++async function recoverSavedGeneration(resume = false, queryOnly = false) {
++  if (recoveryActive) return generation;
 +  if (generating.value || deleting.value || !savedGeneration.value) return;
 +  const controller = new AbortController();
 +  generationController = controller;
-+  generation = generationState.run(async () => {
++  recoveryActive = true;
++  const originalId = savedGeneration.value.clientRequestId;
++  const recover = async () => {
 +    const { directory } = await files.getWorkspaceFiles().list();
-+    const results = await (resume === true ? ai.resumeRecordedMedia : ai.recoverRecordedMedia)("video", directory, `assets/${id}`, controller.signal);
++    const results = await (resume === true ? ai.resumeRecordedMedia("video", directory, `assets/${id}`, controller.signal) : ai.recoverRecordedMedia("video", directory, `assets/${id}`, controller.signal, queryOnly));
++    if (savedGeneration.value?.clientRequestId !== originalId) throw new Error("原任务已变化，未应用旧结果");
++    if (queryOnly && !results.length) return;
 +    controller.signal.throwIfAborted();
 +    const result = results.find(item => item.mediaType === "video");
 +    if (!result) throw new Error("原任务尚无可用结果，请保留记录并查询原任务");
 +    outputs.value.video = { dataType: "VIDEO", value: { url: result.path, mimeType: result.mimeType } };
-+  }).catch(error => {
++  };
++  generation = (queryOnly ? recover() : generationState.run(recover)).catch(error => {
 +    const record = savedGeneration.value;
++    if (record?.clientRequestId !== originalId) return;
 +    if (record) record.error = record.status === "prepared" ? error instanceof Error ? error.message : "原任务尚未提交"
 +      : `恢复原任务失败：${error instanceof Error ? error.message : "无法读取原结果或本地素材"}`;
-+    if (!disposed && record?.status !== "prepared") showNodeError(error, "查询原任务失败");
++    if (!queryOnly && !disposed && record?.status !== "prepared") showNodeError(error, "查询原任务失败");
 +  })
-+    .finally(() => { generationController = undefined; });
++    .finally(() => { generationController = undefined; recoveryActive = false; });
 +  return generation;
 +}
  const selectedMode = computed(() => selectedModel.value?.mode?.find((item) => JSON.stringify(item) === data.value.mode) as NodeVideoRequest["mode"]);
  const frameMode = computed(() => ["startEndRequired", "endFrameOptional", "startFrameOptional"].includes(String(selectedMode.value)));
  const mediaCounts = computed(() => ({
-@@ -202,7 +253,7 @@ watch([selectedModel, () => data.value.duration], ([choice]) => {
+@@ -202,7 +261,7 @@ watch([selectedModel, () => data.value.duration], ([choice]) => {
    if (!durations.includes(data.value.duration!)) data.value.duration = durations[0];
    const resolutions = getResolutions(choice, data.value.duration);
    if (!resolutions.includes(data.value.resolution)) data.value.resolution = resolutions[0] ?? "";
@@ -5582,7 +5618,7 @@ index 77a0535..42ea7ae 100644
    if (choice.audio !== "optional") data.value.generateAudio = choice.audio === true;
  }, { flush: "sync" });
  const modelGroups = computed(() => groupNodeModels(models.value));
-@@ -220,7 +271,7 @@ const generationInput = computed<Omit<NodeVideoRequest, "directory"> | undefined
+@@ -220,7 +279,7 @@ const generationInput = computed<Omit<NodeVideoRequest, "directory"> | undefined
    const images = refList.value.flatMap(item => item.dataType === "IMAGE" && item.value ? [{ path: item.value.url, mimeType: item.value.mimeType }] : []);
    return {
      providerId: choice.providerId,
@@ -5591,7 +5627,7 @@ index 77a0535..42ea7ae 100644
      prompt: generationPrompt.value,
      mode: selectedMode.value,
      duration: data.value.duration,
-@@ -287,10 +338,10 @@ async function replaceOutput(event: Event) {
+@@ -287,10 +346,10 @@ async function replaceOutput(event: Event) {
    }
  }
  
@@ -5605,7 +5641,7 @@ index 77a0535..42ea7ae 100644
      if (disposed || generating.value || deleting.value) return;
      models.value = items.filter((item) => item.type === "video");
      // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
-@@ -306,6 +357,7 @@ function loadModels() {
+@@ -306,6 +365,7 @@ function loadModels() {
  }
  
  async function startGeneration() {
@@ -5613,7 +5649,7 @@ index 77a0535..42ea7ae 100644
    const choice = selectedModel.value;
    const input = generationInput.value;
    if (generating.value) throw new Error("视频正在生成，请等待完成");
-@@ -318,7 +370,7 @@ async function startGeneration() {
+@@ -318,7 +378,7 @@ async function startGeneration() {
    const workspace = files.getWorkspaceFiles();
    const controller = new AbortController();
    generationController = controller;
@@ -5622,15 +5658,18 @@ index 77a0535..42ea7ae 100644
    generation = generationState.run(() => workspace
      .list()
      .then(({ directory }) => {
-@@ -360,11 +412,18 @@ async function resizeVideo(event: Event) {
+@@ -360,11 +420,21 @@ async function resizeVideo(event: Event) {
    updateNodeInternals();
  }
  
 +nodeTools.register({
 +  name: "getRecordedGeneration",
-+  description: "读取此节点持久化的原生成任务、状态、实际积分、结果和历史。只读取已保存记录，不提交新任务；生成中请稍后查询，不能重试生成。",
++  description: "读取此节点持久化的原生成任务、状态、实际积分、结果和历史。按原请求查询并保存最新状态与结果，不提交或继续任务；生成中请稍后查询，不能重试生成。",
 +  parameters: z.strictObject({}),
-+  execute() { return { running: generating.value, record: savedGeneration.value ?? null, history: generationRecords.value, outputs: outputs.value }; },
++  async execute() {
++    if (savedGeneration.value?.providerId === "seecut") await recoverSavedGeneration(false, true);
++    return { running: generating.value, record: savedGeneration.value ?? null, history: generationRecords.value, outputs: outputs.value };
++  },
 +});
 +
  function getConfig() {
@@ -5642,7 +5681,7 @@ index 77a0535..42ea7ae 100644
        duration: data.value.duration,
        resolution: data.value.resolution,
        ratio: data.value.ratio,
-@@ -372,7 +431,7 @@ function getConfig() {
+@@ -372,7 +442,7 @@ function getConfig() {
        generateAudio: data.value.generateAudio,
      },
      models: models.value,
@@ -5651,7 +5690,7 @@ index 77a0535..42ea7ae 100644
      matchingModes: matchingModes.value,
    };
  }
-@@ -397,7 +456,7 @@ nodeTools.register({
+@@ -397,7 +467,7 @@ nodeTools.register({
      modelId: z.string().min(1).optional(),
      duration: z.number().positive().optional(),
      resolution: z.string().min(1).optional(),
@@ -5660,7 +5699,7 @@ index 77a0535..42ea7ae 100644
      mode: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
      generateAudio: z.boolean().optional(),
    }).refine((args) => (args.providerId === undefined) === (args.modelId === undefined), "providerId 与 modelId 必须同时提供"),
-@@ -408,17 +467,18 @@ nodeTools.register({
+@@ -408,17 +478,18 @@ nodeTools.register({
      signal?.throwIfAborted();
      if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
      const choice = args.modelId === undefined ? selectedModel.value
@@ -5681,7 +5720,7 @@ index 77a0535..42ea7ae 100644
      data.value.duration = duration;
      data.value.resolution = resolution;
      if (args.ratio !== undefined) data.value.ratio = args.ratio;
-@@ -519,4 +579,12 @@ nodeTools.register({
+@@ -519,4 +590,12 @@ nodeTools.register({
      }
    }
  }

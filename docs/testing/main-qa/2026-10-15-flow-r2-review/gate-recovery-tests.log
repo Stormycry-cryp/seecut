@@ -1,0 +1,23 @@
+bun test v1.3.14 (0d9b296a)
+
+integrations/toonflow/tests/flow-gate.test.ts:
+(pass) actual edit/save receipt is replayed once with original stale revision [6.08ms]
+(pass) stale revision does not dispatch or consume operation [2.17ms]
+(pass) switching canvas blocks original call [0.12ms]
+(pass) account change blocks before mutation [0.11ms]
+(pass) accepted but unknown original operation never repeats [0.07ms]
+(pass) configuration cannot invoke generation or arbitrary node functions [0.45ms]
+(pass) generation requires the actual configured managed provider before receipt allocation [0.28ms]
+(pass) save failure leaves an original receipt and replay never repeats mutation [1.45ms]
+(pass) abort after begin but before execution persists a definitive refusal [0.94ms]
+(pass) original-task read saves refreshed node output and never allocates a write operation [0.20ms]
+
+integrations/toonflow/tests/flow-task-recovery.test.ts:
+(pass) reopened original task query updates real result, cost and immutable asset without submitting [3.93ms]
+(pass) one-shot running or unknown query persists state and never resumes or generates [0.26ms]
+(pass) replaced node record and mismatched original identity cannot receive stale results [0.15ms]
+
+ 13 pass
+ 0 fail
+ 57 expect() calls
+Ran 13 tests across 2 files. [150.00ms]

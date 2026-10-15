@@ -1765,26 +1765,28 @@ mod desktop {
             } else if let Some(operation) = frozen {
                 let mut permission = Ok(());
                 let mut permit = None;
-                if !operation.is_flow { Shell::with(|shell, _| {
-                    let studio = shell.studio.borrow();
-                    permission = studio
-                        .editor_mcp
-                        .borrow_mut()
-                        .assistant_tool_permit(
-                            &studio,
-                            app,
-                            if operation.retry_registration {
-                                "retry_canvas_registration"
-                            } else {
-                                "canvas_operation"
-                            },
-                            operation.query_arguments(),
-                        )
-                        .map(|id| {
-                            permit = Some(id);
-                        })
-                        .map_err(|error| error.message());
-                }); }
+                if !operation.is_flow {
+                    Shell::with(|shell, _| {
+                        let studio = shell.studio.borrow();
+                        permission = studio
+                            .editor_mcp
+                            .borrow_mut()
+                            .assistant_tool_permit(
+                                &studio,
+                                app,
+                                if operation.retry_registration {
+                                    "retry_canvas_registration"
+                                } else {
+                                    "canvas_operation"
+                                },
+                                operation.query_arguments(),
+                            )
+                            .map(|id| {
+                                permit = Some(id);
+                            })
+                            .map_err(|error| error.message());
+                    });
+                }
                 if let Err(error) = permission {
                     state.notice = error.into();
                 } else if let Err(error) = state.controller.reconcile_editor(&operation) {

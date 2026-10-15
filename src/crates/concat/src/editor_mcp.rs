@@ -528,8 +528,8 @@ struct MoveFingerprint {
 /// used by the native permit. No raw paths or arbitrary instructions displayed.
 pub(crate) fn canvas_approval_view(tool: &str, args: Value) -> Option<(String, String)> {
     if tool.starts_with("flow_") {
-        let call=crate::toonflow_agent::approval(tool,args)?;
-        return Some(("操作 Flow".into(),format!("{} · {}",call.name,call.args)));
+        let call = crate::toonflow_agent::approval(tool, args)?;
+        return Some(("操作 Flow".into(), format!("{} · {}", call.name, call.args)));
     }
     let intent = Intent::parse(tool, args)?;
     Some(match intent.action {
@@ -592,11 +592,15 @@ impl BridgeUi {
     pub(crate) fn assistant_snapshot(&mut self, studio: &Studio, app: &App) -> AssistantSnapshot {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
-        let canvas = active.as_ref().is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
+        let canvas = active
+            .as_ref()
+            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
         let project_name = match active.as_ref().map(|(kind, _)| kind.as_str()) {
             Some("canvas") => studio.canvas.name.clone(),
             Some("clip") => studio.project_name.clone(),
-            Some("flow") => crate::toonflow_agent::context().map(|c| c.name).unwrap_or_default(),
+            Some("flow") => crate::toonflow_agent::context()
+                .map(|c| c.name)
+                .unwrap_or_default(),
             _ => String::new(),
         };
         // A 40ms render tick must not validate filesystem ownership. This only
@@ -633,7 +637,12 @@ impl BridgeUi {
             // Until then, the host keeps session creation and draft editing disabled.
             _ => String::new(),
         };
-        if self.active_flow { snapshot.project_key = active.as_ref().map(|(_, ids)| format!("flow:{}", ids.project)).unwrap_or_default(); }
+        if self.active_flow {
+            snapshot.project_key = active
+                .as_ref()
+                .map(|(_, ids)| format!("flow:{}", ids.project))
+                .unwrap_or_default();
+        }
         snapshot
     }
 
@@ -648,7 +657,9 @@ impl BridgeUi {
     ) -> Result<(), AssistantPermissionError> {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
-        let canvas = active.as_ref().is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
+        let canvas = active
+            .as_ref()
+            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
         if matches!(
             action,
             AssistantPermission::RevokeRead | AssistantPermission::RevokeWrite
@@ -705,12 +716,33 @@ impl BridgeUi {
         arguments: Value,
     ) -> Result<u64, AssistantPermissionError> {
         if tool.starts_with("flow_") {
-            let call=crate::toonflow_agent::approval(tool,arguments).ok_or(AssistantPermissionError::NotAllowed)?;
-            let Some((kind,ids))=self.active_ids(studio,app) else {return Err(AssistantPermissionError::NotAllowed)};
-            let current=crate::toonflow_agent::context().ok_or(AssistantPermissionError::NotAllowed)?;
-            if kind!="flow" || ids.project!=call.project_id || ids.session!=call.session_id || current.canvas_id!=call.canvas_id || current.account_scope!=call.account_scope || current.revision!=call.revision || modal_busy(studio,app,false) {return Err(AssistantPermissionError::NotAllowed)}
-            let scope=self.scope(&ids);
-            self.writes.authorize(&scope,&scope,ASSISTANT_CLIENT_ID,&self.write_token,Instant::now()).map_err(|_|AssistantPermissionError::NotAllowed)?;
+            let call = crate::toonflow_agent::approval(tool, arguments)
+                .ok_or(AssistantPermissionError::NotAllowed)?;
+            let Some((kind, ids)) = self.active_ids(studio, app) else {
+                return Err(AssistantPermissionError::NotAllowed);
+            };
+            let current =
+                crate::toonflow_agent::context().ok_or(AssistantPermissionError::NotAllowed)?;
+            if kind != "flow"
+                || ids.project != call.project_id
+                || ids.session != call.session_id
+                || current.canvas_id != call.canvas_id
+                || current.account_scope != call.account_scope
+                || current.revision != call.revision
+                || modal_busy(studio, app, false)
+            {
+                return Err(AssistantPermissionError::NotAllowed);
+            }
+            let scope = self.scope(&ids);
+            self.writes
+                .authorize(
+                    &scope,
+                    &scope,
+                    ASSISTANT_CLIENT_ID,
+                    &self.write_token,
+                    Instant::now(),
+                )
+                .map_err(|_| AssistantPermissionError::NotAllowed)?;
             return Ok(crate::toonflow_agent::grant(call));
         }
         let intent = Intent::parse(tool, arguments).ok_or(AssistantPermissionError::NotAllowed)?;
@@ -864,16 +896,29 @@ impl BridgeUi {
         } else if let Some((_, old)) = self.clip_ids.take() {
             self.grants.retain(|_, grant| grant.project != old.project);
         }
-        let flow = if app.global::<SeeCut>().get_page() == 8 { crate::toonflow_agent::context() } else { None };
+        let flow = if app.global::<SeeCut>().get_page() == 8 {
+            crate::toonflow_agent::context()
+        } else {
+            None
+        };
         if let Some(flow) = flow {
-            let ids = DocumentIds {project:flow.project_id, session:flow.session_id};
-            if self.flow_ids.as_ref().is_none_or(|old| old.session != ids.session) {
-                if let Some(old)=self.flow_ids.take() { self.grants.retain(|_,g| g.project != old.project); }
+            let ids = DocumentIds {
+                project: flow.project_id,
+                session: flow.session_id,
+            };
+            if self
+                .flow_ids
+                .as_ref()
+                .is_none_or(|old| old.session != ids.session)
+            {
+                if let Some(old) = self.flow_ids.take() {
+                    self.grants.retain(|_, g| g.project != old.project);
+                }
             }
             self.sync_workspace(Some("flow"));
-            self.flow_ids=Some(ids.clone());
+            self.flow_ids = Some(ids.clone());
             self.writes.bind_scope(Some(self.scope(&ids)));
-            return Some(("flow".into(),ids));
+            return Some(("flow".into(), ids));
         }
         let kind = active_document_kind(
             app.global::<SeeCut>().get_page(),
@@ -907,7 +952,9 @@ impl BridgeUi {
     }
 
     fn sync_workspace(&mut self, kind: Option<&str>) {
-        if (self.active_canvas && kind != Some("canvas")) || (self.active_flow && kind != Some("flow")) {
+        if (self.active_canvas && kind != Some("canvas"))
+            || (self.active_flow && kind != Some("flow"))
+        {
             // Leaving the granted workspace withdraws E, but preserves this
             // document session's sequence/results so returning cannot replay an edit.
             self.revoke_move();
@@ -937,7 +984,9 @@ impl BridgeUi {
     }
 
     fn current_scope(&self) -> Option<Scope> {
-        if self.active_flow { return self.flow_ids.as_ref().map(|ids| self.scope(ids)); }
+        if self.active_flow {
+            return self.flow_ids.as_ref().map(|ids| self.scope(ids));
+        }
         (if self.active_canvas {
             self.canvas_ids.as_ref()
         } else {
@@ -959,7 +1008,11 @@ impl BridgeUi {
     }
 
     fn grant_ready(&self, studio: &Studio, app: &App) -> Result<Scope, String> {
-        if self.active_flow && !modal_busy(studio, app, false) { return self.current_scope().ok_or_else(|| "Flow unavailable".into()); }
+        if self.active_flow && !modal_busy(studio, app, false) {
+            return self
+                .current_scope()
+                .ok_or_else(|| "Flow unavailable".into());
+        }
         if !self.active_canvas {
             return Err(t("No canvas project"));
         }
@@ -1271,14 +1324,20 @@ impl BridgeUi {
             })));
         }
         if kind == "flow" {
-            let Some(flow)=crate::toonflow_agent::context() else { return UiReply::Response(Response::error("wrongProject")); };
+            let Some(flow) = crate::toonflow_agent::context() else {
+                return UiReply::Response(Response::error("wrongProject"));
+            };
             return UiReply::Response(if request.method == Method::Context {
-                Response::ok(json!({"appInstanceId":self.instance_id,"activeWorkspace":"flow","documents":[{
-                    "kind":"flow","projectId":flow.project_id,"documentSessionId":flow.session_id,"sessionId":flow.session_id,
-                    "canvasId":flow.canvas_id,"accountScope":flow.account_scope,"revision":flow.revision,"contextRevision":flow.revision,"selectionRevision":flow.revision,
-                    "selectedObjectIds":flow.selected_node_ids,"dirty":false,"busy":if flow.busy {Some("saving")}else{None}
-                }]}))
-            } else {Response::error("unsupportedWorkspace")});
+                Response::ok(
+                    json!({"appInstanceId":self.instance_id,"activeWorkspace":"flow","documents":[{
+                        "kind":"flow","projectId":flow.project_id,"documentSessionId":flow.session_id,"sessionId":flow.session_id,
+                        "canvasId":flow.canvas_id,"accountScope":flow.account_scope,"revision":flow.revision,"contextRevision":flow.revision,"selectionRevision":flow.revision,
+                        "selectedObjectIds":flow.selected_node_ids,"dirty":false,"busy":if flow.busy {Some("saving")}else{None}
+                    }]}),
+                )
+            } else {
+                Response::error("unsupportedWorkspace")
+            });
         }
         let (generation, revision, busy) = if kind == "canvas" {
             studio.canvas.mcp_state()
@@ -1813,24 +1872,50 @@ fn dispatch(request: Request) -> Response {
         return Response::error("invalidInput");
     }
     if request.method == Method::FlowWorkspace {
-        let call=request.flow_workspace.clone().expect("validated Flow call");
+        let call = request.flow_workspace.clone().expect("validated Flow call");
         return crate::toonflow_agent::call(call.clone(), request.client_id.clone(), move || {
-            let mut result=Err(Response::error("appUnavailable"));
-            Shell::with(|shell,app| {
-                let Ok(studio)=shell.studio.try_borrow() else {return};
-                let Ok(mut bridge)=studio.editor_mcp.try_borrow_mut() else {return};
-                let Some((kind,ids))=bridge.active_ids(&studio,&app) else {result=Err(Response::error("wrongProject"));return};
-                if kind!="flow" || ids.project!=call.project_id || (call.name!="flow_get_operation" && ids.session!=call.session_id) || bridge.instance_id!=request.instance_id {result=Err(Response::error("wrongProject"));return}
-                if call.is_read() {
-                    result=if bridge.authorized(&request,&ids.project,true) {Ok(())} else {Err(Response::error("notAuthorized"))};
-                } else {
-                    let scope=bridge.scope(&ids);
-                    let permitted=matches!(bridge.current_lease_status(Instant::now()),LeaseStatus::Active{scope:active,client,..} if active==&scope && client==request.client_id)
-                        && !bridge.write_token.is_empty() && request.client_token==bridge.write_token && !modal_busy(&studio,&app,false)
-                        && (request.client_id!=ASSISTANT_CLIENT_ID || crate::toonflow_agent::claim(&call));
-                    result=if permitted {Ok(())} else {Err(Response::error("notAuthorized"))};
+            let mut result = Err(Response::error("appUnavailable"));
+            Shell::with(|shell, app| {
+                let Ok(studio) = shell.studio.try_borrow() else {
+                    return;
+                };
+                let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+                    return;
+                };
+                let Some((kind, ids)) = bridge.active_ids(&studio, &app) else {
+                    result = Err(Response::error("wrongProject"));
+                    return;
+                };
+                if kind != "flow"
+                    || ids.project != call.project_id
+                    || (call.name != "flow_get_operation" && ids.session != call.session_id)
+                    || bridge.instance_id != request.instance_id
+                {
+                    result = Err(Response::error("wrongProject"));
+                    return;
                 }
-            }); result
+                if call.is_read() {
+                    result = if bridge.authorized(&request, &ids.project, true) {
+                        Ok(())
+                    } else {
+                        Err(Response::error("notAuthorized"))
+                    };
+                } else {
+                    let scope = bridge.scope(&ids);
+                    let permitted = matches!(bridge.current_lease_status(Instant::now()),LeaseStatus::Active{scope:active,client,..} if active==&scope && client==request.client_id)
+                        && !bridge.write_token.is_empty()
+                        && request.client_token == bridge.write_token
+                        && !modal_busy(&studio, &app, false)
+                        && (request.client_id != ASSISTANT_CLIENT_ID
+                            || crate::toonflow_agent::claim(&call));
+                    result = if permitted {
+                        Ok(())
+                    } else {
+                        Err(Response::error("notAuthorized"))
+                    };
+                }
+            });
+            result
         });
     }
     if request.method.is_write() {
