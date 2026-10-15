@@ -34,6 +34,23 @@ class EditorVocabularyTest(unittest.TestCase):
             with self.assertRaises(ApiError):
                 model_request(altered, SimpleNamespace(assistant_max_output_tokens=100, assistant_images=False))
 
+    def test_retired_flow_history_is_readable_without_restoring_tools(self):
+        config = SimpleNamespace(assistant_max_output_tokens=100, assistant_images=False)
+        for name in ("flow_read", "flow_write"):
+            with self.subTest(tool=name):
+                reply = {"id": "old-reply", "role": "assistant", "content": [],
+                         "toolCalls": [{"id": "old-call", "name": name, "arguments": {}}]}
+                result = {"id": "old-result", "role": "tool", "toolCallId": "old-call",
+                          "toolName": name, "content": [{"type": "text", "text": "{}"}]}
+                request = {"system": "test", "messages": [reply, result], "maxOutputTokens": 100,
+                           "tools": [{"name": "context", "description": "editor", "parameters": {"type": "object"}}]}
+                self.assertEqual(model_request(request, config), request)
+                with self.assertRaises(ApiError):
+                    model_event({"type": "done", "message": reply, "stopReason": "tools"})
+                request["tools"][0]["name"] = name
+                with self.assertRaises(ApiError):
+                    model_request(request, config)
+
 
 class ManagedEditorToolsTest(AssistantFixture):
     def test_retired_flow_tools_are_rejected_before_provider_submission(self):
