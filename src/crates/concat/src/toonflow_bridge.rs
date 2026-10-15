@@ -1,7 +1,8 @@
 //! Bun 与当前原生账户之间的私有业务桥。浏览器不接收桥令牌或账户凭据。
 
+mod assets;
+
 use crate::cloud::{AccountAccess, ImageClient};
-use crate::personal_library::{Library, with_library_write_lock};
 use seecut_flow_core::{
     digest,
     execution::{Execution, Phase},
@@ -573,7 +574,9 @@ fn asset_value(asset: &crate::personal_library::Asset) -> Value {
 }
 
 fn check_expected_scope(method: &str, params: &Value, current: &str) -> Result<()> {
-    let required = method.starts_with("generation.") || method.starts_with("projects.cloud.");
+    let required = method.starts_with("generation.")
+        || method.starts_with("projects.cloud.")
+        || method.starts_with("assets.");
     match params.get("expectedScopeKey") {
         Some(Value::String(expected)) if expected == current => Ok(()),
         None if !required => Ok(()),
@@ -602,8 +605,14 @@ fn dispatch(state: &State, method: &str, params: Value) -> Result<Value> {
             | "projects.cloud.download"
             | "assets.list"
             | "assets.resolve"
+            | "assets.thumbnail"
+            | "assets.copyToProject"
+            | "assets.registerProjectMedia"
     ) {
         return Err(RpcError::new("METHOD_NOT_FOUND", "原生桥不支持此方法。"));
+    }
+    if method.starts_with("assets.") {
+        return assets::dispatch(state, method, &params);
     }
     let current = current_client()?;
     if method == "account.status" {
@@ -611,7 +620,7 @@ fn dispatch(state: &State, method: &str, params: Value) -> Result<Value> {
             Some(client) => {
                 json!({"signedIn":true,"scope":client.image.scope,"scopeKey":client.key(),"epoch":client.epoch})
             }
-            None => json!({"signedIn":false,"scope":null,"scopeKey":null}),
+            None => json!({"signedIn":false,"scope":null,"scopeKey":"local"}),
         });
     }
     let client = current.ok_or_else(|| {
@@ -659,24 +668,6 @@ fn dispatch(state: &State, method: &str, params: Value) -> Result<Value> {
         }
         "projects.cloud.upload" => cloud_upload(state, &client, &params),
         "projects.cloud.download" => cloud_download(state, &client, &params),
-        "assets.list" => with_library_write_lock(|| {
-            let library = Library::load(&state.library)?;
-            Ok(
-                json!({"items":library.items().iter().filter(|asset| !asset.trashed).take(1000).map(asset_value).collect::<Vec<_>>()}),
-            )
-        }),
-        "assets.resolve" => {
-            let id = argument(&params, "assetId")?;
-            let version = params.get("version").map(|v| {
-                if v.is_string() {
-                    v.as_str().unwrap().to_owned()
-                } else {
-                    v.to_string()
-                }
-            });
-            let asset = crate::cloud::library_asset(id, version.as_deref())?;
-            Ok(asset_value(&asset.asset))
-        }
         _ => Err(RpcError::new("METHOD_NOT_FOUND", "原生桥不支持此方法。")),
     }?;
     client.recheck()?;
@@ -735,10 +726,7 @@ fn prepare(state: &State, client: &Client, params: &Value) -> Result<Value> {
             }
             for reference in values {
                 let file = state.project_file(project, argument(reference, "path")?, false)?;
-                let asset = with_library_write_lock(|| {
-                    let mut library = Library::load(&state.library)?;
-                    library.import(&file).cloned()
-                })?;
+                let asset = assets::reference_asset(state, project, &file)?;
                 let actual = crate::cloud::media_kind(asset.kind);
                 if actual != kind(argument(reference, "kind")?)? {
                     return Err(RpcError::new(
@@ -1490,8 +1478,8 @@ mod tests {
         }
     }
     #[test]
-    fn bridge_scope_optional_asset_reads_still_check_supplied_identity() {
-        assert!(check_expected_scope("assets.list", &json!({}), "account-a").is_ok());
+    fn bridge_scope_asset_reads_require_current_identity() {
+        assert!(check_expected_scope("assets.list", &json!({}), "account-a").is_err());
         assert!(
             check_expected_scope(
                 "assets.resolve",

@@ -52,6 +52,7 @@ mod native {
         dark: Option<bool>,
         zoom: Option<f64>,
         loaded: bool,
+        app_ready: bool,
         pending_close: Option<String>,
         close_permit: bool,
     }
@@ -100,12 +101,14 @@ mod native {
         }
     }
 
-    fn theme_script(dark: bool) -> String {
+    fn theme_script(dark: bool, background: slint::Color) -> String {
         let theme = if dark { "dark" } else { "light" };
+        let background = crate::format::hex_of(background);
         format!(
             "window.__SEECUT_EMBEDDED__=true;window.__SEECUT_THEME__='{theme}';\
              if(document.documentElement){{document.documentElement.dataset.seecutTheme='{theme}';\
-             document.documentElement.style.colorScheme='{theme}';}}\
+             document.documentElement.style.colorScheme='{theme}';\
+             document.documentElement.style.backgroundColor='{background}';}}\
              window.dispatchEvent(new CustomEvent('seecut:theme',{{detail:{{theme:'{theme}'}}}}));"
         )
     }
@@ -120,6 +123,13 @@ mod native {
     pub(super) fn sync() {
         crate::host::Shell::with(|_, app| {
             let dark = app.global::<crate::ui::Theme>().get_dark();
+            let background = app.global::<crate::ui::Theme>().get_page();
+            let background_rgba = (
+                background.red(),
+                background.green(),
+                background.blue(),
+                background.alpha(),
+            );
             app.window().with_winit_window(|window| {
                 // Slint 的布局值使用逻辑像素。按 Slint 自身的缩放转换，允许
                 // SLINT_SCALE_FACTOR 与显示器默认缩放不同。
@@ -147,7 +157,8 @@ mod native {
                             .with_url(url)
                             .with_bounds(bounds(values))
                             .with_visible(false)
-                            .with_initialization_script(theme_script(dark))
+                            .with_background_color(background_rgba)
+                            .with_initialization_script(theme_script(dark, background))
                             .with_navigation_handler(move |destination| {
                                 url::Url::parse(&destination)
                                     .is_ok_and(|destination| destination.origin() == origin)
@@ -160,22 +171,29 @@ mod native {
                                     return;
                                 }
                                 let Ok(message) =
-                                    serde_json::from_str::<CloseMessage>(request.body())
+                                    serde_json::from_str::<HostMessage>(request.body())
                                 else {
                                     return;
                                 };
                                 let _ = slint::invoke_from_event_loop(move || {
-                                    handle_close_message(message)
+                                    handle_host_message(message)
                                 });
                             })
                             .with_on_page_load_handler(|event, _| {
-                                if matches!(event, wry::PageLoadEvent::Finished) {
-                                    // 重新加载后再次应用当前主题，避免初始化脚本沿用旧值。
-                                    let _ = slint::invoke_from_event_loop(refresh_theme);
-                                    let _ = slint::invoke_from_event_loop(|| {
-                                        HOST.with(|host| host.borrow_mut().loaded = true)
+                                let loaded = matches!(event, wry::PageLoadEvent::Finished);
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if loaded {
+                                        refresh_theme();
+                                    }
+                                    HOST.with(|host| {
+                                        let mut host = host.borrow_mut();
+                                        host.loaded = loaded;
+                                        if !loaded {
+                                            host.app_ready = false;
+                                        }
                                     });
-                                }
+                                    sync();
+                                });
                             })
                             .build_as_child(window)
                         {
@@ -202,7 +220,11 @@ mod native {
                         }
                     }
                     if host.dark != Some(dark) {
-                        if let Err(error) = webview.evaluate_script(&theme_script(dark)) {
+                        if let Err(error) = webview.set_background_color(background_rgba) {
+                            log::warn!("Flow WebView background: {error}");
+                        }
+                        if let Err(error) = webview.evaluate_script(&theme_script(dark, background))
+                        {
                             log::warn!("Flow WebView theme: {error}");
                         }
                     }
@@ -211,11 +233,12 @@ mod native {
                             log::warn!("Flow WebView zoom: {error}");
                         }
                     }
-                    if host.visible != visible {
-                        if let Err(error) = webview.set_visible(visible) {
+                    let show = visible && host.loaded && host.app_ready;
+                    if host.visible != show {
+                        if let Err(error) = webview.set_visible(show) {
                             log::warn!("Flow WebView visibility: {error}");
                         }
-                        let _ = if visible {
+                        let _ = if show {
                             webview.focus()
                         } else {
                             webview.focus_parent()
@@ -224,7 +247,7 @@ mod native {
                     host.bounds = Some(values);
                     host.dark = Some(dark);
                     host.zoom = Some(zoom);
-                    host.visible = visible;
+                    host.visible = show;
                 });
             });
         });
@@ -235,7 +258,8 @@ mod native {
             HOST.with(|host| {
                 if let Some(webview) = &host.borrow().webview {
                     let dark = app.global::<crate::ui::Theme>().get_dark();
-                    if let Err(error) = webview.evaluate_script(&theme_script(dark)) {
+                    let background = app.global::<crate::ui::Theme>().get_page();
+                    if let Err(error) = webview.evaluate_script(&theme_script(dark, background)) {
                         log::warn!("Flow WebView loaded theme: {error}");
                     }
                 }
@@ -245,14 +269,16 @@ mod native {
 
     #[derive(serde::Deserialize)]
     #[serde(tag = "type", deny_unknown_fields)]
-    enum CloseMessage {
+    enum HostMessage {
+        #[serde(rename = "seecut:view-ready")]
+        ViewReady,
         #[serde(rename = "seecut:close-ready")]
-        Ready {
+        CloseReady {
             #[serde(rename = "requestId")]
             request_id: String,
         },
         #[serde(rename = "seecut:close-error")]
-        Error {
+        CloseError {
             #[serde(rename = "requestId")]
             request_id: String,
             message: String,
@@ -319,9 +345,13 @@ mod native {
         }
     }
 
-    fn handle_close_message(message: CloseMessage) {
+    fn handle_host_message(message: HostMessage) {
         match message {
-            CloseMessage::Ready { request_id } => {
+            HostMessage::ViewReady => {
+                HOST.with(|host| host.borrow_mut().app_ready = true);
+                sync();
+            }
+            HostMessage::CloseReady { request_id } => {
                 let matched = HOST.with(|state| {
                     let mut host = state.borrow_mut();
                     if host.pending_close.as_ref() != Some(&request_id) {
@@ -338,7 +368,7 @@ mod native {
                     });
                 }
             }
-            CloseMessage::Error {
+            HostMessage::CloseError {
                 request_id,
                 message,
             } => close_error(&request_id, &format!("Flow 尚未保存：{message}")),

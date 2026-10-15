@@ -615,6 +615,225 @@ index 144baf7..31a020a 100644
 -  await sendFile(res, filePath);
 +  await sendFile(res, `${name}.umd.js`, { root: nodesDirectory });
  });
+diff --git a/apps/server/src/seecutAssets.ts b/apps/server/src/seecutAssets.ts
+new file mode 100644
+index 0000000..b5f74d2
+--- /dev/null
++++ b/apps/server/src/seecutAssets.ts
+@@ -0,0 +1,213 @@
++import express, { type NextFunction, type Request, type Response } from "express";
++import { isAbsolute } from "node:path";
++import { lstat } from "@toonflow/file";
++import { z } from "zod";
++import { nativeCall, type SeecutAccount } from "./seecutNative";
++import { sendFile } from "./utils/fileHttp";
++
++const versionSchema = z.strictObject({
++  sha256: z.string().regex(/^[a-f0-9]{64}$/),
++  registration_id: z.string().min(1).max(256),
++  previous_id: z.string().min(1).max(256).nullable().optional(),
++});
++const assetIdSchema = z.string().min(1).max(256);
++const scopeSchema = z.string().min(1).max(512).optional();
++const mediaTypeSchema = z.enum(["image", "video", "audio"]);
++const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
++const publicError = Symbol("seecut.asset.publicError");
++const fail = (message: string, status = 400, code = "FLOW_ASSET_INVALID") => Object.assign(new Error(message), { status, code, [publicError]: true });
++type Version = z.infer<typeof versionSchema>;
++type Projects = {
++  directory(id: string): Promise<string>;
++  projectIdForDirectory(path: string): string;
++  withProjectWrite<T>(directory: string, operation: () => Promise<T>): Promise<T>;
++  touch(id: string): Promise<void>;
++};
++
++// 原生桥共用四条连接；资产操作最多占两条，排队不创建连接。
++let activeOperations = 0;
++const waitingOperations: (() => void)[] = [];
++async function acquireOperation() {
++  if (activeOperations >= 2) {
++    if (waitingOperations.length >= 64) throw fail("当前素材请求较多，请稍后重试", 503, "FLOW_ASSET_BUSY");
++    await new Promise<void>(resolve => waitingOperations.push(resolve));
++  } else activeOperations++;
++  let released = false;
++  return () => {
++    if (released) return;
++    released = true;
++    const next = waitingOperations.shift();
++    if (next) next();
++    else activeOperations--;
++  };
++}
++
++function parse<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {
++  const result = schema.safeParse(value);
++  if (!result.success) throw fail("素材请求参数无效");
++  return result.data;
++}
++
++function projectMediaPath(value: unknown) {
++  if (typeof value !== "string" || value.length > 4096 || !value.startsWith("assets/") || isAbsolute(value)
++    || value.split("/").some(part => !part || part === "." || part === ".." || /[\\<>:\"|?*\x00-\x1f\x7f]/.test(part))) {
++    throw fail("请选择当前项目 assets 目录内的素材");
++  }
++  return value;
++}
++
++function sameVersion(actual: Version, expected: Version) {
++  return actual.sha256 === expected.sha256 && actual.registration_id === expected.registration_id
++    && (actual.previous_id ?? null) === (expected.previous_id ?? null);
++}
++
++function receiptAsset(value: any) {
++  const result = z.object({ assetId: assetIdSchema, version: versionSchema, name: z.string(), type: mediaTypeSchema,
++    deduplicated: z.boolean().optional() }).safeParse(value);
++  if (!result.success) throw fail("SeeCut 素材回执无效", 502, "FLOW_ASSET_RECEIPT_INVALID");
++  return result.data;
++}
++
++export function createSeecutAssets(projects: Projects) {
++  const router = express.Router();
++  router.use(express.json({ limit: "16kb" }));
++
++  async function session(expected?: string) {
++    const value = await nativeCall<SeecutAccount>("account.status");
++    const scopeKey = value.signedIn ? value.scopeKey : "local";
++    if (typeof scopeKey !== "string" || !scopeKey) throw fail("SeeCut 会话状态无效", 502, "FLOW_SESSION_INVALID");
++    if (expected !== undefined && scopeKey !== expected) throw fail("SeeCut 账户已切换，请重新打开资产库", 409, "FLOW_ACCOUNT_CHANGED");
++    return scopeKey;
++  }
++
++  async function operation<T>(method: string, params: object, expected?: string, finalize?: (result: T, scopeKey: string) => Promise<void>): Promise<{ result: T; scopeKey: string }> {
++    const release = await acquireOperation();
++    try {
++      const scopeKey = await session(expected);
++      const result = await nativeCall(method, { ...params, expectedScopeKey: scopeKey }, 125000);
++      await session(scopeKey);
++      if (result?.scopeKey !== undefined && result.scopeKey !== scopeKey) throw fail("素材回执属于其他会话，请重新打开资产库", 409, "FLOW_ACCOUNT_CHANGED");
++      await finalize?.(result, scopeKey);
++      return { result, scopeKey };
++    } finally { release(); }
++  }
++
++  async function projectDirectory(id: string) {
++    if (!uuid.test(id)) throw fail("Flow 项目编号无效");
++    const directory = await projects.directory(id);
++    if (projects.projectIdForDirectory(directory) !== id) throw fail("Flow 项目目录无效", 403);
++    return directory;
++  }
++
++  router.get("/assets", async (request, response) => {
++    const input = parse(z.strictObject({ q: z.string().max(256).optional(), type: mediaTypeSchema.optional(),
++      offset: z.coerce.number().int().min(0).max(1_000_000).default(0), limit: z.coerce.number().int().min(1).max(50).default(24), expectedScopeKey: scopeSchema }), request.query);
++    const { result, scopeKey } = await operation<any>("assets.list", { q: input.q ?? "", type: input.type, offset: input.offset, limit: input.limit }, input.expectedScopeKey);
++    if (!Array.isArray(result?.items) || result.items.length > input.limit || !Number.isSafeInteger(result.total) || result.total < 0
++      || result.items.length === 0 && input.offset < result.total) throw fail("SeeCut 资产列表无效", 502, "FLOW_ASSET_RECEIPT_INVALID");
++    const items = result.items.map((item: any) => {
++      const parsed = z.object({ assetId: assetIdSchema, name: z.string(), type: mediaTypeSchema, version: versionSchema.nullable(),
++        createdAt: z.number().finite(), source: z.enum(["imported", "generated"]), available: z.boolean(), size: z.number().int().nonnegative().nullable(),
++        mimeType: z.string().nullable(), thumbnailAvailable: z.boolean() }).safeParse(item);
++      if (!parsed.success) throw fail("SeeCut 资产条目无效", 502, "FLOW_ASSET_RECEIPT_INVALID");
++      const entry = parsed.data;
++      const urls: { contentUrl?: string; thumbnailUrl?: string } = {};
++      if (entry.available && entry.version) {
++        const query = new URLSearchParams({ version: JSON.stringify(entry.version), expectedScopeKey: scopeKey });
++        const base = `/__seecut/assets/${encodeURIComponent(entry.assetId)}`;
++        urls.contentUrl = `${base}/content?${query}`;
++        if (entry.thumbnailAvailable) urls.thumbnailUrl = `${base}/thumbnail?${query}`;
++      }
++      return { ...entry, ...urls };
++    });
++    const nextOffset = input.offset + items.length;
++    response.set("Cache-Control", "no-store").json({ items, total: result.total, offset: input.offset, limit: input.limit,
++      ...(nextOffset < result.total ? { nextOffset } : {}), scopeKey });
++  });
++
++  for (const kind of ["thumbnail", "content"] as const) router.get(`/assets/:id/${kind}`, async (request, response, next) => {
++    const assetId = parse(assetIdSchema, request.params.id);
++    const input = parse(z.strictObject({ version: z.string().min(1).max(2048), expectedScopeKey: scopeSchema }), request.query);
++    let decoded: unknown;
++    try { decoded = JSON.parse(input.version); } catch { throw fail("素材版本无效"); }
++    const version = parse(versionSchema, decoded);
++    const { result } = await operation<any>(kind === "thumbnail" ? "assets.thumbnail" : "assets.resolve", { assetId, version }, input.expectedScopeKey, async (result, scopeKey) => {
++      if (!result || typeof result.path !== "string" || !isAbsolute(result.path)) {
++        if (kind === "thumbnail") throw fail("此素材暂无缩略图", 404, "FLOW_ASSET_THUMBNAIL_NOT_FOUND");
++        throw fail("SeeCut 素材文件回执无效", 502, "FLOW_ASSET_RECEIPT_INVALID");
++      }
++      if (kind === "content") {
++        const receipt = receiptAsset(result);
++        if (receipt.assetId !== assetId || !sameVersion(receipt.version, version)) throw fail("素材版本回执不匹配", 409, "FLOW_ASSET_VERSION_CHANGED");
++      }
++      const info = await lstat(result.path).catch(() => { throw fail("素材文件已不可用", 404, "FLOW_ASSET_UNAVAILABLE"); });
++      if (!info.isFile() || info.isSymbolicLink()) throw fail("素材文件已不可用", 404, "FLOW_ASSET_UNAVAILABLE");
++      await session(scopeKey);
++    });
++    response.set({ "Cache-Control": "no-store", "Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff" });
++    if (typeof result.contentType === "string" && /^(image|video|audio)\/[a-zA-Z0-9.+-]+$/.test(result.contentType)) response.type(result.contentType);
++    await sendFile(response, result.path, { dotfiles: "allow" }, error => { if (error) next(fail("素材预览失败，请刷新后重试", (error as any).status ?? 500)); });
++  });
++
++  router.post("/projects/:id/assets/import", async (request, response) => {
++    const input = parse(z.strictObject({ assetId: assetIdSchema, version: versionSchema, expectedScopeKey: scopeSchema }), request.body);
++    const id = request.params.id;
++    const directory = await projectDirectory(id);
++    let attempted = false;
++    let result;
++    try {
++      result = await projects.withProjectWrite(directory, async () => {
++        attempted = true;
++        const { result, scopeKey } = await operation<any>("assets.copyToProject", { projectId: id, assetId: input.assetId, version: input.version }, input.expectedScopeKey);
++        const receipt = receiptAsset(result);
++        const path = projectMediaPath(result.path);
++        if (!path.startsWith("assets/imported/") || receipt.assetId !== input.assetId || !sameVersion(receipt.version, input.version)
++          || result.sha256 !== input.version.sha256 || typeof result.mimeType !== "string" || !result.mimeType.startsWith(`${receipt.type}/`)) {
++          throw fail("素材导入回执不匹配", 502, "FLOW_ASSET_RECEIPT_INVALID");
++        }
++        // 原生只返回受管项目副本；浏览器不会得到资产库的本机路径。
++        return { ...receipt, path, sha256: result.sha256, mimeType: result.mimeType, scopeKey };
++      });
++    } finally {
++      // 响应丢失或中途切账户时原生可能已落盘，项目仍需记录待保存状态。
++      if (attempted) await projects.touch(id);
++    }
++    response.json(result);
++  });
++
++  router.post("/projects/:id/assets/register", async (request, response) => {
++    const input = parse(z.strictObject({ path: z.string(), name: z.string().trim().min(1).max(256).optional(), expectedScopeKey: scopeSchema }), request.body);
++    const path = projectMediaPath(input.path);
++    const id = request.params.id;
++    const directory = await projectDirectory(id);
++    let attempted = false;
++    let result;
++    try {
++      result = await projects.withProjectWrite(directory, async () => {
++        attempted = true;
++        const { result, scopeKey } = await operation<any>("assets.registerProjectMedia", { projectId: id, path, ...(input.name ? { name: input.name } : {}) }, input.expectedScopeKey);
++        return { ...receiptAsset(result), scopeKey };
++      });
++    } finally { if (attempted) await projects.touch(id); }
++    response.json(result);
++  });
++
++  router.use((error: any, _request: Request, response: Response, next: NextFunction) => {
++    if (response.headersSent) return next(error);
++    const code = typeof error.code === "string" && /^[A-Z0-9_]{1,80}$/.test(error.code) ? error.code : "FLOW_ASSET_ERROR";
++    const status = Number.isInteger(error.status) && error.status >= 400 && error.status < 600 ? error.status
++      : ["NOT_FOUND", "ASSET_NOT_FOUND", "THUMBNAIL_NOT_FOUND"].includes(code) ? 404
++        : ["FLOW_ACCOUNT_CHANGED", "BUSY", "EBUSY", "ASSET_VERSION_CONFLICT", "ASSET_TRASHED"].includes(code) ? 409
++          : ["INVALID_ARGUMENT", "INVALID_VERSION", "INVALID_MEDIA"].includes(code) ? 400
++            : ["INVALID_PATH", "INVALID_SOURCE"].includes(code) ? 403 : 500;
++    // 原生或系统错误可能携带绝对路径，仅本模块构造的业务消息可直接显示。
++    const message = error[publicError] ? error.message : status === 404 ? "素材文件已不可用"
++      : code === "FLOW_ACCOUNT_CHANGED" ? "SeeCut 账户已切换，请重新打开资产库"
++        : ["BUSY", "EBUSY"].includes(code) ? "项目正在使用，请稍后重试"
++          : ["ASSET_VERSION_CONFLICT", "ASSET_TRASHED"].includes(code) ? "素材版本已变化或已移入废纸篓，请刷新资产库"
++            : code === "INVALID_MEDIA" ? "素材需要是格式受支持且不超过 100 MB 的普通媒体文件"
++              : status === 400 || status === 403 ? "素材身份、版本或项目路径无效" : "SeeCut 素材操作失败，请刷新后重试";
++    response.status(status).json({ error: { code, message } });
++  });
++  return router;
++}
 diff --git a/apps/server/src/seecutGeneration.ts b/apps/server/src/seecutGeneration.ts
 new file mode 100644
 index 0000000..f157b5e
@@ -1134,16 +1353,17 @@ index 0000000..f157b5e
 +}
 diff --git a/apps/server/src/seecutHost.ts b/apps/server/src/seecutHost.ts
 new file mode 100644
-index 0000000..13aa719
+index 0000000..196c611
 --- /dev/null
 +++ b/apps/server/src/seecutHost.ts
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,99 @@
 +import express from "express";
 +import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 +import { resolve } from "node:path";
 +import { readFile, readdir, writeAtomic } from "@toonflow/file";
 +import { createApp } from "./app";
 +import { createSeecutProjects } from "./seecutProjects";
++import { createSeecutAssets } from "./seecutAssets";
 +import { setSeecutGenerationObserver, setSeecutGenerationWriteBarrier } from "./seecutGeneration";
 +
 +const appDirectory = resolve(import.meta.dirname, "..");
@@ -1209,6 +1429,7 @@ index 0000000..13aa719
 +setSeecutGenerationObserver(directory => projects.touch(projects.projectIdForDirectory(directory)));
 +setSeecutGenerationWriteBarrier(projects.withProjectWrite);
 +app.use("/__seecut", projects.router);
++app.use("/__seecut", createSeecutAssets(projects));
 +app.use(projects.observeWrites);
 +
 +const workspace = await createApp({
@@ -2226,12 +2447,93 @@ index 33df935..d072e52 100644
 +export const isDesktop = !isSeecutEmbedded && parameters.get("desktop") === "1";
  export const isRemoteConnection = (isMobile || isDesktop) && parameters.get("remote") === "1";
  export const isRemoteMobile = isMobile && isRemoteConnection;
+diff --git a/apps/web/src/lib/seecutAssets.ts b/apps/web/src/lib/seecutAssets.ts
+new file mode 100644
+index 0000000..1445fd4
+--- /dev/null
++++ b/apps/web/src/lib/seecutAssets.ts
+@@ -0,0 +1,75 @@
++export type SeecutAssetType = "image" | "video" | "audio";
++export type SeecutAssetVersion = { sha256: string; registration_id: string; previous_id?: string | null };
++export type SeecutAsset = {
++  assetId: string;
++  name: string;
++  type: SeecutAssetType;
++  version: SeecutAssetVersion | null;
++  createdAt: number | string;
++  source: string;
++  available: boolean;
++  size?: number | null;
++  mimeType?: string | null;
++  thumbnailAvailable: boolean;
++  thumbnailUrl?: string;
++  contentUrl?: string;
++};
++export type SeecutAssetPage = { items: SeecutAsset[]; total: number; offset: number; limit: number; nextOffset?: number; scopeKey: string };
++export type SeecutImportedAsset = Pick<SeecutAsset, "assetId" | "name" | "type"> & {
++  version: SeecutAssetVersion;
++  path: string;
++  mimeType: string;
++  sha256: string;
++  scopeKey: string;
++  deduplicated?: boolean;
++};
++
++async function assetRequest<T>(path: string, signal: AbortSignal, body?: object): Promise<T> {
++  signal.throwIfAborted();
++  const response = await fetch(`/__seecut/${path}`, {
++    method: body ? "POST" : "GET", credentials: "same-origin", cache: "no-store", signal,
++    ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
++  });
++  const data = await response.json();
++  signal.throwIfAborted();
++  if (!response.ok) throw new Error(data?.error?.message || `资产请求失败（${response.status}）`);
++  return data;
++}
++
++export function seecutAssetUrl(value: string | undefined) {
++  if (!value?.startsWith("/__seecut/assets/") || value.includes("\\")) return;
++  const url = new URL(value, window.location.origin);
++  return url.origin === window.location.origin && url.pathname.startsWith("/__seecut/assets/") ? url.href : undefined;
++}
++
++export async function listSeecutAssets(query: { q?: string; type?: SeecutAssetType | ""; offset?: number; limit?: number; expectedScopeKey?: string }, signal: AbortSignal) {
++  const params = new URLSearchParams({ offset: String(query.offset ?? 0), limit: String(query.limit ?? 24) });
++  if (query.q?.trim()) params.set("q", query.q.trim());
++  if (query.type) params.set("type", query.type);
++  if (query.expectedScopeKey) params.set("expectedScopeKey", query.expectedScopeKey);
++  const page = await assetRequest<SeecutAssetPage>(`assets?${params}`, signal);
++  if (!Array.isArray(page.items) || !Number.isSafeInteger(page.total) || page.total < 0 || typeof page.scopeKey !== "string" || !page.scopeKey
++    || query.expectedScopeKey && page.scopeKey !== query.expectedScopeKey) throw new Error("资产库已变化，请重新打开");
++  return page;
++}
++
++export async function importSeecutAsset(projectId: string, asset: SeecutAsset, scopeKey: string, signal: AbortSignal) {
++  if (!asset.available || !asset.version) throw new Error("此资产暂不可用");
++  const imported = await assetRequest<SeecutImportedAsset>(`projects/${encodeURIComponent(projectId)}/assets/import`, signal, {
++    assetId: asset.assetId, version: asset.version, expectedScopeKey: scopeKey,
++  });
++  if (imported.assetId !== asset.assetId || imported.scopeKey !== scopeKey || imported.type !== asset.type
++    || imported.version?.sha256 !== asset.version.sha256 || imported.version?.registration_id !== asset.version.registration_id
++    || (imported.version?.previous_id ?? null) !== (asset.version.previous_id ?? null) || imported.sha256 !== asset.version.sha256
++    || typeof imported.path !== "string" || !imported.path.startsWith("assets/") || imported.path.split(/[\\/]/).some(part => !part || part.startsWith("."))
++    || typeof imported.mimeType !== "string" || !imported.mimeType.startsWith(`${asset.type}/`)) throw new Error("资产导入回执无效");
++  return imported;
++}
++
++export async function registerSeecutAsset(projectId: string, path: string, name: string, scopeKey: string, signal: AbortSignal) {
++  const result = await assetRequest<{ assetId: string; version: SeecutAssetVersion; name: string; type: SeecutAssetType; scopeKey: string; deduplicated?: boolean }>(
++    `projects/${encodeURIComponent(projectId)}/assets/register`, signal, { path, name, expectedScopeKey: scopeKey }
++  );
++  if (!result.assetId || !result.version?.sha256 || result.scopeKey !== scopeKey) throw new Error("资产保存回执无效");
++  return result;
++}
 diff --git a/apps/web/src/lib/seecutEmbedded.ts b/apps/web/src/lib/seecutEmbedded.ts
 new file mode 100644
-index 0000000..8bf4fa0
+index 0000000..40be100
 --- /dev/null
 +++ b/apps/web/src/lib/seecutEmbedded.ts
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,62 @@
 +import { ref } from "vue";
 +
 +type SeecutTheme = "light" | "dark";
@@ -2258,6 +2560,12 @@ index 0000000..8bf4fa0
 +
 +export async function flushSeecutWorkspace() {
 +  await workspaceFlush?.();
++}
++
++export function notifySeecutViewReady() {
++  if (!isSeecutEmbedded) return;
++  const host = window as Window & { ipc?: { postMessage(message: string): void } };
++  host.ipc?.postMessage(JSON.stringify({ type: "seecut:view-ready" }));
 +}
 +
 +function applySeecutTheme(theme: unknown) {
@@ -2405,7 +2713,7 @@ index 0000000..003a028
 +  }, signal);
 +}
 diff --git a/apps/web/src/main.ts b/apps/web/src/main.ts
-index 61061f8..7b0e4d0 100644
+index 61061f8..8d78a4b 100644
 --- a/apps/web/src/main.ts
 +++ b/apps/web/src/main.ts
 @@ -4,6 +4,8 @@ import { createPinia } from "pinia";
@@ -2413,7 +2721,7 @@ index 61061f8..7b0e4d0 100644
  import App from "./App.vue";
  import "@/assets/main.scss";
 +import "@/assets/seecutTheme.scss";
-+import { flushSeecutWorkspace, isSeecutEmbedded, registerSeecutTheme } from "@/lib/seecutEmbedded";
++import { flushSeecutWorkspace, isSeecutEmbedded, notifySeecutViewReady, registerSeecutTheme } from "@/lib/seecutEmbedded";
  import "element-plus/es/components/message-box/style/css";
  import "element-plus/es/components/button/style/css";
  import "element-plus/es/components/result/style/css";
@@ -2474,10 +2782,12 @@ index 61061f8..7b0e4d0 100644
  const requiresWebView2Update = isDesktop && /Windows/i.test(navigator.userAgent)
    && [Map.groupBy, URL.canParse, Promise.withResolvers].some(method => typeof method !== "function");
  const requiresMobileWebViewUpdate = isMobile && getMissingBrowserFeatures().length > 0;
-@@ -43,10 +86,12 @@ async function notifyDesktopReady(failed = false) {
+@@ -42,17 +85,20 @@ async function notifyDesktopReady(failed = false) {
+   ? Promise.reject(new Error("当前 Microsoft Edge WebView2 Runtime 版本过旧。请以管理员身份运行微软最新版安装器；若仍提示已安装，请修复 WebView2 或联系管理员检查更新服务。更新完成后，请完全退出 Toonflow 再重新打开。"))
    : requiresMobileWebViewUpdate
    ? Promise.reject(new Error("当前移动端浏览器内核缺少 Toonflow 所需能力。请更新 Toonflow 和系统浏览器内核；部分系统需要通过系统更新升级。更新完成后，请完全退出并重新打开 Toonflow。"))
-   : loadSettings()).then(async () => {
+-  : loadSettings()).then(async () => {
++  : loadSettings(isSeecutEmbedded ? 10_000 : 0)).then(async () => {
 +  app.onUnmount(await registerLanguage());
    app.use(createPinia().use(createPersistedState({ storage: settingsStorage })));
    app.use(router);
@@ -2488,6 +2798,22 @@ index 61061f8..7b0e4d0 100644
    app.mount("#app");
    isMounted = true;
    app.onUnmount(registerDownloads());
++  await nextTick();
++  notifySeecutViewReady();
+   if (!isDesktop) return;
+   if (!isRemoteConnection) app.onUnmount(registerDesktopProtocol());
+-  await nextTick();
+   // ACT: 隐藏的 WebView 不依赖 requestAnimationFrame；等待首页挂载和页面资源就绪。
+   if (document.readyState !== "complete") {
+     await new Promise<void>((resolve) => window.addEventListener("load", () => resolve(), { once: true }));
+@@ -96,6 +142,7 @@ async function notifyDesktopReady(failed = false) {
+     }),
+   }).mount("#app");
+   await nextTick();
++  notifySeecutViewReady();
+   // ACT: 错误页也要结束启动动画，但不能消费尚未注册监听的安装请求。
+   await notifyDesktopReady(true).catch((error) => console.error("显示启动错误页失败：", error));
+ });
 diff --git a/apps/web/src/pages/home/index.vue b/apps/web/src/pages/home/index.vue
 index b8ae40f..dee5f95 100644
 --- a/apps/web/src/pages/home/index.vue
@@ -2752,7 +3078,7 @@ index 0000000..12db544
 +}
 +</style>
 diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
-index 61cddd7..da28e08 100644
+index 61cddd7..87f2f39 100644
 --- a/apps/web/src/pages/workspace/index.vue
 +++ b/apps/web/src/pages/workspace/index.vue
 @@ -1,5 +1,19 @@
@@ -2964,12 +3290,13 @@ index 61cddd7..da28e08 100644
    if (canvasPanelRef.value?.saveBusy) {
      ElMessage.warning("画布操作尚未完成，请稍后退出");
      return false;
-@@ -343,6 +437,19 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
+@@ -343,6 +437,20 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
    height: 100dvh;
    background-color: var(--el-bg-color);
  
 +  &.seecutWorkspace {
 +    .canvasPanel, .workspaceTools { top: 52px; }
++    .canvasPanel { height: auto; }
 +    .workspaceDocument { position: absolute; inset: 52px 0 0; height: auto; width: 100%; }
 +    .seecutWorkspaceBar {
 +      position: absolute; inset: 0 0 auto; height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 16px;
@@ -2984,6 +3311,38 @@ index 61cddd7..da28e08 100644
    .canvasPanel {
      position: absolute;
      inset: 0;
+diff --git a/apps/web/src/pages/workspace/panels/canvas/canvasDrop.ts b/apps/web/src/pages/workspace/panels/canvas/canvasDrop.ts
+index 70683a6..e4448ba 100644
+--- a/apps/web/src/pages/workspace/panels/canvas/canvasDrop.ts
++++ b/apps/web/src/pages/workspace/panels/canvas/canvasDrop.ts
+@@ -4,6 +4,7 @@ import type { useVueFlow } from "@vue-flow/core";
+ import { uploadNodeFile } from "@toonflow/nodes-scaffold/workspaceFiles";
+ import type { NodeOutput } from "@toonflow/nodes-scaffold/values";
+ import useWorkspaceFiles from "@/lib/workspaceFiles";
++import type { SeecutImportedAsset } from "@/lib/seecutAssets";
+ 
+ const assetDragType = "application/toonflow-asset";
+ const fileMimeTypes: Record<string, string> = {
+@@ -70,6 +71,19 @@ type CanvasFileContext = {
+   flow: Pick<ReturnType<typeof useVueFlow>, "addNodes" | "screenToFlowCoordinate">;
+ };
+ 
++export function createSeecutAssetNode(asset: SeecutImportedAsset, position: { x: number; y: number }) {
++  const dataType = asset.type === "image" ? "IMAGE" : asset.type === "audio" ? "AUDIO" : "VIDEO";
++  return {
++    id: crypto.randomUUID(), type: `remote-${asset.type}Node`, position,
++    data: {
++      label: asset.name,
++      handles: [{ id: asset.type, type: "source" as const, dataType }],
++      outputs: { [asset.type]: { dataType, value: { url: asset.path, mimeType: asset.mimeType } } },
++      seecutAsset: { assetId: asset.assetId, version: asset.version, sha256: asset.sha256 },
++    },
++  };
++}
++
+ export async function dropCanvasFiles(event: DragEvent, context: CanvasFileContext) {
+   const transfer = event.dataTransfer;
+   if (!transfer) return;
 diff --git a/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue b/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue
 index 23cb7da..9a28c72 100644
 --- a/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue
@@ -3016,6 +3375,36 @@ index 23cb7da..9a28c72 100644
    addNodeAtPointer: () => activeInstance.value?.addNodeAtPointer(),
    mentionSource,
    get saveBusy() { return fileActionBusy || [...instances.values()].some(panel => panel.saveBusy); },
+diff --git a/apps/web/src/pages/workspace/panels/canvas/components/canvasControls.vue b/apps/web/src/pages/workspace/panels/canvas/components/canvasControls.vue
+index 1cb78b6..e8f98f9 100644
+--- a/apps/web/src/pages/workspace/panels/canvas/components/canvasControls.vue
++++ b/apps/web/src/pages/workspace/panels/canvas/components/canvasControls.vue
+@@ -10,13 +10,13 @@
+   <panel class="canvasControlsPanel" position="bottom-left">
+     <el-card class="canvasControlsCard" shadow="never" :bodyStyle="{ padding: '3px 6px' }">
+       <div class="canvasControls">
+-        <el-tooltip :showArrow="false" :content="assetsVisible ? '关闭素材库' : '打开素材库'" placement="top" :hideAfter="0" :enterable="false" :triggerKeys="[]">
++        <el-tooltip :showArrow="false" :content="(assetsVisible ? '关闭' : '打开') + libraryLabel" placement="top" :hideAfter="0" :enterable="false" :triggerKeys="[]">
+           <el-button
+             class="toolButton"
+             text
+             :type="assetsVisible ? 'primary' : 'default'"
+             :aria-pressed="assetsVisible"
+-            aria-label="素材库"
++            :aria-label="libraryLabel"
+             @click="assetsVisible = !assetsVisible">
+             <icon-folders :size="18" />
+           </el-button>
+@@ -122,6 +122,9 @@ import { MiniMap } from "@vue-flow/minimap";
+ import { IconMap, IconMagnet, IconFocusCentered } from "@tabler/icons-vue";
+ import { ElMessage } from "element-plus";
+ import { arrangeCanvas } from "../arrangeCanvas";
++import { isSeecutEmbedded } from "@/lib/seecutEmbedded";
++
++const libraryLabel = isSeecutEmbedded ? "资产库" : "素材库";
+ 
+ const props = defineProps<{
+   canvasId: string;
 diff --git a/apps/web/src/pages/workspace/panels/canvas/components/canvasMenu.vue b/apps/web/src/pages/workspace/panels/canvas/components/canvasMenu.vue
 index 166ceed..65f7abc 100644
 --- a/apps/web/src/pages/workspace/panels/canvas/components/canvasMenu.vue
@@ -3131,29 +3520,319 @@ index 166ceed..65f7abc 100644
  </script>
  
  <style lang="scss" scoped>
+diff --git a/apps/web/src/pages/workspace/panels/canvas/components/seecutAssetLibrary.vue b/apps/web/src/pages/workspace/panels/canvas/components/seecutAssetLibrary.vue
+new file mode 100644
+index 0000000..cdac424
+--- /dev/null
++++ b/apps/web/src/pages/workspace/panels/canvas/components/seecutAssetLibrary.vue
+@@ -0,0 +1,255 @@
++<template>
++  <el-card v-if="visible" class="seecutAssetLibrary nodrag nopan nowheel" shadow="never" :bodyStyle="{ padding: '10px' }" role="region" aria-label="资产库" @dblclick.stop @pointerdown.stop @keydown.stop>
++    <div class="libraryToolbar">
++      <el-input v-model="search" :prefixIcon="IconSearch" placeholder="搜索资产" aria-label="搜索资产" clearable />
++      <el-select v-model="type" class="typeFilter" aria-label="资产类型" placeholder="全部">
++        <el-option label="全部" value="" /><el-option label="图片" value="image" /><el-option label="视频" value="video" /><el-option label="音频" value="audio" />
++      </el-select>
++      <el-button text :icon="IconRefresh" aria-label="刷新资产库" title="刷新" :disabled="loading || busy" @click="refresh" />
++      <el-button text :icon="IconX" aria-label="关闭资产库" title="关闭" @click="visible = false" />
++    </div>
++    <el-alert v-if="error" :title="error" type="error" :closable="false" showIcon />
++    <el-scrollbar class="libraryScroll" maxHeight="min(440px, calc(100dvh - 270px))" v-loading="loading">
++      <div class="assetGrid" role="listbox" aria-label="资产" :aria-busy="loading">
++        <div v-for="asset in items" :key="asset.assetId + (asset.version?.registration_id ?? '')" class="assetItem" :class="{ selected: selected?.assetId === asset.assetId, unavailable: !asset.available || !asset.version }" role="option" :aria-selected="selected?.assetId === asset.assetId" :aria-disabled="!asset.available || !asset.version" tabindex="0" :title="asset.name" @click="selectAsset(asset)" @keydown.enter.prevent="selectAsset(asset)">
++          <el-image v-if="asset.thumbnailAvailable && seecutAssetUrl(asset.thumbnailUrl)" class="assetThumbnail" :src="seecutAssetUrl(asset.thumbnailUrl)" fit="cover" loading="lazy" draggable="false"><template #error><icon-photo :size="24" /></template></el-image>
++          <span v-else class="assetThumbnail assetPlaceholder"><icon-video v-if="asset.type === 'video'" :size="28" /><icon-music v-else-if="asset.type === 'audio'" :size="28" /><icon-photo v-else :size="28" /></span>
++          <span class="assetName">{{ asset.name }}</span>
++          <el-button class="previewButton" text :icon="IconEye" :disabled="!asset.available || !seecutAssetUrl(asset.contentUrl)" :aria-label="'预览 ' + asset.name" title="预览" @click.stop="openPreview(asset)" />
++        </div>
++      </div>
++      <el-empty v-if="!loading && !error && !items.length" description="暂无资产" :imageSize="48" />
++    </el-scrollbar>
++    <div class="libraryFooter">
++      <el-pagination :currentPage="page" :pageSize="24" :total="total" :pagerCount="5" layout="prev, pager, next" size="small" :disabled="loading || busy" @currentChange="changePage" />
++      <div class="libraryActions">
++        <el-button :disabled="!selected || busy || loading || !enabled" :loading="busy && !addingReference" @click="add(false)">添加到画布</el-button>
++        <el-button type="primary" :disabled="!selected || busy || loading || !enabled || !canReference(selected.type)" :loading="busy && addingReference" @click="add(true)">用作参考</el-button>
++      </div>
++    </div>
++  </el-card>
++
++  <el-image-viewer v-if="preview?.type === 'image' && previewUrl" :urlList="[previewUrl]" teleported @close="preview = undefined" />
++  <el-dialog :modelValue="!!preview && preview.type !== 'image'" :title="preview?.name" width="min(760px, calc(100vw - 32px))" alignCenter appendToBody destroyOnClose @update:modelValue="preview = undefined">
++    <el-alert v-if="previewError" :title="previewError" type="error" :closable="false" showIcon />
++    <video v-else-if="preview?.type === 'video' && previewUrl" class="previewMedia" :src="previewUrl" controls playsinline preload="metadata" @error="previewError = '视频无法播放'" />
++    <audio v-else-if="preview?.type === 'audio' && previewUrl" class="previewMedia" :src="previewUrl" controls preload="metadata" @error="previewError = '音频无法播放'" />
++  </el-dialog>
++
++  <el-dialog v-model="saveVisible" title="添加到资产库" width="420px" alignCenter appendToBody :closeOnClickModal="false" @opened="nameInput?.select()" @closed="cancelSave">
++    <el-form labelPosition="top" @submit.prevent="saveAsset">
++      <el-form-item label="资产名称"><el-input ref="nameInput" v-model="name" aria-label="资产名称" :disabled="saving" @keydown.enter.prevent="saveAsset" /></el-form-item>
++      <el-form-item v-if="outputs.length > 1" label="节点输出"><el-select v-model="outputIndex" aria-label="节点输出" :disabled="saving"><el-option v-for="(item, index) in outputs" :key="index" :label="item.label" :value="index" /></el-select></el-form-item>
++    </el-form>
++    <template #footer><el-button @click="saveVisible = false">取消</el-button><el-button type="primary" :disabled="!name.trim() || /[\\/]/.test(name) || !saveScopeKey" :loading="saving" @click="saveAsset">添加到资产库</el-button></template>
++  </el-dialog>
++</template>
++
++<script setup lang="ts">
++import { computed, onBeforeUnmount, ref, watch } from "vue";
++import { ElLoading, ElMessage, type InputInstance } from "element-plus";
++import { IconEye, IconMusic, IconPhoto, IconRefresh, IconSearch, IconVideo, IconX } from "@tabler/icons-vue";
++import type { NodeOutput } from "@toonflow/nodes-scaffold/values";
++import { listSeecutAssets, registerSeecutAsset, seecutAssetUrl, type SeecutAsset, type SeecutAssetType } from "@/lib/seecutAssets";
++
++type AssetOutput = { label: string; output: NodeOutput };
++const vLoading = ElLoading.directive;
++const props = defineProps<{
++  directory?: string;
++  projectId?: string;
++  enabled: boolean;
++  canReference: (type: SeecutAssetType) => boolean;
++  addAsset: (asset: SeecutAsset, reference: boolean, scopeKey: string, signal: AbortSignal) => Promise<void>;
++}>();
++const visible = defineModel<boolean>({ default: false });
++const search = ref("");
++const type = ref<SeecutAssetType | "">("");
++const page = ref(1);
++const total = ref(0);
++const items = ref<SeecutAsset[]>([]);
++const selected = ref<SeecutAsset>();
++const scopeKey = ref("");
++const loading = ref(false);
++const busy = ref(false);
++const addingReference = ref(false);
++const error = ref("");
++const preview = ref<SeecutAsset>();
++const previewUrl = computed(() => seecutAssetUrl(preview.value?.contentUrl));
++const previewError = ref("");
++const saveVisible = ref(false);
++const outputs = ref<AssetOutput[]>([]);
++const outputIndex = ref(0);
++const name = ref("");
++const nameInput = ref<InputInstance>();
++const saving = ref(false);
++const saveScopeKey = ref("");
++let sourceProjectId: string | undefined;
++let loadController: AbortController | undefined;
++let addController: AbortController | undefined;
++let saveController: AbortController | undefined;
++let searchTimer: ReturnType<typeof setTimeout> | undefined;
++
++function stopList() {
++  clearTimeout(searchTimer);
++  loadController?.abort();
++  loadController = undefined;
++  loading.value = false;
++  selected.value = undefined;
++}
++
++async function loadAssets(resetScope = false) {
++  stopList();
++  if (!visible.value) return;
++  if (resetScope) scopeKey.value = "";
++  const controller = new AbortController();
++  loadController = controller;
++  loading.value = true;
++  error.value = "";
++  try {
++    const result = await listSeecutAssets({ q: search.value, type: type.value, offset: (page.value - 1) * 24, limit: 24, expectedScopeKey: scopeKey.value || undefined }, controller.signal);
++    if (loadController !== controller || !visible.value) return;
++    items.value = result.items;
++    total.value = result.total;
++    scopeKey.value = result.scopeKey;
++  } catch (cause) {
++    if (!controller.signal.aborted && loadController === controller) {
++      items.value = [];
++      total.value = 0;
++      error.value = cause instanceof Error ? cause.message : "资产库读取失败";
++    }
++  } finally {
++    if (loadController === controller) { loading.value = false; loadController = undefined; }
++  }
++}
++
++function refresh() {
++  page.value = 1;
++  preview.value = undefined;
++  void loadAssets(true);
++}
++
++function changePage(value: number) {
++  page.value = value;
++  void loadAssets();
++}
++
++function selectAsset(asset: SeecutAsset) {
++  if (!asset.available || !asset.version || busy.value || loading.value) return;
++  selected.value = asset;
++}
++
++function openPreview(asset: SeecutAsset) {
++  previewError.value = "";
++  preview.value = asset;
++}
++
++async function add(reference: boolean) {
++  const asset = selected.value;
++  if (!asset || !scopeKey.value || !props.enabled || busy.value || reference && !props.canReference(asset.type)) return;
++  const controller = new AbortController();
++  addController = controller;
++  busy.value = true;
++  addingReference.value = reference;
++  try {
++    await props.addAsset(asset, reference, scopeKey.value, controller.signal);
++    controller.signal.throwIfAborted();
++    ElMessage.success(reference ? "已添加参考" : "已添加到画布");
++  } catch (cause) {
++    if (!controller.signal.aborted) ElMessage.error(cause instanceof Error ? cause.message : "资产导入失败");
++  } finally {
++    if (addController === controller) { busy.value = false; addController = undefined; }
++  }
++}
++
++function cancelSave() {
++  saveController?.abort();
++  saveController = undefined;
++  saving.value = false;
++}
++
++async function openSave(label: string, values: AssetOutput[]) {
++  cancelSave();
++  outputs.value = values.filter(item => ["IMAGE", "VIDEO", "AUDIO"].includes(item.output.dataType));
++  if (!outputs.value.length || !props.projectId || !props.directory) return;
++  sourceProjectId = props.projectId;
++  outputIndex.value = 0;
++  name.value = label;
++  saveScopeKey.value = "";
++  saveVisible.value = true;
++  const controller = new AbortController();
++  saveController = controller;
++  try {
++    const result = await listSeecutAssets({ limit: 1 }, controller.signal);
++    if (saveController === controller) saveScopeKey.value = result.scopeKey;
++  } catch (cause) {
++    if (!controller.signal.aborted) { ElMessage.error(cause instanceof Error ? cause.message : "资产库读取失败"); saveVisible.value = false; }
++  }
++}
++
++async function saveAsset() {
++  const output = outputs.value[outputIndex.value]?.output;
++  if (!output || typeof output.value !== "object" || !sourceProjectId || !saveScopeKey.value || !name.value.trim() || /[\\/]/.test(name.value) || saving.value) return;
++  saveController?.abort();
++  const controller = new AbortController();
++  saveController = controller;
++  saving.value = true;
++  try {
++    const result = await registerSeecutAsset(sourceProjectId, output.value.url, name.value.trim(), saveScopeKey.value, controller.signal);
++    controller.signal.throwIfAborted();
++    saveVisible.value = false;
++    ElMessage.success(result.deduplicated ? "已在资产库中" : "已添加到资产库");
++    if (visible.value) refresh();
++  } catch (cause) {
++    if (!controller.signal.aborted) ElMessage.error(cause instanceof Error ? cause.message : "资产保存失败");
++  } finally {
++    if (saveController === controller) saving.value = false;
++  }
++}
++
++watch([search, type], () => {
++  stopList();
++  page.value = 1;
++  if (visible.value) { loading.value = true; searchTimer = setTimeout(() => void loadAssets(), 250); }
++}, { flush: "sync" });
++watch(visible, opened => {
++  if (opened) refresh();
++  else { stopList(); addController?.abort(); preview.value = undefined; }
++}, { flush: "sync" });
++watch(saveVisible, opened => { if (!opened) cancelSave(); }, { flush: "sync" });
++watch([() => props.directory, () => props.projectId], () => {
++  addController?.abort();
++  saveVisible.value = false;
++  cancelSave();
++  if (visible.value) refresh();
++}, { flush: "sync" });
++watch(() => props.enabled, enabled => { if (!enabled) addController?.abort(); }, { flush: "sync" });
++onBeforeUnmount(() => { stopList(); addController?.abort(); cancelSave(); });
++defineExpose({ openSave });
++</script>
++
++<style lang="scss" scoped>
++.seecutAssetLibrary {
++  width: min(440px, calc(100vw - 30px));
++  .libraryToolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
++    .el-input { flex: 1; min-width: 0; }
++    .typeFilter { width: 88px; flex-shrink: 0; }
++    .el-button { width: 26px; height: 28px; padding: 0; margin: 0; flex-shrink: 0; }
++  }
++  .libraryScroll { min-height: 120px; }
++  .assetGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
++    .assetItem { position: relative; padding: 4px; min-width: 0; border: 1px solid var(--el-border-color); border-radius: var(--el-border-radius-base); cursor: pointer;
++      &.selected { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
++      &.unavailable { opacity: 0.45; cursor: default; }
++      .assetThumbnail { display: flex; width: 100%; aspect-ratio: 1; border-radius: var(--el-border-radius-base); background: var(--el-fill-color-light); }
++      .assetPlaceholder { align-items: center; justify-content: center; color: var(--el-text-color-secondary); }
++      .assetName { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 28px; padding-right: 22px; }
++      .previewButton { position: absolute; right: 2px; bottom: 4px; width: 24px; height: 24px; padding: 0; }
++    }
++  }
++  .libraryFooter { margin-top: 8px;
++    .el-pagination { justify-content: center; }
++    .libraryActions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; .el-button { margin: 0; } }
++  }
++}
++.previewMedia { display: block; width: 100%; max-height: 65dvh; }
++</style>
 diff --git a/apps/web/src/pages/workspace/panels/canvas/index.vue b/apps/web/src/pages/workspace/panels/canvas/index.vue
-index 649c61b..8dd8a53 100644
+index 649c61b..24ee4b1 100644
 --- a/apps/web/src/pages/workspace/panels/canvas/index.vue
 +++ b/apps/web/src/pages/workspace/panels/canvas/index.vue
-@@ -66,7 +66,7 @@
+@@ -66,8 +66,9 @@
          v-if="active && !settingsVisible && project?.directory && canvasReady && !flow.getNodes.value.length"
          :availableNodes="availableNodes"
          @create="createEmptyNode" />
 -      <canvasMenu ref="canvasMenuRef" v-model:canvasId="canvasId" :directory="project?.directory" :initialCanvasId="initialCanvasId" :activateCanvas="activateCanvas" :flushSave="flushCanvases ?? flushCanvasSave">
+-        <assetLibrary ref="assetLibraryRef" v-model="assetsVisible" :directory="project?.directory" />
 +      <canvasMenu ref="canvasMenuRef" v-model:canvasId="canvasId" :directory="project?.directory" :initialCanvasId="initialCanvasId" :activateCanvas="activateCanvas" :flushSave="flushCanvases ?? flushCanvasSave" :onCanvasSnapshot="captureCanvasSnapshot">
-         <assetLibrary ref="assetLibraryRef" v-model="assetsVisible" :directory="project?.directory" />
++        <seecutAssetLibrary v-if="isSeecutEmbedded" ref="seecutAssetLibraryRef" v-model="assetsVisible" :directory="project?.directory" :projectId="currentSeecutProjectId" :enabled="active && !settingsVisible && canvasReady" :canReference="canUseAssetReference" :addAsset="addSeecutAsset" />
++        <assetLibrary v-else ref="assetLibraryRef" v-model="assetsVisible" :directory="project?.directory" />
        </canvasMenu>
        <canvasControls
-@@ -175,7 +175,7 @@ import { useNodeToolsContext } from "@toonflow/nodes-scaffold/nodeTools";
+         ref="canvasControlsRef"
+@@ -163,21 +164,25 @@ import canvasMenu from "./components/canvasMenu.vue";
+ import canvasControls from "./components/canvasControls.vue";
+ import canvasEmpty from "./components/canvasEmpty.vue";
+ import assetLibrary from "./components/assetLibrary.vue";
++import seecutAssetLibrary from "./components/seecutAssetLibrary.vue";
++import { isSeecutEmbedded } from "@/lib/seecutEmbedded";
++import { currentSeecutProjectId } from "@/lib/seecutWorkspaceBridge";
++import { importSeecutAsset, type SeecutAsset, type SeecutAssetType } from "@/lib/seecutAssets";
+ import groupNode from "./components/groupNode.vue";
+ import selectionToolbar from "./components/selectionToolbar.vue";
+ import nodeSearch from "./components/nodeSearch.vue";
+ import { finishGroupDrag, getSelectionTree } from "./selectionNodes";
+ import type { NodeOutput } from "@toonflow/nodes-scaffold/values";
+-import type { NodeConnectionFeedback, NodeHandle } from "@toonflow/nodes-scaffold/connection";
++import { isTypeCompatible, validateConnection, type NodeConnectionFeedback, type NodeHandle } from "@toonflow/nodes-scaffold/connection";
+ import { useNodeEvent } from "@toonflow/nodes-scaffold/nodeEvent";
+ import type { NodeDocumentContext, NodeDocumentState } from "@toonflow/nodes-scaffold/nodeDocument";
+ import { useNodeToolsContext } from "@toonflow/nodes-scaffold/nodeTools";
  import { useWorkspaceStore } from "@/stores/workspace";
  import { generalSettings } from "@/stores/settings";
  import { getShortcutBindings, shortcutLabel, shortcutMatches, shortcutPressed } from "@/lib/canvasShortcuts";
 -import useWorkspaceFiles from "@/lib/workspaceFiles";
 +import useWorkspaceFiles, { type TextSnapshot } from "@/lib/workspaceFiles";
  import anonymousData from "@/lib/anonymousData";
- import { createClipboardMediaFile, dropCanvasFiles, getClipboardMediaFiles, importCanvasFiles, isCanvasFileDrag } from "./canvasDrop";
+-import { createClipboardMediaFile, dropCanvasFiles, getClipboardMediaFiles, importCanvasFiles, isCanvasFileDrag } from "./canvasDrop";
++import { createClipboardMediaFile, createSeecutAssetNode, dropCanvasFiles, getClipboardMediaFiles, importCanvasFiles, isCanvasFileDrag } from "./canvasDrop";
  import "@vue-flow/core/dist/style.css";
-@@ -233,6 +233,11 @@ const flow = useVueFlow(props.runtimeKey);
+ import "@vue-flow/core/dist/theme-default.css";
+ import "@vue-flow/minimap/dist/style.css";
+@@ -228,11 +233,17 @@ let copyingNodes = false;
+ const showEdges = ref(true);
+ const assetsVisible = ref(false);
+ const assetLibraryRef = ref<InstanceType<typeof assetLibrary>>();
++const seecutAssetLibraryRef = ref<InstanceType<typeof seecutAssetLibrary>>();
+ const edgeDisconnect = ref<{ id: string; x: number; y: number }>();
+ const flow = useVueFlow(props.runtimeKey);
  const nodeDocument: NodeDocumentContext = { targets: shallowReactive(new Map()), mounts: new Map(), states: shallowReactive(new Map()) };
  const canvasDirty = ref(false);
  const canvasSaveError = ref("");
@@ -3165,7 +3844,21 @@ index 649c61b..8dd8a53 100644
  const documentObservers = new Set<() => void>();
  onScopeDispose(() => { for (const release of documentObservers) release(); });
  provide("nodeDocument", nodeDocument);
-@@ -288,8 +293,15 @@ function getCanvasContext() {
+@@ -271,7 +282,12 @@ provide("copyNodeToClipboard", async (node: Parameters<typeof copyNodeToClipboar
+ });
+ provide("retainNodeFiles", true);
+ provide("selectionConnection", shallowRef<NodeConnectionFeedback>());
+-provide("saveNodeToAssets", (label: string, outputs: { label: string; output: NodeOutput }[]) => assetLibraryRef.value?.openSave(label, outputs));
++if (isSeecutEmbedded) provide("assetOutputFilter", (output: NodeOutput) => ["IMAGE", "VIDEO", "AUDIO"].includes(output.dataType));
++provide("assetLibraryLabel", isSeecutEmbedded ? "资产库" : "素材库");
++provide("saveNodeToAssets", (label: string, outputs: { label: string; output: NodeOutput }[]) => {
++  if (isSeecutEmbedded) void seecutAssetLibraryRef.value?.openSave(label, outputs);
++  else void assetLibraryRef.value?.openSave(label, outputs);
++});
+ let canvasController = new AbortController();
+ let workspaceController = new AbortController();
+ const createCanvasContext = useCanvasTools({
+@@ -288,8 +304,15 @@ function getCanvasContext() {
    return canvasId.value || canvasMenuRef.value?.initialized ? createCanvasContext(canvasId.value, canvasController.signal, workspaceController.signal) : undefined;
  }
  const canvasReady = computed(() => !!canvasId.value && !nodeListLoading.value && nodeLoads.size === 0);
@@ -3182,7 +3875,64 @@ index 649c61b..8dd8a53 100644
    getCanvases: (signal?: AbortSignal) => {
      if (!canvasMenuRef.value) throw new Error("画布菜单尚未就绪");
      return canvasMenuRef.value.getCanvases(signal);
-@@ -559,14 +571,20 @@ let saveRevision = 0;
+@@ -514,6 +537,56 @@ function selectFiles(position: { x: number; y: number }) {
+   input.click();
+ }
+ 
++function assetReferenceTarget(type: SeecutAssetType) {
++  const selected = flow.getSelectedNodes.value;
++  if (selected.length !== 1) return;
++  const node = selected[0]!;
++  const dataType = type === "image" ? "IMAGE" : type === "video" ? "VIDEO" : "AUDIO";
++  const handle = (node.data.handles as NodeHandle[] | undefined)?.find(item => item.type === "target" && isTypeCompatible(dataType, item.dataType));
++  return handle ? { node, handle } : undefined;
++}
++
++function canUseAssetReference(type: SeecutAssetType) {
++  return !!assetReferenceTarget(type);
++}
++
++async function addSeecutAsset(asset: SeecutAsset, reference: boolean, scopeKey: string, signal: AbortSignal) {
++  const directory = project.value?.directory;
++  const projectId = currentSeecutProjectId.value;
++  const target = reference ? assetReferenceTarget(asset.type) : undefined;
++  if (!directory || !projectId || !props.active || props.settingsVisible || !canvasReady.value || reference && !target) throw new Error("请先选择可用的画布或参考节点");
++  const type = `remote-${asset.type}Node`;
++  if (!availableNodes.value.some(node => node.type === type)) throw new Error("请先启用对应的基础节点");
++  const rect = canvasElement.value?.getBoundingClientRect();
++  if (!rect) throw new Error("画布尚未就绪");
++  const position = target
++    ? { x: target.node.computedPosition.x - 360, y: target.node.computedPosition.y }
++    : screenToFlowCoordinate({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
++  const currentCanvasId = canvasId.value;
++  const operationSignal = AbortSignal.any([signal, canvasController.signal]);
++  const imported = await importSeecutAsset(projectId, asset, scopeKey, operationSignal);
++  operationSignal.throwIfAborted();
++  if (project.value?.directory !== directory || currentSeecutProjectId.value !== projectId || canvasId.value !== currentCanvasId || !props.active || props.settingsVisible) throw new Error("画布已切换，本次导入已停止");
++  if (target && flow.findNode(target.node.id) !== target.node) throw new Error("参考节点已移除");
++  await canvasHistory.batch(async () => {
++    operationSignal.throwIfAborted();
++    const node = createSeecutAssetNode(imported, position);
++    flow.addNodes(node);
++    if (!target) return;
++    try {
++      const sourceNode = flow.findNode(node.id)!;
++      const connection = { source: node.id, sourceHandle: asset.type, target: target.node.id, targetHandle: target.handle.id };
++      if (!validateConnection(connection, { sourceNode, targetNode: target.node, nodes: flow.getNodes.value, edges: flow.getEdges.value })) throw new Error("此节点不接受该资产作为参考");
++      const edgeId = crypto.randomUUID();
++      flow.addEdges({ ...connection, id: edgeId });
++      if (!flow.findEdge(edgeId)) throw new Error("参考连线未创建，请重试");
++    } catch (error) {
++      flow.removeNodes(node.id);
++      throw error;
++    }
++  });
++}
++
+ function openNodeMenu(event: MouseEvent) {
+   if (event.target instanceof Element && event.target.classList.contains("vue-flow__pane")) nodeMenuRef.value?.openMenu(event, true);
+ }
+@@ -559,14 +632,20 @@ let saveRevision = 0;
  const saveCanvas = debounce((directory: string, fileName: string) => {
    const flow = toObject();
    const revision = saveRevision;
@@ -3206,7 +3956,7 @@ index 649c61b..8dd8a53 100644
        saveError = err;
        canvasSaveError.value = axios.isAxiosError<{ message?: string }>(err) ? err.response?.data.message || err.message : err instanceof Error ? err.message : "画布保存失败";
        ElMessage.error(
-@@ -581,15 +599,16 @@ const saveCanvas = debounce((directory: string, fileName: string) => {
+@@ -581,15 +660,16 @@ const saveCanvas = debounce((directory: string, fileName: string) => {
  }, 500);
  
  function scheduleCanvasSave() {
@@ -3226,7 +3976,7 @@ index 649c61b..8dd8a53 100644
  }
  
  function scheduleCanvasChange() {
-@@ -670,6 +689,10 @@ watch(
+@@ -670,6 +750,10 @@ watch(
        canvasController.abort(new Error("画布已重新加载，本次画布调用已停止"));
        canvasController = new AbortController();
      }
@@ -3237,7 +3987,7 @@ index 649c61b..8dd8a53 100644
      if (!savePaused) saveCanvas.flush();
    },
    { flush: "sync" }
-@@ -699,7 +722,10 @@ async function saveCanvasState(action?: () => Promise<void>) {
+@@ -699,7 +783,10 @@ async function saveCanvasState(action?: () => Promise<void>) {
    await Promise.all(flow.getNodes.value.map((node) => useNodeEvent(node.id, flow).emit("save")));
    await nextTick();
    if (saveCancelled) throw new Error("画布保存已取消");
@@ -3249,7 +3999,7 @@ index 649c61b..8dd8a53 100644
    if (action) savePaused = true;
    try {
      let revision: number;
-@@ -728,6 +754,34 @@ async function saveCanvasState(action?: () => Promise<void>) {
+@@ -728,6 +815,34 @@ async function saveCanvasState(action?: () => Promise<void>) {
    }
  }
  
@@ -3284,7 +4034,7 @@ index 649c61b..8dd8a53 100644
  function cancelCanvasSave() {
    saveCancelled = true;
    savePaused = true;
-@@ -964,6 +1018,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
+@@ -964,6 +1079,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
      && shortcutPressed(event, getShortcutBindings(shortcuts.pan).filter(binding => binding !== "None").join(" / "), pressedCodes);
    updateCanvasSelection(event);
    if (event.type === "keyup" || event.defaultPrevented || event.isComposing || !inCanvas || editing) return;
@@ -3296,7 +4046,7 @@ index 649c61b..8dd8a53 100644
    const action = ([
      "group", "mergeGroup", "ungroup", "addNode", "moveTool", "handTool", "arrange", "search",
      "delete", "copy", "paste", "undo", "redo", "zoomIn", "zoomOut", "fitView",
-@@ -1005,6 +1064,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
+@@ -1005,6 +1125,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
    else void flow[action]();
  }
  
@@ -3308,7 +4058,7 @@ index 649c61b..8dd8a53 100644
  function resetCanvasKeys() {
    pressedCodes.clear();
    gestureScale = undefined;
-@@ -1012,7 +1076,7 @@ function resetCanvasKeys() {
+@@ -1012,7 +1137,7 @@ function resetCanvasKeys() {
    panKeyPressed.value = false;
    selectionKeyPressed.value = getShortcutBindings(generalSettings.value.canvasShortcuts.selection).includes("None");
    flow.multiSelectionActive.value = false;
@@ -3317,7 +4067,7 @@ index 649c61b..8dd8a53 100644
  }
  
  watch([() => props.active, () => props.settingsVisible, () => generalSettings.value.canvasShortcuts], resetCanvasKeys, { deep: true, flush: "sync", immediate: true });
-@@ -1028,6 +1092,8 @@ onMounted(() => {
+@@ -1028,6 +1153,8 @@ onMounted(() => {
    window.addEventListener("keydown", updateCanvasKeys, true);
    window.addEventListener("keyup", updateCanvasKeys, true);
    window.addEventListener("blur", resetCanvasKeys);
@@ -3326,7 +4076,7 @@ index 649c61b..8dd8a53 100644
    window.addEventListener("toonflow:plugin-installed", refreshInstalled);
    window.addEventListener("toonflow:node-config-updated", refreshNodeConfig);
    document.addEventListener("paste", pasteNode);
-@@ -1040,6 +1106,8 @@ onBeforeUnmount(() => {
+@@ -1040,6 +1167,8 @@ onBeforeUnmount(() => {
    window.removeEventListener("keydown", updateCanvasKeys, true);
    window.removeEventListener("keyup", updateCanvasKeys, true);
    window.removeEventListener("blur", resetCanvasKeys);
@@ -3335,7 +4085,7 @@ index 649c61b..8dd8a53 100644
    window.removeEventListener("toonflow:plugin-installed", refreshInstalled);
    window.removeEventListener("toonflow:node-config-updated", refreshNodeConfig);
    document.removeEventListener("paste", pasteNode);
-@@ -1181,6 +1249,17 @@ const defaultEdgeOptions = markRaw({
+@@ -1181,6 +1310,17 @@ const defaultEdgeOptions = markRaw({
  .canvas {
    width: 100%;
    height: 100%;
@@ -3412,6 +4162,22 @@ index ccbe5d2..2ae72bf 100644
 +  }
 +});
  export default router;
+diff --git a/apps/web/src/stores/settings.ts b/apps/web/src/stores/settings.ts
+index b2207b3..6f4ef19 100644
+--- a/apps/web/src/stores/settings.ts
++++ b/apps/web/src/stores/settings.ts
+@@ -98,9 +98,9 @@ export const modelChoices = computed(() => customProviders.value.flatMap(provide
+   value: JSON.stringify([provider.id, model.id]), providerId: provider.id, modelId: model.id, label: model.label, contextWindow: model.contextWindow,
+ }))));
+ 
+-export async function loadSettings() {
++export async function loadSettings(timeout = 0) {
+   if (settingsReady) return;
+-  const { data } = await axios.get("/api/settings/get", { headers: { "Cache-Control": "no-cache", "x-toonflow-workspace": "1" } });
++  const { data } = await axios.get("/api/settings/get", { timeout, headers: { "Cache-Control": "no-cache", "x-toonflow-workspace": "1" } });
+   if (settingsReady) return;
+   if (data.code !== 200 || !data.data || typeof data.data !== "object" || Array.isArray(data.data)) {
+     throw new Error("读取设置失败");
 diff --git a/packages/i18n/src/elementPlus.ts b/packages/i18n/src/elementPlus.ts
 index 8ed06a1..3be8e84 100644
 --- a/packages/i18n/src/elementPlus.ts
@@ -3900,6 +4666,63 @@ index 63e67ee..5d49e9d 100644
 -  return { getModels, getMediaModels, getMediaPrice, generateImage, generateVideo, generateAudio, generate };
 +  return { getModels, getMediaModels, getMediaPrice, generateImage, generateVideo, generateAudio, generate, getMediaGeneration, getMediaGenerationHistory, recoverRecordedMedia, resumeRecordedMedia };
  }
+diff --git a/packages/nodeScaffold/src/nodeSkeleton.vue b/packages/nodeScaffold/src/nodeSkeleton.vue
+index 3bb727f..3701318 100644
+--- a/packages/nodeScaffold/src/nodeSkeleton.vue
++++ b/packages/nodeScaffold/src/nodeSkeleton.vue
+@@ -14,7 +14,7 @@
+       @command="handleCommand">
+       <template #dropdown>
+         <el-dropdown-menu>
+-          <el-dropdown-item v-if="assetOutputs.length && saveNodeToAssets" command="saveAsset" :icon="IconFolderPlus">保存到素材库</el-dropdown-item>
++          <el-dropdown-item v-if="assetOutputs.length && saveNodeToAssets" command="saveAsset" :icon="IconFolderPlus">{{ assetLibraryLabel === '资产库' ? '添加到资产库' : '保存到素材库' }}</el-dropdown-item>
+           <el-dropdown-item :divided="!!(assetOutputs.length && saveNodeToAssets)" command="copy" :icon="IconCopy">复制节点</el-dropdown-item>
+           <el-dropdown-item command="duplicate" :icon="IconCopyPlus">创建副本</el-dropdown-item>
+           <el-dropdown-item command="delete" :icon="IconTrash">删除节点</el-dropdown-item>
+@@ -36,12 +36,13 @@
+       <slot name="top">
+         <el-card class="mediaToolbar" shadow="never" :bodyStyle="{ padding: '6px' }">
+           <el-button
++            v-if="!assetOutputFilter || handles.some(handle => handle.type === 'source' && ['IMAGE', 'VIDEO', 'AUDIO'].some(type => isTypeCompatible(type, handle.dataType)))"
+             :icon="IconFolderPlus"
+             :disabled="!assetOutputs.length || !saveNodeToAssets"
+             text
+-            title="添加到素材库"
+-            aria-label="添加到素材库"
+-            @click.stop="handleCommand('saveAsset')">添加到素材库</el-button>
++            :title="'添加到' + assetLibraryLabel"
++            :aria-label="'添加到' + assetLibraryLabel"
++            @click.stop="handleCommand('saveAsset')">{{ '添加到' + assetLibraryLabel }}</el-button>
+           <slot name="topActions" />
+           <el-divider direction="vertical" />
+           <slot name="topRightActions" />
+@@ -178,7 +179,7 @@ import {
+ } from "@tabler/icons-vue";
+ import { ElCard, ElButton, ElDivider, ElDropdown, ElDropdownMenu, ElDropdownItem, ElMessage } from "element-plus";
+ import type { DropdownInstance } from "element-plus";
+-import { validateConnection } from "./connection";
++import { isTypeCompatible, validateConnection } from "./connection";
+ import { useNodeEvent } from "./nodeEvent";
+ import type { NodeConnectionFeedback, NodeData, NodeHandle } from "./connection";
+ import type { NodeOutput } from "./values";
+@@ -411,6 +412,8 @@ async function deleteNode() {
+ 
+ const copyNodeToClipboard = inject<((node: { type?: string; data: NodeData }) => Promise<void>) | undefined>("copyNodeToClipboard", undefined);
+ const copyingToClipboard = ref(false);
++const assetLibraryLabel = inject<string>("assetLibraryLabel", "素材库");
++const assetOutputFilter = inject<((output: NodeOutput) => boolean) | undefined>("assetOutputFilter", undefined);
+ const saveNodeToAssets = inject<((label: string, outputs: { label: string; output: NodeOutput }[]) => void) | undefined>(
+   "saveNodeToAssets",
+   undefined
+@@ -418,7 +421,7 @@ const saveNodeToAssets = inject<((label: string, outputs: { label: string; outpu
+ const assetOutputs = computed(() =>
+   props.handles.flatMap((handle) => {
+     const output = props.outputs[handle.id];
+-    if (handle.type !== "source" || !output || (output.dataType === "STRING" && !output.value.trim())) return [];
++    if (handle.type !== "source" || !output || assetOutputFilter && !assetOutputFilter(output) || (output.dataType === "STRING" && !output.value.trim())) return [];
+     return [{ label: handle.label ?? handle.id, output }];
+   })
+ );
 diff --git a/packages/nodes/audioGenerationNode/src/index.vue b/packages/nodes/audioGenerationNode/src/index.vue
 index c45117f..4b5792c 100644
 --- a/packages/nodes/audioGenerationNode/src/index.vue
