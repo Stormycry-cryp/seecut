@@ -68,7 +68,10 @@ mod personal_library;
 mod platform;
 mod purchase_journal;
 mod registration_retry;
+mod toonflow_agent;
 mod toonflow_bridge;
+#[cfg(target_os = "macos")]
+mod toonflow_overlay_macos;
 mod toonflow_service;
 mod toonflow_webview;
 /// What a phone's own crate installs before the window runs: the way to

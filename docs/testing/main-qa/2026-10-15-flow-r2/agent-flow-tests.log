@@ -1,0 +1,11 @@
+✔ Flow uses allocated original identity, removes sequence from MCP wire and verifies save (0.727375ms)
+✔ switching canvas or stale revision refuses before allocation (0.23725ms)
+✔ unknown receipt latches original operation and never reallocates (0.28125ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 75.252208

@@ -1,0 +1,16 @@
+bun test v1.3.14 (0d9b296a)
+
+integrations/toonflow/tests/flow-gate.test.ts:
+(pass) actual edit/save receipt is replayed once with original stale revision [9.40ms]
+(pass) stale revision does not dispatch or consume operation [1.25ms]
+(pass) switching canvas blocks original call [0.11ms]
+(pass) account change blocks before mutation [0.20ms]
+(pass) accepted but unknown original operation never repeats [0.39ms]
+(pass) configuration cannot invoke generation or arbitrary node functions [0.37ms]
+(pass) generation requires the actual configured managed provider before receipt allocation [0.23ms]
+(pass) save failure leaves an original receipt and replay never repeats mutation [1.01ms]
+
+ 8 pass
+ 0 fail
+ 20 expect() calls
+Ran 8 tests across 1 file. [136.00ms]

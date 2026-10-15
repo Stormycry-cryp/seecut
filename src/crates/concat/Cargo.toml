@@ -61,6 +61,13 @@ opener = { version = "0.8", features = ["reveal"] }
 # 复用 Slint 的原生窗口与事件循环，不创建第二个桌面窗口。
 wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSView"] }
+objc2-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-quartz-core = "0.3"
+
 [target.'cfg(target_os = "ios")'.dependencies]
 slint = { version = "1.17", default-features = false, features = [
     "std",

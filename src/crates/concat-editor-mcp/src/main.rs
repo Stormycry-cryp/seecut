@@ -128,6 +128,7 @@ impl Bridge {
             library_query: None,
             operation_query: None,
             flow: None,
+            flow_workspace: None,
             instance_id: self.instance.clone(),
             client_id: self.client.clone(),
             client_token: if method.is_write() {
@@ -170,6 +171,195 @@ impl Bridge {
 
 #[tool_router(server_handler)]
 impl Bridge {
+    #[tool(
+        description = "Read the current embedded Flow node configuration or original generation task status. Supply nodeId in args; never launches generation."
+    )]
+    fn flow_get_node_config(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_get_node_config".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Read the current embedded Flow node configuration or original generation task status. Supply nodeId in args; never launches generation."
+    )]
+    fn flow_get_task(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_get_task".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Read current embedded Flow selection, canvas and edges. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_get_workspace(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_get_workspace".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Read node data, ports and outputs using nodeIds and fields. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_read_canvas(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_read_canvas".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Read available node types and canvases. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_list_node_types(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_list_node_types".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Read actual node function schemas. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_get_node_tools(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_get_node_tools".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Query original operationId. Never retry with a new identity. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_get_operation(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_get_operation".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Create node through current Flow UI and save. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_add_node(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_add_node".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Configure node:setConfig or node:setPrompt through node tools. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_update_node(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_update_node".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Connect validated ports and save. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_connect_nodes(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_connect_nodes".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Delete specified nodes through Flow editor. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_delete_nodes(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_delete_nodes".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Save current canvas and switch to known canvasId. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_switch_canvas(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_switch_canvas".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Execute node:generateImage or node:generateVideo using existing generation ledger. Unknown submissions only query original tasks. Freeze projectId, canvasId, sessionId, accountScope and revision from context. Writes require original operationId and App edit permission. The name field is supplied by this named tool."
+    )]
+    fn flow_execute_node(
+        &self,
+        Parameters(mut args): Parameters<concat_editor_mcp::FlowWorkspace>,
+    ) -> String {
+        args.name = "flow_execute_node".into();
+        let mut request = self.request(Method::FlowWorkspace);
+        if !args.is_read() {
+            request.client_token = self.write_token.clone().unwrap_or_default();
+        }
+        request.flow_workspace = Some(args);
+        self.dispatch(request)
+    }
     #[tool(
         description = "Read the running SeeCut instance's named capabilities, current permission state and limits; tool presence alone does not authorize an edit"
     )]
@@ -405,6 +595,49 @@ mod tests {
                 .iter()
                 .all(|tool| !matches!(tool.name.as_ref(), "flow_read" | "flow_write"))
         );
+    }
+
+    #[test]
+    fn embedded_flow_tools_are_explicit_and_have_frozen_identity_fields() {
+        let tools = Bridge::tool_router().list_all();
+        let names = [
+            "flow_get_workspace",
+            "flow_read_canvas",
+            "flow_list_node_types",
+            "flow_get_node_tools",
+            "flow_get_node_config",
+            "flow_get_task",
+            "flow_get_operation",
+            "flow_add_node",
+            "flow_update_node",
+            "flow_connect_nodes",
+            "flow_delete_nodes",
+            "flow_switch_canvas",
+            "flow_execute_node",
+        ];
+        for name in names {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .expect("named Flow tool");
+            let schema = serde_json::to_value(&tool.input_schema).unwrap();
+            for field in [
+                "projectId",
+                "canvasId",
+                "sessionId",
+                "accountScope",
+                "revision",
+            ] {
+                assert!(
+                    schema["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&serde_json::json!(field)),
+                    "{name}: {field}"
+                );
+            }
+            assert_eq!(schema["additionalProperties"], false);
+        }
     }
 
     #[test]
