@@ -102,7 +102,6 @@ pub struct EditorRecovery {
     pub project_id: String,
     pub document_session_id: String,
     pub retry_registration: bool,
-    pub flow: bool,
 }
 impl EditorRecovery {
     pub fn query_arguments(&self) -> Value {
@@ -114,7 +113,6 @@ pub struct View<'a> {
     pub phase: Phase,
     pub text: &'a str,
     pub progress: &'a str,
-    pub results: &'a [Value],
     pub approval: Option<&'a Approval>,
     pub outcome: Option<TaskOutcome>,
     pub error: Option<UiError>,
@@ -141,8 +139,6 @@ enum ToolAction {
     Export,
     Operation,
     RegistrationRetry,
-    FlowRead,
-    FlowWrite,
 }
 impl ToolAction {
     fn from_name(name: &str) -> Option<Self> {
@@ -159,8 +155,6 @@ impl ToolAction {
             "export_canvas_png" => Some(Self::Export),
             "canvas_operation" => Some(Self::Operation),
             "retry_canvas_registration" => Some(Self::RegistrationRetry),
-            "flow_read" => Some(Self::FlowRead),
-            "flow_write" => Some(Self::FlowWrite),
             _ => None,
         }
     }
@@ -173,7 +167,6 @@ impl ToolAction {
                 | Self::Save
                 | Self::Export
                 | Self::RegistrationRetry
-                | Self::FlowWrite
         )
     }
     fn label(self) -> &'static str {
@@ -190,8 +183,6 @@ impl ToolAction {
             Self::Export => "导出并入库",
             Self::Operation => "核对操作结果",
             Self::RegistrationRetry => "登记原 PNG",
-            Self::FlowRead => "读取工作流",
-            Self::FlowWrite => "执行工作流操作",
         }
     }
 }
@@ -257,7 +248,6 @@ pub struct Controller {
     last_seq: u64,
     text: String,
     tool_progress: Vec<ToolProgress>,
-    results: Vec<Value>,
     progress: String,
     approval: Option<Approval>,
     outcome: Option<TaskOutcome>,
@@ -300,7 +290,6 @@ impl Default for Controller {
             last_seq: 0,
             text: String::new(),
             tool_progress: Vec::new(),
-            results: Vec::new(),
             progress: String::new(),
             approval: None,
             outcome: None,
@@ -431,7 +420,6 @@ impl Controller {
             self.write_identity = None;
         }
         self.text.clear();
-        self.results.clear();
         self.tool_progress.clear();
         self.progress.clear();
         self.approval = None;
@@ -500,7 +488,6 @@ impl Controller {
             phase: self.phase,
             text: &self.text,
             progress: &self.progress,
-            results: &self.results,
             approval: self.approval.as_ref(),
             outcome: self.outcome,
             error: self.error,
@@ -590,7 +577,6 @@ impl Controller {
         }
         self.enqueue("send", params, Request::Send { input_id })?;
         self.text.clear();
-        self.results.clear();
         self.tool_progress.clear();
         self.progress.clear();
         self.outcome = None;
@@ -685,7 +671,6 @@ impl Controller {
                             | "transform_canvas_layer"
                             | "save_canvas_project"
                             | "export_canvas_png"
-                            | "flow_write"
                     )
                 )
             {
@@ -733,7 +718,6 @@ impl Controller {
                 client_sequence: sequence,
                 project_id: project.into(),
                 document_session_id: session.into(),
-                flow: item["toolName"] == "flow_write",
                 retry_registration: item["toolName"] == "export_canvas_png"
                     && item["result"]["status"] == "partial"
                     && item["result"]["data"]["operationId"].as_str() == Some(operation)
@@ -896,7 +880,6 @@ impl Controller {
             self.disconnect();
             self.error = Some(UiError::DocumentChanged);
             self.text.clear();
-            self.results.clear();
             self.outcome = None;
         }
         for _ in 0..64 {
@@ -1471,31 +1454,6 @@ impl Controller {
                 }
             }
             "tool.completed" | "tool.failed" => {
-                if kind == "tool.completed"
-                    && turn.is_some()
-                    && turn == self.turn_id.as_deref()
-                    && matches!(
-                        self.phase,
-                        Phase::Running | Phase::AwaitingApproval | Phase::Stopping
-                    )
-                    && !self.unknown_latched
-                    && data["message"]["toolName"] == "flow_read"
-                    && let Some(results) = data["metadata"]["flowResults"].as_array()
-                    && results.len() <= 4
-                {
-                    self.results = results
-                        .iter()
-                        .filter(|r| {
-                            r["kind"] == "asset"
-                                && r["label"].as_str().is_some_and(|s| s.len() <= 512)
-                                && r["target"]["assetId"]
-                                    .as_str()
-                                    .is_some_and(|s| s.len() <= 128)
-                                && r["target"]["version"].is_object()
-                        })
-                        .cloned()
-                        .collect();
-                }
                 let owns_write = self.write_identity.as_ref().is_some_and(
                     |(original_turn, invocation, tool)| {
                         turn == Some(original_turn.as_str())
@@ -1586,7 +1544,6 @@ impl Controller {
                             | "transform_canvas_layer"
                             | "save_canvas_project"
                             | "export_canvas_png"
-                            | "flow_write"
                             | "canvas_operation"
                             | "retry_canvas_registration"
                     )
@@ -3082,41 +3039,6 @@ for line in sys.stdin:
         assert_eq!(c.view().text, "tool.started fake model text");
     }
     #[test]
-    fn flow_result_cards_survive_completion_and_final_reply_in_one_tick() {
-        let mut c = display_controller();
-        let reference = json!({"kind":"asset","label":"生成结果","target":{
-            "assetId":"registered-image","version":{"sha256":"a".repeat(64),"registration_id":"receipt"},
-            "graphId":"graph","runId":"run","nodeId":"image"}});
-        display_event(
-            &mut c,
-            1,
-            "tool.started",
-            json!({"invocationId":"results","call":{"name":"flow_read"}}),
-        );
-        display_event(
-            &mut c,
-            2,
-            "tool.completed",
-            json!({"invocationId":"results",
-            "message":{"toolName":"flow_read"},"metadata":{"flowResults":[reference.clone()]}}),
-        );
-        // tick consumes consecutive queued frames before publishing one View.
-        c.result(&json!({"sessionId":"display-session","result":{
-            "turnId":"display-turn","status":"completed","text":"已完成，可打开结果"},
-            "toolState":{"outcomeUnknown":false,"observed":[]}}));
-        assert_eq!(c.view().outcome, Some(TaskOutcome::Completed));
-        assert_eq!(c.view().results, std::slice::from_ref(&reference));
-        assert_eq!(c.view().text, "已完成，可打开结果");
-        display_event(
-            &mut c,
-            3,
-            "tool.completed",
-            json!({"invocationId":"late",
-            "message":{"toolName":"flow_read"},"metadata":{"flowResults":[]}}),
-        );
-        assert_eq!(c.view().results, &[reference]);
-    }
-    #[test]
     fn tool_progress_ignores_unscoped_old_duplicate_and_post_terminal_events() {
         let mut c = display_controller();
         let data = json!({"invocationId":"one", "call":{"name":"preview"}});
@@ -3558,7 +3480,6 @@ for line in sys.stdin:
             project_id: f.identity.project_id.clone(),
             document_session_id: f.identity.document_session_id.clone(),
             retry_registration: false,
-            flow: false,
         });
         f.controller.write_in_flight = true;
         f.controller.write_identity = Some((

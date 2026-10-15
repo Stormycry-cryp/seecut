@@ -94,6 +94,12 @@ impl CustomApplicationHandler for DropHandler {
         if !self.pending.is_empty() {
             (self.on_dropped)(std::mem::take(&mut self.pending));
         }
+        crate::toonflow_webview::sync();
+        EventResult::Propagate
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) -> EventResult {
+        crate::toonflow_webview::shutdown();
         EventResult::Propagate
     }
 }

@@ -25,8 +25,7 @@ mod flow_parameters;
 mod generation_state;
 mod inspiration;
 mod preview_validation;
-pub(crate) use flow_generation::{RegisteredAsset, library_asset, library_receipt, media_kind};
-pub(crate) use flow_parameters::{generation_fields, parameter_default, parameter_values};
+pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, media_kind};
 
 /// The opt-in software-rendered fixture exercises local state transitions with
 /// a signed-out synthetic Cloud. Normal startup never invokes this entry.
@@ -3172,12 +3171,6 @@ fn apply_generation_configuration(
 }
 
 fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
-    if app
-        .global::<crate::ui::Flow>()
-        .invoke_leave_requested(target)
-    {
-        return;
-    }
     let ui = app.global::<SeeCut>();
     if ui.get_page() == 6 && !ui.get_canvas_gallery_open() && app.invoke_canvas_leave_page(target) {
         return;

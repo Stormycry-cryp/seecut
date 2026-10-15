@@ -15,8 +15,10 @@ TOOLS = frozenset({
     "capabilities", "context", "project", "preview", "move_selected_image",
     "library_images", "insert_library_image", "transform_canvas_layer",
     "save_canvas_project", "export_canvas_png", "canvas_operation",
-    "retry_canvas_registration", "flow_read", "flow_write",
+    "retry_canvas_registration",
 })
+# Retired names remain readable only inside stored conversation history.
+HISTORICAL_TOOLS = TOOLS | {"flow_read", "flow_write"}
 IDENTITY = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 
 
@@ -73,7 +75,8 @@ def digest(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def message(value, images=False):
+def message(value, images=False, *, historical=False):
+    tools = HISTORICAL_TOOLS if historical else TOOLS
     fields(value, {"id", "role", "content"}, {"toolCalls", "toolCallId", "toolName", "isError"})
     identity(value["id"])
     if not isinstance(value["role"], str) or value["role"] not in {"user", "assistant", "tool"} or not isinstance(value["content"], list) or len(value["content"]) > 64:
@@ -106,7 +109,7 @@ def message(value, images=False):
         for call in value["toolCalls"]:
             fields(call, {"id", "name", "arguments"})
             identity(call["id"])
-            if call["id"] in ids or not isinstance(call["name"], str) or call["name"] not in TOOLS or not isinstance(call["arguments"], dict):
+            if call["id"] in ids or not isinstance(call["name"], str) or call["name"] not in tools or not isinstance(call["arguments"], dict):
                 invalid()
             ids.add(call["id"])
             canonical(call["arguments"])
@@ -115,7 +118,7 @@ def message(value, images=False):
     for name in ("toolCallId", "toolName", "isError"):
         if name in value and value["role"] != "tool":
             invalid()
-    if "toolName" in value and (not isinstance(value["toolName"], str) or value["toolName"] not in TOOLS):
+    if "toolName" in value and (not isinstance(value["toolName"], str) or value["toolName"] not in tools):
         invalid()
     if "isError" in value and type(value["isError"]) is not bool:
         invalid()
@@ -129,7 +132,7 @@ def model_request(value, config):
     if not isinstance(value["messages"], list) or len(value["messages"]) > 256:
         invalid()
     for item in value["messages"]:
-        message(item, config.assistant_images)
+        message(item, config.assistant_images, historical=True)
     if not isinstance(value["tools"], list) or len(value["tools"]) > len(TOOLS):
         invalid()
     names = set()

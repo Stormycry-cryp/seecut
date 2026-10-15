@@ -418,7 +418,8 @@ impl Library {
         // creates a new version so projects referencing the older managed copy
         // keep their original media. A missing copy is never treated as a hit.
         for (index, item) in self.items.iter().enumerate().rev() {
-            if item.source == AssetSource::Imported
+            if !item.trashed
+                && item.source == AssetSource::Imported
                 && item.original_path.as_ref() == Some(&source.0)
                 && same_file_bytes(&source.0, &item.path)?
             {

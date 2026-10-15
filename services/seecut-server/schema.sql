@@ -1,6 +1,40 @@
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
+CREATE TABLE IF NOT EXISTS flow_projects (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id,id)
+);
+
+CREATE TABLE IF NOT EXISTS flow_snapshots (
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    name TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+    updated_at INTEGER NOT NULL,
+    object_key TEXT NOT NULL UNIQUE,
+    PRIMARY KEY (user_id,project_id,revision),
+    FOREIGN KEY (user_id,project_id) REFERENCES flow_projects(user_id,id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS flow_snapshot_requests (
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    PRIMARY KEY (user_id,project_id,key),
+    FOREIGN KEY (user_id,project_id) REFERENCES flow_projects(user_id,id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,

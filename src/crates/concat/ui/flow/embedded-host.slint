@@ -1,0 +1,19 @@
+import { Theme } from "../theme/theme.slint";
+
+// 内容由同一个原生窗口中的 WebView 承载，Slint 保留导航与错误反馈。
+export component EmbeddedFlowHost inherits Rectangle {
+    in property <string> error;
+    background: Theme.page;
+    VerticalLayout {
+        padding: 40px; spacing: 12px; alignment: center;
+        Text {
+            text: root.error == "" ? "正在载入 Flow…" : "Flow 暂时无法打开";
+            color: Theme.fg; font-size: 20px; font-weight: 500;
+            horizontal-alignment: center;
+        }
+        if root.error != "": Text {
+            text: root.error; color: Theme.fg-muted; wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+    }
+}

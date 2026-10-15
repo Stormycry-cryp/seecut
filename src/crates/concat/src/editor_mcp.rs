@@ -36,8 +36,6 @@ mod canvas_policy;
 use canvas_policy::{Intent, Permit, Permits, Receipts};
 #[path = "editor_mcp_canvas_execute.rs"]
 mod canvas_execute;
-#[path = "editor_mcp_flow.rs"]
-mod flow_execute;
 use canvas_execute::{
     dispatch_library, execute_canvas, execute_registration_retry, refresh_registration_receipt,
 };
@@ -518,10 +516,6 @@ enum EditFingerprint {
         revision: u64,
         parameters: CanvasParameters,
     },
-    Flow {
-        revision: u64,
-        parameters: concat_editor_mcp::FlowParameters,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -534,44 +528,6 @@ struct MoveFingerprint {
 /// used by the native permit. No raw paths or arbitrary instructions displayed.
 pub(crate) fn canvas_approval_view(tool: &str, args: Value) -> Option<(String, String)> {
     let intent = Intent::parse(tool, args)?;
-    if let Some(flow) = intent.flow {
-        let title = match flow.action.as_str() {
-            "run" => "运行 Flow",
-            "adopt" => "采用生成结果",
-            "pause" => "暂停或继续 Flow",
-            _ => "编辑 Flow",
-        };
-        let action = match flow.payload["type"].as_str().unwrap_or(&flow.action) {
-            "add" => "添加节点",
-            "add_connected" => "添加并连接节点",
-            "remove" => "删除所选节点",
-            "connect" => "连接节点",
-            "disconnect" => "断开连线",
-            "update" | "update_params" => "修改节点",
-            "run" => "运行工作流",
-            "adopt" => "采用生成结果",
-            "pause" => "调整运行状态",
-            _ => "修改工作流",
-        };
-        let target = flow.payload["node"]["title"]
-            .as_str()
-            .or_else(|| flow.payload["nodeId"].as_str())
-            .or_else(|| flow.payload["node"].as_str())
-            .unwrap_or("");
-        let target: String = target
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(80)
-            .collect();
-        return Some((
-            title.into(),
-            if target.is_empty() {
-                action.into()
-            } else {
-                format!("{action} · {target}")
-            },
-        ));
-    }
     Some(match intent.action {
         Some(CanvasAction::Insert { asset_id, .. }) => {
             ("放入画布".into(), format!("图片：{asset_id}"))
@@ -613,8 +569,6 @@ pub(crate) struct BridgeUi {
     grants: HashMap<String, Grant>,
     canvas_ids: Option<(String, DocumentIds)>,
     clip_ids: Option<(String, DocumentIds)>,
-    flow_ids: Option<(String, DocumentIds)>,
-    active_flow: bool,
     active_canvas: bool,
     active_clip: bool,
     writes: WriteRegistry<EditFingerprint, Response>,
@@ -632,33 +586,17 @@ impl BridgeUi {
     pub(crate) fn assistant_snapshot(&mut self, studio: &Studio, app: &App) -> AssistantSnapshot {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
-        let canvas = active
-            .as_ref()
-            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
+        let canvas = active.as_ref().is_some_and(|(kind, _)| kind == "canvas");
         let project_name = match active.as_ref().map(|(kind, _)| kind.as_str()) {
             Some("canvas") => studio.canvas.name.clone(),
             Some("clip") => studio.project_name.clone(),
-            Some("flow") => studio
-                .flow
-                .as_ref()
-                .and_then(|f| f.snapshot())
-                .map(|f| f.name)
-                .unwrap_or_default(),
             _ => String::new(),
         };
         // A 40ms render tick must not validate filesystem ownership. This only
         // enables an explicit request; permission and writes recheck ownership.
         let ready = canvas
             && !modal_busy(studio, app, false)
-            && if self.active_flow {
-                studio
-                    .flow
-                    .as_ref()
-                    .and_then(|f| f.snapshot())
-                    .is_some_and(|f| f.writable && !f.busy)
-            } else {
-                studio.canvas.mcp_move_permission_request_ready().is_ok()
-            };
+            && studio.canvas.mcp_move_permission_request_ready().is_ok();
         let mut snapshot = assistant_registry_snapshot(
             AssistantPermissionContext {
                 scope: scope.as_ref(),
@@ -671,13 +609,7 @@ impl BridgeUi {
             &self.writes,
             &self.write_token,
         );
-        let path = if self.active_flow {
-            studio
-                .flow
-                .as_ref()
-                .and_then(|f| f.snapshot())
-                .map(|f| f.project_key)
-        } else if canvas {
+        let path = if canvas {
             studio
                 .canvas
                 .mcp_project_path()
@@ -708,9 +640,7 @@ impl BridgeUi {
     ) -> Result<(), AssistantPermissionError> {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
-        let canvas = active
-            .as_ref()
-            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
+        let canvas = active.as_ref().is_some_and(|(kind, _)| kind == "canvas");
         if matches!(
             action,
             AssistantPermission::RevokeRead | AssistantPermission::RevokeWrite
@@ -771,8 +701,7 @@ impl BridgeUi {
             return Err(AssistantPermissionError::NotAllowed);
         };
         let current = self.scope(&ids);
-        if (kind != "canvas" && kind != "flow")
-            || (kind == "flow") != intent.flow.is_some()
+        if kind != "canvas"
             || modal_busy(studio, app, true)
             || self
                 .grants
@@ -787,28 +716,6 @@ impl BridgeUi {
             session: intent.session.clone(),
         };
         let now = Instant::now();
-        if let Some(flow) = &intent.flow {
-            if claimed != current {
-                return Err(AssistantPermissionError::NotAllowed);
-            }
-            studio
-                .flow
-                .as_ref()
-                .ok_or(AssistantPermissionError::NotAllowed)?
-                .check(flow, intent.revision)
-                .map_err(|_| AssistantPermissionError::NotAllowed)?;
-            self.grant_ready(studio, app)
-                .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
-            self.writes
-                .authorize(
-                    &current,
-                    &claimed,
-                    ASSISTANT_CLIENT_ID,
-                    &self.write_token,
-                    now,
-                )
-                .map_err(|_| AssistantPermissionError::NotAllowed)?;
-        }
         if let Some(query) = &intent.operation {
             if intent.retry_registration {
                 studio
@@ -883,8 +790,6 @@ impl BridgeUi {
             grants: HashMap::new(),
             canvas_ids: None,
             clip_ids: None,
-            flow_ids: None,
-            active_flow: false,
             active_canvas: false,
             active_clip: false,
             writes: WriteRegistry::new(),
@@ -901,8 +806,6 @@ impl BridgeUi {
     fn ids(&mut self, kind: &str, generation: String) -> DocumentIds {
         let slot = if kind == "canvas" {
             &mut self.canvas_ids
-        } else if kind == "flow" {
-            &mut self.flow_ids
         } else {
             &mut self.clip_ids
         };
@@ -941,25 +844,13 @@ impl BridgeUi {
         } else if let Some((_, old)) = self.clip_ids.take() {
             self.grants.retain(|_, grant| grant.project != old.project);
         }
-        let flow = studio.flow.as_ref().and_then(|flow| flow.snapshot());
-        if let Some(flow) = &flow {
-            self.ids("flow", flow.generation.clone());
-        } else if let Some((_, old)) = self.flow_ids.take() {
-            self.canvas_permits.clear();
-            self.grants.retain(|_, g| g.project != old.project);
-        }
-        let page = app.global::<SeeCut>().get_page();
-        let kind = if page == 8 && flow.is_some() {
-            Some("flow")
-        } else {
-            active_document_kind(
-                page,
-                app.global::<SeeCut>().get_canvas_gallery_open(),
-                studio.on_start,
-                studio.canvas.document.is_some(),
-                studio.session.is_some(),
-            )
-        };
+        let kind = active_document_kind(
+            app.global::<SeeCut>().get_page(),
+            app.global::<SeeCut>().get_canvas_gallery_open(),
+            studio.on_start,
+            studio.canvas.document.is_some(),
+            studio.session.is_some(),
+        );
         self.sync_workspace(kind);
         let scope = self.current_scope();
         self.writes.bind_scope(scope);
@@ -968,12 +859,6 @@ impl BridgeUi {
             LeaseStatus::Active { .. }
         ) {
             self.write_token.clear();
-        }
-        if kind == Some("flow") {
-            return self
-                .flow_ids
-                .as_ref()
-                .map(|(_, ids)| ("flow".into(), ids.clone()));
         }
         if kind == Some("canvas") {
             return self
@@ -991,16 +876,13 @@ impl BridgeUi {
     }
 
     fn sync_workspace(&mut self, kind: Option<&str>) {
-        if (self.active_canvas && kind != Some("canvas"))
-            || (self.active_flow && kind != Some("flow"))
-        {
+        if self.active_canvas && kind != Some("canvas") {
             // Leaving the granted workspace withdraws E, but preserves this
             // document session's sequence/results so returning cannot replay an edit.
             self.revoke_move();
         }
         self.active_canvas = kind == Some("canvas");
         self.active_clip = kind == Some("clip");
-        self.active_flow = kind == Some("flow");
     }
 
     fn scope(&self, ids: &DocumentIds) -> Scope {
@@ -1023,9 +905,7 @@ impl BridgeUi {
     }
 
     fn current_scope(&self) -> Option<Scope> {
-        (if self.active_flow {
-            self.flow_ids.as_ref()
-        } else if self.active_canvas {
+        (if self.active_canvas {
             self.canvas_ids.as_ref()
         } else {
             None
@@ -1046,17 +926,6 @@ impl BridgeUi {
     }
 
     fn grant_ready(&self, studio: &Studio, app: &App) -> Result<Scope, String> {
-        if self.active_flow {
-            let flow = studio
-                .flow
-                .as_ref()
-                .and_then(|f| f.snapshot())
-                .ok_or("Flow 工程已关闭")?;
-            if flow.busy || !flow.writable || modal_busy(studio, app, false) {
-                return Err("Flow 当前不可编辑".into());
-            }
-            return self.current_scope().ok_or("Flow 工程已变化".into());
-        }
         if !self.active_canvas {
             return Err(t("No canvas project"));
         }
@@ -1329,9 +1198,6 @@ impl BridgeUi {
         };
         if !self.authorized(request, &ids.project, false) {
             return UiReply::Response(Response::error("notAuthorized"));
-        }
-        if kind == "flow" {
-            return UiReply::Response(flow_execute::read(self, request, studio, app, &ids));
         }
         if matches!(request.method, Method::Capabilities) {
             let mut granted = vec!["R"];
@@ -1869,9 +1735,7 @@ fn dispatch_write(request: Request) -> Response {
                 queued.complete(Response::error("busy"));
                 return;
             };
-            let (response, changed) = if request.method == Method::FlowWrite {
-                flow_execute::write(&request, &mut studio, &app)
-            } else if request.method == Method::MoveSelectedImage {
+            let (response, changed) = if request.method == Method::MoveSelectedImage {
                 execute_move(&request, &mut studio, &app)
             } else if request.method == Method::RetryCanvasRegistration {
                 execute_registration_retry(&request, &mut studio, &app)
@@ -1880,11 +1744,7 @@ fn dispatch_write(request: Request) -> Response {
             };
             queued.complete(response);
             // Store both cache and request result before rendering can publish Settings.
-            if changed && request.method == Method::FlowWrite {
-                if let Some(flow) = &studio.flow {
-                    flow.publish(&app);
-                }
-            } else if changed {
+            if changed {
                 let mut canvas = std::mem::take(&mut studio.canvas);
                 canvas.mcp_move_committed(&mut studio);
                 studio.canvas = canvas;
@@ -1902,6 +1762,9 @@ fn dispatch_write(request: Request) -> Response {
 }
 
 fn dispatch(request: Request) -> Response {
+    if matches!(request.method, Method::FlowRead | Method::FlowWrite) {
+        return Response::error("unsupportedWorkspace");
+    }
     if concat_editor_mcp::validate_request_shape(&request).is_err() {
         return Response::error("invalidInput");
     }
@@ -2419,6 +2282,17 @@ mod assistant_permission_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_flow_requests_are_rejected_before_ui_dispatch() {
+        for method in [Method::FlowRead, Method::FlowWrite] {
+            let request = serde_json::from_value(json!({
+                "instanceId":"retired", "clientId":"client", "clientToken":"token", "method":method,
+            }))
+            .unwrap();
+            assert_eq!(dispatch(request).status, "unsupportedWorkspace");
+        }
+    }
 
     fn write_fixture() -> (BridgeUi, Scope, OperationKey, EditFingerprint, Instant) {
         let mut bridge = BridgeUi::new();

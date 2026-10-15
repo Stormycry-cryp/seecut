@@ -58,8 +58,6 @@ mod cloud_files;
 mod dock;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod editor_mcp;
-mod flow_controller;
-mod flow_ui;
 mod format;
 mod generation_outputs;
 mod generation_templates;
@@ -70,6 +68,9 @@ mod personal_library;
 mod platform;
 mod purchase_journal;
 mod registration_retry;
+mod toonflow_bridge;
+mod toonflow_service;
+mod toonflow_webview;
 /// What a phone's own crate installs before the window runs: the way to
 /// the system's file picker. See `platform::pick_files_async`.
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -339,14 +340,18 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     let app = App::new()?;
     let account = cloud::bind(&app);
-    let _flow = flow_ui::bind(&app, host.dirs.data.join("flow-projects"), account.clone());
+    let toonflow_bridge = toonflow_service::data_root()
+        .and_then(|data| toonflow_bridge::start(data, account.clone()));
+    let toonflow_service = match &toonflow_bridge {
+        Ok(bridge) => Some(toonflow_service::start_async(bridge, &app)),
+        Err(error) => {
+            toonflow_webview::configure(&app, Err(error.clone()));
+            None
+        }
+    };
     app.set_macos(platform::MACOS);
 
-    let mut studio = Studio::new(host);
-    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
-    {
-        studio.flow = Some(_flow);
-    }
+    let studio = Studio::new(host);
     let dark = studio.prefs.dark.unwrap_or(false);
     app.global::<Theme>().set_dark(dark);
 
@@ -503,7 +508,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_titlebar_close(|| {
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
-            if app.global::<ui::Flow>().invoke_close_requested() {
+            if toonflow_webview::defer_close(&app) {
                 return;
             }
             let should_close = shell.studio.borrow_mut().request_window_close();
@@ -522,7 +527,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         log::info!("close: system close request (Alt+F4 / taskbar)");
         let mut should_close = false;
         Shell::with(|shell, app| {
-            if app.global::<ui::Flow>().invoke_close_requested() {
+            if toonflow_webview::defer_close(&app) {
                 return;
             }
             should_close = shell.studio.borrow_mut().request_window_close();
@@ -2096,7 +2101,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 }
                 if action == "close-window" {
                     log::info!("close: File > Close Window");
-                    if app.global::<ui::Flow>().invoke_close_requested() {
+                    if toonflow_webview::defer_close(&app) {
                         return;
                     }
                     let should_close = shell.studio.borrow_mut().request_window_close();
@@ -2337,6 +2342,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     let assistant = agent_ui::bind(&app, account);
     let result = app.run();
+    drop(toonflow_service);
+    toonflow_webview::shutdown();
+    drop(toonflow_bridge);
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     {
         assistant.shutdown(&app);
