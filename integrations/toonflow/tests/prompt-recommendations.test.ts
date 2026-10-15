@@ -18,7 +18,7 @@ test('old account or draft reply cannot repopulate recommendations',async()=>{
 });
 test('rewrite changes only prompt, and does not recursively recommend',async()=>{
  let calls=0;const f=fixture(async(o:string)=>{calls++;return o==='rewrite'?{prompt:'短改写'}:{recommendations:[{id:'one',label:'棚拍'}]}});
- f.c.update({prompt:'原文',images:['ref']},'one');f.at(1000);await f.c.tick();await f.c.rewrite('one');expect(f.applied).toEqual(['短改写']);expect(f.c.input.images).toEqual(['ref']);f.c.update({prompt:'短改写',images:['ref']},'one');f.at(20000);await f.c.tick();expect(calls).toBe(2);
+ f.c.update({prompt:'原文',images:['ref']},'one');f.at(1000);await f.c.tick();f.c.update({prompt:'最新需求',images:['ref']},'one');await f.c.rewrite('one');expect(f.state.status).toBe('为你推荐');expect(f.applied).toEqual(['短改写']);expect(f.c.input.images).toEqual(['ref']);f.c.update({prompt:'短改写',images:['ref']},'one');f.at(20000);await f.c.tick();expect(calls).toBe(2);
 });
 test('failed rewrite retains original and can be explicitly retried',async()=>{
  let count=0;const f=fixture(async(o:string)=>{if(o==='recommend')return {recommendations:[{id:'one',label:'棚拍'}]};count++;throw Error('offline')});f.c.update(input('original'),'one');f.at(1000);await f.c.tick();await f.c.rewrite('one');expect(f.applied).toEqual([]);expect(f.c.input.prompt).toBe('original');expect(f.state.rewriting).toBe(false);await f.c.rewrite('one');expect(count).toBe(2);

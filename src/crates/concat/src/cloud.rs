@@ -24,8 +24,8 @@ mod flow_generation;
 mod flow_parameters;
 mod generation_state;
 mod inspiration;
-pub(crate) mod prompt_assistance;
 mod preview_validation;
+pub(crate) mod prompt_assistance;
 pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, media_kind};
 
 /// The opt-in software-rendered fixture exercises local state transitions with
