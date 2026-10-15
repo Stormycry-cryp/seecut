@@ -5177,7 +5177,7 @@ index 03a5b56..3c17294 100644
 +</style>
 diff --git a/packages/nodeShared/src/promptRecommendations.ts b/packages/nodeShared/src/promptRecommendations.ts
 new file mode 100644
-index 0000000..4a20590
+index 0000000..3391ae8
 --- /dev/null
 +++ b/packages/nodeShared/src/promptRecommendations.ts
 @@ -0,0 +1,39 @@
@@ -5214,7 +5214,7 @@ index 0000000..4a20590
 +    if(this.disposed||this.state.rewriting||!this.state.cards.some(card=>card.id===id))return;
 +    this.version++;const version=this.version;const input=structuredClone(this.input);this.state.rewriting=true;this.state.error='';this.publish();
 +    try {const result=await this.api('rewrite',input,id);if(this.disposed||version!==this.version)return;
-+      this.input={...input,prompt:result.prompt};this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.apply(result.prompt);
++      this.input={...input,prompt:result.prompt};this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.state.status='为你推荐';this.apply(result.prompt);
 +    }catch{if(version===this.version)this.state.error='应用失败，原文已保留，请重试';}
 +    finally{this.state.rewriting=false;this.publish();}
 +  }

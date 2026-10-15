@@ -190,6 +190,7 @@ fn tick(weak: slint::Weak<App>, cloud: Rc<RefCell<Cloud>>, state: Rc<RefCell<Ass
                             ui.set_prompt_focus_revision(ui.get_prompt_focus_revision() + 1);
                             a.observed = signature(&app, &c);
                             a.completed = a.observed.clone();
+                            ui.set_prompt_recommend_status("为你推荐".into());
                             refresh = true;
                         }
                     }
