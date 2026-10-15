@@ -1,0 +1,11 @@
+{
+  "codeCommit": "fa1227011b2e8be2fc275f02e9cc239357054b74",
+  "privateCommit": "aaaeae4cb9632baa65bda42b53f0a6a6743f9f54",
+  "app": "/tmp/SeeCut-Prompt-Recommendations-Final.app",
+  "rawBinarySha256": "5040f13bb1fa43849fdd53fd79ce2b828e0d227205d702179b96a9ec37d13602",
+  "packagedExecutableSha256": "44167231b401f9fab6bb3b11487d73a685fcde9c5cf3cdb373f8b59fdd8770c2",
+  "integrationPatchSha256": "ac8b57dca0bfa247cac1dd65b361d72036a7135dc9091828066ca1f30d321bf3",
+  "fixture": "http://127.0.0.1:18743",
+  "productionDeployed": false,
+  "providerCalls": 0
+}

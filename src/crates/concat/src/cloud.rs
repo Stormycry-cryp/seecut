@@ -25,6 +25,7 @@ mod flow_parameters;
 mod generation_state;
 mod inspiration;
 mod preview_validation;
+pub(crate) mod prompt_assistance;
 pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, media_kind};
 
 /// The opt-in software-rendered fixture exercises local state transitions with
@@ -8991,6 +8992,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
     });
     refresh_canvas_projects(app, &state);
     auth_countdown(app.as_weak());
+    prompt_assistance::start(app.as_weak(), state.clone());
     heartbeat(app.as_weak(), state);
     account
 }

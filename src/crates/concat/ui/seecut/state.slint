@@ -46,7 +46,19 @@ export struct AccountEntry {
     value: string,
 }
 
+export struct PromptRecommendation { id: string, label: string }
+
 export global SeeCut {
+    in-out property <[PromptRecommendation]> prompt-recommendations;
+    in-out property <string> prompt-recommend-status;
+    in-out property <string> prompt-recommend-error;
+    in-out property <string> prompt-apply-id;
+    in-out property <bool> prompt-rewriting;
+    in-out property <int> prompt-focus-revision;
+    in-out property <bool> prompt-recommend-pulse;
+    in-out property <bool> canvas-prompt-open;
+    in-out property <int> prompt-context-revision;
+    changed canvas-gallery-open => { if self.canvas-gallery-open { self.canvas-prompt-open = false; self.prompt-context-revision += 1; } }
     in-out property <int> page: 1;
     changed page => {
         self.personal-relink-view += 1;

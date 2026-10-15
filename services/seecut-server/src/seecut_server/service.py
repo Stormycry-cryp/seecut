@@ -46,6 +46,7 @@ from .grsai import GrsaiClient, GrsaiError
 from .grsai_catalog import ALIASES
 from .network import open_no_redirect, read_limited
 from .flow_projects import FlowProjects
+from .prompt_assistance import PromptAssistance
 
 
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -79,6 +80,7 @@ class SeeCutService:
         self.assistant = AssistantService(self, assistant_provider if assistant_provider is not None else make_assistant_provider(config, self.db), providers=assistant_providers)
         self.config.storage_path.mkdir(parents=True, exist_ok=True)
         self.flow_projects = FlowProjects(self)
+        self.prompt_assistance = PromptAssistance(self)
 
     def now(self) -> int:
         return int(self.clock())
