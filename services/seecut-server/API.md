@@ -1,6 +1,6 @@
 # SeeCut Server API Contract v0.1
 
-All API responses use JSON except signed media downloads and the Alipay asynchronous-notification response. Protected routes require `Authorization: Bearer <session-token>`. Timestamps are Unix seconds.
+All API responses use JSON except media/Flow snapshot downloads and the Alipay asynchronous-notification response. Protected routes require `Authorization: Bearer <session-token>`. Timestamps are Unix seconds.
 
 Errors use:
 
@@ -24,6 +24,27 @@ Errors use:
 Development and test environments may return tokens in responses only when `SECUT_EXPOSE_TEST_TOKENS=true`. Production configuration cannot expose them.
 
 Email codes expire after 30 minutes, allow at most five incorrect attempts, and are bound to both the normalized email address and purpose. Resend requests for an existing account have a 60-second cooldown and may return `EMAIL_CODE_COOLDOWN` with `retry_after`. Unknown addresses still receive `202 {"accepted":true}` from resend and forgot-password. A configured-provider or delivery failure returns `503 EMAIL_DELIVERY_UNAVAILABLE`; the API does not report an email as sent in that case. Password reset does not change email-verification state.
+
+## Flow 项目与快照 v1
+
+`GET /api/capabilities` 的 `flow_projects` 为 `{version:1,snapshots:true,max_snapshot_bytes:N}`。旧服务器缺少此能力或返回404时，客户端需要提示升级服务器。
+
+所有 Flow 接口每次校验 Bearer 会话，项目按账号隔离，不接收客户端 owner 字段。
+
+| Method | Path | 返回 |
+| --- | --- | --- |
+| `GET` | `/api/flow/projects` | `{items:[{id,name,revision,sha256,size_bytes,updated_at}]}` |
+| `GET` | `/api/flow/projects/{uuid}?revision=N` | metadata 加 `download_url`；省略 revision 取最新版本 |
+| `PUT` | `/api/flow/projects/{uuid}/snapshot?base_revision=N&name=URL编码名称` | 保存后的 metadata 加固定 revision 的 `download_url`，成功200 |
+| `GET` | `/api/flow/projects/{uuid}/snapshot?revision=N` | ZIP 原始字节；省略 revision 取最新版本 |
+
+PUT 使用原始 ZIP body，必需 `Content-Type: application/zip`、`Content-Length`、64位十六进制 `X-Content-SHA256` 和1至128字符 `Idempotency-Key`。不支持 chunked 上传。大小上限取 `SECUT_MAX_UPLOAD_BYTES` 与512MiB中的较小值。名称去控制字符、去首尾空白并截至128字符，空名称使用 `未命名 Flow`。服务端仅校验 ZIP magic，不解压或执行包内容。
+
+首次以 `base_revision=0` 保存为 revision 1；后续必须匹配当前 revision。冲突返回409 `FLOW_REVISION_CONFLICT`，error 同时包含 `current_revision`。同账号、同项目、同 key 的请求按 base revision、规范化名称、内容 SHA 和长度核对：完全相同返回原始回执；不同返回409 `FLOW_IDEMPOTENCY_CONFLICT`。后续更新不会改变旧回执或旧下载字节。`download_url` 是同源相对认证路由，始终带固定 revision，下载仍须发送 Bearer。
+
+下载响应包含 `X-Content-SHA256`、`X-Flow-Revision` 和 `Cache-Control: no-store`。不存在或属于其他账号的项目均返回404 `FLOW_PROJECT_NOT_FOUND`；本人项目没有该版本时返回404 `FLOW_SNAPSHOT_NOT_FOUND`。上传 SHA 不匹配返回400 `FLOW_HASH_MISMATCH`，截断返回400 `FLOW_INCOMPLETE_UPLOAD`，错误 magic 返回400 `FLOW_INVALID_SNAPSHOT`。缺 Content-Length 返回411 `FLOW_LENGTH_REQUIRED`，超限413 `REQUEST_TOO_LARGE`，类型错误415 `FLOW_CONTENT_TYPE_REQUIRED`；其他参数/请求头错误为400 `FLOW_INVALID_REQUEST` 或 `FLOW_INVALID_SHA256`。元数据对应文件无法读取时为503 `FLOW_SNAPSHOT_UNAVAILABLE`。
+
+快照 blob 不可变，版本与幂等回执在同一 SQLite 事务提交。失败不会替换上一版本；事务提交前进程中断可能留下无引用 blob。本接口不改变媒体上传 purpose、钱包或账务。
 
 ## Teams and invitations
 

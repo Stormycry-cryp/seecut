@@ -1,3 +1,4 @@
+import { LauncherSafeArea, LauncherControlRow } from "launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ScrollView } from "std-widgets.slint";
@@ -6,6 +7,8 @@ import { Theme, SegmentedControl, Glyph, Icon, Modal, FocusRing } from "../primi
 import { SeeCut } from "state.slint";
 import { AppButton, AssetPreview, CloudField, Label, EmptyState, WorkspaceSelect, WorkspaceIcon } from "components.slint";
 
+
+import { InspirationPanel, InspirationPreview } from "inspiration.slint";
 
 component GenerationForm inherits Rectangle {
     background: Theme.panel;
@@ -28,17 +31,26 @@ component GenerationForm inherits Rectangle {
             height: 44px;
             spacing: 8px;
             SegmentedControl {
-                width: 176px; height: 36px; text-size: 14px; workbench: true; reduced-motion: SeeCut.reduced-motion;
+                width: 176px; height: 36px; text-size: 14px; workbench: true; text-tabs: true; reduced-motion: SeeCut.reduced-motion;
                 options: ["图片", "视频"];
                 current: SeeCut.mode;
                 changed(index) => { SeeCut.mode = index; SeeCut.changed("mode", index); }
             }
             Rectangle { horizontal-stretch: 1; }
+            if SeeCut.inspiration-can-restore: WorkspaceIcon {
+                glyph: Glyph.undo; label: "恢复原草稿"; enabled: !SeeCut.working;
+                clicked => { SeeCut.action("inspiration-restore", ""); }
+            }
             AppButton {
                 label: SeeCut.creator-mode == 1 ? "专业" : "快速";
                 subtle: true;
                 clicked => { SeeCut.action("creator-mode", SeeCut.creator-mode == 1 ? "0" : "1"); }
             }
+        }
+        if SeeCut.signed-in && SeeCut.generation-effort-names.length > 0: WorkspaceSelect {
+            options: SeeCut.generation-effort-names; current: SeeCut.generation-effort-index;
+            placeholder: "选择强度";
+            changed(index) => { SeeCut.generation-effort-index = index; SeeCut.changed("generation-effort", index); }
         }
         if SeeCut.recovery-warning != "": Rectangle {
             min-height: root.compact ? 32px : 54px;
@@ -422,10 +434,10 @@ component GenerationSubmitBar inherits Rectangle {
                 }
                 if SeeCut.quantities.length == 0: Text { text: "此模型暂无数量选项"; color: Theme.fg-muted; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
-                if SeeCut.quote != "": Text { text: SeeCut.quote; color: Theme.fg-muted; font-size: 12px; min-width: 0px; max-width: root.compact ? 140px : 200px; wrap: word-wrap; horizontal-alignment: right; vertical-alignment: center; }
+                Text { text: SeeCut.generation-actual-cost; accessible-label: "当前任务实际消耗 " + self.text + " 积分"; color: Theme.fg-muted; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
             }
         }
-        HorizontalLayout {
+        LauncherControlRow {
             height: Theme.workbench-h;
             spacing: 8px;
             AppButton {
@@ -592,7 +604,7 @@ component GenerationResults inherits Rectangle {
                                 }
                                 if item.ready && !SeeCut.task-selection-mode: tray := Rectangle {
                                     x: (parent.width - self.width) / 2;
-                                    y: parent.height - self.height - 16px;
+                                    y: parent.height - self.height - 16px - LauncherSafeArea.lift(parent.absolute-position.x + (parent.width + self.width) / 2, parent.absolute-position.y + parent.height - 16px);
                                     width: Math.min(parent.width - 16px, item.kind == "image" ? 224px : 184px);
                                     height: 40px;
                                     property <bool> entry-focused;
@@ -673,7 +685,7 @@ export component GenerationPage inherits Rectangle {
     VerticalLayout {
         if root.narrow: HorizontalLayout {
             padding: 12px;
-            SegmentedControl { text-size: 14px; height: 36px; workbench: true; reduced-motion: SeeCut.reduced-motion; options: ["创建", "生成结果"]; current <=> root.step; }
+            SegmentedControl { text-size: 14px; height: 36px; workbench: true; text-tabs: true; reduced-motion: SeeCut.reduced-motion; options: ["创建", "浏览"]; current <=> root.step; }
         }
         HorizontalLayout {
             vertical-stretch: 1;
@@ -695,9 +707,31 @@ export component GenerationPage inherits Rectangle {
                 GenerationSubmitBar { compact: root.compact-height; }
             }
             if !root.narrow: Rectangle { width: 1px; background: Theme.line; }
-            if !root.narrow || root.step == 1: GenerationResults { horizontal-stretch: 1; }
+            // Keep both views alive so switching tabs retains scroll and selections.
+            Rectangle {
+                visible: !root.narrow || root.step == 1;
+                max-width: self.visible ? 100000px : 0px;
+                min-width: 0px; horizontal-stretch: self.visible ? 1 : 0;
+                VerticalLayout {
+                    HorizontalLayout {
+                        padding: 24px; padding-top: 16px; padding-bottom: 8px; spacing: 8px;
+                        SegmentedControl {
+                            height: 36px; width: 164px; text-size: 14px; workbench: true; text-tabs: true;
+                            reduced-motion: SeeCut.reduced-motion; options: ["结果", "灵感"];
+                            current <=> SeeCut.generation-browse-tab;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1; min-height: 0px;
+                        GenerationResults { visible: SeeCut.generation-browse-tab == 0; width: 100%; height: 100%; }
+                        InspirationPanel { visible: SeeCut.generation-browse-tab == 1; width: 100%; height: 100%; }
+                    }
+                }
+            }
         }
     }
+    InspirationPreview { }
     Modal {
         open: SeeCut.creator-mode < 0;
         title: "选择工作模式";

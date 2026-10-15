@@ -57,6 +57,10 @@ rfd = "0.17"
 # Reveal an exported file in the platform's file manager.
 opener = { version = "0.8", features = ["reveal"] }
 
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+# 复用 Slint 的原生窗口与事件循环，不创建第二个桌面窗口。
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
+
 [target.'cfg(target_os = "ios")'.dependencies]
 slint = { version = "1.17", default-features = false, features = [
     "std",
@@ -79,6 +83,7 @@ slint = { version = "1.17", default-features = false, features = [
 ] }
 
 [dependencies]
+seecut-flow-core.workspace = true
 # Writes the card still an imported look gets, rendered here from the
 # reference picture through the table.
 png = "0.17"
@@ -127,6 +132,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "webp"
 tempfile = "3"
 libc = "0.2"
 base64 = "0.22"
+sha2 = "0.10.9"
 
 # The renderer is picked by a feature here rather than by editing the
 # dependency, so both variants build from one tree and can be compared:
@@ -152,6 +158,8 @@ base64 = "0.22"
 # `rustup target add`.
 [features]
 default = ["skia"]
+# Local provider setup is available only in explicitly selected developer builds.
+assistant-local-dev = []
 wgpu = ["slint/renderer-femtovg-wgpu"]
 skia = ["slint/renderer-skia"]
 

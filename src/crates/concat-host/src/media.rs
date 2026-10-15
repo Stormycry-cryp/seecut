@@ -119,6 +119,7 @@ impl MediaSummary {
                 .iter()
                 .map(AudioStreamInfo::to_track)
                 .collect(),
+            extra: Default::default(),
         }
     }
 }

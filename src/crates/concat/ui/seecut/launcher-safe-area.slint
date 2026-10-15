@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Reserve only the entry corner for controls; page and panel geometry stay full-size.
+export global LauncherSafeArea {
+    in-out property <length> window-width: 100000px;
+    in-out property <length> window-height: 100000px;
+    out property <length> diameter: 36px;
+    out property <length> edge: 24px;
+    out property <length> inset: diameter + edge + 8px;
+    public pure function trailing(right: length, bottom: length) -> length {
+        return right > window-width - inset && bottom > window-height - inset ? min(inset, right - (window-width - inset)) : 0px;
+    }
+    public pure function lift(right: length, bottom: length) -> length {
+        return right > window-width - inset && bottom > window-height - inset ? bottom - (window-height - inset) : 0px;
+    }
+}
+
+// Fixed row metrics keep local corner padding out of the parent layout's size calculation.
+export component LauncherControlRow inherits Rectangle {
+    height: 36px;
+    min-height: root.height; max-height: root.height; preferred-height: root.height;
+    min-width: 0px; max-width: 100000px; preferred-width: 0px;
+    horizontal-stretch: 1;
+    in property <length> spacing;
+    in property <length> left-padding;
+    in property <length> right-padding;
+    in property <length> top-padding;
+    in property <length> bottom-padding;
+    Rectangle {
+        x: 0px; y: 0px;
+        width: max(0px, root.width - LauncherSafeArea.trailing(root.absolute-position.x + root.width - root.right-padding, root.absolute-position.y + root.height - root.bottom-padding));
+        height: root.height;
+        HorizontalLayout {
+            spacing: root.spacing;
+            padding-left: root.left-padding;
+            padding-right: root.right-padding;
+            padding-top: root.top-padding;
+            padding-bottom: root.bottom-padding;
+            @children
+        }
+    }
+}

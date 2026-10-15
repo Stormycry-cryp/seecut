@@ -23,7 +23,7 @@ export component AppButton inherits Rectangle {
     opacity: 1;
     background: !root.enabled ? Theme.well : root.danger ? (touch.pressed ? Theme.workbench-danger-pressed : touch.has-hover ? Theme.workbench-danger-hover : Theme.workbench-danger-solid) : root.selected ? Theme.accent-soft : root.subtle ? (touch.pressed ? Theme.field-hover : Colors.transparent) : root.primary ? (touch.pressed ? Theme.workbench-action-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : touch.pressed ? Theme.field-active : touch.has-hover ? Theme.field-hover : Theme.field;
-    border-width: root.subtle ? 0px : 1px;
+    border-width: 0px;
     border-color: !root.enabled ? Theme.line : root.danger ? Theme.workbench-danger-solid : root.primary || root.selected ? Theme.accent : Theme.workbench-control-border;
     animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
     property <bool> ring;
@@ -74,7 +74,13 @@ export component CloudField inherits Rectangle {
     in property <bool> enabled: true;
     callback edited(value: string);
     in property <bool> auto-focus;
-    init => { if root.auto-focus { input.focus(); } }
+    property <bool> auto-focus-pending;
+    init => { root.auto-focus-pending = root.auto-focus; }
+    changed auto-focus => { root.auto-focus-pending = root.auto-focus; }
+    Timer { interval: 1ms; running: root.auto-focus-pending; triggered => {
+        root.auto-focus-pending = false;
+        if root.auto-focus && root.enabled && root.visible { input.focus(); }
+    } }
     callback cursor-moved(offset: int);
     callback key-event(text: string) -> bool;
     public function focus-at(offset: int) { input.focus(); input.set-selection-offsets(offset, offset); }
@@ -209,6 +215,11 @@ export component NavItem inherits Rectangle {
 }
 
 export component AppRail inherits Rectangle {
+    in property <bool> assistant-available;
+    in property <bool> assistant-enabled;
+    in property <bool> assistant-active;
+    callback toggle-assistant();
+    public function focus-assistant() { assistant-button.take-focus(); }
     callback begin-drag();
     callback toggle-maximize();
     callback open-settings();
@@ -228,10 +239,20 @@ export component AppRail inherits Rectangle {
             }
         }
         NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; }
+        NavItem { label: "Flow"; glyph: Glyph.workflow; page: 8; }
         NavItem { label: "画布"; glyph: Glyph.brush; page: 6; }
         NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; }
         NavItem { label: "资产库"; glyph: Glyph.folder; page: 5; }
         Rectangle { vertical-stretch: 1; }
+        assistant-button := IconButton {
+            visible: root.assistant-available;
+            width: 44px; height: root.assistant-available ? 44px : 0px;
+            side: 44px; icon-size: 24px; glyph: Glyph.sparkle;
+            label: root.assistant-enabled ? "助手" : "打开工程后使用助手";
+            enabled: root.assistant-available && root.assistant-enabled;
+            checkable: true; checked: root.assistant-active;
+            clicked => { root.toggle-assistant(); }
+        }
         settings-focus := FocusScope {
             width: 44px; height: 44px;
             focus-on-tab-navigation: false;
@@ -283,7 +304,7 @@ export component MenuAction inherits Rectangle {
 
 export component WorkspaceSelect inherits Select {
     text-size: Theme.workbench-font; item-height: Theme.workbench-h; height: Theme.workbench-h;
-    border-width: self.flat ? 0px : 1px; border-color: Theme.line-strong;
+    border-width: 0px; border-color: Theme.line-strong;
 }
 
 /// Shared media well for asset, team, template, and result cards. Card callers
@@ -334,5 +355,33 @@ export component AssetPreview inherits Rectangle {
             clicked => { focus.focus(); root.activated(); }
         }
         FocusRing { active: root.ring; radius: Theme.r; }
+    }
+}
+
+
+export component CompactSearch inherits Rectangle {
+    in-out property <string> value;
+    in property <string> placeholder: "搜索素材";
+    in property <bool> enabled: true;
+    callback edited(string);
+    property <bool> expanded;
+    property <bool> showing: root.expanded || root.value != "";
+    width: root.showing ? 240px : Theme.workbench-h;
+    height: Theme.workbench-h;
+    function collapse() { root.value = ""; root.edited(""); root.expanded = false; }
+    if !root.showing: WorkspaceIcon {
+        glyph: Glyph.search; label: root.placeholder; enabled: root.enabled;
+        clicked => { root.expanded = true; }
+    }
+    if root.showing: HorizontalLayout {
+        spacing: 4px;
+        CloudField {
+            horizontal-stretch: 1; min-width: 80px;
+            value <=> root.value; placeholder: root.placeholder; enabled: root.enabled;
+            auto-focus: true;
+            edited(value) => { root.edited(value); }
+            key-event(text) => { if text == Key.Escape { root.collapse(); return true; } return false; }
+        }
+        WorkspaceIcon { glyph: Glyph.close; label: "收起搜索"; clicked => { root.collapse(); } }
     }
 }

@@ -1,0 +1,40 @@
+name: SeeCut service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/seecut-server/**'
+      - '.github/workflows/seecut-server.yml'
+  pull_request:
+    paths:
+      - 'services/seecut-server/**'
+      - '.github/workflows/seecut-server.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seecut-service-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  service-tests:
+    name: Account and Agent service contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Media validation dependency
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Account, wallet, and managed Agent tests
+        working-directory: services/seecut-server
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v

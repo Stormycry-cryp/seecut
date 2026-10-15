@@ -1,0 +1,12 @@
+{
+  "schema": 2,
+  "reviewed_by": "main-reviewer",
+  "runtime_head": "0aa9406247e53f073c0b4df686adc68b40e2f8f6",
+  "runtime_app_sha256": "03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2",
+  "change_scope": "product-candidate",
+  "public_source_run": 37385930165,
+  "public_source_job": 112019086814,
+  "public_source_artifact": 11380395799,
+  "public_manifest_sha256": "d666628e2499a26ef5f541898a4b5f0c8a69bba98bc6a3a28a2725d37c426d73",
+  "review_status": "prepared for main integration; initial raw images reviewed by main; later pages pending fresh review; no initialization acceptance"
+}

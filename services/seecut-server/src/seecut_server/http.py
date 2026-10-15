@@ -143,6 +143,81 @@ class SeeCutHandler(BaseHTTPRequestHandler):
 
         user, raw_token = self._auth()
         user_id = user["id"]
+        if method == "GET" and path == "/api/flow/projects":
+            return 200, self.service.flow_projects.list(user_id)
+        flow_match = re.fullmatch(r"/api/flow/projects/([^/]+)(/snapshot)?", path)
+        if flow_match:
+            query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            flow = self.service.flow_projects
+            project_id, snapshot = flow_match.groups()
+            if any(len(query.get(key, [])) > 1 for key in ("revision", "base_revision", "name")):
+                raise ApiError(400, "FLOW_INVALID_REQUEST", "Flow 请求参数重复")
+            revision = query.get("revision", [None])[0]
+            if method == "GET" and not snapshot:
+                return 200, flow.get(user_id, project_id, revision)
+            if method == "GET" and snapshot:
+                file_path, metadata = flow.download(user_id, project_id, revision)
+                self._file(file_path, "application/zip", f"{metadata['id']}-r{metadata['revision']}.zip", headers={
+                    "X-Content-SHA256": metadata["sha256"], "X-Flow-Revision": str(metadata["revision"]),
+                    "Cache-Control": "no-store", "ETag": f'"{metadata["sha256"]}"',
+                })
+                return None
+            if method == "PUT" and snapshot:
+                # This route consumes a bounded binary stream, never JSON or
+                # the media-upload purpose/ledger pipeline.
+                self.close_connection = True
+                if any(len(self.headers.get_all(header, [])) > 1 for header in ("Content-Length", "Content-Type", "X-Content-SHA256", "Idempotency-Key")):
+                    raise ApiError(400, "FLOW_INVALID_REQUEST", "Flow 上传请求头重复")
+                if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/zip":
+                    raise ApiError(415, "FLOW_CONTENT_TYPE_REQUIRED", "Flow 快照需要 application/zip")
+                if self.headers.get("Transfer-Encoding"):
+                    raise ApiError(400, "FLOW_INVALID_REQUEST", "Flow 上传需要明确的 Content-Length")
+                if not self.headers.get("Content-Length"):
+                    raise ApiError(411, "FLOW_LENGTH_REQUIRED", "Flow 上传缺少 Content-Length")
+                length = self._content_length(flow.max_snapshot_bytes)
+                old_timeout = self.connection.gettimeout()
+                self.connection.settimeout(30)
+                try:
+                    return 200, flow.save(user_id, project_id, self.rfile, length,
+                                          self.headers.get("X-Content-SHA256", ""), self.headers.get("Idempotency-Key", ""),
+                                          query.get("base_revision", [None])[0], query.get("name", [""])[0])
+                finally:
+                    self.connection.settimeout(old_timeout)
+            raise ApiError(404, "NOT_FOUND", "接口不存在")
+        if path.startswith("/api/assistant/"):
+            assistant = self.service.assistant
+            key = self.headers.get("Idempotency-Key", "")
+            if method == "GET" and path == "/api/assistant/capabilities":
+                return 200, assistant.capabilities()
+            if method == "POST" and path == "/api/assistant/turn-budgets":
+                return 200, assistant.turn_budget(user_id, self._json_body(), key)
+            close_budget = re.fullmatch(r"/api/assistant/turn-budgets/([^/]+)/close", path)
+            if method == "POST" and close_budget:
+                return 200, assistant.close_budget(user_id, close_budget.group(1), self._json_body(), key)
+            if method == "POST" and path == "/api/assistant/quotes":
+                return 200, assistant.quote(user_id, self._json_body(), key)
+            if method == "POST" and path == "/api/assistant/operations":
+                snapshot, created = assistant.create(user_id, self._json_body(), key)
+                return (202 if created else 200), snapshot
+            by_request = re.fullmatch(r"/api/assistant/operations/by-request/([^/]+)", path)
+            if method == "GET" and by_request:
+                return 200, assistant.by_request(user_id, by_request.group(1))
+            operation = re.fullmatch(r"/api/assistant/operations/([^/]+)(?:/(events|cancel|reconcile))?", path)
+            if operation:
+                operation_id, action = operation.groups()
+                if method == "GET" and action is None:
+                    return 200, assistant.get(user_id, operation_id)
+                if method == "GET" and action == "events":
+                    try:
+                        after = int(query.get("after", ["0"])[0])
+                    except ValueError:
+                        raise ApiError(400, "ASSISTANT_INVALID_CURSOR", "Agent 事件游标无效")
+                    return 200, assistant.events(user_id, operation_id, after)
+                if method == "POST" and action == "cancel":
+                    return 200, assistant.cancel(user_id, operation_id, self._json_body(), key)
+                if method == "POST" and action == "reconcile":
+                    return 200, assistant.reconcile(user_id, operation_id, self._json_body(), key)
+            raise ApiError(404, "NOT_FOUND", "接口不存在")
         if method == "POST" and path == "/api/auth/logout":
             self.service.logout(raw_token)
             return 204, None
@@ -210,13 +285,19 @@ class SeeCutHandler(BaseHTTPRequestHandler):
             return 200, self.service.restore_asset(user_id, asset_restore.group(1), asset_restore.group(2))
 
         if method == "GET" and path == "/api/wallet":
-            return 200, self.service.wallet(user_id)
+            return 200, self.service.wallet(user_id, include_history=query.get('balance_only', ['0'])[0] != '1')
+        if method == "GET" and path == "/api/wallet/ledger":
+            return 200, self.service.wallet_ledger(user_id, category=query.get('category', ['all'])[0],
+                cursor=query.get('cursor', [''])[0], limit=query.get('limit', ['50'])[0])
         if method == "GET" and path == "/api/credit-plans":
             return 200, {"items": self.service.list_plans()}
         if method == "POST" and path == "/api/orders":
-            return 201, self.service.create_order(user_id, str(self._json_body().get("plan_id", "")))
+            return 201, self.service.create_order(
+                user_id, str(self._json_body().get("plan_id", "")),
+                self.headers.get("Idempotency-Key", ""),
+            )
         if method == "GET" and path == "/api/orders":
-            return 200, self.service.orders(user_id)
+            return 200, self.service.orders(user_id, cursor=query.get('cursor', [''])[0], limit=query.get('limit', ['50'])[0])
         order_match = re.fullmatch(r"/api/orders/([^/]+)", path)
         if method == "GET" and order_match:
             return 200, self.service.order(user_id, order_match.group(1))
@@ -241,6 +322,10 @@ class SeeCutHandler(BaseHTTPRequestHandler):
             return 202, self.service.create_generation_task(user_id, kind, self._json_body(), key)
         if method == "GET" and path == "/api/generation/tasks":
             return 200, {"items": self.service.list_generation_tasks(user_id)}
+        if method == "GET" and path == "/api/generation/tasks/by-request":
+            return 200, self.service.get_generation_task_by_request(
+                user_id, self.headers.get("Idempotency-Key", "")
+            )
         if method == "POST" and path == "/api/generation/tasks/trash":
             return 200, self.service.trash_generation_tasks(user_id, self._json_body().get("ids"))
         task_match = re.fullmatch(r"/api/generation/tasks/([^/]+)", path)
@@ -309,11 +394,13 @@ class SeeCutHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _file(self, path: Path, content_type: str, filename: str) -> None:
+    def _file(self, path: Path, content_type: str, filename: str, *, headers: dict[str, str] | None = None) -> None:
         size = path.stat().st_size
         self.send_response(200)
         self.send_header("Content-Type", content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream")
         self.send_header("Content-Length", str(size))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         safe_filename = Path(filename).name.replace("\r", "").replace("\n", "").replace('"', "")
         self.send_header(
             "Content-Disposition",

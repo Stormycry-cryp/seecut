@@ -126,6 +126,12 @@ export enum Glyph {
     save,
     // the canvas's mask chip: a circle held apart by its own diameter
     mask,
+    // the Flow entry: one node branching into two
+    workflow,
+    edit,
+    ellipse,
+    bezier,
+    nodes,
 }
 
 component Stroked inherits Path {
@@ -433,6 +439,10 @@ export component Icon inherits Rectangle {
 
     // lucide/diamond
     // lucide's square, for the strip's maximise button.
+    // Basic canvas geometry icons, drawn on the shared 24px stroke grid.
+    if root.glyph == Glyph.ellipse: Stroked { size: root.size; tint: root.tint; weight: root.weight; commands: "M 21 12 A 9 9 0 1 1 3 12 A 9 9 0 1 1 21 12 Z"; }
+    if root.glyph == Glyph.bezier: Stroked { size: root.size; tint: root.tint; weight: root.weight; commands: "M 4 18 C 4 2 20 22 20 6 M 2 16 H 6 V 20 H 2 Z M 18 4 H 22 V 8 H 18 Z"; }
+    if root.glyph == Glyph.nodes: Stroked { size: root.size; tint: root.tint; weight: root.weight; commands: "M 5 6 L 19 18 M 2 3 H 8 V 9 H 2 Z M 16 15 H 22 V 21 H 16 Z"; }
     if root.glyph == Glyph.maximize: Stroked {
         size: root.size; tint: root.tint; weight: root.weight;
         commands: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z";
@@ -714,6 +724,19 @@ export component Icon inherits Rectangle {
         size: root.size; tint: root.tint;
         commands: "M 1 1 L 2 1 L 2 14 L 1 14 Z M 13 1 L 14 1 L 14 14 L 13 14 Z M 4 4"
             + " L 7 4 L 7 11 L 4 11 Z M 9 4 L 12 4 L 12 11 L 9 11 Z";
+    }
+
+    // Three rounded nodes connected by a branch on the shared 24-unit grid.
+    if root.glyph == Glyph.workflow: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M3.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1 -1.5 1.5h-3a1.5 1.5 0 0 1 -1.5 -1.5v-3a1.5 1.5 0 0 1 1.5 -1.5Z"
+            + " M17.5 2h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1 -1.5 1.5h-3a1.5 1.5 0 0 1 -1.5 -1.5v-3a1.5 1.5 0 0 1 1.5 -1.5Z"
+            + " M17.5 16h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1 -1.5 1.5h-3a1.5 1.5 0 0 1 -1.5 -1.5v-3a1.5 1.5 0 0 1 1.5 -1.5Z"
+            + " M8 12h3 M16 5h-5v14h5";
+    }
+    if root.glyph == Glyph.edit: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M16 3 L21 8 L8 21 L3 21 L3 16 Z M13 6 L18 11";
     }
 
     // hand-drawn: no library carries it

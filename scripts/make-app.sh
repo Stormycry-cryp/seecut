@@ -34,6 +34,18 @@ STAGED_ZIP="$STAGING_ROOT/Seecut-macos.zip"
 mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Frameworks" "$STAGED_APP/Contents/Resources"
 cp "$BIN" "$STAGED_APP/Contents/MacOS/$EXECUTABLE"
 
+# Local Agent components are assembled separately from public source. The
+# optional input is a complete sealed bundle, never a path to credentials.
+typeset -a agent_binaries
+agent_binaries=()
+if [[ -n "${SEECUT_AGENT_BUNDLE:-}" ]]; then
+  python3 "$ROOT/scripts/agent-bundle-manifest.py" prepare "$SEECUT_AGENT_BUNDLE" "$STAGED_APP/Contents/Resources/agent"
+  agent_binaries=("$STAGED_APP/Contents/Resources/agent/bin/node" "$STAGED_APP/Contents/Resources/agent/bin/seecut-editor-mcp")
+  for component in "${agent_binaries[@]}"; do
+    install_name_tool -add_rpath "@loader_path/../../../Frameworks" "$component"
+  done
+fi
+
 ICON_SOURCE="$ROOT/src/crates/concat/ui/assets/seecut-astronaut.png"
 BRAND_SOURCE="$ROOT/src/crates/concat/ui/assets/seecut-logo.png"
 [[ -f "$ICON_SOURCE" && -f "$BRAND_SOURCE" ]] || { print -u2 "缺少 Seecut Logo 源图"; exit 1; }
@@ -71,7 +83,7 @@ plutil -lint "$STAGED_APP/Contents/Info.plist" >/dev/null
 typeset -a queue
 typeset -A copied
 typeset -A source_by_name
-queue=("$STAGED_APP/Contents/MacOS/$EXECUTABLE")
+queue=("$STAGED_APP/Contents/MacOS/$EXECUTABLE" "${agent_binaries[@]}")
 if ! otool -l "$STAGED_APP/Contents/MacOS/$EXECUTABLE" | awk '
   $1 == "path" && $2 == "@executable_path/../Frameworks" { found = 1 }
   END { exit(found ? 0 : 1) }
@@ -108,18 +120,25 @@ while (( ${#queue[@]} > 0 )); do
   done < <(otool -L "$current" | tail -n +2 | awk '{print $1}')
 done
 
-for file in "$STAGED_APP/Contents/MacOS/$EXECUTABLE" "$STAGED_APP"/Contents/Frameworks/*.dylib(N); do
+for file in "$STAGED_APP/Contents/MacOS/$EXECUTABLE" "${agent_binaries[@]}" "$STAGED_APP"/Contents/Frameworks/*.dylib(N); do
   if otool -L "$file" | tail -n +2 | awk '{print $1}' | grep -Eq '^(/opt/homebrew|/usr/local)/'; then
     print -u2 "仍有未打包的 Homebrew 动态库：$file"
     exit 1
   fi
 done
 
-for dylib in "$STAGED_APP"/Contents/Frameworks/*.dylib(N); do
-  codesign --force --sign - "$dylib"
+for binary in "$STAGED_APP"/Contents/Frameworks/*.dylib(N) "${agent_binaries[@]}" "$STAGED_APP/Contents/MacOS/$EXECUTABLE"; do
+  codesign --force --sign - "$binary"
 done
-codesign --force --deep --sign - "$STAGED_APP"
+if (( ${#agent_binaries[@]} > 0 )); then
+  # Hash final inner signatures, then seal the outer app without re-signing them.
+  python3 "$ROOT/scripts/agent-bundle-manifest.py" seal "$STAGED_APP/Contents/Resources/agent"
+fi
+codesign --force --sign - "$STAGED_APP"
 codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
+if (( ${#agent_binaries[@]} > 0 )); then
+  python3 "$ROOT/scripts/agent-bundle-manifest.py" verify "$STAGED_APP/Contents/Resources/agent"
+fi
 ditto -c -k --keepParent "$STAGED_APP" "$STAGED_ZIP"
 
 APP_BACKUP=""

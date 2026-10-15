@@ -8,6 +8,7 @@ from .db import Database
 from .http import SeeCutHandler
 from .service import SeeCutService
 from .worker import GenerationWorker
+from .assistant_worker import AssistantWorker
 from .ratelimit import InMemoryRateLimiter
 
 
@@ -30,10 +31,13 @@ def main() -> None:
     server.auth_rate_limit_window_seconds = service.config.auth_rate_limit_window_seconds
     worker = GenerationWorker(service)
     worker.start()
+    assistant_worker = AssistantWorker(service.assistant)
+    assistant_worker.start()
     print(f"SeeCut server listening on http://{service.config.host}:{service.config.port}")
     try:
         server.serve_forever()
     finally:
+        assistant_worker.stop()
         worker.stop()
         server.server_close()
 

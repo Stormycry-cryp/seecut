@@ -1,3 +1,4 @@
+import { LauncherSafeArea, LauncherControlRow } from "../seecut/launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
@@ -928,7 +929,7 @@ export component PreviewPane inherits Rectangle {
         }
 
         // ── the transport ────────────────────────────────────────────────
-        Rectangle {
+        transport := Rectangle {
             height: 46px;
             background: Theme.panel;
 
@@ -940,9 +941,9 @@ export component PreviewPane inherits Rectangle {
                 background: Theme.line;
             }
 
-            HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
+            LauncherControlRow {
+                height: 46px;
+                left-padding: 10px; right-padding: 10px;
                 spacing: 12px;
 
                 // Leading: where the playhead is, and how far it has to go.

@@ -8,9 +8,11 @@ export component FocusRing inherits Rectangle {
     in property <bool> active;
     in property <length> radius: Theme.r;
 
+    in property <bool> button: false;
+    in property <color> marker-color: Theme.focus-control;
     background: transparent;
 
-    Rectangle {
+    if !root.button: Rectangle {
         x: 1px;
         y: 1px;
         width: parent.width - 2px;
@@ -18,5 +20,13 @@ export component FocusRing inherits Rectangle {
         border-radius: root.radius;
         border-width: 1px;
         border-color: root.active ? Theme.focus-control : Colors.transparent;
+    }
+    if root.button && root.active: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - 4px;
+        width: Math.min(18px, Math.max(0px, parent.width - 8px));
+        height: 2px;
+        border-radius: 1px;
+        background: root.marker-color;
     }
 }

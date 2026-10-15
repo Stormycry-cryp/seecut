@@ -5,6 +5,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .assistant_billing import rate_denominator
+from .model_pricing import billing_mode, parse_price_catalog
+
 
 class ConfigError(ValueError):
     pass
@@ -28,6 +31,36 @@ def _optional_positive_int(name: str) -> int | None:
     if parsed <= 0:
         raise ConfigError(f"{name} must be a positive integer")
     return parsed
+
+
+def _assistant_integer(name: str, default: int, maximum: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a positive integer") from exc
+    if not 1 <= value <= maximum:
+        raise ConfigError(f"{name} must be between 1 and {maximum}")
+    return value
+
+
+def _assistant_rates():
+    old = ('SECUT_ASSISTANT_INPUT_CREDITS_PER_1000', 'SECUT_ASSISTANT_OUTPUT_CREDITS_PER_1000')
+    new = ('SECUT_ASSISTANT_INPUT_CREDITS_PER_1000000', 'SECUT_ASSISTANT_OUTPUT_CREDITS_PER_1000000')
+    old_set = [bool(os.getenv(name, '').strip()) for name in old]
+    new_set = [bool(os.getenv(name, '').strip()) for name in new]
+    try:
+        denominator = rate_denominator(int(os.getenv('SECUT_ASSISTANT_RATE_DENOMINATOR', '').strip() or '1000'))
+    except ValueError as error:
+        raise ConfigError('Invalid Agent rate denominator') from error
+    if any(old_set) and any(new_set) or denominator == 1000 and any(new_set) or denominator == 1_000_000 and any(old_set):
+        raise ConfigError('Agent rate units cannot be mixed')
+    if any(new_set) and not all(new_set):
+        raise ConfigError('Both million-token Agent rates are required')
+    names = old if denominator == 1000 else new
+    return denominator, *(_assistant_integer(name, 0, 1_000_000) for name in names)
 
 
 @dataclass(frozen=True)
@@ -80,6 +113,32 @@ class Config:
     alipay_notify_url: str
     alipay_seller_id: str
 
+    assistant_base_url: str = ""
+    assistant_model: str = ""
+    assistant_api_key: str = ""
+    assistant_pricing_version: str = ""
+    assistant_input_rate: int = 0
+    assistant_output_rate: int = 0
+    assistant_context_window: int = 32768
+    assistant_max_output_tokens: int = 2048
+    assistant_max_steps: int = 8
+    assistant_max_turn_credits: int = 0
+    assistant_images: bool = False
+    assistant_models: tuple = ()
+    assistant_rate_denominator: int = 1000
+    assistant_billing_mode: str = 'verified_input_v1'
+    assistant_provider_id: str = 'bigmodel'
+    model_price_catalog: tuple = ()
+    model_cost_pricing_enabled: bool = False
+    efforts: tuple = ()
+
+    def __post_init__(self):
+        rate_denominator(self.assistant_rate_denominator)
+        billing_mode(self.assistant_billing_mode)
+        parse_price_catalog(json.dumps(self.model_price_catalog))
+        if type(self.model_cost_pricing_enabled) is not bool:
+            raise ValueError('Model cost pricing opt-in must be boolean')
+
     @classmethod
     def from_env(cls) -> "Config":
         try:
@@ -118,7 +177,26 @@ class Config:
         ):
             raise ConfigError("SMTP authentication requires TLS outside development and test")
 
-        return cls(
+        denominator, input_rate, output_rate = _assistant_rates()
+        config = cls(
+            assistant_base_url=os.getenv("SECUT_ASSISTANT_BASE_URL", "").rstrip("/"),
+            assistant_model=os.getenv("SECUT_ASSISTANT_MODEL", ""),
+            assistant_models=_assistant_model_catalog(),
+            assistant_billing_mode=billing_mode(os.getenv('SECUT_ASSISTANT_BILLING_MODE', 'verified_input_v1')),
+            assistant_provider_id=os.getenv('SECUT_ASSISTANT_PROVIDER_ID', 'bigmodel'),
+            model_price_catalog=parse_price_catalog(os.getenv('SECUT_MODEL_PRICE_CATALOG_JSON', '[]')),
+            model_cost_pricing_enabled=_bool('SECUT_MODEL_COST_PRICING_ENABLED', False),
+            efforts=_effort_policies(),
+            assistant_api_key=os.getenv("SECUT_ASSISTANT_API_KEY", ""),
+            assistant_pricing_version=os.getenv("SECUT_ASSISTANT_PRICING_VERSION", ""),
+            assistant_input_rate=input_rate,
+            assistant_output_rate=output_rate,
+            assistant_rate_denominator=denominator,
+            assistant_context_window=_assistant_integer("SECUT_ASSISTANT_CONTEXT_WINDOW", 32768, 1_000_000),
+            assistant_max_output_tokens=_assistant_integer("SECUT_ASSISTANT_MAX_OUTPUT_TOKENS", 2048, 131072),
+            assistant_max_steps=_assistant_integer("SECUT_ASSISTANT_MAX_STEPS", 8, 8),
+            assistant_max_turn_credits=_assistant_integer("SECUT_ASSISTANT_MAX_TURN_CREDITS", 0, 1_000_000_000),
+            assistant_images=_bool("SECUT_ASSISTANT_IMAGES", False),
             env=env,
             host=os.getenv("SECUT_HOST", "127.0.0.1"),
             port=int(os.getenv("SECUT_PORT", "8787")),
@@ -183,6 +261,12 @@ class Config:
             alipay_notify_url=os.getenv("SECUT_ALIPAY_NOTIFY_URL", ""),
             alipay_seller_id=os.getenv("SECUT_ALIPAY_SELLER_ID", ""),
         )
+        from .efforts import validate_efforts
+        try:
+            validate_efforts(config)
+        except ValueError as error:
+            raise ConfigError('Invalid effort policies') from error
+        return config
 
     def email_configured(self) -> bool:
         if self.email_provider == "disabled":
@@ -208,3 +292,19 @@ class Config:
             and self.alipay_notify_url
             and all(path and Path(path).is_file() for path in paths)
         )
+
+
+def _effort_policies():
+    from .efforts import parse_efforts
+    try:
+        return parse_efforts(os.getenv('SECUT_EFFORTS_JSON', '[]'))
+    except ValueError as error:
+        raise ConfigError('Invalid effort policies') from error
+
+
+def _assistant_model_catalog():
+    from .assistant_models import parse_models
+    try:
+        return parse_models(os.getenv("SECUT_ASSISTANT_MODELS_JSON", "[]"))
+    except ValueError as error:
+        raise ConfigError("Invalid Agent model catalog") from error

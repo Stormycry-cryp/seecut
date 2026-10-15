@@ -54,6 +54,123 @@ Use `.env.tencent.example` as the production template. It targets Tencent Cloud 
 
 Alipay remains deferred. The Tencent template intentionally leaves all Alipay settings empty, so credit orders remain unavailable until merchant configuration is approved and supplied.
 
+## Managed Agent service
+
+The authenticated `/api/assistant` endpoints provide capabilities, turn budgets,
+quotes, operations, operation lookup by client request ID, paginated events,
+cancellation and reconciliation. They use the existing account wallet. Agent
+holds, consumption and released credits appear in the same ledger as generation
+and recharge entries.
+
+Each inference operation has stable request and operation IDs. After a lost
+response or an interrupted worker, recover by querying those IDs. An uncertain
+upstream result remains `outcome_unknown` with its credits held until it can be
+reconciled. Cancellation requests do not imply a free operation: confirmed usage
+is captured and the unused hold is released exactly once.
+
+The default compatible-gateway adapter remains unavailable until a verified
+model-specific adapter supplies its input token counting contract and prepared
+request. Configuring a model name or pricing alone does not enable it. The
+current verified contract supports text and tools; images remain disabled.
+Production model selection and real provider verification are separate from the
+local synthetic contract tests.
+
+`capabilities.models` lists public aliases, labels, limits and availability. The
+legacy alias is `default`. Clients may send `model_id` with turn-budget, quote
+and operation creation requests. The budget records that alias permanently;
+query, cancel and reconcile follow the original operation's model even after a
+new model is selected. An unavailable or removed model cannot redirect an
+operation to the default provider.
+
+Additional aliases are configured by the server through
+`SECUT_ASSISTANT_MODELS_JSON`, a bounded list of objects with `id`, `label` and
+`model`. Optional fields are `pricing_version`, `input_rate`, `output_rate`,
+`context_window`, `max_output_tokens`, `max_steps` and `max_turn_credits`.
+These models use the server's existing gateway. The catalog accepts no gateway,
+credential or request-header fields. Each configured model still requires a
+verified provider/token contract before it can be available. Existing clients
+that omit `model_id` keep the default contract.
+
+### Effort policies
+
+`SECUT_EFFORTS_JSON` optionally defines up to eight ordered effort policies. No
+production tiers are installed by default. Each object contains `id`, `label`,
+`policy_revision`, `agent` and `generation`. `agent` selects one existing
+`model_id` alias and sets `max_output_tokens`, `max_steps` and
+`max_turn_credits`, bounded by that model's limits. `generation` contains
+`image_model_ids` and `video_model_ids` from the existing supported catalog;
+at least one model reference is required. This is a server selection and budget
+policy, not a provider `reasoning_effort` parameter.
+
+Both Agent capabilities and generation models return `effort_policy_version`,
+`default_effort_id` and `efforts`. The first configured policy is the default.
+Available generation references require a configured provider and an applicable
+price; a tier is available only when its Agent route is verified and at least
+one allowed generation model is available. A client must not turn configuration
+names into availability. Empty policies preserve the legacy contract.
+
+With policies configured, new budget and generation requests must provide the
+paired `effort_id` and `policy_revision`. The service resolves the full policy;
+client-provided limits or snapshots are not accepted. Budgets freeze their model,
+limits, pricing and policy for all steps. Queries, cancellation and UNKNOWN
+reconciliation retain the original operation even if its tier is removed.
+New effort budgets also require `expected_policy_digest`: lowercase SHA-256 of
+the UTF-8 policy JSON with recursively sorted keys, compact separators and
+unescaped Unicode, excluding only transient `available` and `reason_code`.
+Clients freeze this digest with the original budget request. The service checks
+it inside the creation transaction before writing any budget or idempotency
+record. A mismatch returns `EFFORT_POLICY_STALE`; a missing digest returns
+`EFFORT_POLICY_DIGEST_REQUIRED`. Existing budgets restore their original snapshot
+before this check, including journals created before digest support. The field
+is accepted only on budget creation, not on quotes or operations. Legacy budgets
+without an effort retain their existing contract.
+Generation quotes and tasks retain their original `policy`. A changed server
+configuration rejects an old quote with `EFFORT_POLICY_STALE`; temporary loss of
+an unrelated generation provider does not rewrite or invalidate an otherwise
+valid quote. Policy errors must not trigger automatic re-pricing or resubmission.
+
+### Domestic GLM adapter
+
+The server selects `GLMAssistantProvider` for the exact model name
+`glm-5.3-flash` and the domestic base
+`https://open.bigmodel.cn/api/paas/v4`. This adapter uses the existing Agent
+quote, hold, single-dispatch, cancellation and reconciliation protocol. It
+supports bounded SSE and normal JSON responses, tool fragments, final usage,
+and enabled thinking. Same-turn tool reasoning is stored only in the server
+DB and recovered only for the original user's settled operation and budget.
+It is not sent to the client or accepted from client-supplied reasoning fields.
+
+**Availability remains off.** The official Tokenizer model enumeration does
+not currently list `glm-5.3-flash`. A Flash-specific input counting contract
+for the exact frozen request (including tool reasoning) must be independently
+verified and supplied by server code before this adapter can be advertised as
+available. No environment switch, client setting or pricing entry bypasses
+this requirement. The loopback tests inject a synthetic byte counter; they
+prove protocol and ledger behavior, not production GLM token counts or a live
+connection. Images remain disabled.
+
+Documented pre-inference rejection codes release the hold with zero usage.
+Timeouts, incomplete usage and ambiguous supplier errors retain UNKNOWN and
+the original hold. `request_id` is correlation metadata, not a vendor
+idempotency promise. There is no automatic POST retry or invented synchronous
+status lookup; the async-result API does not reconcile synchronous requests.
+Complete confirmed usage after cancellation is settled exactly once while
+late results and tool calls are suppressed. Documented unsuccessful finish
+reasons with a complete final response and valid usage settle a failed operation
+at its actual cost; they never publish a successful result or execute tools.
+
+References: [Flash model](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash),
+[Chat Completions](https://docs.bigmodel.cn/api-reference/模型-api/对话补全),
+[Tokenizer](https://docs.bigmodel.cn/api-reference/模型-api/文本分词器),
+[error codes](https://docs.bigmodel.cn/cn/api/api-code).
+Deployment, safe server credential provisioning, verified Flash token counting
+and authorized real-provider acceptance remain separate gates. This change
+performs none of them and contains no real credentials.
+
+The dedicated **SeeCut service** workflow runs the existing account, wallet,
+generation and Agent tests on Python 3.12 when this service changes. These tests
+use temporary storage and synthetic providers or local HTTP fixtures.
+
 ## Configuration
 
 All supported variables are documented in `.env.example`. `GET /api/capabilities` reports whether email, Xiangxin and Alipay configuration is complete without revealing credential values.

@@ -9,6 +9,7 @@ rust-version = "1.93"
 license = "AGPL-3.0-or-later"  # + plugin exception, see LICENSE-EXCEPTIONS.md
 
 [workspace.dependencies]
+seecut-flow-core = { path = "crates/seecut-flow-core" }
 concat-core = { path = "crates/concat-core" }
 concat-media = { path = "crates/concat-media" }
 concat-project = { path = "crates/concat-project" }
@@ -104,4 +105,9 @@ strip = "symbols"
 # Decoding and compositing are unusably slow in an unoptimised build, even when
 # the rest of the engine is being debugged.
 [profile.dev.package."*"]
+opt-level = 2
+
+# Shape caches rebuild during pointer gestures; keep this workspace crate
+# optimised in local preview builds as well as in release.
+[profile.dev.package.concat-canvas]
 opt-level = 2

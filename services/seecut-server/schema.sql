@@ -1,6 +1,40 @@
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
+CREATE TABLE IF NOT EXISTS flow_projects (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id,id)
+);
+
+CREATE TABLE IF NOT EXISTS flow_snapshots (
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    name TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+    updated_at INTEGER NOT NULL,
+    object_key TEXT NOT NULL UNIQUE,
+    PRIMARY KEY (user_id,project_id,revision),
+    FOREIGN KEY (user_id,project_id) REFERENCES flow_projects(user_id,id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS flow_snapshot_requests (
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    PRIMARY KEY (user_id,project_id,key),
+    FOREIGN KEY (user_id,project_id) REFERENCES flow_projects(user_id,id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -142,7 +176,18 @@ CREATE TABLE IF NOT EXISTS orders (
     provider_trade_no TEXT,
     paid_at INTEGER,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER
+);
+
+-- Purchase intents use the same account-scoped digest/target contract as Agent
+-- requests. Legacy orders have no intent key and an unknown expiry (NULL).
+CREATE TABLE IF NOT EXISTS order_idempotency (
+    user_id TEXT NOT NULL REFERENCES users(id),
+    key TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    order_id TEXT NOT NULL REFERENCES orders(id),
+    PRIMARY KEY(user_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS payment_events (
@@ -166,6 +211,7 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     prompt TEXT NOT NULL,
     request_json TEXT NOT NULL,
     batch_id TEXT,
+    billing_id TEXT REFERENCES generation_billings(id),
     batch_index INTEGER NOT NULL DEFAULT 0,
     batch_size INTEGER NOT NULL DEFAULT 1,
     trashed_at INTEGER,
@@ -191,11 +237,33 @@ CREATE TABLE IF NOT EXISTS generation_quotes (
     kind TEXT NOT NULL,
     model TEXT NOT NULL,
     canonical_json TEXT NOT NULL,
+    effort_policy_fingerprint TEXT,
+    rounding_mode TEXT NOT NULL DEFAULT 'legacy_item' CHECK(rounding_mode IN ('legacy_item','batch_cumulative_v1')),
     billing_key TEXT NOT NULL,
     credits INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     consumed_at INTEGER,
     created_at INTEGER NOT NULL
+);
+
+-- New batches reserve and settle one exact cumulative cost. Historical tasks
+-- retain their original per-item holds through a NULL billing_id.
+CREATE TABLE IF NOT EXISTS generation_billings (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    quote_id TEXT NOT NULL UNIQUE REFERENCES generation_quotes(id),
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    unit_numerator TEXT NOT NULL,
+    unit_denominator TEXT NOT NULL,
+    reserved_credits INTEGER NOT NULL CHECK(reserved_credits >= 0),
+    captured_credits INTEGER NOT NULL DEFAULT 0 CHECK(captured_credits >= 0),
+    released_credits INTEGER NOT NULL DEFAULT 0 CHECK(released_credits >= 0),
+    succeeded_count INTEGER NOT NULL DEFAULT 0 CHECK(succeeded_count >= 0),
+    failed_count INTEGER NOT NULL DEFAULT 0 CHECK(failed_count >= 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK(succeeded_count + failed_count <= quantity),
+    CHECK(captured_credits + released_credits <= reserved_credits)
 );
 
 CREATE TABLE IF NOT EXISTS generation_assets (
@@ -216,4 +284,91 @@ CREATE TABLE IF NOT EXISTS generation_outputs (
     sha256 TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL
+);
+
+-- Agent uses the existing wallet; a turn budget is a ceiling, never a debit.
+CREATE TABLE IF NOT EXISTS assistant_turn_budgets (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ local_session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+ model_id TEXT NOT NULL DEFAULT 'default',
+ effort_id TEXT, policy_revision TEXT, policy_json TEXT, route_fingerprint TEXT,
+ billing_mode TEXT NOT NULL DEFAULT 'verified_input_v1' CHECK(billing_mode IN ('verified_input_v1','provider_usage_capped_v1')),
+ billing_contract_json TEXT, billing_contract_digest TEXT,
+ accrued_numerator TEXT NOT NULL DEFAULT '0',
+ max_credits INTEGER NOT NULL CHECK(max_credits > 0),
+ held_credits INTEGER NOT NULL DEFAULT 0 CHECK(held_credits >= 0),
+ spent_credits INTEGER NOT NULL DEFAULT 0 CHECK(spent_credits >= 0),
+ rounding_mode TEXT NOT NULL DEFAULT 'legacy_operation' CHECK(rounding_mode IN ('legacy_operation','task_cumulative_v1')),
+ accrued_microcredits INTEGER NOT NULL DEFAULT 0 CHECK(accrued_microcredits >= 0),
+ operation_count INTEGER NOT NULL DEFAULT 0, max_steps INTEGER NOT NULL,
+ state TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+ UNIQUE(user_id,local_session_id,turn_id)
+);
+CREATE TABLE IF NOT EXISTS assistant_idempotency (
+ user_id TEXT NOT NULL REFERENCES users(id), namespace TEXT NOT NULL,
+ key TEXT NOT NULL, digest TEXT NOT NULL, target_id TEXT NOT NULL,
+ PRIMARY KEY(user_id,namespace,key)
+);
+CREATE TABLE IF NOT EXISTS assistant_quotes (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ request_digest TEXT NOT NULL, pricing_version TEXT NOT NULL,
+ billing_mode TEXT NOT NULL DEFAULT 'verified_input_v1' CHECK(billing_mode IN ('verified_input_v1','provider_usage_capped_v1')),
+ billing_contract_json TEXT, billing_contract_digest TEXT,
+ prepared_payload BLOB,
+ input_token_upper_bound INTEGER NOT NULL, payload_digest TEXT NOT NULL,
+ route_fingerprint TEXT NOT NULL, input_rate INTEGER NOT NULL, output_rate INTEGER NOT NULL, context_window INTEGER NOT NULL,
+ rate_denominator INTEGER NOT NULL DEFAULT 1000 CHECK(rate_denominator IN (1000,1000000)),
+ max_credits INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+ consumed_at INTEGER, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assistant_operations (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ client_request_id TEXT NOT NULL, local_session_id TEXT NOT NULL,
+ turn_id TEXT NOT NULL, step_id TEXT NOT NULL,
+ budget_id TEXT NOT NULL REFERENCES assistant_turn_budgets(id),
+ request_digest TEXT NOT NULL, request_json TEXT NOT NULL,
+ billing_mode TEXT NOT NULL DEFAULT 'verified_input_v1' CHECK(billing_mode IN ('verified_input_v1','provider_usage_capped_v1')),
+ billing_contract_json TEXT, billing_contract_digest TEXT,
+ provider_usage_json TEXT, reported_numerator TEXT, uncollected_numerator TEXT,
+ prepared_payload BLOB,
+ input_token_upper_bound INTEGER NOT NULL, payload_digest TEXT NOT NULL,
+ pricing_version TEXT NOT NULL, input_rate INTEGER NOT NULL, output_rate INTEGER NOT NULL,
+ rate_denominator INTEGER NOT NULL DEFAULT 1000 CHECK(rate_denominator IN (1000,1000000)), route_fingerprint TEXT NOT NULL, context_window INTEGER NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('queued','dispatching','running','succeeded','failed','cancelled','outcome_unknown')),
+ version INTEGER NOT NULL DEFAULT 1, last_event_seq INTEGER NOT NULL DEFAULT 0,
+ cancel_requested INTEGER NOT NULL DEFAULT 0,
+ billing_state TEXT NOT NULL DEFAULT 'held', reserved_credits INTEGER NOT NULL,
+ captured_credits INTEGER NOT NULL DEFAULT 0, released_credits INTEGER NOT NULL DEFAULT 0,
+ result_json TEXT, error_json TEXT, usage_json TEXT,
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+ UNIQUE(user_id,client_request_id), UNIQUE(user_id,local_session_id,turn_id,step_id)
+);
+CREATE TABLE IF NOT EXISTS assistant_events (
+ operation_id TEXT NOT NULL REFERENCES assistant_operations(id), seq INTEGER NOT NULL,
+ type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+ PRIMARY KEY(operation_id,seq)
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_queued ON assistant_operations(state,created_at);
+
+-- Local operator declarations, atomically committed with one manual settlement.
+CREATE TABLE IF NOT EXISTS assistant_resolutions (
+ resolution_id TEXT PRIMARY KEY, input_digest TEXT NOT NULL,
+ user_id TEXT NOT NULL REFERENCES users(id),
+ operation_id TEXT NOT NULL REFERENCES assistant_operations(id),
+ operator TEXT NOT NULL, operator_authentication TEXT NOT NULL
+   CHECK(operator_authentication='local_declaration'),
+ reason TEXT NOT NULL, evidence_reference_json TEXT NOT NULL,
+ input_summary_json TEXT NOT NULL, before_json TEXT NOT NULL,
+ after_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assistant_active_budget ON assistant_turn_budgets(user_id) WHERE state='active';
+
+-- GLM reasoning stays server-side, bound to the original settled operation.
+CREATE TABLE IF NOT EXISTS assistant_glm_messages (
+ message_id TEXT PRIMARY KEY,
+ operation_id TEXT NOT NULL UNIQUE REFERENCES assistant_operations(id),
+ model TEXT NOT NULL,
+ message_digest TEXT NOT NULL,
+ reasoning TEXT NOT NULL
 );

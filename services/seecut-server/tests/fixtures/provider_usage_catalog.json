@@ -1,0 +1,197 @@
+{
+  "available": true,
+  "billing_mode": "provider_usage_capped_v1",
+  "context_preflight": "byte_bounds_only",
+  "context_window": 1000000,
+  "default_effort_id": "synthetic-effort",
+  "default_model_id": "default",
+  "effort_policy_version": 3,
+  "efforts": [
+    {
+      "agent": {
+        "billing_mode": "provider_usage_capped_v1",
+        "context_preflight": "byte_bounds_only",
+        "context_window": 1000000,
+        "input_rate": 2,
+        "max_output_tokens": 100,
+        "max_steps": 2,
+        "max_turn_credits": 8,
+        "model_id": "default",
+        "output_rate": 5,
+        "pricing_digest": "6b2c85203f32728a79eb2846925cf9cdbe47802a35b06aa3071f8e08dc7069fa",
+        "pricing_snapshot": {
+          "cost_status": "verified",
+          "credits_per_yuan": 10,
+          "denominator": "1",
+          "dimensions": {
+            "cached_input": {
+              "cost_yuan": "0.23",
+              "rate_numerator": "6900",
+              "retail_source": "cost_times_three",
+              "sale_override_credits": null,
+              "selectors": {},
+              "unit": "per_million_tokens"
+            },
+            "input": {
+              "cost_yuan": "0.8",
+              "rate_numerator": "20000",
+              "retail_source": "override",
+              "sale_override_credits": "20",
+              "selectors": {},
+              "unit": "per_million_tokens"
+            },
+            "output": {
+              "cost_yuan": "2.8",
+              "rate_numerator": "60000",
+              "retail_source": "override",
+              "sale_override_credits": "60",
+              "selectors": {},
+              "unit": "per_million_tokens"
+            }
+          },
+          "kind": "agent",
+          "model": "synthetic-exact",
+          "multiplier": 3,
+          "provider": "synthetic",
+          "schema_version": 1,
+          "source": "synthetic-fixture-contract",
+          "unit": "nanocredits",
+          "verified_at": "2026-10-12T00:00:00Z",
+          "version": "synthetic-cost-v1"
+        },
+        "pricing_version": "synthetic-cost-v1",
+        "provider_id": "synthetic",
+        "upstream_model": "synthetic-exact",
+        "usage_contract_id": "synthetic-provider-usage-v1"
+      },
+      "available": true,
+      "generation": {
+        "image_model_ids": [],
+        "video_model_ids": []
+      },
+      "id": "synthetic-effort",
+      "label": "合成测试",
+      "policy_revision": "synthetic-v3",
+      "reason_code": null
+    }
+  ],
+  "images": false,
+  "label": "synthetic-exact",
+  "max_output_tokens": 200,
+  "max_steps": 8,
+  "max_turn_credits": 10,
+  "model_id": "default",
+  "models": [
+    {
+      "available": true,
+      "billing_mode": "provider_usage_capped_v1",
+      "context_preflight": "byte_bounds_only",
+      "context_window": 1000000,
+      "default_model_id": "default",
+      "images": false,
+      "label": "synthetic-exact",
+      "max_output_tokens": 200,
+      "max_steps": 8,
+      "max_turn_credits": 10,
+      "model_id": "default",
+      "pricing_digest": "6b2c85203f32728a79eb2846925cf9cdbe47802a35b06aa3071f8e08dc7069fa",
+      "pricing_snapshot": {
+        "cost_status": "verified",
+        "credits_per_yuan": 10,
+        "denominator": "1",
+        "dimensions": {
+          "cached_input": {
+            "cost_yuan": "0.23",
+            "rate_numerator": "6900",
+            "retail_source": "cost_times_three",
+            "sale_override_credits": null,
+            "selectors": {},
+            "unit": "per_million_tokens"
+          },
+          "input": {
+            "cost_yuan": "0.8",
+            "rate_numerator": "20000",
+            "retail_source": "override",
+            "sale_override_credits": "20",
+            "selectors": {},
+            "unit": "per_million_tokens"
+          },
+          "output": {
+            "cost_yuan": "2.8",
+            "rate_numerator": "60000",
+            "retail_source": "override",
+            "sale_override_credits": "60",
+            "selectors": {},
+            "unit": "per_million_tokens"
+          }
+        },
+        "kind": "agent",
+        "model": "synthetic-exact",
+        "multiplier": 3,
+        "provider": "synthetic",
+        "schema_version": 1,
+        "source": "synthetic-fixture-contract",
+        "unit": "nanocredits",
+        "verified_at": "2026-10-12T00:00:00Z",
+        "version": "synthetic-cost-v1"
+      },
+      "pricing_version": "synthetic-cost-v1",
+      "protocol_version": 1,
+      "provider_id": "synthetic",
+      "rate_denominator": 1000,
+      "reason_code": null,
+      "tools": true,
+      "upstream_model": "synthetic-exact",
+      "usage_contract_id": "synthetic-provider-usage-v1"
+    }
+  ],
+  "pricing_digest": "6b2c85203f32728a79eb2846925cf9cdbe47802a35b06aa3071f8e08dc7069fa",
+  "pricing_snapshot": {
+    "cost_status": "verified",
+    "credits_per_yuan": 10,
+    "denominator": "1",
+    "dimensions": {
+      "cached_input": {
+        "cost_yuan": "0.23",
+        "rate_numerator": "6900",
+        "retail_source": "cost_times_three",
+        "sale_override_credits": null,
+        "selectors": {},
+        "unit": "per_million_tokens"
+      },
+      "input": {
+        "cost_yuan": "0.8",
+        "rate_numerator": "20000",
+        "retail_source": "override",
+        "sale_override_credits": "20",
+        "selectors": {},
+        "unit": "per_million_tokens"
+      },
+      "output": {
+        "cost_yuan": "2.8",
+        "rate_numerator": "60000",
+        "retail_source": "override",
+        "sale_override_credits": "60",
+        "selectors": {},
+        "unit": "per_million_tokens"
+      }
+    },
+    "kind": "agent",
+    "model": "synthetic-exact",
+    "multiplier": 3,
+    "provider": "synthetic",
+    "schema_version": 1,
+    "source": "synthetic-fixture-contract",
+    "unit": "nanocredits",
+    "verified_at": "2026-10-12T00:00:00Z",
+    "version": "synthetic-cost-v1"
+  },
+  "pricing_version": "synthetic-cost-v1",
+  "protocol_version": 1,
+  "provider_id": "synthetic",
+  "rate_denominator": 1000,
+  "reason_code": null,
+  "tools": true,
+  "upstream_model": "synthetic-exact",
+  "usage_contract_id": "synthetic-provider-usage-v1"
+}

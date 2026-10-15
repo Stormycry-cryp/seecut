@@ -374,6 +374,33 @@ fn adjust_one(back: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(byte(out_rgb.r), byte(out_rgb.g), byte(out_rgb.b), back.a);
 }
 
+// Source bitmaps contain straight RGBA. Interpolate premultiplied colors,
+// then return straight, byte-quantized pixels like the CPU compositor.
+fn sample_source(uv: vec2<f32>) -> vec4<f32> {
+    let size = vec2<i32>(textureDimensions(source_texture));
+    let pixel = uv * vec2<f32>(size) - vec2<f32>(0.5);
+    let base = vec2<i32>(floor(pixel));
+    let fraction = pixel - vec2<f32>(base);
+    var sum = vec4<f32>(0.0);
+    for (var y = 0; y < 2; y++) {
+        for (var x = 0; x < 2; x++) {
+            let pos = base + vec2<i32>(x, y);
+            if any(pos < vec2<i32>(0)) || any(pos >= size) {
+                continue;
+            }
+            let weight = select(1.0 - fraction.x, fraction.x, x == 1)
+                * select(1.0 - fraction.y, fraction.y, y == 1);
+            let texel = textureLoad(source_texture, pos, 0);
+            sum += vec4<f32>(texel.rgb * texel.a, texel.a) * weight;
+        }
+    }
+    if sum.a <= 0.00000011920929 {
+        return vec4<f32>(0.0);
+    }
+    let rgb = sum.rgb / sum.a;
+    return vec4<f32>(byte(rgb.r), byte(rgb.g), byte(rgb.b), byte(sum.a));
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
@@ -399,7 +426,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         uv_src = b / vec2<f32>(p.bw, p.bh);
     }
-    let src = textureSampleLevel(source_texture, tex_sampler, uv_src, 0.0);
+    var src: vec4<f32>;
+    if (p.flags & 4u) != 0u {
+        src = sample_source(uv_src);
+    } else {
+        src = textureSampleLevel(source_texture, tex_sampler, uv_src, 0.0);
+    }
 
     if p.pass_kind == 2u {
         // Coverage: the clip base's alpha through opacity, mask and its
@@ -1657,6 +1689,39 @@ mod tests {
         CanvasGpu::new().expect("this GPU regression requires a usable wgpu adapter")
     }
 
+    #[test]
+    fn editable_shape_cache_matches_gpu_cpu_and_invalidation() {
+        use crate::vector::{Knot, ShapeKind, VectorShape};
+        let mut gpu = required_gpu();
+        let mut world = World::new();
+        world.with_layer("photo", solid(16, 16, [80, 120, 160, 255]));
+        for kind in [ShapeKind::Rectangle, ShapeKind::Ellipse, ShapeKind::Path] {
+            let mut shape = VectorShape::new(kind, [3.0, 3.0], [13.0, 12.0]);
+            if kind == ShapeKind::Path {
+                shape.knots[0].outgoing = [3.0, 12.0];
+                shape.knots.push(Knot {
+                    anchor: [13.0, 3.0],
+                    incoming: [13.0, 12.0],
+                    outgoing: [13.0, 3.0],
+                });
+            }
+            let id = world.with_layer("shape", shape.rasterize(16, 16).unwrap());
+            let layer = world.document.layer_mut(id).unwrap();
+            layer.vector = Some(shape.clone());
+            layer.opacity = 0.75;
+            layer.transform.rotation = 0.25;
+            let pixels = layer.pixels;
+            assert_parity_on(&world, &mut gpu);
+            shape.stroke_width = 1.0;
+            shape.fill = Some([120, 200, 20, 160]);
+            world.document.layer_mut(id).unwrap().vector = Some(shape.clone());
+            world
+                .store
+                .replace(pixels, shape.rasterize(16, 16).unwrap());
+            assert_parity_on(&world, &mut gpu);
+        }
+    }
+
     /// Match the editor's shared device: no optional features, real hardware.
     #[test]
     fn shared_device_without_optional_features_matches_cpu() {
@@ -1754,6 +1819,29 @@ mod tests {
         let mut world = World::new();
         world.with_layer("Red", solid(16, 16, [220, 40, 90, 200]));
         assert_parity(&world);
+    }
+
+    #[test]
+    fn scaled_transparent_edges_preserve_color_in_export_readback() {
+        let mut world = World::new();
+        let mut frame = Frame::transparent(12, 10);
+        for y in 2..8 {
+            for x in 2..10 {
+                frame.set_pixel(x, y, [220, 40, 30, 255]);
+            }
+        }
+        let layer = world.with_layer("Scaled transparent PNG", frame);
+        let transform = &mut world.document.layer_mut(layer).unwrap().transform;
+        transform.scale_x = 1.5;
+        transform.scale_y = 1.5;
+        let expected = cpu::compose(&world.document, &world.store);
+        assert!(
+            expected
+                .pixels()
+                .chunks_exact(4)
+                .any(|p| { p[3] > 0 && p[3] < 255 && p[0..3] == [220, 40, 30] })
+        );
+        assert_parity_on(&world, &mut required_gpu());
     }
 
     #[test]

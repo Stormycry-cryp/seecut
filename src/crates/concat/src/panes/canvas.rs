@@ -31,18 +31,67 @@ use concat_canvas::{
     fill_region,
 };
 use concat_core::frame::Frame;
-use concat_host::ownership::{ResourceIdentity, WriterGuard, desktop_writer_ownership_supported};
+use concat_host::ownership::{
+    OwnershipError, ResourceIdentity, WriterGuard, desktop_writer_ownership_supported,
+};
 use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, SharedPixelBuffer};
 
 use crate::i18n::tf;
 use crate::studio::Studio;
 
+mod shapes;
+use shapes::ShapeDrag;
+
 /// What [`CanvasPane::edit_selection`] does to a selection.
 #[derive(Clone, Copy, Debug)]
 enum EditKind {
     Fill,
     Delete,
+}
+
+/// Failures at the current canvas's typed MCP write boundary.
+#[derive(Debug)]
+pub(crate) enum CanvasMoveError {
+    UnsupportedPlatform,
+    NoDocument,
+    Busy,
+    UnstableBinding,
+    MissingOwner,
+    OwnerMismatch,
+    Ownership(OwnershipError),
+    PixelSelection,
+    MaskTarget,
+    SelectionChanged,
+    ObjectGone,
+    NonImageTarget,
+    MissingPixels,
+    InvalidDelta,
+    InvalidTransform,
+    InvalidAnchor,
+    ResourceLimit,
+}
+
+/// Preserve both canvas failures and the UI caller's final commit checks.
+#[derive(Debug)]
+pub(crate) enum CanvasMoveCheckedError<E> {
+    Canvas(CanvasMoveError),
+    Commit(E),
+}
+
+/// The actual f32 document coordinates committed by one move.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CanvasMoveResult {
+    pub x: f32,
+    pub y: f32,
+    pub changed: bool,
+}
+
+/// Exact full transform committed by the typed canvas action.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CanvasTransformResult {
+    pub transform: concat_canvas::LayerTransform,
+    pub changed: bool,
 }
 
 type ActiveGeometry = (
@@ -82,6 +131,224 @@ struct CanvasSaveData {
     document: ImageDocument,
     store: PixelStore,
     name: String,
+    view: CanvasSavedView,
+}
+
+/// Worker-owned ordinary save; paths remain internal to the App.
+pub(crate) struct CanvasSaveJob {
+    data: CanvasSaveData,
+    path: PathBuf,
+    owner: Option<WriterGuard>,
+    ticket: Arc<AtomicU64>,
+    sequence: u64,
+    generation: u64,
+    binding_epoch: u64,
+    pub revision: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CanvasSavedReceipt {
+    pub persisted_revision: u64,
+    pub manifest_sha256: String,
+}
+
+pub(crate) enum CanvasJobCheckedError<E> {
+    Canvas(CanvasMoveError),
+    Io(String),
+    Commit(E),
+}
+
+impl CanvasSaveJob {
+    pub(crate) fn run(&self) -> Result<Option<CanvasSavedReceipt>, String> {
+        use sha2::{Digest, Sha256};
+        if !CanvasPane::write_canvas_snapshot(
+            &self.data,
+            &self.path,
+            &self.ticket,
+            self.sequence,
+            self.owner.as_ref(),
+        )? {
+            return Ok(None);
+        }
+        // Hash the exact manifest bytes passed to the atomic package writer;
+        // a later save cannot change which snapshot this receipt describes.
+        let manifest_sha256 = format!(
+            "{:x}",
+            Sha256::digest(canvas_manifest(&self.data).as_bytes())
+        );
+        if let Err(error) = remember_canvas_project(&self.path) {
+            log::warn!("canvas: saved package, but could not update registry: {error}");
+        }
+        Ok(Some(CanvasSavedReceipt {
+            persisted_revision: self.revision,
+            manifest_sha256,
+        }))
+    }
+}
+
+/// Formal export snapshot shared by native UI and Agent execution. Composition,
+/// PNG encoding, filesystem IO and persistent registration can run off the UI.
+pub(crate) struct CanvasExportJob {
+    snapshot: CanvasSaveData,
+    project_path: Option<PathBuf>,
+    path: PathBuf,
+    export_stem: String,
+    generation: u64,
+    binding_epoch: u64,
+    pub revision: u64,
+    pub registration_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CanvasExportReceipt {
+    pub source_revision: u64,
+    pub sha256: String,
+    pub width: u32,
+    pub height: u32,
+    pub registration_id: String,
+    pub asset: Option<crate::personal_library::AssetReference>,
+    pub registration_error: Option<String>,
+    pub recovery: Option<Arc<CanvasExportRecovery>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CanvasExportRecovery {
+    path: PathBuf,
+    name: String,
+    registration_id: String,
+    sha256: String,
+    provenance: crate::personal_library::OutputProvenance,
+}
+impl CanvasExportRecovery {
+    /// Reuse the original written PNG and frozen provenance, including when a
+    /// failed journal write left only that original file. Never compose again.
+    pub(crate) fn retry(&self) -> Result<crate::personal_library::AssetReference, String> {
+        use sha2::{Digest, Sha256};
+        let dirs = concat_host::AppDirs::locate()?;
+        let root = dirs.data.join("personal-library");
+        let expected = format!("operation:{}", self.registration_id);
+        if let Some(asset) =
+            crate::registration_retry::registered_operation(&root, &expected, &self.sha256)?
+        {
+            return Ok(asset);
+        }
+        if self.path.parent() != Some(dirs.data.join("canvas-exports").as_path()) {
+            return Err("原 PNG 不在受管导出目录".into());
+        }
+        let metadata = std::fs::symlink_metadata(&self.path).map_err(|e| e.to_string())?;
+        if !metadata.file_type().is_file() || metadata.len() > PROJECT_FILE_LIMIT {
+            return Err("原 PNG 不可用".into());
+        }
+        let bytes = std::fs::read(&self.path).map_err(|e| e.to_string())?;
+        if format!("{:x}", Sha256::digest(&bytes)) != self.sha256 {
+            return Err("原 PNG 的内容已变化".into());
+        }
+        crate::registration_retry::register_output_with_provenance(
+            &root,
+            &self.path,
+            Some(&self.name),
+            Some(&self.registration_id),
+            Some(&bytes),
+            Some(self.provenance.clone()),
+        )?;
+        crate::registration_retry::registered_operation(&root, &expected, &self.sha256)?
+            .ok_or_else(|| "原 PNG 登记回执不可用".into())
+    }
+}
+
+impl CanvasExportJob {
+    pub(crate) fn run(&self, composed_frame: Option<Frame>) -> Result<CanvasExportReceipt, String> {
+        use sha2::{Digest, Sha256};
+        let frame = composed_frame.unwrap_or_else(|| {
+            concat_canvas::compose(&self.snapshot.document, &self.snapshot.store)
+        });
+        let bytes = encode_png(&frame)?;
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let provenance = canvas_export_provenance(&self.snapshot, self.project_path.clone())?;
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        std::fs::write(&self.path, &bytes).map_err(|error| error.to_string())?;
+        let recovery = Arc::new(CanvasExportRecovery {
+            path: self.path.clone(),
+            name: self.export_stem.clone(),
+            registration_id: self.registration_id.clone(),
+            sha256: sha256.clone(),
+            provenance: provenance.clone(),
+        });
+        let (asset, registration_error) = crate::personal_library::with_library_write_lock(|| {
+            let dirs = concat_host::AppDirs::locate()?;
+            let root = dirs.data.join("personal-library");
+            let registration = crate::registration_retry::register_output_with_provenance(
+                &root,
+                &self.path,
+                Some(&self.export_stem),
+                Some(&self.registration_id),
+                Some(&bytes),
+                Some(provenance),
+            );
+            match registration {
+                Err(error) => Ok((None, Some(error))),
+                Ok(()) => {
+                    let library = crate::personal_library::Library::load_for_relink(&root)?;
+                    let expected = format!("operation:{}", self.registration_id);
+                    let asset = library
+                        .items()
+                        .iter()
+                        .find(|asset| {
+                            !asset.trashed
+                                && asset.version.as_ref().is_some_and(|v| {
+                                    v.registration_id == expected && v.sha256 == sha256
+                                })
+                        })
+                        .ok_or("formal export registration receipt missing")?;
+                    crate::personal_library::checked_managed_version_path(&root, asset)?;
+                    Ok((
+                        Some(crate::personal_library::AssetReference {
+                            asset_id: asset.id.clone(),
+                            version: asset.version.clone(),
+                        }),
+                        None,
+                    ))
+                }
+            }
+        })
+        .unwrap_or_else(|error| (None, Some(error)));
+        Ok(CanvasExportReceipt {
+            source_revision: self.revision,
+            sha256,
+            width: frame.width(),
+            height: frame.height(),
+            registration_id: self.registration_id.clone(),
+            asset,
+            recovery: registration_error.as_ref().map(|_| recovery),
+            registration_error,
+        })
+    }
+}
+
+fn canvas_manifest(data: &CanvasSaveData) -> String {
+    let version = if data
+        .document
+        .walk()
+        .iter()
+        .any(|n| matches!(n, LayerNode::Layer(l) if l.vector.is_some()))
+    {
+        2
+    } else {
+        1
+    };
+    serde_json::json!({"concat-project":version,"name":data.name,"width":data.document.width,"height":data.document.height,
+        "document":data.document,"view":data.view}).to_string()
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CanvasSavedView {
+    zoom: f64,
+    pan: (f64, f64),
+    follows_fit: bool,
+    active_layer: Option<concat_canvas::LayerId>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -244,6 +511,8 @@ pub(crate) struct CanvasImport {
     pub(crate) path: PathBuf,
     #[serde(default)]
     pub(crate) display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) library_reference: Option<crate::personal_library::AssetReference>,
 }
 
 impl CanvasImport {
@@ -251,6 +520,7 @@ impl CanvasImport {
         Self {
             path,
             display_name: None,
+            library_reference: None,
         }
     }
 
@@ -259,7 +529,22 @@ impl CanvasImport {
         Self {
             path,
             display_name: (!display_name.is_empty()).then_some(display_name),
+            library_reference: None,
         }
+    }
+
+    pub(crate) fn from_library(asset: &serde_json::Value) -> Self {
+        let mut item = Self::named(
+            PathBuf::from(asset["path"].as_str().unwrap_or_default()),
+            asset["name"].as_str().unwrap_or_default(),
+        );
+        if let Some(id) = asset["id"].as_str().filter(|id| !id.is_empty()) {
+            item.library_reference = Some(crate::personal_library::AssetReference {
+                asset_id: id.to_owned(),
+                version: serde_json::from_value(asset["version"].clone()).ok(),
+            });
+        }
+        item
     }
 
     fn layer_name(&self) -> String {
@@ -279,6 +564,9 @@ impl CanvasImport {
 /// Everything that can happen to the canvas.
 #[derive(Debug)]
 pub enum CanvasMsg {
+    ShapePointer(i32, f64, f64),
+    ShapeFinish(bool, bool),
+    ShapeStyle(i32, String, f32),
     /// The picker came back with files; the first image is the one opened.
     Picked(Vec<std::path::PathBuf>),
     /// Adds images to the current document as separate editable layers.
@@ -491,6 +779,7 @@ pub struct CanvasPane {
     pub stage: (f64, f64),
     /// The open file's name, as the header readout.
     pub name: String,
+    export_operation: Option<String>,
     /// The brush the painting tools drive: diameter in pixels, opacity and
     /// hardness in 0..1, straight-alpha colour, and whether it erases.
     pub brush: BrushSettings,
@@ -521,6 +810,8 @@ pub struct CanvasPane {
     parameter_gesture: Option<ParameterGesture>,
     object_drag: Option<ObjectDrag>,
     transform_session: Option<concat_canvas::LayerId>,
+    shape_session: Option<concat_canvas::LayerId>,
+    shape_drag: Option<ShapeDrag>,
     pending_transform_boundary: Option<PendingTransformBoundary>,
     content_bounds: HashMap<PixelId, Option<(f32, f32, f32, f32)>>,
     pub object_view: Option<(f64, f64, f64, f64, f64)>,
@@ -602,6 +893,7 @@ impl Default for CanvasPane {
             pan: (0.0, 0.0),
             stage: (0.0, 0.0),
             name: String::new(),
+            export_operation: None,
             brush: BrushSettings {
                 diameter: 24.0,
                 opacity: 1.0,
@@ -622,6 +914,8 @@ impl Default for CanvasPane {
             parameter_gesture: None,
             object_drag: None,
             transform_session: None,
+            shape_session: None,
+            shape_drag: None,
             pending_transform_boundary: None,
             content_bounds: HashMap::new(),
             object_view: None,
@@ -662,10 +956,18 @@ impl Default for CanvasPane {
 
 impl CanvasPane {
     fn transform_boundary_label(&mut self, msg: &CanvasMsg) -> Option<&'static str> {
-        let target = self.transform_session?;
+        let target = self.transform_session.or(self.shape_session)?;
         match msg {
+            CanvasMsg::TransformStart
+            | CanvasMsg::TransformSet(..)
+            | CanvasMsg::Nudge(..)
+            | CanvasMsg::Flip(..)
+                if self.shape_session.is_some() =>
+            {
+                Some("继续编辑画布")
+            }
             CanvasMsg::Tool(tool) => {
-                let next = ((*tool).max(0) as usize).min(6);
+                let next = ((*tool).max(0) as usize).min(10);
                 (next != self.tool).then_some("切换工具")
             }
             CanvasMsg::LayerPick(index) => self
@@ -777,7 +1079,7 @@ impl CanvasPane {
     }
 
     pub fn defer_window_close_for_transform(&mut self) -> bool {
-        if self.transform_session.is_none() {
+        if self.transform_session.is_none() && self.shape_session.is_none() {
             return false;
         }
         self.defer_transform_boundary(CanvasBoundaryAction::WindowClose, "关闭窗口");
@@ -785,7 +1087,7 @@ impl CanvasPane {
     }
 
     pub fn defer_navigation_for_transform(&mut self, target: i32) -> bool {
-        if self.transform_session.is_none() {
+        if self.transform_session.is_none() && self.shape_session.is_none() {
             return false;
         }
         let label = if target == 6 {
@@ -820,11 +1122,15 @@ impl CanvasPane {
     /// the same ordered history. Pointer gestures own their transaction from
     /// press through release; immediate commands are wrapped here.
     pub fn update(&mut self, msg: CanvasMsg, studio: &mut Studio) {
+        if self.shape_session.is_some() && matches!(msg, CanvasMsg::ShapeStyle(..)) {
+            return;
+        }
         let Some(msg) = self.route_transform_boundary(msg) else {
             return;
         };
         let previous_revision = self.revision;
         let history = match &msg {
+            CanvasMsg::ShapeStyle(..) if self.transform_session.is_none() => Some(0),
             CanvasMsg::FillSelection => Some(0),
             CanvasMsg::DeleteSelection => Some(0),
             CanvasMsg::LayerToggleVisibility(_) => Some(0),
@@ -870,6 +1176,18 @@ impl CanvasPane {
     /// submits from - the same rule the monitor's drawing keeps.
     fn update_inner(&mut self, msg: CanvasMsg, studio: &mut Studio) {
         match msg {
+            CanvasMsg::ShapePointer(event, x, y) => {
+                self.shape_pointer(event, x, y);
+                self.render(studio);
+            }
+            CanvasMsg::ShapeFinish(commit, closed) => {
+                self.shape_finish(commit, closed);
+                self.render(studio);
+            }
+            CanvasMsg::ShapeStyle(field, text, value) => {
+                self.shape_style(field, &text, value);
+                self.render(studio);
+            }
             CanvasMsg::Picked(paths) => {
                 if let Some(path) = paths.first() {
                     self.request_open(path, studio);
@@ -1438,8 +1756,8 @@ impl CanvasPane {
     /// tray has, but the number arrives over a boundary. The eraser is the
     /// brush with its erasing bit on, so the settings stay shared.
     pub fn set_tool(&mut self, tool: i32) {
-        let next = (tool.max(0) as usize).min(6);
-        if self.transform_session.is_some() && next != self.tool {
+        let next = (tool.max(0) as usize).min(10);
+        if (self.transform_session.is_some() || self.shape_session.is_some()) && next != self.tool {
             self.defer_transform_boundary(
                 CanvasBoundaryAction::Message(CanvasMsg::Tool(next as i32)),
                 "切换工具",
@@ -1696,7 +2014,11 @@ impl CanvasPane {
         let (pixels, transform) = (layer.pixels, layer.transform.canonical_for_edit());
         let frame = self.store.get(pixels)?;
         let bitmap = (frame.width() as f32, frame.height() as f32);
-        let bounds = self.bounds_for_pixel(pixels)?;
+        let bounds = if let Some(shape) = &layer.vector {
+            shape.bounds()?
+        } else {
+            self.bounds_for_pixel(pixels)?
+        };
         Some((id, transform, bounds, bitmap))
     }
 
@@ -1723,9 +2045,30 @@ impl CanvasPane {
             return None;
         }
         let composer = concat_canvas::Composer::new(document, &self.store);
-        candidates
-            .into_iter()
-            .find(|&id| composer.hit_coverage(id, dx as u32, dy as u32) > 1.0 / 255.0)
+        candidates.into_iter().find(|&id| {
+            if composer.hit_coverage(id, dx as u32, dy as u32) > 1.0 / 255.0 {
+                return true;
+            }
+            let Some(LayerNode::Layer(layer)) = document.find(id) else {
+                return false;
+            };
+            let Some(shape) = &layer.vector else {
+                return false;
+            };
+            if !shape.closed {
+                return false;
+            }
+            let size = (document.width as f32, document.height as f32);
+            let Some(p) = layer
+                .transform
+                .to_bitmap((dx as f32, dy as f32), size, size)
+            else {
+                return false;
+            };
+            shape
+                .bounds()
+                .is_some_and(|b| p.0 >= b.0 && p.0 <= b.2 && p.1 >= b.1 && p.1 <= b.3)
+        })
     }
 
     fn handle_at(&self, x: f64, y: f64) -> Option<ObjectDragKind> {
@@ -1943,6 +2286,10 @@ impl CanvasPane {
     }
 
     fn transform_finish(&mut self, commit: bool) {
+        if self.shape_session.is_some() {
+            self.shape_finish(commit, false);
+            return;
+        }
         if self.transform_session.take().is_none() {
             return;
         }
@@ -2182,6 +2529,8 @@ impl CanvasPane {
         self.parameter_gesture = None;
         self.object_drag = None;
         self.transform_session = None;
+        self.shape_session = None;
+        self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.thumbnail_cache.clear();
         self.content_bounds.clear();
@@ -2194,19 +2543,25 @@ impl CanvasPane {
 
     /// Whether the canvas toolbar should enable its history actions.
     pub fn can_undo(&self) -> bool {
-        self.stroke.is_none() && !self.undo_stack.is_empty()
+        self.stroke.is_none() && (self.shape_session.is_some() || !self.undo_stack.is_empty())
     }
 
     pub fn can_redo(&self) -> bool {
-        self.stroke.is_none() && !self.redo_stack.is_empty()
+        self.stroke.is_none() && self.shape_session.is_none() && !self.redo_stack.is_empty()
     }
 
     pub fn transform_session_active(&self) -> bool {
-        self.transform_session.is_some()
+        self.transform_session.is_some() || self.shape_session.is_some()
     }
 
     pub fn is_modified(&self) -> bool {
         self.document.is_some() && self.revision != self.saved_revision
+    }
+
+    pub(crate) fn mcp_texture_limit(&self) -> Option<u32> {
+        self.gpu
+            .as_ref()
+            .map(|gpu| gpu.device().limits().max_texture_dimension_2d)
     }
 
     pub(crate) fn mcp_state(&self) -> (u64, u64, bool) {
@@ -2218,13 +2573,321 @@ impl CanvasPane {
                 || self.parameter_gesture.is_some()
                 || self.pending_history.is_some()
                 || self.transform_session.is_some()
+                || self.shape_session.is_some()
                 || self.pending_transform_boundary.is_some()
                 || self.marquee_start.is_some(),
         )
     }
 
+    /// The existing bound path for the trusted permission view only.
+    pub(crate) fn mcp_project_path(&self) -> Option<&std::path::Path> {
+        self.project_path.as_deref()
+    }
+
     pub(crate) fn mcp_binding_epoch(&self) -> u64 {
         self.mcp_binding_epoch
+    }
+
+    /// A rendering hint only: no filesystem or ownership validation. An
+    /// explicit grant/renew and every actual write still use mcp_writer_ready.
+    pub(crate) fn mcp_move_permission_request_ready(&self) -> Result<(), CanvasMoveError> {
+        self.mcp_writer_preflight(desktop_writer_ownership_supported())?;
+        if self.writer_owner.is_none()
+            && (self.project_path.is_some() || self.autosave_inflight.is_some())
+        {
+            return Err(CanvasMoveError::MissingOwner);
+        }
+        if self.project_path.is_none()
+            && self.writer_owner.is_some()
+            && self.autosave_inflight.is_none()
+        {
+            return Err(CanvasMoveError::UnstableBinding);
+        }
+        Ok(())
+    }
+
+    /// Read-only check of the existing App-held writer and document binding.
+    /// This never acquires a guard, saves, or creates a filesystem entry.
+    pub(crate) fn mcp_writer_ready(&self) -> Result<(), CanvasMoveError> {
+        self.mcp_writer_ready_on_platform(desktop_writer_ownership_supported())
+    }
+
+    fn mcp_writer_preflight(&self, supported: bool) -> Result<(), CanvasMoveError> {
+        if !supported {
+            return Err(CanvasMoveError::UnsupportedPlatform);
+        }
+        if self.document.is_none() {
+            return Err(CanvasMoveError::NoDocument);
+        }
+        if self.open_confirm
+            || self.pending_open.is_some()
+            || self.pending_handoff_paths.is_some()
+            || self.pending_transform_boundary.is_some()
+        {
+            return Err(CanvasMoveError::UnstableBinding);
+        }
+        if self.mcp_state().2 || self.nav.is_gesturing() {
+            return Err(CanvasMoveError::Busy);
+        }
+        Ok(())
+    }
+
+    fn mcp_writer_ready_on_platform(&self, supported: bool) -> Result<(), CanvasMoveError> {
+        self.mcp_writer_preflight(supported)?;
+        match (
+            self.project_path.as_deref(),
+            self.writer_owner.as_ref(),
+            self.autosave_inflight.as_ref(),
+        ) {
+            (Some(path), Some(owner), inflight) => {
+                owner.validate().map_err(CanvasMoveError::Ownership)?;
+                if !owner
+                    .matches_canvas(path)
+                    .map_err(CanvasMoveError::Ownership)?
+                {
+                    return Err(CanvasMoveError::OwnerMismatch);
+                }
+                if inflight.is_some_and(|save| {
+                    save.generation != self.document_generation
+                        || save.path != owner.identity().target()
+                }) {
+                    return Err(CanvasMoveError::UnstableBinding);
+                }
+            }
+            (Some(_), None, _) | (None, None, Some(_)) => {
+                return Err(CanvasMoveError::MissingOwner);
+            }
+            (None, Some(owner), Some(save)) => {
+                owner.validate().map_err(CanvasMoveError::Ownership)?;
+                if save.generation != self.document_generation {
+                    return Err(CanvasMoveError::UnstableBinding);
+                }
+                if save.path != owner.identity().target()
+                    || !owner
+                        .matches_canvas(&save.path)
+                        .map_err(CanvasMoveError::Ownership)?
+                {
+                    return Err(CanvasMoveError::OwnerMismatch);
+                }
+            }
+            (None, Some(_), None) => return Err(CanvasMoveError::UnstableBinding),
+            (None, None, None) => {}
+        }
+        Ok(())
+    }
+
+    /// Translate the current single image selection in one history entry.
+    /// The UI caller caches this result before it refreshes or publishes views.
+    #[cfg(test)]
+    pub(crate) fn mcp_translate_selected(
+        &mut self,
+        layer_id: concat_canvas::LayerId,
+        dx: f64,
+        dy: f64,
+    ) -> Result<CanvasMoveResult, CanvasMoveError> {
+        match self.mcp_translate_selected_checked(layer_id, dx, dy, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(result) => Ok(result),
+            Err(CanvasMoveCheckedError::Canvas(error)) => Err(error),
+            Err(CanvasMoveCheckedError::Commit(never)) => match never {},
+        }
+    }
+
+    /// Calculate read-only, then recheck the owner and caller's lease/session
+    /// at the final commit point within the same exclusive UI callback.
+    pub(crate) fn mcp_translate_selected_checked<E>(
+        &mut self,
+        layer_id: concat_canvas::LayerId,
+        dx: f64,
+        dy: f64,
+        check: impl FnOnce(&Self) -> Result<(), E>,
+    ) -> Result<CanvasMoveResult, CanvasMoveCheckedError<E>> {
+        self.mcp_edit_transform_checked(
+            layer_id,
+            |old| {
+                if !dx.is_finite() || !dy.is_finite() || dx.abs() > 32768.0 || dy.abs() > 32768.0 {
+                    return Err(CanvasMoveError::InvalidDelta);
+                }
+                let x = f64::from(old.x) + dx;
+                let y = f64::from(old.y) + dy;
+                if !x.is_finite()
+                    || !y.is_finite()
+                    || x.abs() > 1_000_000.0
+                    || y.abs() > 1_000_000.0
+                {
+                    return Err(CanvasMoveError::InvalidTransform);
+                }
+                Ok(concat_canvas::LayerTransform {
+                    x: x as f32,
+                    y: y as f32,
+                    ..old
+                })
+            },
+            check,
+        )
+        .map(|result| CanvasMoveResult {
+            x: result.transform.x,
+            y: result.transform.y,
+            changed: result.changed,
+        })
+    }
+
+    /// Set bounded position and uniform scale, preserving rotation, mirror,
+    /// legacy fields and linked-mask anchoring in the ordinary history path.
+    pub(crate) fn mcp_transform_selected_checked<E>(
+        &mut self,
+        layer_id: concat_canvas::LayerId,
+        x: f64,
+        y: f64,
+        scale: f64,
+        check: impl FnOnce(&Self) -> Result<(), E>,
+    ) -> Result<CanvasTransformResult, CanvasMoveCheckedError<E>> {
+        self.mcp_edit_transform_checked(
+            layer_id,
+            |old| {
+                if !old.is_invertible()
+                    || !x.is_finite()
+                    || !y.is_finite()
+                    || x.abs() > 32768.0
+                    || y.abs() > 32768.0
+                    || !scale.is_finite()
+                    || !(0.01..=64.0).contains(&scale)
+                {
+                    return Err(CanvasMoveError::InvalidTransform);
+                }
+                Ok(concat_canvas::LayerTransform {
+                    x: x as f32,
+                    y: y as f32,
+                    scale_x: (scale as f32).copysign(old.scale_x),
+                    scale_y: (scale as f32).copysign(old.scale_y),
+                    ..old
+                })
+            },
+            check,
+        )
+    }
+
+    fn mcp_edit_transform_checked<E>(
+        &mut self,
+        layer_id: concat_canvas::LayerId,
+        transform: impl FnOnce(
+            concat_canvas::LayerTransform,
+        ) -> Result<concat_canvas::LayerTransform, CanvasMoveError>,
+        check: impl FnOnce(&Self) -> Result<(), E>,
+    ) -> Result<CanvasTransformResult, CanvasMoveCheckedError<E>> {
+        let canvas_error = CanvasMoveCheckedError::Canvas;
+        self.mcp_writer_ready().map_err(canvas_error)?;
+        if self.selection.is_some() {
+            return Err(canvas_error(CanvasMoveError::PixelSelection));
+        }
+        if self.paint_mask {
+            return Err(canvas_error(CanvasMoveError::MaskTarget));
+        }
+        let document = self
+            .document
+            .as_ref()
+            .ok_or(CanvasMoveError::NoDocument)
+            .map_err(canvas_error)?;
+        let node = document
+            .find(layer_id)
+            .ok_or(CanvasMoveError::ObjectGone)
+            .map_err(canvas_error)?;
+        if self.active != Some(layer_id) {
+            return Err(canvas_error(CanvasMoveError::SelectionChanged));
+        }
+        let LayerNode::Layer(layer) = node else {
+            return Err(canvas_error(CanvasMoveError::NonImageTarget));
+        };
+        if self.store.get(layer.pixels).is_none() {
+            return Err(canvas_error(CanvasMoveError::MissingPixels));
+        }
+        let old = layer.transform;
+        let next = transform(old).map_err(canvas_error)?;
+        // Check canonical validity while retaining the actual raw legacy fields.
+        if !next.canonical_for_edit().is_valid_edit()
+            || next.x.abs() > 1_000_000.0
+            || next.y.abs() > 1_000_000.0
+        {
+            return Err(canvas_error(CanvasMoveError::InvalidTransform));
+        }
+        if layer.mask.as_ref().is_some_and(|mask| {
+            mask.linked && mask.anchor.is_some_and(|anchor| !anchor.is_invertible())
+        }) {
+            return Err(canvas_error(CanvasMoveError::InvalidAnchor));
+        }
+        let result = CanvasTransformResult {
+            transform: next,
+            changed: next != old,
+        };
+        self.mcp_writer_ready().map_err(canvas_error)?;
+        check(self).map_err(CanvasMoveCheckedError::Commit)?;
+        if !result.changed {
+            return Ok(result);
+        }
+        self.begin_history();
+        let layer = self
+            .document
+            .as_mut()
+            .and_then(|doc| doc.layer_mut(layer_id))
+            .expect("validated layer in exclusive UI callback");
+        if let Some(mask) = layer.mask.as_mut().filter(|mask| mask.linked)
+            && mask.anchor.is_none()
+        {
+            mask.anchor = Some(old);
+        }
+        layer.transform = next;
+        self.commit_history();
+        Ok(result)
+    }
+
+    /// A worker has decoded the exact verified library bytes before this UI
+    /// callback. All fallible checks precede the single ordinary insertion.
+    pub(crate) fn mcp_insert_library_checked<E>(
+        &mut self,
+        item: &CanvasImport,
+        frame: Frame,
+        check: impl FnOnce(&Self) -> Result<(), E>,
+    ) -> Result<concat_canvas::LayerId, CanvasMoveCheckedError<E>> {
+        let canvas_error = CanvasMoveCheckedError::Canvas;
+        self.mcp_writer_ready().map_err(canvas_error)?;
+        validate_canvas_dimensions(
+            frame.width(),
+            frame.height(),
+            self.gpu
+                .as_ref()
+                .map(|gpu| gpu.device().limits().max_texture_dimension_2d),
+        )
+        .map_err(|_| canvas_error(CanvasMoveError::ResourceLimit))?;
+        if self.selection.is_some() {
+            return Err(canvas_error(CanvasMoveError::PixelSelection));
+        }
+        if self.paint_mask {
+            return Err(canvas_error(CanvasMoveError::MaskTarget));
+        }
+        if item
+            .library_reference
+            .as_ref()
+            .and_then(|r| r.version.as_ref())
+            .is_none()
+        {
+            return Err(canvas_error(CanvasMoveError::MissingPixels));
+        }
+        self.mcp_writer_ready().map_err(canvas_error)?;
+        check(self).map_err(CanvasMoveCheckedError::Commit)?;
+        self.begin_history();
+        let id = self.insert_import_frame(item, frame);
+        self.commit_history();
+        Ok(id)
+    }
+
+    /// Refresh after the UI caller has cached a changed move's outcome and
+    /// released its bridge borrow, following the normal canvas edit lifecycle.
+    pub(crate) fn mcp_move_committed(&mut self, studio: &mut Studio) {
+        self.render(studio);
+        if self.is_modified() {
+            self.schedule_auto_save(900);
+        }
     }
 
     /// Starts a stroke: the paint target's pixels are snapshotted for the
@@ -2399,7 +3062,7 @@ impl CanvasPane {
         if self.stroke.is_some() {
             return;
         }
-        if self.transform_session.is_some() {
+        if self.transform_session.is_some() || self.shape_session.is_some() {
             self.transform_finish(false);
             return;
         }
@@ -2425,6 +3088,7 @@ impl CanvasPane {
             return;
         }
         if self.transform_session.is_some()
+            || self.shape_session.is_some()
             || self.object_drag.is_some()
             || self.parameter_gesture.is_some()
         {
@@ -2740,7 +3404,7 @@ impl CanvasPane {
         let document = self.document.as_ref()?;
         let id = self.active?;
         match document.find(id)? {
-            LayerNode::Layer(layer) => Some(layer.pixels),
+            LayerNode::Layer(layer) => layer.vector.is_none().then_some(layer.pixels),
             LayerNode::Group(_) | LayerNode::Adjustment(_) => None,
         }
     }
@@ -2999,7 +3663,13 @@ impl CanvasPane {
             .iter()
             .map(|(node, _)| {
                 let kind = match node {
-                    LayerNode::Layer(_) => 0,
+                    LayerNode::Layer(layer) => {
+                        if layer.vector.is_some() {
+                            3
+                        } else {
+                            0
+                        }
+                    }
                     LayerNode::Group(_) => 1,
                     LayerNode::Adjustment(_) => 2,
                 };
@@ -3362,7 +4032,7 @@ impl CanvasPane {
     /// dialog. The GPU path reads its own texture back; the CPU path
     /// composites from the store.
     fn export_png(&mut self, studio: &mut Studio, to_library: bool) {
-        if self.transform_session.is_some() {
+        if self.transform_session.is_some() || self.export_operation.is_some() {
             return;
         }
         let Some(document) = self.document.clone() else {
@@ -3379,6 +4049,14 @@ impl CanvasPane {
             studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
             return;
         }
+        let snapshot = match self.save_data() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                studio.notify(&error, true);
+                return;
+            }
+        };
+        let project_path = self.project_path.clone();
         let frame = match &mut self.gpu {
             Some(gpu) => gpu.compose_frame(&document, &self.store),
             None => concat_canvas::compose(&document, &self.store),
@@ -3419,31 +4097,109 @@ impl CanvasPane {
             };
             path
         };
-        match encode_png(&frame) {
-            Ok(bytes) => {
-                if let Err(error) = std::fs::write(&path, bytes) {
-                    log::warn!("canvas: {error}");
-                    studio.notify(&tf("Canvas failed: {0}", &[&error.to_string()]), true);
-                } else if to_library {
-                    let path = path.to_string_lossy().into_owned();
-                    let payload = serde_json::json!({
-                        "path": path,
-                        "name": export_stem,
-                    })
-                    .to_string();
-                    crate::host::Shell::with(|_, app| {
-                        app.global::<crate::ui::SeeCut>()
-                            .invoke_action("personal-register-canvas".into(), payload.into());
-                    });
-                } else {
-                    studio.notify("图片已导出", false);
+        let registration_id = uuid::Uuid::new_v4().to_string();
+        let completion_id = registration_id.clone();
+        self.export_operation = Some(registration_id.clone());
+        let job = CanvasExportJob {
+            snapshot,
+            project_path,
+            path,
+            export_stem,
+            generation: self.document_generation,
+            binding_epoch: self.mcp_binding_epoch,
+            revision: self.revision,
+            registration_id,
+        };
+        crate::host::spawn(
+            move || job.run(Some(frame)),
+            move |studio, _, _, result| {
+                if !studio.canvas.finish_export(&completion_id) {
+                    return;
                 }
-            }
-            Err(error) => {
-                log::warn!("canvas: {error}");
-                studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
-            }
+                match result {
+                    Ok(receipt) if receipt.asset.is_some() => {
+                        studio.notify("画布已导出并加入资产库", false);
+                        crate::host::Shell::with(|_, app| {
+                            app.global::<crate::ui::SeeCut>()
+                                .invoke_action("personal-refresh".into(), "".into());
+                        });
+                    }
+                    Ok(receipt) => {
+                        let error = receipt
+                            .registration_error
+                            .as_deref()
+                            .unwrap_or("登记回执待核验");
+                        studio.notify(&format!("画布已导出，入库失败：{error}"), true)
+                    }
+                    Err(error) => {
+                        log::warn!("canvas: {error}");
+                        studio.notify(&tf("Canvas failed: {0}", &[&error]), true);
+                    }
+                }
+            },
+        );
+    }
+
+    pub(crate) fn mcp_prepare_export_checked<E>(
+        &mut self,
+        check: impl FnOnce(&Self) -> Result<(), E>,
+    ) -> Result<CanvasExportJob, CanvasJobCheckedError<E>> {
+        self.mcp_writer_ready()
+            .map_err(CanvasJobCheckedError::Canvas)?;
+        if self.export_operation.is_some() {
+            return Err(CanvasJobCheckedError::Canvas(CanvasMoveError::Busy));
         }
+        let snapshot = self.save_data().map_err(CanvasJobCheckedError::Io)?;
+        validate_canvas_dimensions(
+            snapshot.document.width,
+            snapshot.document.height,
+            self.gpu
+                .as_ref()
+                .map(|gpu| gpu.device().limits().max_texture_dimension_2d),
+        )
+        .map_err(CanvasJobCheckedError::Io)?;
+        let export_stem = safe_export_stem(&self.name);
+        let dirs = concat_host::AppDirs::locate().map_err(CanvasJobCheckedError::Io)?;
+        let path = dirs
+            .data
+            .join("canvas-exports")
+            .join(format!("{}-{export_stem}.png", uuid::Uuid::new_v4()));
+        self.mcp_writer_ready()
+            .map_err(CanvasJobCheckedError::Canvas)?;
+        check(self).map_err(CanvasJobCheckedError::Commit)?;
+        let registration_id = uuid::Uuid::new_v4().to_string();
+        self.export_operation = Some(registration_id.clone());
+        Ok(CanvasExportJob {
+            snapshot,
+            project_path: self.project_path.clone(),
+            path,
+            export_stem,
+            generation: self.document_generation,
+            binding_epoch: self.mcp_binding_epoch,
+            revision: self.revision,
+            registration_id,
+        })
+    }
+
+    /// Late completion cannot clear an unrelated document's busy state.
+    pub(crate) fn mcp_complete_export(&mut self, job: &CanvasExportJob) -> bool {
+        let original = self.document_generation == job.generation
+            && self.mcp_binding_epoch == job.binding_epoch;
+        let finished = self.finish_export(&job.registration_id);
+        original && finished
+    }
+
+    /// Whether the current formal export is still writing or registering its output.
+    pub fn export_busy(&self) -> bool {
+        self.export_operation.is_some()
+    }
+
+    fn finish_export(&mut self, operation: &str) -> bool {
+        if self.export_operation.as_deref() != Some(operation) {
+            return false;
+        }
+        self.export_operation = None;
+        true
     }
 
     /// The document's size, as the navigator wants it: `None` while the
@@ -3494,6 +4250,68 @@ impl CanvasPane {
             return Ok(true);
         }
         self.save_as()
+    }
+
+    /// Prepare the ordinary current-path save; an unnamed canvas requires
+    /// the existing trusted location picker and returns no scheduled job.
+    pub(crate) fn mcp_prepare_save_checked<E>(
+        &mut self,
+        check: impl FnOnce(&Self) -> Result<(), E>,
+    ) -> Result<Option<CanvasSaveJob>, CanvasJobCheckedError<E>> {
+        self.mcp_writer_ready()
+            .map_err(CanvasJobCheckedError::Canvas)?;
+        if self.autosave_inflight.is_some() {
+            return Err(CanvasJobCheckedError::Canvas(CanvasMoveError::Busy));
+        }
+        let Some(path) = self.project_path.clone() else {
+            check(self).map_err(CanvasJobCheckedError::Commit)?;
+            return Ok(None);
+        };
+        let data = self.save_data().map_err(CanvasJobCheckedError::Io)?;
+        let owner = self.writer_owner.clone();
+        self.mcp_writer_ready()
+            .map_err(CanvasJobCheckedError::Canvas)?;
+        check(self).map_err(CanvasJobCheckedError::Commit)?;
+        let ticket = canvas_save_ticket(&path);
+        let sequence = ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        self.autosave_inflight = Some(AutoSaveInFlight {
+            generation: self.document_generation,
+            path: path.clone(),
+            revision: self.revision,
+            sequence,
+        });
+        self.autosave_pending = false;
+        Ok(Some(CanvasSaveJob {
+            data,
+            path,
+            owner,
+            ticket,
+            sequence,
+            generation: self.document_generation,
+            binding_epoch: self.mcp_binding_epoch,
+            revision: self.revision,
+        }))
+    }
+
+    pub(crate) fn mcp_complete_save(&mut self, job: &CanvasSaveJob, written: bool) -> Option<bool> {
+        if self.mcp_binding_epoch != job.binding_epoch {
+            return None;
+        }
+        let dirty = self.complete_auto_save(
+            job.generation,
+            &job.path,
+            job.revision,
+            &job.ticket,
+            job.sequence,
+            written,
+        )?;
+        if written {
+            notify_canvas_registry_changed();
+        }
+        if dirty {
+            self.schedule_auto_save(350);
+        }
+        Some(dirty)
     }
 
     /// Opens the Save As dialog and records the chosen path only after the
@@ -3767,6 +4585,7 @@ impl CanvasPane {
             || self.parameter_gesture.is_some()
             || self.object_drag.is_some()
             || self.transform_session.is_some()
+            || self.shape_session.is_some()
             || self.stroke.is_some()
     }
 
@@ -3792,6 +4611,9 @@ impl CanvasPane {
     }
 
     fn save_data(&self) -> Result<CanvasSaveData, String> {
+        if self.shape_session.is_some() {
+            return Err("请先完成或取消形状编辑".into());
+        }
         Ok(CanvasSaveData {
             document: self
                 .document
@@ -3799,6 +4621,12 @@ impl CanvasPane {
                 .ok_or_else(|| tf("No image open", &[]))?,
             store: self.store.clone(),
             name: self.name.clone(),
+            view: CanvasSavedView {
+                zoom: self.nav.viewport().zoom(),
+                pan: self.nav.viewport().pan(),
+                follows_fit: self.nav.viewport().follows_fit(),
+                active_layer: self.active,
+            },
         })
     }
 
@@ -3849,11 +4677,18 @@ impl CanvasPane {
         used.dedup();
         if used.len() > PROJECT_BITMAP_LIMIT
             || checked_frame_bytes(document.width, document.height)
-                .unwrap_or(usize::MAX)
-                .checked_mul(used.len())
                 .is_none_or(|bytes| bytes > PROJECT_PIXEL_LIMIT)
         {
             return Err("save: project pixel data is too large".into());
+        }
+        let mut pixel_bytes = 0;
+        for id in &used {
+            let frame = data
+                .store
+                .get(*id)
+                .ok_or_else(|| format!("save: pixels {id:?} are gone"))?;
+            pixel_bytes = checked_project_pixel_bytes(pixel_bytes, frame.width(), frame.height())
+                .ok_or("save: project pixel data is too large")?;
         }
 
         let staging = sibling_temp(path);
@@ -3870,14 +4705,7 @@ impl CanvasPane {
                 )
                 .map_err(|e| format!("save: {e}"))?;
             }
-            let manifest = serde_json::json!({
-                "concat-project": 1,
-                "name": data.name,
-                "width": document.width,
-                "height": document.height,
-                "document": document,
-            })
-            .to_string();
+            let manifest = canvas_manifest(data);
             std::fs::write(staging.join("manifest.json"), manifest)
                 .map_err(|e| format!("save: {e}"))?;
             let preview = concat_canvas::compose(document, &data.store);
@@ -3947,7 +4775,10 @@ impl CanvasPane {
         let manifest_bytes = std::fs::read(manifest_path).map_err(|e| format!("open: {e}"))?;
         let manifest: serde_json::Value =
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("open: {e}"))?;
-        if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(1) {
+        if !matches!(
+            manifest.get("concat-project").and_then(|v| v.as_u64()),
+            Some(1 | 2)
+        ) {
             return Err("open: not a concat project".into());
         }
         let document: ImageDocument = serde_json::from_value(
@@ -3963,6 +4794,21 @@ impl CanvasPane {
         validate_canvas_dimensions(document.width, document.height, texture_limit)
             .map_err(|error| format!("open: {error}"))?;
         document.validate().map_err(|e| format!("open: {e}"))?;
+        let saved_view: Option<CanvasSavedView> = manifest
+            .get("view")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|error| format!("open: invalid view: {error}"))?;
+        if saved_view.as_ref().is_some_and(|view| {
+            !view.zoom.is_finite()
+                || !(0.001..=32.0).contains(&view.zoom)
+                || !view.pan.0.is_finite()
+                || !view.pan.1.is_finite()
+                || view.pan.0.abs() > 1e9
+                || view.pan.1.abs() > 1e9
+        }) {
+            return Err("open: invalid saved view".into());
+        }
 
         let mut used = Vec::new();
         document.collect_pixels(&mut used);
@@ -3973,13 +4819,10 @@ impl CanvasPane {
         }
         let canvas_bytes =
             checked_frame_bytes(document.width, document.height).unwrap_or(usize::MAX);
-        if canvas_bytes == 0
-            || canvas_bytes
-                .checked_mul(used.len())
-                .is_none_or(|bytes| bytes > PROJECT_PIXEL_LIMIT)
-        {
+        if canvas_bytes == 0 || canvas_bytes > PROJECT_PIXEL_LIMIT {
             return Err("open: project pixel data is too large".into());
         }
+        let mut pixel_bytes = 0;
         let mut store = PixelStore::new();
         for id in &used {
             let file = path.join("images").join(format!("{}.png", id.as_u64()));
@@ -3991,12 +4834,31 @@ impl CanvasPane {
                 return Err("open: project bitmap is too large".into());
             }
             let bytes = std::fs::read(&file).map_err(|e| format!("open: {e}"))?;
-            let (width, height, rgba) = decode_png(&bytes, texture_limit)?;
-            if width != document.width || height != document.height {
-                return Err("open: project bitmap dimensions do not match canvas".into());
-            }
+            // Layers and masks retain their own bitmap dimensions. Check
+            // their cumulative RGBA budget before the decoder allocates pixels.
+            let (width, height, rgba) = decode_png_with_pixel_budget(
+                &bytes,
+                texture_limit,
+                PROJECT_PIXEL_LIMIT - pixel_bytes,
+            )?;
+            pixel_bytes = checked_project_pixel_bytes(pixel_bytes, width, height)
+                .ok_or("open: project pixel data is too large")?;
             let frame = Frame::from_rgba(width, height, rgba).ok_or("open: empty image")?;
             store.restore(*id, frame);
+        }
+
+        for node in document.walk() {
+            if let LayerNode::Layer(layer) = node
+                && let Some(shape) = &layer.vector
+            {
+                if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(2) {
+                    return Err("open: vector geometry requires project version 2".into());
+                }
+                let frame = shape
+                    .rasterize(document.width, document.height)
+                    .ok_or("open: cannot rebuild shape cache")?;
+                store.replace(layer.pixels, frame);
+            }
         }
 
         if let Some(owner) = &owner {
@@ -4030,6 +4892,8 @@ impl CanvasPane {
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
         self.object_drag = None;
         self.transform_session = None;
+        self.shape_session = None;
+        self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.parameter_gesture = None;
         self.autosave_inflight = None;
@@ -4060,6 +4924,23 @@ impl CanvasPane {
         let size = (f64::from(width), f64::from(height));
         self.nav.set_document(Some(size));
         self.nav.viewport_mut().fit(size);
+        if let Some(view) = saved_view {
+            if !view.follows_fit {
+                let viewport = self.nav.viewport_mut();
+                viewport.set_zoom(view.zoom, viewport.center(), size);
+                let pan = viewport.pan();
+                viewport.translate((view.pan.0 - pan.0, view.pan.1 - pan.1));
+            }
+            if let Some(active) = view.active_layer
+                && let Some(node) = self
+                    .document
+                    .as_ref()
+                    .and_then(|document| document.find(active))
+            {
+                self.active = Some(active);
+                self.layer = node_image_pixels(node);
+            }
+        }
         self.sync_view();
         Ok(())
     }
@@ -4150,6 +5031,9 @@ impl CanvasPane {
         self.invalidate_auto_save();
         let (width, height) = (width.clamp(64, 4096), height.clamp(64, 4096));
         self.store = PixelStore::new();
+        self.thumbnail_cache.clear();
+        self.content_bounds.clear();
+        self.pixel_revisions.clear();
         let pixels = self.store.put(Frame::transparent(width, height));
         let mut document = ImageDocument::new(width, height);
         let layer = document.new_layer("图层 1", pixels);
@@ -4168,6 +5052,8 @@ impl CanvasPane {
         self.document_generation = self.document_generation.wrapping_add(1).max(1);
         self.object_drag = None;
         self.transform_session = None;
+        self.shape_session = None;
+        self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.parameter_gesture = None;
         self.autosave_inflight = None;
@@ -4200,7 +5086,7 @@ impl CanvasPane {
                     .map(|device| device.limits().max_texture_dimension_2d)
             });
         for item in paths {
-            if let Err(error) = decode(&item.path, texture_limit) {
+            if let Err(error) = decode_import(item, texture_limit) {
                 studio.notify(&format!("无法导入 {}：{error}", item.path.display()), true);
                 return false;
             }
@@ -4225,7 +5111,7 @@ impl CanvasPane {
             });
         let mut decoded = Vec::with_capacity(paths.len());
         for item in paths {
-            match decode(&item.path, texture_limit) {
+            match decode_import(item, texture_limit) {
                 Ok(frame) => decoded.push((item, frame)),
                 Err(error) => {
                     studio.notify(&format!("无法导入 {}：{error}", item.path.display()), true);
@@ -4234,54 +5120,75 @@ impl CanvasPane {
             }
         }
         if self.document.is_none() {
-            self.open_now(&paths[0].path, studio);
-            if self.document.is_none() {
-                return false;
-            }
-            let name = paths[0].layer_name();
+            let (first, frame) = decoded.remove(0);
+            self.open_frame(&first.path, frame, studio);
+            let name = first.layer_name();
             self.name = name.clone();
             if let Some(active) = self.active
                 && let Some(document) = self.document.as_mut()
                 && let Some(layer) = document.layer_mut(active)
             {
                 layer.name = name;
+                layer.library_asset = paths[0].library_reference.as_ref().map(|reference| {
+                    serde_json::to_value(reference).expect("library reference serializes")
+                });
             }
-            decoded.remove(0);
         }
-        let (width, height) = self
-            .document
-            .as_ref()
-            .map(|document| (document.width, document.height))
-            .expect("checked");
         for (item, frame) in decoded {
-            let fit = (width as f64 / frame.width() as f64)
-                .min(height as f64 / frame.height() as f64)
-                .min(1.0);
-            let pixels = self.store.put(frame);
-            let name = item.layer_name();
-            let id = self
-                .document
-                .as_mut()
-                .expect("checked")
-                .new_layer(name, pixels);
-            if let Some(layer) = self
-                .document
-                .as_mut()
-                .and_then(|document| document.layer_mut(id))
-            {
-                layer.transform.scale_x = fit as f32;
-                layer.transform.scale_y = fit as f32;
-            }
-            self.active = Some(id);
-            self.layer = Some(pixels);
+            self.insert_import_frame(item, frame);
         }
         self.render(studio);
         true
     }
 
+    /// Shared insertion semantics for picker/library handoff and the MCP edit.
+    fn insert_import_frame(&mut self, item: &CanvasImport, frame: Frame) -> concat_canvas::LayerId {
+        let document = self
+            .document
+            .as_ref()
+            .expect("insertion requires an open document");
+        let fit = (document.width as f64 / frame.width() as f64)
+            .min(document.height as f64 / frame.height() as f64)
+            .min(1.0);
+        let pixels = self.store.put(frame);
+        let id = self
+            .document
+            .as_mut()
+            .expect("open document")
+            .new_layer(item.layer_name(), pixels);
+        let layer = self
+            .document
+            .as_mut()
+            .and_then(|document| document.layer_mut(id))
+            .expect("new image layer");
+        layer.transform.scale_x = fit as f32;
+        layer.transform.scale_y = fit as f32;
+        layer.library_asset = item.library_reference.as_ref().map(|reference| {
+            serde_json::to_value(reference).expect("library reference serializes")
+        });
+        self.active = Some(id);
+        self.layer = Some(pixels);
+        id
+    }
+
     fn request_open(&mut self, path: &Path, studio: &mut Studio) {
         match self.owns_canvas_path(path) {
-            Ok(true) => return,
+            Ok(true) => {
+                if let Some(paths) = self.pending_handoff_paths.take() {
+                    self.begin_history_mode(0);
+                    let success = self.import_layers(&paths, studio);
+                    self.commit_history();
+                    report_canvas_handoff(
+                        success,
+                        if success {
+                            ""
+                        } else {
+                            "画布素材导入失败，请重试"
+                        },
+                    );
+                }
+                return;
+            }
             Ok(false) => {}
             Err(error) => {
                 studio.notify(&tf("Could not open {0}", &[&error]), true);
@@ -4349,54 +5256,7 @@ impl CanvasPane {
         }
         match decode(path, texture_limit) {
             Ok(frame) => {
-                self.invalidate_auto_save();
-                let (width, height) = (frame.width(), frame.height());
-                let mut document = ImageDocument::new(width, height);
-                self.store = PixelStore::new();
-                self.thumbnail_cache.clear();
-                self.content_bounds.clear();
-                self.pixel_revisions.clear();
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.reset_document();
-                }
-                let pixels = self.store.put(frame);
-                let base = document.new_layer(
-                    path.file_stem().unwrap_or_default().to_string_lossy(),
-                    pixels,
-                );
-                self.document = Some(document);
-                self.layer = Some(pixels);
-                self.active = Some(base);
-                self.selection = None;
-                self.marquee = None;
-                self.undo_stack.clear();
-                self.redo_stack.clear();
-                self.pending_history = None;
-                self.revision = self.allocate_revision();
-                self.saved_revision = 0;
-                self.document_generation = self.document_generation.wrapping_add(1).max(1);
-                self.object_drag = None;
-                self.transform_session = None;
-                self.pending_transform_boundary = None;
-                self.parameter_gesture = None;
-                self.autosave_inflight = None;
-                self.autosave_pending = false;
-                self.pending_open = None;
-                self.open_confirm = false;
-                self.project_path = None;
-                self.writer_owner = None;
-                self.name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                self.failed = false;
-                self.checker = checker_image(width, height);
-                // The view starts over: fitted to what was just opened, in
-                // whatever box the pane has.
-                let size = (f64::from(width), f64::from(height));
-                self.nav.set_document(Some(size));
-                self.nav.viewport_mut().fit(size);
-                self.render(studio);
+                self.open_frame(path, frame, studio);
             }
             Err(error) => {
                 log::warn!("canvas: {error}");
@@ -4406,6 +5266,59 @@ impl CanvasPane {
                 }
             }
         }
+    }
+
+    fn open_frame(&mut self, path: &Path, frame: Frame, studio: &mut Studio) {
+        self.invalidate_auto_save();
+        let (width, height) = (frame.width(), frame.height());
+        let mut document = ImageDocument::new(width, height);
+        self.store = PixelStore::new();
+        self.thumbnail_cache.clear();
+        self.content_bounds.clear();
+        self.pixel_revisions.clear();
+        if let Some(gpu) = &mut self.gpu {
+            gpu.reset_document();
+        }
+        let pixels = self.store.put(frame);
+        let base = document.new_layer(
+            path.file_stem().unwrap_or_default().to_string_lossy(),
+            pixels,
+        );
+        self.document = Some(document);
+        self.layer = Some(pixels);
+        self.active = Some(base);
+        self.selection = None;
+        self.marquee = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.pending_history = None;
+        self.revision = self.allocate_revision();
+        self.saved_revision = 0;
+        self.document_generation = self.document_generation.wrapping_add(1).max(1);
+        self.object_drag = None;
+        self.transform_session = None;
+        self.shape_session = None;
+        self.shape_drag = None;
+        self.pending_transform_boundary = None;
+        self.parameter_gesture = None;
+        self.autosave_inflight = None;
+        self.autosave_pending = false;
+        self.pending_open = None;
+        self.open_confirm = false;
+        self.project_path = None;
+        self.writer_owner = None;
+        self.name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.failed = false;
+        self.checker = checker_image(width, height);
+        // The view starts over: fitted to what was just opened, in
+        // whatever box the pane has.
+        let size = (f64::from(width), f64::from(height));
+        self.nav.set_document(Some(size));
+        self.nav.viewport_mut().fit(size);
+        self.render(studio);
     }
 
     /// Composites the document and publishes the picture. The GPU path
@@ -4736,6 +5649,9 @@ impl CanvasPane {
     /// Writes the composed canvas to `path` as PNG - the export without
     /// the save dialog, which an unattended run cannot answer.
     pub fn agent_export_png(&mut self, path: &Path) -> Result<(), String> {
+        if self.shape_session.is_some() {
+            return Err("请先完成或取消形状编辑".into());
+        }
         let Some(document) = self.document.clone() else {
             return Err(tf("No image open", &[]));
         };
@@ -4971,7 +5887,7 @@ impl CanvasPane {
         if self.owns_canvas_path(path)? {
             return Ok(());
         }
-        if self.transform_session.is_some() {
+        if self.transform_session.is_some() || self.shape_session.is_some() {
             self.defer_transform_boundary(
                 CanvasBoundaryAction::Message(CanvasMsg::Picked(vec![path.to_owned()])),
                 "打开其他画布",
@@ -5032,6 +5948,8 @@ impl CanvasPane {
                     self.document_generation = self.document_generation.wrapping_add(1).max(1);
                     self.object_drag = None;
                     self.transform_session = None;
+                    self.shape_session = None;
+                    self.shape_drag = None;
                     self.pending_transform_boundary = None;
                     self.parameter_gesture = None;
                     self.autosave_inflight = None;
@@ -5549,6 +6467,12 @@ fn checked_frame_bytes(width: u32, height: u32) -> Option<usize> {
         .checked_mul(4)
 }
 
+fn checked_project_pixel_bytes(total: usize, width: u32, height: u32) -> Option<usize> {
+    total
+        .checked_add(checked_frame_bytes(width, height)?)
+        .filter(|&bytes| bytes <= PROJECT_PIXEL_LIMIT)
+}
+
 fn unique_sibling(path: &Path, kind: &str) -> std::path::PathBuf {
     static NEXT_SAVE: AtomicU64 = AtomicU64::new(1);
     loop {
@@ -5602,15 +6526,91 @@ fn encode_png(frame: &Frame) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+fn canvas_export_provenance(
+    data: &CanvasSaveData,
+    project_path: Option<PathBuf>,
+) -> Result<crate::personal_library::OutputProvenance, String> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(serde_json::to_vec(&data.document).map_err(|error| error.to_string())?);
+    let mut pixels = Vec::new();
+    data.document.collect_pixels(&mut pixels);
+    pixels.sort();
+    pixels.dedup();
+    for id in pixels {
+        let frame = data
+            .store
+            .get(id)
+            .ok_or("export: source pixels are missing")?;
+        hash.update(id.as_u64().to_le_bytes());
+        hash.update(frame.width().to_le_bytes());
+        hash.update(frame.height().to_le_bytes());
+        hash.update(frame.pixels());
+    }
+    let mut inputs = Vec::new();
+    let mut layers = Vec::new();
+    for node in data.document.walk() {
+        if let LayerNode::Layer(layer) = node {
+            if let Some(value) = &layer.library_asset {
+                let reference: crate::personal_library::AssetReference =
+                    serde_json::from_value(value.clone())
+                        .map_err(|error| format!("export: invalid library reference: {error}"))?;
+                if !inputs.contains(&reference) {
+                    inputs.push(reference);
+                }
+            }
+            layers.push(
+                serde_json::json!({"layer_id": layer.id.as_u64(), "transform": layer.transform,
+                "opacity": layer.opacity, "hidden": layer.hidden, "vector": layer.vector}),
+            );
+        }
+    }
+    Ok(crate::personal_library::OutputProvenance {
+        kind: "canvas_export".into(),
+        project_path,
+        document_sha256: format!("{:x}", hash.finalize()),
+        inputs,
+        parameters: serde_json::json!({"format": "png", "alpha": "straight", "width": data.document.width,
+            "height": data.document.height, "layers": layers, "document": data.document}),
+    })
+}
+
+pub(crate) fn decode_import(
+    item: &CanvasImport,
+    texture_limit: Option<u32>,
+) -> Result<Frame, String> {
+    decode_version(
+        &item.path,
+        texture_limit,
+        item.library_reference
+            .as_ref()
+            .and_then(|reference| reference.version.as_ref()),
+    )
+}
+
 /// Decodes an image file into straight-alpha RGBA. PNG through the `png`
 /// crate, which the window already keeps; everything else through `image`,
 /// whose feature set here covers the JPEG the artwork cache wanted - a
 /// format outside that set is the error, not a panic.
 fn decode(path: &Path, texture_limit: Option<u32>) -> Result<Frame, String> {
+    decode_version(path, texture_limit, None)
+}
+
+fn decode_version(
+    path: &Path,
+    texture_limit: Option<u32>,
+    version: Option<&crate::personal_library::AssetVersion>,
+) -> Result<Frame, String> {
     if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > PROJECT_FILE_LIMIT {
         return Err("image file is too large".into());
     }
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    if let Some(version) = version {
+        use sha2::{Digest, Sha256};
+        if format!("{:x}", Sha256::digest(&bytes)) != version.sha256 {
+            return Err("库内素材版本已变化，请重新选择".into());
+        }
+    }
     let name = path
         .extension()
         .map(|e| e.to_ascii_lowercase().to_string_lossy().into_owned())
@@ -5638,6 +6638,14 @@ fn decode(path: &Path, texture_limit: Option<u32>) -> Result<Frame, String> {
 /// PNG to RGBA, any of the colour types a still is likely to come in.
 /// Returns `(width, height, rgba)`.
 fn decode_png(bytes: &[u8], texture_limit: Option<u32>) -> Result<(u32, u32, Vec<u8>), String> {
+    decode_png_with_pixel_budget(bytes, texture_limit, PROJECT_PIXEL_LIMIT)
+}
+
+fn decode_png_with_pixel_budget(
+    bytes: &[u8],
+    texture_limit: Option<u32>,
+    pixel_budget: usize,
+) -> Result<(u32, u32, Vec<u8>), String> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_limits(png::Limits {
         bytes: PROJECT_PIXEL_LIMIT,
@@ -5649,6 +6657,9 @@ fn decode_png(bytes: &[u8], texture_limit: Option<u32>) -> Result<(u32, u32, Vec
         (info.width, info.height)
     };
     validate_canvas_dimensions(width, height, texture_limit)?;
+    if checked_frame_bytes(width, height).is_none_or(|bytes| bytes > pixel_budget) {
+        return Err("project pixel data is too large".into());
+    }
     let mut buffer = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buffer).map_err(|e| e.to_string())?;
     let plain = &buffer[..info.buffer_size()];
@@ -5705,14 +6716,148 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mcp_canvas_transform_keeps_signed_mirror_mask_anchor_and_one_undo() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, pixels) = painting_pane();
+        let id = pane.active.unwrap();
+        let old = concat_canvas::LayerTransform {
+            x: 17.0,
+            y: -23.0,
+            scale_x: -2.0,
+            scale_y: 0.5,
+            rotation: 0.73,
+            flip_h: true,
+            flip_v: false,
+        };
+        let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+        layer.transform = old;
+        layer.mask = Some(LayerMask::new(pixels));
+        let before = pane.snapshot().unwrap();
+        let result = pane
+            .mcp_transform_selected_checked(id, 1.25, 2.5, 0.75, |_| Ok::<(), u8>(()))
+            .unwrap();
+        let expected = concat_canvas::LayerTransform {
+            x: 1.25,
+            y: 2.5,
+            scale_x: -0.75,
+            scale_y: 0.75,
+            ..old
+        };
+        assert_eq!(result.transform, expected);
+        assert!(result.changed);
+        let layer = pane.document.as_ref().unwrap().find(id).unwrap();
+        let LayerNode::Layer(layer) = layer else {
+            panic!("image")
+        };
+        assert_eq!(layer.mask.unwrap().anchor, Some(old));
+        assert_eq!(pane.undo_stack.len(), 1);
+        assert!(pane.pending_history.is_none());
+        pane.undo();
+        assert!(pane.snapshot().unwrap().same_state(&before));
+    }
+
+    #[test]
+    fn mcp_canvas_insert_final_refusal_keeps_pixels_history_and_revision_then_commits_one_layer() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let before = pane.snapshot().unwrap();
+        let store = pane.store.clone();
+        let revision = pane.revision;
+        let item = CanvasImport {
+            path: "/synthetic-not-read.png".into(),
+            display_name: Some("库内图片".into()),
+            library_reference: Some(crate::personal_library::AssetReference {
+                asset_id: "source".into(),
+                version: Some(crate::personal_library::AssetVersion {
+                    sha256: "a".repeat(64),
+                    registration_id: "imported:source".into(),
+                    previous_id: None,
+                }),
+            }),
+        };
+        assert!(matches!(
+            pane.mcp_insert_library_checked(&item, Frame::transparent(32, 16), |_| Err(7_u8)),
+            Err(CanvasMoveCheckedError::Commit(7))
+        ));
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert!(pane.store.same_versions(&store));
+        assert_eq!(pane.revision, revision);
+        assert!(pane.undo_stack.is_empty());
+        let id = pane
+            .mcp_insert_library_checked(&item, Frame::transparent(32, 16), |_| Ok::<(), u8>(()))
+            .unwrap();
+        assert_eq!(pane.active, Some(id));
+        assert_eq!(pane.undo_stack.len(), 1);
+        assert!(pane.revision > revision);
+        let LayerNode::Layer(layer) = pane.document.as_ref().unwrap().find(id).unwrap() else {
+            panic!("image")
+        };
+        assert_eq!(layer.name, "库内图片");
+        assert_eq!(
+            layer.library_asset,
+            Some(serde_json::to_value(item.library_reference.unwrap()).unwrap())
+        );
+        pane.undo();
+        assert!(pane.snapshot().unwrap().same_state(&before));
+    }
+
+    #[test]
+    fn mcp_canvas_late_export_releases_original_slot_without_clearing_another_operation() {
+        let (mut pane, _) = painting_pane();
+        let job = CanvasExportJob {
+            snapshot: pane.save_data().unwrap(),
+            project_path: None,
+            path: "/synthetic-not-written.png".into(),
+            export_stem: "test".into(),
+            generation: pane.document_generation,
+            binding_epoch: pane.mcp_binding_epoch,
+            revision: pane.revision,
+            registration_id: "first".into(),
+        };
+        pane.export_operation = Some("first".into());
+        pane.document_generation += 1;
+        pane.mcp_binding_epoch += 1;
+        assert!(!pane.mcp_complete_export(&job));
+        assert!(pane.export_operation.is_none());
+        pane.export_operation = Some("second".into());
+        assert!(!pane.mcp_complete_export(&job));
+        assert_eq!(pane.export_operation.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn mcp_canvas_transform_does_not_anchor_a_linked_mask_to_invalid_source() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, pixels) = painting_pane();
+        let id = pane.active.unwrap();
+        let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+        layer.transform.scale_x = 0.0;
+        layer.mask = Some(LayerMask::new(pixels));
+        let before = pane.snapshot().unwrap();
+        assert!(matches!(
+            pane.mcp_transform_selected_checked(id, 0.0, 0.0, 1.0, |_| Ok::<(), u8>(())),
+            Err(CanvasMoveCheckedError::Canvas(
+                CanvasMoveError::InvalidTransform
+            ))
+        ));
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert!(pane.undo_stack.is_empty());
+    }
+
+    #[test]
     fn a_tool_stays_in_the_tray() {
         let mut pane = CanvasPane::default();
         pane.set_tool(4);
         assert_eq!(pane.tool, 4);
         pane.set_tool(6);
         assert_eq!(pane.tool, 6);
-        pane.set_tool(9);
-        assert_eq!(pane.tool, 6, "a tool past the tray is the last one");
+        pane.set_tool(99);
+        assert_eq!(pane.tool, 10, "a tool past the tray is the last one");
         pane.set_tool(-4);
         assert_eq!(pane.tool, 0, "a tool before the tray is the first one");
     }
@@ -7196,6 +8341,92 @@ mod tests {
     }
 
     #[test]
+    fn mixed_dimension_project_preserves_each_bitmap_and_transform() {
+        let root = ownership_test_root();
+        let path = root.join("mixed-dimensions.comp");
+        let (mut pane, base_pixels) = painting_pane();
+        pane.name = "混尺寸画布".to_owned();
+        let mut expected_frames = vec![(base_pixels, pane.store.get(base_pixels).unwrap())];
+        for (width, height, color, x, y, scale) in [
+            (37, 23, [30, 80, 240, 255], 55.0, -30.0, 1.5),
+            (420, 260, [240, 40, 20, 128], -45.0, 20.0, 0.75),
+        ] {
+            let frame = Frame::from_rgba(width, height, color.repeat((width * height) as usize))
+                .expect("fixture pixels");
+            let pixels = pane.store.put(frame);
+            expected_frames.push((pixels, pane.store.get(pixels).unwrap()));
+            let document = pane.document.as_mut().unwrap();
+            let layer = document.new_layer(format!("{width}x{height}"), pixels);
+            let Some(LayerNode::Layer(layer)) = document.find_mut(layer) else {
+                panic!("image layer");
+            };
+            layer.transform.x = x;
+            layer.transform.y = y;
+            layer.transform.scale_x = scale;
+            layer.transform.scale_y = scale;
+        }
+        let document = pane.document.as_ref().unwrap();
+        let tree = document.to_json().unwrap();
+        let composed = concat_canvas::compose(document, &pane.store);
+        pane.agent_save_comp(&path).expect("save mixed sizes");
+        let manifest = std::fs::read(path.join("manifest.json")).unwrap();
+        drop(pane);
+
+        let mut reopened = CanvasPane::default();
+        reopened.agent_open(&path).expect("reopen mixed sizes");
+        let document = reopened.document.as_ref().unwrap();
+        assert_eq!((document.width, document.height), (300, 200));
+        assert_eq!(document.to_json().unwrap(), tree);
+        for (id, expected) in expected_frames {
+            let actual = reopened.store.get(id).expect("original pixel id");
+            assert_eq!(
+                (actual.width(), actual.height()),
+                (expected.width(), expected.height())
+            );
+            assert_eq!(actual.pixels(), expected.pixels());
+        }
+        assert_eq!(
+            concat_canvas::compose(document, &reopened.store).pixels(),
+            composed.pixels()
+        );
+        reopened
+            .agent_save_comp(&path)
+            .expect("save reopened sizes");
+        assert_eq!(std::fs::read(path.join("manifest.json")).unwrap(), manifest);
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mixed_dimension_project_budget_counts_actual_rgba_before_decoding() {
+        let total = checked_project_pixel_bytes(0, 1920, 1080).unwrap();
+        assert_eq!(
+            checked_project_pixel_bytes(total, 320, 240),
+            Some(total + 320 * 240 * 4)
+        );
+        assert_eq!(
+            checked_project_pixel_bytes(PROJECT_PIXEL_LIMIT - 4, 1, 1),
+            Some(PROJECT_PIXEL_LIMIT)
+        );
+        assert_eq!(
+            checked_project_pixel_bytes(PROJECT_PIXEL_LIMIT - 3, 1, 1),
+            None
+        );
+        assert_eq!(checked_project_pixel_bytes(usize::MAX, 1, 1), None);
+        assert_eq!(checked_project_pixel_bytes(0, u32::MAX, u32::MAX), None);
+
+        let bytes = encode_png(&Frame::black(2, 2)).unwrap();
+        assert!(decode_png_with_pixel_budget(&bytes, None, 16).is_ok());
+        let error = decode_png_with_pixel_budget(&bytes, None, 15).unwrap_err();
+        assert!(error.contains("project pixel data is too large"));
+        assert!(
+            decode_png_with_pixel_budget(&bytes, Some(1), 16)
+                .unwrap_err()
+                .contains("1px texture limit")
+        );
+    }
+
+    #[test]
     fn a_project_package_round_trips_through_a_save_and_a_load() {
         let (mut pane, pixels) = painting_pane();
         pane.name = "分层画布".to_owned();
@@ -7369,6 +8600,725 @@ mod tests {
         assert_eq!(reopened.project_path.as_deref(), Some(path.as_path()));
         assert!(!reopened.is_modified());
         std::fs::remove_dir_all(&dir).expect("remove isolated fixture");
+    }
+
+    fn mcp_assert_move_rejected(
+        pane: &mut CanvasPane,
+        id: concat_canvas::LayerId,
+        dx: f64,
+        dy: f64,
+        expected: impl FnOnce(&CanvasMoveError) -> bool,
+    ) {
+        // Debug preserves NaN/Inf fields too, unlike float PartialEq.
+        let document = format!("{:?}", pane.document);
+        let store = pane.store.clone();
+        let history = (
+            pane.undo_stack.len(),
+            pane.redo_stack.len(),
+            pane.pending_history.is_some(),
+        );
+        let revisions = (pane.revision, pane.saved_revision, pane.revision_clock);
+        let binding = (pane.document_generation, pane.mcp_binding_epoch);
+        let modified = pane.is_modified();
+        let error = pane.mcp_translate_selected(id, dx, dy).unwrap_err();
+        assert!(expected(&error), "unexpected error: {error:?}");
+        assert_eq!(format!("{:?}", pane.document), document);
+        assert!(pane.store.same_versions(&store));
+        assert_eq!(
+            (
+                pane.undo_stack.len(),
+                pane.redo_stack.len(),
+                pane.pending_history.is_some()
+            ),
+            history
+        );
+        assert_eq!(
+            (pane.revision, pane.saved_revision, pane.revision_clock),
+            revisions
+        );
+        assert_eq!((pane.document_generation, pane.mcp_binding_epoch), binding);
+        assert_eq!(pane.is_modified(), modified);
+    }
+
+    #[test]
+    fn mcp_move_transparent_image_preserves_raw_legacy_fields_and_undoes_once() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        let mask_pixels = pane.store.put(Frame::transparent(300, 200));
+        let old = concat_canvas::LayerTransform {
+            x: 17.0,
+            y: -23.0,
+            scale_x: -2.0,
+            scale_y: -0.5,
+            rotation: 0.73,
+            flip_h: true,
+            flip_v: false,
+        };
+        let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+        layer.transform = old;
+        layer.mask = Some(LayerMask::new(mask_pixels));
+        let before = pane.snapshot().unwrap();
+        let result = pane.mcp_translate_selected(id, 3.25, -7.5).unwrap();
+        assert_eq!(
+            result,
+            CanvasMoveResult {
+                x: 20.25,
+                y: -30.5,
+                changed: true
+            }
+        );
+        let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+        assert_eq!(
+            layer.transform,
+            concat_canvas::LayerTransform {
+                x: result.x,
+                y: result.y,
+                ..old
+            }
+        );
+        assert_eq!(layer.mask.unwrap().anchor, Some(old));
+        assert_eq!(pane.undo_stack.len(), 1);
+        assert!(pane.is_modified());
+        assert!(pane.pending_history.is_none());
+        pane.undo();
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert!(pane.undo_stack.is_empty());
+        assert_eq!(pane.redo_stack.len(), 1);
+    }
+
+    #[test]
+    fn mcp_move_commit_check_sees_raw_state_and_rejection_keeps_changed_or_unchanged_state() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for (dx, dy) in [(0.0, 0.0), (2.0, 3.0)] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            let old = concat_canvas::LayerTransform {
+                x: 17.0,
+                y: -23.0,
+                scale_x: -2.0,
+                scale_y: -0.5,
+                rotation: 0.73,
+                flip_h: true,
+                flip_v: false,
+            };
+            let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+            layer.transform = old;
+            layer.mask = Some(LayerMask::new(pixels));
+            let before = pane.snapshot().unwrap();
+            let clock = pane.revision_clock;
+            let binding = (pane.document_generation, pane.mcp_binding_epoch);
+            let mut called = false;
+            let result = pane.mcp_translate_selected_checked(id, dx, dy, |current| {
+                called = true;
+                assert!(current.pending_history.is_none());
+                assert!(current.undo_stack.is_empty());
+                assert!(current.snapshot().unwrap().same_state(&before));
+                let LayerNode::Layer(layer) = current.document.as_ref().unwrap().find(id).unwrap()
+                else {
+                    panic!("current image selection");
+                };
+                assert_eq!(layer.transform, old);
+                assert!(layer.mask.unwrap().anchor.is_none());
+                Err(7_u8)
+            });
+            assert!(called, "unchanged also requires the final commit check");
+            assert!(matches!(result, Err(CanvasMoveCheckedError::Commit(7))));
+            assert!(pane.snapshot().unwrap().same_state(&before));
+            assert!(pane.pending_history.is_none());
+            assert!(pane.undo_stack.is_empty());
+            assert!(pane.redo_stack.is_empty());
+            assert_eq!(pane.revision_clock, clock);
+            assert_eq!((pane.document_generation, pane.mcp_binding_epoch), binding);
+            assert!(!pane.is_modified());
+        }
+    }
+
+    #[test]
+    fn mcp_move_passing_commit_check_still_creates_exactly_one_undo() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, pixels) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.document.as_mut().unwrap().layer_mut(id).unwrap().mask = Some(LayerMask::new(pixels));
+        let before = pane.snapshot().unwrap();
+        let mut called = false;
+        let result = pane
+            .mcp_translate_selected_checked(id, 2.0, -3.0, |current| {
+                called = true;
+                assert!(current.pending_history.is_none());
+                assert!(current.snapshot().unwrap().same_state(&before));
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert!(called);
+        assert_eq!(
+            result,
+            CanvasMoveResult {
+                x: 2.0,
+                y: -3.0,
+                changed: true
+            }
+        );
+        assert_eq!(pane.undo_stack.len(), 1);
+        assert!(pane.pending_history.is_none());
+        pane.undo();
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert!(pane.undo_stack.is_empty());
+        assert_eq!(pane.redo_stack.len(), 1);
+    }
+
+    #[test]
+    fn mcp_move_accepts_inclusive_delta_coordinate_and_signed_scale_limits() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+        layer.transform.x = 967232.0;
+        layer.transform.y = -967232.0;
+        layer.transform.scale_x = -0.001;
+        layer.transform.scale_y = -1000.0;
+        assert_eq!(
+            pane.mcp_translate_selected(id, 32768.0, -32768.0).unwrap(),
+            CanvasMoveResult {
+                x: 1_000_000.0,
+                y: -1_000_000.0,
+                changed: true
+            }
+        );
+        assert_eq!(pane.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn mcp_zero_and_f32_unchanged_moves_create_no_anchor_history_or_revision() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for (x, y, dx, dy) in [
+            (0.0, 0.0, 0.0, -0.0),
+            (900_000.0, -900_000.0, 0.001, -0.001),
+        ] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+            layer.transform.x = x;
+            layer.transform.y = y;
+            layer.mask = Some(LayerMask::new(pixels));
+            let before = pane.snapshot().unwrap();
+            let clock = pane.revision_clock;
+            assert_eq!(
+                pane.mcp_translate_selected(id, dx, dy).unwrap(),
+                CanvasMoveResult {
+                    x,
+                    y,
+                    changed: false
+                }
+            );
+            assert!(pane.snapshot().unwrap().same_state(&before));
+            assert!(pane.undo_stack.is_empty());
+            assert!(pane.redo_stack.is_empty());
+            assert!(pane.pending_history.is_none());
+            assert_eq!(pane.revision_clock, clock);
+            assert!(!pane.is_modified());
+        }
+    }
+
+    #[test]
+    fn mcp_move_rejects_nonfinite_or_excessive_delta_without_any_edit() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for (dx, dy) in [
+            (f64::NAN, 0.0),
+            (0.0, f64::INFINITY),
+            (f64::NEG_INFINITY, 0.0),
+            (32768.0001, 0.0),
+            (0.0, -32768.0001),
+        ] {
+            let (mut pane, _) = painting_pane();
+            let id = pane.active.unwrap();
+            mcp_assert_move_rejected(&mut pane, id, dx, dy, |e| {
+                matches!(e, CanvasMoveError::InvalidDelta)
+            });
+        }
+    }
+
+    #[test]
+    fn mcp_move_rejects_invalid_raw_transforms_even_for_zero_delta() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let base = concat_canvas::LayerTransform::default();
+        for invalid in [
+            concat_canvas::LayerTransform {
+                scale_x: 0.0,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                scale_y: -0.0009,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                scale_x: -1000.1,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                scale_x: f32::NAN,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                scale_y: f32::INFINITY,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                rotation: f32::NAN,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                rotation: f32::INFINITY,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                x: f32::NAN,
+                ..base
+            },
+            concat_canvas::LayerTransform {
+                y: f32::NEG_INFINITY,
+                ..base
+            },
+        ] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+            layer.transform = invalid;
+            layer.mask = Some(LayerMask::new(pixels));
+            mcp_assert_move_rejected(&mut pane, id, 0.0, 0.0, |e| {
+                matches!(e, CanvasMoveError::InvalidTransform)
+            });
+        }
+    }
+
+    #[test]
+    fn mcp_move_checks_f64_coordinate_limit_before_f32_rounding() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for (x, y, dx, dy) in [
+            (1_000_000.0, 0.0, 0.0001, 0.0),
+            (0.0, -1_000_000.0, 0.0, -1.0),
+        ] {
+            let (mut pane, _) = painting_pane();
+            let id = pane.active.unwrap();
+            let layer = pane.document.as_mut().unwrap().layer_mut(id).unwrap();
+            layer.transform.x = x;
+            layer.transform.y = y;
+            mcp_assert_move_rejected(&mut pane, id, dx, dy, |e| {
+                matches!(e, CanvasMoveError::InvalidTransform)
+            });
+        }
+    }
+
+    #[test]
+    fn mcp_move_keeps_existing_linked_and_unlinked_mask_anchors() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for linked in [true, false] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            let anchor = concat_canvas::LayerTransform {
+                x: 42.0,
+                scale_x: -0.0001,
+                ..Default::default()
+            };
+            pane.document.as_mut().unwrap().layer_mut(id).unwrap().mask = Some(LayerMask {
+                linked,
+                anchor: Some(anchor),
+                ..LayerMask::new(pixels)
+            });
+            pane.mcp_translate_selected(id, 2.0, 3.0).unwrap();
+            assert_eq!(
+                pane.document
+                    .as_ref()
+                    .unwrap()
+                    .find(id)
+                    .unwrap()
+                    .mask()
+                    .unwrap()
+                    .anchor,
+                Some(anchor)
+            );
+        }
+        let (mut pane, pixels) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.document.as_mut().unwrap().layer_mut(id).unwrap().mask = Some(LayerMask {
+            linked: false,
+            ..LayerMask::new(pixels)
+        });
+        pane.mcp_translate_selected(id, 2.0, 3.0).unwrap();
+        assert!(
+            pane.document
+                .as_ref()
+                .unwrap()
+                .find(id)
+                .unwrap()
+                .mask()
+                .unwrap()
+                .anchor
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mcp_move_rejects_noninvertible_linked_anchor_without_edit() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        for anchor in [
+            concat_canvas::LayerTransform {
+                scale_x: 0.0,
+                ..Default::default()
+            },
+            concat_canvas::LayerTransform {
+                scale_y: f32::INFINITY,
+                ..Default::default()
+            },
+            concat_canvas::LayerTransform {
+                rotation: f32::NAN,
+                ..Default::default()
+            },
+            concat_canvas::LayerTransform {
+                x: f32::NEG_INFINITY,
+                ..Default::default()
+            },
+        ] {
+            let (mut pane, pixels) = painting_pane();
+            let id = pane.active.unwrap();
+            pane.document.as_mut().unwrap().layer_mut(id).unwrap().mask = Some(LayerMask {
+                anchor: Some(anchor),
+                ..LayerMask::new(pixels)
+            });
+            mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+                matches!(e, CanvasMoveError::InvalidAnchor)
+            });
+        }
+    }
+
+    #[test]
+    fn mcp_move_rejects_selection_mask_nonimage_missing_pixels_and_changed_id() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.selection = Some(Mask::all(300, 200));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::PixelSelection)
+        });
+        pane.selection = None;
+        pane.paint_mask = true;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::MaskTarget)
+        });
+        pane.paint_mask = false;
+        pane.active = None;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::SelectionChanged)
+        });
+        let other_pixels = pane.store.put(Frame::transparent(1, 1));
+        let other = pane
+            .document
+            .as_mut()
+            .unwrap()
+            .new_layer("other image", other_pixels);
+        pane.active = Some(other);
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::SelectionChanged)
+        });
+        let group = pane.document.as_mut().unwrap().new_group("group");
+        pane.active = Some(group);
+        mcp_assert_move_rejected(&mut pane, group, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::NonImageTarget)
+        });
+        let adjustment = pane
+            .document
+            .as_mut()
+            .unwrap()
+            .new_adjustment("adjustment", Adjustment::Invert);
+        pane.active = Some(adjustment);
+        mcp_assert_move_rejected(&mut pane, adjustment, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::NonImageTarget)
+        });
+        pane.active = Some(id);
+        pane.store = PixelStore::new();
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::MissingPixels)
+        });
+        pane.document.as_mut().unwrap().root.children.clear();
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::ObjectGone)
+        });
+    }
+
+    #[test]
+    fn mcp_move_rejects_history_transform_brush_parameter_and_navigation_gestures() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.begin_history();
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.pending_history = None;
+        pane.transform_session = Some(id);
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.transform_session = None;
+        pane.object_drag = Some(ObjectDrag {
+            id,
+            generation: pane.document_generation,
+            start: (0.0, 0.0),
+            original: Default::default(),
+            bounds: (0.0, 0.0, 300.0, 200.0),
+            kind: ObjectDragKind::Move,
+        });
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.object_drag = None;
+        pane.marquee_start = Some((1.0, 2.0));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.marquee_start = None;
+        pane.begin_parameter_gesture(ParameterTarget::Opacity(id));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.finish_parameter_gesture(false);
+        pane.brush_press_document(150.0, 100.0);
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+            matches!(e, CanvasMoveError::Busy)
+        });
+        pane.brush_release();
+        for input in [
+            NavInput::PanPress((12.0, 34.0)),
+            NavInput::ZoomPress {
+                pointer: (12.0, 34.0),
+                option: false,
+            },
+        ] {
+            pane.nav.apply(input);
+            mcp_assert_move_rejected(&mut pane, id, 1.0, 2.0, |e| {
+                matches!(e, CanvasMoveError::Busy)
+            });
+            pane.nav.apply(NavInput::Release { option: false });
+            assert!(pane.mcp_writer_ready().is_ok());
+        }
+    }
+
+    #[test]
+    fn mcp_writer_memory_document_is_readonly_and_platform_or_document_gate_is_closed() {
+        let root = ownership_test_root();
+        let (pane, _) = painting_pane();
+        let before = pane.snapshot().unwrap();
+        assert!(matches!(
+            pane.mcp_writer_ready_on_platform(false),
+            Err(CanvasMoveError::UnsupportedPlatform)
+        ));
+        assert!(pane.mcp_writer_ready_on_platform(true).is_ok());
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert!(pane.writer_owner.is_none());
+        assert!(pane.project_path.is_none());
+        assert!(pane.undo_stack.is_empty());
+        assert!(pane.pending_history.is_none());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        assert!(matches!(
+            CanvasPane::default().mcp_writer_ready_on_platform(true),
+            Err(CanvasMoveError::NoDocument)
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mcp_writer_rejects_every_pending_rebind_or_close_state() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.open_confirm = true;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.open_confirm = false;
+        pane.pending_open = Some(PathBuf::from("pending.comp"));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.pending_open = None;
+        pane.pending_handoff_paths = Some(Vec::new());
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.pending_handoff_paths = None;
+        pane.pending_transform_boundary = Some(PendingTransformBoundary {
+            action: CanvasBoundaryAction::WindowClose,
+            label: "关闭窗口",
+        });
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+    }
+
+    #[test]
+    fn mcp_writer_bound_owner_requires_guard_and_matching_valid_identity() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let root = ownership_test_root();
+        let path = root.join("bound.comp");
+        let other = root.join("other.comp");
+        std::fs::create_dir(&path).unwrap();
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.project_path = Some(path.clone());
+        assert!(matches!(
+            pane.mcp_move_permission_request_ready(),
+            Err(CanvasMoveError::MissingOwner)
+        ));
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::MissingOwner)
+        });
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation: pane.document_generation,
+            path: path.clone(),
+            revision: pane.revision,
+            sequence: 1,
+        });
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::MissingOwner)
+        });
+        pane.autosave_inflight = None;
+        assert!(!root.join(".seecut-canvas-locks").exists());
+        pane.writer_owner = pane.owner_for_path(&path).unwrap();
+        assert!(pane.mcp_writer_ready().is_ok());
+        pane.project_path = Some(other.clone());
+        assert!(
+            pane.mcp_move_permission_request_ready().is_ok(),
+            "UI readiness does not validate ownership or touch the mismatched path"
+        );
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::OwnerMismatch)
+        });
+        assert!(!other.exists());
+        assert!(!root.join(".seecut-canvas-locks/other.comp").exists());
+        pane.project_path = Some(path.clone());
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation: pane.document_generation + 1,
+            path: path.clone(),
+            revision: pane.revision,
+            sequence: 1,
+        });
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        let save = pane.autosave_inflight.as_mut().unwrap();
+        save.generation = pane.document_generation;
+        save.path = other;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.autosave_inflight = None;
+        let sidecar = root.join(".seecut-canvas-locks/bound.comp");
+        std::fs::rename(&sidecar, root.join("held-old-lock")).unwrap();
+        std::fs::write(&sidecar, b"replacement").unwrap();
+        assert!(
+            pane.mcp_move_permission_request_ready().is_ok(),
+            "UI readiness does not inspect the replaced owner file"
+        );
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(
+                e,
+                CanvasMoveError::Ownership(OwnershipError::IdentityAmbiguous { .. })
+            )
+        });
+        drop(pane);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mcp_writer_first_autosave_candidate_may_be_absent_but_must_match_generation_and_path() {
+        if !desktop_writer_ownership_supported() {
+            return;
+        }
+        let root = ownership_test_root();
+        let path = root.join("candidate.comp");
+        let (mut pane, _) = painting_pane();
+        let id = pane.active.unwrap();
+        pane.writer_owner = pane.owner_for_path(&path).unwrap();
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation: pane.document_generation,
+            path: path.clone(),
+            revision: pane.revision,
+            sequence: 1,
+        });
+        let before = pane.snapshot().unwrap();
+        let epoch = pane.mcp_binding_epoch;
+        let sidecar = root.join(".seecut-canvas-locks/candidate.comp");
+        let lock_bytes = std::fs::read(&sidecar).unwrap();
+        assert!(pane.mcp_writer_ready().is_ok());
+        assert!(!path.exists());
+        assert!(pane.project_path.is_none());
+        assert!(pane.snapshot().unwrap().same_state(&before));
+        assert_eq!(pane.mcp_binding_epoch, epoch);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), lock_bytes);
+        pane.autosave_inflight.as_mut().unwrap().generation += 1;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.autosave_inflight.as_mut().unwrap().generation = pane.document_generation;
+        pane.autosave_inflight.as_mut().unwrap().path = root.join("different.comp");
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::OwnerMismatch)
+        });
+        assert!(!root.join(".seecut-canvas-locks/different.comp").exists());
+        pane.autosave_inflight.as_mut().unwrap().path = path.clone();
+        pane.autosave_inflight = None;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::UnstableBinding)
+        });
+        pane.autosave_inflight = Some(AutoSaveInFlight {
+            generation: pane.document_generation,
+            path: path.clone(),
+            revision: pane.revision,
+            sequence: 1,
+        });
+        std::fs::rename(&sidecar, root.join("held-old-lock")).unwrap();
+        std::fs::write(&sidecar, b"replacement").unwrap();
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(
+                e,
+                CanvasMoveError::Ownership(OwnershipError::IdentityAmbiguous { .. })
+            )
+        });
+        pane.writer_owner = None;
+        mcp_assert_move_rejected(&mut pane, id, 1.0, 1.0, |e| {
+            matches!(e, CanvasMoveError::MissingOwner)
+        });
+        assert!(!path.exists());
+        drop(pane);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn ownership_test_root() -> PathBuf {

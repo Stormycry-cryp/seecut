@@ -1,3 +1,4 @@
+import { LauncherSafeArea, LauncherControlRow } from "../seecut/launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
@@ -80,11 +81,10 @@ export component TimelineTray inherits Rectangle {
         background: Theme.line;
     }
 
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        padding-top: 7px;
-        padding-bottom: 7px;
+    LauncherControlRow {
+        height: 40px;
+        left-padding: 8px; right-padding: 8px;
+        top-padding: 7px; bottom-padding: 7px;
         spacing: 4px;
 
         IconButton {

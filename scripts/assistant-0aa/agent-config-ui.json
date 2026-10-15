@@ -1,0 +1,62 @@
+{
+  "schema": "seecut-agent-config-ui-v1",
+  "review_status": "inherited exact header template; 0aa current full metadata must match; field geometry unknown and never used",
+  "source_head": "0aa9406247e53f073c0b4df686adc68b40e2f8f6",
+  "app_sha256": "03fb1752c34adb0c0f4a21521c2302ee80c9b23203728cbcf636d3a4a57eaea2",
+  "settings_button": {
+    "path": [
+      0,
+      32,
+      1
+    ],
+    "label": "助手设置",
+    "bounds": {
+      "x": 1200,
+      "y": 88,
+      "width": 36,
+      "height": 40
+    }
+  },
+  "close_button": {
+    "path": [
+      0,
+      32,
+      2
+    ],
+    "label": "关闭助手",
+    "bounds": {
+      "x": 1240,
+      "y": 88,
+      "width": 36,
+      "height": 40
+    }
+  },
+  "panel": {
+    "path": [
+      0,
+      32
+    ],
+    "bounds": {
+      "x": 936,
+      "y": 88,
+      "width": 344,
+      "height": 812
+    }
+  },
+  "actions": [
+    "one fresh public open-settings click",
+    "one fresh public close-from-settings click"
+  ],
+  "configuration_pixels": "forbidden",
+  "field_names_and_values": "excluded for all editable nodes",
+  "configuration_state": "discover actual metadata; no input or additional config Actions",
+  "focus_after_close": "expect known assistant rail trigger from source; require actual focused metadata",
+  "inherited_header_evidence": {
+    "source_head": "11ebf203e1a78d3b6a21677c4b17e96223c74b0e",
+    "test_helper_source_head": "a8a180abef5a6cd2401e4f64fbf4f652f91481e2",
+    "observed_run": 37347767724,
+    "observed_metadata_sha256": "3984eafc10a8ef45457f4ea3a2f96b97c9da0910b7a15790bb2f8117e79a0c38",
+    "observed_frame_sha256": "07ad2339b5d49b44970516c789b049a65b7167b4d46350951f2aa14d2622dc15"
+  },
+  "actual_0aa_header_observed": false
+}

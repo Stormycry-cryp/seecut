@@ -30,6 +30,7 @@ export component Seat inherits Rectangle {
     /// where the panel came from.
     in property <int> index;
     in property <bool> standalone;
+    in property <bool> hide-sidebar;
 
     /// Its corner button was used.
     callback picked(kind: PaneKind);
@@ -199,7 +200,7 @@ export component Seat inherits Rectangle {
             has-document: Editor.canvas-has-document;
             can-undo: Editor.canvas-can-undo;
             can-redo: Editor.canvas-can-redo;
-            sidebar-open: Editor.canvas-sidebar-open;
+            sidebar-open: Editor.canvas-sidebar-open && !root.hide-sidebar;
             document-name: Editor.canvas-name;
             zoom: Editor.canvas-zoom;
             pan-x: Editor.canvas-pan-x;
@@ -213,11 +214,11 @@ export component Seat inherits Rectangle {
             object-h: Editor.canvas-object-h;
             object-angle: Editor.canvas-object-angle;
             transforming: Editor.canvas-transforming;
-            object-doc-x: Editor.canvas-object-doc-x;
-            object-doc-y: Editor.canvas-object-doc-y;
-            object-doc-w: Editor.canvas-object-doc-w;
-            object-doc-h: Editor.canvas-object-doc-h;
-            object-doc-angle: Editor.canvas-object-doc-angle;
+            object-doc-x <=> Editor.canvas-object-doc-x;
+            object-doc-y <=> Editor.canvas-object-doc-y;
+            object-doc-w <=> Editor.canvas-object-doc-w;
+            object-doc-h <=> Editor.canvas-object-doc-h;
+            object-doc-angle <=> Editor.canvas-object-doc-angle;
             object-flip-h: Editor.canvas-object-flip-h;
             object-flip-v: Editor.canvas-object-flip-v;
             tool: Editor.canvas-tool;

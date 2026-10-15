@@ -1,3 +1,4 @@
+import { LauncherSafeArea, LauncherControlRow } from "../seecut/launcher-safe-area.slint";
 import { Rail } from "../inspector/controls.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
@@ -42,7 +43,34 @@ export global Palette {
 // Colour controls live at the canvas boundary rather than in Editor's long
 // property chain. Rust publishes the current colour and target here, while
 // edits and the explicit picker click travel back through these callbacks.
+export struct CanvasCurvePoint {
+    x: float,
+    y: float,
+}
+
+export struct CanvasCurveSegment {
+    x: float,
+    y: float,
+    x2: float,
+    y2: float,
+}
+
 export global CanvasControls {
+    in-out property <bool> shape-selected;
+    in-out property <bool> shape-drawing;
+    in-out property <bool> shape-editing;
+    in-out property <bool> shape-fill;
+    in-out property <bool> shape-stroke;
+    in-out property <bool> shape-closed;
+    in-out property <string> shape-fill-hex;
+    in-out property <string> shape-stroke-hex;
+    in-out property <float> shape-width;
+    in-out property <[CanvasCurvePoint]> shape-points;
+    in-out property <[CanvasCurveSegment]> shape-lines;
+    callback shape-pointer(int,float,float);
+    callback shape-finish(bool,bool);
+    callback shape-style(int,string,float);
+
     in-out property <float> red: 30;
     in-out property <float> green: 30;
     in-out property <float> blue: 34;
@@ -87,20 +115,12 @@ export struct CanvasLayerData {
 
 // One control point of a curves channel, normalized `0..1` on both axes:
 // `x` the input, `y` the output.
-export struct CanvasCurvePoint {
-    x: float,
-    y: float,
-}
+
 
 // One drawn segment of a curves polyline, precomputed in Rust: both
 // endpoints in normalized editor coordinates (`y` already flipped to
 // the screen's downward axis).
-export struct CanvasCurveSegment {
-    x: float,
-    y: float,
-    x2: float,
-    y2: float,
-}
+
 
 // The curves editor: a square plot, the identity's diagonal for
 // reference, the curve as little rotated strokes, and every control
@@ -356,7 +376,7 @@ component CanvasBlendButton inherits Rectangle {
     public function take-focus() { focus.focus(); }
     width: 132px; height: 30px; border-radius: Theme.r-xs;
     background: root.open ? Theme.field-active : touch.has-hover ? Theme.field-hover : Theme.field;
-    border-width: 1px;
+    border-width: root.keyboard-ring ? 1px : 0px;
     border-color: root.keyboard-ring ? Theme.focus-control : root.open ? Theme.line-strong : Theme.line;
     opacity: root.enabled ? 1 : 0.45;
     accessible-role: button;
@@ -451,11 +471,11 @@ export component CanvasPane inherits Rectangle {
     in property <float> object-h;
     in property <float> object-angle;
     in property <bool> transforming;
-    in property <float> object-doc-x;
-    in property <float> object-doc-y;
-    in property <float> object-doc-w;
-    in property <float> object-doc-h;
-    in property <float> object-doc-angle;
+    in-out property <float> object-doc-x;
+    in-out property <float> object-doc-y;
+    in-out property <float> object-doc-w;
+    in-out property <float> object-doc-h;
+    in-out property <float> object-doc-angle;
     in property <bool> object-flip-h;
     in property <bool> object-flip-v;
     /// 0 move, 1 hand, 2 zoom, 3 brush, 4 eraser.
@@ -674,7 +694,7 @@ export component CanvasPane inherits Rectangle {
     in property <bool> pane-removable: true;
     in property <bool> standalone;
     property <bool> show-context-bar: root.has-document &&
-        (root.tool == 3 || root.tool == 4 || root.tool == 5 || root.tool == 6 || (!root.standalone && root.tool == 0));
+        (root.tool == 3 || root.tool == 4 || root.tool == 5 || root.tool == 6 || root.tool == 9 || (!root.standalone && root.tool == 0));
     callback pane-removed();
 
     property <angle> object-turn: root.object-angle * 1deg;
@@ -805,6 +825,12 @@ export component CanvasPane inherits Rectangle {
                         clicked => { root.wand-contiguous-changed(!root.wand-contiguous); }
                     }
                 }
+                if root.tool == 9: HorizontalLayout {
+                    spacing: 4px;
+                    WorkspaceIcon { glyph: Glyph.check; label: "结束开放路径"; enabled: CanvasControls.shape-drawing; clicked => { CanvasControls.shape-finish(true,false); } }
+                    WorkspaceIcon { glyph: Glyph.bezier; label: "闭合路径"; enabled: CanvasControls.shape-drawing; clicked => { CanvasControls.shape-finish(true,true); } }
+                    WorkspaceIcon { glyph: Glyph.close; label: "取消路径"; enabled: CanvasControls.shape-drawing; clicked => { CanvasControls.shape-finish(false,false); } }
+                }
                 Rectangle { horizontal-stretch: 1; }
             }
             Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.line; }
@@ -822,7 +848,31 @@ export component CanvasPane inherits Rectangle {
                         { glyph: Glyph.search, label: "缩放工具" }, { glyph: Glyph.brush, label: "画笔工具" },
                         { glyph: Glyph.eraser, label: "橡皮擦" }, { glyph: Glyph.box-select, label: "矩形选区" },
                         { glyph: Glyph.wand, label: "魔棒选区" },
-                    ]: WorkspaceIcon { glyph: t.glyph; label: t.label; checkable: true; checked: root.tool == i; enabled: root.has-document; clicked => { root.tool-changed(i); } }
+                    ]: WorkspaceIcon { glyph: t.glyph; label: t.label; checkable: true; checked: root.tool == i; enabled: root.has-document; clicked => { if i >= 7 { root.inspector-tab = 0; } root.tool-changed(i); } }
+                    shape-tool := WorkspaceIcon {
+                        glyph: root.tool == 8 ? Glyph.ellipse : root.tool == 9 ? Glyph.bezier : root.tool == 10 ? Glyph.nodes : Glyph.maximize;
+                        label: "形状与路径"; checkable: true; checked: root.tool >= 7; enabled: root.has-document;
+                        function choose-shape(index: int) {
+                            shape-picker.close();
+                            root.inspector-tab = 0;
+                            root.tool-changed(index);
+                        }
+                        clicked => { shape-picker.show(); }
+                        shape-picker := PopupWindow {
+                            x: 44px; y: 0px; width: 172px; height: 164px;
+                            close-policy: close-on-click-outside;
+                            Rectangle {
+                                background: Theme.panel; border-radius: 10px; border-width: 1px; border-color: Theme.line;
+                                VerticalLayout {
+                                    padding: 6px;
+                                    for shape[i] in [{glyph: Glyph.maximize,label: "矩形"},{glyph: Glyph.ellipse,label: "椭圆"},{glyph: Glyph.bezier,label: "贝塞尔路径"},{glyph: Glyph.nodes,label: "编辑锚点"}]: MenuAction {
+                                        glyph: shape.glyph; label: shape.label;
+                                        clicked => { shape-tool.choose-shape(i + 7); }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Rectangle { vertical-stretch: 1; }
                     WorkspaceIcon { glyph: Glyph.fit; label: "适合窗口"; enabled: root.has-document; clicked => { root.nav-fit(); } }
                 }
@@ -970,6 +1020,7 @@ export component CanvasPane inherits Rectangle {
                 property <bool> painting;
                 property <bool> marqueeing;
                 property <bool> objecting;
+                property <bool> shaping;
                 mouse-cursor: CanvasControls.picking ? MouseCursor.crosshair
                     : self.panning ? MouseCursor.grabbing
                     : root.tool == 1 ? MouseCursor.grab
@@ -1014,13 +1065,22 @@ export component CanvasPane inherits Rectangle {
                             && root.tool == 6) {
                             root.wand-click(self.mouse-x / 1px, self.mouse-y / 1px);
                         }
+                        if event.button == PointerEventButton.left && root.tool >= 7 {
+                            self.shaping = true;
+                            CanvasControls.shape-pointer(0,self.mouse-x / 1px,self.mouse-y / 1px);
+                        }
                     } else if (event.kind == PointerEventKind.move) {
+                        if self.shaping { CanvasControls.shape-pointer(1,self.mouse-x / 1px,self.mouse-y / 1px); }
                         if (self.objecting) {
                             root.object-move(self.mouse-x / 1px, self.mouse-y / 1px,
                                 event.modifiers.shift, event.modifiers.alt);
                         }
                     } else if (event.kind == PointerEventKind.up
                         || event.kind == PointerEventKind.cancel) {
+                        if self.shaping {
+                            self.shaping = false;
+                            CanvasControls.shape-pointer(event.kind == PointerEventKind.up ? 2 : 3,self.mouse-x / 1px,self.mouse-y / 1px);
+                        }
                         if (self.objecting) {
                             self.objecting = false;
                             root.object-release(event.kind == PointerEventKind.up);
@@ -1089,6 +1149,22 @@ export component CanvasPane inherits Rectangle {
                 commands: "M \{root.object-px(-1,-1)} \{root.object-py(-1,-1)} L \{root.object-px(1,-1)} \{root.object-py(1,-1)} L \{root.object-px(1,1)} \{root.object-py(1,1)} L \{root.object-px(-1,1)} \{root.object-py(-1,1)} Z";
                 stroke: Theme.accent; stroke-width: 1px; fill: transparent;
             }
+            for line in CanvasControls.shape-lines: Path {
+                visible: root.tool == 10 || CanvasControls.shape-drawing;
+                width: well.width; height: well.height;
+                viewbox-width: well.width / 1px; viewbox-height: well.height / 1px;
+                commands: "M \{line.x} \{line.y} L \{line.x2} \{line.y2}";
+                stroke: Theme.accent; stroke-width: 1px;
+            }
+            for point[i] in CanvasControls.shape-points: Rectangle {
+                visible: root.tool == 10 || CanvasControls.shape-drawing;
+                x: point.x * 1px - self.width / 2; y: point.y * 1px - self.height / 2;
+                width: Math.mod(i, 3) == 0 ? 9px : 7px; height: self.width;
+                border-radius: Math.mod(i, 3) == 0 ? 2px : 4px;
+                background: Math.mod(i, 3) == 0 ? Theme.accent : Theme.panel;
+                border-color: Theme.accent; border-width: 1px;
+            }
+
             if root.has-object && root.tool == 0: Path {
                 width: well.width; height: well.height;
                 viewbox-width: well.width / 1px; viewbox-height: well.height / 1px;
@@ -1176,19 +1252,39 @@ export component CanvasPane inherits Rectangle {
                         viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
                             spacing: 12px; alignment: start;
+                            if CanvasControls.shape-selected: VerticalLayout {
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    WorkspaceIcon { glyph: Glyph.paint-bucket; label: "填充"; checkable: true; checked: CanvasControls.shape-fill; enabled: !CanvasControls.shape-editing; clicked => { CanvasControls.shape-style(3,"",CanvasControls.shape-fill ? 0 : 1); } }
+                                    shape-fill := TextInput { text <=> CanvasControls.shape-fill-hex; enabled: !CanvasControls.shape-editing; font-family: Theme.font; font-size: Theme.fs; color: Theme.fg; single-line: true; vertical-alignment: center; accessible-label: "形状填充色"; accepted => { CanvasControls.shape-style(0,self.text,0); Focus.release(); } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    WorkspaceIcon { glyph: Glyph.ellipse; label: "描边"; checkable: true; checked: CanvasControls.shape-stroke; enabled: !CanvasControls.shape-editing; clicked => { CanvasControls.shape-style(4,"",CanvasControls.shape-stroke ? 0 : 1); } }
+                                    shape-stroke := TextInput { text <=> CanvasControls.shape-stroke-hex; enabled: !CanvasControls.shape-editing; font-family: Theme.font; font-size: Theme.fs; color: Theme.fg; single-line: true; vertical-alignment: center; accessible-label: "形状描边色"; accepted => { CanvasControls.shape-style(1,self.text,0); Focus.release(); } }
+                                }
+                                NumberField { prefix: "描边"; value <=> CanvasControls.shape-width; minimum: 0; maximum: 1024; precision: 1; unit: "px"; enabled: !CanvasControls.shape-editing; block-editor-shortcuts: true; changed(value) => { CanvasControls.shape-style(2,"",value); } edit-started => { root.transform-start(); } edit-finished(commit) => { root.transform-finish(commit); } }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    WorkspaceIcon { glyph: Glyph.nodes; label: "编辑锚点"; enabled: !CanvasControls.shape-editing; checked: root.tool == 10; clicked => { root.tool-changed(10); } }
+                                    WorkspaceIcon { glyph: Glyph.bezier; label: "闭合路径"; enabled: !CanvasControls.shape-editing; checkable: true; checked: CanvasControls.shape-closed; clicked => { CanvasControls.shape-style(5,"",CanvasControls.shape-closed ? 0 : 1); } }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                            }
                             if root.has-object && root.tool == 0: VerticalLayout {
                                 spacing: 5px;
                                 HorizontalLayout {
                                     spacing: 5px;
-                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "X"; value: root.object-doc-x; precision: 1; changed(value) => { root.transform-set(0, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
-                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "Y"; value: root.object-doc-y; precision: 1; changed(value) => { root.transform-set(1, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "X"; value <=> root.object-doc-x; precision: 1; changed(value) => { root.transform-set(0, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "Y"; value <=> root.object-doc-y; precision: 1; changed(value) => { root.transform-set(1, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
                                 }
                                 HorizontalLayout {
                                     spacing: 5px;
-                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "W"; value: root.object-doc-w; minimum: 1; precision: 1; changed(value) => { root.transform-set(2, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
-                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "H"; value: root.object-doc-h; minimum: 1; precision: 1; changed(value) => { root.transform-set(3, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "W"; value <=> root.object-doc-w; minimum: 1; precision: 1; changed(value) => { root.transform-set(2, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                    NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix: "H"; value <=> root.object-doc-h; minimum: 1; precision: 1; changed(value) => { root.transform-set(3, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
                                 }
-                                NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix-glyph: Glyph.angle; value: root.object-doc-angle; unit: "°"; precision: 1; changed(value) => { root.transform-set(4, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
+                                NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix-glyph: Glyph.angle; value <=> root.object-doc-angle; unit: "°"; precision: 1; changed(value) => { root.transform-set(4, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
                             }
                             if root.has-selection && root.active-layer >= 0
                                 && (root.layers[root.active-layer].kind == 0 || root.layers[root.active-layer].mask-paint): HorizontalLayout {
@@ -1303,7 +1399,7 @@ export component CanvasPane inherits Rectangle {
                                 height: 18px;
                                 border-radius: Theme.r;
                                 background: root.curve-channel == t ? Theme.field-hover : Theme.field;
-                                border-width: 1px;
+                                border-width: 0px;
                                 border-color: root.curve-channel == t ? tab.tint : Theme.line;
                                 TouchArea {
                                     mouse-cursor: pointer;
@@ -1479,43 +1575,47 @@ export component CanvasPane inherits Rectangle {
                                 HorizontalLayout {
                                     padding-left: 4px + Math.min(layer.depth, 3) * 10px; spacing: 4px;
                                     Rectangle {
-                                        width: 34px; height: 28px; border-radius: Theme.r-xs;
-                                        background: Theme.well;
-                                        border-width: layer.active && !layer.mask-paint ? 2px : 1px;
-                                        border-color: layer.active && !layer.mask-paint ? Theme.accent : Theme.line;
-                                        if layer.kind == 0 && CanvasThumbs.layer-images.length > i
-                                            && CanvasThumbs.layer-images[i].width > 0: Image {
-                                            width: parent.width; height: parent.height;
-                                            source: CanvasThumbs.layer-images[i]; image-fit: contain;
-                                        }
-                                        if layer.group: Icon {
-                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                                            glyph: Glyph.folder; size: 16px; tint: Theme.fg-muted;
-                                        }
-                                        if layer.kind == 2: Icon {
-                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                                            glyph: layer.adjustment-kind == 1 ? Glyph.moon
-                                                : layer.adjustment-kind == 2 ? Glyph.sun
-                                                : layer.adjustment-kind == 3 ? Glyph.sliders
-                                                : layer.adjustment-kind == 4 ? Glyph.sparkle
-                                                : layer.adjustment-kind == 5 ? Glyph.filter
-                                                : layer.adjustment-kind == 6 ? Glyph.rows
-                                                : layer.adjustment-kind == 7 ? Glyph.waveform : Glyph.sliders;
-                                            size: 16px; tint: Theme.fg-muted;
-                                        }
-                                        CanvasChipAction {
-                                            label: layer.group ? "选择图层组：" + layer.name
-                                                : layer.kind == 2 ? "编辑调整图层：" + layer.name
-                                                : "编辑图层图片：" + layer.name;
-                                            selected: layer.active && !layer.mask-paint;
-                                            clicked => {
-                                                root.layer-picked(i);
-                                                if (layer.kind == 2) { root.inspector-tab = 0; }
+                                        width: 34px; height: 38px;
+                                        Rectangle {
+                                            y: (parent.height - self.height) / 2;
+                                            width: 34px; height: 28px; border-radius: Theme.r-xs;
+                                            background: Theme.well;
+                                            border-width: layer.active && !layer.mask-paint ? 2px : 1px;
+                                            border-color: layer.active && !layer.mask-paint ? Theme.accent : Theme.line;
+                                            if (layer.kind == 0 || layer.kind == 3) && CanvasThumbs.layer-images.length > i
+                                                && CanvasThumbs.layer-images[i].width > 0: Image {
+                                                width: parent.width; height: parent.height;
+                                                source: CanvasThumbs.layer-images[i]; image-fit: contain;
+                                            }
+                                            if layer.group: Icon {
+                                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                                glyph: Glyph.folder; size: 16px; tint: Theme.fg-muted;
+                                            }
+                                            if layer.kind == 2: Icon {
+                                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                                glyph: layer.adjustment-kind == 1 ? Glyph.moon
+                                                    : layer.adjustment-kind == 2 ? Glyph.sun
+                                                    : layer.adjustment-kind == 3 ? Glyph.sliders
+                                                    : layer.adjustment-kind == 4 ? Glyph.sparkle
+                                                    : layer.adjustment-kind == 5 ? Glyph.filter
+                                                    : layer.adjustment-kind == 6 ? Glyph.rows
+                                                    : layer.adjustment-kind == 7 ? Glyph.waveform : Glyph.sliders;
+                                                size: 16px; tint: Theme.fg-muted;
+                                            }
+                                            CanvasChipAction {
+                                                label: layer.group ? "选择图层组：" + layer.name
+                                                    : layer.kind == 2 ? "编辑调整图层：" + layer.name
+                                                    : "编辑图层图片：" + layer.name;
+                                                selected: layer.active && !layer.mask-paint;
+                                                clicked => {
+                                                    root.layer-picked(i);
+                                                    if (layer.kind == 2) { root.inspector-tab = 0; }
+                                                }
                                             }
                                         }
                                     }
-                                    if layer.group: WorkspaceIcon { glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right; label: layer.expanded ? "折叠图层组" : "展开图层组"; clicked => { root.layer-folded(i); } }
-                                    WorkspaceIcon { glyph: layer.hidden ? Glyph.eye-off : Glyph.eye; label: layer.hidden ? "显示图层" : "隐藏图层"; clicked => { root.layer-visibility-toggled(i); } }
+                                    if layer.group: WorkspaceIcon { height: 38px; glyph: layer.expanded ? Glyph.chevron-down : Glyph.chevron-right; label: layer.expanded ? "折叠图层组" : "展开图层组"; clicked => { root.layer-folded(i); } }
+                                    WorkspaceIcon { height: 38px; glyph: layer.hidden ? Glyph.eye-off : Glyph.eye; label: layer.hidden ? "显示图层" : "隐藏图层"; clicked => { root.layer-visibility-toggled(i); } }
                                     if root.renaming-row != i: Rectangle {
                                         horizontal-stretch: 1; min-width: 0px;
                                         Text {
@@ -1552,9 +1652,10 @@ export component CanvasPane inherits Rectangle {
                                         }
                                     }
                                     Rectangle {
-                                        width: 28px; height: 28px;
+                                        width: 28px; height: 38px;
                                         if layer.masked: Rectangle {
-                                            width: parent.width; height: parent.height;
+                                            y: (parent.height - self.height) / 2;
+                                            width: parent.width; height: 28px;
                                             border-radius: Theme.r-xs;
                                             background: Theme.well;
                                             border-width: layer.active && layer.mask-paint ? 2px : 1px;
@@ -1581,21 +1682,21 @@ export component CanvasPane inherits Rectangle {
                             }
                         }
                     }
-                    HorizontalLayout {
-                        height: 34px; spacing: 8px;
-                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
-                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
-                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
-                        Rectangle { horizontal-stretch: 1; }
-                        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.mask; label: "添加图层蒙版"; enabled: root.active-layer >= 0 && !root.layers[root.active-layer].masked; clicked => { root.layer-mask-added(); } }
-                        layer-more-button := WorkspaceIcon {
-                            width: 32px; height: 32px; side: 32px; glyph: Glyph.more; label: "更多图层操作";
-                            clicked => {
-                                root.blend-open = false;
-                                root.layer-menu-index = root.active-layer < 0 ? 2 : root.layers[root.active-layer].kind == 1 ? 1 : 0;
-                                root.layer-more-open = !root.layer-more-open;
+                    LauncherControlRow {
+                        height: 34px; spacing: 4px;
+                            WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-up; label: "图层上移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, 1); } }
+                            WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-down; label: "图层下移"; enabled: root.active-layer >= 0; clicked => { root.layer-moved(root.active-layer, -1); } }
+                            WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "删除图层"; danger: true; enabled: root.active-layer >= 0; clicked => { root.layer-deleted(root.active-layer); } }
+                            Rectangle { horizontal-stretch: 1; }
+                            WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.mask; label: "添加图层蒙版"; enabled: root.active-layer >= 0 && !root.layers[root.active-layer].masked; clicked => { root.layer-mask-added(); } }
+                            layer-more-button := WorkspaceIcon {
+                                width: 32px; height: 32px; side: 32px; glyph: Glyph.more; label: "更多图层操作";
+                                clicked => {
+                                    root.blend-open = false;
+                                    root.layer-menu-index = root.active-layer < 0 ? 2 : root.layers[root.active-layer].kind == 1 ? 1 : 0;
+                                    root.layer-more-open = !root.layer-more-open;
+                                }
                             }
-                        }
                     }
                 }
                 if root.blend-open || root.layer-more-open: TouchArea {
@@ -1673,7 +1774,7 @@ export component CanvasPane inherits Rectangle {
         Rectangle {
             height: 28px; background: Theme.panel;
             HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
-                Text { text: root.has-document ? (root.tool == 3 ? "画笔" : root.tool == 4 ? "橡皮擦" : root.tool == 5 ? "矩形选区" : root.tool == 6 ? "魔棒选区" : root.tool == 1 ? "平移" : root.tool == 2 ? "缩放" : "移动") : "打开图片开始编辑"; font-size: 13px; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; }
+                Text { text: root.has-document ? (root.tool == 3 ? "画笔" : root.tool == 4 ? "橡皮擦" : root.tool == 5 ? "矩形选区" : root.tool == 6 ? "魔棒选区" : root.tool == 7 ? "矩形" : root.tool == 8 ? "椭圆" : root.tool == 9 ? "路径" : root.tool == 10 ? "锚点" : root.tool == 1 ? "平移" : root.tool == 2 ? "缩放" : "移动") : "打开图片开始编辑"; font-size: 13px; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; }
                 if root.has-document: Text { text: Math.round(root.zoom) + "%"; font-size: 13px; color: Theme.fg-muted; vertical-alignment: center; }
             }
         }

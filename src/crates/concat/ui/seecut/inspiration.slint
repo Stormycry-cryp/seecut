@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Glyph, Icon, Modal, FocusRing } from "../primitives/primitives.slint";
+import { SeeCut } from "state.slint";
+import { AppButton, AssetPreview, WorkspaceSelect, WorkspaceIcon, EmptyState } from "components.slint";
+import { LauncherSafeArea } from "launcher-safe-area.slint";
+
+export component InspirationPanel inherits Rectangle {
+    min-width: 0px; min-height: 0px;
+    VerticalLayout {
+        padding: 24px; padding-top: 8px; spacing: 20px;
+        HorizontalLayout {
+            height: Theme.workbench-h; spacing: 8px;
+            WorkspaceSelect {
+                width: 150px;
+                options: ["全部灵感", "商品主图", "广告海报", "社媒封面", "我的模板"];
+                current <=> SeeCut.inspiration-category;
+                changed(index) => { SeeCut.action("inspiration-filter", ""); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            WorkspaceIcon {
+                glyph: Glyph.tag; label: "保存当前草稿为模板";
+                enabled: !SeeCut.working;
+                clicked => { SeeCut.action("template-new", ""); SeeCut.template-editor-current = true; SeeCut.template-editor-open = true; }
+            }
+        }
+        if SeeCut.inspirations.length == 0: EmptyState { glyph: Glyph.tag; title: "还没有模板"; detail: "保存常用草稿，下次直接使用。"; }
+        gallery := ScrollView {
+            visible: SeeCut.inspirations.length > 0;
+            vertical-stretch: 1; horizontal-scrollbar-policy: always-off;
+            viewport-width: self.visible-width; viewport-height: grid.height;
+            grid := Rectangle {
+                width: gallery.visible-width;
+                property <int> columns: Math.max(1, Math.floor((self.width + 16px) / 240px));
+                property <length> card-width: (self.width - (self.columns - 1) * 16px) / self.columns;
+                property <length> well-height: SeeCut.inspiration-has-previews ? self.card-width * 4 / 3 : 172px;
+                property <length> card-height: SeeCut.inspiration-has-previews ? self.well-height + 56px : self.well-height;
+                height: Math.max(0px, Math.ceil(SeeCut.inspirations.length / self.columns) * (self.card-height + 24px));
+                for item[index] in SeeCut.inspirations: card := Rectangle {
+                    x: Math.mod(index,grid.columns) * (grid.card-width + 16px);
+                    y: Math.floor(index / grid.columns) * (grid.card-height + 24px);
+                    width: grid.card-width; height: grid.card-height;
+                    accessible-role: button; accessible-label: item.name;
+                    accessible-action-default => { card.open(); }
+                    public function open() { SeeCut.error = ""; SeeCut.inspiration-selected = item; SeeCut.inspiration-preview-open = true; }
+                    property <bool> ring;
+                    focus := FocusScope {
+                        focus-gained(reason) => { card.ring = reason == FocusReason.tab-navigation; }
+                        focus-lost(reason) => { card.ring = false; }
+                        key-pressed(event) => { if event.text == " " || event.text == "\n" { card.open(); return accept; } return reject; }
+                    }
+                    VerticalLayout {
+                        spacing: 0px;
+                        Rectangle {
+                            height: grid.well-height;
+                            background: touch.has-hover ? Theme.field-hover : Theme.well;
+                            border-radius: 12px; clip: true;
+                            if item.preview.width > 0: AssetPreview { width: 100%; height: 100%; source: item.preview; fill-frame: true; }
+                            if item.preview.width == 0: VerticalLayout {
+                                padding: 22px; spacing: 12px;
+                                HorizontalLayout {
+                                    height: 20px; spacing: 8px;
+                                    Icon { size: 16px; glyph: Glyph.tag; tint: Theme.fg-muted; }
+                                    Text { text: "提示词模板"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
+                                }
+                                Rectangle { vertical-stretch: 1; }
+                                Text { text: item.name; font-size: 22px; font-weight: Theme.weight-title; color: Theme.fg; wrap: word-wrap; }
+                                Text { text: item.purpose; font-size: 12px; color: Theme.fg-muted; wrap: word-wrap; }
+                            }
+                            FocusRing { active: card.ring; radius: 12px; }
+                        }
+                        if SeeCut.inspiration-has-previews: VerticalLayout {
+                            height: 56px; padding-top: 10px; spacing: 2px;
+                            Text { text: item.preview.width > 0 ? item.name : ""; font-size: 14px; font-weight: Theme.weight-title; color: Theme.fg; overflow: elide; }
+                            Text { text: item.preview.width > 0 ? item.purpose : ""; font-size: 12px; color: Theme.fg-muted; overflow: elide; }
+                        }
+                    }
+                    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); card.open(); } }
+                }
+            }
+        }
+    }
+}
+
+export component InspirationPreview inherits Modal {
+    open: SeeCut.inspiration-preview-open;
+    title: SeeCut.inspiration-selected.name;
+    title-at-start: true;
+    trap-focus: true;
+    show-close-for-start-title: true;
+    prominent-close: true;
+    surface-width: Math.min(660px, root.width - 24px);
+    surface-height: Math.min(SeeCut.inspiration-selected.preview.width > 0 ? 780px : 420px, root.height - 24px);
+    closed => { SeeCut.inspiration-preview-open = false; }
+    property <bool> provenance-open;
+    property <bool> preview-open: root.open;
+    changed preview-open => { root.provenance-open = false; }
+    VerticalLayout {
+        padding: 20px; padding-top: 8px; spacing: 16px;
+        ScrollView {
+            vertical-stretch: 1; viewport-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+            VerticalLayout {
+                spacing: 16px; alignment: start;
+                if SeeCut.inspiration-selected.preview.width > 0: AssetPreview {
+                    height: Math.min(380px, root.height * 0.42); source: SeeCut.inspiration-selected.preview;
+                    accessible-name: "模板效果预览";
+                }
+                Text { text: SeeCut.inspiration-selected.purpose; font-size: 14px; color: Theme.fg; wrap: word-wrap; }
+                Text { text: SeeCut.inspiration-selected.parameters; font-size: 12px; color: Theme.fg-muted; wrap: word-wrap; }
+                Text { text: SeeCut.inspiration-selected.preview.width == 0 ? "提示词" : "生成提示词"; font-size: 12px; color: Theme.fg-muted; }
+                Text { text: SeeCut.inspiration-selected.prompt; font-size: 15px; color: Theme.fg; wrap: word-wrap; }
+                if root.provenance-open: Text { text: SeeCut.inspiration-selected.provenance; font-size: 12px; color: Theme.fg-muted; wrap: word-wrap; }
+            }
+        }
+        if SeeCut.error != "": Text { text: SeeCut.error; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+        HorizontalLayout {
+            height: 38px; spacing: 8px;
+            WorkspaceIcon { glyph: Glyph.info; label: "来源与许可"; clicked => { root.provenance-open = !root.provenance-open; } }
+            Rectangle { horizontal-stretch: 1; }
+            AppButton { label: "用同款"; primary: true; enabled: !SeeCut.working; clicked => { SeeCut.action("inspiration-apply", SeeCut.inspiration-selected.id); } }
+        }
+    }
+}

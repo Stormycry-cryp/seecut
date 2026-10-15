@@ -1,3 +1,4 @@
+import { LauncherSafeArea, LauncherControlRow } from "launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ScrollView } from "std-widgets.slint";
@@ -124,12 +125,12 @@ export component AccountPage inherits Rectangle {
             Rectangle { height: 1px; background: Theme.line; }
             Heading { text: "偏好设置"; }
             Label { text: "生成结果保存位置"; }
-            HorizontalLayout {
-                spacing: 8px;
+            LauncherControlRow {
+                height: 36px; spacing: 8px;
                 Text { text: SeeCut.local-folder == "" ? "尚未选择" : SeeCut.local-folder; color: Theme.fg-muted; overflow: elide; min-width: 0px; vertical-alignment: center; horizontal-stretch: 1; }
                 AppButton { label: "选择文件夹"; glyph: Glyph.folder; clicked => { SeeCut.action("local-folder-browse", ""); } }
             }
-            HorizontalLayout { height: 34px; spacing: 12px;
+            LauncherControlRow { height: 34px; spacing: 12px;
                 Text { text: "减少动态效果"; color: Theme.fg; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
                 VerticalLayout { alignment: center;
                     Switch { reduced-motion: SeeCut.reduced-motion; accessible-label: "减少动态效果"; checked <=> SeeCut.reduced-motion; toggled(value) => { SeeCut.changed("reduced-motion", value ? "true" : "false"); } }
@@ -141,7 +142,9 @@ export component AccountPage inherits Rectangle {
 }
 
 export component CreditsPage inherits Rectangle {
-    property <int> tab;
+    property <string> expanded-entry;
+    property <int> view-revision: SeeCut.history-view-revision;
+    changed view-revision => { credits-scroll.viewport-y = 0px; root.expanded-entry = ""; }
     credits-scroll := ScrollView {
         viewport-width: self.width;
         horizontal-scrollbar-policy: always-off;
@@ -167,7 +170,7 @@ export component CreditsPage inherits Rectangle {
             }
             Rectangle { height: 1px; background: Theme.line; }
             if SeeCut.payment-enabled: Heading { text: "充值积分"; }
-            if !SeeCut.payment-enabled: Label { text: "当前已开放模型为 0 积分，充值暂未开放"; }
+            if !SeeCut.payment-enabled: Label { text: "充值暂未开放"; }
             if SeeCut.payment-enabled && !SeeCut.signed-in: AppButton { label: "登录后充值"; primary: true; clicked => { SeeCut.action("auth-open", ""); } }
             if SeeCut.payment-enabled && SeeCut.signed-in && SeeCut.plans.length == 0: Label { text: "暂无可用套餐"; }
             for plan in (SeeCut.payment-enabled ? SeeCut.plans : []): Rectangle {
@@ -176,8 +179,9 @@ export component CreditsPage inherits Rectangle {
                 border-width: 1px;
                 border-color: Theme.line;
                 background: Theme.panel;
-                HorizontalLayout {
-                    padding: 16px;
+                LauncherControlRow {
+                    height: 78px;
+                    left-padding: 16px; right-padding: 16px; top-padding: 16px; bottom-padding: 16px;
                     spacing: 18px;
                     VerticalLayout {
                         spacing: 5px;
@@ -186,27 +190,60 @@ export component CreditsPage inherits Rectangle {
                     }
                     Rectangle { horizontal-stretch: 1; }
                     Text { text: plan.price; color: Theme.fg; vertical-alignment: center; font-size: 18px; }
-                    AppButton { label: "购买"; primary: true; enabled: SeeCut.signed-in && !SeeCut.working; clicked => { SeeCut.action("purchase", plan.id); } }
+                    AppButton { label: plan.purchase-label; primary: true; enabled: SeeCut.signed-in && !SeeCut.working; clicked => { SeeCut.action("purchase", plan.id); } }
                 }
             }
             Rectangle { height: 8px; }
-            if SeeCut.payment-enabled: SegmentedControl { options: ["积分明细", "充值订单"]; current <=> root.tab; }
-            if root.tab == 0 && SeeCut.ledger.length == 0: EmptyState { glyph: Glyph.rows; title: "暂无积分记录"; }
-            if root.tab == 1 && SeeCut.orders.length == 0: EmptyState { glyph: Glyph.rows; title: "暂无充值订单"; }
-            for entry in (root.tab == 0 ? SeeCut.ledger : SeeCut.orders): Rectangle {
-                height: 62px;
-                HorizontalLayout {
-                    spacing: 16px;
+            LauncherControlRow {
+                spacing: 8px; height: 36px;
+                SegmentedControl { width: 208px; options: ["积分明细", "充值订单"]; text-tabs: true;
+                    current <=> SeeCut.account-history-tab;
+                    changed(index) => { root.expanded-entry = ""; SeeCut.changed("account-history-tab", index); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                IconButton { glyph: Glyph.reset; label: "刷新记录"; enabled: !SeeCut.history-loading; clicked => { SeeCut.action("history-refresh", ""); } }
+            }
+            if SeeCut.account-history-tab == 0: SegmentedControl {
+                height: 32px; options: ["全部", "消费", "充值", "退回"]; text-tabs: true;
+                current <=> SeeCut.ledger-filter-index;
+                changed(index) => { root.expanded-entry = ""; SeeCut.changed("ledger-filter", index); }
+            }
+            if SeeCut.account-history-tab == 0 && SeeCut.ledger.length == 0 && !SeeCut.history-loading && SeeCut.history-error == "": EmptyState { glyph: Glyph.rows; title: "暂无积分记录"; }
+            if SeeCut.account-history-tab == 1 && SeeCut.orders.length == 0 && !SeeCut.history-loading && SeeCut.history-error == "": EmptyState { glyph: Glyph.rows; title: "暂无充值订单"; }
+            if SeeCut.history-notice != "": Text { text: SeeCut.history-notice; color: Theme.fg-dim; font-size: Theme.fs-sm; }
+            if SeeCut.history-error != "": Text { text: SeeCut.history-error; color: Theme.accent; wrap: word-wrap; }
+            for entry in (SeeCut.account-history-tab == 0 ? SeeCut.ledger : SeeCut.orders): Rectangle {
+                height: root.expanded-entry == entry.id ? (SeeCut.account-history-tab == 1 ? 112px : 92px) : 62px;
+                LauncherControlRow {
+                    height: 62px; spacing: 16px;
                     VerticalLayout {
                         alignment: center;
                         spacing: 6px;
                         Text { text: entry.title; color: Theme.fg; overflow: elide; }
                         Text { text: entry.detail; color: Theme.fg-dim; font-size: Theme.fs-sm; overflow: elide; }
                     }
-                    Text { text: entry.value; color: Theme.fg-muted; vertical-alignment: center; }
-                    if root.tab == 1: IconButton { glyph: Glyph.reset; label: "查询订单状态"; clicked => { SeeCut.action("order-refresh", entry.id); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: entry.value; color: Theme.fg; vertical-alignment: center; }
+                    IconButton { glyph: root.expanded-entry == entry.id ? Glyph.chevron-up : Glyph.chevron-down; label: "查看记录详情";
+                        clicked => { root.expanded-entry = root.expanded-entry == entry.id ? "" : entry.id; }
+                    }
+                    if SeeCut.account-history-tab == 1: IconButton { glyph: Glyph.reset; label: "查询订单状态"; enabled: !SeeCut.working; clicked => { SeeCut.action("order-refresh", entry.id); } }
+                }
+                if root.expanded-entry == entry.id: Text {
+                    y: 62px; width: parent.width; height: SeeCut.account-history-tab == 1 ? 44px : 24px; text: entry.reference;
+                    color: Theme.fg-dim; font-size: Theme.fs-sm; overflow: elide;
                 }
                 Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.line; }
+            }
+            HorizontalLayout {
+                height: 36px; spacing: 8px;
+                Rectangle { horizontal-stretch: 1; }
+                IconButton { glyph: Glyph.chevron-left; label: "上一页记录"; enabled: SeeCut.history-previous;
+                    clicked => { root.expanded-entry = ""; SeeCut.action("history-page", "previous"); } }
+                Text { text: SeeCut.history-loading ? "加载中…" : "" + SeeCut.history-page; color: Theme.fg-muted; vertical-alignment: center; }
+                IconButton { glyph: Glyph.chevron-right; label: "下一页记录"; enabled: SeeCut.history-next;
+                    clicked => { root.expanded-entry = ""; SeeCut.action("history-page", "next"); } }
+                Rectangle { horizontal-stretch: 1; }
             }
         }
     }

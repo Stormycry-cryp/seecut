@@ -204,3 +204,45 @@ MIT is compatible with Concat's AGPL-3.0-or-later: the ported work may be
 conveyed under the AGPL, and the notice above travels with it. The port's
 plan and its scope are recorded in
 `docs/plans/2026-09-20-compositor-canvas-port-plan.md`.
+
+
+## PhotoCraft geometry reference
+
+Source: https://github.com/storytold/photocraft/tree/48c17214704d4768ad7b1f28c5d2767b1d87110c
+
+`concat-canvas/src/vector.rs` adapts the knot/control-point representation and rectangle/ellipse construction from `crates/doc/src/vector.rs` and `crates/vector/src/shapes.rs`. Changes: f32 layer-local coordinates, the existing SeeCut layer/PixelStore/history, bounded serde geometry validation, and tiny-skia cache rasterization. No PhotoCraft document, session, history, branding or assets are included. Selected license: MIT.
+
+MIT License
+
+Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## Toonflow 嵌入实验
+
+本分支的 Toonflow 依赖固定于 HBAI-Ltd/Toonflow-app v2.0.6，提交
+`c6756b9c23e87aff1ecafad6ebf8dfbe015a74a2`。完整版权及 MIT 许可见
+`integrations/toonflow/LICENSE`；嵌入模式、主题和本地启动器的修改记录见
+`integrations/toonflow/SOURCE.md`。上游按固定提交加补丁准备到本地
+`external/toonflow`，不把完整上游源码纳入 SeeCut 提交。其传递依赖保留各自的许可。
+
+原生 WebView 使用 Wry 0.57.0，来源 https://github.com/tauri-apps/wry ，按其
+MIT 选项使用；对应许可随 Cargo 源码包提供。系统 WebView 由平台提供。
+实验运行时使用 Bun 1.3.14，来源 https://github.com/oven-sh/bun ，对应许可及
+第三方说明应在正式分发前与二进制一起核对。本分支的本地实验包不构成正式发布。

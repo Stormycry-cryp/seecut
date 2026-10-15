@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme, Glyph, Icon, IconButton, FocusRing, Tip } from "../primitives/primitives.slint";
+import { Rail } from "../inspector/controls.slint";
+
+// Positions are display indices only. The host resolves stable server policy IDs.
+export component EffortSlider inherits Rectangle {
+    in property <[string]> names;
+    in property <int> current: -1;
+    in property <string> current-label;
+    in property <string> reason;
+    in property <bool> enabled;
+    in property <bool> can-refresh;
+    callback selected(int);
+    callback refresh();
+    property <int> preview: root.current;
+    property <bool> dragging;
+    property <bool> ring;
+    height: 32px;
+    min-width: 0px;
+    changed current => { if !root.dragging { root.preview = root.current; } }
+    changed enabled => { if !root.enabled { root.dragging = false; root.preview = root.current; } }
+    function choose(index: int) {
+        if root.enabled && index >= 0 && index < root.names.length { root.selected(index); }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            Icon { glyph: Glyph.sparkle; size: 14px; tint: Theme.fg-muted; }
+        }
+        control := Rectangle {
+            min-width: 48px; horizontal-stretch: 1;
+            accessible-role: slider;
+            accessible-label: "强度，" + root.current-label;
+            accessible-enabled: root.enabled && root.names.length > 1;
+            accessible-value: root.current >= 0 ? root.current : 0;
+            accessible-value-minimum: 0;
+            accessible-value-maximum: max(0, root.names.length - 1);
+            accessible-value-step: 1;
+            accessible-action-increment => { if root.names.length > 1 { root.choose(min(root.names.length - 1, max(0, root.current + 1))); } }
+            accessible-action-decrement => { if root.names.length > 1 { root.choose(max(0, root.current - 1)); } }
+            accessible-action-set-value(value) => { if root.names.length > 1 && value.is-float() { root.choose(round(value.to-float())); } }
+            forward-focus: keys;
+            keys := FocusScope {
+                enabled: root.enabled && root.names.length > 1;
+                focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+                focus-lost => { root.ring = false; }
+                key-pressed(event) => {
+                    if event.text == Key.RightArrow || event.text == Key.UpArrow {
+                        root.choose(min(root.names.length - 1, max(0, root.current + 1))); return EventResult.accept;
+                    }
+                    if event.text == Key.LeftArrow || event.text == Key.DownArrow {
+                        root.choose(max(0, root.current - 1)); return EventResult.accept;
+                    }
+                    if event.text == Key.Home || event.text == Key.End {
+                        root.choose(event.text == Key.Home ? 0 : root.names.length - 1); return EventResult.accept;
+                    }
+                    return EventResult.reject;
+                }
+            }
+            Rail {
+                width: parent.width; height: parent.height;
+                minimum: 0; maximum: max(0, root.names.length - 1); step: 1;
+                value: max(0, root.dragging ? root.preview : root.current);
+                default-value: max(0, root.current);
+                enabled: root.enabled && root.names.length > 1;
+                gesture-started => { keys.focus(); root.dragging = true; root.preview = root.current; }
+                changed(value) => { root.preview = round(value); }
+                gesture-ended(commit) => {
+                    root.dragging = false;
+                    if commit { root.choose(root.preview); }
+                    root.preview = root.current;
+                }
+            }
+            FocusRing { active: root.ring; radius: Theme.r; }
+        }
+        label-button := Rectangle {
+            min-width: 32px; max-width: 104px; preferred-width: label-text.preferred-width + 8px;
+            horizontal-stretch: 0;
+            border-radius: Theme.r-sm;
+            background: label-touch.has-hover && self.available ? Theme.field-hover : transparent;
+            property <bool> available: root.enabled && root.current >= 0 && root.current < root.names.length;
+            property <bool> ring;
+            accessible-role: button;
+            accessible-label: "应用强度：" + root.current-label;
+            accessible-enabled: self.available;
+            accessible-action-default => { if self.available { root.choose(root.current); } }
+            forward-focus: label-focus;
+            label-focus := FocusScope {
+                enabled: label-button.available;
+                focus-gained(reason) => { label-button.ring = reason == FocusReason.tab-navigation; }
+                focus-lost => { label-button.ring = false; }
+                key-pressed(event) => {
+                    if event.text == "\n" || event.text == " " {
+                        if !event.repeat { root.choose(root.current); }
+                        return EventResult.accept;
+                    }
+                    return EventResult.reject;
+                }
+            }
+            label-text := Text {
+                x: 4px; width: max(0px, parent.width - 8px); height: parent.height;
+                text: root.dragging && root.preview >= 0 && root.preview < root.names.length ? root.names[root.preview] : root.current-label;
+                font-family: Theme.font; font-size: Theme.fs; color: Theme.fg-muted;
+                vertical-alignment: center; overflow: elide;
+                accessible-role: none;
+            }
+            label-touch := TouchArea {
+                enabled: label-button.available; mouse-cursor: pointer;
+                clicked => { label-focus.focus(); root.choose(root.current); }
+            }
+            FocusRing { active: label-button.ring; radius: Theme.r-sm; }
+            Tip { text: root.reason == "" ? "用于下一次请求" : root.reason; active: label-touch.has-hover || label-button.ring; }
+        }
+        // A sole supported tier is not a slider range. Legacy/expired sessions
+        // still require one explicit choice instead of being silently migrated.
+        if root.current < 0 && root.names.length == 1: IconButton {
+            glyph: Glyph.check; label: "使用" + root.names[0]; enabled: root.enabled;
+            side: 28px; icon-size: 14px;
+            clicked => { root.choose(0); }
+        }
+        if root.reason != "": IconButton {
+            glyph: Glyph.reset; label: "刷新强度"; enabled: root.can-refresh;
+            side: 28px; icon-size: 14px;
+            clicked => { root.refresh(); }
+        }
+    }
+    Tip { text: root.reason == "" ? "用于下一次请求" : root.reason; active: root.ring; }
+}

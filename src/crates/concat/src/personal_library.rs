@@ -2,6 +2,7 @@
 //! Local-only storage for the user's personal media library.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::hash_map::DefaultHasher,
     fs::{self, File},
@@ -47,7 +48,7 @@ pub enum AssetKind {
 pub enum AssetSource {
     /// Copied into the managed `imported` directory.
     Imported,
-    /// Registered from an existing generated or downloaded file.
+    /// Generated or downloaded media copied into immutable managed storage.
     Generated,
 }
 
@@ -64,9 +65,18 @@ pub struct Asset {
     pub kind: AssetKind,
     /// Whether this file was imported or generated.
     pub source: AssetSource,
-    /// Canonical source path for import de-duplication.
+    /// Immutable generated-content identity and previous version, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<AssetVersion>,
+    /// Canonical source path retained as provenance, separate from managed storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_path: Option<PathBuf>,
+    /// Explicit recovery provenance; an unknown historical file remains unverified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<AssetRecovery>,
+    /// Frozen creator context for a successful formal output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<OutputProvenance>,
     /// Creation time in milliseconds since the Unix epoch.
     pub created_at: u64,
     /// Whether the item is in the library recycle bin.
@@ -77,6 +87,68 @@ pub struct Asset {
     /// Optional user folder. Assets keep their stable id and media path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder_id: Option<String>,
+}
+
+pub use crate::asset_version::AssetVersion;
+
+/// A reference to the existing library identity, never a second asset entry.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AssetReference {
+    /// Stable global-library asset identity.
+    pub asset_id: String,
+    /// The selected immutable version; absent for an unversioned legacy asset.
+    pub version: Option<AssetVersion>,
+}
+
+pub(crate) fn verify_asset_reference(
+    path: &Path,
+    reference: Option<&AssetReference>,
+) -> Result<(), String> {
+    if let Some(version) = reference.and_then(|reference| reference.version.as_ref())
+        && file_digest(path)? != version.sha256
+    {
+        return Err("库内素材版本已变化，请重新选择".into());
+    }
+    Ok(())
+}
+
+/// Source document and parameters captured when an output is requested.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutputProvenance {
+    /// Creator operation, such as canvas_export.
+    pub kind: String,
+    /// Saved source project, when the document has one.
+    pub project_path: Option<PathBuf>,
+    /// SHA256 of the exact source document snapshot.
+    pub document_sha256: String,
+    /// Existing library inputs with their selected versions.
+    pub inputs: Vec<AssetReference>,
+    /// Output dimensions, format and layer parameters at request time.
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AssetRecovery {
+    /// First missing path, retained across subsequent recovery attempts.
+    pub previous_path: PathBuf,
+    pub selected_path: PathBuf,
+    pub sha256: String,
+    /// False stays false even after a later match against the recovered bytes.
+    pub verified_original: bool,
+}
+
+/// Durable registration input. Its managed bytes survive a failed index update.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct PreparedGenerated {
+    pub(crate) path: PathBuf,
+    pub(crate) source_path: PathBuf,
+    pub(crate) name: String,
+    pub(crate) kind: AssetKind,
+    pub(crate) sha256: String,
+    pub(crate) registration_id: String,
+    pub(crate) operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provenance: Option<OutputProvenance>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -101,6 +173,25 @@ pub struct Library {
 }
 
 impl Library {
+    /// Reads the existing index without migration, registration retry or writes.
+    /// Use for a frozen relink request, whose failure must preserve the index.
+    pub fn load_for_relink(root: impl AsRef<Path>) -> Result<Self, String> {
+        let root = root.as_ref().to_path_buf();
+        if !root.is_dir() {
+            return Err("个人资产库目录不存在，请刷新后重试".into());
+        }
+        let bytes = fs::read(root.join(MANIFEST_NAME))
+            .map_err(|error| format!("无法读取个人资产库索引：{error}"))?;
+        let manifest = serde_json::from_slice::<Manifest>(&bytes).map_err(|error| {
+            format!("个人资产库索引已损坏，请先备份或修复 library.json：{error}")
+        })?;
+        Ok(Self {
+            root,
+            items: manifest.items,
+            folders: manifest.folders,
+        })
+    }
+
     /// Opens a library, creating its directories when no index exists.
     pub fn load(root: impl AsRef<Path>) -> Result<Self, String> {
         let root = root.as_ref().to_path_buf();
@@ -119,16 +210,141 @@ impl Library {
         };
         fs::create_dir_all(root.join("imported"))
             .map_err(|error| format!("无法创建个人资产库目录：{error}"))?;
-        Ok(Self {
+        let mut library = Self {
             root,
             items: manifest.items,
             folders: manifest.folders,
-        })
+        };
+        // Existing intents win over the current external bytes. Keep migration
+        // identities separate from ordinary output registration and its queue.
+        let mut migrations = crate::registration_retry::load_legacy_migrations(&library.root)?;
+        let existing_count = migrations.len();
+        let mut migrated = false;
+        for (position, entry) in migrations.iter().enumerate() {
+            if migrations[..position]
+                .iter()
+                .any(|previous| previous.target_asset_id == entry.target_asset_id)
+            {
+                return Err("旧资产迁移身份重复，已保留原记录和副本".into());
+            }
+            migrated |= library.apply_legacy_migration(entry)?;
+        }
+        let mut staged = false;
+        for item in &library.items {
+            if item.source == AssetSource::Generated
+                && item.version.is_none()
+                && !migrations
+                    .iter()
+                    .any(|entry| entry.target_asset_id == item.id)
+            {
+                let prepared = match fs::metadata(&item.path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => Err(error.to_string()),
+                    Ok(_) => {
+                        prepare_generated(&library.root, &item.path, Some(&item.name), None, None)
+                    }
+                };
+                let prepared = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        if staged {
+                            crate::registration_retry::save_legacy_migrations(
+                                &library.root,
+                                &migrations,
+                            )?;
+                        }
+                        return Err(format!("旧资产“{}”入库失败：{error}", item.name));
+                    }
+                };
+                migrations.push(crate::registration_retry::LegacyMigration {
+                    target_asset_id: item.id.clone(),
+                    asset_path: item.path.clone(),
+                    prepared,
+                });
+                staged = true;
+            }
+        }
+        if staged {
+            crate::registration_retry::save_legacy_migrations(&library.root, &migrations)?;
+        }
+        for entry in migrations.iter().skip(existing_count) {
+            migrated |= library.apply_legacy_migration(entry)?;
+        }
+        if migrated {
+            library.save()?;
+        }
+        if !migrations.is_empty() {
+            // A failed cleanup leaves the same intents for idempotent replay.
+            crate::registration_retry::save_legacy_migrations(&library.root, &[])?;
+        }
+        Ok(library)
+    }
+
+    fn apply_legacy_migration(
+        &mut self,
+        entry: &crate::registration_retry::LegacyMigration,
+    ) -> Result<bool, String> {
+        let mut matches = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.id == entry.target_asset_id);
+        let index = matches.next().map(|(index, _)| index);
+        if index.is_none() || matches.next().is_some() {
+            return Err("旧资产迁移目标不存在或身份重复，已保留迁移记录".into());
+        }
+        let path = checked_prepared_path(&self.root, &entry.prepared)?;
+        let item = &mut self.items[index.expect("已验证旧资产身份")];
+        let version = AssetVersion {
+            sha256: entry.prepared.sha256.clone(),
+            registration_id: entry.prepared.registration_id.clone(),
+            previous_id: None,
+        };
+        if item.source != AssetSource::Generated || item.kind != entry.prepared.kind {
+            return Err("旧资产迁移目标已变化，已保留原记录和副本".into());
+        }
+        if let Some(existing) = &item.version {
+            if existing == &version && item.path == path {
+                return Ok(false);
+            }
+            return Err("旧资产已有不同版本，已保留原记录和迁移副本".into());
+        }
+        if item.path != entry.asset_path {
+            return Err("旧资产路径已变化，已保留原记录和迁移副本".into());
+        }
+        // Retain current user metadata, including any previously recorded provenance.
+        item.original_path
+            .get_or_insert_with(|| entry.prepared.source_path.clone());
+        item.path = path;
+        item.version = Some(version);
+        Ok(true)
     }
 
     /// Returns all indexed items, including recycled items.
     pub fn items(&self) -> &[Asset] {
         &self.items
+    }
+    /// Add creator metadata to an already registered generation result without changing its version.
+    pub(crate) fn annotate_output(
+        &mut self,
+        id: &str,
+        version: &AssetVersion,
+        provenance: OutputProvenance,
+    ) -> Result<(), String> {
+        let index = self
+            .items
+            .iter()
+            .position(|a| a.id == id && a.version.as_ref() == Some(version))
+            .ok_or("输出版本已变化")?;
+        if self.items[index].provenance.is_some() {
+            return Ok(());
+        }
+        self.items[index].provenance = Some(provenance);
+        if let Err(error) = self.save() {
+            self.items[index].provenance = None;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn folders(&self) -> &[Folder] {
@@ -202,7 +418,8 @@ impl Library {
         // creates a new version so projects referencing the older managed copy
         // keep their original media. A missing copy is never treated as a hit.
         for (index, item) in self.items.iter().enumerate().rev() {
-            if item.source == AssetSource::Imported
+            if !item.trashed
+                && item.source == AssetSource::Imported
                 && item.original_path.as_ref() == Some(&source.0)
                 && same_file_bytes(&source.0, &item.path)?
             {
@@ -234,6 +451,16 @@ impl Library {
                 return Err(error);
             }
         }
+        let sha256 = file_digest(&temporary)?;
+        let previous_id = self
+            .items
+            .iter()
+            .rev()
+            .find(|item| {
+                item.source == AssetSource::Imported
+                    && item.original_path.as_ref() == Some(&source.0)
+            })
+            .map(|item| item.id.clone());
         if let Err(error) = fs::rename(&temporary, &destination) {
             let _ = fs::remove_file(&temporary);
             return Err(format!("保存导入素材失败：{error}"));
@@ -246,12 +473,19 @@ impl Library {
             }
         };
         let item = Asset {
-            id,
+            id: id.clone(),
             name: display_name(&source.0),
             path: canonical_destination,
             kind: source.1,
             source: AssetSource::Imported,
+            version: Some(AssetVersion {
+                registration_id: format!("import:{id}:{sha256}"),
+                sha256,
+                previous_id,
+            }),
             original_path: Some(source.0),
+            recovery: None,
+            provenance: None,
             created_at,
             trashed: false,
             favorite: false,
@@ -266,36 +500,67 @@ impl Library {
         Ok(self.items.last().expect("刚保存的资产必须存在"))
     }
 
-    /// Indexes an existing generated or downloaded media file without copying it.
+    /// Copies generated media into immutable managed storage, then indexes it.
     pub fn register_generated(&mut self, path: impl AsRef<Path>) -> Result<&Asset, String> {
         self.register_generated_with_name(path, None)
     }
 
-    /// Indexes an existing generated or downloaded media file with an
-    /// optional user-visible name. The path remains the stable storage
-    /// identity; callers may provide a readable project name separately.
     pub fn register_generated_with_name(
         &mut self,
         path: impl AsRef<Path>,
         name: Option<&str>,
     ) -> Result<&Asset, String> {
-        let checked = checked_media(path.as_ref())?;
-        if let Some(index) = self.items.iter().position(|item| item.path == checked.0) {
-            return Ok(&self.items[index]);
+        let prepared = prepare_generated(&self.root, path.as_ref(), name, None, None)?;
+        self.commit_generated(&prepared)
+    }
+
+    pub(crate) fn commit_generated(
+        &mut self,
+        prepared: &PreparedGenerated,
+    ) -> Result<&Asset, String> {
+        let path = checked_prepared_path(&self.root, prepared)?;
+        for (index, item) in self.items.iter().enumerate().rev() {
+            if let Some(version) = &item.version {
+                if version.registration_id == prepared.registration_id {
+                    if version.sha256 != prepared.sha256 || item.provenance != prepared.provenance {
+                        return Err("同一输出的内容已变化，已保留原版本".into());
+                    }
+                    return Ok(&self.items[index]);
+                }
+                // A directory scan or repeated indexing adopts the existing content version.
+                if prepared.operation.is_none()
+                    && item.original_path.as_ref() == Some(&prepared.source_path)
+                    && version.sha256 == prepared.sha256
+                    && item.path.is_file()
+                {
+                    return Ok(&self.items[index]);
+                }
+            }
         }
-        let created_at = now_millis()?;
-        let name = name
-            .filter(|name| !name.is_empty() && validate_name(name).is_ok())
-            .map(str::to_owned)
-            .unwrap_or_else(|| display_name(&checked.0));
+        let previous_id = self
+            .items
+            .iter()
+            .rev()
+            .find(|item| {
+                item.source == AssetSource::Generated
+                    && item.original_path.as_ref() == Some(&prepared.source_path)
+            })
+            .map(|item| item.id.clone());
         self.items.push(Asset {
             id: Uuid::new_v4().to_string(),
-            name,
-            path: checked.0,
-            kind: checked.1,
+            name: prepared.name.clone(),
+            path,
+            kind: prepared.kind,
             source: AssetSource::Generated,
-            original_path: None,
-            created_at,
+            original_path: Some(prepared.source_path.clone()),
+            recovery: None,
+            provenance: prepared.provenance.clone(),
+            version: Some(AssetVersion {
+                sha256: prepared.sha256.clone(),
+                registration_id: prepared.registration_id.clone(),
+                previous_id,
+            }),
+            created_at: now_millis()?,
             trashed: false,
             favorite: false,
             folder_id: None,
@@ -305,6 +570,180 @@ impl Library {
             return Err(error);
         }
         Ok(self.items.last().expect("刚保存的资产必须存在"))
+    }
+
+    /// Restores one frozen missing item without registering another asset.
+    /// The caller holds the library write lock across load and this operation.
+    /// Returned failures roll back the index and newly published file; this is
+    /// not a crash-atomic transaction across the media file and JSON index.
+    pub fn relink_missing(
+        &mut self,
+        expected: &Asset,
+        selected: &Path,
+        allow_unverified: bool,
+    ) -> Result<&Asset, String> {
+        let mut matches = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.id == expected.id);
+        let index = matches.next().map(|(index, _)| index);
+        if index.is_none() || matches.next().is_some() {
+            return Err("找不到唯一的原资产，请刷新后重试".into());
+        }
+        let index = index.expect("已验证资产身份");
+        if &self.items[index] != expected {
+            return Err("资产记录已变化，请刷新后重新选择文件".into());
+        }
+        if crate::registration_retry::load_legacy_migrations(&self.root)?
+            .iter()
+            .any(|entry| entry.target_asset_id == expected.id)
+        {
+            return Err("此资产仍有待恢复的原副本，请先刷新完成原入库恢复".into());
+        }
+        let expected_hash = expected
+            .version
+            .as_ref()
+            .map(|version| version.sha256.as_str())
+            .or_else(|| {
+                expected
+                    .recovery
+                    .as_ref()
+                    .map(|recovery| recovery.sha256.as_str())
+            });
+        match fs::symlink_metadata(&expected.path) {
+            Ok(metadata) => {
+                // A repeated completed request never creates another record or
+                // replaces a file, including one changed by an external writer.
+                if metadata.is_file()
+                    && expected.recovery.is_some()
+                    && expected_hash.is_some_and(|hash| {
+                        file_digest(&expected.path).is_ok_and(|actual| actual == hash)
+                    })
+                {
+                    return Ok(&self.items[index]);
+                }
+                return Err("原素材路径已存在，未覆盖任何文件".into());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("无法确认原素材缺失：{error}")),
+        }
+        if expected_hash.is_none() && !allow_unverified {
+            return Err("旧素材没有内容指纹，请先确认使用所选文件；无法验证是否为原内容".into());
+        }
+        let (selected_path, kind) = checked_media(selected)?;
+        if kind != expected.kind {
+            return Err("所选文件的素材类型与原记录不一致".into());
+        }
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let source_folder = match expected.source {
+            AssetSource::Imported => "imported",
+            AssetSource::Generated => "generated",
+        };
+        // Only a direct managed path may be restored in place. Never recreate
+        // an old external source or traverse a symlinked managed directory.
+        let folder_name = ["imported", "generated"]
+            .into_iter()
+            .find(|name| expected.path.parent() == Some(root.join(name).as_path()))
+            .unwrap_or(source_folder);
+        let folder = checked_recovery_folder(&root, folder_name)?;
+        let extension = selected_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .ok_or("文件扩展名无效")?;
+        let destination = if expected.path.parent() == Some(folder.as_path()) {
+            expected.path.clone()
+        } else {
+            folder.join(format!("recovered-{}.{}", Uuid::new_v4(), extension))
+        };
+        let temporary = folder.join(format!(".recovery-{}.tmp", Uuid::new_v4()));
+        let mut staged = false;
+        let mut published = false;
+        let mut copied_hash = String::new();
+        let result = (|| {
+            let mut input = File::open(&selected_path).map_err(|error| error.to_string())?;
+            let mut output = File::options()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| error.to_string())?;
+            staged = true;
+            std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+            output.sync_all().map_err(|error| error.to_string())?;
+            copied_hash = file_digest(&temporary)?;
+            if let Some(hash) = expected_hash {
+                if copied_hash != hash {
+                    return Err("所选文件与已记录的内容指纹不一致，原记录未改变".into());
+                }
+            } else {
+                let info = concat_media::probe(&temporary)
+                    .map_err(|_| "所选文件不是可读取的有效素材".to_owned())?;
+                if (kind == AssetKind::Audio && info.audio.is_none())
+                    || (kind != AssetKind::Audio && info.video.is_none())
+                {
+                    return Err("所选文件内容与素材类型不一致".into());
+                }
+            }
+            if !same_file_bytes(&selected_path, &temporary)? {
+                return Err("所选文件在复制过程中发生变化，请重新选择".into());
+            }
+            // hard_link publishes atomically without overwriting an existing
+            // destination, unlike rename on platforms that replace the target.
+            fs::hard_link(&temporary, &destination)
+                .map_err(|error| format!("无法恢复素材文件，未覆盖已有文件：{error}"))?;
+            published = true;
+            let mut restored = expected.clone();
+            restored.path = destination.clone();
+            restored
+                .original_path
+                .get_or_insert_with(|| expected.path.clone());
+            if restored.version.is_none() {
+                restored.version = Some(AssetVersion {
+                    sha256: copied_hash.clone(),
+                    registration_id: format!("recovery:{}:{}", expected.id, copied_hash),
+                    previous_id: None,
+                });
+            }
+            restored.recovery = Some(AssetRecovery {
+                previous_path: expected
+                    .recovery
+                    .as_ref()
+                    .map(|recovery| recovery.previous_path.clone())
+                    .unwrap_or_else(|| expected.path.clone()),
+                selected_path: selected_path.clone(),
+                sha256: copied_hash.clone(),
+                verified_original: expected
+                    .recovery
+                    .as_ref()
+                    .map(|recovery| recovery.verified_original)
+                    .unwrap_or(expected_hash.is_some()),
+            });
+            self.items[index] = restored;
+            if let Err(error) = self.save() {
+                self.items[index] = expected.clone();
+                return Err(error);
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let cleanup = if published {
+                remove_recovery_copy(&temporary, &destination, &copied_hash)
+            } else {
+                Ok(())
+            };
+            if staged {
+                let _ = fs::remove_file(&temporary);
+            }
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}；{cleanup}"),
+            });
+        }
+        let _ = fs::remove_file(temporary);
+        Ok(&self.items[index])
     }
 
     /// Changes only an item's display name.
@@ -384,6 +823,18 @@ impl Library {
             file.write_all(&bytes)
                 .and_then(|_| file.sync_all())
                 .map_err(|error| format!("无法写入个人资产库索引：{error}"))?;
+            #[cfg(test)]
+            if FAIL_NEXT_MANIFEST_SAVE.with(|failure| {
+                let mut failure = failure.borrow_mut();
+                if failure.as_ref() == Some(&self.root) {
+                    failure.take();
+                    true
+                } else {
+                    false
+                }
+            }) {
+                return Err("test: manifest commit failed after snapshot staging".into());
+            }
             fs::rename(&temporary, self.root.join(MANIFEST_NAME))
                 .map_err(|error| format!("无法更新个人资产库索引：{error}"))
         })();
@@ -392,6 +843,197 @@ impl Library {
         }
         result
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_MANIFEST_SAVE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_manifest_save(root: &Path) {
+    FAIL_NEXT_MANIFEST_SAVE.with(|failure| *failure.borrow_mut() = Some(root.to_path_buf()));
+}
+
+fn checked_prepared_path(root: &Path, prepared: &PreparedGenerated) -> Result<PathBuf, String> {
+    let managed = root
+        .join("generated")
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let path = prepared.path.canonicalize().map_err(|e| e.to_string())?;
+    if !path.starts_with(managed) || file_digest(&path)? != prepared.sha256 {
+        return Err("待入库副本校验失败，已保留原记录".into());
+    }
+    Ok(path)
+}
+
+/// Read-only validation for an explicit project binding to a managed version.
+/// Unlike loading or preparing a library entry, this never migrates or writes.
+pub(crate) fn checked_managed_version_path(root: &Path, asset: &Asset) -> Result<PathBuf, String> {
+    if asset.id.is_empty() {
+        return Err("库内资产没有稳定身份".into());
+    }
+    if asset.trashed {
+        return Err("库内版本已在回收站，请先恢复资产".into());
+    }
+    let version = asset.version.as_ref().ok_or("库内资产没有固定内容版本")?;
+    if version.sha256.len() != 64
+        || !version
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || version.registration_id.is_empty()
+    {
+        return Err("库内版本身份无效".into());
+    }
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    let folder = ["imported", "generated"]
+        .into_iter()
+        .map(|name| root.join(name))
+        .find(|folder| asset.path.parent() == Some(folder.as_path()))
+        .ok_or("库内版本不是直系受管素材")?;
+    let folder_metadata = fs::symlink_metadata(&folder).map_err(|error| error.to_string())?;
+    let metadata = fs::symlink_metadata(&asset.path).map_err(|error| error.to_string())?;
+    if folder_metadata.file_type().is_symlink()
+        || !folder_metadata.is_dir()
+        || !metadata.is_file()
+        || asset
+            .path
+            .canonicalize()
+            .map_err(|error| error.to_string())?
+            != asset.path
+    {
+        return Err("库内版本不是普通受管文件".into());
+    }
+    if file_digest(&asset.path)? != version.sha256 {
+        return Err("库内受管版本内容校验失败".into());
+    }
+    Ok(asset.path.clone())
+}
+
+fn file_digest(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn checked_recovery_folder(root: &Path, name: &str) -> Result<PathBuf, String> {
+    let folder = root.join(name);
+    match fs::symlink_metadata(&folder) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&folder).map_err(|error| error.to_string())?;
+        }
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    let metadata = fs::symlink_metadata(&folder).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("受管素材目录不是普通文件夹，未写入任何素材".into());
+    }
+    if folder.canonicalize().map_err(|error| error.to_string())? != folder {
+        return Err("受管素材目录路径已变化，未写入任何素材".into());
+    }
+    Ok(folder)
+}
+
+fn remove_recovery_copy(temporary: &Path, destination: &Path, sha256: &str) -> Result<(), String> {
+    // Keep an external replacement intact if it appeared after our publication.
+    let metadata = fs::symlink_metadata(destination).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || file_digest(destination)? != sha256 {
+        return Err("恢复路径被其他操作改变，已保留该文件；资产索引未改变".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let staged = fs::metadata(temporary).map_err(|error| error.to_string())?;
+        if metadata.dev() != staged.dev() || metadata.ino() != staged.ino() {
+            return Err("恢复路径被其他操作替换，已保留该文件；资产索引未改变".into());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = temporary;
+    fs::remove_file(destination).map_err(|error| format!("无法清理本次恢复副本：{error}"))
+}
+
+/// Run on a worker. Canvas can supply its encoded bytes, avoiding an external-path overwrite race.
+pub(crate) fn prepare_generated(
+    root: &Path,
+    path: &Path,
+    name: Option<&str>,
+    operation: Option<&str>,
+    bytes: Option<&[u8]>,
+) -> Result<PreparedGenerated, String> {
+    let (source_path, kind) = checked_media(path)?;
+    let extension = source_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .ok_or("文件扩展名无效")?
+        .to_ascii_lowercase();
+    let folder = root.join("generated");
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let temporary = folder.join(format!(".{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        if let Some(bytes) = bytes {
+            let mut file = File::create(&temporary).map_err(|e| e.to_string())?;
+            file.write_all(bytes)
+                .and_then(|_| file.sync_all())
+                .map_err(|e| e.to_string())?;
+        } else {
+            fs::copy(&source_path, &temporary).map_err(|e| e.to_string())?;
+            File::options()
+                .write(true)
+                .open(&temporary)
+                .and_then(|f| f.sync_all())
+                .map_err(|e| e.to_string())?;
+            if !same_file_bytes(&source_path, &temporary)? {
+                return Err("源素材在入库过程中发生变化，请重试".into());
+            }
+        }
+        let sha256 = file_digest(&temporary)?;
+        let destination = folder.join(format!("{sha256}.{extension}"));
+        if destination.exists() {
+            if file_digest(&destination)? != sha256 {
+                return Err("受管副本校验失败，已保留原文件".into());
+            }
+            fs::remove_file(&temporary).map_err(|e| e.to_string())?;
+        } else {
+            fs::rename(&temporary, &destination).map_err(|e| e.to_string())?;
+        }
+        let operation = operation
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let registration_id = if let Some(operation) = &operation {
+            format!("operation:{operation}")
+        } else {
+            let encoded = serde_json::to_vec(&source_path).map_err(|e| e.to_string())?;
+            format!("content:{:x}:{sha256}", Sha256::digest(encoded))
+        };
+        Ok(PreparedGenerated {
+            path: destination.canonicalize().map_err(|e| e.to_string())?,
+            source_path: source_path.clone(),
+            name: name
+                .filter(|v| !v.is_empty() && validate_name(v).is_ok())
+                .map(str::to_owned)
+                .unwrap_or_else(|| display_name(&source_path)),
+            kind,
+            sha256,
+            registration_id,
+            operation,
+            provenance: None,
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
 }
 
 /// Builds or reuses a local JPEG thumbnail for an image or video asset.
@@ -571,6 +1213,295 @@ fn now_millis() -> Result<u64, String> {
 mod tests {
     use super::*;
 
+    struct RelinkTemp(PathBuf);
+
+    impl RelinkTemp {
+        fn new() -> Self {
+            let path = temp_root("relink");
+            fs::create_dir_all(&path).unwrap();
+            Self(path.canonicalize().unwrap())
+        }
+    }
+
+    impl Drop for RelinkTemp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn relink_fixture() -> (RelinkTemp, Library, Asset, PathBuf) {
+        let temporary = RelinkTemp::new();
+        let selected = temporary.0.join("selected.png");
+        fs::write(&selected, b"original immutable output").unwrap();
+        let mut library = Library::load(temporary.0.join("library")).unwrap();
+        let id = library.register_generated(&selected).unwrap().id.clone();
+        library.rename(&id, "保留名称").unwrap();
+        library.set_favorite(&id, true).unwrap();
+        let folder = library.create_folder("保留目录").unwrap().id.clone();
+        library
+            .move_to_folder(std::slice::from_ref(&id), Some(&folder))
+            .unwrap();
+        let expected = library.get(&id).unwrap().clone();
+        fs::remove_file(&expected.path).unwrap();
+        (temporary, library, expected, selected)
+    }
+
+    fn relink_image(path: &Path) {
+        let frame = concat_core::frame::Frame::black(16, 16);
+        fs::write(path, concat_media::jpeg(&frame, 5).unwrap()).unwrap();
+    }
+
+    fn relink_assert_unchanged(library: &Library, expected: &Asset, manifest: &[u8]) {
+        assert_eq!(library.items(), std::slice::from_ref(expected));
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        assert!(!expected.path.exists());
+        for name in ["imported", "generated"] {
+            if let Ok(entries) = fs::read_dir(library.root.join(name)) {
+                assert!(entries.into_iter().all(|entry| {
+                    !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".recovery-")
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn relink_matching_hash_restores_original_path_identity_and_metadata_once() {
+        let (_temporary, mut library, expected, selected) = relink_fixture();
+        let recovered = library
+            .relink_missing(&expected, &selected, false)
+            .unwrap()
+            .clone();
+        let mut preserved = recovered.clone();
+        preserved.recovery = None;
+        assert_eq!(preserved, expected);
+        assert_eq!(
+            fs::read(&recovered.path).unwrap(),
+            fs::read(&selected).unwrap()
+        );
+        let recovery = recovered.recovery.as_ref().unwrap();
+        assert_eq!(recovery.previous_path, expected.path);
+        assert_eq!(recovery.selected_path, selected.canonicalize().unwrap());
+        assert!(recovery.verified_original);
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        assert_eq!(
+            library
+                .relink_missing(&recovered, &selected, false)
+                .unwrap(),
+            &recovered
+        );
+        assert_eq!(library.items().len(), 1);
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        let reopened = Library::load(&library.root).unwrap();
+        assert_eq!(reopened.items(), std::slice::from_ref(&recovered));
+    }
+
+    #[test]
+    fn relink_wrong_hash_kind_and_cancelled_selection_keep_original_record() {
+        let (temporary, mut library, expected, selected) = relink_fixture();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        fs::write(&selected, b"wrong content").unwrap();
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        let audio = temporary.0.join("different.wav");
+        fs::write(&audio, b"original immutable output").unwrap();
+        assert!(library.relink_missing(&expected, &audio, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        assert!(
+            library
+                .relink_missing(&expected, Path::new(""), false)
+                .is_err()
+        );
+        relink_assert_unchanged(&library, &expected, &manifest);
+    }
+
+    #[test]
+    fn relink_unverified_requires_confirmation_probes_snapshot_and_retains_provenance() {
+        let (temporary, mut library, mut expected, _) = relink_fixture();
+        expected.path = temporary.0.join("old-external-missing.jpg");
+        expected.version = None;
+        library.items[0] = expected.clone();
+        library.save().unwrap();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        let selected = temporary.0.join("replacement.jpg");
+        relink_image(&selected);
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        let invalid = temporary.0.join("invalid.jpg");
+        fs::write(&invalid, b"not a media file").unwrap();
+        assert!(library.relink_missing(&expected, &invalid, true).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+
+        let restored = library
+            .relink_missing(&expected, &selected, true)
+            .unwrap()
+            .clone();
+        assert_eq!(restored.id, expected.id);
+        assert_eq!(restored.name, expected.name);
+        assert_eq!(restored.source, expected.source);
+        assert_eq!(restored.original_path, expected.original_path);
+        assert_eq!(restored.folder_id, expected.folder_id);
+        assert_eq!(restored.created_at, expected.created_at);
+        assert_eq!(restored.favorite, expected.favorite);
+        assert_eq!(restored.trashed, expected.trashed);
+        assert_eq!(
+            restored.path.parent(),
+            Some(library.root.join("generated").as_path())
+        );
+        assert!(!expected.path.exists());
+        assert!(!restored.recovery.as_ref().unwrap().verified_original);
+        assert_eq!(
+            restored.recovery.as_ref().unwrap().previous_path,
+            expected.path
+        );
+        assert_eq!(
+            restored.version.as_ref().unwrap().sha256,
+            file_digest(&selected).unwrap()
+        );
+
+        // A second recovery matches the recorded replacement, not proven
+        // historical content, and preserves the first external missing path.
+        fs::remove_file(&restored.path).unwrap();
+        let restored_again = library
+            .relink_missing(&restored, &selected, false)
+            .unwrap()
+            .clone();
+        assert_eq!(restored_again.path, restored.path);
+        assert_eq!(restored_again.version, restored.version);
+        assert!(!restored_again.recovery.as_ref().unwrap().verified_original);
+        assert_eq!(
+            restored_again.recovery.as_ref().unwrap().previous_path,
+            expected.path
+        );
+        let reopened = Library::load(&library.root).unwrap();
+        assert_eq!(reopened.items(), std::slice::from_ref(&restored_again));
+    }
+
+    #[test]
+    fn relink_imported_without_hash_keeps_id_source_and_original_managed_path() {
+        let temporary = RelinkTemp::new();
+        let selected = temporary.0.join("selected.jpg");
+        relink_image(&selected);
+        let mut library = Library::load(temporary.0.join("library")).unwrap();
+        let mut expected = library.import(&selected).unwrap().clone();
+        expected.version = None;
+        library.items[0].version = None;
+        library.save().unwrap();
+        fs::remove_file(&expected.path).unwrap();
+        let restored = library.relink_missing(&expected, &selected, true).unwrap();
+        assert_eq!(restored.id, expected.id);
+        assert_eq!(restored.path, expected.path);
+        assert_eq!(restored.source, AssetSource::Imported);
+        assert_eq!(restored.original_path, expected.original_path);
+        assert!(restored.version.is_some());
+        assert!(!restored.recovery.as_ref().unwrap().verified_original);
+    }
+
+    #[test]
+    fn relink_manifest_failure_rolls_back_memory_index_and_new_file() {
+        let (_temporary, mut library, expected, selected) = relink_fixture();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        fail_next_manifest_save(&library.root);
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        let restored = library.relink_missing(&expected, &selected, false).unwrap();
+        assert_eq!(restored.path, expected.path);
+        assert_eq!(restored.id, expected.id);
+        assert!(restored.path.is_file());
+        assert_eq!(library.items().len(), 1);
+    }
+
+    #[test]
+    fn relink_stale_expected_and_existing_file_are_not_overwritten() {
+        let (_temporary, mut library, expected, selected) = relink_fixture();
+        library.rename(&expected.id, "后来修改的名称").unwrap();
+        let updated = library.get(&expected.id).unwrap().clone();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &updated, &manifest);
+        fs::write(&updated.path, b"another existing file").unwrap();
+        assert!(library.relink_missing(&updated, &selected, false).is_err());
+        assert_eq!(fs::read(&updated.path).unwrap(), b"another existing file");
+        assert_eq!(library.items(), std::slice::from_ref(&updated));
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relink_rejects_symlinked_managed_directory() {
+        use std::os::unix::fs::symlink;
+        let (temporary, mut library, expected, selected) = relink_fixture();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        let external = temporary.0.join("external-directory");
+        fs::create_dir(&external).unwrap();
+        fs::remove_dir(library.root.join("generated")).unwrap();
+        symlink(&external, library.root.join("generated")).unwrap();
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        assert_eq!(fs::read_dir(&external).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn relink_loader_does_not_migrate_retry_or_create_directories() {
+        let (temporary, mut library, mut expected, selected) = relink_fixture();
+        expected.path = selected.clone();
+        expected.version = None;
+        library.items[0] = expected.clone();
+        library.save().unwrap();
+        fs::remove_dir(library.root.join("generated")).unwrap();
+        fs::remove_dir(library.root.join("imported")).unwrap();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        let mut reopened = Library::load_for_relink(&library.root).unwrap();
+        assert_eq!(reopened.items(), std::slice::from_ref(&expected));
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        assert!(!library.root.join("generated").exists());
+        assert!(!library.root.join("imported").exists());
+        assert!(reopened.relink_missing(&expected, &selected, true).is_err());
+        assert_eq!(
+            fs::read(library.root.join(MANIFEST_NAME)).unwrap(),
+            manifest
+        );
+        let absent = temporary.0.join("absent-library");
+        assert!(Library::load_for_relink(&absent).is_err());
+        assert!(!absent.exists());
+    }
+
+    #[test]
+    fn relink_preserves_existing_legacy_migration_intent() {
+        let (_temporary, mut library, expected, selected) = relink_fixture();
+        let prepared = prepare_generated(&library.root, &selected, None, None, None).unwrap();
+        fs::remove_file(&prepared.path).unwrap();
+        let entries = vec![crate::registration_retry::LegacyMigration {
+            target_asset_id: expected.id.clone(),
+            asset_path: expected.path.clone(),
+            prepared,
+        }];
+        crate::registration_retry::save_legacy_migrations(&library.root, &entries).unwrap();
+        let manifest = fs::read(library.root.join(MANIFEST_NAME)).unwrap();
+        let journal = fs::read(library.root.join("pending-legacy-generated.json")).unwrap();
+        assert!(library.relink_missing(&expected, &selected, false).is_err());
+        relink_assert_unchanged(&library, &expected, &manifest);
+        assert_eq!(
+            fs::read(library.root.join("pending-legacy-generated.json")).unwrap(),
+            journal
+        );
+    }
+
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "seecut-personal-library-{label}-{}",
@@ -662,7 +1593,9 @@ mod tests {
             .register_generated_with_name(&media, Some("opaque-square"))
             .unwrap();
         assert_eq!(asset.name, "opaque-square");
-        assert_eq!(asset.path, media.canonicalize().unwrap());
+        assert_ne!(asset.path, media.canonicalize().unwrap());
+        assert_eq!(asset.original_path, Some(media.canonicalize().unwrap()));
+        assert_eq!(fs::read(&asset.path).unwrap(), b"image");
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(media_dir).unwrap();
@@ -791,7 +1724,10 @@ mod tests {
             path: source.canonicalize().unwrap(),
             kind: AssetKind::Image,
             source: AssetSource::Generated,
+            version: None,
             original_path: None,
+            recovery: None,
+            provenance: None,
             created_at: 0,
             trashed: false,
             favorite: false,
@@ -814,5 +1750,151 @@ mod tests {
         assert_eq!(thumbnail(&audio, &root), None);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(media_dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod f1_library_tests {
+    use super::*;
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("f1-library-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn png(path: &Path, color: [u8; 4]) {
+        image::RgbaImage::from_pixel(24, 16, image::Rgba(color))
+            .save(path)
+            .unwrap();
+    }
+    fn provenance() -> OutputProvenance {
+        OutputProvenance {
+            kind: "canvas_export".into(),
+            project_path: Some(PathBuf::from("/synthetic/project.comp")),
+            document_sha256: "b".repeat(64),
+            inputs: vec![],
+            parameters: serde_json::json!({"width":24,"height":16,"format":"png","opacity":0.5}),
+        }
+    }
+    #[test]
+    fn f1_local_import_freezes_version_and_changed_source_keeps_old_bytes() {
+        let t = Temp::new();
+        let source = t.0.join("source.png");
+        png(&source, [230, 70, 25, 128]);
+        let root = t.0.join("library");
+        let mut library = Library::load(&root).unwrap();
+        let first = library.import(&source).unwrap().clone();
+        assert_eq!(
+            first.version.as_ref().unwrap().sha256,
+            file_digest(&first.path).unwrap()
+        );
+        assert_eq!(library.import(&source).unwrap().id, first.id);
+        let bytes = fs::read(&first.path).unwrap();
+        png(&source, [25, 90, 220, 64]);
+        let second = library.import(&source).unwrap().clone();
+        assert_ne!(first.id, second.id);
+        assert_eq!(
+            second.version.as_ref().unwrap().previous_id.as_ref(),
+            Some(&first.id)
+        );
+        assert_eq!(fs::read(&first.path).unwrap(), bytes);
+        assert_eq!(Library::load(&root).unwrap().items(), library.items());
+    }
+    #[test]
+    fn f1_changed_managed_bytes_fail_reference_verification() {
+        let t = Temp::new();
+        let source = t.0.join("source.png");
+        png(&source, [230, 70, 25, 128]);
+        let mut library = Library::load(t.0.join("library")).unwrap();
+        let asset = library.import(&source).unwrap().clone();
+        let reference = AssetReference {
+            asset_id: asset.id,
+            version: asset.version,
+        };
+        verify_asset_reference(&asset.path, Some(&reference)).unwrap();
+        fs::write(&asset.path, b"changed").unwrap();
+        assert!(verify_asset_reference(&asset.path, Some(&reference)).is_err());
+    }
+    #[test]
+    fn f1_output_provenance_and_operation_replay_are_immutable() {
+        let t = Temp::new();
+        let output = t.0.join("output.png");
+        png(&output, [230, 70, 25, 128]);
+        let root = t.0.join("library");
+        let bytes = fs::read(&output).unwrap();
+        let expected = provenance();
+        crate::registration_retry::register_output_with_provenance(
+            &root,
+            &output,
+            Some("result"),
+            Some("f1-output"),
+            Some(&bytes),
+            Some(expected.clone()),
+        )
+        .unwrap();
+        let first = Library::load(&root).unwrap().items()[0].clone();
+        let manifest = fs::read(root.join(MANIFEST_NAME)).unwrap();
+        assert_eq!(first.provenance, Some(expected.clone()));
+        crate::registration_retry::register_output_with_provenance(
+            &root,
+            &output,
+            Some("result"),
+            Some("f1-output"),
+            Some(&bytes),
+            Some(expected.clone()),
+        )
+        .unwrap();
+        assert_eq!(fs::read(root.join(MANIFEST_NAME)).unwrap(), manifest);
+        let mut changed = expected;
+        changed.parameters["opacity"] = serde_json::json!(0.7);
+        assert!(
+            crate::registration_retry::register_output_with_provenance(
+                &root,
+                &output,
+                None,
+                Some("f1-output"),
+                Some(&bytes),
+                Some(changed)
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(root.join(MANIFEST_NAME)).unwrap(), manifest);
+    }
+    #[test]
+    fn f1_pending_output_recovers_original_provenance_after_reload_once() {
+        let t = Temp::new();
+        let output = t.0.join("output.png");
+        png(&output, [230, 70, 25, 128]);
+        let root = t.0.join("library");
+        Library::load(&root).unwrap().save().unwrap();
+        fail_next_manifest_save(&root);
+        let bytes = fs::read(&output).unwrap();
+        let expected = provenance();
+        assert!(
+            crate::registration_retry::register_output_with_provenance(
+                &root,
+                &output,
+                None,
+                Some("f1-pending"),
+                Some(&bytes),
+                Some(expected.clone())
+            )
+            .is_err()
+        );
+        assert!(Library::load_for_relink(&root).unwrap().items().is_empty());
+        crate::registration_retry::retry(&root).unwrap();
+        let restored = Library::load(&root).unwrap();
+        assert_eq!(restored.items().len(), 1);
+        assert_eq!(restored.items()[0].provenance, Some(expected));
+        let manifest = fs::read(root.join(MANIFEST_NAME)).unwrap();
+        crate::registration_retry::retry(&root).unwrap();
+        assert_eq!(fs::read(root.join(MANIFEST_NAME)).unwrap(), manifest);
     }
 }

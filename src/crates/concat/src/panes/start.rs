@@ -68,7 +68,10 @@ impl StartPane {
             StartMsg::RateChanged(index) => {
                 self.rate = (index.max(0) as usize).min(START_RATES.len() - 1);
             }
-            StartMsg::DismissError => self.error.clear(),
+            StartMsg::DismissError => {
+                self.error.clear();
+                studio.dismiss_project_open_error();
+            }
             StartMsg::Browse => {
                 if let Some(folder) =
                     platform::pick_folder(&t("Where should the project folder go?"), &self.location)
@@ -78,8 +81,7 @@ impl StartPane {
             }
             StartMsg::Create => self.create(studio),
             StartMsg::OpenRecent(path) => {
-                let opened = projects::open(&path).and_then(|info| studio.open_project(info));
-                self.opened(opened);
+                studio.request_project_open(path);
             }
             StartMsg::ForgetRecent(path) => {
                 if let Err(error) = projects::forget(&studio.host.dirs.config, &path) {
@@ -105,19 +107,8 @@ impl StartPane {
             self.error = t("Choose where the project folder should go");
             return;
         }
-        let opened = projects::create_owned(&self.location, &name, width, height, num, den)
-            .map_err(|error| error.to_string())
-            .and_then(|created| studio.open_created_project(created));
-        self.opened(opened);
-    }
-
-    /// The form after an open: at rest, and saying why when it failed.
-    fn opened(&mut self, result: Result<(), String>) {
-        self.busy = false;
-        match result {
-            Ok(()) => self.error.clear(),
-            Err(error) => self.error = error,
-        }
+        self.error.clear();
+        studio.request_project_create(self.location.clone(), name, width, height, num, den);
     }
 
     /// The form as Slint shows it.

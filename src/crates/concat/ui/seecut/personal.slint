@@ -1,9 +1,11 @@
+import { LauncherSafeArea } from "launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Modal, Tip } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
+import { AssetLibrarySwitch } from "asset-library-switch.slint";
 import { Payload } from "../util.slint";
-import { AppButton, AssetPreview, CloudField, EmptyState, WorkspaceSelect, WorkspaceIcon, MenuAction } from "components.slint";
+import { AppButton, AssetPreview, CloudField, CompactSearch, EmptyState, WorkspaceSelect, WorkspaceIcon, MenuAction } from "components.slint";
 
 component AssetFilters inherits HorizontalLayout {
     horizontal-stretch: 1; spacing: Theme.workbench-gap;
@@ -51,7 +53,7 @@ export component PersonalPage inherits Rectangle {
             padding: 12px; spacing: 8px;
             HorizontalLayout {
                 height: 40px; spacing: 8px;
-                Text { text: "文件夹"; font-size: 14px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
+                AssetLibrarySwitch { horizontal-stretch: 1; }
                 WorkspaceIcon { glyph: Glyph.folder-plus; label: "新建文件夹"; clicked => { SeeCut.personal-new-folder = ""; SeeCut.personal-dialog = 3; } }
             }
             folder-scroll := ScrollView {
@@ -111,12 +113,11 @@ export component PersonalPage inherits Rectangle {
         padding: 32px; padding-top: 34px; spacing: 19px;
         HorizontalLayout {
             height: Theme.workbench-h; spacing: 8px;
-            Text { text: root.width >= 1100px && SeeCut.personal-folder-names.length > SeeCut.personal-folder-filter ? SeeCut.personal-folder-names[SeeCut.personal-folder-filter] : "资产库"; font-size: 24px; color: Theme.fg; vertical-alignment: center; }
+            if root.width >= 1100px: Text { text: SeeCut.personal-folder-names.length > SeeCut.personal-folder-filter ? SeeCut.personal-folder-names[SeeCut.personal-folder-filter] : "全部素材"; font-size: 24px; color: Theme.fg; vertical-alignment: center; }
+            if root.width < 1100px: AssetLibrarySwitch { width: 148px; }
             Text { text: SeeCut.personal-assets.length + " 项"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
-            CloudField {
-                width: root.width >= 760px ? 232px : 1px;
-                horizontal-stretch: root.width < 760px ? 1 : 0;
+            CompactSearch {
                 value <=> SeeCut.personal-search;
                 placeholder: "搜索素材";
                 edited(value) => { SeeCut.changed("personal-search", value); }
@@ -232,9 +233,9 @@ export component PersonalPage inherits Rectangle {
                     Text { text: group.date-label + "  ·  " + group.items.length + " 项"; color: Theme.fg-muted; font-size: 13px; height: 22px; }
                     grid := Rectangle {
                         width: parent.width;
-                        property <int> columns: Math.max(1, Math.floor((self.width + 20px) / 330px));
+                        property <int> columns: Math.max(1, Math.floor((self.width + 20px) / 216px));
                         property <length> card-width: (self.width - (self.columns - 1) * 20px) / self.columns;
-                        property <length> card-height: self.card-width * 0.61 + 37px;
+                        property <length> card-height: self.card-width * 4 / 3;
                         height: Math.ceil(group.items.length / self.columns) * (self.card-height + 20px) - 20px;
                         for asset[i] in group.items: Rectangle {
                             property <bool> preview-open: SeeCut.media-preview-open;
@@ -263,7 +264,7 @@ export component PersonalPage inherits Rectangle {
                             VerticalLayout {
                                 spacing: 0px;
                                 Rectangle {
-                                    height: grid.card-width * 0.61; clip: true; border-radius: Theme.r-lg;
+                                    height: grid.card-height; clip: true; border-radius: Theme.r-lg;
                                     drag := DragArea {
                                         width: parent.width; height: parent.height;
                                         data: Payload.of(SeeCut.personal-trash || SeeCut.working ? ""
@@ -290,22 +291,19 @@ export component PersonalPage inherits Rectangle {
                                     }
                                     if preview.hovered || !asset.ready: Rectangle {
                                         y: parent.height - 48px; height: 48px; width: 100%; background: Theme.scrim;
-                                        Text { x: 10px; width: parent.width - 20px; height: 100%; text: asset.ready ? asset.status : "文件已移动或丢失"; color: Theme.on-scrim; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
+                                        Text { x: 10px; width: parent.width - (asset.ready ? 20px : 62px); height: 100%; text: SeeCut.personal-relink-id == asset.id ? "正在关联…" : asset.ready ? asset.status : "文件已移动或丢失"; color: Theme.on-scrim; font-size: 13px; wrap: word-wrap; vertical-alignment: center; }
+                                        if !asset.ready: WorkspaceIcon {
+                                            x: parent.width - self.width - 6px - LauncherSafeArea.trailing(parent.absolute-position.x + parent.width - 6px, parent.absolute-position.y + (parent.height + self.height) / 2); y: (parent.height - self.height) / 2;
+                                            on-image: true; glyph: Glyph.folder; label: "重新关联素材";
+                                            enabled: !SeeCut.working && SeeCut.personal-relink-id == "" && SeeCut.personal-dialog == 0;
+                                            clicked => { SeeCut.action("personal-relink", asset.id); }
+                                        }
                                     }
                                     if SeeCut.personal-selection-mode: WorkspaceIcon { x: 8px; y: 8px; on-image: true; glyph: asset.selected ? Glyph.check : Glyph.box-select; checkable: true; checked: asset.selected; label: asset.selected ? "取消选择" : "选择素材"; clicked => { SeeCut.action("personal-select", asset.id); } }
                                     if !SeeCut.personal-selection-mode: WorkspaceIcon { x: 8px; y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.star; checkable: true; checked: asset.favorite; label: asset.favorite ? "取消收藏" : "收藏素材"; clicked => { SeeCut.action("personal-favorite", asset.id); } }
-                                    WorkspaceIcon { x: parent.width - self.width - 8px; y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.chevron-down; label: "更多素材操作"; clicked => { root.open-menu(2, asset.id, asset.name, asset.kind, asset.ready, self.absolute-position.x - root.absolute-position.x, self.absolute-position.y - root.absolute-position.y + self.height + 4px); } }
+                                    WorkspaceIcon { x: parent.width - self.width - 8px - LauncherSafeArea.trailing(parent.absolute-position.x + parent.width - 8px, parent.absolute-position.y + 8px + self.height); y: 8px; visible: preview.hovered || self.lit; on-image: true; glyph: Glyph.chevron-down; label: "更多素材操作"; clicked => { root.open-menu(2, asset.id, asset.name, asset.kind, asset.ready, self.absolute-position.x - root.absolute-position.x, self.absolute-position.y - root.absolute-position.y + self.height + 4px); } }
                                 }
-                                HorizontalLayout {
-                                    padding-left: 0px; padding-right: 0px; padding-top: 6px; padding-bottom: 8px; spacing: 6px;
-                                    Rectangle {
-                                        horizontal-stretch: 1; min-width: 0px; min-height: 20px;
-                                        name-label := Text { width: 100%; height: 100%; text: asset.name; color: Theme.fg; font-size: 14px; vertical-alignment: center; overflow: elide; }
-                                        name-hover := TouchArea { }
-                                        Tip { text: asset.name; active: name-hover.has-hover && name-label.preferred-width > name-label.width; }
-                                    }
-                                    Text { max-width: 112px; text: asset.detail; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: right; overflow: elide; }
-                                }
+
                             }
                         }
                     }
@@ -381,7 +379,7 @@ export component PersonalPage inherits Rectangle {
         property <int> dialog-kind: SeeCut.personal-dialog;
         changed dialog-kind => { if self.dialog-kind == 5 { cancel-button.take-focus(); } }
         open: SeeCut.personal-dialog > 0;
-        title: SeeCut.personal-dialog == 1 ? "重命名素材" : SeeCut.personal-dialog == 2 ? "上传到团队资产库" : SeeCut.personal-dialog == 3 ? "新建文件夹" : SeeCut.personal-dialog == 4 ? "移到文件夹" : "移入回收站";
+        title: SeeCut.personal-dialog == 1 ? "重命名素材" : SeeCut.personal-dialog == 2 ? "上传到团队资产库" : SeeCut.personal-dialog == 3 ? "新建文件夹" : SeeCut.personal-dialog == 4 ? "移到文件夹" : SeeCut.personal-dialog == 6 ? "重新关联素材" : "移入回收站";
         glyph: Glyph.folder;
         title-at-start: true;
         show-close-for-start-title: true;
@@ -394,6 +392,7 @@ export component PersonalPage inherits Rectangle {
             if SeeCut.personal-dialog == 3: CloudField { value <=> SeeCut.personal-new-folder; placeholder: "文件夹名称"; edited(value) => { SeeCut.personal-dialog-error = ""; } }
             if SeeCut.personal-dialog == 4: WorkspaceSelect { options: SeeCut.personal-move-folder-names; current: SeeCut.personal-folder-target; changed(index) => { SeeCut.personal-folder-target = index; SeeCut.personal-dialog-error = ""; } }
             if SeeCut.personal-dialog-error != "": Text { text: SeeCut.personal-dialog-error; color: Theme.danger; wrap: word-wrap; }
+            if SeeCut.personal-dialog == 6: Text { text: "缺少原内容校验信息，无法确认是原文件。仍关联所选文件？"; color: Theme.fg; wrap: word-wrap; }
             if SeeCut.personal-dialog == 5: Text { text: "将 " + SeeCut.personal-delete-count + " 项素材移入回收站？文件会保留，可恢复。"; color: Theme.fg; wrap: word-wrap; }
             if SeeCut.personal-dialog == 2: VerticalLayout {
                 spacing: 12px;
@@ -406,12 +405,12 @@ export component PersonalPage inherits Rectangle {
                 alignment: end; spacing: 8px;
                 cancel-button := AppButton { label: "取消"; enabled: !SeeCut.personal-dialog-busy; clicked => { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } }
                 AppButton {
-                    label: SeeCut.personal-dialog == 1 ? "保存" : SeeCut.personal-dialog == 2 ? "确认上传" : SeeCut.personal-dialog == 3 ? "创建" : SeeCut.personal-dialog == 4 ? "移动" : "移入回收站";
+                    label: SeeCut.personal-dialog == 1 ? "保存" : SeeCut.personal-dialog == 2 ? "确认上传" : SeeCut.personal-dialog == 3 ? "创建" : SeeCut.personal-dialog == 4 ? "移动" : SeeCut.personal-dialog == 6 ? "仍关联" : "移入回收站";
                     primary: SeeCut.personal-dialog != 5;
                     danger: SeeCut.personal-dialog == 5;
                     enabled: !SeeCut.working && !SeeCut.personal-dialog-busy && (SeeCut.personal-dialog == 1 ? SeeCut.personal-rename != "" : SeeCut.personal-dialog == 2 ? SeeCut.signed-in && SeeCut.team-index >= 0 : SeeCut.personal-dialog == 3 ? SeeCut.personal-new-folder != "" : true);
                     clicked => {
-                        SeeCut.action(SeeCut.personal-dialog == 1 ? "personal-rename" : SeeCut.personal-dialog == 2 ? "personal-upload" : SeeCut.personal-dialog == 3 ? "personal-create-folder" : SeeCut.personal-dialog == 4 ? "personal-move" : "personal-confirm-delete", root.selected-id);
+                        SeeCut.action(SeeCut.personal-dialog == 1 ? "personal-rename" : SeeCut.personal-dialog == 2 ? "personal-upload" : SeeCut.personal-dialog == 3 ? "personal-create-folder" : SeeCut.personal-dialog == 4 ? "personal-move" : SeeCut.personal-dialog == 6 ? "personal-confirm-relink" : "personal-confirm-delete", root.selected-id);
                         if SeeCut.personal-dialog == 2 || SeeCut.personal-dialog == 5 { SeeCut.personal-dialog = 0; }
                     }
                 }

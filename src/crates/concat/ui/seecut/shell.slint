@@ -3,7 +3,7 @@
 import { Theme, Modal, Glyph, IconButton, Button } from "../primitives/primitives.slint";
 import { SeeCut } from "state.slint";
 import { AccountPage } from "account.slint";
-import { AppButton } from "components.slint";
+import { AppButton, WorkspaceIcon } from "components.slint";
 import { ToastLayer } from "../primitives/toast.slint";
 
 export component AuthDialog inherits Modal {
@@ -47,6 +47,7 @@ export component WorkflowFeedback inherits VerticalLayout {
 // The pending project import above stays in the layout because it has an
 // explicit action; ordinary operation results never shift the page.
 export component WorkflowToast inherits Rectangle {
+    in property <length> bottom-offset: 58px;
     property <string> message: !SeeCut.auth-open && !SeeCut.asset-picker-open
         ? (SeeCut.error != "" ? SeeCut.error : SeeCut.notice) : "";
     property <bool> failed: SeeCut.error != "";
@@ -54,14 +55,14 @@ export component WorkflowToast inherits Rectangle {
     changed message => { if root.message != "" { root.token += 1; } }
     ToastLayer {
         width: parent.width; height: parent.height;
-        bottom-offset: 58px;
-        data: { token: root.token, message: root.message, failed: root.failed };
+        bottom-offset: root.bottom-offset;
+        data: { token: root.token, message: root.message, detail: root.message, failed: root.failed };
     }
 }
 
 export component EditorBridgeBar inherits Rectangle {
-    in property <string> project-name;
-    in property <string> project-status;
+    in property <bool> repair-preview;
+    in property <bool> repair-busy;
     in property <int> focus-request-target;
     in property <int> focus-request-token;
     in property <bool> focus-restore-allowed;
@@ -82,17 +83,24 @@ export component EditorBridgeBar inherits Rectangle {
             }
         }
     }
-    height: 54px;
+    height: 36px;
     callback export-clicked();
     callback assets-clicked();
+    callback save-clicked();
+    callback cancel-repair-clicked();
     public function focus-assets() { assets-button.take-focus(); }
     public function focus-export() { export-button.take-focus(); }
     background: Theme.panel;
     HorizontalLayout {
-        padding-top: 10px; padding-bottom: 10px; padding-left: 20px; padding-right: 20px; spacing: 8px;
-        Text { font-size: 14px; text: SeeCut.project-open ? root.project-name + " · " + root.project-status : "未打开项目"; color: Theme.fg; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
-        assets-button := AppButton { label: "从资产库导入"; enabled: !SeeCut.working; clicked => { root.assets-clicked(); } }
-        export-button := AppButton { visible: SeeCut.project-open; label: "导出视频"; primary: true; clicked => { root.export-clicked(); } }
+        padding-top: 2px; padding-bottom: 2px; padding-left: 16px; padding-right: 12px; spacing: 8px;
+        Rectangle {
+            horizontal-stretch: 1; min-width: 0px;
+            if root.repair-preview: Text { text: "修复预览·需另存"; color: Theme.fg; width: parent.width; height: parent.height; vertical-alignment: center; overflow: elide; }
+        }
+        assets-button := WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.folder; label: "从资产库导入"; enabled: !SeeCut.working && !root.repair-busy; clicked => { root.assets-clicked(); } }
+        WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.save; label: root.repair-preview ? "另存修复工程" : "保存工程"; enabled: SeeCut.project-open && !root.repair-busy; clicked => { root.save-clicked(); } }
+        export-button := WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.export; label: "导出视频"; enabled: SeeCut.project-open && !root.repair-busy; clicked => { root.export-clicked(); } }
+        if root.repair-preview: WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.undo; label: "取消修复"; enabled: !root.repair-busy; clicked => { root.cancel-repair-clicked(); } }
     }
     Rectangle { y: parent.height - 1px; width: 100%; height: 1px; background: Theme.line; }
 }

@@ -214,6 +214,9 @@ impl ImageDocument {
             let LayerNode::Layer(layer) = node else {
                 continue;
             };
+            if layer.vector.as_ref().is_some_and(|shape| !shape.validate()) {
+                return Err(DocumentError::InvalidShape(layer.id));
+            }
             let Some(source) = layer.clips_to else {
                 continue;
             };
@@ -282,6 +285,9 @@ pub const CLIP_CHAIN_LIMIT: usize = 256;
 /// Why a document cannot be drawn: a live alpha link that does not resolve.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DocumentError {
+    /// Invalid or unsupported editable geometry.
+    #[error("layer {0:?} has invalid or unsupported vector geometry")]
+    InvalidShape(LayerId),
     /// A layer clips to itself.
     #[error("layer {0:?} clips to itself")]
     SelfClip(LayerId),
@@ -427,6 +433,13 @@ pub struct ImageLayer {
     /// The layer's pixels, by name. Never [`PixelId::NONE`] in a document
     /// that came from `new_layer`.
     pub pixels: PixelId,
+    /// Optional reference to a global-library asset, preserved by document history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_asset: Option<serde_json::Value>,
+    /// Editable shape content. When present, pixels are only a rebuildable
+    /// cache; the existing drawable layer owns all transform/mask semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<crate::vector::VectorShape>,
 }
 
 /// How a layer's bitmap is sampled when the canvas draws it at a size other
@@ -457,6 +470,8 @@ impl ImageLayer {
             sampling: LayerSampling::default(),
             hidden: false,
             pixels,
+            library_asset: None,
+            vector: None,
         }
     }
 }
@@ -1103,5 +1118,31 @@ mod tests {
         let (doc, _) = document_with_tree();
         // Root + Background + Folder + Inner.
         assert_eq!(doc.node_count(), 4);
+    }
+}
+
+#[cfg(test)]
+mod f1_reference_tests {
+    use super::*;
+    #[test]
+    fn f1_layer_reference_round_trips_and_legacy_absence_remains_compatible() {
+        let mut layer = ImageLayer::new(LayerId(1), "source", PixelId::NONE);
+        let reference = serde_json::json!({"asset_id":"global-input", "version":{"registration_id":"import:input", "sha256":"a".repeat(64)}});
+        layer.library_asset = Some(reference.clone());
+        let wire = serde_json::to_value(&layer).unwrap();
+        let restored: ImageLayer = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(restored.library_asset, Some(reference));
+        assert_eq!(restored, layer);
+        let mut legacy = wire;
+        legacy.as_object_mut().unwrap().remove("library_asset");
+        let restored: ImageLayer = serde_json::from_value(legacy).unwrap();
+        assert!(restored.library_asset.is_none());
+        assert!(
+            !serde_json::to_value(restored)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("library_asset")
+        );
     }
 }

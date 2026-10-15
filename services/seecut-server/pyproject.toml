@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 
 [project.scripts]
 seecut-server = "seecut_server.app:main"
+seecut-account-resolve = "seecut_server.assistant_local_resolution:main"
 
 [tool.unittest]
 start-directory = "tests"

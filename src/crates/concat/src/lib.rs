@@ -33,6 +33,25 @@ mod ui {
     slint::include_modules!();
 }
 
+mod account_ledger;
+mod agent_billing;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_components;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_controller;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_identity;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod agent_models;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_process;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod agent_references;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod agent_sessions;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_ui;
+mod asset_version;
 mod chips;
 mod cloud;
 mod cloud_files;
@@ -40,12 +59,18 @@ mod dock;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod editor_mcp;
 mod format;
+mod generation_outputs;
 mod generation_templates;
 mod gpu;
 mod host;
 mod i18n;
 mod personal_library;
 mod platform;
+mod purchase_journal;
+mod registration_retry;
+mod toonflow_bridge;
+mod toonflow_service;
+mod toonflow_webview;
 /// What a phone's own crate installs before the window runs: the way to
 /// the system's file picker. See `platform::pick_files_async`.
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -53,6 +78,8 @@ pub use platform::{FilePicker, install_file_picker};
 mod panes;
 mod prefs;
 mod presets;
+mod project_library_relink;
+mod project_open;
 mod studio;
 mod sysinfo;
 mod ui_preview;
@@ -65,7 +92,6 @@ use panes::export::ExportMsg;
 use panes::media_bin::MediaMsg;
 use panes::monitor::MonitorMsg;
 use panes::project::ProjectMsg;
-use panes::relink::RelinkMsg;
 use panes::settings::SettingsMsg;
 use panes::speech::SpeechMsg;
 use panes::start::StartMsg;
@@ -313,7 +339,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
 
     let app = App::new()?;
-    cloud::bind(&app);
+    let account = cloud::bind(&app);
+    let toonflow_bridge = toonflow_service::data_root()
+        .and_then(|data| toonflow_bridge::start(data, account.clone()));
+    let toonflow_service = match &toonflow_bridge {
+        Ok(bridge) => Some(toonflow_service::start_async(bridge, &app)),
+        Err(error) => {
+            toonflow_webview::configure(&app, Err(error.clone()));
+            None
+        }
+    };
     app.set_macos(platform::MACOS);
 
     let studio = Studio::new(host);
@@ -328,6 +363,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     Shell::install(shell.clone());
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     {
+        account.attach_editor_bridge(Rc::downgrade(&shell.studio.borrow().editor_mcp));
         let instance = shell
             .studio
             .borrow()
@@ -472,6 +508,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_titlebar_close(|| {
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
+            if toonflow_webview::defer_close(&app) {
+                return;
+            }
             let should_close = shell.studio.borrow_mut().request_window_close();
             shell.studio.borrow_mut().refresh_art();
             shell.studio.borrow().publish(&app, &shell.models);
@@ -488,6 +527,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
         log::info!("close: system close request (Alt+F4 / taskbar)");
         let mut should_close = false;
         Shell::with(|shell, app| {
+            if toonflow_webview::defer_close(&app) {
+                return;
+            }
             should_close = shell.studio.borrow_mut().request_window_close();
             shell.studio.borrow_mut().refresh_art();
             shell.studio.borrow().publish(&app, &shell.models);
@@ -548,6 +590,25 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     let editor = app.global::<Editor>();
     let controls = app.global::<CanvasControls>();
+    controls.on_shape_pointer(on_window!(|state, event: i32, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ShapePointer(
+            event, x as f64, y as f64,
+        )));
+    }));
+    controls.on_shape_finish(on_window!(|state, commit: bool, closed: bool| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ShapeFinish(
+            commit, closed,
+        )));
+    }));
+    controls.on_shape_style(on_window!(
+        |state, field: i32, text: SharedString, value: f32| {
+            state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ShapeStyle(
+                field,
+                text.to_string(),
+                value,
+            )));
+        }
+    ));
 
     controls.on_rgb_changed(on_window!(|state, red: f32, green: f32, blue: f32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::BrushRgb(
@@ -589,6 +650,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     app.on_start_create(on_window!(|state| {
         state.handle(Msg::Start(StartMsg::Create));
+    }));
+    app.on_project_open_cancel(on_window!(|state| {
+        state.cancel_project_open(&i18n::t("Project opening cancelled"));
     }));
     app.on_start_open_recent(on_window!(|state, path: SharedString| {
         state.handle(Msg::Start(StartMsg::OpenRecent(path.to_string())));
@@ -1678,11 +1742,51 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
 
     app.on_relink_all(on_window!(|state| {
-        state.handle(Msg::Relink(RelinkMsg::RelinkAll));
+        state.repair_from_library();
     }));
     app.on_relink_dismiss(on_window!(|state| {
-        state.handle(Msg::Relink(RelinkMsg::Dismiss));
+        state.dismiss_library_repair();
     }));
+
+    app.on_relink_locate_folder(|| {
+        let mut request = None;
+        Shell::with(|shell, _| {
+            request = shell.studio.borrow_mut().begin_folder_relink_picker();
+        });
+        let Some(stamp) = request else { return };
+        // Release Studio before the native picker pumps the event loop.
+        let folder = platform::pick_folder("定位素材文件夹", "");
+        Shell::with(move |shell, app| {
+            shell
+                .studio
+                .borrow_mut()
+                .finish_folder_relink_picker(stamp, folder);
+            shell.studio.borrow().publish(&app, &shell.models);
+        });
+    });
+
+    app.on_relink_cancel_preview(on_window!(|state| {
+        state.cancel_repair_preview();
+    }));
+    app.on_relink_save_copy(|| {
+        let mut picker = None;
+        Shell::with(|shell, app| {
+            picker = shell.studio.borrow_mut().begin_repair_save_picker();
+            shell.studio.borrow().publish(&app, &shell.models);
+        });
+        let Some((ticket, name)) = picker else {
+            return;
+        };
+        // Native pickers pump the event loop; no Studio borrow crosses this call.
+        let path = platform::save_file("另存修复工程（新文件夹）", &name, None);
+        Shell::with(move |shell, app| {
+            shell
+                .studio
+                .borrow_mut()
+                .finish_repair_save_picker(ticket, path);
+            shell.studio.borrow().publish(&app, &shell.models);
+        });
+    });
 
     // ── the dialogs ──
     app.on_export_clicked(|| {
@@ -1823,6 +1927,33 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 studio.publish(&app, &shell.models);
             });
         });
+        app.on_settings_mcp_grant_move(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                {
+                    studio.editor_mcp.borrow_mut().grant_move(&studio, &app);
+                }
+                studio.publish(&app, &shell.models);
+            });
+        });
+        app.on_settings_mcp_renew_move(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                {
+                    studio.editor_mcp.borrow_mut().renew_move(&studio, &app);
+                }
+                studio.publish(&app, &shell.models);
+            });
+        });
+        app.on_settings_mcp_revoke_move(|| {
+            Shell::with(|shell, app| {
+                let studio = shell.studio.borrow();
+                {
+                    studio.editor_mcp.borrow_mut().revoke_move();
+                }
+                studio.publish(&app, &shell.models);
+            });
+        });
     }
     #[cfg(not(all(unix, not(any(target_os = "android", target_os = "ios")))))]
     {
@@ -1830,6 +1961,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
         app.on_settings_mcp_grant_r(|| {});
         app.on_settings_mcp_grant_m(|| {});
         app.on_settings_mcp_revoke(|| {});
+        app.on_settings_mcp_grant_move(|| {});
+        app.on_settings_mcp_renew_move(|| {});
+        app.on_settings_mcp_revoke_move(|| {});
     }
     app.on_model_activated(on_window!(|state, id: SharedString| {
         state.handle(Msg::Settings(SettingsMsg::ModelActivated(id.to_string())));
@@ -1911,14 +2045,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
                         "open" => {
                             if let Some(path) = platform::pick_folder(&i18n::t("Open project"), "")
                             {
-                                let concat_json = path.join("concat.json");
-                                if concat_json.exists() {
-                                    state.handle(Msg::Start(StartMsg::OpenRecent(
-                                        path.to_string_lossy().into_owned(),
-                                    )));
-                                } else {
-                                    state.notify("Not a valid project folder", true);
-                                }
+                                state.handle(Msg::Start(StartMsg::OpenRecent(
+                                    path.to_string_lossy().into_owned(),
+                                )));
                             }
                         }
                         "import" => {
@@ -1972,6 +2101,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 }
                 if action == "close-window" {
                     log::info!("close: File > Close Window");
+                    if toonflow_webview::defer_close(&app) {
+                        return;
+                    }
                     let should_close = shell.studio.borrow_mut().request_window_close();
                     shell.studio.borrow_mut().refresh_art();
                     shell.studio.borrow().publish(&app, &shell.models);
@@ -2207,9 +2339,19 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // The timer is the animation's only owner; the event loop outlives it.
     std::mem::forget(ants);
 
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    let assistant = agent_ui::bind(&app, account);
     let result = app.run();
+    drop(toonflow_service);
+    toonflow_webview::shutdown();
+    drop(toonflow_bridge);
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
     {
+        assistant.shutdown(&app);
+        // Normal UI callbacks stay nonblocking. Only process exit waits for owned children.
+        if !agent_process::shutdown_all_at_exit() {
+            log::warn!("assistant shutdown did not finish before the exit deadline");
+        }
         let instance = shell
             .studio
             .borrow()
@@ -2225,3 +2367,6 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
     std::process::exit(0);
 }
+
+#[cfg(test)]
+mod field_tests;

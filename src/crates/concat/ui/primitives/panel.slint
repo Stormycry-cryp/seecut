@@ -234,6 +234,7 @@ export component IconButton inherits Rectangle {
     property <bool> ring;
     property <bool> focused;
     out property <bool> keyboard-focus: root.focused;
+    out property <bool> keyboard-navigation-focus: root.focused && root.ring;
 
     // Fixed across, free along. A Slint layout start-aligns a fixed-size child
     // on the cross axis — there is no `align-items: center` — so the root takes
@@ -273,7 +274,7 @@ export component IconButton inherits Rectangle {
         height: root.side;
         border-radius: Theme.r-sm;
         opacity: 1.0;
-        background: root.on-image ? (touch.has-hover ? Theme.image-control-hover : Theme.image-control)
+        background: root.on-image ? (root.enabled && touch.has-hover ? Theme.image-control-hover : Theme.image-control)
             : root.checked ? Theme.well
             : !root.enabled ? Colors.transparent
             : (touch.has-hover && root.danger) ? Theme.danger-soft
@@ -315,12 +316,13 @@ export component IconButton inherits Rectangle {
         }
 
         touch := TouchArea {
-            enabled: root.enabled;
-            mouse-cursor: pointer;
+            mouse-cursor: root.enabled ? pointer : default;
             clicked => {
-                root.ring = false;
-                fs.focus();
-                root.activate();
+                if root.enabled {
+                    root.ring = false;
+                    fs.focus();
+                    root.activate();
+                }
             }
         }
 

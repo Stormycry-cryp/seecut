@@ -210,6 +210,7 @@ pub(crate) fn home_folder(name: &str) -> String {
 pub struct ToastState {
     pub token: i32,
     pub message: String,
+    pub detail: String,
     pub failed: bool,
 }
 
@@ -523,6 +524,143 @@ struct RecentProjectMeta {
     duration: String,
 }
 
+enum OpenTarget {
+    Existing(String),
+    Create {
+        location: String,
+        name: String,
+        width: u32,
+        height: u32,
+        num: i64,
+        den: i64,
+    },
+}
+impl OpenTarget {
+    fn label(&self) -> String {
+        match self {
+            Self::Existing(path) => path.clone(),
+            Self::Create { name, .. } => name.clone(),
+        }
+    }
+}
+struct OpenSave {
+    path: String,
+    // None retains source identity/ownership for same-resource opening without
+    // reserializing an unchanged source protected by the explicit repair flow.
+    document: Option<Value>,
+    owner: Option<concat_host::ownership::WriterGuard>,
+    lane: Arc<projects::SaveLane>,
+    ticket: u64,
+}
+fn prepare_outgoing_save(
+    session: &mut Session,
+    lane: Arc<projects::SaveLane>,
+    preserve_source: bool,
+) -> OpenSave {
+    let document = (!preserve_source).then(|| session.prepare_save(None).1);
+    OpenSave {
+        path: session.path().to_owned(),
+        document,
+        owner: session.writer_guard(),
+        ticket: lane.next(),
+        lane,
+    }
+}
+
+struct PreparedOpen {
+    session: Option<(ProjectInfo, Session, Vec<model::MissingMedia>)>,
+    save: Option<(Arc<projects::SaveLane>, u64)>,
+}
+fn prepare_project_open(
+    target: OpenTarget,
+    old: Option<OpenSave>,
+    request: &crate::project_open::Request,
+) -> Result<PreparedOpen, String> {
+    request.check()?;
+    if let OpenTarget::Existing(path) = &target
+        && let Some(old) = &old
+    {
+        let same = if let Some(owner) = &old.owner {
+            owner
+                .matches_project(path)
+                .map_err(|error| error.to_string())?
+        } else {
+            std::fs::canonicalize(path)
+                .ok()
+                .zip(std::fs::canonicalize(&old.path).ok())
+                .is_some_and(|(a, b)| a == b)
+        };
+        if same {
+            return Ok(PreparedOpen {
+                session: None,
+                save: None,
+            });
+        }
+    }
+    request.check()?;
+    let (info, session) = match target {
+        OpenTarget::Existing(path) => {
+            let info = projects::open(&path)?;
+            let session = Session::open_info_owned(&info).map_err(|error| error.to_string())?;
+            (info, session)
+        }
+        OpenTarget::Create {
+            location,
+            name,
+            width,
+            height,
+            num,
+            den,
+        } => {
+            let created = projects::create_owned(&location, &name, width, height, num, den)
+                .map_err(|error| error.to_string())?;
+            let info = created.info().clone();
+            (
+                info,
+                created.into_session().map_err(|error| error.to_string())?,
+            )
+        }
+    };
+    request.check()?;
+    let missing = session.project().missing_media();
+    if !missing.is_empty() {
+        use std::io::Write;
+        if let Ok(mut file) =
+            std::fs::File::create(std::path::Path::new(&info.path).join("cache/missing_media.log"))
+        {
+            let _ = writeln!(file, "{} media files missing:", missing.len());
+            for media in &missing {
+                let _ = writeln!(file, "  - {} ({})", media.name, media.path);
+            }
+        }
+    }
+    request.check()?;
+    let save = if let Some(old) = old {
+        if let Some(document) = old.document {
+            let written = old
+                .lane
+                .write_owned(old.ticket, &old.path, &document, old.owner.as_ref())
+                .map_err(|error| tf("Could not save: {0}", &[&error]))?;
+            if !written {
+                return Err(t("The project save changed. Please open it again."));
+            }
+            Some((old.lane, old.ticket))
+        } else {
+            // The repair entry already settled this clean source's save lane.
+            // Keep the ordering check without invalidating a newer explicit save
+            // issued while opening, and without serializing the protected source.
+            Some((old.lane, old.ticket))
+        }
+    } else {
+        None
+    };
+    request.check()?;
+    Ok(PreparedOpen {
+        session: Some((info, session, missing)),
+        save,
+    })
+}
+
 /// Identity captured by media workers before they leave the UI thread.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MediaImportSession {
@@ -564,11 +702,108 @@ impl SaveStamp {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct RepairStamp {
+    id: u64,
+    generation: u64,
+    revision: u64,
+    path: String,
+    name: String,
+    project: Project,
+}
+
+impl RepairStamp {
+    fn matches(
+        &self,
+        generation: u64,
+        revision: u64,
+        path: &str,
+        name: &str,
+        project: &Project,
+    ) -> bool {
+        self.generation == generation
+            && self.revision == revision
+            && self.path == path
+            && self.name == name
+            && self.project == *project
+    }
+}
+
+/// Protects the source's original manifest encoding only while it remains the
+/// clean, unedited source of this repair. It is not a general dirty-save policy.
+struct RepairSourceGuard {
+    generation: u64,
+    path: String,
+    project: Project,
+    settings: concat_project::DocumentSettings,
+}
+
+impl RepairSourceGuard {
+    fn capture(session: &Session, generation: u64) -> Self {
+        Self {
+            generation,
+            path: session.path().to_owned(),
+            project: session.project().clone(),
+            settings: session.settings(),
+        }
+    }
+
+    fn owns(&self, generation: u64, path: &str) -> bool {
+        self.generation == generation && self.path == path
+    }
+
+    fn unchanged(&self, session: &Session) -> bool {
+        let settings = session.settings();
+        self.project == *session.project()
+            && self.settings.name == settings.name
+            && self.settings.width == settings.width
+            && self.settings.height == settings.height
+            && self.settings.rate_num == settings.rate_num
+            && self.settings.rate_den == settings.rate_den
+    }
+}
+
+/// A real edit or explicit save permanently consumes protection. In particular,
+/// undoing an already-saved edit must not resurrect the old clean-source guard.
+fn preserve_repair_source(
+    guard: &mut Option<RepairSourceGuard>,
+    session: &Session,
+    generation: u64,
+    dirty: bool,
+    explicit_save: bool,
+) -> bool {
+    let Some(source) = guard.as_ref() else {
+        return false;
+    };
+    if !source.owns(generation, session.path()) {
+        return false;
+    }
+    if dirty || explicit_save || !source.unchanged(session) {
+        *guard = None;
+        return false;
+    }
+    true
+}
+
+struct RepairRequest {
+    stamp: RepairStamp,
+    plan: Option<crate::project_library_relink::RepairPlan>,
+}
+
+struct RepairPreview {
+    source: Session,
+    source_info: ProjectInfo,
+    plan: crate::project_library_relink::RepairPlan,
+    playhead: f32,
+    selection: Vec<String>,
+}
+
 pub struct Studio {
     pub host: Host,
     pub prefs: Preferences,
     #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
-    pub(crate) editor_mcp: RefCell<crate::editor_mcp::BridgeUi>,
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+    pub(crate) editor_mcp: Rc<RefCell<crate::editor_mcp::BridgeUi>>,
     /// What each effect library is showing, indexed the way `SHELF_KINDS`
     /// is: 0 filters, 1 effects, 2 audio.
     pub library: [LibraryView; 3],
@@ -589,6 +824,22 @@ pub struct Studio {
     dirty: bool,
     autosave: slint::Timer,
     save_lane: Option<Arc<projects::SaveLane>>,
+    repair_sequence: u64,
+    repair_request: Option<RepairRequest>,
+    repair_preview: Option<RepairPreview>,
+    repair_save: Option<RepairStamp>,
+    repair_source_guard: Option<RepairSourceGuard>,
+    open_request: Option<crate::project_open::Request>,
+    open_sequence: u64,
+    open_timeout: slint::Timer,
+    open_error: String,
+    pending_recent: Option<(u64, ProjectInfo)>,
+    recent_retry: slint::Timer,
+    cache_retry: slint::Timer,
+    mask_epoch: u64,
+    cache_probe: Option<(u64, u64)>,
+    cutout_blank: RefCell<HashMap<String, bool>>,
+    cutout_blank_pending: RefCell<HashSet<String>>,
 
     // ── the bin ──
     pub media: crate::panes::media_bin::MediaBin,
@@ -1350,9 +1601,26 @@ impl Studio {
             empty: Project::new(),
             dirty: false,
             #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
-            editor_mcp: RefCell::new(crate::editor_mcp::BridgeUi::new()),
+            #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+            editor_mcp: Rc::new(RefCell::new(crate::editor_mcp::BridgeUi::new())),
             autosave: slint::Timer::default(),
             save_lane: None,
+            repair_sequence: 0,
+            repair_request: None,
+            repair_preview: None,
+            repair_save: None,
+            repair_source_guard: None,
+            open_request: None,
+            open_sequence: 0,
+            open_timeout: slint::Timer::default(),
+            open_error: String::new(),
+            pending_recent: None,
+            recent_retry: slint::Timer::default(),
+            cache_retry: slint::Timer::default(),
+            mask_epoch: 0,
+            cache_probe: None,
+            cutout_blank: RefCell::new(HashMap::new()),
+            cutout_blank_pending: RefCell::new(HashSet::new()),
             media: crate::panes::media_bin::MediaBin::default(),
             peaks: HashMap::new(),
             strips: HashMap::new(),
@@ -1626,6 +1894,13 @@ impl Studio {
     /// The bookkeeping every change to the edit needs: the caches that
     /// follow the document, the autosave, the monitor and the mix.
     fn after_change(&mut self) {
+        if self.repair_source_guard.as_ref().is_some_and(|guard| {
+            self.session
+                .as_ref()
+                .is_some_and(|session| guard.owns(self.session_generation, session.path()))
+        }) {
+            self.repair_source_guard = None;
+        }
         self.dirty = true;
         self.revision += 1;
         self.assign_media_rows();
@@ -1679,6 +1954,9 @@ impl Studio {
     }
 
     fn schedule_autosave(&mut self) {
+        if self.repair_request.is_some() || self.repair_save.is_some() {
+            return;
+        }
         // A second and a half after the last change, not after the first:
         // a drag that commits ten edits saves once.
         self.autosave.start(
@@ -1696,6 +1974,20 @@ impl Studio {
     /// Writes the document, on a worker. `announce` says so on success;
     /// a failure is always said.
     pub fn save(&mut self, announce: bool) {
+        if self.repair_request.is_some() || self.repair_save.is_some() {
+            if announce {
+                self.notify("素材修复处理中，请稍候", true);
+            }
+            return;
+        }
+        if announce && self.repair_preview.is_some() {
+            self.notify("修复预览需另存，请使用‘另存修复工程’", false);
+            return;
+        }
+        if self.preserve_repair_source(announce) {
+            self.autosave.stop();
+            return;
+        }
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -4143,24 +4435,14 @@ impl Studio {
     /// that are not there, unless one is running. Called after every
     /// change; the finished job calls it again for whatever is next.
     pub fn ensure_cutouts(&mut self) {
+        self.request_cache_probe();
+    }
+
+    fn start_cutout_analysis(&mut self, id: String, request: AnalyseRequest) {
         if !self.cutout_jobs.is_empty() || self.host.cutouts.is_busy() {
             return;
         }
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
-        let project = std::path::PathBuf::from(session.path());
-        // One analysis per media and subject, keyed the way the job map is.
-        let wanted: Vec<(String, AnalyseRequest)> = Cutouts::requests(self.project(), &project)
-            .into_iter()
-            .map(|(media_id, request)| (Self::analysis_key(&media_id, request.subject), request))
-            .collect();
-        let Some((id, request)) = wanted
-            .into_iter()
-            .find(|(_, request)| Cutouts::outstanding(request) > 0)
-        else {
-            return;
-        };
+        let generation = self.session_generation;
         self.cutout_jobs.insert(id.clone(), (false, 0.0));
         let cutouts = Arc::clone(&self.host.cutouts);
         spawn(
@@ -4180,6 +4462,9 @@ impl Studio {
                         last = now;
                         let id = reporting.clone();
                         on_ui(move |studio, _, _| {
+                            if studio.session_generation != generation {
+                                return;
+                            }
                             if let Some(held) = studio.cutout_jobs.get_mut(&id) {
                                 *held = now;
                             }
@@ -4188,8 +4473,13 @@ impl Studio {
                 });
                 (id, result)
             },
-            |studio, _, _, (id, result)| {
+            move |studio, _, _, (id, result)| {
+                if studio.session_generation != generation {
+                    studio.request_cache_probe();
+                    return;
+                }
                 studio.cutout_jobs.remove(&id);
+                studio.invalidate_blank_masks();
                 match result {
                     Ok(_) => {
                         // The monitor shows the cut, and whatever else is
@@ -4686,41 +4976,628 @@ impl Studio {
 
     // ── projects ──
 
-    /// Opens a project as the session and leaves the launch screen, or
-    /// says why it could not.
-    pub fn open_project(&mut self, info: ProjectInfo) -> Result<(), String> {
-        if let Some(session) = &self.session
-            && session
-                .matches_project(&info.path)
-                .map_err(|error| error.to_string())?
-        {
-            self.on_start = false;
-            return Ok(());
-        }
-        let session = Session::open_info_owned(&info).map_err(|error| error.to_string())?;
-        self.adopt_project_session(info, session)
+    /// Starts a bounded background open. State lives on Studio, including while
+    /// StartPane is temporarily moved out by handle().
+    pub(crate) fn request_project_open(&mut self, path: String) -> u64 {
+        self.begin_project_open(OpenTarget::Existing(path))
     }
 
-    /// Adopts a newly created project without releasing its writer ownership.
-    pub fn open_created_project(
+    pub(crate) fn request_project_create(
         &mut self,
-        created: projects::CreatedProject,
-    ) -> Result<(), String> {
-        let info = created.info().clone();
-        let session = created.into_session().map_err(|error| error.to_string())?;
-        self.adopt_project_session(info, session)
+        location: String,
+        name: String,
+        width: u32,
+        height: u32,
+        num: i64,
+        den: i64,
+    ) -> u64 {
+        self.begin_project_open(OpenTarget::Create {
+            location,
+            name,
+            width,
+            height,
+            num,
+            den,
+        })
     }
 
-    fn adopt_project_session(&mut self, info: ProjectInfo, session: Session) -> Result<(), String> {
-        if self.session.is_some() {
-            self.close_project()?;
+    fn preserve_repair_source(&mut self, explicit_save: bool) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            preserve_repair_source(
+                &mut self.repair_source_guard,
+                session,
+                self.session_generation,
+                self.dirty,
+                explicit_save,
+            )
+        })
+    }
+
+    fn repair_unresolved(&self) -> bool {
+        self.repair_request.is_some() || self.repair_preview.is_some()
+    }
+
+    fn can_locate_media_folder(&self) -> bool {
+        crate::panes::relink::folder_relink_allowed(
+            self.relink.busy || self.repair_request.is_some() || self.repair_save.is_some(),
+            self.repair_preview.is_some(),
+        ) && self.repair_idle_edit()
+            && self.open_request.is_none()
+    }
+
+    pub(crate) fn begin_folder_relink_picker(&mut self) -> Option<RepairStamp> {
+        self.can_locate_media_folder()
+            .then(|| self.repair_stamp())
+            .flatten()
+    }
+
+    pub(crate) fn finish_folder_relink_picker(
+        &mut self,
+        stamp: RepairStamp,
+        folder: Option<std::path::PathBuf>,
+    ) {
+        let Some(folder) = folder else { return };
+        if !self.can_locate_media_folder() || !self.repair_stamp_current(&stamp) {
+            self.notify("工程已变化，请重新定位素材文件夹", true);
+            return;
         }
-        if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
-            log::warn!("{error}");
+        let Some(plan) = crate::panes::relink::plan_folder_relink(
+            &stamp.project.missing_media(),
+            Some(&folder),
+            false,
+            false,
+        ) else {
+            return;
+        };
+        let count = plan.commands.len();
+        if !plan.commands.is_empty() {
+            // Explicit manual relinking is the original undoable project edit.
+            self.apply(Command::Batch {
+                commands: plan.commands,
+            });
         }
+        let remaining = self.project().missing_media();
+        self.relink.open = !remaining.is_empty();
+        self.relink.items = remaining;
+        self.relink.error = if plan.ambiguous > 0 {
+            format!("{} 项素材存在多个同名候选，已跳过", plan.ambiguous)
+        } else {
+            String::new()
+        };
+        self.notify(
+            &format!(
+                "已重连 {count}/{} 项素材{}",
+                plan.total,
+                if plan.ambiguous > 0 {
+                    "，同名歧义项已跳过"
+                } else {
+                    ""
+                }
+            ),
+            false,
+        );
+        self.request_media_art();
+        self.request_preview();
+    }
+
+    fn repair_idle_edit(&self) -> bool {
+        self.echo.is_none() && matches!(self.gesture, Gesture::None) && !self.commit_pending
+    }
+
+    fn repair_stamp(&mut self) -> Option<RepairStamp> {
+        let session = self.session.as_ref()?;
+        self.repair_sequence = self.repair_sequence.wrapping_add(1).max(1);
+        Some(RepairStamp {
+            id: self.repair_sequence,
+            generation: self.session_generation,
+            revision: self.revision,
+            path: session.path().to_owned(),
+            name: session.settings().name,
+            project: session.project().clone(),
+        })
+    }
+
+    fn repair_stamp_current(&self, stamp: &RepairStamp) -> bool {
+        self.repair_idle_edit()
+            && self.session.as_ref().is_some_and(|session| {
+                stamp.matches(
+                    self.session_generation,
+                    self.revision,
+                    session.path(),
+                    &session.settings().name,
+                    session.project(),
+                )
+            })
+    }
+
+    fn repair_failed(&mut self, id: u64, error: String) {
+        if self.repair_request.as_ref().map(|request| request.stamp.id) != Some(id) {
+            return;
+        }
+        self.repair_request = None;
+        self.relink.busy = false;
+        self.relink.confirm = false;
+        self.relink.error = error;
+        if self.dirty {
+            self.schedule_autosave();
+        }
+    }
+
+    /// Plans against one clean source snapshot. Neither the planner nor the
+    /// preparation worker ever receives a source writer or saves that Session.
+    pub(crate) fn repair_from_library(&mut self) {
+        if self.relink.busy || self.repair_preview.is_some() {
+            return;
+        }
+        if self.relink.confirm {
+            self.prepare_repair_preview();
+            return;
+        }
+        if self.dirty || !self.repair_idle_edit() || self.open_request.is_some() {
+            self.relink.error = "请先完成编辑并保存当前工程，再修复素材".into();
+            return;
+        }
+        let Some(stamp) = self.repair_stamp() else {
+            return;
+        };
+        self.repair_source_guard = self
+            .session
+            .as_ref()
+            .map(|session| RepairSourceGuard::capture(session, self.session_generation));
+        let root = self.host.dirs.data.join("personal-library");
+        self.autosave.stop();
+        let lane = self
+            .save_lane
+            .get_or_insert_with(|| Arc::new(projects::SaveLane::default()))
+            .clone();
+        lane.next(); // Invalidate before dispatch; the worker also waits for an active writer.
+        self.repair_request = Some(RepairRequest {
+            stamp: stamp.clone(),
+            plan: None,
+        });
+        self.relink.busy = true;
+        self.relink.error.clear();
+        let worker_stamp = stamp.clone();
+        spawn(
+            move || {
+                lane.invalidate_and_wait();
+                crate::personal_library::with_library_write_lock(|| {
+                    crate::project_library_relink::plan_repair(&worker_stamp.project, &root)
+                })
+            },
+            move |studio, _, _, result| {
+                if studio.repair_request.as_ref().map(|r| r.stamp.id) != Some(stamp.id) {
+                    return;
+                }
+                if !studio.repair_stamp_current(&stamp) {
+                    studio.repair_failed(stamp.id, "工程已变化，请重新核对素材".into());
+                    return;
+                }
+                match result {
+                    Err(error) => studio.repair_failed(stamp.id, error),
+                    Ok(plan) => {
+                        let confirm = plan.needs_confirmation;
+                        studio.repair_request.as_mut().unwrap().plan = Some(plan);
+                        studio.relink.busy = false;
+                        studio.relink.confirm = confirm;
+                        if !confirm {
+                            studio.prepare_repair_preview();
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    pub(crate) fn dismiss_library_repair(&mut self) {
+        if self.relink.busy {
+            return;
+        }
+        self.repair_request = None;
+        self.relink = Default::default();
+        if self.dirty {
+            self.schedule_autosave();
+        }
+    }
+
+    fn prepare_repair_preview(&mut self) {
+        let Some(request) = self.repair_request.as_ref() else {
+            return;
+        };
+        let Some(plan) = request.plan.clone() else {
+            return;
+        };
+        let stamp = request.stamp.clone();
+        if !self.repair_stamp_current(&stamp) || self.dirty {
+            self.repair_failed(stamp.id, "工程已变化，请重新核对素材".into());
+            return;
+        }
+        let settings = self.session.as_ref().unwrap().settings();
+        let library_root = self.host.dirs.data.join("personal-library");
+        let previews = self.host.dirs.data.join("relink-previews");
+        self.relink.busy = true;
+        let worker_plan = plan.clone();
+        let worker_stamp = stamp.clone();
+        spawn(
+            move || {
+                crate::personal_library::with_library_write_lock(
+                    || -> Result<(ProjectInfo, Session), String> {
+                        worker_plan.revalidate(&worker_stamp.project, &library_root)?;
+                        std::fs::create_dir_all(&previews).map_err(|error| error.to_string())?;
+                        let path = previews.join(uuid::Uuid::new_v4().to_string());
+                        let document = concat_project::to_document(&settings, &worker_plan.patched);
+                        let created = projects::create_document_owned(&path, &settings, &document)
+                            .map_err(|error| error.to_string())?;
+                        let info = created.info().clone();
+                        let session = created.into_session().map_err(|error| error.to_string())?;
+                        Ok((info, session))
+                    },
+                )
+            },
+            move |studio, _, _, result| {
+                if studio.repair_request.as_ref().map(|r| r.stamp.id) != Some(stamp.id) {
+                    return;
+                }
+                if !studio.repair_stamp_current(&stamp) || studio.dirty {
+                    studio
+                        .repair_failed(stamp.id, "工程已变化，未采用旧修复预览，请重新核对".into());
+                    return;
+                }
+                match result {
+                    Err(error) => studio.repair_failed(stamp.id, error),
+                    Ok((info, session)) => {
+                        let source = studio.session.take().unwrap();
+                        let settings = source.settings();
+                        let source_info = ProjectInfo {
+                            path: source.path().to_owned(),
+                            name: settings.name,
+                            width: settings.width,
+                            height: settings.height,
+                            rate_num: settings.rate_num,
+                            rate_den: settings.rate_den,
+                            opened_at: 0,
+                        };
+                        let preview = RepairPreview {
+                            source,
+                            source_info,
+                            plan,
+                            playhead: studio.playhead,
+                            selection: studio.selection.clone(),
+                        };
+                        studio.repair_request = None;
+                        studio.repair_preview = Some(preview);
+                        studio.relink = Default::default();
+                        studio.adopt_project_session(info, session, false);
+                        studio.notify("修复预览已就绪，请播放核对后另存", false);
+                    }
+                }
+            },
+        );
+    }
+
+    /// Starts a native picker transaction; the caller must release its Studio
+    /// borrow before displaying the picker, which may pump the event loop.
+    pub(crate) fn begin_repair_save_picker(&mut self) -> Option<(u64, String)> {
+        if self.repair_preview.is_none() || self.repair_save.is_some() {
+            return None;
+        }
+        if !self.repair_idle_edit() {
+            self.notify("请先完成当前编辑", true);
+            return None;
+        }
+        let stamp = self.repair_stamp()?;
+        let name = format!("{}-修复副本", projects::folder_name(&stamp.name));
+        let id = stamp.id;
+        self.autosave.stop();
+        self.repair_save = Some(stamp);
+        Some((id, name))
+    }
+
+    pub(crate) fn finish_repair_save_picker(&mut self, id: u64, path: Option<std::path::PathBuf>) {
+        let Some(stamp) = self.repair_save.as_ref().filter(|s| s.id == id).cloned() else {
+            return;
+        };
+        let Some(path) = path else {
+            self.repair_save = None;
+            if self.dirty {
+                self.schedule_autosave();
+            }
+            return;
+        };
+        if !self.repair_stamp_current(&stamp) {
+            self.finish_repair_copy(id, &stamp, Err("工程已变化，请重新另存".into()));
+            return;
+        }
+        let Some(preview) = self.repair_preview.as_ref() else {
+            return;
+        };
+        let plan = preview.plan.clone();
+        let root = self.host.dirs.data.join("personal-library");
+        let mut settings = self.session.as_ref().unwrap().settings();
+        let Some(name) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+        else {
+            self.finish_repair_copy(id, &stamp, Err("请选择新的工程文件夹路径".into()));
+            return;
+        };
+        settings.name = name.to_owned();
+        let worker_stamp = stamp.clone();
+        spawn(
+            move || {
+                crate::personal_library::with_library_write_lock(
+                    || -> Result<(ProjectInfo, Session), String> {
+                        plan.revalidate_preview(&worker_stamp.project, &root)?;
+                        let document =
+                            concat_project::to_document(&settings, &worker_stamp.project);
+                        let created = projects::create_document_owned(&path, &settings, &document)
+                            .map_err(|error| error.to_string())?;
+                        let info = created.info().clone();
+                        let session = created.into_session().map_err(|error| error.to_string())?;
+                        Ok((info, session))
+                    },
+                )
+            },
+            move |studio, _, _, result| studio.finish_repair_copy(id, &stamp, result),
+        );
+    }
+
+    fn finish_repair_copy(
+        &mut self,
+        id: u64,
+        stamp: &RepairStamp,
+        result: Result<(ProjectInfo, Session), String>,
+    ) {
+        if self.repair_save.as_ref().map(|s| s.id) != Some(id) {
+            return;
+        }
+        self.repair_save = None;
+        if !self.repair_stamp_current(stamp) {
+            let message = match &result {
+                Ok((info, _)) => {
+                    format!("工程已变化，未切换到旧快照副本：{}。请重新另存", info.path)
+                }
+                Err(_) => "工程已变化，请重新另存".into(),
+            };
+            self.notify(&message, true);
+        } else {
+            match result {
+                Ok((info, session)) => {
+                    self.repair_preview = None; // Release the untouched source owner only now.
+                    self.adopt_project_session(info, session, true);
+                    self.notify("已另存修复工程", false);
+                }
+                Err(error) => self.notify(&error, true),
+            }
+        }
+        if self.dirty {
+            self.schedule_autosave();
+        }
+    }
+
+    pub(crate) fn cancel_repair_preview(&mut self) {
+        if self.repair_preview.is_none() || self.repair_save.is_some() {
+            return;
+        }
+        if !self.repair_idle_edit() {
+            self.notify("请先完成当前编辑", true);
+            return;
+        }
+        let Some(stamp) = self.repair_stamp() else {
+            return;
+        };
+        self.autosave.stop();
         self.pause();
-        self.session = Some(session);
+        let lane = self.save_lane.as_ref().unwrap().clone();
+        lane.next();
+        self.repair_save = Some(stamp.clone());
+        spawn(
+            move || lane.invalidate_and_wait(),
+            move |studio, _, _, ()| {
+                if studio.repair_save.as_ref().map(|s| s.id) != Some(stamp.id) {
+                    return;
+                }
+                studio.repair_save = None;
+                if !studio.repair_stamp_current(&stamp) {
+                    studio.notify("工程已变化，请再次取消修复", true);
+                    if studio.dirty {
+                        studio.schedule_autosave();
+                    }
+                    return;
+                }
+                let Some(preview) = studio.repair_preview.take() else {
+                    return;
+                };
+                // No prepare_save, ordinary open, or close: the original Session is
+                // adopted directly. Owned UUID previews remain for late cache workers.
+                studio.adopt_project_session(preview.source_info, preview.source, false);
+                studio.playhead = preview.playhead;
+                studio.selection = preview.selection;
+                studio.request_preview();
+                studio.notify("已取消修复，原工程未改变", false);
+            },
+        );
+    }
+
+    fn begin_project_open(&mut self, target: OpenTarget) -> u64 {
+        if self.repair_unresolved() {
+            self.open_sequence = self.open_sequence.wrapping_add(1).max(1);
+            let id = self.open_sequence;
+            crate::cloud::clip_open_started(
+                id,
+                &target.label(),
+                matches!(&target, OpenTarget::Create { .. }),
+            );
+            crate::cloud::clip_open_failed(id);
+            self.notify("请先另存修复工程或取消修复", true);
+            return id;
+        }
+        self.cancel_project_open(&t("Project opening cancelled"));
+        self.flush_commit();
+        self.open_error.clear();
+        self.open_sequence = self.open_sequence.wrapping_add(1).max(1);
+        let id = self.open_sequence;
+        let created = matches!(&target, OpenTarget::Create { .. });
+        let request = crate::project_open::Request::new(
+            id,
+            self.session_generation,
+            self.revision,
+            target.label(),
+        );
+        if self.echo.is_some() || !matches!(self.gesture, Gesture::None) {
+            self.open_error = t("Finish the current edit before opening a project.");
+            self.notify(&self.open_error.clone(), true);
+            crate::cloud::clip_open_started(id, &request.target, created);
+            crate::cloud::clip_open_failed(id);
+            return id;
+        }
+        self.autosave.stop();
+        let preserve_source = self.preserve_repair_source(false);
+        let old = self.session.as_mut().map(|session| {
+            let lane = self
+                .save_lane
+                .get_or_insert_with(|| Arc::new(projects::SaveLane::default()))
+                .clone();
+            prepare_outgoing_save(session, lane, preserve_source)
+        });
+        let worker_request = request.clone();
+        crate::cloud::clip_open_started(id, &request.target, created);
+        self.open_request = Some(request);
+        let dispatched = crate::project_open::dispatch(false, move || {
+            let result = prepare_project_open(target, old, &worker_request);
+            on_ui(move |studio, app, _| studio.finish_project_open(id, result, app));
+        });
+        if let Err(error) = dispatched {
+            let error = match error {
+                crate::project_open::DispatchError::Busy => {
+                    t("Another project operation is still running. Please try again.")
+                }
+                crate::project_open::DispatchError::Spawn(error) => {
+                    tf("Could not start opening: {0}", &[&error.to_string()])
+                }
+            };
+            self.cancel_project_open(&error);
+            self.open_error = error.clone();
+            self.notify(&error, true);
+            return id;
+        }
+
+        self.open_timeout.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_secs(30),
+            move || {
+                crate::host::Shell::with(|shell, app| {
+                    let mut studio = shell.studio.borrow_mut();
+                    if studio
+                        .open_request
+                        .as_ref()
+                        .is_some_and(|request| request.id == id)
+                    {
+                        studio.cancel_project_open(&t("Opening timed out. Please try again."));
+                        studio.publish(&app, &shell.models);
+                    }
+                });
+            },
+        );
+        id
+    }
+
+    pub(crate) fn cancel_project_open(&mut self, reason: &str) {
+        if let Some(request) = self.open_request.take() {
+            request.cancel();
+            self.open_timeout.stop();
+            crate::cloud::clip_open_failed(request.id);
+            self.notify(reason, false);
+            self.open_error = reason.into();
+            if self.dirty {
+                self.schedule_autosave();
+            }
+        }
+    }
+
+    fn finish_project_open(&mut self, id: u64, result: Result<PreparedOpen, String>, app: &App) {
+        let save_latest = result.as_ref().ok().is_none_or(|prepared| {
+            prepared
+                .save
+                .as_ref()
+                .is_none_or(|(lane, ticket)| lane.is_latest(*ticket))
+        });
+        let completion = crate::project_open::complete(
+            &mut self.open_request,
+            id,
+            self.session_generation,
+            self.revision,
+            save_latest,
+            self.echo.is_some() || !matches!(self.gesture, Gesture::None) || self.commit_pending,
+            result,
+        );
+        let prepared = match completion {
+            crate::project_open::Completion::Obsolete => return,
+            crate::project_open::Completion::Ready(prepared) => prepared,
+            rejected => {
+                self.open_timeout.stop();
+                self.open_error = match rejected {
+                    crate::project_open::Completion::Changed => {
+                        t("The current project changed. Please open it again.")
+                    }
+                    crate::project_open::Completion::SaveSuperseded => {
+                        t("The project save changed. Please open it again.")
+                    }
+                    crate::project_open::Completion::Failed(error) => error,
+                    _ => unreachable!(),
+                };
+                self.notify(&self.open_error.clone(), true);
+                crate::cloud::clip_open_failed(id);
+                if self.dirty {
+                    self.schedule_autosave();
+                }
+                return;
+            }
+        };
+        self.open_timeout.stop();
+        self.open_error.clear();
+        if let Some((info, session, missing)) = prepared.session {
+            self.adopt_project_session(info, session, true);
+            if !missing.is_empty() {
+                self.handle(crate::panes::Msg::Relink(
+                    crate::panes::relink::RelinkMsg::Show(missing),
+                ));
+            }
+        } else {
+            // Same OS resource, including aliases: keep history and the save lane.
+            self.on_start = false;
+            if self.dirty {
+                self.schedule_autosave();
+            }
+        }
+        app.set_clip_create_open(false);
+
+        crate::cloud::clip_open_completed(self, app, id);
+    }
+
+    fn adopt_project_session(&mut self, info: ProjectInfo, session: Session, remember: bool) {
+        // Callers have settled the outgoing save lane (normal open) or retained
+        // the untouched source (repair). No disk I/O or close runs in adoption.
+        self.host.cutouts.cancel();
+        self.cutout_jobs.clear();
+        self.region_job = None;
+        self.cache_probe = None;
+        self.cutout_blank.borrow_mut().clear();
+        self.cutout_blank_pending.borrow_mut().clear();
+        self.autosave.stop();
+        self.gesture = Gesture::None;
+        self.pause();
         self.session_generation = self.session_generation.wrapping_add(1).max(1);
+        if remember {
+            self.repair_source_guard = None;
+        } else if let Some(guard) = self.repair_source_guard.as_mut()
+            && guard.path == session.path()
+        {
+            // Cancel restores the retained original under a fresh UI generation.
+            guard.generation = self.session_generation;
+        }
+        self.session = Some(session);
         self.save_lane = Some(Arc::new(projects::SaveLane::default()));
         self.echo = None;
         self.dirty = false;
@@ -4735,8 +5612,12 @@ impl Studio {
         self.handle(crate::panes::Msg::Monitor(
             crate::panes::monitor::MonitorMsg::Opened,
         ));
-        self.recents = projects::list(&self.host.dirs.config);
-        self.invalidate_recent_gallery();
+        self.recent_retry.stop();
+        self.pending_recent = None;
+        if remember {
+            self.pending_recent = Some((self.session_generation, info));
+            self.update_opened_recent();
+        }
         self.host.monitor.clear();
         self.audition = None;
         self.revision += 1;
@@ -4746,28 +5627,87 @@ impl Studio {
         self.request_preview();
         self.ensure_cutouts();
         self.ensure_regions();
+    }
 
-        // Log missing media to file for debugging
-        if let Some(session) = &self.session {
-            let missing = session.project().missing_media();
-            if !missing.is_empty() {
-                let log_path = std::path::Path::new(&info.path)
-                    .join("cache")
-                    .join("missing_media.log");
-                if let Ok(mut file) = std::fs::File::create(&log_path) {
-                    use std::io::Write;
-                    let _ = writeln!(file, "{} media files missing:", missing.len());
-                    for m in &missing {
-                        let _ = writeln!(file, "  - {} ({})", m.name, m.path);
-                    }
+    pub(crate) fn dismiss_project_open_error(&mut self) {
+        self.open_error.clear();
+    }
+
+    fn mask_cache_stamp(&self) -> crate::project_open::CacheStamp {
+        crate::project_open::CacheStamp {
+            generation: self.session_generation,
+            revision: self.revision,
+            mask_epoch: self.mask_epoch,
+        }
+    }
+
+    fn invalidate_blank_masks(&mut self) {
+        self.mask_epoch = self.mask_epoch.wrapping_add(1);
+        self.cutout_blank.borrow_mut().clear();
+    }
+
+    fn retry_cache_probe(&mut self) {
+        if self.cache_retry.running() || self.session.is_none() {
+            return;
+        }
+        self.cache_retry.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(250),
+            || {
+                on_ui(|studio, _, _| studio.request_cache_probe());
+            },
+        );
+    }
+
+    fn update_opened_recent(&mut self) {
+        let Some((generation, info)) = self.pending_recent.take() else {
+            return;
+        };
+        if generation != self.session_generation {
+            return;
+        }
+        let config = self.host.dirs.config.clone();
+        let retained = info.clone();
+        let result = crate::project_open::dispatch_recent(move || {
+            let remembered = projects::remember(&config, &info);
+            let recents = projects::list(&config);
+            on_ui(move |studio, _, _| {
+                if studio.session_generation != generation {
+                    return;
                 }
-
-                self.handle(crate::panes::Msg::Relink(
-                    crate::panes::relink::RelinkMsg::Show(missing),
-                ));
+                studio.recents = recents;
+                studio.invalidate_recent_gallery();
+                if let Err(error) = remembered {
+                    studio.notify(
+                        &tf("Could not update recent projects: {0}", &[&error]),
+                        true,
+                    );
+                }
+            });
+        });
+        match result {
+            Ok(()) => self.recent_retry.stop(),
+            Err(crate::project_open::DispatchError::Busy) => {
+                self.pending_recent = Some((generation, retained));
+                self.recent_retry.start(
+                    slint::TimerMode::SingleShot,
+                    std::time::Duration::from_millis(250),
+                    || {
+                        on_ui(|studio, _, _| studio.update_opened_recent());
+                    },
+                );
+            }
+            Err(crate::project_open::DispatchError::Spawn(error)) => {
+                self.recent_retry.stop();
+                self.notify(
+                    &tf(
+                        "Could not update recent projects: {0}",
+                        &[&error.to_string()],
+                    ),
+                    true,
+                );
             }
         }
-        Ok(())
     }
 
     /// Clears all cached artwork and waveforms from the current project.
@@ -4780,7 +5720,12 @@ impl Studio {
             return;
         };
         match concat_host::projects::clear_cache(&path) {
-            Ok(count) => self.notify(&format!("Cleared {count} cache files"), false),
+            Ok(count) => {
+                self.invalidate_blank_masks();
+                self.ensure_cutouts();
+                self.ensure_regions();
+                self.notify(&format!("Cleared {count} cache files"), false);
+            }
             Err(error) => self.notify(&format!("Cache clear failed: {error}"), true),
         }
         self.request_media_art();
@@ -4791,8 +5736,15 @@ impl Studio {
     /// The canvas is deliberately independent: closing the clip project must
     /// not discard an open canvas document.
     pub fn close_project(&mut self) -> Result<(), String> {
+        if self.repair_unresolved() {
+            let message = "请先另存修复工程或取消修复".to_owned();
+            self.notify(&message, true);
+            return Err(message);
+        }
+        self.cancel_project_open(&t("Project opening cancelled"));
         self.pause();
-        if let Some(session) = self.session.as_mut() {
+        let preserve_source = self.preserve_repair_source(false);
+        if !preserve_source && let Some(session) = self.session.as_mut() {
             let (path, document) = session.prepare_save(None);
             let writer_guard = session.writer_guard();
             let lane = self
@@ -4821,6 +5773,7 @@ impl Studio {
         self.region_job = None;
         self.autosave.stop();
         self.session = None;
+        self.repair_source_guard = None;
         self.save_lane = None;
         self.session_generation = self.session_generation.wrapping_add(1).max(1);
         self.echo = None;
@@ -4847,6 +5800,10 @@ impl Studio {
     /// request, and File > Close Window. A dirty canvas opens the global
     /// confirmation sheet; a clean canvas proceeds to the clip save.
     pub fn request_window_close(&mut self) -> bool {
+        if self.repair_unresolved() {
+            self.notify("请先另存修复工程或取消修复", true);
+            return false;
+        }
         if self.canvas.defer_window_close_for_transform() {
             return false;
         }
@@ -5148,14 +6105,34 @@ impl Studio {
     /// this only records; the publish that handler was going to make anyway
     /// is what puts it on screen.
     pub fn notify(&mut self, message: &str, failed: bool) {
+        self.notify_with_detail(message, message, failed);
+    }
+
+    /// Shows a short notice while keeping the full diagnostic in Copy.
+    pub fn notify_with_detail(&mut self, message: &str, detail: &str, failed: bool) {
         self.toast.token += 1;
         self.toast.message = message.into();
+        self.toast.detail = detail.into();
         self.toast.failed = failed;
     }
 
     // ── publishing ──
 
     pub fn publish(&self, app: &App, models: &Models) {
+        #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+        self.editor_mcp.borrow_mut().sync_document(self, app);
+        self.sync_mcp_selection();
+        self.mcp_context_epoch
+            .set(self.mcp_context_epoch.get().saturating_add(1));
+        self.publish_lanes(app, models);
+        self.publish_chrome(app, models);
+        self.publish_dock(app, models);
+        self.publish_canvas(app, models);
+    }
+
+    /// Synchronize only actual selection identity before an insert receipt.
+    /// Full publish may occur later, after the operation result is cached.
+    pub(crate) fn sync_mcp_selection(&self) {
         let mut selection = self
             .selection
             .iter()
@@ -5174,12 +6151,6 @@ impl Studio {
             self.mcp_selection_epoch
                 .set(self.mcp_selection_epoch.get().saturating_add(1));
         }
-        self.mcp_context_epoch
-            .set(self.mcp_context_epoch.get().saturating_add(1));
-        self.publish_lanes(app, models);
-        self.publish_chrome(app, models);
-        self.publish_dock(app, models);
-        self.publish_canvas(app, models);
     }
 
     pub(crate) fn mcp_clip_state(&self) -> (u64, u64, bool, bool) {
@@ -5801,63 +6772,152 @@ impl Studio {
         ) else {
             return false;
         };
-        let project = std::path::Path::new(session.path());
-        let store = concat_vision::MaskStore::open(&concat_vision::mask_dir(
-            project,
-            &media.path,
-            cutout.subject,
-        ));
-        store
-            .mask_at(self.source_at_playhead(clip))
-            .is_some_and(|mask| mask.is_blank())
+        let stamp = self.mask_cache_stamp();
+        let instant = self.source_at_playhead(clip);
+        let key = format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            stamp.generation,
+            stamp.revision,
+            stamp.mask_epoch,
+            clip.media_id,
+            media.path,
+            cutout.subject.key(),
+            instant.to_bits()
+        );
+        if let Some(blank) = self.cutout_blank.borrow().get(&key) {
+            return *blank;
+        }
+        if self.cutout_blank_pending.borrow().contains(&key) {
+            return false;
+        }
+        let path = std::path::PathBuf::from(session.path());
+        let media_path = media.path.clone();
+        let subject = cutout.subject;
+        self.cutout_blank_pending.borrow_mut().insert(key.clone());
+        let worker_key = key.clone();
+        let dispatched = crate::project_open::dispatch(true, move || {
+            let store = concat_vision::MaskStore::open(&concat_vision::mask_dir(
+                &path,
+                &media_path,
+                subject,
+            ));
+            let blank = store.mask_at(instant).is_some_and(|mask| mask.is_blank());
+            on_ui(move |studio, _, _| {
+                studio.cutout_blank_pending.borrow_mut().remove(&worker_key);
+                let current = studio.mask_cache_stamp();
+                stamp.store(
+                    current,
+                    &mut studio.cutout_blank.borrow_mut(),
+                    worker_key,
+                    blank,
+                );
+            });
+        });
+        if dispatched.is_err() {
+            self.cutout_blank_pending.borrow_mut().remove(&key);
+        }
+        false
     }
 
     /// Starts reading the first smart stroke whose region is not there
     /// yet, unless one is being read. Called after every change, and by
     /// the finished job for whatever is next.
     pub fn ensure_regions(&mut self) {
-        if self.region_job.is_some() || self.host.brushes.is_busy() {
+        self.request_cache_probe();
+    }
+
+    fn request_cache_probe(&mut self) {
+        if self.cache_probe.is_some() {
             return;
         }
+        let want_cutout = self.cutout_jobs.is_empty() && !self.host.cutouts.is_busy();
+        let want_region = self.region_job.is_none() && !self.host.brushes.is_busy();
+        if !want_cutout && !want_region {
+            return;
+        }
+        let Some(permit) = crate::project_open::reserve_cache() else {
+            self.retry_cache_probe();
+            return;
+        };
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let project = std::path::PathBuf::from(session.path());
-        let mut next: Option<(String, RegionRequest)> = None;
-        'clips: for clip in &self.timeline().clips {
-            let Some(cutout) = clip.cutout.as_ref() else {
-                continue;
+        let path = std::path::PathBuf::from(session.path());
+        let project = self.project().clone();
+        let stamp = (self.session_generation, self.revision);
+        self.cache_probe = Some(stamp);
+        let dispatched = crate::project_open::dispatch_cache(permit, move || {
+            let cutout = if want_cutout {
+                Cutouts::requests(&project, &path)
+                    .into_iter()
+                    .find(|(_, request)| Cutouts::outstanding(request) > 0)
+                    .map(|(id, request)| (Studio::analysis_key(&id, request.subject), request))
+            } else {
+                None
             };
-            if cutout.mode != model::CutoutMode::Custom || !clip.kind.is_visual() {
-                continue;
-            }
-            let Some(media) = self.project().media_by_id(&clip.media_id) else {
-                continue;
-            };
-            // The source the clip shows, as the mask analysis reckons it.
-            let range = (
-                clip.source_start,
-                clip.source_start + clip.duration * clip.speed.max(0.0625),
-            );
-            for stroke in &cutout.strokes {
-                let request = RegionRequest {
-                    project: project.clone(),
-                    media_path: media.path.clone(),
-                    media_size: (media.width.unwrap_or(0), media.height.unwrap_or(0)),
-                    still: media.kind == model::MediaKind::Image,
-                    subject: cutout.subject,
-                    ranges: vec![range],
-                    stroke: stroke.clone(),
+            let mut region = None;
+            'clips: for clip in project.active().clips.iter().filter(|_| want_region) {
+                let Some(cutout) = clip.cutout.as_ref() else {
+                    continue;
                 };
-                if request.outstanding() {
-                    next = Some((Self::analysis_key(&media.id, cutout.subject), request));
-                    break 'clips;
+                if cutout.mode != model::CutoutMode::Custom || !clip.kind.is_visual() {
+                    continue;
+                }
+                let Some(media) = project.media_by_id(&clip.media_id) else {
+                    continue;
+                };
+                for stroke in &cutout.strokes {
+                    let request = RegionRequest {
+                        project: path.clone(),
+                        media_path: media.path.clone(),
+                        media_size: (media.width.unwrap_or(0), media.height.unwrap_or(0)),
+                        still: media.kind == model::MediaKind::Image,
+                        subject: cutout.subject,
+                        ranges: vec![(
+                            clip.source_start,
+                            clip.source_start + clip.duration * clip.speed.max(0.0625),
+                        )],
+                        stroke: stroke.clone(),
+                    };
+                    if request.outstanding() {
+                        region = Some((Studio::analysis_key(&media.id, cutout.subject), request));
+                        break 'clips;
+                    }
                 }
             }
+            on_ui(move |studio, _, _| {
+                if studio.cache_probe != Some(stamp) {
+                    return;
+                }
+                studio.cache_probe = None;
+                if studio.session_generation != stamp.0 {
+                    return;
+                }
+                if studio.revision != stamp.1 {
+                    studio.request_cache_probe();
+                    return;
+                }
+                if let Some((id, request)) = cutout {
+                    studio.start_cutout_analysis(id, request);
+                }
+                if let Some((key, request)) = region {
+                    studio.start_region_analysis(key, request);
+                }
+            });
+        });
+        if dispatched.is_err() {
+            self.cache_probe = None;
+            // Spawn failures do not become an implicit retry loop.
+        } else {
+            self.cache_retry.stop();
         }
-        let Some((key, request)) = next else {
+    }
+
+    fn start_region_analysis(&mut self, key: String, request: RegionRequest) {
+        if self.region_job.is_some() || self.host.brushes.is_busy() {
             return;
-        };
+        }
+        let generation = self.session_generation;
         self.region_job = Some(key.clone());
         self.cutout_jobs.entry(key.clone()).or_insert((false, 0.0));
         let brushes = Arc::clone(&self.host.brushes);
@@ -5873,6 +6933,9 @@ impl Studio {
                     };
                     let key = reporting.clone();
                     on_ui(move |studio, _, _| {
+                        if studio.session_generation != generation {
+                            return;
+                        }
                         if let Some(held) = studio.cutout_jobs.get_mut(&key) {
                             *held = now;
                         }
@@ -5880,10 +6943,15 @@ impl Studio {
                 });
                 (key, result)
             },
-            |studio, _, _, (key, result)| {
+            move |studio, _, _, (key, result)| {
+                if studio.session_generation != generation {
+                    studio.request_cache_probe();
+                    return;
+                }
                 studio.region_job = None;
                 studio.cutout_jobs.remove(&key);
                 studio.pending_stroke = None;
+                studio.invalidate_blank_masks();
                 match result {
                     Ok(()) => {
                         studio.request_preview();
@@ -5899,9 +6967,11 @@ impl Studio {
     /// The canvas pane's readouts: the picture and the view Rust holds.
     /// Values, not models, so it rides in whichever publish is running.
     fn publish_canvas(&self, app: &App, models: &Models) {
+        self.canvas.publish_shape_controls(app);
         let editor = app.global::<Editor>();
         editor.set_canvas_frame(self.canvas.image.clone());
         editor.set_canvas_has_document(self.canvas.document.is_some());
+        editor.set_canvas_export_busy(self.canvas.export_busy());
         editor.set_canvas_can_undo(self.canvas.can_undo());
         editor.set_canvas_can_redo(self.canvas.can_redo());
         editor.set_canvas_modified(self.canvas.is_modified());
@@ -6141,9 +7211,13 @@ impl Studio {
         );
 
         app.set_on_start(self.on_start);
+        app.set_repair_preview(self.repair_preview.is_some());
+        app.set_repair_busy(self.repair_save.is_some());
         app.set_project_name(self.project_name.as_str().into());
         app.set_project_status(
-            if self.dirty {
+            if self.repair_preview.is_some() {
+                "修复预览·需另存".to_owned()
+            } else if self.dirty {
                 t("unsaved changes")
             } else {
                 t("saved")
@@ -6153,9 +7227,34 @@ impl Studio {
         app.set_toast(ToastData {
             token: self.toast.token,
             message: self.toast.message.as_str().into(),
+            detail: self.toast.detail.as_str().into(),
             failed: self.toast.failed,
         });
-        app.set_start(self.start.data());
+        let mut start = self.start.data();
+        start.busy = self.open_request.is_some();
+        if !self.open_error.is_empty() {
+            start.error = self.open_error.as_str().into();
+        }
+        app.set_start(start);
+        app.set_project_open_busy(self.open_request.is_some());
+        app.set_project_open_target(
+            self.open_request
+                .as_ref()
+                .map(|request| {
+                    self.recents
+                        .iter()
+                        .find(|info| info.path == request.target)
+                        .map(|info| info.name.as_str())
+                        .unwrap_or_else(|| {
+                            std::path::Path::new(&request.target)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or(request.target.as_str())
+                        })
+                })
+                .unwrap_or("")
+                .into(),
+        );
         let gallery = app.global::<SeeCut>();
         let query = gallery.get_clip_project_search().trim().to_lowercase();
         let sort = gallery.get_clip_project_sort();
@@ -6286,7 +7385,7 @@ impl Studio {
         app.set_settings(self.settings.data(self));
         sync(&models.transcribers, self.settings.transcriber_rows());
         sync(&models.voices, self.settings.voice_rows());
-        app.set_relink(self.relink.data());
+        app.set_relink(self.relink.data(self.can_locate_media_folder()));
 
         // The speech sheets, and the lists they choose from.
         let transcribers = installed(&self.settings.transcribers);
@@ -6887,6 +7986,383 @@ impl Studio {
             timeline_id: id,
             index,
         });
+    }
+}
+
+#[cfg(test)]
+mod project_open_tests {
+    use super::*;
+    struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("seecut-open-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn project(&self, name: &str) -> (ProjectInfo, Session) {
+            let created =
+                projects::create_owned(self.0.to_str().unwrap(), name, 320, 180, 30, 1).unwrap();
+            let info = created.info().clone();
+            (info, created.into_session().unwrap())
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn snapshot(session: &mut Session, lane: Arc<projects::SaveLane>) -> OpenSave {
+        prepare_outgoing_save(session, lane, false)
+    }
+    fn request() -> crate::project_open::Request {
+        crate::project_open::Request::new(1, 1, 1, "synthetic".into())
+    }
+
+    fn old_encoded_source(scratch: &Scratch) -> (ProjectInfo, Session, Vec<u8>) {
+        let (info, session) = scratch.project("original");
+        let settings = session.settings();
+        let mut project = session.project().clone();
+        project.media.push(model::MediaItem {
+            id: "m5".into(),
+            path: scratch.0.join("missing.png").to_string_lossy().into_owned(),
+            name: "Old media".into(),
+            kind: model::MediaKind::Image,
+            ..Default::default()
+        });
+        let mut document = concat_project::to_document(&settings, &project);
+        // An older/foreign writer's encoding must not be normalized on rejection.
+        document.as_object_mut().unwrap().remove("version");
+        let bytes = format!(
+            "{}\r\n\r\n",
+            serde_json::to_string_pretty(&document)
+                .unwrap()
+                .replace('\n', "\r\n")
+        )
+        .into_bytes();
+        drop(session);
+        std::fs::write(std::path::Path::new(&info.path).join("concat.json"), &bytes).unwrap();
+        let session = Session::open_info_owned(&info).unwrap();
+        (info, session, bytes)
+    }
+
+    #[test]
+    fn project_relink_rejected_plan_and_cancel_skip_implicit_old_json_save() {
+        let scratch = Scratch::new();
+        let (info, mut source, bytes) = old_encoded_source(&scratch);
+        let mut guard = Some(RepairSourceGuard::capture(&source, 1));
+        assert!(
+            crate::project_library_relink::plan_repair(
+                source.project(),
+                &scratch.0.join("absent-library")
+            )
+            .is_err()
+        );
+        assert!(preserve_repair_source(&mut guard, &source, 1, false, false));
+        // Preview edits do not consume the separately held original guard.
+        let (_, mut preview) = scratch.project("preview");
+        preview.apply(Command::AddTrack).unwrap();
+        assert!(!preserve_repair_source(
+            &mut guard, &preview, 2, true, false
+        ));
+        assert!(guard.is_some());
+        drop(preview);
+        // Cancel directly restores the original Session under a new generation.
+        guard.as_mut().unwrap().generation = 3;
+        let preserve = preserve_repair_source(&mut guard, &source, 3, false, false);
+        assert!(preserve);
+        let lane = Arc::new(projects::SaveLane::default());
+        let old = prepare_outgoing_save(&mut source, lane.clone(), preserve);
+        assert!(old.document.is_none());
+        // Same-resource reopen still uses the retained owner; it never reacquires.
+        let same = prepare_project_open(
+            OpenTarget::Existing(info.path.clone()),
+            Some(old),
+            &request(),
+        )
+        .unwrap();
+        assert!(same.session.is_none());
+        let (target_info, target) = scratch.project("target");
+        drop(target);
+        let old = prepare_outgoing_save(&mut source, lane, preserve);
+        let prepared = prepare_project_open(
+            OpenTarget::Existing(target_info.path),
+            Some(old),
+            &request(),
+        )
+        .unwrap();
+        assert!(prepared.session.is_some());
+        let (lane, ticket) = prepared.save.as_ref().unwrap();
+        assert!(lane.is_latest(*ticket));
+        lane.next(); // A later explicit save must still invalidate adoption.
+        assert!(!lane.is_latest(*ticket));
+        assert_eq!(
+            std::fs::read(std::path::Path::new(&info.path).join("concat.json")).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn project_relink_source_guard_is_consumed_by_edit_or_explicit_save() {
+        let scratch = Scratch::new();
+        let (_, mut source, _) = old_encoded_source(&scratch);
+        let mut guard = Some(RepairSourceGuard::capture(&source, 1));
+        source.apply(Command::AddTrack).unwrap();
+        assert!(!preserve_repair_source(&mut guard, &source, 1, true, false));
+        assert!(guard.is_none());
+        source.undo();
+        assert!(!preserve_repair_source(
+            &mut guard, &source, 1, false, false
+        ));
+        let old =
+            prepare_outgoing_save(&mut source, Arc::new(projects::SaveLane::default()), false);
+        assert!(old.document.is_some());
+        guard = Some(RepairSourceGuard::capture(&source, 1));
+        assert!(!preserve_repair_source(&mut guard, &source, 1, false, true));
+        assert!(guard.is_none());
+    }
+
+    #[test]
+    fn project_relink_preview_autosave_and_cancel_leave_source_manifest_untouched() {
+        let scratch = Scratch::new();
+        let (source_info, source) = scratch.project("original");
+        let manifest = std::path::Path::new(&source_info.path).join("concat.json");
+        let bytes = std::fs::read(&manifest).unwrap();
+        let mut patched = source.project().clone();
+        patched
+            .extra
+            .insert("repair-test".into(), serde_json::json!(true));
+        let settings = source.settings();
+        let created = projects::create_document_owned(
+            &scratch.0.join("preview"),
+            &settings,
+            &concat_project::to_document(&settings, &patched),
+        )
+        .unwrap();
+        let mut preview = created.into_session().unwrap();
+        preview.apply(Command::AddTrack).unwrap();
+        let lane = projects::SaveLane::default();
+        let (path, document) = preview.prepare_save(None);
+        assert!(
+            lane.write_owned(
+                lane.next(),
+                &path,
+                &document,
+                preview.writer_guard().as_ref()
+            )
+            .unwrap()
+        );
+        lane.invalidate_and_wait();
+        drop(preview);
+        // Cancellation retains this original Session rather than opening/saving it.
+        assert_eq!(source.path(), source_info.path);
+        assert_eq!(std::fs::read(&manifest).unwrap(), bytes);
+        assert!(!source.project().extra.contains_key("repair-test"));
+        assert_eq!(source.project().active().tracks.len(), 4);
+    }
+
+    #[test]
+    fn project_relink_adoption_rejects_reopened_edited_or_renamed_source() {
+        let project = Project::new();
+        let stamp = RepairStamp {
+            id: 7,
+            generation: 3,
+            revision: 5,
+            path: "original".into(),
+            name: "Original".into(),
+            project: project.clone(),
+        };
+        assert!(stamp.matches(3, 5, "original", "Original", &project));
+        assert!(!stamp.matches(4, 5, "original", "Original", &project));
+        assert!(!stamp.matches(3, 6, "original", "Original", &project));
+        assert!(!stamp.matches(3, 5, "copy", "Original", &project));
+        assert!(!stamp.matches(3, 5, "original", "Renamed", &project));
+        let mut changed = project;
+        changed
+            .extra
+            .insert("later-edit".into(), serde_json::json!(true));
+        assert!(!stamp.matches(3, 5, "original", "Original", &changed));
+    }
+
+    #[test]
+    fn background_prepare_keeps_both_owners_and_persists_old_edit() {
+        let scratch = Scratch::new();
+        let (old_info, mut old) = scratch.project("old");
+        old.apply(Command::AddTrack).unwrap();
+        let tracks = old.project().active().tracks.len();
+        let (target_info, target) = scratch.project("target");
+        drop(target);
+        let lane = Arc::new(projects::SaveLane::default());
+        let prepared = prepare_project_open(
+            OpenTarget::Existing(target_info.path.clone()),
+            Some(snapshot(&mut old, lane)),
+            &request(),
+        )
+        .unwrap();
+        let (_, prepared_session, _) = prepared.session.unwrap();
+        #[cfg(any(
+            target_os = "macos",
+            all(target_os = "linux", not(target_os = "android")),
+            target_os = "windows"
+        ))]
+        {
+            assert!(Session::open_info_owned(&old_info).is_err());
+            assert!(Session::open_info_owned(&target_info).is_err());
+        }
+        assert!(old.can_undo()); // Preparing never replaces old history.
+        drop(prepared_session);
+        assert!(Session::open_info_owned(&target_info).is_ok());
+        drop(old);
+        let reopened = Session::open_info_owned(&old_info).unwrap();
+        assert_eq!(reopened.project().active().tracks.len(), tracks);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alias_reuses_current_session_without_a_second_writer_or_history_reset() {
+        let scratch = Scratch::new();
+        let (info, mut session) = scratch.project("original");
+        session.apply(Command::AddTrack).unwrap();
+        let alias = scratch.0.join("alias");
+        std::os::unix::fs::symlink(&info.path, &alias).unwrap();
+        let lane = Arc::new(projects::SaveLane::default());
+        let prepared = prepare_project_open(
+            OpenTarget::Existing(alias.to_str().unwrap().into()),
+            Some(snapshot(&mut session, lane.clone())),
+            &request(),
+        )
+        .unwrap();
+        assert!(prepared.session.is_none() && prepared.save.is_none());
+        assert!(session.can_undo());
+        assert!(session.matches_project(alias.to_str().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn failed_or_superseded_save_releases_target_and_preserves_old_session() {
+        let scratch = Scratch::new();
+        let (old_info, mut old) = scratch.project("old");
+        old.apply(Command::AddTrack).unwrap();
+        let (target_info, target) = scratch.project("target");
+        drop(target);
+        let lane = Arc::new(projects::SaveLane::default());
+        let stale = snapshot(&mut old, lane.clone());
+        lane.next();
+        assert!(
+            prepare_project_open(
+                OpenTarget::Existing(target_info.path.clone()),
+                Some(stale),
+                &request()
+            )
+            .is_err()
+        );
+        assert!(Session::open_info_owned(&target_info).is_ok());
+        let mut bad_save = snapshot(&mut old, lane);
+        bad_save.path = scratch
+            .0
+            .join("missing-parent/old")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            prepare_project_open(
+                OpenTarget::Existing(target_info.path.clone()),
+                Some(bad_save),
+                &request()
+            )
+            .is_err()
+        );
+        assert!(Session::open_info_owned(&target_info).is_ok());
+        assert!(old.can_undo() && old.path() == old_info.path);
+    }
+
+    #[test]
+    fn new_project_preparation_moves_creator_owner_without_reopening() {
+        let scratch = Scratch::new();
+        let prepared = prepare_project_open(
+            OpenTarget::Create {
+                location: scratch.0.to_str().unwrap().into(),
+                name: "created".into(),
+                width: 320,
+                height: 180,
+                num: 30,
+                den: 1,
+            },
+            None,
+            &request(),
+        )
+        .unwrap();
+        let (info, session, _) = prepared.session.unwrap();
+        #[cfg(any(
+            target_os = "macos",
+            all(target_os = "linux", not(target_os = "android")),
+            target_os = "windows"
+        ))]
+        assert!(Session::open_info_owned(&info).is_err());
+        drop(session);
+        assert!(Session::open_info_owned(&info).is_ok());
+    }
+
+    #[test]
+    fn legacy_manifest_opens_but_corrupt_target_does_not_save_or_replace_old() {
+        let scratch = Scratch::new();
+        let (old_info, mut old) = scratch.project("old");
+        old.apply(Command::AddTrack).unwrap();
+        let (target_info, target) = scratch.project("legacy");
+        drop(target);
+        let root = std::path::Path::new(&target_info.path);
+        std::fs::rename(root.join("concat.json"), root.join("wolfcut.json")).unwrap();
+        let opened = prepare_project_open(
+            OpenTarget::Existing(target_info.path.clone()),
+            None,
+            &request(),
+        )
+        .unwrap();
+        drop(opened);
+        std::fs::write(root.join("wolfcut.json"), b"not a project").unwrap();
+        let before =
+            std::fs::read(std::path::Path::new(&old_info.path).join("concat.json")).unwrap();
+        let lane = Arc::new(projects::SaveLane::default());
+        assert!(
+            prepare_project_open(
+                OpenTarget::Existing(target_info.path),
+                Some(snapshot(&mut old, lane)),
+                &request()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(std::path::Path::new(&old_info.path).join("concat.json")).unwrap(),
+            before
+        );
+        assert!(old.can_undo());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_target_returns_failure_and_keeps_old_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let (_, mut old) = scratch.project("old");
+        old.apply(Command::AddTrack).unwrap();
+        let (info, target) = scratch.project("unreadable");
+        drop(target);
+        let manifest = std::path::Path::new(&info.path).join("concat.json");
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Superuser test runners cannot establish permission denial.
+        let denies_read = std::fs::read(&manifest).is_err();
+        if denies_read {
+            let lane = Arc::new(projects::SaveLane::default());
+            assert!(
+                prepare_project_open(
+                    OpenTarget::Existing(info.path.clone()),
+                    Some(snapshot(&mut old, lane)),
+                    &request()
+                )
+                .is_err()
+            );
+            assert!(old.can_undo());
+        }
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(Session::open_info_owned(&info).is_ok());
     }
 }
 

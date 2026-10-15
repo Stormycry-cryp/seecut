@@ -20,7 +20,12 @@ use std::{
 };
 use url::Url;
 
+mod flow_generation;
+mod flow_parameters;
+mod generation_state;
+mod inspiration;
 mod preview_validation;
+pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, media_kind};
 
 /// The opt-in software-rendered fixture exercises local state transitions with
 /// a signed-out synthetic Cloud. Normal startup never invokes this entry.
@@ -28,7 +33,168 @@ pub(crate) fn validate_preview_state(app: &App, directory: &std::path::Path) -> 
     preview_validation::run(app, directory)
 }
 
+fn project_media_error() -> String {
+    crate::i18n::t("Could not prepare project media.")
+}
+
+/// A host-only view of the existing login. Credentials never enter Slint or preferences.
+#[derive(Clone)]
+pub(crate) struct AccountAccess {
+    state: std::rc::Weak<RefCell<Cloud>>,
+}
+pub(crate) struct AccountSnapshot {
+    pub epoch: u64,
+    pub base: String,
+    pub token: String,
+}
+// Cloud is cloned into network workers. Keep this UI-only ownership outside it.
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+thread_local! {
+    static ACCOUNT_EDITOR_BRIDGE: RefCell<std::rc::Weak<RefCell<crate::editor_mcp::BridgeUi>>> =
+        const { RefCell::new(std::rc::Weak::new()) };
+}
+impl AccountAccess {
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    pub(crate) fn attach_editor_bridge(
+        &self,
+        bridge: std::rc::Weak<RefCell<crate::editor_mcp::BridgeUi>>,
+    ) {
+        ACCOUNT_EDITOR_BRIDGE.with(|slot| *slot.borrow_mut() = bridge);
+    }
+    pub(crate) fn epoch(&self) -> Option<u64> {
+        self.state.upgrade().map(|state| state.borrow().epoch)
+    }
+    pub(crate) fn signed_in(&self) -> bool {
+        self.state
+            .upgrade()
+            .is_some_and(|state| !state.borrow().token.is_empty())
+    }
+    /// Stable public account identity; neither tokens nor the UI epoch are history keys.
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    pub(crate) fn history_scope(&self) -> Option<String> {
+        let state = self.state.upgrade()?;
+        let cloud = state.borrow();
+        let id = cloud.history_name.strip_suffix("-history.json")?;
+        if cloud.token.is_empty() || id.is_empty() {
+            return None;
+        }
+        serde_json::to_string(&(&cloud.base, id)).ok()
+    }
+    pub(crate) fn snapshot(&self) -> Option<AccountSnapshot> {
+        let state = self.state.upgrade()?;
+        let cloud = state.borrow();
+        if cloud.token.is_empty() {
+            return None;
+        }
+        Some(AccountSnapshot {
+            epoch: cloud.epoch,
+            base: cloud.base.clone(),
+            token: cloud.token.clone(),
+        })
+    }
+    fn generation_selection(&self) -> HashMap<String, String> {
+        self.state
+            .upgrade()
+            .map(|state| state.borrow().selected_model_ids.clone())
+            .unwrap_or_default()
+    }
+    /// Change only the next draft. Submitted bodies and their idempotency keys
+    /// remain owned by their original operation, even across session switches.
+    fn apply_effort_selection(
+        &self,
+        app: &App,
+        effort: Option<Value>,
+        selections: HashMap<String, String>,
+        explicit_change: bool,
+    ) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        {
+            let mut cloud = state.borrow_mut();
+            remember_current_model_draft(&app.global::<SeeCut>(), &mut cloud);
+            cloud.effort_selection = effort;
+            if explicit_change {
+                cloud.effort_confirmation_required = false;
+            }
+            cloud.selected_model_ids = selections;
+            filter_effort_models(&mut cloud);
+            if explicit_change {
+                for kind in ["image", "video"] {
+                    let allowed = cloud
+                        .selected_model_ids
+                        .get(kind)
+                        .is_some_and(|id| model_by_id(&cloud.models, kind, id).is_some());
+                    if !allowed {
+                        if let Some(id) = cloud
+                            .models
+                            .iter()
+                            .find(|model| text(model, "kind") == kind)
+                            .map(|model| text(model, "id"))
+                        {
+                            cloud.selected_model_ids.insert(kind.into(), id);
+                        } else {
+                            cloud.selected_model_ids.remove(kind);
+                        }
+                    }
+                }
+            }
+            let kind = model_kind(app.global::<SeeCut>().get_mode());
+            let missing = cloud
+                .selected_model_ids
+                .get(kind)
+                .filter(|id| model_by_id(&cloud.models, kind, id).is_none())
+                .cloned();
+            cloud.unavailable_model_id = missing;
+            cloud.unavailable_model_kind = cloud.unavailable_model_id.as_ref().map(|_| kind.into());
+        }
+        if explicit_change {
+            let ui = app.global::<SeeCut>();
+            let previous = ui.get_recovery_warning().to_string();
+            let warning = previous
+                .split('；')
+                .filter(|part| *part != EFFORT_REFILL_WARNING)
+                .collect::<Vec<_>>()
+                .join("；");
+            if previous != warning {
+                ui.set_recovery_warning(warning.clone().into());
+                if ui.get_error().as_str() == previous {
+                    ui.set_error(warning.into());
+                }
+            }
+        }
+        publish_generation_efforts(app, &state.borrow());
+        update_model_options_preserving_catalog(app, &state);
+        refresh_quote(app, &state);
+    }
+    pub(crate) fn refresh_wallet(&self, app: &App) {
+        if let Some(state) = self.state.upgrade() {
+            job(
+                app,
+                &state,
+                "wallet".into(),
+                request("GET", "/api/wallet?balance_only=1", Value::Null),
+            );
+        }
+    }
+    pub(crate) fn expire_if_current(&self, app: &App, epoch: u64) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        if state.borrow().epoch != epoch || state.borrow().token.is_empty() {
+            return;
+        }
+        clear_session(app, &state, true);
+        let ui = app.global::<SeeCut>();
+        switch_auth(&ui, 0);
+        ui.set_auth_open(true);
+        ui.set_error("登录状态已失效，请重新登录".into());
+        sync_operation_state(app, &state);
+    }
+}
+
 const DEFAULT_API_URL: &str = "https://seecut.stormycry.cloud";
+const EFFORT_REFILL_WARNING: &str = "历史任务强度不同，请点击当前强度档名确认后报价";
 
 struct ClientError {
     status: u16,
@@ -45,6 +211,8 @@ struct TaskInputSnapshot {
     parameters: Value,
     #[serde(default)]
     references: Vec<crate::generation_templates::TemplateReference>,
+    #[serde(default)]
+    effort: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -72,11 +240,41 @@ impl From<&str> for ClientError {
 }
 
 #[derive(Clone, Default)]
+struct HistoryPage {
+    notice: String,
+    rollback: Option<Box<HistoryPage>>,
+    error: String,
+    cursor: String,
+    previous: Vec<String>,
+    next: Option<String>,
+    revision: u64,
+    loading: bool,
+}
+impl HistoryPage {
+    fn reset(&mut self) {
+        self.rollback = None;
+        self.notice.clear();
+        self.error.clear();
+        self.cursor.clear();
+        self.previous.clear();
+        self.next = None;
+        self.revision = self.revision.wrapping_add(1);
+        self.loading = false;
+    }
+}
+
+#[derive(Clone, Default)]
 struct Cloud {
     base: String,
     token: String,
     teams: Vec<Value>,
     models: Vec<Value>,
+    catalog_models: Vec<Value>,
+    catalog_efforts: Vec<Value>,
+    effort_catalog_valid: bool,
+    effort_required: bool,
+    effort_selection: Option<Value>,
+    effort_confirmation_required: bool,
     /// The catalog can be refreshed and reordered while the form is open. Keep
     /// the user's choice by stable model id and retain the raw values per model
     /// instead of treating the UI index as persisted state.
@@ -100,6 +298,7 @@ struct Cloud {
     personal_folders: Vec<Value>,
     selected_personal: HashSet<String>,
     pending_handoff: Option<PendingHandoff>,
+    pending_relink: Option<PendingRelink>,
     pending_delete_ids: Vec<String>,
     /// Ordered, temporary selection used only by the asset picker. It is
     /// scoped to the current source/purpose/team context and never overlaps
@@ -109,6 +308,7 @@ struct Cloud {
     picker_batch: Option<(String, Vec<PickerSelection>)>,
     pending_personal_references: VecDeque<(String, String)>,
     pending_template_id: Option<String>,
+    inspiration_backup: Option<Box<inspiration::Draft>>,
     pending_task_refill_id: Option<String>,
     pending_team_picker: bool,
     auth_return_page: Option<i32>,
@@ -122,6 +322,17 @@ struct Cloud {
     task_snapshots: HashMap<String, TaskInputSnapshot>,
     invite_id: String,
     orders: Vec<Value>,
+    ledger: Vec<Value>,
+    ledger_page: HistoryPage,
+    orders_page: HistoryPage,
+    actual_cost: generation_state::ActualCost,
+    saved_generation_choice: Option<generation_state::Choices>,
+    purchase: Option<PendingPurchase>,
+    purchase_uid: String,
+    purchase_data: Option<PathBuf>,
+    purchase_journal: Option<std::sync::Arc<std::sync::Mutex<crate::purchase_journal::Journal>>>,
+    purchase_error: Option<&'static str>,
+    purchase_expiry_checked: HashSet<String>,
     submission: Option<PendingSubmission>,
     pending_task_references: HashSet<String>,
     epoch: u64,
@@ -166,6 +377,25 @@ struct PendingHandoff {
     kind: String,
     imports: Vec<crate::panes::canvas::CanvasImport>,
     awaiting_new_project: bool,
+    clip_open: Option<crate::project_open::HandoffBinding>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelinkPhase {
+    Picking,
+    Confirming,
+    Queued,
+    Running,
+}
+
+#[derive(Clone)]
+struct PendingRelink {
+    token: String,
+    epoch: u64,
+    view: i32,
+    expected: crate::personal_library::Asset,
+    selected: Option<PathBuf>,
+    phase: RelinkPhase,
 }
 
 #[derive(Clone)]
@@ -187,6 +417,219 @@ fn request(method: &str, path: impl Into<String>, body: Value) -> Request {
         body,
         idem: None,
     }
+}
+
+// The process epoch fences callbacks in poll; durable keys belong to base/uid/plan.
+type PendingPurchase = crate::purchase_journal::Intent;
+
+fn restore_purchases(cloud: &mut Cloud) -> Result<(), &'static str> {
+    cloud.purchase = None;
+    cloud.purchase_journal = None;
+    cloud.purchase_expiry_checked.clear();
+    cloud.purchase_error = None;
+    let loaded = (|| {
+        let data = cloud
+            .purchase_data
+            .as_deref()
+            .ok_or(crate::purchase_journal::UNAVAILABLE)?;
+        crate::purchase_journal::Journal::open(data, &cloud.base, &cloud.purchase_uid)
+    })();
+    match loaded {
+        Ok(journal) => {
+            cloud.purchase_journal = Some(std::sync::Arc::new(std::sync::Mutex::new(journal)));
+            Ok(())
+        }
+        Err(error) => {
+            cloud.purchase_error = Some(error);
+            Err(error)
+        }
+    }
+}
+
+fn purchase_busy(cloud: &Cloud) -> bool {
+    matches!(cloud.active_name.as_str(), "purchase" | "order")
+        || cloud
+            .pending
+            .iter()
+            .any(|(name, _)| matches!(name.as_str(), "purchase" | "order"))
+}
+
+fn purchase_request(
+    cloud: &mut Cloud,
+    plan_id: &str,
+    now: i64,
+) -> Result<Option<Request>, &'static str> {
+    if cloud.token.is_empty() || plan_id.is_empty() || purchase_busy(cloud) {
+        return Ok(None);
+    }
+    if let Some(error) = cloud.purchase_error {
+        return Err(error);
+    }
+    let journal = cloud
+        .purchase_journal
+        .clone()
+        .ok_or(crate::purchase_journal::UNAVAILABLE)?;
+    let mut journal = journal
+        .lock()
+        .map_err(|_| crate::purchase_journal::UNAVAILABLE)?;
+    if !journal.matches(&cloud.base, &cloud.purchase_uid) {
+        return Err(crate::purchase_journal::UNAVAILABLE);
+    }
+    let old = journal.get(plan_id).cloned();
+    let expired = old
+        .as_ref()
+        .is_some_and(|intent| intent.expires_at.is_some_and(|expiry| expiry <= now));
+    let checked = old
+        .as_ref()
+        .is_some_and(|intent| cloud.purchase_expiry_checked.contains(&intent.key));
+    let intent = match journal.prepare(plan_id, expired && checked) {
+        Ok(intent) => intent,
+        Err(error) => {
+            cloud.purchase_error = Some(error);
+            return Err(error);
+        }
+    };
+    cloud.purchase = Some(intent.clone());
+    // An expired unresolved order must be queried before a new purchase. If its
+    // response was lost, same-key creation first recovers the original order id.
+    if expired
+        && !checked
+        && let Some(id) = &intent.order_id
+    {
+        return Ok(Some(request(
+            "POST",
+            format!("/api/orders/{id}/refresh"),
+            Value::Null,
+        )));
+    }
+    let mut req = request("POST", "/api/orders", json!({"plan_id":plan_id}));
+    req.idem = Some(intent.key);
+    Ok(Some(req))
+}
+
+fn accept_purchase_order(
+    cloud: &mut Cloud,
+    order: &Value,
+    created: bool,
+    refreshed: bool,
+    now: i64,
+) -> Result<(), &'static str> {
+    let id = text(order, "id");
+    if id.is_empty() {
+        return Ok(());
+    }
+    let Some(journal) = cloud.purchase_journal.clone() else {
+        return Ok(());
+    };
+    let mut journal = journal
+        .lock()
+        .map_err(|_| crate::purchase_journal::UNAVAILABLE)?;
+    if !journal.matches(&cloud.base, &cloud.purchase_uid) {
+        return Err(crate::purchase_journal::UNAVAILABLE);
+    }
+    let plan = if created {
+        cloud.purchase.as_ref().map(|intent| intent.plan_id.clone())
+    } else {
+        journal.plan_for_order(&id)
+    };
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    let expiry = order["expires_at"].as_i64().or_else(|| {
+        order
+            .pointer("/payment_action/expires_at")
+            .and_then(Value::as_i64)
+    });
+    let status = text(order, "status");
+    if let Err(error) = journal.accept(&plan, &id, &status, expiry) {
+        cloud.purchase_error = Some(error);
+        return Err(error);
+    }
+    if refreshed
+        && order["payment_status_verified"] == true
+        && status == "pending"
+        && expiry.is_some_and(|expiry| expiry <= now)
+        && let Some(intent) = journal.get(&plan)
+    {
+        cloud.purchase_expiry_checked.insert(intent.key.clone());
+    }
+    if cloud
+        .purchase
+        .as_ref()
+        .is_some_and(|intent| intent.plan_id == plan)
+    {
+        cloud.purchase = journal.get(&plan).cloned();
+    }
+    Ok(())
+}
+
+fn purchase_plan_label(cloud: &Cloud, plan: &str, now: i64) -> &'static str {
+    if purchase_busy(cloud)
+        && cloud
+            .purchase
+            .as_ref()
+            .is_some_and(|intent| intent.plan_id == plan)
+    {
+        return "处理中…";
+    }
+    if cloud.purchase_error.is_some() {
+        return "重试";
+    }
+    let Some(journal) = &cloud.purchase_journal else {
+        return "购买";
+    };
+    let Ok(journal) = journal.lock() else {
+        return "重试";
+    };
+    if journal.blocked() {
+        return "重试";
+    }
+    let Some(intent) = journal.get(plan) else {
+        return "购买";
+    };
+    if intent.expires_at.is_some_and(|expiry| expiry <= now) {
+        if cloud.purchase_expiry_checked.contains(&intent.key) {
+            "购买"
+        } else if intent.order_id.is_some() {
+            "查询订单"
+        } else {
+            "重试"
+        }
+    } else if intent.order_id.is_some() {
+        "继续支付"
+    } else {
+        "重试"
+    }
+}
+
+fn purchase_action_label(cloud: &Cloud, now: i64) -> &'static str {
+    cloud
+        .purchase
+        .as_ref()
+        .map(|intent| purchase_plan_label(cloud, &intent.plan_id, now))
+        .unwrap_or("购买")
+}
+
+fn purchase_payment_url(order: &Value, now: i64) -> Option<&str> {
+    let expires_at = order["expires_at"].as_i64().or_else(|| {
+        order
+            .pointer("/payment_action/expires_at")
+            .and_then(Value::as_i64)
+    });
+    if order["status"] != "pending" || expires_at.is_some_and(|expires_at| expires_at <= now) {
+        return None;
+    }
+    let raw = order
+        .pointer("/payment_action/url")
+        .and_then(Value::as_str)?;
+    Url::parse(raw)
+        .is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str().is_some_and(|host| {
+                    host == "openapi.alipay.com" || host == "openapi-sandbox.dl.alipaydev.com"
+                })
+        })
+        .then_some(raw)
 }
 fn text(v: &Value, key: &str) -> String {
     v.get(key)
@@ -319,6 +762,9 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
                     },
                     source: AssetSource::Imported,
                     original_path: None,
+                    recovery: None,
+                    provenance: None,
+                    version: None,
                     created_at: 0,
                     trashed: false,
                     favorite: false,
@@ -357,6 +803,18 @@ fn call(c: &Cloud, req: &Request) -> Result<Value, ClientError> {
         }
         result["intent_team"] = json!(team);
         return Ok(result);
+    }
+    if req.path == "local:generation-cache" {
+        let output: crate::generation_outputs::Output =
+            serde_json::from_value(req.body["output"].clone()).map_err(|e| e.to_string())?;
+        let path = crate::generation_outputs::prepare(&output, |target| {
+            crate::cloud_files::download(&c.base, &c.token, &output.url, target)
+        })?;
+        return Ok(
+            json!({"id":req.body["id"],"cache_key":output.key,"task_id":output.task_id,"path":path,
+            "generation_identity":flow_generation::output_identity(c,&output.key),"sha256":output.sha256,
+            "intent":req.body["intent"],"intent_team":req.body["intent_team"],"preview_token":req.body["preview_token"]}),
+        );
     }
     if req.path == "local:download" {
         let mut url = text(&req.body, "url");
@@ -438,7 +896,9 @@ fn is_auth_job(name: &str) -> bool {
 }
 
 fn is_background_job(name: &str) -> bool {
-    name.starts_with("local-cache:")
+    name.starts_with("history:")
+        || name.starts_with("personal-cache:")
+        || name.starts_with("local-cache:")
         || matches!(
             name,
             "quote"
@@ -519,10 +979,73 @@ fn sync_operation_state(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     ui.set_auth_busy(auth_busy);
     ui.set_working(working);
+    ui.set_purchase_plan_id(
+        cloud
+            .purchase
+            .as_ref()
+            .map(|purchase| purchase.plan_id.as_str())
+            .unwrap_or_default()
+            .into(),
+    );
+    ui.set_purchase_action_label(
+        purchase_action_label(&cloud, chrono::Utc::now().timestamp()).into(),
+    );
+    let mut changed = false;
+    let plans = ui
+        .get_plans()
+        .iter()
+        .map(|mut plan| {
+            let label: SharedString =
+                purchase_plan_label(&cloud, plan.id.as_str(), chrono::Utc::now().timestamp())
+                    .into();
+            changed |= plan.purchase_label != label;
+            plan.purchase_label = label;
+            plan
+        })
+        .collect();
+    if changed {
+        ui.set_plans(rows(plans));
+    }
+}
+
+fn quote_request_current(ui: &SeeCut, cloud: &Cloud, request: &Request) -> bool {
+    let mut body = request.body.clone();
+    if let Some(body) = body.as_object_mut() {
+        body.remove("kind");
+    }
+    reference_validation(ui, cloud).is_empty() && body == generation_body(ui, cloud)
 }
 
 fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
     let ui = app.global::<SeeCut>();
+    if let Some(token) = name.strip_prefix("personal-relink:")
+        && !relink_job_current(&state.borrow(), ui.get_personal_relink_view(), token)
+    {
+        cancel_personal_relink(app, state, token);
+        sync_operation_state(app, state);
+        // Some existing error handlers dispatch their next item directly.
+        // Dropping an obsolete relink must not strand the rest of that queue.
+        if !ui.get_busy() {
+            let next = state.borrow_mut().pending.pop_front();
+            if let Some((name, req)) = next {
+                job(app, state, name, req);
+            }
+        }
+        return;
+    }
+    if name == "quote" && !quote_request_current(&ui, &state.borrow(), &req) {
+        sync_operation_state(app, state);
+        return;
+    }
+    if name == "generate"
+        && !req
+            .idem
+            .as_deref()
+            .is_some_and(|key| state.borrow().actual_cost.current(key))
+    {
+        sync_operation_state(app, state);
+        return;
+    }
     if !can_start_request(ui.get_signed_in(), &req) {
         if !is_background_job(&name) && name != "logout" {
             show_auth(app, state, None);
@@ -538,6 +1061,11 @@ fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
         drop(c);
         sync_operation_state(app, state);
         return;
+    }
+    if name.starts_with("personal-relink:")
+        && let Some(pending) = state.borrow_mut().pending_relink.as_mut()
+    {
+        pending.phase = RelinkPhase::Running;
     }
     let snapshot = state.borrow().clone();
     state.borrow_mut().active_name = name.clone();
@@ -557,6 +1085,12 @@ fn job(app: &App, state: &Rc<RefCell<Cloud>>, name: String, req: Request) {
     sync_operation_state(app, &state);
     std::thread::spawn(move || {
         let result = call(&snapshot, &req).map(|mut value| {
+            if matches!(req.path.as_str(), "/api/generation/images" | "/api/generation/videos") {
+                value["client_submission_key"] = json!(req.idem);
+            }
+            if req.path == "/api/generation/tasks" {
+                value = json!({"items": items(&value), "client_submission_key": snapshot.actual_cost.key()});
+            }
             if req.path == "/api/generation/quote" {
                 value["client_request_body"] = request_body;
             }
@@ -593,6 +1127,13 @@ fn poll(
         app.global::<SeeCut>().set_busy(false);
         state.borrow_mut().active_name.clear();
         match result {
+            result if name.starts_with("personal-relink:") => finish_personal_relink(
+                &app,
+                &state,
+                name.trim_start_matches("personal-relink:"),
+                result,
+            ),
+            result if name.starts_with("history:") => finish_history(&app, &state, &name, result),
             Ok(value) => publish(&app, &state, &name, value),
             Err(error) => {
                 let ui = app.global::<SeeCut>();
@@ -681,9 +1222,7 @@ fn poll(
                 if let Some(id) = name.strip_prefix("local-reference:") {
                     state.borrow_mut().pending_task_references.remove(id);
                 }
-                if let Some(id) = name.strip_prefix("local-cache:") {
-                    state.borrow_mut().download_attempts.remove(id);
-                }
+                release_cache_attempt(&state, &name);
                 if let Some(rest) = name.strip_prefix("media-preview:")
                     && let Some((id, token)) = rest.rsplit_once(':')
                     && let Ok(token) = token.parse()
@@ -707,13 +1246,526 @@ fn poll(
                 }
             }
         }
-        let next = state.borrow_mut().pending.pop_front();
+        let next = loop {
+            let next = state.borrow_mut().pending.pop_front();
+            if let Some((name, request)) = &next
+                && name == "quote"
+                && !quote_request_current(&app.global::<SeeCut>(), &state.borrow(), request)
+            {
+                continue;
+            }
+            if let Some((name, _)) = &next
+                && let Some(token) = name.strip_prefix("personal-relink:")
+                && !relink_job_current(
+                    &state.borrow(),
+                    app.global::<SeeCut>().get_personal_relink_view(),
+                    token,
+                )
+            {
+                cancel_personal_relink(&app, &state, token);
+                continue;
+            }
+            break next;
+        };
         if let Some((name, req)) = next {
             job(&app, &state, name, req)
         } else {
             sync_operation_state(&app, &state);
         }
     });
+}
+
+fn effort_identity(value: &Value) -> bool {
+    value.as_str().is_some_and(|value| {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+    })
+}
+
+fn generation_model_identity(value: &Value) -> bool {
+    value.as_str().is_some_and(|value| {
+        !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+    })
+}
+
+fn account_date(value: &Value) -> String {
+    value["created_at"]
+        .as_i64()
+        .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+        .map(DateTime::<Local>::from)
+        .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
+}
+fn render_account_history(app: &App, cloud: &Cloud) {
+    let ui = app.global::<SeeCut>();
+    ui.set_ledger(rows(
+        cloud
+            .ledger
+            .iter()
+            .map(|value| AccountEntry {
+                id: text(value, "id").into(),
+                title: crate::account_ledger::title(value).into(),
+                detail: account_date(value).into(),
+                reference: text(value, "reference_id").into(),
+                value: crate::account_ledger::amount(value).into(),
+            })
+            .collect(),
+    ));
+    ui.set_orders(rows(
+        cloud
+            .orders
+            .iter()
+            .map(|value| AccountEntry {
+                id: text(value, "id").into(),
+                title: "支付宝充值".into(),
+                reference: format!(
+                    "{} 积分{}\n{}",
+                    value["credits"]
+                        .as_i64()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    value["paid_at"]
+                        .as_i64()
+                        .map(|paid| format!(
+                            " · 到账 {}",
+                            account_date(&json!({"created_at":paid}))
+                        ))
+                        .unwrap_or_default(),
+                    text(value, "id")
+                )
+                .into(),
+                detail: format!(
+                    "{} · {}",
+                    account_date(value),
+                    crate::account_ledger::order_status(value, chrono::Utc::now().timestamp())
+                )
+                .into(),
+                value: format!("¥{:.2}", value["amount_fen"].as_f64().unwrap_or(0.) / 100.).into(),
+            })
+            .collect(),
+    ));
+    publish_history_navigation(&ui, cloud);
+}
+fn publish_history_navigation(ui: &SeeCut, cloud: &Cloud) {
+    let page = if ui.get_account_history_tab() == 1 {
+        &cloud.orders_page
+    } else {
+        &cloud.ledger_page
+    };
+    ui.set_history_loading(page.loading);
+    ui.set_history_previous(!page.loading && !page.previous.is_empty());
+    ui.set_history_next(!page.loading && page.next.is_some());
+    ui.set_history_page(page.rollback.as_deref().unwrap_or(page).previous.len() as i32 + 1);
+    ui.set_history_error(page.error.clone().into());
+    ui.set_history_notice(page.notice.clone().into());
+}
+fn load_history(app: &App, state: &Rc<RefCell<Cloud>>, reset: bool) {
+    let ui = app.global::<SeeCut>();
+    if !ui.get_signed_in() {
+        return;
+    }
+    let orders = ui.get_account_history_tab() == 1;
+    let (name, cursor) = {
+        let mut cloud = state.borrow_mut();
+        if reset {
+            if orders {
+                cloud.orders.clear();
+            } else {
+                cloud.ledger.clear();
+            }
+            render_account_history(app, &cloud);
+        }
+        let page = if orders {
+            &mut cloud.orders_page
+        } else {
+            &mut cloud.ledger_page
+        };
+        if reset {
+            page.reset();
+        }
+        page.revision = page.revision.wrapping_add(1);
+        page.error.clear();
+        page.notice.clear();
+        page.loading = true;
+        (
+            format!(
+                "history:{}:{}",
+                if orders { "orders" } else { "ledger" },
+                page.revision
+            ),
+            page.cursor.clone(),
+        )
+    };
+    publish_history_navigation(&ui, &state.borrow());
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("limit", "50")
+        .append_pair("cursor", &cursor);
+    if !orders {
+        let category = ["all", "spend", "topup", "refund"]
+            .get(ui.get_ledger_filter_index().max(0) as usize)
+            .copied()
+            .unwrap_or("all");
+        query.append_pair("category", category);
+    }
+    let path = format!(
+        "{}?{}",
+        if orders {
+            "/api/orders"
+        } else {
+            "/api/wallet/ledger"
+        },
+        query.finish()
+    );
+    job(app, state, name, request("GET", path, Value::Null));
+}
+fn history_page_action(app: &App, state: &Rc<RefCell<Cloud>>, direction: &str) {
+    let ui = app.global::<SeeCut>();
+    {
+        let mut cloud = state.borrow_mut();
+        let page = if ui.get_account_history_tab() == 1 {
+            &mut cloud.orders_page
+        } else {
+            &mut cloud.ledger_page
+        };
+        if page.loading {
+            return;
+        }
+        let prior = page.clone();
+        match direction {
+            "next" => {
+                let Some(next) = page.next.take() else {
+                    return;
+                };
+                page.previous
+                    .push(std::mem::replace(&mut page.cursor, next));
+            }
+            "previous" => {
+                let Some(previous) = page.previous.pop() else {
+                    return;
+                };
+                page.cursor = previous;
+            }
+            _ => return,
+        }
+        page.rollback = Some(Box::new(prior));
+    }
+    load_history(app, state, false);
+}
+fn finish_history(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    name: &str,
+    result: Result<Value, ClientError>,
+) {
+    let mut pieces = name.split(':');
+    if pieces.next() != Some("history") {
+        return;
+    }
+    let orders = pieces.next() == Some("orders");
+    let Some(revision) = pieces.next().and_then(|value| value.parse::<u64>().ok()) else {
+        return;
+    };
+    let legacy = pieces.next() == Some("legacy");
+    {
+        let mut cloud = state.borrow_mut();
+        let page = if orders {
+            &mut cloud.orders_page
+        } else {
+            &mut cloud.ledger_page
+        };
+        if page.revision != revision {
+            return;
+        }
+        page.loading = false;
+    }
+    match result {
+        Ok(mut value) => {
+            let mut cloud = state.borrow_mut();
+            if legacy {
+                let category = app.global::<SeeCut>().get_ledger_filter_index();
+                let records: Vec<Value> = value["ledger"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|row| {
+                        let kind = row["kind"].as_str().unwrap_or("");
+                        match category {
+                            1 => kind == "capture",
+                            2 => kind == "purchase",
+                            3 => kind == "release",
+                            _ => kind != "hold",
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                cloud.ledger_page.notice = "仅显示最近 100 条记录中的匹配项".into();
+                value = json!({"items":records,"next_cursor":null});
+            }
+            let next = value["next_cursor"].as_str().map(str::to_owned);
+            if orders {
+                cloud.orders_page.next = next;
+                cloud.orders_page.rollback = None;
+                cloud.orders = items(&value);
+            } else {
+                cloud.ledger_page.next = next;
+                cloud.ledger_page.rollback = None;
+                cloud.ledger = items(&value);
+            }
+            render_account_history(app, &cloud);
+            let ui = app.global::<SeeCut>();
+            if (ui.get_account_history_tab() == 1) == orders {
+                ui.set_history_view_revision(ui.get_history_view_revision().wrapping_add(1));
+            }
+        }
+        Err(error) => {
+            if !orders && !legacy && error.status == 404 {
+                state.borrow_mut().ledger_page.loading = true;
+                publish_history_navigation(&app.global::<SeeCut>(), &state.borrow());
+                job(
+                    app,
+                    state,
+                    format!("{name}:legacy"),
+                    request("GET", "/api/wallet", Value::Null),
+                );
+                return;
+            }
+            if session_expired(&error) {
+                clear_session(app, state, true);
+                return;
+            }
+            let mut cloud = state.borrow_mut();
+            let page = if orders {
+                &mut cloud.orders_page
+            } else {
+                &mut cloud.ledger_page
+            };
+            if let Some(prior) = page.rollback.take() {
+                *page = *prior;
+                page.revision = revision;
+            }
+            page.error = error.message;
+            page.loading = false;
+            publish_history_navigation(&app.global::<SeeCut>(), &cloud);
+        }
+    }
+}
+fn current_generation_choice(cloud: &Cloud, mode: i32) -> generation_state::Choices {
+    generation_state::Choices {
+        version: 1,
+        service: cloud.base.clone(),
+        account: cloud.purchase_uid.clone(),
+        mode,
+        effort_id: cloud
+            .effort_selection
+            .as_ref()
+            .and_then(|e| e["id"].as_str())
+            .map(str::to_owned),
+        effort_identity: cloud
+            .effort_selection
+            .as_ref()
+            .map(generation_state::policy_identity),
+        models: cloud.selected_model_ids.clone(),
+    }
+}
+
+fn accept_effort_catalog(cloud: &mut Cloud, value: &Value) {
+    cloud.catalog_efforts.clear();
+    let legacy = ["efforts", "effort_policy_version", "default_effort_id"]
+        .into_iter()
+        .all(|field| value.get(field).is_none());
+    cloud.effort_required = !legacy;
+    cloud.effort_catalog_valid = legacy;
+    let Some(efforts) = value.get("efforts").and_then(Value::as_array) else {
+        return;
+    };
+    cloud.effort_required = !efforts.is_empty();
+    if !matches!(value["effort_policy_version"].as_u64(), Some(1..=4)) || efforts.len() > 8 {
+        cloud.effort_catalog_valid = false;
+        cloud.effort_required = true;
+        return;
+    }
+    let mut ids = HashSet::new();
+    for effort in efforts {
+        let unit = effort["agent"].get("rate_denominator");
+        let valid_unit = match unit {
+            None => true,
+            Some(unit) => unit.as_u64().is_some_and(|unit| {
+                matches!(unit, 1000 | 1_000_000)
+                    && (value["effort_policy_version"] != 1 || unit == 1000)
+            }),
+        };
+        let billing = crate::agent_billing::validate(
+            &effort["agent"],
+            if effort.get("agent_models").is_some() {
+                false
+            } else {
+                effort["available"].as_bool().unwrap_or(false)
+            },
+        );
+        if !valid_unit
+            || billing.is_err()
+            || billing == Ok(true) && value["effort_policy_version"].as_u64().unwrap_or(0) < 3
+        {
+            cloud.effort_catalog_valid = false;
+            cloud.effort_required = true;
+            return;
+        }
+        let generation = &effort["generation"];
+        let valid_models = ["image_model_ids", "video_model_ids"]
+            .into_iter()
+            .all(|key| {
+                generation[key].as_array().is_some_and(|models| {
+                    models.len() <= 17
+                        && models.iter().all(generation_model_identity)
+                        && models
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<HashSet<_>>()
+                            .len()
+                            == models.len()
+                })
+            });
+        if !effort_identity(&effort["id"])
+            || !effort_identity(&effort["policy_revision"])
+            || effort["available"].as_bool().is_none()
+            || !effort_identity(&effort["agent"]["model_id"])
+            || (effort.get("agent_models").is_some()
+                && (value["effort_policy_version"] != 4
+                    || effort["generation_available"].as_bool().is_none()))
+            || !valid_models
+            || !ids.insert(text(effort, "id"))
+        {
+            cloud.effort_catalog_valid = false;
+            cloud.effort_required = true;
+            return;
+        }
+    }
+    let default_valid = if efforts.is_empty() {
+        value["default_effort_id"].is_null()
+    } else {
+        value["default_effort_id"]
+            .as_str()
+            .is_some_and(|id| ids.contains(id))
+    };
+    cloud.effort_catalog_valid = default_valid;
+    if !default_valid {
+        cloud.effort_required = true;
+        return;
+    }
+    cloud.catalog_efforts = efforts.clone();
+}
+
+fn public_effort_policy(effort: &Value) -> Value {
+    let mut policy = json!({"id": effort["id"], "label": effort["label"], "policy_revision": effort["policy_revision"],
+        "agent": effort["agent"], "generation": effort["generation"]});
+    if effort.get("agent_models").is_some() || effort["policy_version"] == 4 {
+        policy["policy_version"] = json!(4);
+    }
+    policy
+}
+
+fn generation_effort_available(effort: &Value) -> bool {
+    if effort.get("agent_models").is_some() {
+        effort["generation_available"] == true
+    } else {
+        effort["available"] == true
+    }
+}
+
+fn publish_generation_efforts(app: &App, cloud: &Cloud) {
+    let ui = app.global::<SeeCut>();
+    ui.set_generation_effort_names(ModelRc::new(VecModel::from(
+        cloud
+            .catalog_efforts
+            .iter()
+            .map(|effort| slint::SharedString::from(text(effort, "label")))
+            .collect::<Vec<_>>(),
+    )));
+    ui.set_generation_effort_index(
+        cloud
+            .effort_selection
+            .as_ref()
+            .and_then(|selected| {
+                cloud
+                    .catalog_efforts
+                    .iter()
+                    .position(|effort| effort["id"] == selected["id"])
+            })
+            .map(|index| index as i32)
+            .unwrap_or(-1),
+    );
+}
+
+fn generation_effort_reason(cloud: &Cloud) -> &'static str {
+    if cloud.effort_confirmation_required {
+        return "请点击强度档名，确认本次生成策略";
+    }
+    generation_policy_reason(cloud)
+}
+
+fn generation_policy_reason(cloud: &Cloud) -> &'static str {
+    let Some(selected) = &cloud.effort_selection else {
+        return if cloud.effort_required {
+            "请选择可用的强度档位"
+        } else {
+            ""
+        };
+    };
+    if !cloud.effort_catalog_valid {
+        return "强度目录暂不可用";
+    }
+    let Some(current) = cloud
+        .catalog_efforts
+        .iter()
+        .find(|entry| entry["id"] == selected["id"])
+    else {
+        return "该强度档位暂不可用";
+    };
+    if current["policy_revision"] != selected["policy_revision"]
+        || current["agent"] != selected["agent"]
+        || current["generation"] != selected["generation"]
+    {
+        return "强度策略已更新，请重新选择";
+    }
+    if !generation_effort_available(current) || !generation_effort_available(selected) {
+        return "该强度档位暂不可用";
+    }
+    ""
+}
+
+fn filter_effort_models(cloud: &mut Cloud) {
+    if !generation_policy_reason(cloud).is_empty() {
+        cloud.models.clear();
+        return;
+    }
+    cloud.models = cloud
+        .catalog_models
+        .iter()
+        .filter(|model| {
+            if model.get("available") == Some(&Value::Bool(false)) {
+                return false;
+            }
+            let Some(effort) = &cloud.effort_selection else {
+                return true;
+            };
+            if model["available"] != true {
+                return false;
+            }
+            let key = match text(model, "kind").as_str() {
+                "image" => "image_model_ids",
+                "video" => "video_model_ids",
+                _ => return false,
+            };
+            effort["generation"][key]
+                .as_array()
+                .is_some_and(|ids| ids.contains(&model["id"]))
+        })
+        .cloned()
+        .collect();
 }
 
 fn selected_model(ui: &SeeCut, state: &Cloud) -> String {
@@ -725,6 +1777,9 @@ fn selected_model(ui: &SeeCut, state: &Cloud) -> String {
             .any(|model| text(model, "id") == id.as_str() && text(model, "kind") == kind)
     {
         return id.clone();
+    }
+    if state.selected_model_ids.contains_key(kind) {
+        return String::new();
     }
     model_id_at_index(&state.models, ui.get_mode(), ui.get_model_index()).unwrap_or_default()
 }
@@ -953,6 +2008,10 @@ fn validate_configuration_references(
 }
 
 fn reference_validation(ui: &SeeCut, state: &Cloud) -> String {
+    let policy_error = generation_effort_reason(state);
+    if !policy_error.is_empty() {
+        return policy_error.into();
+    }
     if selected_model(ui, state).is_empty() {
         return "请选择可用的生成模型后再继续".into();
     }
@@ -1156,6 +2215,10 @@ fn generation_body(ui: &SeeCut, state: &Cloud) -> Value {
     };
     let mut body =
         json!({"model": selected_model(ui, state), "operation":"generate", "prompt":prompt});
+    if let Some(effort) = &state.effort_selection {
+        body["effort_id"] = effort["id"].clone();
+        body["policy_revision"] = effort["policy_revision"].clone();
+    }
     let model_id = selected_model(ui, state);
     let model = state
         .models
@@ -1337,7 +2400,7 @@ enum NavigationDecision {
 }
 
 fn navigation_decision(current: i32, target: i32, signed_in: bool) -> NavigationDecision {
-    let target = target.clamp(0, 7);
+    let target = target.clamp(0, 8);
     if !signed_in && matches!(target, 2..=4) {
         NavigationDecision::Authenticate {
             stay: current,
@@ -1349,13 +2412,13 @@ fn navigation_decision(current: i32, target: i32, signed_in: bool) -> Navigation
 }
 
 fn auth_return_target(pending: Option<i32>, current: i32) -> i32 {
-    pending.unwrap_or(current).clamp(0, 7)
+    pending.unwrap_or(current).clamp(0, 8)
 }
 
 fn show_auth(app: &App, state: &Rc<RefCell<Cloud>>, target: Option<i32>) {
     let ui = app.global::<SeeCut>();
     if let Some(target) = target {
-        state.borrow_mut().auth_return_page = Some(target.clamp(0, 7));
+        state.borrow_mut().auth_return_page = Some(target.clamp(0, 8));
     }
     if !ui.get_signed_in() {
         switch_auth(&ui, 0);
@@ -1400,14 +2463,9 @@ fn load_page(app: &App, state: &Rc<RefCell<Cloud>>, page: i32) {
                 app,
                 state,
                 "wallet".into(),
-                request("GET", "/api/wallet", Value::Null),
+                request("GET", "/api/wallet?balance_only=1", Value::Null),
             );
-            job(
-                app,
-                state,
-                "orders".into(),
-                request("GET", "/api/orders", Value::Null),
-            );
+            load_history(app, state, false);
         }
         _ => {}
     }
@@ -1420,6 +2478,7 @@ fn template_root() -> Result<PathBuf, String> {
 }
 
 fn render_templates(app: &App, state: &Rc<RefCell<Cloud>>) {
+    inspiration::render(app);
     let ui = app.global::<SeeCut>();
     let library = match template_root().and_then(crate::generation_templates::Library::load) {
         Ok(library) => library,
@@ -1468,6 +2527,9 @@ fn render_templates(app: &App, state: &Rc<RefCell<Cloud>>) {
                             kind,
                             source: AssetSource::Generated,
                             original_path: None,
+                            recovery: None,
+                            provenance: None,
+                            version: None,
                             created_at: 0,
                             trashed: false,
                             favorite: false,
@@ -1599,6 +2661,7 @@ fn current_task_snapshot(ui: &SeeCut, state: &Cloud) -> TaskInputSnapshot {
         model_id: selected_model(ui, state),
         parameters: current_template_parameters(ui, state),
         references: template_references(state),
+        effort: state.effort_selection.clone(),
     }
 }
 
@@ -1755,6 +2818,7 @@ fn server_task_snapshot(task: &Value) -> Result<TaskInputSnapshot, String> {
         model_id,
         parameters: Value::Object(parameters),
         references: historical_references(task, &request),
+        effort: request.get("policy").cloned(),
     })
 }
 
@@ -1903,6 +2967,20 @@ fn apply_task_snapshot(
     state: &Rc<RefCell<Cloud>>,
     snapshot: TaskInputSnapshot,
 ) -> Result<(), String> {
+    {
+        let mut cloud = state.borrow_mut();
+        if cloud.active_name == "generate"
+            || cloud.pending.iter().any(|(name, _)| name == "generate")
+        {
+            return Err("请等待当前生成请求确认".into());
+        }
+        let old_policy = snapshot.effort.as_ref().map(public_effort_policy);
+        let current_policy = cloud.effort_selection.as_ref().map(public_effort_policy);
+        if old_policy.is_some() && current_policy.is_none() {
+            return Err("原任务强度暂不可用，请先选择强度档位".into());
+        }
+        cloud.effort_confirmation_required = old_policy != current_policy;
+    }
     let configuration = crate::generation_templates::GenerationTemplate {
         id: String::new(),
         name: String::new(),
@@ -1913,12 +2991,21 @@ fn apply_task_snapshot(
         references: snapshot.references,
         created_at: 0,
         updated_at: 0,
+        metadata: None,
     };
     apply_generation_configuration(app, state, &configuration, "历史任务", false)?;
     let ui = app.global::<SeeCut>();
     ui.set_generation_step(0);
     ui.set_result_preview_open(false);
-    if ui.get_recovery_warning().is_empty() {
+    if state.borrow().effort_confirmation_required {
+        let previous = ui.get_recovery_warning().to_string();
+        let warning = if previous.is_empty() {
+            EFFORT_REFILL_WARNING.into()
+        } else {
+            format!("{previous}；{EFFORT_REFILL_WARNING}")
+        };
+        set_recovery_warning(&ui, warning);
+    } else if ui.get_recovery_warning().is_empty() {
         ui.set_notice("历史任务输入已回填，可调整后重新报价".into());
     }
     Ok(())
@@ -2292,6 +3379,9 @@ fn begin_handoff_with_imports(
             });
         }
     }
+    if kind == "clip" {
+        app.invoke_project_open_cancel();
+    }
     ui.set_handoff_source_page(ui.get_page());
     ui.set_handoff_kind(kind.into());
     ui.set_handoff_count(imports.len() as i32);
@@ -2301,6 +3391,7 @@ fn begin_handoff_with_imports(
         kind: kind.to_owned(),
         imports,
         awaiting_new_project: false,
+        clip_open: None,
     });
     ui.set_handoff_open(true);
 }
@@ -2313,6 +3404,7 @@ fn clip_imports(
         .map(|item| crate::panes::media_bin::MediaImport {
             path: item.path.clone(),
             display_name: item.display_name.clone(),
+            library_reference: item.library_reference.clone(),
         })
         .collect()
 }
@@ -2347,42 +3439,48 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
             app.invoke_canvas_open_with_paths(path.into(), payload.into());
         }
         return;
-    } else {
-        if id != "current" && !app.get_on_start() {
-            app.invoke_close_clip_project();
-            if !app.get_on_start() {
-                ui.set_error("当前剪辑项目未能保存，请重试".into());
-                return;
-            }
+    } else if id == "new" {
+        if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
+            handoff.awaiting_new_project = true;
+            handoff.clip_open = Some(crate::project_open::HandoffBinding::create());
         }
-        if id == "new" {
-            if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
-                handoff.awaiting_new_project = true;
-            }
-            ui.set_pending_import_count(
-                (state.borrow().pending_imports.len() + pending.imports.len()) as i32,
-            );
-            ui.set_page(0);
-            app.set_clip_create_open(true);
-            ui.set_handoff_open(false);
-            return;
-        } else if id == "current" {
-            import_named_paths(app, clip_imports(&pending.imports));
-        } else if let Some(path) = id.strip_prefix("recent:") {
-            app.invoke_start_open_recent(path.into());
-            if app.get_on_start() {
-                ui.set_error("剪辑项目未能打开，请重新选择".into());
-                ui.set_page(ui.get_handoff_source_page());
-                return;
-            }
-            import_named_paths(app, clip_imports(&pending.imports));
+        ui.set_pending_import_count(
+            (state.borrow().pending_imports.len() + pending.imports.len()) as i32,
+        );
+        app.invoke_project_open_cancel();
+        ui.set_page(0);
+        app.set_clip_create_open(true);
+        ui.set_handoff_open(false);
+        return;
+    } else if id == "current" {
+        if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
+            handoff.clip_open = None;
         }
+        app.invoke_project_open_cancel();
+        import_current_clip_paths(app, clip_imports(&pending.imports));
+    } else if let Some(path) = id.strip_prefix("recent:") {
+        if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
+            handoff.awaiting_new_project = false;
+            handoff.clip_open = Some(crate::project_open::HandoffBinding::existing(
+                path.to_owned(),
+            ));
+        }
+        ui.set_handoff_open(false);
+        ui.set_page(0);
+        app.invoke_start_open_recent(path.into());
+        return;
     }
     state.borrow_mut().pending_handoff = None;
     ui.set_handoff_open(false);
 }
 
 fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
+    let name = if name.starts_with("personal-cache:") {
+        release_cache_attempt(state, name);
+        "personal-cache"
+    } else {
+        name
+    };
     let ui = app.global::<SeeCut>();
     match name {
         "export-copy" => {
@@ -2488,6 +3586,10 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             let history = state.borrow().folder.join(&history_name);
             let task_snapshots = state.borrow().folder.join(&task_snapshot_name);
             state.borrow_mut().history_name = history_name;
+            state.borrow_mut().purchase_uid = uid;
+            if let Err(error) = restore_purchases(&mut state.borrow_mut()) {
+                ui.set_error(error.into());
+            }
             state.borrow_mut().task_snapshot_name = task_snapshot_name;
             state.borrow_mut().local = std::fs::read(history)
                 .ok()
@@ -2507,7 +3609,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 app,
                 state,
                 "wallet".into(),
-                request("GET", "/api/wallet", Value::Null),
+                request("GET", "/api/wallet?balance_only=1", Value::Null),
             );
             let target =
                 auth_return_target(state.borrow_mut().auth_return_page.take(), ui.get_page());
@@ -2560,26 +3662,6 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             ui.set_auth_resend_seconds(60);
         }
         "wallet" => {
-            ui.set_ledger(rows(
-                value["ledger"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|v| AccountEntry {
-                        id: text(v, "id").into(),
-                        title: match text(v, "kind").as_str() {
-                            "hold" => "生成预扣",
-                            "capture" => "生成消费",
-                            "release" => "退回积分",
-                            "recharge" => "充值到账",
-                            _ => "积分变动",
-                        }
-                        .into(),
-                        detail: text(v, "reference_id").into(),
-                        value: v["delta_available"].to_string().into(),
-                    })
-                    .collect(),
-            ));
             ui.set_balance(
                 value["available_credits"]
                     .as_i64()
@@ -2607,12 +3689,52 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 let mut cloud = state.borrow_mut();
                 remember_current_model_draft(&ui, &mut cloud);
             }
-            state.borrow_mut().models = value
-                .get("models")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_else(|| items(&value));
+            {
+                let mut cloud = state.borrow_mut();
+                cloud.catalog_models = value
+                    .get("models")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_else(|| items(&value));
+                accept_effort_catalog(&mut cloud, &value);
+                if cloud.effort_catalog_valid && !cloud.effort_confirmation_required {
+                    let current = current_generation_choice(&cloud, ui.get_mode());
+                    let choice = if cloud.effort_selection.is_some() {
+                        &current
+                    } else {
+                        cloud
+                            .saved_generation_choice
+                            .as_ref()
+                            .filter(|saved| {
+                                saved.service == cloud.base && saved.account == cloud.purchase_uid
+                            })
+                            .unwrap_or(&current)
+                    };
+                    if let Some(restored) = choice.resolve(
+                        &cloud.base,
+                        &cloud.purchase_uid,
+                        &cloud.catalog_models,
+                        &cloud.catalog_efforts,
+                        value["default_effort_id"].as_str().unwrap_or(""),
+                        cloud.effort_required,
+                    ) {
+                        cloud.effort_selection = restored.effort;
+                        cloud.effort_confirmation_required = restored.needs_confirmation;
+                        cloud.selected_model_ids = restored.models;
+                        cloud.unavailable_model_id = None;
+                        cloud.unavailable_model_kind = None;
+                        cloud.generation_mode = Some(restored.mode);
+                    }
+                }
+                publish_generation_efforts(app, &cloud);
+                filter_effort_models(&mut cloud);
+                cloud.updating_model_options = true;
+            }
+            let mode = state.borrow().generation_mode.unwrap_or(ui.get_mode());
+            ui.set_mode(mode);
+            state.borrow_mut().updating_model_options = false;
             update_model_options_preserving_catalog(app, state);
+            save_preferences(app, state);
             refresh_quote(app, state);
             if ui.get_page() == 7 {
                 render_templates(app, state);
@@ -2681,6 +3803,18 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             if value["client_request_body"] != current {
                 return;
             }
+            if state
+                .borrow()
+                .effort_selection
+                .as_ref()
+                .is_some_and(|effort| {
+                    value["policy"] != public_effort_policy(effort)
+                        || value["effort_id"] != effort["id"]
+                        || value["policy_revision"] != effort["policy_revision"]
+                })
+            {
+                return;
+            }
             if !state
                 .borrow()
                 .pending
@@ -2693,7 +3827,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             state.borrow_mut().quote_id = text(&value, "quote_id");
             state.borrow_mut().quote_credits = Some(credits);
             state.borrow_mut().quote_body = current;
-            ui.set_quote(format!("预计消耗 {credits} 积分").into());
+            ui.set_quote("".into());
             ui.set_insufficient_credits(ui.get_balance().parse::<i64>().unwrap_or(0) < credits);
             ui.set_can_generate(
                 !ui.get_prompt().trim().is_empty()
@@ -2701,7 +3835,28 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             );
         }
         "generate" => {
-            let submission = state.borrow_mut().submission.take();
+            {
+                let tasks = value["tasks"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_else(|| vec![value.clone()]);
+                let mut cloud = state.borrow_mut();
+                let key = value["client_submission_key"].as_str().unwrap_or("");
+                if !cloud.actual_cost.bind(key, &tasks) {
+                    return;
+                }
+                ui.set_generation_actual_cost(cloud.actual_cost.display().into());
+            }
+            let submission = {
+                let mut cloud = state.borrow_mut();
+                if cloud.submission.as_ref().is_some_and(|s| {
+                    Some(s.key.as_str()) == value["client_submission_key"].as_str()
+                }) {
+                    cloud.submission.take()
+                } else {
+                    None
+                }
+            };
             if let Some(submission) = submission {
                 let task_ids = value["tasks"]
                     .as_array()
@@ -2744,6 +3899,11 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 cloud
                     .selected_tasks
                     .retain(|id| tasks.iter().any(|task| text(task, "id") == *id));
+                cloud.actual_cost.observe(
+                    value["client_submission_key"].as_str().unwrap_or(""),
+                    &tasks,
+                );
+                ui.set_generation_actual_cost(cloud.actual_cost.display().into());
                 cloud.tasks = tasks.clone();
             }
             render_tasks(app, state);
@@ -2763,20 +3923,12 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     app,
                     state,
                     "wallet".into(),
-                    request("GET", "/api/wallet", Value::Null),
+                    request("GET", "/api/wallet?balance_only=1", Value::Null),
                 );
                 refresh_quote(app, state);
             }
-            for task in tasks.iter().filter(|v| text(v, "status") == "succeeded") {
-                let id = text(task, "id");
-                let needs_download = !state
-                    .borrow()
-                    .local
-                    .get(&id)
-                    .is_some_and(|p| std::path::Path::new(p).is_file());
-                if needs_download && state.borrow_mut().download_attempts.insert(id.clone()) {
-                    download_task(app, state, &id, "cache", "");
-                }
+            for task in &tasks {
+                cache_task_outputs(app, state, task);
             }
         }
         "tasks-trash" => {
@@ -2809,6 +3961,12 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     name: text(v, "name").into(),
                     price: format!("¥{:.2}", v["price_fen"].as_f64().unwrap_or(0.) / 100.).into(),
                     credits: format!("{} 积分", v["credits"]).into(),
+                    purchase_label: purchase_plan_label(
+                        &state.borrow(),
+                        &text(v, "id"),
+                        chrono::Utc::now().timestamp(),
+                    )
+                    .into(),
                 })
                 .collect(),
         )),
@@ -2834,6 +3992,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     id: text(v, "id").into(),
                     title: text(v, "email").into(),
                     detail: "".into(),
+                    reference: "".into(),
                     value: if text(v, "role") == "owner" {
                         "创建者"
                     } else {
@@ -2919,7 +4078,16 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             let id = text(&value, "id");
             state.borrow_mut().pending_task_references.remove(&id);
             let generated = id.starts_with("gen_");
-            state.borrow_mut().local.insert(id.clone(), path.clone());
+            if let Some(key) = value["cache_key"].as_str() {
+                crate::generation_outputs::record(
+                    &mut state.borrow_mut().local,
+                    key,
+                    &text(&value, "task_id"),
+                    &path,
+                );
+            } else {
+                state.borrow_mut().local.insert(id.clone(), path.clone());
+            }
             let folder = state.borrow().folder.clone();
             let _ = std::fs::create_dir_all(&folder);
             if let Ok(bytes) = serde_json::to_vec(&state.borrow().local) {
@@ -2959,57 +4127,78 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     job(
                         app,
                         state,
-                        "personal-cache".into(),
-                        request("POST", "local:library-register", json!({"path":path})),
+                        format!("personal-cache:{id}"),
+                        request(
+                            "POST",
+                            "local:library-register",
+                            json!({"path":path,"generation_identity":value["generation_identity"],"sha256":value["sha256"]}),
+                        ),
                     );
                 } else {
-                    personal_job(app, state, "register", json!({"path":path}));
+                    personal_job(
+                        app,
+                        state,
+                        "register",
+                        json!({"path":path,"generation_identity":value["generation_identity"],"sha256":value["sha256"]}),
+                    );
                 }
             }
         }
         "purchase" | "order" | "orders" => {
             if name == "orders" {
-                state.borrow_mut().orders = items(&value);
+                let orders = items(&value);
+                let mut cloud = state.borrow_mut();
+                for order in &orders {
+                    if let Err(error) = accept_purchase_order(
+                        &mut cloud,
+                        order,
+                        false,
+                        false,
+                        chrono::Utc::now().timestamp(),
+                    ) {
+                        ui.set_error(error.into());
+                    }
+                }
+                cloud.orders = orders;
             } else {
                 let id = text(&value, "id");
-                state.borrow_mut().orders.retain(|v| text(v, "id") != id);
-                state.borrow_mut().orders.insert(0, value.clone());
-            }
-            ui.set_orders(rows(
-                state
-                    .borrow()
+                let mut cloud = state.borrow_mut();
+                if let Err(error) = accept_purchase_order(
+                    &mut cloud,
+                    &value,
+                    name == "purchase",
+                    name == "order",
+                    chrono::Utc::now().timestamp(),
+                ) {
+                    ui.set_error(error.into());
+                    return;
+                }
+                if let Some(order) = cloud
                     .orders
-                    .iter()
-                    .map(|v| AccountEntry {
-                        id: text(v, "id").into(),
-                        title: "支付宝充值".into(),
-                        detail: match text(v, "status").as_str() {
-                            "paid" => "已到账",
-                            "closed" => "已关闭",
-                            _ => "等待支付",
-                        }
-                        .into(),
-                        value: format!("¥{:.2}", v["amount_fen"].as_f64().unwrap_or(0.) / 100.)
+                    .iter_mut()
+                    .find(|order| text(order, "id") == id)
+                {
+                    *order = value.clone();
+                } else if cloud.orders_page.cursor.is_empty() {
+                    cloud.orders.insert(0, value.clone());
+                }
+            }
+            render_account_history(app, &state.borrow());
+            if name == "purchase" {
+                if let Some(raw) = purchase_payment_url(&value, chrono::Utc::now().timestamp()) {
+                    open_file(raw);
+                } else {
+                    ui.set_notice(
+                        crate::account_ledger::order_status(&value, chrono::Utc::now().timestamp())
                             .into(),
-                    })
-                    .collect(),
-            ));
-            if name == "purchase"
-                && let Some(raw) = value.pointer("/payment_action/url").and_then(Value::as_str)
-                && Url::parse(raw).is_ok_and(|u| {
-                    u.scheme() == "https"
-                        && u.host_str().is_some_and(|h| {
-                            h == "openapi.alipay.com" || h == "openapi-sandbox.dl.alipaydev.com"
-                        })
-                })
-            {
-                open_file(raw);
+                    );
+                }
             }
             job(
                 app,
                 state,
                 "wallet".into(),
-                request("GET", "/api/wallet", Value::Null),
+                request("GET", "/api/wallet?balance_only=1", Value::Null),
             );
         }
         "connect" | "capabilities" => {
@@ -3095,6 +4284,9 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
                         kind: AssetKind::Video,
                         source: AssetSource::Generated,
                         original_path: None,
+                        recovery: None,
+                        provenance: None,
+                        version: None,
                         created_at: 0,
                         trashed: false,
                         favorite: false,
@@ -3609,6 +4801,61 @@ fn library_call_unlocked(
     root: &std::path::Path,
 ) -> Result<Value, String> {
     use crate::personal_library::Library;
+    if req.path == "local:library-relink" {
+        let expected =
+            serde_json::from_value::<crate::personal_library::Asset>(req.body["expected"].clone())
+                .map_err(|_| "素材信息已变化，请重新选择".to_owned())?;
+        let selected = req.body["path"]
+            .as_str()
+            .filter(|path| !path.is_empty())
+            .ok_or("请选择一个素材文件")?;
+        if text(&req.body, "id") != expected.id {
+            return Err("素材信息已变化，请重新选择".into());
+        }
+        // A rejected relink must not migrate other legacy entries or scan outputs.
+        let mut library = Library::load_for_relink(root)?;
+        library.relink_missing(
+            &expected,
+            Path::new(selected),
+            req.body["allow_unverified"].as_bool().unwrap_or(false),
+        )?;
+        return library_result(&library, root, "已重新关联素材".into());
+    }
+    if req.path == "local:library-register" {
+        if !req.body["generation_identity"].is_null() {
+            let identity = serde_json::from_value(req.body["generation_identity"].clone())
+                .map_err(|e| format!("输出身份无效: {e}"))?;
+            crate::registration_retry::register_generation_output(
+                root,
+                Path::new(&text(&req.body, "path")),
+                req.body["name"].as_str(),
+                &identity,
+                req.body["sha256"].as_str().ok_or("输出缺少摘要")?,
+                None,
+            )?;
+        } else {
+            crate::registration_retry::register(
+                root,
+                Path::new(&text(&req.body, "path")),
+                req.body["name"].as_str(),
+            )?;
+        }
+        return library_result(&Library::load(root)?, root, String::new());
+    }
+    let recovery = if req.path == "local:library-list" {
+        match crate::registration_retry::retry(root) {
+            Ok(outcome) if outcome.remaining > 0 => {
+                format!("{} 项尚未入库，刷新可重试", outcome.remaining)
+            }
+            Ok(outcome) if outcome.completed > 0 => {
+                format!("已补入库 {} 项素材", outcome.completed)
+            }
+            Ok(_) => String::new(),
+            Err(error) => format!("入库恢复失败：{error}"),
+        }
+    } else {
+        String::new()
+    };
     let mut library = Library::load(root)?;
     let id = text(&req.body, "id");
     if !id.is_empty() && library.get(&id).is_none() {
@@ -3620,11 +4867,6 @@ fn library_call_unlocked(
             let id = asset.id.clone();
             library.restore(&id)?;
             "已导入个人资产库"
-        }
-        "local:library-register" => {
-            library
-                .register_generated_with_name(text(&req.body, "path"), req.body["name"].as_str())?;
-            ""
         }
         "local:library-rename" => {
             library.rename(&id, text(&req.body, "name"))?;
@@ -3704,11 +4946,27 @@ fn library_call_unlocked(
                                 name.starts_with("gen_")
                                     && matches!(
                                         path.extension().and_then(|ext| ext.to_str()),
-                                        Some("png" | "mp4")
+                                        Some(
+                                            "png"
+                                                | "jpg"
+                                                | "jpeg"
+                                                | "webp"
+                                                | "gif"
+                                                | "mp4"
+                                                | "webm"
+                                        )
                                     )
                             });
                         if generated && path.is_file() {
-                            library.register_generated(path)?;
+                            let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+                            let indexed = library.items().iter().any(|item| {
+                                item.version.is_some()
+                                    && item.original_path.as_ref() == Some(&canonical)
+                                    && item.path.is_file()
+                            });
+                            if !indexed {
+                                library.register_generated(canonical)?;
+                            }
                         }
                     }
                 }
@@ -3719,7 +4977,15 @@ fn library_call_unlocked(
         }
         _ => return Err("未知的个人资产操作".into()),
     };
-    library_result(&library, root, notice.to_owned())
+    library_result(
+        &library,
+        root,
+        if recovery.is_empty() {
+            notice.to_owned()
+        } else {
+            recovery
+        },
+    )
 }
 
 fn library_result(
@@ -3759,6 +5025,281 @@ fn library_result(
         })
         .collect();
     Ok(json!({"items":items,"folders":library.folders(),"notice":notice}))
+}
+
+fn relink_has_checksum(asset: &crate::personal_library::Asset) -> bool {
+    asset.version.is_some() || asset.recovery.is_some()
+}
+
+fn freeze_personal_relink(cloud: &mut Cloud, id: &str, view: i32) -> Result<String, String> {
+    if cloud.pending_relink.is_some() {
+        return Err("请先完成当前关联".into());
+    }
+    let value = cloud
+        .personal
+        .iter()
+        .find(|item| text(item, "id") == id)
+        .ok_or("素材信息已变化，请刷新后重试")?;
+    let expected = serde_json::from_value::<crate::personal_library::Asset>(value.clone())
+        .map_err(|_| "素材信息已变化，请刷新后重试".to_owned())?;
+    if expected.path.is_file() {
+        return Err("素材文件已可用，无需重新关联".into());
+    }
+    let token = uuid::Uuid::new_v4().to_string();
+    cloud.pending_relink = Some(PendingRelink {
+        token: token.clone(),
+        epoch: cloud.epoch,
+        view,
+        expected,
+        selected: None,
+        phase: RelinkPhase::Picking,
+    });
+    Ok(token)
+}
+
+fn relink_context_current(cloud: &Cloud, view: i32, token: &str) -> bool {
+    let Some(pending) = cloud
+        .pending_relink
+        .as_ref()
+        .filter(|pending| pending.token == token)
+    else {
+        return false;
+    };
+    pending.epoch == cloud.epoch
+        && pending.view == view
+        && cloud
+            .personal
+            .iter()
+            .find(|item| text(item, "id") == pending.expected.id)
+            .and_then(|item| {
+                serde_json::from_value::<crate::personal_library::Asset>(item.clone()).ok()
+            })
+            .as_ref()
+            == Some(&pending.expected)
+}
+
+fn relink_job_current(cloud: &Cloud, view: i32, token: &str) -> bool {
+    relink_context_current(cloud, view, token)
+        && cloud
+            .pending_relink
+            .as_ref()
+            .is_some_and(|pending| pending.phase == RelinkPhase::Queued)
+}
+
+fn take_personal_relink(cloud: &mut Cloud, token: &str) -> Option<PendingRelink> {
+    if cloud
+        .pending_relink
+        .as_ref()
+        .is_some_and(|pending| pending.token == token)
+    {
+        cloud.pending_relink.take()
+    } else {
+        None
+    }
+}
+
+fn cancel_personal_relink(app: &App, state: &Rc<RefCell<Cloud>>, token: &str) {
+    let cancelled = {
+        let mut cloud = state.borrow_mut();
+        if cloud
+            .pending_relink
+            .as_ref()
+            .is_some_and(|pending| pending.phase == RelinkPhase::Running)
+        {
+            return;
+        }
+        let cancelled = take_personal_relink(&mut cloud, token);
+        if cancelled.is_some() {
+            cloud
+                .pending
+                .retain(|(name, _)| name != &format!("personal-relink:{token}"));
+        }
+        cancelled
+    };
+    if cancelled.is_some() {
+        let ui = app.global::<SeeCut>();
+        ui.set_personal_relink_id("".into());
+        if ui.get_personal_dialog() == 6 {
+            ui.set_personal_dialog_busy(false);
+            ui.set_personal_dialog(0);
+            ui.set_personal_dialog_error("".into());
+        }
+    }
+}
+
+fn relink_request(
+    cloud: &mut Cloud,
+    view: i32,
+    token: &str,
+    confirmed: bool,
+) -> Result<Request, String> {
+    if !relink_context_current(cloud, view, token) {
+        return Err("素材或页面已变化，请重新选择".into());
+    }
+    let pending = cloud.pending_relink.as_mut().unwrap();
+    if !matches!(
+        pending.phase,
+        RelinkPhase::Picking | RelinkPhase::Confirming
+    ) {
+        return Err("素材正在关联，请稍候".into());
+    }
+    let allow_unverified = !relink_has_checksum(&pending.expected);
+    if allow_unverified && (!confirmed || pending.phase != RelinkPhase::Confirming) {
+        return Err("请先确认所选文件".into());
+    }
+    let selected = pending.selected.as_ref().ok_or("请选择一个素材文件")?;
+    let req = request(
+        "POST",
+        "local:library-relink",
+        json!({
+            "id": pending.expected.id, "expected": pending.expected,
+            "path": selected, "allow_unverified": allow_unverified,
+        }),
+    );
+    pending.phase = RelinkPhase::Queued;
+    Ok(req)
+}
+
+fn submit_personal_relink(app: &App, state: &Rc<RefCell<Cloud>>, token: &str, confirmed: bool) {
+    let ui = app.global::<SeeCut>();
+    let result = relink_request(
+        &mut state.borrow_mut(),
+        ui.get_personal_relink_view(),
+        token,
+        confirmed,
+    );
+    match result {
+        Ok(req) => {
+            if ui.get_personal_dialog() == 6 {
+                // The confirmed operation continues on the card. Do not let
+                // its busy state leak into another personal-library dialog.
+                ui.set_personal_dialog(0);
+            }
+            job(app, state, format!("personal-relink:{token}"), req);
+        }
+        Err(error) => {
+            cancel_personal_relink(app, state, token);
+            ui.set_error(error.into());
+        }
+    }
+}
+
+fn begin_personal_relink(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
+    let ui = app.global::<SeeCut>();
+    if ui.get_working() || ui.get_personal_dialog() != 0 || state.borrow().pending_relink.is_some()
+    {
+        return;
+    }
+    let frozen = freeze_personal_relink(&mut state.borrow_mut(), id, ui.get_personal_relink_view());
+    let token = match frozen {
+        Ok(token) => token,
+        Err(error) => {
+            ui.set_error(error.into());
+            return;
+        }
+    };
+    ui.set_personal_relink_id(id.into());
+    ui.set_error("".into());
+    // Native desktop pickers may pump the event loop. Hold neither Cloud nor
+    // the library lock while they are open, and recheck the frozen context.
+    let selected = crate::platform::pick_file("重新关联素材", None);
+    if !relink_context_current(&state.borrow(), ui.get_personal_relink_view(), &token) {
+        cancel_personal_relink(app, state, &token);
+        return;
+    }
+    let path = match selected {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            cancel_personal_relink(app, state, &token);
+            return;
+        }
+        Err(error) => {
+            cancel_personal_relink(app, state, &token);
+            ui.set_error(error.into());
+            return;
+        }
+    };
+    let needs_confirmation = {
+        let mut cloud = state.borrow_mut();
+        let pending = cloud.pending_relink.as_mut().unwrap();
+        pending.selected = Some(path);
+        let needs_confirmation = !relink_has_checksum(&pending.expected);
+        if needs_confirmation {
+            pending.phase = RelinkPhase::Confirming;
+        }
+        needs_confirmation
+    };
+    if needs_confirmation {
+        ui.set_personal_dialog_busy(false);
+        ui.set_personal_dialog_error("".into());
+        ui.set_personal_dialog(6);
+    } else {
+        submit_personal_relink(app, state, &token, false);
+    }
+}
+
+fn relink_cancelled_context(cloud: &Cloud, view: i32, dialog: i32) -> Option<String> {
+    let pending = cloud.pending_relink.as_ref()?;
+    if matches!(pending.phase, RelinkPhase::Picking | RelinkPhase::Running) {
+        return None;
+    }
+    (!relink_context_current(cloud, view, &pending.token)
+        || (pending.phase == RelinkPhase::Confirming && dialog != 6))
+        .then(|| pending.token.clone())
+}
+
+fn schedule_relink_context_cleanup(app: &App, state: &Rc<RefCell<Cloud>>) {
+    let weak = app.as_weak();
+    let state = state.clone();
+    // Property change trackers can run while a host callback is on the stack.
+    // Defer state access; this callback never changes focus.
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let ui = app.global::<SeeCut>();
+        let cancelled = relink_cancelled_context(
+            &state.borrow(),
+            ui.get_personal_relink_view(),
+            ui.get_personal_dialog(),
+        );
+        if let Some(token) = cancelled {
+            cancel_personal_relink(&app, &state, &token);
+            sync_operation_state(&app, &state);
+        }
+    });
+}
+
+fn finish_personal_relink(
+    app: &App,
+    state: &Rc<RefCell<Cloud>>,
+    token: &str,
+    result: Result<Value, ClientError>,
+) {
+    let pending = take_personal_relink(&mut state.borrow_mut(), token);
+    let Some(pending) = pending else {
+        return;
+    };
+    let ui = app.global::<SeeCut>();
+    let same_view = pending.view == ui.get_personal_relink_view();
+    ui.set_personal_relink_id("".into());
+    ui.set_inspiration_can_restore(false);
+    ui.set_inspiration_preview_open(false);
+    if ui.get_personal_dialog() == 6 {
+        ui.set_personal_dialog_busy(false);
+        ui.set_personal_dialog(0);
+        ui.set_personal_dialog_error("".into());
+    }
+    match result {
+        Ok(mut value) => {
+            if !same_view {
+                value["notice"] = Value::Null;
+            }
+            publish(app, state, "personal", value);
+        }
+        Err(error) if same_view => ui.set_error(error.message.into()),
+        Err(_) => {}
+    }
 }
 
 fn personal_job(app: &App, state: &Rc<RefCell<Cloud>>, operation: &str, body: Value) {
@@ -3973,9 +5514,13 @@ fn render_personal(app: &App, state: &Rc<RefCell<Cloud>>) {
             .filter(|v| {
                 !v["trashed"].as_bool().unwrap_or(false)
                     && v["available"] == true
-                    && (imports_into_project
-                        || (!opens_in_canvas && ui.get_mode() != 0)
-                        || text(v, "kind") == "image")
+                    && (if ui.get_asset_picker_purpose() == "flow-reference" {
+                        flow_generation::picker_allows(&text(v, "kind"))
+                    } else {
+                        imports_into_project
+                            || (!opens_in_canvas && ui.get_mode() != 0)
+                            || text(v, "kind") == "image"
+                    })
             })
             .filter(|v| text(v, "name").to_lowercase().contains(&reference_search))
             .filter(|v| match ui.get_asset_picker_personal_filter() {
@@ -4370,6 +5915,10 @@ fn picker_confirm(app: &App, state: &Rc<RefCell<Cloud>>) {
         }
     };
     let purpose = ui.get_asset_picker_purpose().to_string();
+    if purpose == "flow-reference" {
+        flow_generation::accept_picker(app, &selected);
+        return;
+    }
     if state.borrow().picker_batch.is_some() {
         ui.set_error("上一批素材仍在准备，请稍候".into());
         return;
@@ -4455,6 +6004,19 @@ fn continue_picker_batch(app: &App, state: &Rc<RefCell<Cloud>>) {
 fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str) {
     let ui = app.global::<SeeCut>();
     match action {
+        "personal-relink" => begin_personal_relink(app, state, id),
+        "personal-confirm-relink" => {
+            if ui.get_personal_dialog() == 6 && !ui.get_personal_dialog_busy() {
+                let token = state
+                    .borrow()
+                    .pending_relink
+                    .as_ref()
+                    .map(|pending| pending.token.clone());
+                if let Some(token) = token {
+                    submit_personal_relink(app, state, &token, true);
+                }
+            }
+        }
         "personal-preview" => open_personal_media_preview(app, state, id),
         "personal-refresh" => personal_job(app, state, "list", Value::Null),
         "personal-register-canvas" => {
@@ -4707,12 +6269,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                 "personal-project-selected" => {
                     let imports = selected
                         .iter()
-                        .map(|asset| {
-                            crate::panes::canvas::CanvasImport::named(
-                                PathBuf::from(text(asset, "path")),
-                                text(asset, "name"),
-                            )
-                        })
+                        .map(crate::panes::canvas::CanvasImport::from_library)
                         .collect();
                     begin_handoff_with_imports(app, state, "clip", imports);
                 }
@@ -4723,12 +6280,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                     }
                     let imports = selected
                         .iter()
-                        .map(|asset| {
-                            crate::panes::canvas::CanvasImport::named(
-                                PathBuf::from(text(asset, "path")),
-                                text(asset, "name"),
-                            )
-                        })
+                        .map(crate::panes::canvas::CanvasImport::from_library)
                         .collect();
                     begin_handoff_with_imports(app, state, "canvas", imports);
                 }
@@ -4832,10 +6384,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                         app,
                         state,
                         "clip",
-                        vec![crate::panes::canvas::CanvasImport::named(
-                            PathBuf::from(path),
-                            text(&asset, "name"),
-                        )],
+                        vec![crate::panes::canvas::CanvasImport::from_library(&asset)],
                     );
                 }
                 "personal-canvas" => {
@@ -4848,10 +6397,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                         app,
                         state,
                         "canvas",
-                        vec![crate::panes::canvas::CanvasImport::named(
-                            PathBuf::from(path),
-                            text(&asset, "name"),
-                        )],
+                        vec![crate::panes::canvas::CanvasImport::from_library(&asset)],
                     );
                 }
                 "personal-reference" => {
@@ -5166,6 +6712,9 @@ fn media_preview_image(path: &str, kind: &str) -> slint::Image {
                 },
                 source: crate::personal_library::AssetSource::Generated,
                 original_path: None,
+                recovery: None,
+                provenance: None,
+                version: None,
                 created_at: 0,
                 trashed: false,
                 favorite: false,
@@ -5560,8 +7109,14 @@ fn refresh_assets(app: &App, state: &Rc<RefCell<Cloud>>) {
 fn refresh_quote(app: &App, state: &Rc<RefCell<Cloud>>) {
     let ui = app.global::<SeeCut>();
     ui.set_can_generate(false);
-    state.borrow_mut().quote_id.clear();
-    state.borrow_mut().quote_credits = None;
+    {
+        let mut cloud = state.borrow_mut();
+        cloud.quote_id.clear();
+        cloud.quote_credits = None;
+        // Quotes describe the editable draft; submitted generation requests
+        // keep their original body, idempotency key and queue position.
+        cloud.pending.retain(|(name, _)| name != "quote");
+    }
     ui.set_quote("".into());
     ui.set_insufficient_credits(false);
     let reference_error = reference_validation(&ui, &state.borrow());
@@ -5750,6 +7305,71 @@ fn upload_file_for_team(
         ),
     );
 }
+fn release_cache_attempt(state: &Rc<RefCell<Cloud>>, name: &str) {
+    if let Some(id) = name
+        .strip_prefix("local-cache:")
+        .or_else(|| name.strip_prefix("personal-cache:"))
+    {
+        state.borrow_mut().download_attempts.remove(id);
+    }
+}
+
+fn cache_task_outputs(app: &App, state: &Rc<RefCell<Cloud>>, task: &Value) {
+    let plans = {
+        let cloud = state.borrow();
+        flow_generation::output_plans(&cloud, task)
+    };
+    for output in plans {
+        let (registered, bound) = {
+            let cloud = state.borrow();
+            (
+                crate::generation_outputs::registered(&cloud.personal, &output.path),
+                cloud
+                    .local
+                    .get(&output.key)
+                    .is_some_and(|p| Path::new(p) == output.path)
+                    && cloud
+                        .local
+                        .get(&output.task_id)
+                        .is_some_and(|p| Path::new(p).is_file()),
+            )
+        };
+        if registered && bound {
+            continue;
+        }
+        if !state
+            .borrow_mut()
+            .download_attempts
+            .insert(output.key.clone())
+        {
+            continue;
+        }
+        if bound && output.path.is_file() {
+            job(
+                app,
+                state,
+                format!("personal-cache:{}", output.key),
+                request(
+                    "POST",
+                    "local:library-register",
+                    json!({"path":output.path,"generation_identity":flow_generation::output_identity(&state.borrow(),&output.key),"sha256":output.sha256}),
+                ),
+            );
+        } else {
+            job(
+                app,
+                state,
+                format!("local-cache:{}", output.key),
+                request(
+                    "GET",
+                    "local:generation-cache",
+                    json!({"id":output.key,"output":output,"intent":"cache","intent_team":""}),
+                ),
+            );
+        }
+    }
+}
+
 fn download_task(app: &App, state: &Rc<RefCell<Cloud>>, id: &str, intent: &str, intent_team: &str) {
     download_task_with_token(app, state, id, intent, intent_team, None);
 }
@@ -5790,33 +7410,28 @@ fn download_task_with_token(
         return;
     }
     if let Some(task) = c.tasks.iter().find(|v| text(v, "id") == id)
-        && let Some(out) = task["outputs"].as_array().and_then(|v| v.first())
+        && let Some(output) = flow_generation::output_plans(&c, task).into_iter().next()
     {
-        let ext = if text(task, "kind") == "video" {
-            "mp4"
+        let name = if intent == "cache" {
+            format!("local-cache:{}", output.key)
+        } else if intent == "reference" {
+            format!("local-reference:{id}")
+        } else if intent == "media-preview" {
+            format!("media-preview:{id}:{}", preview_token.unwrap_or_default())
         } else {
-            "png"
+            "local".into()
         };
-        let path = c.folder.join(format!("{id}.{ext}"));
         job(
             app,
             state,
-            if intent == "cache" {
-                format!("local-cache:{id}")
-            } else if intent == "reference" {
-                format!("local-reference:{id}")
-            } else if intent == "media-preview" {
-                format!("media-preview:{id}:{}", preview_token.unwrap_or_default())
-            } else {
-                "local".into()
-            },
-            {
-                let mut body = json!({"id":id,"url":out["download_url"],"path":path,"intent":intent,"intent_team":intent_team});
-                if let Some(token) = preview_token {
-                    body["preview_token"] = json!(token);
-                }
-                request("GET", "local:download", body)
-            },
+            name,
+            request(
+                "GET",
+                "local:generation-cache",
+                json!({
+                    "id":id,"output":output,"intent":intent,"intent_team":intent_team,"preview_token":preview_token
+                }),
+            ),
         );
     }
 }
@@ -5911,10 +7526,6 @@ fn enqueue_pending_import(queue: &mut Vec<PathBuf>, path: PathBuf) -> bool {
     }
 }
 
-fn resume_pending_imports(queue: &mut Vec<PathBuf>) -> Vec<PathBuf> {
-    std::mem::take(queue)
-}
-
 fn cancel_pending_imports(queue: &mut Vec<PathBuf>) -> usize {
     let count = queue.len();
     queue.clear();
@@ -5965,6 +7576,7 @@ fn import_or_queue_named(
                 vec![crate::panes::media_bin::MediaImport {
                     path,
                     display_name: Some(display_name),
+                    library_reference: None,
                 }],
             );
         } else {
@@ -5987,41 +7599,92 @@ fn import_or_queue_named(
     ui.set_notice("".into());
 }
 
-fn project_ready(app: &App, state: &Rc<RefCell<Cloud>>) {
-    let imports = {
-        let mut cloud = state.borrow_mut();
-        let display_names = std::mem::take(&mut cloud.pending_import_display_names);
-        let mut imports = resume_pending_imports(&mut cloud.pending_imports)
-            .into_iter()
-            .map(|path| crate::panes::media_bin::MediaImport {
-                display_name: display_names.get(&path).cloned(),
-                path,
-            })
-            .collect::<Vec<_>>();
-        if cloud
-            .pending_handoff
-            .as_ref()
-            .is_some_and(|handoff| handoff.kind == "clip" && handoff.awaiting_new_project)
-        {
-            imports.extend(
-                cloud
-                    .pending_handoff
-                    .take()
-                    .expect("checked")
-                    .imports
-                    .into_iter()
-                    .map(|item| crate::panes::media_bin::MediaImport {
-                        path: item.path,
-                        display_name: item.display_name,
-                    }),
-            );
-        }
-        imports
+/// Start/finish callbacks only borrow Cloud; Studio owns the actual adoption.
+pub(crate) fn clip_open_started(id: u64, target: &str, created: bool) {
+    crate::host::Shell::with(|_, app| {
+        app.invoke_clip_open_started(id.to_string().into(), target.into(), created);
+    });
+}
+
+pub(crate) fn clip_open_failed(id: u64) {
+    crate::host::Shell::with(|_, app| app.invoke_clip_open_failed(id.to_string().into()));
+}
+
+pub(crate) fn clip_open_completed(studio: &mut crate::studio::Studio, app: &App, id: u64) {
+    let Some(session) = studio.media_import_session() else {
+        return;
     };
-    let ui = app.global::<SeeCut>();
-    ui.set_project_open(true);
-    ui.set_pending_import_count(0);
-    import_named_paths(app, imports);
+    // Capture and import within this same UI turn. No deferred get_on_start()
+    // or selection of whatever project happens to be open in a later callback.
+    let payload = app.invoke_clip_open_completed(id.to_string().into());
+    let Ok(imports) =
+        serde_json::from_str::<Vec<crate::panes::canvas::CanvasImport>>(payload.as_str())
+    else {
+        return;
+    };
+    if imports.is_empty() {
+        return;
+    }
+    studio.handle(crate::panes::Msg::Media(
+        crate::panes::media_bin::MediaMsg::ImportNamed {
+            imports: clip_imports(&imports),
+            session,
+        },
+    ));
+    app.global::<SeeCut>().set_page(0);
+}
+
+fn import_current_clip_paths(app: &App, imports: Vec<crate::panes::media_bin::MediaImport>) {
+    crate::host::Shell::with(|shell, app| {
+        {
+            let mut studio = shell.studio.borrow_mut();
+            let Some(session) = studio.media_import_session() else {
+                return;
+            };
+            studio.handle(crate::panes::Msg::Media(
+                crate::panes::media_bin::MediaMsg::ImportNamed { imports, session },
+            ));
+        }
+        shell.studio.borrow().publish(&app, &shell.models);
+    });
+    app.global::<SeeCut>().set_page(0);
+}
+
+fn completed_clip_imports(cloud: &mut Cloud, id: u64) -> Result<String, serde_json::Error> {
+    let bound = cloud.pending_handoff.as_ref().is_some_and(|handoff| {
+        handoff.kind == "clip"
+            && handoff
+                .clip_open
+                .as_ref()
+                .is_some_and(|binding| binding.completed(id))
+    });
+    let mut imports: Vec<crate::panes::canvas::CanvasImport> = cloud
+        .pending_imports
+        .iter()
+        .map(|path| crate::panes::canvas::CanvasImport {
+            path: path.clone(),
+            display_name: cloud.pending_import_display_names.get(path).cloned(),
+            library_reference: None,
+        })
+        .collect();
+    if bound {
+        imports.extend(
+            cloud
+                .pending_handoff
+                .as_ref()
+                .expect("checked")
+                .imports
+                .clone(),
+        );
+    }
+    // Serialize before consuming; an invalid UTF-8 path must not lose a batch.
+    let encoded = serde_json::to_string(&imports)?;
+    cloud.pending_imports.clear();
+    cloud.pending_import_display_names.clear();
+    if bound {
+        cloud.pending_handoff = None;
+    }
+    Ok(encoded)
 }
 
 fn cancel_project_import(app: &App, state: &Rc<RefCell<Cloud>>) {
@@ -6224,17 +7887,16 @@ fn update_model_options_inner(
             .cloned()
             .collect::<Vec<_>>();
         let desired_id = selected_id.filter(|id| !id.is_empty());
-        let unavailable = if cloud.unavailable_model_kind.as_deref() == Some(kind)
-            && cloud.unavailable_model_id.is_some()
-            && desired_id.is_none()
-        {
-            true
-        } else {
-            desired_id.as_deref().is_some_and(|id| {
+        let unavailable = desired_id
+            .as_ref()
+            .is_some_and(|id| !models.iter().any(|model| text(model, "id") == *id))
+            || (cloud.unavailable_model_kind.as_deref() == Some(kind)
+                && cloud.unavailable_model_id.is_some()
+                && desired_id.is_none())
+            || desired_id.as_deref().is_some_and(|id| {
                 !models.iter().any(|model| text(model, "id") == id)
                     && cloud.unavailable_model_id.as_deref() == Some(id)
-            })
-        };
+            });
         let draft = desired_id.as_deref().and_then(|id| {
             cloud
                 .parameter_drafts
@@ -6403,7 +8065,14 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.quote_id.clear();
     cloud.quote_credits = None;
     cloud.pending.clear();
+    cloud.pending_relink = None;
     cloud.models.clear();
+    cloud.catalog_models.clear();
+    cloud.catalog_efforts.clear();
+    cloud.effort_catalog_valid = false;
+    cloud.effort_required = false;
+    cloud.effort_selection = None;
+    cloud.effort_confirmation_required = false;
     cloud.selected_model_ids.clear();
     cloud.parameter_drafts.clear();
     cloud.generation_mode = None;
@@ -6439,14 +8108,40 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.task_snapshots.clear();
     cloud.task_snapshot_name.clear();
     cloud.orders.clear();
+    cloud.ledger.clear();
+    cloud.ledger_page.reset();
+    cloud.orders_page.reset();
+    cloud.actual_cost = generation_state::ActualCost::default();
+    cloud.purchase = None;
+    cloud.purchase_uid.clear();
+    cloud.purchase_journal = None;
+    cloud.purchase_error = None;
+    cloud.purchase_expiry_checked.clear();
     cloud.submission = None;
     cloud.pending_task_references.clear();
     cloud.download_attempts.clear();
     cloud.media_preview_token = cloud.media_preview_token.wrapping_add(1);
     cloud.active_name.clear();
+    cloud.inspiration_backup = None;
     cloud.epoch += 1;
     drop(cloud);
+    // Revoke the old account's App permissions synchronously, before another
+    // queued MCP write can be dispatched. The Agent timer also closes its runtime.
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    ACCOUNT_EDITOR_BRIDGE.with(|slot| {
+        if let Some(bridge) = slot.borrow().upgrade() {
+            // Native dialogs may hold Studio while pumping this account callback.
+            // Bridge ownership is independent so revocation remains synchronous.
+            bridge.borrow_mut().revoke_assistant_for_account_change();
+        }
+    });
     let ui = app.global::<SeeCut>();
+    ui.set_personal_relink_id("".into());
+    if ui.get_personal_dialog() == 6 {
+        ui.set_personal_dialog_busy(false);
+        ui.set_personal_dialog(0);
+        ui.set_personal_dialog_error("".into());
+    }
     ui.set_signed_in(false);
     ui.set_email("".into());
     ui.set_account_label("?".into());
@@ -6460,8 +8155,21 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
         ui.set_references(rows(vec![]));
     }
     ui.set_members(rows(vec![]));
+    ui.set_generation_actual_cost("0".into());
+    ui.set_generation_effort_names(rows(vec![]));
+    ui.set_generation_effort_index(-1);
+    ui.set_account_history_tab(0);
+    ui.set_ledger_filter_index(0);
+    ui.set_history_loading(false);
+    ui.set_history_previous(false);
+    ui.set_history_next(false);
+    ui.set_history_page(1);
+    ui.set_history_error("".into());
+    ui.set_history_notice("".into());
     ui.set_ledger(rows(vec![]));
     ui.set_orders(rows(vec![]));
+    ui.set_purchase_plan_id("".into());
+    ui.set_purchase_action_label("购买".into());
     ui.set_team_names(strings(vec![]));
     ui.set_team_index(-1);
     ui.set_invite_url("".into());
@@ -6652,8 +8360,15 @@ fn save_preferences(app: &App, state: &Rc<RefCell<Cloud>>) {
     let Some(path) = preferences_path() else {
         return;
     };
-    let c = state.borrow();
+    let mut c = state.borrow_mut();
+    if !c.token.is_empty() && c.effort_catalog_valid && !c.effort_confirmation_required {
+        let choice = current_generation_choice(&c, app.global::<SeeCut>().get_mode());
+        if choice.valid() {
+            c.saved_generation_choice = Some(choice);
+        }
+    }
     let data = json!({
+        "generation_choice": c.saved_generation_choice,
         "folder": c.folder,
         "reduced_motion": app.global::<SeeCut>().get_reduced_motion(),
         "creator_mode": app.global::<SeeCut>().get_creator_mode(),
@@ -6665,7 +8380,7 @@ fn save_preferences(app: &App, state: &Rc<RefCell<Cloud>>) {
         let _ = std::fs::write(path, bytes);
     }
 }
-pub fn bind(app: &App) {
+pub(crate) fn bind(app: &App) -> AccountAccess {
     let saved: Value = preferences_path()
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -6694,8 +8409,92 @@ pub fn bind(app: &App) {
     let state = Rc::new(RefCell::new(Cloud {
         base,
         folder,
+        purchase_data: concat_host::AppDirs::locate().ok().map(|dirs| dirs.data),
+        saved_generation_choice: serde_json::from_value::<generation_state::Choices>(
+            saved["generation_choice"].clone(),
+        )
+        .ok()
+        .filter(|choice| choice.valid()),
         ..Cloud::default()
     }));
+    inspiration::render(app);
+    let account = AccountAccess {
+        state: Rc::downgrade(&state),
+    };
+    let started_state = state.clone();
+    app.on_clip_open_started(move |id, target, created| {
+        let Ok(id) = id.as_str().parse::<u64>() else {
+            return;
+        };
+        if let Some(handoff) = started_state.borrow_mut().pending_handoff.as_mut()
+            && handoff.kind == "clip"
+            && let Some(binding) = handoff.clip_open.as_mut()
+        {
+            binding.started(id, target.as_str(), created);
+        }
+    });
+    let failed_state = state.clone();
+    let failed_app = app.as_weak();
+    app.on_clip_open_failed(move |id| {
+        let Ok(id) = id.as_str().parse::<u64>() else {
+            return;
+        };
+        let matched = failed_state
+            .borrow_mut()
+            .pending_handoff
+            .as_mut()
+            .is_some_and(|handoff| {
+                handoff
+                    .clip_open
+                    .as_mut()
+                    .is_some_and(|binding| binding.failed(id))
+            });
+        let Some(app) = failed_app.upgrade() else {
+            return;
+        };
+        if matched && !app.get_clip_create_open() {
+            let ui = app.global::<SeeCut>();
+            ui.set_page(ui.get_handoff_source_page());
+            ui.set_handoff_open(true);
+        }
+    });
+    let completed_state = state.clone();
+    let completed_app = app.as_weak();
+    app.on_clip_open_completed(move |id| {
+        let Ok(id) = id.as_str().parse::<u64>() else {
+            return "[]".into();
+        };
+        let Some(app) = completed_app.upgrade() else {
+            return "[]".into();
+        };
+        let bound = completed_state
+            .borrow()
+            .pending_handoff
+            .as_ref()
+            .is_some_and(|handoff| {
+                handoff
+                    .clip_open
+                    .as_ref()
+                    .is_some_and(|binding| binding.completed(id))
+            });
+        let result = completed_clip_imports(&mut completed_state.borrow_mut(), id);
+        match result {
+            Ok(encoded) => {
+                let ui = app.global::<SeeCut>();
+                ui.set_project_open(true);
+                ui.set_pending_import_count(0);
+                if bound {
+                    ui.set_handoff_open(false);
+                }
+                encoded.into()
+            }
+            Err(_) => {
+                app.global::<SeeCut>()
+                    .set_error(project_media_error().into());
+                "[]".into()
+            }
+        }
+    });
     let drop_state = state.clone();
     let drop_app = app.as_weak();
     app.global::<SeeCut>()
@@ -6711,9 +8510,18 @@ pub fn bind(app: &App) {
             )
             .is_some()
         });
+    let relink_app = app.as_weak();
+    let relink_state = state.clone();
+    app.global::<SeeCut>()
+        .on_personal_relink_context_changed(move || {
+            if let Some(app) = relink_app.upgrade() {
+                schedule_relink_context_cleanup(&app, &relink_state);
+            }
+        });
     let weak = app.as_weak();
     let shared = state.clone();
     app.global::<SeeCut>().on_action(move |name, id| { let Some(app)=weak.upgrade() else{return}; let ui=app.global::<SeeCut>(); let team=team_id(&ui,&shared.borrow()); match name.as_str() {
+        name if name.starts_with("inspiration-") => inspiration::action(&app,&shared,name,id.as_str()),
         "handoff-select" => select_handoff(&app, &shared, id.as_str()),
         "handoff-cancel" => { shared.borrow_mut().pending_handoff = None; ui.set_handoff_open(false); },
         "handoff-complete" => {
@@ -6733,7 +8541,7 @@ pub fn bind(app: &App) {
             let restore = {
                 let mut cloud = shared.borrow_mut();
                 if let Some(handoff) = cloud.pending_handoff.as_mut() {
-                    if handoff.awaiting_new_project { handoff.awaiting_new_project = false; true } else { false }
+                    if handoff.awaiting_new_project { handoff.awaiting_new_project = false; handoff.clip_open = None; true } else { false }
                 } else { false }
             };
             if restore {
@@ -6851,9 +8659,21 @@ pub fn bind(app: &App) {
         "auth-verify-start" => { if let Err(error) = normalized_auth_email(ui.get_auth_email().as_str()) { ui.set_error(error.into()); } else if !ui.get_auth_busy() { switch_auth(&ui, 3); send_auth_code(&app, &shared, 3); } },
         "change-password"=>{ui.set_auth_email(ui.get_email());switch_auth(&ui,2);ui.set_auth_open(true);},
         "logout"=>job(&app,&shared,"logout".into(),request("POST","/api/auth/logout",Value::Null)),
-        "wallet-refresh"=>job(&app,&shared,"wallet".into(),request("GET","/api/wallet",Value::Null)),
+        "history-page" => history_page_action(&app, &shared, id.as_str()),
+        "history-refresh" => load_history(&app, &shared, false),
+        "wallet-refresh"=>job(&app,&shared,"wallet".into(),request("GET","/api/wallet?balance_only=1",Value::Null)),
         "tasks-refresh"=>job(&app,&shared,"tasks".into(),request("GET","/api/generation/tasks",Value::Null)),
-        "purchase"=>job(&app,&shared,"purchase".into(),request("POST","/api/orders",json!({"plan_id":id.to_string()}))),
+        "purchase"=>{
+            if !ui.get_signed_in(){show_auth(&app,&shared,Some(3));return;}
+            if ui.get_working(){return;}
+            let now=chrono::Utc::now().timestamp();
+            let result = purchase_request(&mut shared.borrow_mut(),id.as_str(),now);
+            match result {
+                Ok(Some(req))=>{let name=if req.path=="/api/orders"{"purchase"}else{"order"};job(&app,&shared,name.into(),req);},
+                Ok(None)=>{},
+                Err(error)=>{ui.set_error(error.into());sync_operation_state(&app,&shared);},
+            }
+        },
         "order-refresh"=>job(&app,&shared,"order".into(),request("POST",format!("/api/orders/{id}/refresh"),Value::Null)),
         "navigate"=>navigate(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
         "navigate-resume"=>navigate_unchecked(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
@@ -6910,7 +8730,7 @@ pub fn bind(app: &App) {
             render_personal(&app,&shared);
             render_assets(&app,&shared);
         },
-        "project-ready"=>project_ready(&app,&shared),
+
         "cancel-project-import"=>cancel_project_import(&app,&shared),
         "generate"=>{
             if !ui.get_signed_in(){show_auth(&app,&shared,Some(1));return;}
@@ -6921,8 +8741,15 @@ pub fn bind(app: &App) {
             let previous=shared.borrow().submission.clone();
             let key=previous.filter(|submission|submission.body==body).map(|submission|submission.key).unwrap_or_else(||uuid::Uuid::new_v4().to_string());
             let snapshot=current_task_snapshot(&ui,&shared.borrow());
-            shared.borrow_mut().submission=Some(PendingSubmission{body:body.clone(),key:key.clone(),snapshot});
+            {
+                let mut cloud = shared.borrow_mut();
+                cloud.actual_cost.begin(&key);
+                ui.set_generation_actual_cost(cloud.actual_cost.display().into());
+                cloud.submission=Some(PendingSubmission{body:body.clone(),key:key.clone(),snapshot});
+            }
             body["quote_id"]=json!(shared.borrow().quote_id.clone());
+            ui.set_generation_browse_tab(0);
+            ui.set_generation_step(1);
             let endpoint=if ui.get_mode()==0{"/api/generation/images"}else{"/api/generation/videos"};let mut req=request("POST",endpoint,body);req.idem=Some(key);job(&app,&shared,"generate".into(),req);
         },
         "team-create"=>job(&app,&shared,"team-create".into(),request("POST","/api/teams",json!({"name":ui.get_team_name().to_string()}))),
@@ -7070,6 +8897,25 @@ pub fn bind(app: &App) {
         if shared.borrow().updating_model_options {
             return;
         }
+        if field == "account-history-tab" || field == "ledger-filter" {
+            load_history(&app, &shared, field == "ledger-filter");
+            return;
+        }
+        if field == "generation-effort" {
+            let index = app.global::<SeeCut>().get_generation_effort_index();
+            let effort = usize::try_from(index)
+                .ok()
+                .and_then(|index| shared.borrow().catalog_efforts.get(index).cloned());
+            if let Some(effort) = effort {
+                let access = AccountAccess {
+                    state: Rc::downgrade(&shared),
+                };
+                let selections = access.generation_selection();
+                access.apply_effort_selection(&app, Some(effort), selections, true);
+                save_preferences(&app, &shared);
+            }
+            return;
+        }
         if field == "reduced-motion" {
             save_preferences(&app, &shared);
         }
@@ -7078,6 +8924,9 @@ pub fn bind(app: &App) {
         }
         if field == "model" {
             update_model_options(&app, &shared);
+        }
+        if field == "mode" || field == "model" {
+            save_preferences(&app, &shared);
         }
         if field == "prompt" || field == "prompt-cursor" {
             update_mention(&app);
@@ -7151,11 +9000,15 @@ pub fn bind(app: &App) {
     refresh_canvas_projects(app, &state);
     auth_countdown(app.as_weak());
     heartbeat(app.as_weak(), state);
+    account
 }
 fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
     slint::Timer::single_shot(Duration::from_secs(5), move || {
         let Some(app) = weak.upgrade() else { return };
         app.global::<SeeCut>().set_project_open(!app.get_on_start());
+        if state.borrow().purchase_journal.is_some() {
+            sync_operation_state(&app, &state);
+        }
         if app.global::<SeeCut>().get_signed_in()
             && !app.global::<SeeCut>().get_busy()
             && app.global::<SeeCut>().get_page() == 1
@@ -7173,7 +9026,6 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
 
 #[cfg(test)]
 mod reference_tests {
-    use super::accept_asset_list;
     use super::{
         Cloud, DEFAULT_API_URL, ExportCopyItem, ExportCopyJob, NavigationDecision, PickerSelection,
         TaskInputSnapshot, auth_request, auth_return_target, can_start_request,
@@ -7182,13 +9034,459 @@ mod reference_tests {
         invalid_reference_prompt, is_background_job, is_cloud_identity_error, mention_start,
         navigation_decision, option_index, parameter_default_index, parameter_label,
         parameter_value, personal_drop_plan, picker_download_request, reference_number, request,
-        request_requires_auth, resume_pending_imports, rewrite_mentions, selected_task_id,
-        selected_task_index, server_task_snapshot, set_picker_batch_path,
-        should_clear_identity_error_for_target, should_surface_job_error, stable_model_index,
-        task_item, task_reference_source, validate_configuration_references,
+        request_requires_auth, rewrite_mentions, selected_task_id, selected_task_index,
+        server_task_snapshot, set_picker_batch_path, should_clear_identity_error_for_target,
+        should_surface_job_error, stable_model_index, task_item, task_reference_source,
+        validate_configuration_references,
     };
+    use super::{
+        PendingSubmission, accept_asset_list, accept_effort_catalog, filter_effort_models,
+        generation_effort_reason, model_id_at_index,
+    };
+    use serde_json::Value;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::path::PathBuf;
+
+    fn purchase_fixture() -> (tempfile::TempDir, Cloud) {
+        let root = tempfile::Builder::new()
+            .prefix("seecut-purchase-cloud-")
+            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+            .unwrap();
+        let mut cloud = Cloud {
+            base: "http://127.0.0.1:19000".into(),
+            token: "synthetic-session".into(),
+            purchase_uid: "synthetic-account".into(),
+            purchase_data: Some(root.path().into()),
+            epoch: 3,
+            ..Default::default()
+        };
+        super::restore_purchases(&mut cloud).unwrap();
+        (root, cloud)
+    }
+    fn purchase(cloud: &mut Cloud, plan: &str, now: i64) -> super::Request {
+        super::purchase_request(cloud, plan, now).unwrap().unwrap()
+    }
+    fn purchase_order(
+        cloud: &mut Cloud,
+        id: &str,
+        status: &str,
+        created: bool,
+        refreshed: bool,
+        now: i64,
+    ) {
+        super::accept_purchase_order(
+            cloud,
+            &json!({"id":id,"status":status,"expires_at":1900,"payment_status_verified":refreshed}),
+            created,
+            refreshed,
+            now,
+        )
+        .unwrap();
+    }
+    #[test]
+    fn purchase_lost_reply_restart_retains_key_without_automatic_request() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        let mut reopened = Cloud {
+            base: cloud.base.clone(),
+            token: cloud.token.clone(),
+            purchase_uid: cloud.purchase_uid.clone(),
+            purchase_data: cloud.purchase_data.clone(),
+            epoch: 0,
+            ..Default::default()
+        };
+        super::restore_purchases(&mut reopened).unwrap();
+        assert!(reopened.pending.is_empty());
+        assert!(reopened.active_name.is_empty());
+        assert!(reopened.purchase.is_none());
+        assert_eq!(super::purchase_plan_label(&reopened, "plan-a", 110), "重试");
+        assert_eq!(purchase(&mut reopened, "plan-a", 110).idem, first.idem);
+        purchase_order(&mut reopened, "ord-a", "pending", true, false, 110);
+        super::restore_purchases(&mut reopened).unwrap();
+        assert_eq!(
+            super::purchase_plan_label(&reopened, "plan-a", 120),
+            "继续支付"
+        );
+        assert_eq!(purchase(&mut reopened, "plan-a", 120).idem, first.idem);
+    }
+    #[test]
+    fn purchase_plan_switch_and_restart_keep_both_unresolved_intentions() {
+        let (_root, mut cloud) = purchase_fixture();
+        let a = purchase(&mut cloud, "plan-a", 100);
+        let b = purchase(&mut cloud, "plan-b", 110);
+        assert_ne!(a.idem, b.idem);
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(purchase(&mut cloud, "plan-a", 120).idem, a.idem);
+        assert_eq!(purchase(&mut cloud, "plan-b", 130).idem, b.idem);
+    }
+    #[test]
+    fn purchase_epoch_reauth_retains_key_but_account_and_endpoint_are_isolated() {
+        let (_root, mut cloud) = purchase_fixture();
+        let a = purchase(&mut cloud, "plan-a", 100);
+        cloud.epoch += 1;
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(purchase(&mut cloud, "plan-a", 110).idem, a.idem);
+        cloud.purchase_uid = "other-account".into();
+        assert!(super::purchase_request(&mut cloud, "plan-a", 120).is_err());
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(super::purchase_plan_label(&cloud, "plan-a", 120), "购买");
+        let b = purchase(&mut cloud, "plan-a", 120);
+        assert_ne!(b.idem, a.idem);
+        cloud.base = "http://127.0.0.1:19001".into();
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(super::purchase_plan_label(&cloud, "plan-a", 130), "购买");
+        assert_ne!(purchase(&mut cloud, "plan-a", 130).idem, b.idem);
+        cloud.token.clear();
+        assert!(
+            super::purchase_request(&mut cloud, "plan-a", 140)
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn purchase_terminal_retirement_persists_and_does_not_drop_another_plan() {
+        for terminal in ["paid", "closed"] {
+            let (_root, mut cloud) = purchase_fixture();
+            let a = purchase(&mut cloud, "plan-a", 100);
+            let b = purchase(&mut cloud, "plan-b", 110);
+            purchase(&mut cloud, "plan-a", 120);
+            purchase_order(&mut cloud, "ord-a", terminal, true, false, 120);
+            super::restore_purchases(&mut cloud).unwrap();
+            assert_eq!(super::purchase_plan_label(&cloud, "plan-a", 140), "购买");
+            assert_ne!(purchase(&mut cloud, "plan-a", 140).idem, a.idem);
+            assert_eq!(purchase(&mut cloud, "plan-b", 150).idem, b.idem);
+        }
+    }
+    #[test]
+    fn purchase_expired_unverified_intention_queries_before_explicit_new_purchase() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        purchase_order(&mut cloud, "ord-a", "pending", true, false, 100);
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(
+            super::purchase_plan_label(&cloud, "plan-a", 1900),
+            "查询订单"
+        );
+        let query = purchase(&mut cloud, "plan-a", 1900);
+        assert_eq!(query.path, "/api/orders/ord-a/refresh");
+        assert!(query.idem.is_none());
+        assert_eq!(
+            cloud.purchase.as_ref().unwrap().key,
+            first.idem.clone().unwrap()
+        );
+        purchase_order(&mut cloud, "ord-a", "pending", false, true, 1900);
+        assert_eq!(super::purchase_plan_label(&cloud, "plan-a", 1901), "购买");
+        let next = purchase(&mut cloud, "plan-a", 1901);
+        assert_eq!(next.path, "/api/orders");
+        assert_ne!(next.idem, first.idem);
+    }
+    #[test]
+    fn purchase_unconfirmed_expired_query_cannot_authorize_a_new_key() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        purchase_order(&mut cloud, "ord-a", "pending", true, false, 100);
+        for verified in [serde_json::Value::Null, json!(false)] {
+            super::accept_purchase_order(&mut cloud, &json!({"id":"ord-a","status":"pending","expires_at":1900,"payment_status_verified":verified}), false, true, 1900).unwrap();
+            assert_eq!(
+                super::purchase_plan_label(&cloud, "plan-a", 1901),
+                "查询订单"
+            );
+            assert_eq!(
+                purchase(&mut cloud, "plan-a", 1901).path,
+                "/api/orders/ord-a/refresh"
+            );
+            assert_eq!(
+                cloud.purchase.as_ref().unwrap().key,
+                first.idem.clone().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn purchase_expired_lost_response_recovers_id_with_same_key_before_query() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        super::restore_purchases(&mut cloud).unwrap();
+        assert_eq!(purchase(&mut cloud, "plan-a", 1900).idem, first.idem);
+        purchase_order(&mut cloud, "ord-a", "pending", true, false, 1900);
+        assert_eq!(
+            super::purchase_plan_label(&cloud, "plan-a", 1900),
+            "查询订单"
+        );
+        assert_eq!(
+            purchase(&mut cloud, "plan-a", 1901).path,
+            "/api/orders/ord-a/refresh"
+        );
+    }
+    #[test]
+    fn purchase_active_or_queued_prevents_duplicate_request() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        cloud.active_name = "purchase".into();
+        assert!(
+            super::purchase_request(&mut cloud, "plan-a", 101)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(super::purchase_action_label(&cloud, 101), "处理中…");
+        cloud.active_name.clear();
+        cloud.pending.push_back(("purchase".into(), first));
+        assert!(
+            super::purchase_request(&mut cloud, "plan-b", 102)
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn purchase_response_save_failure_keeps_original_key_and_blocks_new_request() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        let mut other = crate::purchase_journal::Journal::open(
+            cloud.purchase_data.as_deref().unwrap(),
+            &cloud.base,
+            &cloud.purchase_uid,
+        )
+        .unwrap();
+        other.prepare("plan-b", false).unwrap();
+        assert!(
+            super::accept_purchase_order(
+                &mut cloud,
+                &json!({"id":"ord-a","status":"pending","expires_at":1900}),
+                true,
+                false,
+                100
+            )
+            .is_err()
+        );
+        assert_eq!(cloud.purchase.as_ref().unwrap().key, first.idem.unwrap());
+        assert!(super::purchase_request(&mut cloud, "plan-a", 110).is_err());
+        assert!(super::purchase_request(&mut cloud, "plan-c", 110).is_err());
+    }
+    #[test]
+    fn purchase_first_save_failure_produces_no_request_and_does_not_overwrite() {
+        let (_root, mut cloud) = purchase_fixture();
+        let directory = cloud
+            .purchase_data
+            .as_ref()
+            .unwrap()
+            .join("purchase-journals/purchase-intents");
+        std::fs::rename(&directory, directory.with_extension("preserved")).unwrap();
+        assert!(super::purchase_request(&mut cloud, "plan-a", 100).is_err());
+        assert!(cloud.purchase.is_none());
+        assert!(cloud.pending.is_empty());
+        assert!(super::purchase_request(&mut cloud, "plan-a", 110).is_err());
+        assert!(!directory.exists());
+    }
+    #[test]
+    fn purchase_other_order_cannot_retire_active_intention() {
+        let (_root, mut cloud) = purchase_fixture();
+        let first = purchase(&mut cloud, "plan-a", 100);
+        purchase_order(&mut cloud, "ord-a", "pending", true, false, 100);
+        purchase_order(&mut cloud, "ord-b", "paid", false, true, 120);
+        assert_eq!(purchase(&mut cloud, "plan-a", 130).idem, first.idem);
+    }
+
+    #[test]
+    fn purchase_without_valid_pending_payment_action_never_opens_cashier() {
+        let valid = json!({"status":"pending", "expires_at":1900,
+            "payment_action":{"url":"https://openapi.alipay.com/gateway.do"}});
+        assert_eq!(
+            super::purchase_payment_url(&valid, 100),
+            Some("https://openapi.alipay.com/gateway.do")
+        );
+        assert_eq!(super::purchase_payment_url(&valid, 1900), None);
+        for status in ["paid", "closed"] {
+            let mut terminal = valid.clone();
+            terminal["status"] = json!(status);
+            assert_eq!(super::purchase_payment_url(&terminal, 100), None);
+        }
+        assert_eq!(
+            super::purchase_payment_url(&json!({"status":"pending"}), 100),
+            None
+        );
+        let invalid =
+            json!({"status":"pending", "payment_action":{"url":"https://example.invalid/pay"}});
+        assert_eq!(super::purchase_payment_url(&invalid, 100), None);
+        let legacy_expired = json!({"status":"pending", "payment_action":{"url":"https://openapi.alipay.com/gateway.do", "expires_at":99}});
+        assert_eq!(super::purchase_payment_url(&legacy_expired, 100), None);
+    }
+
+    fn effort_fixture(id: &str, revision: &str, image: &str) -> Value {
+        json!({"id":id,"label":id,"policy_revision":revision,"available":true,
+            "agent":{"model_id":"default","max_steps":2,"max_turn_credits":10,"max_output_tokens":128,"pricing_version":"p1"},
+            "generation":{"image_model_ids":[image],"video_model_ids":[]}})
+    }
+    #[test]
+    fn effort_generation_filters_model_values_and_preserves_submitted_snapshot() {
+        let low = effort_fixture("low", "v1", "image-low");
+        let high = effort_fixture("high", "v1", "image-high");
+        let original_body = json!({"model":"image-low","effort_id":"low","policy_revision":"v1"});
+        let mut cloud = Cloud {
+            catalog_models: vec![
+                json!({"id":"image-low","kind":"image","available":true}),
+                json!({"id":"image-high","kind":"image","available":true}),
+                json!({"id":"unwired","kind":"image","available":false}),
+            ],
+            effort_selection: Some(low.clone()),
+            submission: Some(PendingSubmission {
+                body: original_body.clone(),
+                key: "original-key".into(),
+                snapshot: TaskInputSnapshot {
+                    mode: 0,
+                    prompt: "old prompt".into(),
+                    model_id: "image-low".into(),
+                    parameters: json!({}),
+                    references: vec![],
+                    effort: Some(low.clone()),
+                },
+            }),
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":"low","efforts":[low.clone(),high.clone()]}),
+        );
+        filter_effort_models(&mut cloud);
+        assert_eq!(
+            model_id_at_index(&cloud.models, 0, 0).as_deref(),
+            Some("image-low")
+        );
+        cloud.effort_selection = Some(high);
+        filter_effort_models(&mut cloud);
+        assert_eq!(
+            model_id_at_index(&cloud.models, 0, 0).as_deref(),
+            Some("image-high")
+        );
+        let pending = cloud.submission.unwrap();
+        assert_eq!(pending.body, original_body);
+        assert_eq!(pending.key, "original-key");
+        assert_eq!(pending.snapshot.effort, Some(low));
+    }
+    #[test]
+    fn generation_catalog_v2_keeps_legacy_quote_raw_and_rejects_unit_drift() {
+        let old = effort_fixture("low", "v1", "image-low");
+        let mut current = old.clone();
+        current["agent"]["rate_denominator"] = json!(1_000_000);
+        let mut cloud = Cloud {
+            effort_selection: Some(old.clone()),
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":2,"default_effort_id":"low","efforts":[current.clone()]}),
+        );
+        assert_eq!(cloud.catalog_efforts, vec![current.clone()]);
+        assert_eq!(cloud.effort_selection, Some(old));
+        assert_eq!(
+            generation_effort_reason(&cloud),
+            "强度策略已更新，请重新选择"
+        );
+        for unit in [json!(true), json!("1000000"), json!(100)] {
+            current["agent"]["rate_denominator"] = unit;
+            accept_effort_catalog(
+                &mut cloud,
+                &json!({"effort_policy_version":2,"default_effort_id":"low","efforts":[current.clone()]}),
+            );
+            assert!(cloud.catalog_efforts.is_empty());
+        }
+    }
+    #[test]
+    fn effort_generation_rejects_changed_policy_unavailable_and_missing_selection() {
+        let old = effort_fixture("low", "v1", "image-low");
+        let mut current = old.clone();
+        current["policy_revision"] = json!("v2");
+        let mut cloud = Cloud {
+            effort_selection: Some(old.clone()),
+            catalog_models: vec![json!({"id":"image-low","kind":"image"})],
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":"low","efforts":[current.clone()]}),
+        );
+        filter_effort_models(&mut cloud);
+        assert_eq!(
+            generation_effort_reason(&cloud),
+            "强度策略已更新，请重新选择"
+        );
+        assert!(cloud.models.is_empty());
+        cloud.effort_selection = Some(current.clone());
+        assert!(generation_effort_reason(&cloud).is_empty());
+        current["available"] = json!(false);
+        cloud.catalog_efforts = vec![current];
+        filter_effort_models(&mut cloud);
+        assert_eq!(generation_effort_reason(&cloud), "该强度档位暂不可用");
+        assert!(cloud.models.is_empty());
+        cloud.effort_selection = None;
+        assert_eq!(generation_effort_reason(&cloud), "请选择可用的强度档位");
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":null,"efforts":[]}),
+        );
+        assert!(generation_effort_reason(&cloud).is_empty());
+    }
+    #[test]
+    fn effort_generation_accepts_opaque_provider_models_and_checks_confirmation() {
+        let tier = effort_fixture("low", "v1", "provider/image");
+        let mut cloud = Cloud {
+            effort_selection: Some(tier.clone()),
+            effort_confirmation_required: true,
+            catalog_models: vec![json!({"id":"provider/image","kind":"image","available":true})],
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":"low","efforts":[tier]}),
+        );
+        filter_effort_models(&mut cloud);
+        assert!(cloud.effort_catalog_valid);
+        assert_eq!(
+            model_id_at_index(&cloud.models, 0, 0).as_deref(),
+            Some("provider/image")
+        );
+        assert!(!generation_effort_reason(&cloud).is_empty());
+        cloud.effort_confirmation_required = false;
+        assert!(generation_effort_reason(&cloud).is_empty());
+    }
+
+    #[test]
+    fn effort_generation_partial_metadata_cannot_downgrade_to_legacy() {
+        for response in [
+            json!({"effort_policy_version":1,"default_effort_id":"low"}),
+            json!({"effort_policy_version":1}),
+            json!({"efforts":null}),
+        ] {
+            let mut cloud = Cloud {
+                catalog_models: vec![json!({"id":"image-low","kind":"image","available":true})],
+                ..Default::default()
+            };
+            accept_effort_catalog(&mut cloud, &response);
+            filter_effort_models(&mut cloud);
+            assert!(cloud.effort_required);
+            assert!(!cloud.effort_catalog_valid);
+            assert!(!generation_effort_reason(&cloud).is_empty());
+            assert!(cloud.models.is_empty());
+        }
+    }
+
+    #[test]
+    fn effort_generation_invalid_catalog_fails_closed_without_rebinding_ids() {
+        let tier = effort_fixture("low", "v1", "image-low");
+        let mut cloud = Cloud {
+            effort_selection: Some(tier.clone()),
+            selected_model_ids: HashMap::from([("image".into(), "removed-image".into())]),
+            ..Default::default()
+        };
+        accept_effort_catalog(
+            &mut cloud,
+            &json!({"effort_policy_version":1,"default_effort_id":"low","efforts":[tier.clone(),tier]}),
+        );
+        filter_effort_models(&mut cloud);
+        assert_eq!(generation_effort_reason(&cloud), "强度目录暂不可用");
+        assert!(cloud.models.is_empty());
+        assert_eq!(cloud.selected_model_ids["image"], "removed-image");
+    }
 
     #[test]
     fn repeat_export_keeps_every_existing_file_and_uses_display_name() {
@@ -7266,6 +9564,7 @@ mod reference_tests {
             prompt: "让 @[视频1] 跟随 @[图片1]".into(),
             model_id: "video-model".into(),
             parameters: json!({"duration": 8, "resolution": "720p"}),
+            effort: None,
             references: vec![
                 crate::generation_templates::TemplateReference {
                     path: "/tmp/first.mp4".into(),
@@ -7413,6 +9712,190 @@ mod reference_tests {
         assert!(!has_reference_path(&references, "/tmp/other.png"));
     }
 
+    fn relink_state_fixture() -> Cloud {
+        Cloud {
+            epoch: 7,
+            personal: vec![json!({
+                "id":"missing", "name":"保留名称", "path":"/nonexistent-seecut-relink-fixture.png",
+                "kind":"image", "source":"imported", "created_at":1,
+                "trashed":false, "favorite":true, "folder_id":"kept", "available":false
+            })],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn relink_requires_explicit_confirmation_and_submits_frozen_asset_once() {
+        let mut cloud = relink_state_fixture();
+        let token = super::freeze_personal_relink(&mut cloud, "missing", 3).unwrap();
+        assert!(super::freeze_personal_relink(&mut cloud, "missing", 3).is_err());
+        cloud.pending_relink.as_mut().unwrap().selected = Some("/selected.png".into());
+        assert!(super::relink_request(&mut cloud, 3, &token, true).is_err());
+        cloud.pending_relink.as_mut().unwrap().phase = super::RelinkPhase::Confirming;
+        assert!(super::relink_request(&mut cloud, 3, &token, false).is_err());
+        let expected = cloud.pending_relink.as_ref().unwrap().expected.clone();
+        let req = super::relink_request(&mut cloud, 3, &token, true).unwrap();
+        assert_eq!(
+            req.body["expected"],
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(req.body["path"], "/selected.png");
+        assert_eq!(req.body["allow_unverified"], true);
+        assert!(super::relink_job_current(&cloud, 3, &token));
+        assert!(super::relink_request(&mut cloud, 3, &token, true).is_err());
+        cloud.pending_relink.as_mut().unwrap().phase = super::RelinkPhase::Running;
+        assert!(!super::relink_job_current(&cloud, 3, &token));
+        assert!(super::relink_request(&mut cloud, 3, &token, true).is_err());
+    }
+
+    #[test]
+    fn relink_rejects_changed_view_account_or_metadata_and_late_tokens() {
+        let mut cloud = relink_state_fixture();
+        let old = super::freeze_personal_relink(&mut cloud, "missing", 3).unwrap();
+        assert!(super::relink_context_current(&cloud, 3, &old));
+        assert!(!super::relink_context_current(&cloud, 5, &old)); // leave and return
+        cloud.epoch += 1;
+        assert!(!super::relink_context_current(&cloud, 3, &old));
+        cloud.epoch -= 1;
+        cloud.personal[0]["name"] = json!("期间重命名");
+        assert!(!super::relink_context_current(&cloud, 3, &old));
+        assert!(super::take_personal_relink(&mut cloud, &old).is_some()); // picker cancel
+        assert!(cloud.pending_relink.is_none());
+        let new = super::freeze_personal_relink(&mut cloud, "missing", 5).unwrap();
+        assert_ne!(new, old);
+        assert!(super::take_personal_relink(&mut cloud, &old).is_none()); // late completion
+        assert!(super::relink_context_current(&cloud, 5, &new));
+    }
+
+    #[test]
+    fn relink_queued_confirmation_does_not_depend_on_an_open_or_busy_dialog() {
+        let mut cloud = relink_state_fixture();
+        let token = super::freeze_personal_relink(&mut cloud, "missing", 3).unwrap();
+        let pending = cloud.pending_relink.as_mut().unwrap();
+        pending.selected = Some("/selected.png".into());
+        pending.phase = super::RelinkPhase::Confirming;
+        assert_eq!(
+            super::relink_cancelled_context(&cloud, 3, 0),
+            Some(token.clone())
+        );
+        let req = super::relink_request(&mut cloud, 3, &token, true).unwrap();
+        cloud
+            .pending
+            .push_back((format!("personal-relink:{token}"), req));
+        // Confirmation closes immediately even when an unrelated background job
+        // delays dispatch. Only the relink token stays busy, not another dialog.
+        assert_eq!(super::relink_cancelled_context(&cloud, 3, 0), None);
+        assert_eq!(super::relink_cancelled_context(&cloud, 3, 1), None);
+        assert!(super::relink_job_current(&cloud, 3, &token));
+        assert_eq!(
+            super::relink_cancelled_context(&cloud, 4, 0),
+            Some(token.clone())
+        );
+        cloud.pending_relink.as_mut().unwrap().phase = super::RelinkPhase::Running;
+        assert_eq!(super::relink_cancelled_context(&cloud, 4, 0), None);
+        assert!(!super::relink_job_current(&cloud, 4, &token));
+    }
+
+    #[test]
+    fn relink_recorded_recovery_checksum_bypasses_unverified_confirmation() {
+        let mut cloud = relink_state_fixture();
+        cloud.personal[0]["recovery"] = json!({
+            "previous_path":"/old.png", "selected_path":"/first-selection.png",
+            "sha256":"a".repeat(64), "verified_original":false
+        });
+        let token = super::freeze_personal_relink(&mut cloud, "missing", 3).unwrap();
+        cloud.pending_relink.as_mut().unwrap().selected = Some("/selected.png".into());
+        let req = super::relink_request(&mut cloud, 3, &token, false).unwrap();
+        assert_eq!(req.body["allow_unverified"], false);
+        assert_eq!(req.body["expected"]["recovery"]["verified_original"], false);
+        assert!(!super::relink_job_current(&cloud, 4, &token));
+    }
+
+    #[test]
+    fn relink_bridge_failures_preserve_index_and_success_does_not_scan_or_migrate() {
+        use crate::personal_library::{Library, MANIFEST_NAME};
+        let root =
+            std::env::temp_dir().join(format!("seecut-relink-bridge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let selected = root.join("selected.png");
+        let mut encoder = png::Encoder::new(std::fs::File::create(&selected).unwrap(), 4, 4);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[160; 48])
+            .unwrap();
+        let library_root = root.join("library");
+        let mut library = Library::load(&library_root).unwrap();
+        let id = library.register_generated(&selected).unwrap().id.clone();
+        library.rename(&id, "保留名称").unwrap();
+        library.set_favorite(&id, true).unwrap();
+        let expected = library.get(&id).unwrap().clone();
+        std::fs::remove_file(&expected.path).unwrap();
+        let mut legacy = expected.clone();
+        legacy.id = "untouched-legacy".into();
+        legacy.path = selected.clone();
+        legacy.version = None;
+        let manifest = library_root.join(MANIFEST_NAME);
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(&json!({"items":[expected,legacy],"folders":[]})).unwrap(),
+        )
+        .unwrap();
+        let before = std::fs::read(&manifest).unwrap();
+        let outputs = root.join("outputs");
+        std::fs::create_dir_all(&outputs).unwrap();
+        std::fs::copy(&selected, outputs.join("gen_do_not_scan.png")).unwrap();
+        let wrong = root.join("wrong.png");
+        std::fs::write(&wrong, b"different bytes").unwrap();
+        let cloud = Cloud {
+            folder: outputs,
+            ..Default::default()
+        };
+        let run = |snapshot: &crate::personal_library::Asset, path: &std::path::Path| {
+            super::library_call_at(
+                &cloud,
+                &super::request(
+                    "POST",
+                    "local:library-relink",
+                    json!({
+                        "id":id, "expected":snapshot, "path":path, "allow_unverified":false
+                    }),
+                ),
+                &library_root,
+            )
+        };
+        assert!(run(&expected, &wrong).is_err());
+        assert_eq!(std::fs::read(&manifest).unwrap(), before);
+        assert!(!expected.path.exists());
+        assert!(!library_root.join("pending-legacy-generated.json").exists());
+        let mut stale = expected.clone();
+        stale.name = "过期名称".into();
+        assert!(run(&stale, &selected).is_err());
+        assert_eq!(std::fs::read(&manifest).unwrap(), before);
+        let result = run(&expected, &selected).unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        let restored = items.iter().find(|asset| asset["id"] == id).unwrap();
+        assert_eq!(restored["name"], expected.name);
+        assert_eq!(restored["favorite"], true);
+        assert_eq!(restored["available"], true);
+        assert_eq!(restored["path"], json!(expected.path));
+        assert_eq!(
+            std::fs::read(&expected.path).unwrap(),
+            std::fs::read(&selected).unwrap()
+        );
+        let untouched = items
+            .iter()
+            .find(|asset| asset["id"] == "untouched-legacy")
+            .unwrap();
+        assert!(untouched["version"].is_null());
+        assert!(!library_root.join("pending-legacy-generated.json").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn personal_folder_drop_uses_selected_group_only_when_source_is_selected() {
         let mut cloud = Cloud {
@@ -7487,7 +9970,17 @@ mod reference_tests {
         assert!(path.exists());
         let restored = run("restore", json!({"id":id}));
         assert_eq!(restored["items"][0]["trashed"], false);
+        let managed = PathBuf::from(first["items"][0]["path"].as_str().unwrap());
+        assert_ne!(managed, path);
+        assert_eq!(
+            first["items"][0]["original_path"],
+            json!(path.canonicalize().unwrap())
+        );
         std::fs::remove_file(path).unwrap();
+        let retained = run("list", serde_json::Value::Null);
+        assert_eq!(retained["items"][0]["available"], true);
+        assert_eq!(retained["items"][0]["id"], id);
+        std::fs::remove_file(managed).unwrap();
         let missing = run("list", serde_json::Value::Null);
         assert_eq!(missing["items"][0]["available"], false);
         std::fs::remove_dir_all(root).unwrap();
@@ -7629,7 +10122,7 @@ mod reference_tests {
     }
 
     #[test]
-    fn pending_project_imports_dedupe_cancel_and_resume_once() {
+    fn pending_project_imports_dedupe_and_cancel() {
         let first = std::path::PathBuf::from("/tmp/first.png");
         let second = std::path::PathBuf::from("/tmp/second.mp4");
         let mut pending = Vec::new();
@@ -7638,13 +10131,6 @@ mod reference_tests {
         assert!(enqueue_pending_import(&mut pending, second.clone()));
         assert_eq!(pending.len(), 2);
 
-        let resumed = resume_pending_imports(&mut pending);
-        assert_eq!(resumed, vec![first.clone(), second.clone()]);
-        assert!(pending.is_empty());
-        assert!(resume_pending_imports(&mut pending).is_empty());
-
-        assert!(enqueue_pending_import(&mut pending, first));
-        assert!(enqueue_pending_import(&mut pending, second));
         assert_eq!(cancel_pending_imports(&mut pending), 2);
         assert!(pending.is_empty());
     }
@@ -7994,5 +10480,97 @@ mod reference_tests {
             current
         ));
         assert_eq!(cloud.assets[0]["id"], "new-asset");
+    }
+}
+
+#[cfg(test)]
+mod clip_open_handoff_tests {
+    use super::*;
+    fn batch(path: &str, id: u64) -> Cloud {
+        let mut binding = crate::project_open::HandoffBinding::existing(path.into());
+        binding.started(id, path, false);
+        Cloud {
+            pending_handoff: Some(PendingHandoff {
+                kind: "clip".into(),
+                imports: vec![crate::panes::canvas::CanvasImport {
+                    path: PathBuf::from("synthetic.png"),
+                    display_name: Some("fixture".into()),
+                    library_reference: None,
+                }],
+                awaiting_new_project: false,
+                clip_open: Some(binding),
+            }),
+            ..Cloud::default()
+        }
+    }
+    #[test]
+    fn actual_batch_consumer_ignores_a_and_consumes_b_once() {
+        let mut cloud = batch("B", 2);
+        assert_eq!(completed_clip_imports(&mut cloud, 1).unwrap(), "[]");
+        assert!(cloud.pending_handoff.is_some());
+        let payload = completed_clip_imports(&mut cloud, 2).unwrap();
+        let imports: Vec<crate::panes::canvas::CanvasImport> =
+            serde_json::from_str(&payload).unwrap();
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].path, PathBuf::from("synthetic.png"));
+        assert!(cloud.pending_handoff.is_none());
+        assert_eq!(completed_clip_imports(&mut cloud, 2).unwrap(), "[]");
+    }
+    #[test]
+    fn cancelled_or_failed_open_preserves_assets_for_an_explicit_retry() {
+        let mut cloud = batch("target", 1);
+        let binding = cloud
+            .pending_handoff
+            .as_mut()
+            .unwrap()
+            .clip_open
+            .as_mut()
+            .unwrap();
+        assert!(binding.failed(1));
+        assert_eq!(completed_clip_imports(&mut cloud, 1).unwrap(), "[]");
+        assert_eq!(cloud.pending_handoff.as_ref().unwrap().imports.len(), 1);
+        cloud
+            .pending_handoff
+            .as_mut()
+            .unwrap()
+            .clip_open
+            .as_mut()
+            .unwrap()
+            .started(2, "target", false);
+        assert_ne!(completed_clip_imports(&mut cloud, 2).unwrap(), "[]");
+    }
+    #[test]
+    fn new_project_batch_needs_its_explicit_created_request() {
+        let mut cloud = batch("old target", 1);
+        let handoff = cloud.pending_handoff.as_mut().unwrap();
+        handoff.awaiting_new_project = true;
+        handoff.clip_open = Some(crate::project_open::HandoffBinding::create());
+        handoff
+            .clip_open
+            .as_mut()
+            .unwrap()
+            .started(2, "another existing project", false);
+        assert_eq!(completed_clip_imports(&mut cloud, 2).unwrap(), "[]");
+        assert!(cloud.pending_handoff.is_some());
+        cloud
+            .pending_handoff
+            .as_mut()
+            .unwrap()
+            .clip_open
+            .as_mut()
+            .unwrap()
+            .started(3, "new project", true);
+        assert_ne!(completed_clip_imports(&mut cloud, 3).unwrap(), "[]");
+        assert!(cloud.pending_handoff.is_none());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn invalid_path_serialization_never_consumes_the_pending_batch() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut cloud = batch("target", 1);
+        cloud.pending_handoff.as_mut().unwrap().imports[0].path =
+            PathBuf::from(std::ffi::OsString::from_vec(vec![0xff]));
+        assert!(completed_clip_imports(&mut cloud, 1).is_err());
+        assert_eq!(cloud.pending_handoff.as_ref().unwrap().imports.len(), 1);
     }
 }

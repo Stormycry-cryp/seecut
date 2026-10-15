@@ -14,6 +14,10 @@ export struct MissingMediaItem {
 
 export struct RelinkData {
     open: bool,
+    busy: bool,
+    confirm: bool,
+    error: string,
+    folder-enabled: bool,
     items: [MissingMediaItem],
 }
 
@@ -21,9 +25,12 @@ export component RelinkDialog inherits Modal {
     in property <RelinkData> data;
 
     callback relink-all();
+    callback locate-folder();
     callback dismiss();
 
     open: root.data.open;
+    dismissable: !root.data.busy;
+    closed => { root.dismiss(); }
     title: I18n.t("Missing Media");
     glyph: Glyph.info;
     surface-width: 600px;
@@ -34,10 +41,12 @@ export component RelinkDialog inherits Modal {
             title: I18n.t1("{0} media file(s) not found", "" + data.items.length);
 
             Text {
-                text: I18n.t("The following media files could not be located. You can relink them to a new folder or dismiss this dialog to continue with offline placeholders.");
+                text: root.data.confirm ? "工程缺少原内容校验信息，无法确认是原文件。仍使用资产库中的匹配素材创建修复预览？" : "从资产库核对缺失素材，创建可播放、可另存的修复预览。";
                 color: Theme.fg;
                 wrap: word-wrap;
             }
+
+            if root.data.error != "": Text { text: root.data.error; color: Theme.fg; wrap: word-wrap; }
 
             Flickable {
                 height: 200px;
@@ -86,13 +95,22 @@ export component RelinkDialog inherits Modal {
 
             Button {
                 primary: false;
-                label: I18n.t("Dismiss");
+                label: root.data.confirm ? "取消" : I18n.t("Dismiss");
+                enabled: !root.data.busy;
                 clicked => { root.dismiss(); }
             }
 
             Button {
+                primary: false;
+                label: "定位文件夹";
+                enabled: root.data.folder-enabled;
+                clicked => { root.locate-folder(); }
+            }
+
+            Button {
                 primary: true;
-                label: I18n.t("Relink All…");
+                label: root.data.busy ? "正在核对…" : root.data.confirm ? "仍创建修复预览" : "从资产库修复";
+                enabled: !root.data.busy;
                 clicked => { root.relink-all(); }
             }
         }

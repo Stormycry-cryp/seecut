@@ -57,6 +57,7 @@ mod tests {
                 audio_codec: has_audio.then(|| "aac".to_owned()),
                 has_audio,
                 audio_tracks: Vec::new(),
+                extra: Default::default(),
             },
         }
     }
@@ -171,6 +172,211 @@ mod tests {
     }
 
     #[test]
+    fn f1_library_identity_survives_undo_redo_and_document_round_trip() {
+        let mut editor = Editor::new();
+        let Command::AddMedia { mut item } = media("/managed/output.png", 5.0, false) else {
+            unreachable!()
+        };
+        item.kind = MediaKind::Image;
+        item.extra.insert("seecutLibraryReference".into(), json!({"asset_id":"asset-a", "version":{"sha256":"a".repeat(64),"registration_id":"operation:export-a"}}));
+        editor.apply(Command::AddMedia { item }).unwrap();
+        let before = editor.project().clone();
+        assert!(editor.undo());
+        assert!(editor.project().media.is_empty());
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &before);
+        let wire = crate::to_document(&settings(), editor.project());
+        assert_eq!(crate::from_document(&wire).unwrap().media, before.media);
+    }
+
+    #[test]
+    fn f1_same_bytes_distinct_library_outputs_keep_distinct_identity() {
+        let mut editor = Editor::new();
+        let Command::AddMedia { mut item } = media("/managed/content-sha.png", 5.0, false) else {
+            unreachable!()
+        };
+        item.extra
+            .insert("seecutLibraryReference".into(), json!({"asset_id":"first"}));
+        editor
+            .apply(Command::AddMedia { item: item.clone() })
+            .unwrap();
+        editor
+            .apply(Command::AddMedia { item: item.clone() })
+            .unwrap();
+        assert_eq!(editor.project().media.len(), 1);
+        item.extra.insert(
+            "seecutLibraryReference".into(),
+            json!({"asset_id":"second"}),
+        );
+        editor.apply(Command::AddMedia { item }).unwrap();
+        assert_eq!(editor.project().media.len(), 2);
+        editor
+            .apply(media("/managed/content-sha.png", 5.0, false))
+            .unwrap();
+        assert_eq!(
+            editor.project().media.len(),
+            2,
+            "ordinary path-only import remains a no-op"
+        );
+        assert_eq!(
+            editor.project().media[0].extra["seecutLibraryReference"]["asset_id"],
+            "first"
+        );
+        assert_eq!(
+            editor.project().media[1].extra["seecutLibraryReference"]["asset_id"],
+            "second"
+        );
+    }
+
+    #[test]
+    fn f1_slot_replacement_updates_identity_preserves_template_and_deduplicates() {
+        let mut editor = Editor::new();
+        let Command::AddMedia { item: mut old } = media("/old.png", 5.0, false) else {
+            unreachable!()
+        };
+        old.extra
+            .insert("seecutLibraryReference".into(), json!({"asset_id":"old"}));
+        old.extra
+            .insert("seecutLibraryBinding".into(), json!({"asset_id":"old"}));
+        old.extra
+            .insert("futureTemplate".into(), json!({"layout":7}));
+        let id = editor
+            .apply(Command::AddMedia { item: old })
+            .unwrap()
+            .created_id
+            .unwrap();
+        editor
+            .apply(Command::SetMediaPlaceholder {
+                media_id: id.clone(),
+                placeholder: true,
+            })
+            .unwrap();
+        let before = editor.project().clone();
+        let Command::AddMedia {
+            item: mut replacement,
+        } = media("/new.png", 5.0, false)
+        else {
+            unreachable!()
+        };
+        replacement
+            .extra
+            .insert("seecutLibraryReference".into(), json!({"asset_id":"new"}));
+        replacement
+            .extra
+            .insert("seecutLibraryBinding".into(), json!({"asset_id":"new"}));
+        editor
+            .apply(Command::FillSlot {
+                media_id: id.clone(),
+                item: replacement.clone(),
+            })
+            .unwrap();
+        let after = editor.project().clone();
+        assert_eq!(after.media[0].id, id);
+        assert_eq!(after.media[0].extra["futureTemplate"], json!({"layout":7}));
+        assert_eq!(
+            after.media[0].extra["seecutLibraryReference"]["asset_id"],
+            "new"
+        );
+        assert_eq!(
+            after.media[0].extra["seecutLibraryBinding"]["asset_id"],
+            "new"
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+        assert_eq!(
+            crate::from_document(&crate::to_document(&settings(), editor.project()))
+                .unwrap()
+                .media,
+            after.media
+        );
+        assert!(
+            !editor
+                .apply(Command::AddMedia {
+                    item: replacement.clone()
+                })
+                .unwrap()
+                .applied
+        );
+        assert_eq!(editor.project().media.len(), 1);
+        editor
+            .apply(Command::SetMediaPlaceholder {
+                media_id: id.clone(),
+                placeholder: true,
+            })
+            .unwrap();
+        replacement.extra.clear();
+        editor
+            .apply(Command::FillSlot {
+                media_id: id,
+                item: replacement,
+            })
+            .unwrap();
+        assert!(
+            !editor.project().media[0]
+                .extra
+                .contains_key("seecutLibraryReference")
+        );
+        assert!(
+            !editor.project().media[0]
+                .extra
+                .contains_key("seecutLibraryBinding")
+        );
+        assert_eq!(
+            editor.project().media[0].extra["futureTemplate"],
+            json!({"layout":7})
+        );
+    }
+
+    #[test]
+    fn f1_reserved_extensions_cannot_change_saved_media_identity() {
+        for key in [
+            "id",
+            "path",
+            "name",
+            "duration",
+            "kind",
+            "width",
+            "height",
+            "frameRate",
+            "frameRateFraction",
+            "videoCodec",
+            "audioCodec",
+            "hasAudio",
+            "audioTracks",
+            "placeholder",
+        ] {
+            let (mut editor, id, _) = fixture();
+            editor
+                .apply(Command::SetMediaPlaceholder {
+                    media_id: id.clone(),
+                    placeholder: true,
+                })
+                .unwrap();
+            let before = editor.project().clone();
+            let Command::AddMedia { mut item } = media("/new.png", 5.0, false) else {
+                unreachable!()
+            };
+            item.extra.insert(key.into(), json!("shadow"));
+            assert_eq!(
+                editor
+                    .apply(Command::AddMedia { item: item.clone() })
+                    .unwrap_err(),
+                crate::commands::CommandError::ReservedMediaExtension
+            );
+            assert_eq!(editor.project(), &before);
+            assert_eq!(
+                editor
+                    .apply(Command::FillSlot { media_id: id, item })
+                    .unwrap_err(),
+                crate::commands::CommandError::ReservedMediaExtension
+            );
+            assert_eq!(editor.project(), &before);
+        }
+    }
+
+    #[test]
     fn freeze_frame_holds_a_second_and_ripples_the_tail() {
         let (mut editor, media_id, clip_id) = fixture();
         let still = NewMedia {
@@ -186,6 +392,7 @@ mod tests {
             audio_codec: None,
             has_audio: false,
             audio_tracks: Vec::new(),
+            extra: Default::default(),
         };
         let freeze_id = editor
             .apply(Command::FreezeFrame {
@@ -279,6 +486,7 @@ mod tests {
                         audio_codec: None,
                         has_audio: false,
                         audio_tracks: Vec::new(),
+                        extra: Default::default(),
                     }),
                 })
                 .expect("freezes")
@@ -1683,6 +1891,7 @@ mod tests {
                     audio_codec: None,
                     has_audio: false,
                     audio_tracks: Vec::new(),
+                    extra: Default::default(),
                 },
             })
             .expect("fills");
@@ -1722,6 +1931,7 @@ mod tests {
                 audio_codec: None,
                 has_audio: false,
                 audio_tracks: Vec::new(),
+                extra: Default::default(),
             },
         });
         assert!(

@@ -60,13 +60,32 @@ impl CustomApplicationHandler for DropHandler {
     fn window_event(
         &mut self,
         _event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         _winit_window: Option<&WinitWindow>,
         _slint_window: Option<&slint::Window>,
         event: &WindowEvent,
     ) -> EventResult {
         if let WindowEvent::DroppedFile(path) = event {
             self.pending.push(path.clone());
+        }
+        if matches!(event, WindowEvent::Focused(_) | WindowEvent::Occluded(_)) {
+            use slint::{ComponentHandle, winit_030::WinitWindowAccessor};
+            crate::host::Shell::with(|_, app| {
+                if app.window().with_winit_window(|own| own.id() == window_id) != Some(true) {
+                    return;
+                }
+                let assistant = app.global::<crate::ui::Assistant>();
+                match event {
+                    WindowEvent::Focused(focused) => assistant.set_window_focused(*focused),
+                    WindowEvent::Occluded(occluded) => assistant.set_window_visible(!*occluded),
+                    _ => {}
+                }
+                log::trace!(
+                    "assistant window focused={}, visible={}",
+                    assistant.get_window_focused(),
+                    assistant.get_window_visible()
+                );
+            });
         }
         EventResult::Propagate
     }
@@ -75,6 +94,12 @@ impl CustomApplicationHandler for DropHandler {
         if !self.pending.is_empty() {
             (self.on_dropped)(std::mem::take(&mut self.pending));
         }
+        crate::toonflow_webview::sync();
+        EventResult::Propagate
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) -> EventResult {
+        crate::toonflow_webview::shutdown();
         EventResult::Propagate
     }
 }
@@ -321,6 +346,24 @@ pub fn pick_files(title: &str, filter: Option<(&str, &[&str])>) -> Option<Vec<Pa
     {
         let _ = (title, filter);
         None
+    }
+}
+
+/// A single-file desktop picker. Cancellation is an explicit `Ok(None)`;
+/// mobile callers receive an error until a single-file picker is available.
+pub fn pick_file(title: &str, filter: Option<(&str, &[&str])>) -> Result<Option<PathBuf>, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let mut dialog = rfd::FileDialog::new().set_title(title);
+        if let Some((name, extensions)) = filter {
+            dialog = dialog.add_filter(name, extensions);
+        }
+        Ok(dialog.pick_file())
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = (title, filter);
+        Err("当前平台暂不支持重新关联素材".into())
     }
 }
 

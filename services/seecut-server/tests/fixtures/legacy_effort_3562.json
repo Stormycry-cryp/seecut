@@ -1,0 +1,125 @@
+{
+  "source_commit": "3562c6df0cab266e931e94a6da251c2c3227e874",
+  "source_hashes": {
+    "src/seecut_server/__init__.py": "44b44fcb902e5ac09223e963ce35c45b1767532fa1d15e48af9971eaec26f675",
+    "src/seecut_server/app.py": "ca48f63e7dd71ddff8e14a1e92e091a79a63cc399fa0b827e82a901fda7cfbcd",
+    "src/seecut_server/assistant_contract.py": "43ad446fde1504c9aa6ba35da68fd0795719e7d4fafa57d7a25af70359035657",
+    "src/seecut_server/assistant_execution_lock.py": "99b51a7f57c0e92fcf26c3bc8016a015d28a44b6fb4dc5928cc327387066a108",
+    "src/seecut_server/assistant_glm.py": "08f6ef826a1a8e4bac49ab4b2eaabd3674cb7d3a7bc115da7d2d7311d11b1287",
+    "src/seecut_server/assistant_local_resolution.py": "517d6ca2d4ed4320a397685f9fc57f0c3299ae1665d97e75304eddb7ca3b7694",
+    "src/seecut_server/assistant_models.py": "45527ecf761da66cc4bd14a3e8077f5374d95bcd901d082b839cc69868d10f92",
+    "src/seecut_server/assistant_provider.py": "0154f544722f95620ed00e04abc3c71daf7d6f12b9992529723d989690f3b3bf",
+    "src/seecut_server/assistant_service.py": "239563584601ddb53f7c0f9af06348215e5253505b49c297167a44c4033ab3fb",
+    "src/seecut_server/assistant_worker.py": "a8e9e37321fb7d99ee4fdea8ab8dc4d415dde8c3b55b48ba506ae8b240ec586e",
+    "src/seecut_server/catalog.py": "fda505d81fc1434929bc3b45e65d92ab90fd1cee6168527358a85877200fb48e",
+    "src/seecut_server/config.py": "48ab5e58ef93541d6dfcc1873ec106b59daa7820f50b1907bded5a8b469d288e",
+    "src/seecut_server/db.py": "c5e07749c55015bff8194e033c8bcedc0038c1a9f0d8df900de5e41c0f1fd9d6",
+    "src/seecut_server/efforts.py": "b7660bcc485030ec1205a6e09ea12b40599c882ea967558361b60765b6f81419",
+    "src/seecut_server/emailer.py": "d9d2603b3672982e38e2ff90338b9d8cc000c2c6ad28c6825c8de2477e92b781",
+    "src/seecut_server/errors.py": "7604e8b1fc6902dd22dc7027454caa694492a54961a1571e6f5d325680ea10cf",
+    "src/seecut_server/http.py": "393aa3490de00a7cfcfa43bd3f512ab4a4f29242f49d3d27bf43aee00d0c7cc6",
+    "src/seecut_server/image2.py": "899ff309884e99dcf47567295eb6cdb8105238104a47414066c3fb32d732ae9b",
+    "src/seecut_server/network.py": "f435c03e7ed13f4ea1e4811c52d9f50ad19e644cc83fe38cc2f7fa6762f851ec",
+    "src/seecut_server/ratelimit.py": "3c69b61096c24d4d46b5683c30a3e551e5ef6ac5b0b0a6a5949975ecf0d2a8e5",
+    "src/seecut_server/security.py": "c39c41607523461b1ead4efe5089ec664ad83eab1d7899de1ab10a95b519eab3",
+    "src/seecut_server/service.py": "619a5c3d24c2ad10efaf9b7f8f2acf56847447475124875afc0097d68c068494",
+    "src/seecut_server/worker.py": "863ba7de7113c5eca12485020a8c40e8dfc3bb3461e8e8e6c1de0e32f642006f",
+    "src/seecut_server/xiangxin.py": "2cf9a0e44a9b8b5a1a25cd8c8d8092df589c3e7e60a2dc14fda56b0c328592cd",
+    "schema.sql": "baf9fed2266fc52e66d6801340da2a54853acb581a481fda9d3ef22bc1e02c01"
+  },
+  "sql_sha256": "0c8ae76fe5465de84cdd8c46bc67aa3256ac4f935b33f99fd18846e47f5df1fc",
+  "user_id": "usr_1wWMqThTywvkENpUPwTdlg",
+  "budget_request": {
+    "model_id": "fast",
+    "effort_id": "lite",
+    "policy_revision": "policy-1",
+    "expected_policy_digest": "feef59403fc8210bb6dd2b7f2178ac9e17d98bbb40688442f89cbd6f39e4a388",
+    "client_request_id": "budget-turn-1",
+    "local_session_id": "session-1",
+    "turn_id": "turn-1"
+  },
+  "create_body": {
+    "client_request_id": "step-2",
+    "protocol_version": 1,
+    "local_session_id": "session-1",
+    "turn_id": "turn-1",
+    "step_id": "step-2",
+    "budget_id": "abud_-0vHD32715AWqHDDJjh3gA",
+    "request": {
+      "system": "合成测试",
+      "messages": [
+        {
+          "id": "input-1",
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "检查画布"
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "name": "context",
+          "description": "读取画布",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      ],
+      "maxOutputTokens": 128
+    },
+    "model_id": "fast",
+    "effort_id": "lite",
+    "policy_revision": "policy-1",
+    "quote_id": "aquo_tFw9m0EyTxygmuLzAUMG7A"
+  },
+  "accepted_operation_id": "aop_fAHKjEMpbIWZYLLZPFcvZA",
+  "budget_id": "abud_-0vHD32715AWqHDDJjh3gA",
+  "policy_json": "{\"agent\":{\"context_window\":1000,\"input_rate\":2,\"max_output_tokens\":128,\"max_steps\":4,\"max_turn_credits\":10,\"model_id\":\"fast\",\"output_rate\":5,\"pricing_version\":\"fixture-1\"},\"generation\":{\"image_model_ids\":[\"gpt-image-2.5-flare\"],\"video_model_ids\":[]},\"id\":\"lite\",\"label\":\"lite\",\"policy_revision\":\"policy-1\"}",
+  "expected_policy_digest": "feef59403fc8210bb6dd2b7f2178ac9e17d98bbb40688442f89cbd6f39e4a388",
+  "initial_wallet": {
+    "available_credits": 96,
+    "held_credits": 3,
+    "ledger": [
+      {
+        "id": "led_GWeku2hXG-8DU93M6N475Q",
+        "kind": "hold",
+        "delta_available": -3,
+        "delta_held": 3,
+        "reference_type": "assistant_operation",
+        "reference_id": "aop_3uDbYSK641gMXI7D7ijF3w",
+        "created_at": 1700000000
+      },
+      {
+        "id": "led_7hvv6Bit7wRgcSoW_2d0hA",
+        "kind": "capture",
+        "delta_available": 0,
+        "delta_held": -1,
+        "reference_type": "assistant_operation",
+        "reference_id": "aop_3uDbYSK641gMXI7D7ijF3w",
+        "created_at": 1700000000
+      },
+      {
+        "id": "led_Kwmu7D8Ahd_m0rlM0SmKeQ",
+        "kind": "release",
+        "delta_available": 2,
+        "delta_held": -2,
+        "reference_type": "assistant_operation",
+        "reference_id": "aop_3uDbYSK641gMXI7D7ijF3w",
+        "created_at": 1700000000
+      },
+      {
+        "id": "led_vfy2BvWH7PTSzB8nLy4orw",
+        "kind": "hold",
+        "delta_available": -3,
+        "delta_held": 3,
+        "reference_type": "assistant_operation",
+        "reference_id": "aop_fAHKjEMpbIWZYLLZPFcvZA",
+        "created_at": 1700000000
+      }
+    ]
+  },
+  "initial_spent_credits": 1
+}
