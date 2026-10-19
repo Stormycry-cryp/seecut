@@ -1,0 +1,12 @@
+bun test v1.3.14 (0d9b296a)
+
+integrations/toonflow/tests/floating-controls.test.ts:
+(pass) controls remain reachable after pan/zoom and in narrow viewports without moving nodes [2.15ms]
+(pass) paired toolbar and prompt never collide when the node pans above the viewport [0.12ms]
+(pass) paired controls share the viewport budget at narrow, short, zoomed and panned boundaries [4.17ms]
+(pass) a missing toolbar or prompt does not reserve space for an invisible partner [0.21ms]
+
+ 4 pass
+ 0 fail
+ 29064 expect() calls
+Ran 4 tests across 1 file. [141.00ms]

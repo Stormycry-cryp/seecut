@@ -1,0 +1,25 @@
+   Compiling concat v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9m 48s
+     Running unittests src/lib.rs (../.toonflow/native-target/debug/deps/concat-6e5e5b3d2a17522d)
+
+running 17 tests
+test registration_retry::tests::canvas_owned_bytes_survive_external_overwrite_before_worker_registration ... ok
+test registration_retry::tests::corrupted_snapshot_is_not_committed_as_expected_content ... ok
+test registration_retry::tests::f3_canvas_content_registration_reuses_identity_and_keeps_scopes_and_old_assets ... ok
+test registration_retry::tests::f3_canvas_reexport_after_trash_keeps_deleted_record_and_retries_new_identity ... ok
+test registration_retry::tests::failed_index_replays_original_snapshot_after_external_overwrite_and_deletion ... ok
+test registration_retry::tests::first_legacy_prepare_failure_is_not_reported_as_available ... ok
+test registration_retry::tests::formal_export_id_distinguishes_same_bytes_and_replay_is_idempotent ... ok
+test registration_retry::tests::later_legacy_prepare_failure_persists_earlier_snapshot_before_returning ... ok
+test registration_retry::tests::legacy_manifest_keeps_id_flags_and_snapshots_available_bytes ... ok
+test registration_retry::tests::legacy_migration_commit_failure_recovers_first_bytes_and_current_metadata ... ok
+test registration_retry::tests::legacy_migration_corrupt_snapshot_keeps_old_index_and_intent ... ok
+test registration_retry::tests::legacy_migration_wrong_target_or_different_version_is_not_replaced ... ok
+test registration_retry::tests::legacy_migrations_and_output_retry_keep_separate_identities_and_journals ... ok
+test registration_retry::tests::mcp_canvas_registration_retry_uses_only_one_original_frozen_snapshot ... ok
+test registration_retry::tests::missing_legacy_source_stays_indexed_until_it_can_be_snapshotted ... ok
+test registration_retry::tests::overwritten_external_path_creates_linked_versions_and_keeps_old_bytes ... ok
+test registration_retry::tests::stale_success_journal_replay_uses_same_asset_and_rejects_changed_operation ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 478 filtered out; finished in 0.50s
+
