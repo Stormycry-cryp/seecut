@@ -1,0 +1,1 @@
+{"reproduction":"serde_json 1.0.151 default features; Value from 0.12_f32; serialize then parse","beforeBits":"3fbeb851e0000000","afterBits":"3fbeb851e0000001","equal":false,"fix":"Enable serde_json/float_roundtrip in concat-canvas; assert exact provenance roundtrip and full export replay"}

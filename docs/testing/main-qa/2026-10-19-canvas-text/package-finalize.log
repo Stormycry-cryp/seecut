@@ -1,0 +1,4 @@
+{"action": "seal", "verified_files": 5135}
+/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Canvas-Text-QA.app: replacing existing signature
+{"action": "verify", "verified_files": 5135}
+{"source": "009bfa134545a15b205587eaa131b3bb531edf73", "app": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Canvas-Text-QA.app", "fileCount": 6380, "manifest": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/docs/testing/main-qa/2026-10-19-canvas-text/candidate-manifest.json"}

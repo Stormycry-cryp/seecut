@@ -1,0 +1,9 @@
+
+running 5 tests
+test panes::canvas::text::tests::double_click_release_keeps_text_cancel_transaction ... ok
+test panes::canvas::text::tests::mixed_text_export_registers_once_and_reimports_existing_asset ... ignored, requires an isolated portable executable and SEECUT_C03_FIXTURE_DIR
+test panes::canvas::text::tests::text_duplicate_cache_and_style_history_are_independent ... ok
+test panes::canvas::text::tests::text_input_is_one_transaction_and_cancel_restores_source_and_pixels ... ok
+test panes::canvas::text::tests::text_project_reopens_editable_source_and_png_matches_compositor ... ok
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 481 filtered out; finished in 0.75s

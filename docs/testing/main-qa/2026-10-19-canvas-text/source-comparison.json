@@ -1,0 +1,112 @@
+{
+  "baseline": "d546262ad6fc28016b8e47f411ba250f916c6b69",
+  "candidate": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/docs/testing/main-qa/2026-10-12-agent-canvas-mcp-loop/public-candidate",
+  "old_records": [
+    "c03-pane-6.json",
+    "c03-native-2.json"
+  ],
+  "recorded_sources": 477,
+  "candidate_mismatches": [],
+  "pane_native_same_sources": true,
+  "old_candidate_preserved": true,
+  "excluded": "retired native Flow, old Agent/MCP/service changes, old Cargo lock; existing R3 integration remains",
+  "current_changes": [
+    "src/Cargo.lock",
+    "src/crates/concat-canvas/Cargo.toml",
+    "src/crates/concat-canvas/src/compositor.rs",
+    "src/crates/concat-canvas/src/document.rs",
+    "src/crates/concat-canvas/src/gpu.rs",
+    "src/crates/concat-canvas/src/lib.rs",
+    "src/crates/concat-text/Cargo.toml",
+    "src/crates/concat-text/src/lib.rs",
+    "src/crates/concat/Cargo.toml",
+    "src/crates/concat/src/lib.rs",
+    "src/crates/concat/src/panes/canvas.rs",
+    "src/crates/concat/src/studio.rs",
+    "src/crates/concat/ui/app.slint",
+    "src/crates/concat/ui/workspace/canvas-pane.slint"
+  ],
+  "new_files": [
+    "src/crates/concat-canvas/src/text.rs",
+    "src/crates/concat/src/panes/canvas/text.rs"
+  ],
+  "initial_font_test": {
+    "command": "cargo +1.93 test -p concat-text --config profile.dev.package.concat.debug=0",
+    "result": "9 passed; 0 failed",
+    "observed": "2026-10-19 UTC",
+    "raw_log": "initial output retained in thread; no rerun solely to create log"
+  },
+  "integratedSource": "009bfa134545a15b205587eaa131b3bb531edf73",
+  "recordedAt": "2026-10-19T02:14:59.503411+00:00",
+  "oldEvidenceHashes": {
+    "c03-pane-6.json": "1838c5b2ff4e80482340edc808cb1f9154228d76681eb56dd99131c1265cf5f1",
+    "c03-native-2.json": "bdfe1ff772b5088e1e476f4a6d63aada79f2d3ae6d353bb4a934b3eec77aa9e7"
+  },
+  "integratedFiles": {
+    "src/Cargo.lock": {
+      "currentSha256": "ab192f0b8adbb8aac3b2025645bf5d7016086e2d6e8fc65b614d0212b2f2d67e",
+      "candidateRecordedSha256": "968dda8545d90b86b8dd7b9979fe330978ee53d6c51f99cda2b3a3a18b2a6a9c"
+    },
+    "src/crates/concat-canvas/Cargo.toml": {
+      "currentSha256": "32d53167b69a68788401b11f4a1e4bf93037647002a5b5d1dad7c6438b322314",
+      "candidateRecordedSha256": "5458a0bd8c442477c24f2b8624870ba2fc7eb96bd4db76a6d504da0dd71ff51e"
+    },
+    "src/crates/concat-canvas/src/compositor.rs": {
+      "currentSha256": "bea2aca6d71eb100cae1f6061323224d555f505f08a88a4a74df0a0778ddadc1",
+      "candidateRecordedSha256": "bea2aca6d71eb100cae1f6061323224d555f505f08a88a4a74df0a0778ddadc1"
+    },
+    "src/crates/concat-canvas/src/document.rs": {
+      "currentSha256": "f32314bf3b7b2b6c55f6c87faa3e055fcfbfc65bbb3e6dcfee06dd4a472b13b4",
+      "candidateRecordedSha256": "f32314bf3b7b2b6c55f6c87faa3e055fcfbfc65bbb3e6dcfee06dd4a472b13b4"
+    },
+    "src/crates/concat-canvas/src/gpu.rs": {
+      "currentSha256": "c84d9820f8e356803b2136d330d7fa1caf541872745e37700a6dd694b9b58085",
+      "candidateRecordedSha256": "c84d9820f8e356803b2136d330d7fa1caf541872745e37700a6dd694b9b58085"
+    },
+    "src/crates/concat-canvas/src/lib.rs": {
+      "currentSha256": "961fb3643f055b4341846ab29d138f73d7265ce9fcf3b0690186ea06c00274ca",
+      "candidateRecordedSha256": "961fb3643f055b4341846ab29d138f73d7265ce9fcf3b0690186ea06c00274ca"
+    },
+    "src/crates/concat-canvas/src/text.rs": {
+      "currentSha256": "7d1f59dfebc9fcc25d5f87b5a99df21f9796cb39d9b2aa4c81e13e82429a0d0e",
+      "candidateRecordedSha256": "79a372800f523559818a75fb3eea7d8cac08f73c70be8fe55785b28a3e5f8952"
+    },
+    "src/crates/concat-text/Cargo.toml": {
+      "currentSha256": "7862a1f93edb40dc0e614b4e8631a13d6829e93ef6fe1040ca985fd12e8efeda",
+      "candidateRecordedSha256": "7862a1f93edb40dc0e614b4e8631a13d6829e93ef6fe1040ca985fd12e8efeda"
+    },
+    "src/crates/concat-text/src/lib.rs": {
+      "currentSha256": "12cb1ccd92e4a6f26ed9b2e8a3392e622d486188a6c099b50584b45943bca2ee",
+      "candidateRecordedSha256": "12cb1ccd92e4a6f26ed9b2e8a3392e622d486188a6c099b50584b45943bca2ee"
+    },
+    "src/crates/concat/Cargo.toml": {
+      "currentSha256": "dace3d786eb29c87c4f1229de98e6e0a5a6ab0b13f5f1eda97d3099dce8bd5bf",
+      "candidateRecordedSha256": "c639a8611160caf3925cb965fa70a0616340c8e01fcf0ee974380181f29bbb2b"
+    },
+    "src/crates/concat/src/lib.rs": {
+      "currentSha256": "75348be4abdb448f18a4bdb9b3737491f4ab509db7a56d3355cddd9161168098",
+      "candidateRecordedSha256": "2821a99829a20408895d9b27a88da4abed48320cd1c656b6f800fe053347a595"
+    },
+    "src/crates/concat/src/panes/canvas.rs": {
+      "currentSha256": "7351b5e3708cecc104437557d35237bc39de6445fd4fccbd6b2b964ff2303a73",
+      "candidateRecordedSha256": "7351b5e3708cecc104437557d35237bc39de6445fd4fccbd6b2b964ff2303a73"
+    },
+    "src/crates/concat/src/panes/canvas/text.rs": {
+      "currentSha256": "b0548ad20326bc0aa0be08670fe4d8c199a2362b87925f03d01502c0ec7f3bd7",
+      "candidateRecordedSha256": "383b3c5e77aa42a8e5003af656bb7067cde6fdf98d44c6097946ec1f6f3e6740"
+    },
+    "src/crates/concat/src/studio.rs": {
+      "currentSha256": "99022cf6529157ecae4eeebffffc91e4ff563adf42aa03b86f71c3589acea940",
+      "candidateRecordedSha256": "52ba0dfbe68da2b7a8ab8bf563001eb0578566e9a8b23fc7b0c21eac3c46d051"
+    },
+    "src/crates/concat/ui/app.slint": {
+      "currentSha256": "17332f76f185f7d6515b00c87910be71af457507023fd3e567cc4150b460ae99",
+      "candidateRecordedSha256": "14006ab150a4a8a0124fea2f8ddcbaf3c5d5a4d948ebc81e7e453af1ad8427c8"
+    },
+    "src/crates/concat/ui/workspace/canvas-pane.slint": {
+      "currentSha256": "30938971162738b8b79206a403de459ca1f9828d2341c181b7810e2c5bc1b5e3",
+      "candidateRecordedSha256": "ce613938e7a7a4b1cf2e186ba175c058428c6eec02118146b6f435876e848248"
+    }
+  },
+  "additionalFix": "serde_json float_roundtrip; line height/tracking controls; focused mixed export/reimport regression"
+}
