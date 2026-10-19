@@ -1722,6 +1722,36 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn editable_text_cache_matches_gpu_cpu_after_content_and_style_changes() {
+        let mut gpu = required_gpu();
+        let mut world = World {
+            document: ImageDocument::new(320, 180),
+            store: PixelStore::new(),
+        };
+        world.with_layer("photo", solid(320, 180, [80, 120, 160, 255]));
+        let mut text = crate::text::CanvasText::new(180);
+        text.style.content = "中文 Text\n第二行".into();
+        text.style.font_size = 0.15;
+        let id = world.with_layer("text", text.rasterize(320, 180).unwrap());
+        let layer = world.document.layer_mut(id).unwrap();
+        layer.text = Some(Box::new(text.clone()));
+        layer.opacity = 0.8;
+        layer.transform.rotation = 0.15;
+        let pixels = layer.pixels;
+        assert_parity_on(&world, &mut gpu);
+        text.style.content = "修改 Edited".into();
+        text.style.stroke_width = 0.01;
+        text.style.shadow = true;
+        text.style.color = "#E94A2AAA".into();
+        world.document.layer_mut(id).unwrap().text = Some(Box::new(text.clone()));
+        world
+            .store
+            .replace(pixels, text.rasterize(320, 180).unwrap());
+        assert_parity_on(&world, &mut gpu);
+    }
+
     /// Match the editor's shared device: no optional features, real hardware.
     #[test]
     fn shared_device_without_optional_features_matches_cpu() {

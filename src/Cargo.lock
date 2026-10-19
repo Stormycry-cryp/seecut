@@ -1281,6 +1281,7 @@ dependencies = [
  "concat-project",
  "concat-server",
  "concat-speech",
+ "concat-text",
  "concat-vision",
  "image",
  "libc",
@@ -1342,6 +1343,7 @@ name = "concat-canvas"
 version = "0.2.2"
 dependencies = [
  "concat-core",
+ "concat-text",
  "pollster",
  "serde",
  "serde_json",
@@ -1497,6 +1499,7 @@ version = "0.2.2"
 dependencies = [
  "fontdb",
  "rustybuzz",
+ "serde",
  "tiny-skia 0.12.0",
  "ttf-parser",
 ]

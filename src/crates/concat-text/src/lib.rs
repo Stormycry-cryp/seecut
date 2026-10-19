@@ -29,7 +29,11 @@
 //! stores them, so a title looks the same at 720p and 4K. Everything here
 //! converts to pixels once, at the top.
 
-use std::fmt;
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use tiny_skia::{
     Color, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect,
@@ -39,7 +43,7 @@ use tiny_skia::{
 /// How a title's lines sit within their block, and which point of the block
 /// the clip's position holds still: its left edge, its centre or its right
 /// edge. See the module docs.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum Align {
     /// Lines share a left edge, and the block's left edge is the anchor.
     Left,
@@ -53,7 +57,7 @@ pub enum Align {
 /// Everything about a title's look. Mirrors the document's text style field
 /// for field so the host can copy it across; this crate does not depend on
 /// the document.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TitleStyle {
     /// The words, newlines included.
     pub content: String,
@@ -137,6 +141,8 @@ pub enum Error {
     Canvas(u32, u32),
     /// No face at all could be found, not even a system fallback.
     NoFont,
+    /// No installed face covers a requested character.
+    MissingGlyph(char),
     /// A face was found but its data could not be read as a font.
     BadFont,
     /// PNG encoding failed.
@@ -148,6 +154,7 @@ impl fmt::Display for Error {
         match self {
             Error::Canvas(w, h) => write!(f, "cannot make a {w}×{h} canvas"),
             Error::NoFont => write!(f, "no font found, not even a system fallback"),
+            Error::MissingGlyph(c) => write!(f, "no installed font covers U+{:04X}", *c as u32),
             Error::BadFont => write!(f, "the chosen font file could not be parsed"),
             Error::Encode(why) => write!(f, "PNG encoding failed: {why}"),
         }
@@ -160,6 +167,8 @@ impl std::error::Error for Error {}
 /// carries. Built once and kept; loading the system's fonts is the slow part.
 pub struct Fonts {
     db: fontdb::Database,
+    blobs: Mutex<HashMap<fontdb::ID, Arc<Vec<u8>>>>,
+    fallback: Mutex<HashMap<(fontdb::ID, char), Option<fontdb::ID>>>,
 }
 
 impl Default for Fonts {
@@ -173,18 +182,23 @@ impl Fonts {
     pub fn new() -> Fonts {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        Fonts { db }
+        Fonts {
+            db,
+            blobs: Mutex::new(HashMap::new()),
+            fallback: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Adds one font file. A file that does not parse is skipped; a title
     /// that names its family falls back to a system face.
     pub fn add_file(&mut self, path: &std::path::Path) -> bool {
+        self.fallback.get_mut().expect("font cache").clear();
         self.db.load_font_file(path).is_ok()
     }
 
     /// The best face for a style: the named family at the nearest weight and
     /// slant, then any sans-serif, then anything at all.
-    fn pick(&self, style: &TitleStyle) -> Result<Vec<u8>, Error> {
+    fn pick(&self, style: &TitleStyle) -> Result<fontdb::ID, Error> {
         let family = style
             .font_family
             .trim()
@@ -212,22 +226,107 @@ impl Fonts {
             .query(&query)
             .or_else(|| self.db.faces().next().map(|face| face.id))
             .ok_or(Error::NoFont)?;
-        // Copied out: the shaper and the outliner both want a slice that
-        // outlives the database borrow, and a face is a few hundred KB.
-        self.db
+        Ok(id)
+    }
+
+    fn blob(&self, id: fontdb::ID) -> Result<Arc<Vec<u8>>, Error> {
+        let mut cache = self.blobs.lock().expect("font cache");
+        if let Some(blob) = cache.get(&id) {
+            return Ok(blob.clone());
+        }
+        let blob = self
+            .db
             .with_face_data(id, |data, index| {
-                // Multi-face collections: keep only the face that answered.
-                // rustybuzz takes the index, so the whole blob travels.
-                (data.to_vec(), index)
-            })
-            .map(|(data, index)| {
-                // Encode the index in front so the caller can hand both on.
                 let mut out = index.to_le_bytes().to_vec();
                 out.extend(data);
-                out
+                Arc::new(out)
             })
-            .ok_or(Error::BadFont)
+            .ok_or(Error::BadFont)?;
+        cache.insert(id, blob.clone());
+        Ok(blob)
     }
+
+    fn coverage(&self, primary: fontdb::ID, c: char) -> Result<fontdb::ID, Error> {
+        if c.is_whitespace() {
+            return Ok(primary);
+        }
+        let key = (primary, c);
+        let known = {
+            let cache = self.fallback.lock().expect("font cache");
+            if let Some(found) = cache.get(&key) {
+                return found.ok_or(Error::MissingGlyph(c));
+            }
+            let mut known = Vec::new();
+            for ((face, _), fallback) in cache.iter() {
+                if *face == primary
+                    && let Some(id) = fallback
+                    && *id != primary
+                    && !known.contains(id)
+                {
+                    known.push(*id);
+                }
+            }
+            known
+        };
+        let covers = |id| {
+            self.blob(id).ok().is_some_and(|blob| {
+                let index = u32::from_le_bytes(blob[..4].try_into().expect("font index"));
+                ttf_parser::Face::parse(&blob[4..], index)
+                    .ok()
+                    .is_some_and(|f| f.glyph_index(c).is_some())
+            })
+        };
+        let usable = |face: &fontdb::FaceInfo| {
+            !face.families.iter().any(|(name, _)| {
+                name.replace(' ', "")
+                    .trim_start_matches('.')
+                    .eq_ignore_ascii_case("LastResort")
+            }) && covers(face.id)
+        };
+        let requested = self.db.face(primary).ok_or(Error::BadFont)?;
+        let found = if usable(requested) {
+            Some(primary)
+        } else if let Some(id) = known.into_iter().find(|id| covers(*id)) {
+            Some(id)
+        } else {
+            let mut candidates: Vec<_> = self.db.faces().collect();
+            candidates.sort_by_key(|f| {
+                u32::from(f.weight.0.abs_diff(requested.weight.0))
+                    + if f.style == requested.style { 0 } else { 1000 }
+            });
+            candidates.into_iter().find(|f| usable(f)).map(|f| f.id)
+        };
+        self.fallback.lock().expect("font cache").insert(key, found);
+        found.ok_or(Error::MissingGlyph(c))
+    }
+
+    /// Requested family is kept by the document, even when this machine uses a fallback.
+    pub fn has_family(&self, family: &str) -> bool {
+        self.db.faces().any(|f| {
+            f.families
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(family))
+        })
+    }
+
+    /// Available installed family names, deduplicated for native controls.
+    pub fn families(&self) -> Vec<String> {
+        let mut names: Vec<_> = self
+            .db
+            .faces()
+            .flat_map(|f| f.families.iter().map(|(n, _)| n.clone()))
+            .filter(|name| !name.starts_with('.') && !name.eq_ignore_ascii_case("LastResort"))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+
+/// Shared, lazily discovered system fonts; font data and fallback coverage stay cached.
+pub fn system_fonts() -> &'static Fonts {
+    static FONTS: std::sync::OnceLock<Fonts> = std::sync::OnceLock::new();
+    FONTS.get_or_init(Fonts::new)
 }
 
 /// One shaped line: its outline path in pixels, pen at the origin, and its
@@ -289,41 +388,104 @@ impl ttf_parser::OutlineBuilder for Outliner<'_> {
     }
 }
 
-/// Shapes one line and outlines it, pen starting at (0, 0) on the baseline.
-/// A paragraph as the lines it wraps to within `max_w` pixels: words are
-/// added while they fit, and a word that fits nowhere gets a line of its
-/// own rather than being cut. No limit, one line.
+/// Chinese characters are legal line boundaries; Latin words stay together.
+fn wrap_units(text: &str) -> Vec<String> {
+    let mut units = Vec::<String>::new();
+    let mut word = String::new();
+    for c in text.chars() {
+        let cjk = matches!(c as u32, 0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x323AF);
+        let closing = "，。！？、；：）》】」』”.!?;:,".contains(c);
+        if closing {
+            if !word.is_empty() {
+                word.push(c);
+                continue;
+            }
+            if let Some(last) = units.last_mut() {
+                last.push(c);
+                continue;
+            }
+        }
+        if cjk || c.is_whitespace() {
+            if !word.is_empty() {
+                units.push(std::mem::take(&mut word));
+            }
+            units.push(c.to_string());
+        } else {
+            word.push(c);
+        }
+    }
+    if !word.is_empty() {
+        units.push(word);
+    }
+    units
+}
+
+fn mixed_line(
+    faces: &[rustybuzz::Face<'_>],
+    coverage: &HashMap<char, usize>,
+    text: &str,
+    em: f32,
+    tracking: f32,
+) -> Line {
+    let mut builder = PathBuilder::new();
+    let mut width = 0.0;
+    let mut run = String::new();
+    let mut index = 0;
+    let mut append = |index: usize, run: &str| {
+        if run.is_empty() {
+            return;
+        }
+        let line = shape_line(&faces[index], run, em, tracking);
+        if let Some(path) = line
+            .path
+            .and_then(|p| p.transform(Transform::from_translate(width, 0.0)))
+        {
+            builder.push_path(&path);
+        }
+        width += line.width + tracking;
+    };
+    for c in text.chars() {
+        let next = *coverage.get(&c).unwrap_or(&0);
+        if next != index {
+            append(index, &run);
+            run.clear();
+            index = next;
+        }
+        run.push(c);
+    }
+    append(index, &run);
+    Line {
+        path: builder.finish(),
+        width: (width - tracking).max(0.0),
+    }
+}
+
 fn wrap_line(
-    face: &rustybuzz::Face<'_>,
+    faces: &[rustybuzz::Face<'_>],
+    coverage: &HashMap<char, usize>,
     text: &str,
     em: f32,
     tracking: f32,
     max_w: f32,
 ) -> Vec<Line> {
+    let shape = |s: &str| mixed_line(faces, coverage, s, em, tracking);
     if max_w <= 0.0 || text.trim().is_empty() {
-        return vec![shape_line(face, text, em, tracking)];
+        return vec![shape(text)];
     }
     let mut lines = Vec::new();
     let mut current = String::new();
-    let mut shaped = shape_line(face, "", em, tracking);
-    for word in text.split_whitespace() {
-        let candidate = if current.is_empty() {
-            word.to_owned()
+    for unit in wrap_units(text) {
+        let candidate = format!("{current}{unit}");
+        if !current.trim().is_empty() && !unit.trim().is_empty() && shape(&candidate).width > max_w
+        {
+            lines.push(shape(current.trim_end()));
+            current = unit;
         } else {
-            format!("{current} {word}")
-        };
-        let trial = shape_line(face, &candidate, em, tracking);
-        if trial.width <= max_w || current.is_empty() {
             current = candidate;
-            shaped = trial;
-        } else {
-            lines.push(shaped);
-            current = word.to_owned();
-            shaped = shape_line(face, word, em, tracking);
         }
     }
     if !current.is_empty() {
-        lines.push(shaped);
+        lines.push(shape(current.trim_end()));
     }
     lines
 }
@@ -489,27 +651,43 @@ fn paint(
     let tracking = style.tracking as f32 * frame_h;
     let pitch = em * (style.line_height.max(0.5) as f32);
 
-    let blob = fonts.pick(style)?;
-    let (index_bytes, data) = blob.split_at(4);
-    let index = u32::from_le_bytes([
-        index_bytes[0],
-        index_bytes[1],
-        index_bytes[2],
-        index_bytes[3],
-    ]);
-    let face = rustybuzz::Face::from_slice(data, index).ok_or(Error::BadFont)?;
-    let upem = face.units_per_em() as f32;
-    let ascent = face.ascender() as f32 / upem * em;
-    let descent = -(face.descender() as f32) / upem * em;
-
-    // Shape every line with the pen at the origin; placement comes after,
-    // once the block's width is known. A paragraph wider than the style's
-    // limit is wrapped at its spaces first.
+    let primary = fonts.pick(style)?;
+    let mut ids = vec![primary];
+    let mut coverage = HashMap::new();
+    for c in style.content.chars() {
+        let id = fonts.coverage(primary, c)?;
+        let index = if let Some(index) = ids.iter().position(|i| *i == id) {
+            index
+        } else {
+            ids.push(id);
+            ids.len() - 1
+        };
+        coverage.insert(c, index);
+    }
+    let blobs: Vec<_> = ids
+        .into_iter()
+        .map(|id| fonts.blob(id))
+        .collect::<Result<_, _>>()?;
+    let faces: Vec<_> = blobs
+        .iter()
+        .map(|blob| {
+            let index = u32::from_le_bytes(blob[..4].try_into().expect("font index"));
+            rustybuzz::Face::from_slice(&blob[4..], index).ok_or(Error::BadFont)
+        })
+        .collect::<Result<_, _>>()?;
+    let ascent = faces
+        .iter()
+        .map(|f| f.ascender() as f32 / f.units_per_em() as f32 * em)
+        .fold(0.0, f32::max);
+    let descent = faces
+        .iter()
+        .map(|f| -(f.descender() as f32) / f.units_per_em() as f32 * em)
+        .fold(0.0, f32::max);
     let max_w = (style.max_width as f32) * width as f32;
     let lines: Vec<Line> = style
         .content
-        .lines()
-        .flat_map(|line| wrap_line(&face, line, em, tracking, max_w))
+        .split('\n')
+        .flat_map(|line| wrap_line(&faces, &coverage, line, em, tracking, max_w))
         .collect();
     let rows = lines.len().max(1);
     let block_w = lines.iter().map(|line| line.width).fold(0.0, f32::max);
@@ -692,6 +870,39 @@ mod tests {
 
     /// A limit narrower than the words wraps them: the block comes out no
     /// wider than the limit and taller than the one-line block.
+    #[test]
+    fn chinese_boundaries_keep_punctuation_and_latin_words() {
+        assert_eq!(
+            wrap_units("中文，Hello world。"),
+            vec!["中", "文，", "Hello", " ", "world。"]
+        );
+    }
+
+    #[test]
+    fn missing_glyph_is_reported_instead_of_a_tofu_success() {
+        let fonts = Fonts::new();
+        assert!(matches!(
+            render_frame(&fonts, &style("\u{10FFFF}"), 320, 180),
+            Err(Error::MissingGlyph('\u{10FFFF}'))
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn installed_chinese_fallback_renders_and_wraps_mixed_text() {
+        let fonts = Fonts::new();
+        let mut s = style("中文混排 Hello 世界");
+        s.font_family = "Helvetica".into();
+        let primary = fonts.pick(&s).unwrap();
+        assert_ne!(fonts.coverage(primary, '中').unwrap(), primary);
+        let wide = render_frame(&fonts, &s, 640, 360).unwrap();
+        s.max_width = 0.18;
+        let narrow = render_frame(&fonts, &s, 640, 360).unwrap();
+        assert!(narrow.block_height > wide.block_height);
+        assert!(narrow.rgba.chunks_exact(4).any(|p| p[3] > 0));
+        assert_eq!(s.font_family, "Helvetica");
+    }
+
     #[test]
     fn a_width_limit_wraps_words_onto_more_lines() {
         let fonts = Fonts::new();

@@ -113,6 +113,7 @@ concat-speech.workspace = true
 # viewport. Its `gpu` feature builds the compositor on the window's own
 # device, so a composed canvas is a texture the renderer shows as it is.
 concat-canvas = { workspace = true, features = ["gpu"] }
+concat-text.workspace = true
 # The Settings sheet's Remote page: the Concat API on a socket while the
 # window is open. JSON-RPC only; the gRPC feature stays with concat-cli.
 concat-server.workspace = true

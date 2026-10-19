@@ -1117,6 +1117,7 @@ mod tests {
             pixels: world.store.put(frame),
             library_asset: None,
             vector: None,
+            text: None,
         };
         let canvas = world.compose();
         assert_eq!(canvas.at(2, 3), [255, 255, 255, 255]);

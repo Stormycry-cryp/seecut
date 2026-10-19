@@ -593,6 +593,25 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     let editor = app.global::<Editor>();
     let controls = app.global::<CanvasControls>();
+    controls.on_text_start(on_window!(|state, mode: i32, x: f32, y: f32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::TextStart(
+            mode, x as f64, y as f64,
+        )));
+    }));
+    controls.on_text_change(on_window!(
+        |state, field: i32, text: SharedString, value: f32| {
+            state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::TextChange(
+                field,
+                text.to_string(),
+                value,
+            )));
+        }
+    ));
+    controls.on_text_finish(on_window!(|state, commit: bool| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::TextFinish(
+            commit,
+        )));
+    }));
     controls.on_shape_pointer(on_window!(|state, event: i32, x: f32, y: f32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ShapePointer(
             event, x as f64, y as f64,

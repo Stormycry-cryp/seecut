@@ -10,7 +10,7 @@ import { Glyph, Icon } from "../icons.slint";
 import { IconButton } from "../primitives/panel.slint";
 import { NumberField } from "../primitives/number-field.slint";
 import { Focus } from "../util.slint";
-import { WorkspaceIcon, MenuAction } from "../seecut/components.slint";
+import { WorkspaceIcon, WorkspaceSelect, MenuAction } from "../seecut/components.slint";
 import { SeeCut } from "../seecut/state.slint";
 import { GenerationForm, GenerationSubmitBar } from "../seecut/generation.slint";
 import { Pane, PaneHeader } from "pane.slint";
@@ -57,6 +57,29 @@ export struct CanvasCurveSegment {
 }
 
 export global CanvasControls {
+    in-out property <bool> text-selected;
+    in-out property <bool> text-editing;
+    in-out property <string> text-content;
+    in-out property <string> text-family;
+    in-out property <int> text-family-index: -1;
+    in-out property <[string]> text-families;
+    in-out property <float> text-size;
+    in-out property <string> text-color;
+    in-out property <bool> text-bold;
+    in-out property <bool> text-italic;
+    in-out property <int> text-align;
+    in-out property <float> text-stroke;
+    in-out property <string> text-stroke-color;
+    in-out property <bool> text-shadow;
+    in-out property <float> text-width;
+    in-out property <float> text-line-height;
+    in-out property <float> text-tracking;
+    in-out property <string> text-font-warning;
+    in-out property <float> text-editor-x;
+    in-out property <float> text-editor-y;
+    callback text-start(int,float,float);
+    callback text-change(int,string,float);
+    callback text-finish(bool);
     in-out property <bool> shape-selected;
     in-out property <bool> shape-drawing;
     in-out property <bool> shape-editing;
@@ -851,6 +874,7 @@ export component CanvasPane inherits Rectangle {
                         { glyph: Glyph.eraser, label: "橡皮擦" }, { glyph: Glyph.box-select, label: "矩形选区" },
                         { glyph: Glyph.wand, label: "魔棒选区" },
                     ]: WorkspaceIcon { glyph: t.glyph; label: t.label; checkable: true; checked: root.tool == i; enabled: root.has-document; clicked => { if i >= 7 { root.inspector-tab = 0; } root.tool-changed(i); } }
+                    WorkspaceIcon { glyph: Glyph.text-mark; label: "添加文字"; enabled: root.has-document; clicked => { root.inspector-tab=0; CanvasControls.text-start(0,0,0); } }
                     shape-tool := WorkspaceIcon {
                         glyph: root.tool == 8 ? Glyph.ellipse : root.tool == 9 ? Glyph.bezier : root.tool == 10 ? Glyph.nodes : Glyph.maximize;
                         label: "形状与路径"; checkable: true; checked: root.tool >= 7; enabled: root.has-document;
@@ -1115,7 +1139,7 @@ export component CanvasPane inherits Rectangle {
                     }
                 }
                 // The monitor's own way back: a double-click fits.
-                double-clicked => { if (root.tool == 1 || root.tool == 2) { root.nav-fit(); } }
+                double-clicked => { if root.tool == 0 { CanvasControls.text-start(2,self.mouse-x / 1px,self.mouse-y / 1px); } else if (root.tool == 1 || root.tool == 2) { root.nav-fit(); } }
 
                 // The brush's shadow on the canvas: the stroke's own
                 // diameter at the view's zoom, riding the pointer while a
@@ -1145,12 +1169,42 @@ export component CanvasPane inherits Rectangle {
                 }
             }
 
-            if root.has-object && root.tool == 0: Path {
+            if root.has-object && root.tool == 0 && !CanvasControls.text-editing: Path {
                 width: well.width; height: well.height;
                 viewbox-width: well.width / 1px; viewbox-height: well.height / 1px;
                 commands: "M \{root.object-px(-1,-1)} \{root.object-py(-1,-1)} L \{root.object-px(1,-1)} \{root.object-py(1,-1)} L \{root.object-px(1,1)} \{root.object-py(1,1)} L \{root.object-px(-1,1)} \{root.object-py(-1,1)} Z";
                 stroke: Theme.accent; stroke-width: 1px; fill: transparent;
             }
+            if CanvasControls.text-editing: Rectangle {
+                width: min(360px,well.width - 24px); height: 196px;
+                x: max(12px,min(well.width - self.width - 12px,CanvasControls.text-editor-x * 1px - self.width / 2));
+                y: max(12px,min(well.height - self.height - 12px,CanvasControls.text-editor-y * 1px - self.height / 2));
+                background: Theme.panel; border-radius: 12px; border-width: 1px; border-color: Theme.accent;
+                init => { text-entry.focus(); text-entry.select-all(); }
+                ScrollView {
+                    x:12px; y:12px; width:parent.width - 24px; height:132px;
+                    horizontal-scrollbar-policy: always-off;
+                    viewport-width:self.width;
+                    text-entry := TextInput {
+                        width:parent.width; min-height:132px;
+                        text <=> CanvasControls.text-content;
+                        font-family: Theme.font; font-size:16px; color:Theme.fg;
+                        wrap:word-wrap; single-line:false; accessible-label:"编辑画布文字";
+                        edited => { CanvasControls.text-change(0,self.text,0); }
+                        key-pressed(event) => {
+                            if (event.modifiers.control || event.modifiers.meta) && (event.text.to-lowercase()=="s" || event.text.to-lowercase()=="d" || event.text.to-lowercase()=="o") {return accept;}
+                            return reject;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    x:12px;y:150px;width:parent.width - 24px;height:32px;spacing:6px;
+                    Rectangle {horizontal-stretch:1;}
+                    WorkspaceIcon {glyph:Glyph.close;label:"取消文字编辑";height:32px;side:32px;clicked=>{CanvasControls.text-finish(false);Focus.release();}}
+                    WorkspaceIcon {glyph:Glyph.check;label:"完成文字编辑";height:32px;side:32px;clicked=>{CanvasControls.text-finish(true);Focus.release();}}
+                }
+            }
+
             for line in CanvasControls.shape-lines: Path {
                 visible: root.tool == 10 || CanvasControls.shape-drawing;
                 width: well.width; height: well.height;
@@ -1167,19 +1221,19 @@ export component CanvasPane inherits Rectangle {
                 border-color: Theme.accent; border-width: 1px;
             }
 
-            if root.has-object && root.tool == 0: Path {
+            if root.has-object && root.tool == 0 && !CanvasControls.text-editing: Path {
                 width: well.width; height: well.height;
                 viewbox-width: well.width / 1px; viewbox-height: well.height / 1px;
                 commands: "M \{root.object-px(0,-1)} \{root.object-py(0,-1)} L \{root.object-cx + (root.object-px(0,-1) - root.object-cx) * (root.object-h + 44) / root.object-h} \{root.object-cy + (root.object-py(0,-1) - root.object-cy) * (root.object-h + 44) / root.object-h}";
                 stroke: Theme.accent; stroke-width: 1px;
             }
-            if root.has-object && root.tool == 0: Rectangle {
+            if root.has-object && root.tool == 0 && !CanvasControls.text-editing: Rectangle {
                 x: (root.object-cx + (root.object-px(0,-1) - root.object-cx) * (root.object-h + 44) / root.object-h) * 1px - 4px;
                 y: (root.object-cy + (root.object-py(0,-1) - root.object-cy) * (root.object-h + 44) / root.object-h) * 1px - 4px;
                 width: 8px; height: 8px; border-radius: 4px;
                 background: Theme.panel; border-width: 1px; border-color: Theme.accent;
             }
-            if root.has-object && root.tool == 0: Rectangle {
+            if root.has-object && root.tool == 0 && !CanvasControls.text-editing: Rectangle {
                 for handle in [
                     { sx: -1, sy: -1 }, { sx: 0, sy: -1 }, { sx: 1, sy: -1 }, { sx: 1, sy: 0 },
                     { sx: 1, sy: 1 }, { sx: 0, sy: 1 }, { sx: -1, sy: 1 }, { sx: -1, sy: 0 },
@@ -1254,6 +1308,40 @@ export component CanvasPane inherits Rectangle {
                         viewport-width: right-panel.width - 24px; horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
                             spacing: 12px; alignment: start;
+                            if CanvasControls.text-selected: VerticalLayout {
+                                spacing:8px;
+                                WorkspaceSelect { options:CanvasControls.text-families; current:CanvasControls.text-family-index; placeholder:CanvasControls.text-family; enabled:!CanvasControls.text-editing; changed(index)=>{CanvasControls.text-change(1,CanvasControls.text-families[index],0);} }
+                                HorizontalLayout {
+                                    spacing:6px;
+                                    NumberField {prefix:"字号";value <=> CanvasControls.text-size;minimum:6;maximum:1000;precision:1;enabled:!CanvasControls.text-editing;block-editor-shortcuts:true;property <bool> owns-transform; edit-started=>{self.owns-transform = !root.transforming; if self.owns-transform {root.transform-start();}} edit-finished(commit)=>{if self.owns-transform {root.transform-finish(commit);} self.owns-transform=false;} changed(v)=>{CanvasControls.text-change(2,"",v);} }
+                                    TextInput {text <=> CanvasControls.text-color;enabled:!CanvasControls.text-editing;font-family:Theme.font;color:Theme.fg;single-line:true;vertical-alignment:center;accessible-label:"文字颜色";key-pressed(event)=>{if (event.modifiers.control || event.modifiers.meta) && (event.text.to-lowercase()=="d" || event.text.to-lowercase()=="s" || event.text.to-lowercase()=="o") {return accept;} return reject;}accepted=>{CanvasControls.text-change(3,self.text,0);Focus.release();}}
+                                }
+                                HorizontalLayout {
+                                    spacing:4px;
+                                    for option[i] in ["B","I"]: CanvasChipAction {
+                                        width:32px;height:32px;label:i==0?"粗体":"斜体";enabled:!CanvasControls.text-editing;
+                                        selected:i==0?CanvasControls.text-bold:CanvasControls.text-italic;
+                                        Text {text:option;color:parent.selected?Theme.accent:Theme.fg;font-weight:700;font-italic:i==1;horizontal-alignment:center;vertical-alignment:center;}
+                                        clicked=>{CanvasControls.text-change(i+4,"",self.selected?0:1);}
+                                    }
+                                    for g[i] in [Glyph.align-left,Glyph.align-center-x,Glyph.align-right]: WorkspaceIcon {
+                                        glyph:g;label:i==0?"左对齐":i==1?"居中":"右对齐";side:32px;height:32px;enabled:!CanvasControls.text-editing;checkable:true;checked:CanvasControls.text-align==i;
+                                        clicked=>{CanvasControls.text-change(6,"",i);}
+                                    }
+                                    Rectangle {horizontal-stretch:1;}
+                                }
+                                text-more := WorkspaceIcon {glyph:Glyph.sliders;label:"更多文字样式";checkable:true;property <bool> expanded;checked:self.expanded;clicked=>{self.expanded=!self.expanded;}}
+                                if text-more.expanded: VerticalLayout {
+                                    spacing:6px;
+                                    NumberField {prefix:"描边";value <=> CanvasControls.text-stroke;minimum:0;maximum:100;enabled:!CanvasControls.text-editing;block-editor-shortcuts:true;property <bool> owns-transform; edit-started=>{self.owns-transform = !root.transforming; if self.owns-transform {root.transform-start();}} edit-finished(commit)=>{if self.owns-transform {root.transform-finish(commit);} self.owns-transform=false;} changed(v)=>{CanvasControls.text-change(7,"",v);} }
+                                    TextInput {text <=> CanvasControls.text-stroke-color;enabled:!CanvasControls.text-editing;font-family:Theme.font;color:Theme.fg;single-line:true;accessible-label:"文字描边颜色";key-pressed(event)=>{if (event.modifiers.control || event.modifiers.meta) && (event.text.to-lowercase()=="d" || event.text.to-lowercase()=="s" || event.text.to-lowercase()=="o") {return accept;} return reject;}accepted=>{CanvasControls.text-change(8,self.text,0);Focus.release();}}
+                                    WorkspaceIcon {glyph:Glyph.mask;label:"文字阴影";checkable:true;checked:CanvasControls.text-shadow;enabled:!CanvasControls.text-editing;clicked=>{CanvasControls.text-change(9,"",CanvasControls.text-shadow?0:1);} }
+                                    NumberField {prefix:"换行宽度";unit:"%";value <=> CanvasControls.text-width;minimum:5;maximum:100;enabled:!CanvasControls.text-editing;block-editor-shortcuts:true;property <bool> owns-transform; edit-started=>{self.owns-transform = !root.transforming; if self.owns-transform {root.transform-start();}} edit-finished(commit)=>{if self.owns-transform {root.transform-finish(commit);} self.owns-transform=false;} changed(v)=>{CanvasControls.text-change(10,"",v);} }
+                                    NumberField {prefix:"行距";value <=> CanvasControls.text-line-height;minimum:0.5;maximum:5;precision:2;enabled:!CanvasControls.text-editing;block-editor-shortcuts:true;property <bool> owns-transform; edit-started=>{self.owns-transform = !root.transforming; if self.owns-transform {root.transform-start();}} edit-finished(commit)=>{if self.owns-transform {root.transform-finish(commit);} self.owns-transform=false;} changed(v)=>{CanvasControls.text-change(11,"",v);} }
+                                    NumberField {prefix:"字距";value <=> CanvasControls.text-tracking;minimum:-20;maximum:20;precision:1;enabled:!CanvasControls.text-editing;block-editor-shortcuts:true;property <bool> owns-transform; edit-started=>{self.owns-transform = !root.transforming; if self.owns-transform {root.transform-start();}} edit-finished(commit)=>{if self.owns-transform {root.transform-finish(commit);} self.owns-transform=false;} changed(v)=>{CanvasControls.text-change(12,"",v);} }
+                                }
+                                if CanvasControls.text-font-warning!="": Text {text:CanvasControls.text-font-warning;color:Theme.fg-muted;font-size:12px;wrap:word-wrap;}
+                            }
                             if CanvasControls.shape-selected: VerticalLayout {
                                 spacing: 8px;
                                 HorizontalLayout {
@@ -1781,7 +1869,6 @@ export component CanvasPane inherits Rectangle {
             }
         }
     }
-
     if root.has-document && SeeCut.page == 6: WorkspaceIcon {
         x: parent.width - 58px; y: 8px; width: 40px; height: 36px;
         glyph: Glyph.sparkle; label: SeeCut.canvas-prompt-open ? "收起灵感推荐" : "灵感推荐";

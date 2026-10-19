@@ -217,6 +217,11 @@ impl ImageDocument {
             if layer.vector.as_ref().is_some_and(|shape| !shape.validate()) {
                 return Err(DocumentError::InvalidShape(layer.id));
             }
+            if layer.text.as_ref().is_some_and(|text| !text.validate())
+                || (layer.text.is_some() && layer.vector.is_some())
+            {
+                return Err(DocumentError::InvalidText(layer.id));
+            }
             let Some(source) = layer.clips_to else {
                 continue;
             };
@@ -288,6 +293,9 @@ pub enum DocumentError {
     /// Invalid or unsupported editable geometry.
     #[error("layer {0:?} has invalid or unsupported vector geometry")]
     InvalidShape(LayerId),
+    /// Invalid text style or two editable source types in the same layer.
+    #[error("invalid text in layer {0:?}")]
+    InvalidText(LayerId),
     /// A layer clips to itself.
     #[error("layer {0:?} clips to itself")]
     SelfClip(LayerId),
@@ -440,6 +448,9 @@ pub struct ImageLayer {
     /// cache; the existing drawable layer owns all transform/mask semantics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vector: Option<crate::vector::VectorShape>,
+    /// Editable text source, mutually exclusive with vector geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<Box<crate::text::CanvasText>>,
 }
 
 /// How a layer's bitmap is sampled when the canvas draws it at a size other
@@ -472,6 +483,7 @@ impl ImageLayer {
             pixels,
             library_asset: None,
             vector: None,
+            text: None,
         }
     }
 }
