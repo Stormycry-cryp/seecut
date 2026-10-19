@@ -57,3 +57,6 @@ pub use history::{DocumentHistory, Snapshot};
 pub use pixels::{PixelId, PixelStore};
 pub use selection::{Mask, SelectionShape, erase_region, fill_region, move_region, pick_color};
 pub use viewport::{CanvasViewport, NavInput, Navigator};
+
+/// Editable text stored independently from its raster cache.
+pub mod text;

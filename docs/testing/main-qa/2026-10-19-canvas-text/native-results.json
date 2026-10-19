@@ -1,0 +1,41 @@
+[
+  {
+    "name": "pane",
+    "args": [
+      "panes::canvas::text::tests",
+      "--test-threads=1"
+    ],
+    "exit": 0,
+    "startedAt": "2026-10-19T02:10:43.863707+00:00"
+  },
+  {
+    "name": "shapes",
+    "args": [
+      "panes::canvas::shapes::tests",
+      "--test-threads=1"
+    ],
+    "exit": 0,
+    "startedAt": "2026-10-19T02:10:46.262034+00:00"
+  },
+  {
+    "name": "legacy",
+    "args": [
+      "panes::canvas::tests::a_project_package_round_trips_through_a_save_and_a_load",
+      "--exact",
+      "--test-threads=1"
+    ],
+    "exit": 0,
+    "startedAt": "2026-10-19T02:10:46.331886+00:00"
+  },
+  {
+    "name": "fixture",
+    "args": [
+      "panes::canvas::text::tests::mixed_text_export_registers_once_and_reimports_existing_asset",
+      "--exact",
+      "--ignored",
+      "--test-threads=1"
+    ],
+    "exit": 0,
+    "startedAt": "2026-10-19T02:10:46.383422+00:00"
+  }
+]

@@ -1722,6 +1722,86 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn editable_text_cache_matches_gpu_cpu_after_content_and_style_changes() {
+        let mut gpu = required_gpu();
+        let mut world = World {
+            document: ImageDocument::new(320, 180),
+            store: PixelStore::new(),
+        };
+        world.with_layer("photo", solid(320, 180, [80, 120, 160, 255]));
+        let mut text = crate::text::CanvasText::new(180);
+        text.style.content = "中文 Text\n第二行".into();
+        text.style.font_size = 0.15;
+        let id = world.with_layer("text", text.rasterize(320, 180).unwrap());
+        let layer = world.document.layer_mut(id).unwrap();
+        layer.text = Some(Box::new(text.clone()));
+        layer.opacity = 0.8;
+        layer.transform.rotation = 0.15;
+        let pixels = layer.pixels;
+        assert_parity_on(&world, &mut gpu);
+        text.style.content = "修改 Edited".into();
+        text.style.stroke_width = 0.01;
+        text.style.shadow = true;
+        text.style.color = "#E94A2AAA".into();
+        world.document.layer_mut(id).unwrap().text = Some(Box::new(text.clone()));
+        world
+            .store
+            .replace(pixels, text.rasterize(320, 180).unwrap());
+        assert_parity_on(&world, &mut gpu);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn long_text_alignment_expanded_cache_matches_gpu_after_repositioning() {
+        let mut gpu = required_gpu();
+        let mut world = World {
+            document: ImageDocument::new(640, 240),
+            store: PixelStore::new(),
+        };
+        let mut text = crate::text::CanvasText::new(240);
+        text.style.content = "中文 English 中文 English".into();
+        text.style.font_size = 40.0 / 240.0;
+        text.style.stroke_width = 2.0 / 240.0;
+        text.style.shadow = true;
+        let id = world.with_layer("text", text.rasterize(640, 240).unwrap());
+        let pixels = world.document.layer_mut(id).unwrap().pixels;
+        for align in [
+            concat_text::Align::Left,
+            concat_text::Align::Center,
+            concat_text::Align::Right,
+        ] {
+            text.style.align = align;
+            let rendered =
+                concat_text::render_layer_frame(concat_text::system_fonts(), &text.style, 640, 240)
+                    .unwrap();
+            let layer = world.document.layer_mut(id).unwrap();
+            layer.text = Some(Box::new(text.clone()));
+            layer.transform.x = -(rendered.block_dx as f32);
+            world
+                .store
+                .replace(pixels, text.rasterize(640, 240).unwrap());
+            let expected = cpu::compose(&world.document, &world.store);
+            let actual = gpu.compose_frame(&world.document, &world.store);
+            assert_eq!((actual.width(), actual.height()), (640, 240));
+            for (a, e) in actual
+                .pixels()
+                .chunks_exact(4)
+                .zip(expected.pixels().chunks_exact(4))
+            {
+                assert!(a[3].abs_diff(e[3]) <= 1);
+                // Straight RGB amplifies sub-byte interpolation at tiny alpha.
+                // Compare visible premultiplied colour, retaining a one-byte bound.
+                for channel in 0..3 {
+                    let a = a[channel] as f32 * a[3] as f32 / 255.0;
+                    let e = e[channel] as f32 * e[3] as f32 / 255.0;
+                    assert!((a - e).abs() <= 1.0);
+                }
+            }
+        }
+    }
+
     /// Match the editor's shared device: no optional features, real hardware.
     #[test]
     fn shared_device_without_optional_features_matches_cpu() {

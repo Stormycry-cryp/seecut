@@ -1,0 +1,5 @@
+
+running 1 test
+test panes::canvas::text::tests::aligned_long_text_survives_png_save_reopen_and_movement ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 2.75s

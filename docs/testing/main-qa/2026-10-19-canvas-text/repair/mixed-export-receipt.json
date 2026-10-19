@@ -1,0 +1,18 @@
+{
+  "actual_ime": "not verified; synthetic committed strings only",
+  "asset": {
+    "asset_id": "7f842f44-1417-453d-a447-e01218bd5ca0",
+    "version": {
+      "registration_id": "operation:c03-review-export",
+      "sha256": "370d030b0df1aaea83820bd1eb5466c6cd88a8c39f060cf5e1bf1669c30a8595"
+    }
+  },
+  "canvas_reimport": true,
+  "clip_ui_reuse": "not verified; existing asset path and identity preserved",
+  "editable_reopen": true,
+  "height": 360,
+  "library_count": 1,
+  "registration_id": "c03-review-export",
+  "sha256": "370d030b0df1aaea83820bd1eb5466c6cd88a8c39f060cf5e1bf1669c30a8595",
+  "width": 640
+}

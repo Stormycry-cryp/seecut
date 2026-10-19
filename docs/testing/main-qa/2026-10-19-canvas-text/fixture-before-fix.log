@@ -1,0 +1,19 @@
+
+running 1 test
+test panes::canvas::text::tests::mixed_text_export_registers_once_and_reimports_existing_asset ... FAILED
+
+failures:
+
+---- panes::canvas::text::tests::mixed_text_export_registers_once_and_reimports_existing_asset stdout ----
+
+thread 'panes::canvas::text::tests::mixed_text_export_registers_once_and_reimports_existing_asset' (157655) panicked at crates/concat/src/panes/canvas/text.rs:457:9:
+assertion `left == right` failed
+  left: None
+ right: Some(AssetReference { asset_id: "df53f5b7-612e-42f0-9bad-bf6844a33a9f", version: Some(AssetVersion { sha256: "370d030b0df1aaea83820bd1eb5466c6cd88a8c39f060cf5e1bf1669c30a8595", registration_id: "operation:c03-review-export", previous_id: None }) })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    panes::canvas::text::tests::mixed_text_export_registers_once_and_reimports_existing_asset
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 485 filtered out; finished in 0.56s

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "publicSource": "009bfa134545a15b205587eaa131b3bb531edf73",
+  "baseline": "d546262ad6fc28016b8e47f411ba250f916c6b69",
+  "privateSource": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "privateRuntimeChanged": false,
+  "app": ".toonflow/SeeCut-Canvas-Text-QA.app",
+  "bundleId": "cloud.stormycry.seecut.canvas-text-qa",
+  "apiUrl": "http://127.0.0.1:18743",
+  "rawBinarySha256": "5ebdd177b83dbdd046aeec3267709aa742afa85d910cf0a1e094c28a086a4f8d",
+  "packagedBinarySha256": "ec87eb254d10ee0f85e2764fa160c479dda664461c04d61ddb85a257722b384b",
+  "toonflowBuildReusedFromR3": true,
+  "toonflowBuildSha256": "eac44cb292e28f27dddf955087f4a6f5240fec2d5e756c2f8559154c0f0a2eac",
+  "fileCount": 6380,
+  "filesSha256": "9406772c2009fbefa4a34be6dad53bf224b9ea121697a4e66734a56bd9aec679",
+  "digestAlgorithm": "SHA256 of compact sorted-key JSON mapping relative regular-file paths to SHA256; symlink file contents followed",
+  "codesignVerified": true,
+  "actualWindowVerified": false,
+  "actualImeVerified": false,
+  "installed": false,
+  "launched": false,
+  "paidCalls": 0
+}

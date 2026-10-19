@@ -8,6 +8,7 @@ publish = false
 description = "Titles as pixels: shapes a text clip's words and rasterises them onto a frame-sized transparent canvas."
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 # Font discovery - the system's faces plus the files a project carries.
 fontdb = "0.23"
 # Shaping: glyph ids and advances from the words, kerning and ligatures

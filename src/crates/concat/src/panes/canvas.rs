@@ -41,6 +41,7 @@ use crate::i18n::tf;
 use crate::studio::Studio;
 
 mod shapes;
+mod text;
 use shapes::ShapeDrag;
 
 /// What [`CanvasPane::edit_selection`] does to a selection.
@@ -333,6 +334,13 @@ fn canvas_manifest(data: &CanvasSaveData) -> String {
         .document
         .walk()
         .iter()
+        .any(|n| matches!(n,LayerNode::Layer(l) if l.text.is_some()))
+    {
+        3
+    } else if data
+        .document
+        .walk()
+        .iter()
         .any(|n| matches!(n, LayerNode::Layer(l) if l.vector.is_some()))
     {
         2
@@ -564,6 +572,9 @@ impl CanvasImport {
 /// Everything that can happen to the canvas.
 #[derive(Debug)]
 pub enum CanvasMsg {
+    TextStart(i32, f64, f64),
+    TextChange(i32, String, f32),
+    TextFinish(bool),
     ShapePointer(i32, f64, f64),
     ShapeFinish(bool, bool),
     ShapeStyle(i32, String, f32),
@@ -811,6 +822,7 @@ pub struct CanvasPane {
     object_drag: Option<ObjectDrag>,
     transform_session: Option<concat_canvas::LayerId>,
     shape_session: Option<concat_canvas::LayerId>,
+    text_session: Option<concat_canvas::LayerId>,
     shape_drag: Option<ShapeDrag>,
     pending_transform_boundary: Option<PendingTransformBoundary>,
     content_bounds: HashMap<PixelId, Option<(f32, f32, f32, f32)>>,
@@ -915,6 +927,7 @@ impl Default for CanvasPane {
             object_drag: None,
             transform_session: None,
             shape_session: None,
+            text_session: None,
             shape_drag: None,
             pending_transform_boundary: None,
             content_bounds: HashMap::new(),
@@ -956,13 +969,16 @@ impl Default for CanvasPane {
 
 impl CanvasPane {
     fn transform_boundary_label(&mut self, msg: &CanvasMsg) -> Option<&'static str> {
-        let target = self.transform_session.or(self.shape_session)?;
+        let target = self
+            .transform_session
+            .or(self.shape_session)
+            .or(self.text_session)?;
         match msg {
             CanvasMsg::TransformStart
             | CanvasMsg::TransformSet(..)
             | CanvasMsg::Nudge(..)
             | CanvasMsg::Flip(..)
-                if self.shape_session.is_some() =>
+                if self.shape_session.is_some() || self.text_session.is_some() =>
             {
                 Some("继续编辑画布")
             }
@@ -976,6 +992,7 @@ impl CanvasPane {
                 .map(|(node, _)| node.id())
                 .filter(|id| *id != target)
                 .map(|_| "切换图层"),
+            CanvasMsg::ObjectPress(..) if self.text_session.is_some() => Some("继续编辑画布"),
             CanvasMsg::ObjectPress(x, y) => {
                 let picked = if self.handle_at(*x, *y).is_some() {
                     self.active
@@ -989,6 +1006,8 @@ impl CanvasPane {
             CanvasMsg::OpenAndImport(..) | CanvasMsg::OpenDiscard | CanvasMsg::OpenSave => {
                 Some("打开其他画布")
             }
+            CanvasMsg::TextStart(..) => Some("继续编辑画布"),
+            CanvasMsg::ShapePointer(..) if self.text_session.is_some() => Some("继续编辑画布"),
             CanvasMsg::SaveComp => Some("保存画布"),
             CanvasMsg::SaveCompAs => Some("另存画布"),
             CanvasMsg::ExportPng | CanvasMsg::ExportLibrary => Some("导出画布"),
@@ -1079,7 +1098,10 @@ impl CanvasPane {
     }
 
     pub fn defer_window_close_for_transform(&mut self) -> bool {
-        if self.transform_session.is_none() && self.shape_session.is_none() {
+        if self.transform_session.is_none()
+            && self.shape_session.is_none()
+            && self.text_session.is_none()
+        {
             return false;
         }
         self.defer_transform_boundary(CanvasBoundaryAction::WindowClose, "关闭窗口");
@@ -1087,7 +1109,10 @@ impl CanvasPane {
     }
 
     pub fn defer_navigation_for_transform(&mut self, target: i32) -> bool {
-        if self.transform_session.is_none() && self.shape_session.is_none() {
+        if self.transform_session.is_none()
+            && self.shape_session.is_none()
+            && self.text_session.is_none()
+        {
             return false;
         }
         let label = if target == 6 {
@@ -1130,6 +1155,11 @@ impl CanvasPane {
         };
         let previous_revision = self.revision;
         let history = match &msg {
+            CanvasMsg::TextChange(..)
+                if self.text_session.is_none() && self.transform_session.is_none() =>
+            {
+                Some(0)
+            }
             CanvasMsg::ShapeStyle(..) if self.transform_session.is_none() => Some(0),
             CanvasMsg::FillSelection => Some(0),
             CanvasMsg::DeleteSelection => Some(0),
@@ -1176,6 +1206,22 @@ impl CanvasPane {
     /// submits from - the same rule the monitor's drawing keeps.
     fn update_inner(&mut self, msg: CanvasMsg, studio: &mut Studio) {
         match msg {
+            CanvasMsg::TextStart(mode, x, y) => {
+                if let Err(e) = self.text_start(mode, x, y) {
+                    studio.notify(&format!("文字不可用：{e}"), true);
+                }
+                self.render(studio);
+            }
+            CanvasMsg::TextChange(field, value, number) => {
+                if let Err(e) = self.text_change(field, &value, number) {
+                    studio.notify(&format!("无法显示文字：{e}"), true);
+                }
+                self.render(studio);
+            }
+            CanvasMsg::TextFinish(commit) => {
+                self.text_finish(commit);
+                self.render(studio);
+            }
             CanvasMsg::ShapePointer(event, x, y) => {
                 self.shape_pointer(event, x, y);
                 self.render(studio);
@@ -1757,7 +1803,11 @@ impl CanvasPane {
     /// brush with its erasing bit on, so the settings stay shared.
     pub fn set_tool(&mut self, tool: i32) {
         let next = (tool.max(0) as usize).min(10);
-        if (self.transform_session.is_some() || self.shape_session.is_some()) && next != self.tool {
+        if (self.transform_session.is_some()
+            || self.shape_session.is_some()
+            || self.text_session.is_some())
+            && next != self.tool
+        {
             self.defer_transform_boundary(
                 CanvasBoundaryAction::Message(CanvasMsg::Tool(next as i32)),
                 "切换工具",
@@ -2286,6 +2336,10 @@ impl CanvasPane {
     }
 
     fn transform_finish(&mut self, commit: bool) {
+        if self.text_session.is_some() {
+            self.text_finish(commit);
+            return;
+        }
         if self.shape_session.is_some() {
             self.shape_finish(commit, false);
             return;
@@ -2530,6 +2584,7 @@ impl CanvasPane {
         self.object_drag = None;
         self.transform_session = None;
         self.shape_session = None;
+        self.text_session = None;
         self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.thumbnail_cache.clear();
@@ -2543,15 +2598,23 @@ impl CanvasPane {
 
     /// Whether the canvas toolbar should enable its history actions.
     pub fn can_undo(&self) -> bool {
-        self.stroke.is_none() && (self.shape_session.is_some() || !self.undo_stack.is_empty())
+        self.stroke.is_none()
+            && (self.shape_session.is_some()
+                || self.text_session.is_some()
+                || !self.undo_stack.is_empty())
     }
 
     pub fn can_redo(&self) -> bool {
-        self.stroke.is_none() && self.shape_session.is_none() && !self.redo_stack.is_empty()
+        self.stroke.is_none()
+            && self.shape_session.is_none()
+            && self.text_session.is_none()
+            && !self.redo_stack.is_empty()
     }
 
     pub fn transform_session_active(&self) -> bool {
-        self.transform_session.is_some() || self.shape_session.is_some()
+        self.transform_session.is_some()
+            || self.shape_session.is_some()
+            || self.text_session.is_some()
     }
 
     pub fn is_modified(&self) -> bool {
@@ -2574,6 +2637,7 @@ impl CanvasPane {
                 || self.pending_history.is_some()
                 || self.transform_session.is_some()
                 || self.shape_session.is_some()
+                || self.text_session.is_some()
                 || self.pending_transform_boundary.is_some()
                 || self.marquee_start.is_some(),
         )
@@ -3062,7 +3126,10 @@ impl CanvasPane {
         if self.stroke.is_some() {
             return;
         }
-        if self.transform_session.is_some() || self.shape_session.is_some() {
+        if self.transform_session.is_some()
+            || self.shape_session.is_some()
+            || self.text_session.is_some()
+        {
             self.transform_finish(false);
             return;
         }
@@ -3089,6 +3156,7 @@ impl CanvasPane {
         }
         if self.transform_session.is_some()
             || self.shape_session.is_some()
+            || self.text_session.is_some()
             || self.object_drag.is_some()
             || self.parameter_gesture.is_some()
         {
@@ -3404,7 +3472,9 @@ impl CanvasPane {
         let document = self.document.as_ref()?;
         let id = self.active?;
         match document.find(id)? {
-            LayerNode::Layer(layer) => layer.vector.is_none().then_some(layer.pixels),
+            LayerNode::Layer(layer) => {
+                (layer.vector.is_none() && layer.text.is_none()).then_some(layer.pixels)
+            }
             LayerNode::Group(_) | LayerNode::Adjustment(_) => None,
         }
     }
@@ -3664,7 +3734,7 @@ impl CanvasPane {
             .map(|(node, _)| {
                 let kind = match node {
                     LayerNode::Layer(layer) => {
-                        if layer.vector.is_some() {
+                        if layer.vector.is_some() || layer.text.is_some() {
                             3
                         } else {
                             0
@@ -4586,6 +4656,7 @@ impl CanvasPane {
             || self.object_drag.is_some()
             || self.transform_session.is_some()
             || self.shape_session.is_some()
+            || self.text_session.is_some()
             || self.stroke.is_some()
     }
 
@@ -4611,6 +4682,9 @@ impl CanvasPane {
     }
 
     fn save_data(&self) -> Result<CanvasSaveData, String> {
+        if self.text_session.is_some() {
+            return Err("请先完成或取消文字编辑".into());
+        }
         if self.shape_session.is_some() {
             return Err("请先完成或取消形状编辑".into());
         }
@@ -4777,7 +4851,7 @@ impl CanvasPane {
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("open: {e}"))?;
         if !matches!(
             manifest.get("concat-project").and_then(|v| v.as_u64()),
-            Some(1 | 2)
+            Some(1..=3)
         ) {
             return Err("open: not a concat project".into());
         }
@@ -4851,13 +4925,29 @@ impl CanvasPane {
             if let LayerNode::Layer(layer) = node
                 && let Some(shape) = &layer.vector
             {
-                if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(2) {
+                if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(2)
+                    && manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(3)
+                {
                     return Err("open: vector geometry requires project version 2".into());
                 }
                 let frame = shape
                     .rasterize(document.width, document.height)
                     .ok_or("open: cannot rebuild shape cache")?;
                 store.replace(layer.pixels, frame);
+            }
+        }
+
+        for node in document.walk() {
+            if let LayerNode::Layer(layer) = node
+                && let Some(text) = &layer.text
+            {
+                if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(3) {
+                    return Err("open: text requires project version 3".into());
+                }
+                store.replace(
+                    layer.pixels,
+                    text.rasterize(document.width, document.height)?,
+                );
             }
         }
 
@@ -4893,6 +4983,7 @@ impl CanvasPane {
         self.object_drag = None;
         self.transform_session = None;
         self.shape_session = None;
+        self.text_session = None;
         self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.parameter_gesture = None;
@@ -5053,6 +5144,7 @@ impl CanvasPane {
         self.object_drag = None;
         self.transform_session = None;
         self.shape_session = None;
+        self.text_session = None;
         self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.parameter_gesture = None;
@@ -5298,6 +5390,7 @@ impl CanvasPane {
         self.object_drag = None;
         self.transform_session = None;
         self.shape_session = None;
+        self.text_session = None;
         self.shape_drag = None;
         self.pending_transform_boundary = None;
         self.parameter_gesture = None;
@@ -5649,6 +5742,9 @@ impl CanvasPane {
     /// Writes the composed canvas to `path` as PNG - the export without
     /// the save dialog, which an unattended run cannot answer.
     pub fn agent_export_png(&mut self, path: &Path) -> Result<(), String> {
+        if self.text_session.is_some() {
+            return Err("请先完成或取消文字编辑".into());
+        }
         if self.shape_session.is_some() {
             return Err("请先完成或取消形状编辑".into());
         }
@@ -5887,7 +5983,10 @@ impl CanvasPane {
         if self.owns_canvas_path(path)? {
             return Ok(());
         }
-        if self.transform_session.is_some() || self.shape_session.is_some() {
+        if self.transform_session.is_some()
+            || self.shape_session.is_some()
+            || self.text_session.is_some()
+        {
             self.defer_transform_boundary(
                 CanvasBoundaryAction::Message(CanvasMsg::Picked(vec![path.to_owned()])),
                 "打开其他画布",
@@ -5949,6 +6048,7 @@ impl CanvasPane {
                     self.object_drag = None;
                     self.transform_session = None;
                     self.shape_session = None;
+                    self.text_session = None;
                     self.shape_drag = None;
                     self.pending_transform_boundary = None;
                     self.parameter_gesture = None;
@@ -6561,7 +6661,7 @@ fn canvas_export_provenance(
             }
             layers.push(
                 serde_json::json!({"layer_id": layer.id.as_u64(), "transform": layer.transform,
-                "opacity": layer.opacity, "hidden": layer.hidden, "vector": layer.vector}),
+                "opacity": layer.opacity, "hidden": layer.hidden, "vector": layer.vector, "text":layer.text}),
             );
         }
     }

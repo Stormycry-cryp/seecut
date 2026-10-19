@@ -1,0 +1,40 @@
+{
+  "source": "009bfa134545a15b205587eaa131b3bb531edf73",
+  "baseline": "d546262ad6fc28016b8e47f411ba250f916c6b69",
+  "recordedAt": "2026-10-19T02:11:13.448685+00:00",
+  "tests": {
+    "concat_text": 9,
+    "canvas_text_and_gpu": 3,
+    "native_text": 4,
+    "shape_regression": 3,
+    "legacy_project": 1,
+    "mixed_export_reimport": 1,
+    "totalPassed": 21
+  },
+  "regressionFixed": "JSON 1 ULP provenance drift; retained failing pre-fix fixture.log and exact-value repro",
+  "isolatedFixture": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/c03-review-fixture-v2",
+  "fontTestRawLog": "initial tool output in task; no rerun solely for log",
+  "artifacts": {
+    "mixed-editable.comp/images/1.png": "963c2a3c08be61d0b597c15d65fac1842345144897009af429579aa0de6168a1",
+    "mixed-editable.comp/images/2.png": "3556ecc60de0b9a9e7f677cafb6d858db2999530d17d0e29d9d753e4bed4ab44",
+    "mixed-editable.comp/images/3.png": "80023ebdee5f140079f2c739f803f950e3c6561670639795febc9b3defcfd8b6",
+    "mixed-editable.comp/manifest.json": "d36f7fa4f333151aca87036af584c4a94d4f2c467e60a01f5db3aa7984e89a81",
+    "mixed-editable.comp/preview.png": "fdd67dc297571dfda81c4a85f6e86c81930befeaf5efbe71393096a36161f72b",
+    "mixed-text.png": "370d030b0df1aaea83820bd1eb5466c6cd88a8c39f060cf5e1bf1669c30a8595"
+  },
+  "actualIme": false,
+  "actualAppWindow": false,
+  "clipUiReuse": false,
+  "appColdStart": false,
+  "paidCalls": 0,
+  "deployment": false,
+  "systemFontsCopied": false,
+  "oldCandidateModified": false,
+  "weeklyRemainingAtBuildStart": 91,
+  "weeklyResetUtc": "2026-10-25 01:02:41 UTC",
+  "nativeBuild": "passed",
+  "candidateCodesign": "passed",
+  "candidateAgentManifest": "passed",
+  "webServerNodes": "unchanged; verified against R3 packaged files",
+  "logCopyNormalization": "Trailing blank lines removed in committed log copies; originals retained in .toonflow/c03-evidence"
+}

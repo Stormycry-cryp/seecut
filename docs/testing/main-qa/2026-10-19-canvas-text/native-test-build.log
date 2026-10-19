@@ -1,0 +1,23 @@
+   Compiling serde_json v1.0.151
+   Compiling i-slint-core v1.17.1
+   Compiling concat-project v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-project)
+   Compiling ureq v2.12.1
+   Compiling sherpa-onnx v1.13.7
+   Compiling concat-editor-mcp v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-editor-mcp)
+   Compiling concat-canvas v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-canvas)
+   Compiling seecut-flow-core v0.1.0 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/seecut-flow-core)
+   Compiling concat-effects v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-effects)
+   Compiling concat-vision v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-vision)
+   Compiling concat-export v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-export)
+   Compiling i-slint-renderer-skia v1.17.1
+   Compiling i-slint-renderer-software v1.17.1
+   Compiling concat-host v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-host)
+   Compiling i-slint-backend-winit v1.17.1
+   Compiling concat-api v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-api)
+   Compiling i-slint-backend-selector v1.17.1
+   Compiling concat-server v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-server)
+   Compiling slint v1.17.1
+   Compiling concat-speech v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-speech)
+   Compiling concat v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 14s
+  Executable unittests src/lib.rs (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/native-target/debug/deps/concat-9253771c0c8591ea)
