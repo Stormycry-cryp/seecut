@@ -1,0 +1,7 @@
+{
+  "testModuleSha256Before": "ab724862f20494733f04131318d6408a5f860a31d128405a492137b57720fb24",
+  "implementationSha256Before": "b4c1a809f6ebe64d942e24619b3566d4d7d9019fc0d917b601cb9ed95ab24000",
+  "testCount": 2,
+  "testModuleUnchanged": true,
+  "implementationUnchanged": true
+}
