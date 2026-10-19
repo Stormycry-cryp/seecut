@@ -30,3 +30,15 @@
 - [原生用例结果](native-results.json)
 
 日志副本仅去除末尾空行以满足补丁空白检查，原始日志保存在本机 .toonflow/c02-evidence。没有运行无关模型或平台的全量测试。
+
+## 固定源码与候选
+
+功能源码 `b91bbf1fc1c45cbf18ad97e87cc34aec85890d62`；[Draft PR #14](https://github.com/Stormycry-cryp/seecut/pull/14)。最终原生构建通过（4 分 35 秒），Rust fmt 与补丁空白检查通过。
+
+独立本机候选 `.toonflow/SeeCut-Adjustments-C02-QA.app`，bundle ID `cloud.stormycry.seecut.adjustments-c02-qa`，API 固定 `http://127.0.0.1:18743`，便携数据模式；未安装、未启动。签名深度严格校验和 5135 个 Agent 文件校验通过，整包 6380 个常规文件摘要已记录。
+
+- [候选来源、原始/封装二进制与整包摘要](candidate-manifest.json)
+- [源码文件摘要和验证范围](validation.json)
+- [签名及 Agent 清单验证](finalize.log)
+
+Agent 私有运行时保持 `7a05ee22bc6889e3ac16e9e6b8a414ae823be53c`；Web/Server/Node 产物与 R3 候选逐文件一致。旧 WIP 及旧候选均保留。实际 UI 验收和部署授权仍是独立待办；本包不推进下一增量。

@@ -1,0 +1,4 @@
+{"action": "seal", "verified_files": 5135}
+/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Adjustments-C02-QA.app: replacing existing signature
+{"action": "verify", "verified_files": 5135}
+{"source": "b91bbf1fc1c45cbf18ad97e87cc34aec85890d62", "app": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Adjustments-C02-QA.app", "fileCount": 6380, "manifest": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/c02-evidence/candidate-manifest.json"}
