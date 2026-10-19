@@ -1,0 +1,5 @@
+imageGenerationNode
+$ vue-tsc --noEmit
+
+videoGenerationNode
+$ vue-tsc --noEmit

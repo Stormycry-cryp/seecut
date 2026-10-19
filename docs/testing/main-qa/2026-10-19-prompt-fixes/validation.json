@@ -1,0 +1,40 @@
+{
+  "source": "05867eb3dd71ed532cd965a81f3a1bc07bef15b4",
+  "recordedAtUtc": "2026-10-19T00:38:24.536514+00:00",
+  "tests": {
+    "promptAndAccountBridge": {
+      "passed": 21,
+      "assertions": 86
+    },
+    "nativeQueueAndLock": {
+      "passed": 2
+    },
+    "existingDraftRestore": {
+      "passed": 5
+    },
+    "totalPassed": 28
+  },
+  "builds": {
+    "native": "Compiling concat v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 20s",
+    "web": "passed",
+    "affectedNodes": [
+      "imageGenerationNode",
+      "videoGenerationNode",
+      "audioGenerationNode",
+      "textNode",
+      "imageNode",
+      "director3dNode"
+    ]
+  },
+  "typecheck": {
+    "imageGenerationNode": "passed",
+    "videoGenerationNode": "passed",
+    "fullWeb": "blocked: pre-existing missing .hutch/devkit/api/config/ElectrobunConfig, TS2307"
+  },
+  "formatAndDiffCheck": "passed",
+  "patchSourceVerification": "passed",
+  "actualWindow": "not run: no window/CUA tool available",
+  "screenshots": "none for this candidate; screenshots/README.md marks pending",
+  "modelCalls": "synthetic test responses only; no real providers",
+  "deployment": "none"
+}

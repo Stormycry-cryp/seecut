@@ -1,0 +1,21 @@
+   Compiling concat v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 01s
+     Running unittests src/lib.rs (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/native-target/debug/deps/concat-43f68f387d0dae03)
+
+running 2 tests
+test cloud::prompt_assistance::tests::cancel_or_second_choice_never_unlocks_an_inflight_rewrite ... ok
+test cloud::prompt_assistance::tests::queued_choice_cancels_without_stranding_the_form ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 479 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
+     Running unittests src/lib.rs (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/native-target/debug/deps/concat-43f68f387d0dae03)
+
+running 5 tests
+test generation_templates::inspiration::tests::curated_content_is_original_versioned_and_never_fakes_effect_previews ... ok
+test generation_templates::inspiration::tests::preserves_chosen_model_and_unspecified_parameters_and_rejects_incompatible_inputs ... ok
+test generation_templates::inspiration::tests::original_draft_restore_rechecks_catalog_parameters_and_operations ... ok
+test generation_templates::inspiration::tests::replaced_or_missing_reference_fails_before_draft_application ... ok
+test generation_templates::inspiration::tests::original_draft_restore_requires_every_frozen_reference_and_preserves_backup ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 476 filtered out; finished in 0.00s
