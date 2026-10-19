@@ -194,6 +194,7 @@ impl CanvasSaveJob {
 /// Formal export snapshot shared by native UI and Agent execution. Composition,
 /// PNG encoding, filesystem IO and persistent registration can run off the UI.
 pub(crate) struct CanvasExportJob {
+    account_scope: String,
     snapshot: CanvasSaveData,
     project_path: Option<PathBuf>,
     path: PathBuf,
@@ -269,6 +270,7 @@ impl CanvasExportJob {
         });
         let bytes = encode_png(&frame)?;
         let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let content_registration = format!("canvas:{}:{sha256}", self.account_scope);
         let provenance = canvas_export_provenance(&self.snapshot, self.project_path.clone())?;
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -277,45 +279,24 @@ impl CanvasExportJob {
         let recovery = Arc::new(CanvasExportRecovery {
             path: self.path.clone(),
             name: self.export_stem.clone(),
-            registration_id: self.registration_id.clone(),
+            registration_id: content_registration.clone(),
             sha256: sha256.clone(),
             provenance: provenance.clone(),
         });
         let (asset, registration_error) = crate::personal_library::with_library_write_lock(|| {
             let dirs = concat_host::AppDirs::locate()?;
             let root = dirs.data.join("personal-library");
-            let registration = crate::registration_retry::register_output_with_provenance(
+            let registration = crate::registration_retry::register_canvas_output(
                 &root,
                 &self.path,
-                Some(&self.export_stem),
-                Some(&self.registration_id),
-                Some(&bytes),
-                Some(provenance),
+                &self.export_stem,
+                &self.account_scope,
+                &bytes,
+                provenance,
             );
             match registration {
                 Err(error) => Ok((None, Some(error))),
-                Ok(()) => {
-                    let library = crate::personal_library::Library::load_for_relink(&root)?;
-                    let expected = format!("operation:{}", self.registration_id);
-                    let asset = library
-                        .items()
-                        .iter()
-                        .find(|asset| {
-                            !asset.trashed
-                                && asset.version.as_ref().is_some_and(|v| {
-                                    v.registration_id == expected && v.sha256 == sha256
-                                })
-                        })
-                        .ok_or("formal export registration receipt missing")?;
-                    crate::personal_library::checked_managed_version_path(&root, asset)?;
-                    Ok((
-                        Some(crate::personal_library::AssetReference {
-                            asset_id: asset.id.clone(),
-                            version: asset.version.clone(),
-                        }),
-                        None,
-                    ))
-                }
+                Ok(asset) => Ok((Some(asset), None)),
             }
         })
         .unwrap_or_else(|error| (None, Some(error)));
@@ -324,7 +305,7 @@ impl CanvasExportJob {
             sha256,
             width: frame.width(),
             height: frame.height(),
-            registration_id: self.registration_id.clone(),
+            registration_id: content_registration.clone(),
             asset,
             recovery: registration_error.as_ref().map(|_| recovery),
             registration_error,
@@ -4234,6 +4215,7 @@ impl CanvasPane {
         let completion_id = registration_id.clone();
         self.export_operation = Some(registration_id.clone());
         let job = CanvasExportJob {
+            account_scope: crate::cloud::canvas_output_scope(),
             snapshot,
             project_path,
             path,
@@ -4303,6 +4285,7 @@ impl CanvasPane {
         let registration_id = uuid::Uuid::new_v4().to_string();
         self.export_operation = Some(registration_id.clone());
         Ok(CanvasExportJob {
+            account_scope: crate::cloud::canvas_output_scope(),
             snapshot,
             project_path: self.project_path.clone(),
             path,
@@ -7004,6 +6987,7 @@ mod tests {
     fn mcp_canvas_late_export_releases_original_slot_without_clearing_another_operation() {
         let (mut pane, _) = painting_pane();
         let job = CanvasExportJob {
+            account_scope: crate::cloud::canvas_output_scope(),
             snapshot: pane.save_data().unwrap(),
             project_path: None,
             path: "/synthetic-not-written.png".into(),

@@ -427,7 +427,10 @@ component CanvasBlendButton inherits Rectangle {
 
 component PropertySlider inherits HorizontalLayout {
     in property <string> label;
-    in-out property <float> value;
+    in property <float> value;
+    property <float> control-value: root.value;
+    changed value => { root.control-value = root.value; }
+    changed control-value => { number.value = root.percent ? root.control-value * 100 : root.control-value; }
     in property <float> minimum;
     in property <float> maximum: 1;
     in property <float> step: 0.01;
@@ -448,21 +451,21 @@ component PropertySlider inherits HorizontalLayout {
         height: 28px; horizontal-stretch: 1;
         minimum: root.minimum; maximum: root.maximum; step: root.step;
         default-value: root.default-value;
-        value: root.value;
-        changed(value) => { root.value = value; root.changed(value); }
+        value <=> root.control-value;
+        changed(value) => { root.changed(value); }
         gesture-started => { root.gesture-started(); }
         gesture-ended(commit) => { root.gesture-ended(commit); }
     }
-    NumberField {
+    number := NumberField {
         block-editor-shortcuts: true;
         width: root.unit == "" ? 56px : 72px;
-        value: root.percent ? root.value * 100 : root.value;
+        value: root.percent ? root.control-value * 100 : root.control-value;
         minimum: root.percent ? root.minimum * 100 : root.minimum;
         maximum: root.percent ? root.maximum * 100 : root.maximum;
         step: root.percent ? root.step * 100 : root.step;
         precision: root.percent ? 0 : root.precision;
         unit: root.percent ? "%" : root.unit;
-        changed(value) => { root.value = root.percent ? value / 100 : value; root.changed(root.value); }
+        changed(value) => { root.control-value = root.percent ? value / 100 : value; root.changed(root.control-value); }
         edit-started => { root.gesture-started(); }
         edit-finished(commit) => { root.gesture-ended(commit); }
     }

@@ -313,6 +313,34 @@ pub(crate) fn register_output_with_provenance(
         Err(error) => Err(format!("{error}；刷新资产库可重试入库")),
     }
 }
+/// Canvas repeats share an account/content identity, while transport operations
+/// stay distinct. Use the frozen owned PNG bytes, never re-read an external file.
+pub(crate) fn register_canvas_output(
+    root: &Path,
+    path: &Path,
+    name: &str,
+    scope: &str,
+    bytes: &[u8],
+    provenance: crate::personal_library::OutputProvenance,
+) -> Result<crate::personal_library::AssetReference, String> {
+    use sha2::{Digest, Sha256};
+    let sha = format!("{:x}", Sha256::digest(bytes));
+    let operation = format!("canvas:{scope}:{sha}");
+    let expected = format!("operation:{operation}");
+    if let Some(asset) = registered_operation(root, &expected, &sha)? {
+        return Ok(asset);
+    }
+    register_output_with_provenance(
+        root,
+        path,
+        Some(name),
+        Some(&operation),
+        Some(bytes),
+        Some(provenance),
+    )?;
+    registered_operation(root, &expected, &sha)?.ok_or_else(|| "画布导出登记回执不可用".into())
+}
+
 /// Retry snapshots only. No generation, download or wallet request is made.
 pub(crate) fn retry(root: &Path) -> Result<Outcome, String> {
     let mut entries = load(root)?;
@@ -425,6 +453,51 @@ mod tests {
     };
     use serde_json::json;
     use std::{fs, path::PathBuf};
+
+    #[test]
+    fn f3_canvas_content_registration_reuses_identity_and_keeps_scopes_and_old_assets() {
+        let t = Temp::new();
+        let root = t.0.join("library");
+        let source = t.0.join("canvas.png");
+        fs::write(&source, b"external file is not the owned snapshot").unwrap();
+        let provenance = crate::personal_library::OutputProvenance {
+            kind: "canvas_export".into(),
+            project_path: None,
+            document_sha256: "synthetic".into(),
+            inputs: vec![],
+            parameters: json!({}),
+        };
+        let register = |scope, bytes: &[u8]| {
+            registration_retry::register_canvas_output(
+                &root,
+                &source,
+                "canvas",
+                scope,
+                bytes,
+                provenance.clone(),
+            )
+            .unwrap()
+        };
+        let first = register("account-a", b"first owned PNG");
+        assert_eq!(first, register("account-a", b"first owned PNG"));
+        let other_account = register("account-b", b"first owned PNG");
+        assert_ne!(first.asset_id, other_account.asset_id);
+        let changed = register("account-a", b"changed owned PNG");
+        assert_ne!(first.asset_id, changed.asset_id);
+        let library = Library::load(&root).unwrap();
+        assert_eq!(library.items().len(), 3);
+        assert_eq!(
+            fs::read(&library.get(&first.asset_id).unwrap().path).unwrap(),
+            b"first owned PNG"
+        );
+        assert_eq!(
+            fs::read(&library.get(&changed.asset_id).unwrap().path).unwrap(),
+            b"changed owned PNG"
+        );
+        drop(library);
+        assert_eq!(first, register("account-a", b"first owned PNG"));
+        assert_eq!(Library::load(&root).unwrap().items().len(), 3);
+    }
 
     #[test]
     fn mcp_canvas_registration_retry_uses_only_one_original_frozen_snapshot() {

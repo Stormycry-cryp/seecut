@@ -208,6 +208,7 @@ fn lookup_project_owns_resource_after_source_deletion_and_export_deduplicates() 
     p.agent_adjustment_param(0, 0.5);
     p.agent_undo();
     let job = CanvasExportJob {
+        account_scope: "local".into(),
         snapshot: p.save_data().unwrap(),
         project_path: Some(project.clone()),
         path: data.join("canvas-exports/color-lookup.png"),

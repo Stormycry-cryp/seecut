@@ -254,16 +254,18 @@ export component NumberField inherits Rectangle {
             if (event.kind == PointerEventKind.down) {
                 self.origin = root.value;
                 self.travelled = false;
-            } else if (event.kind == PointerEventKind.up && !self.travelled) {
-                ti.focus();
+            } else if (event.kind == PointerEventKind.up) {
+                if (self.travelled) { root.edit-finished(true); }
+                else { ti.focus(); }
             }
         }
 
         moved => {
-            if (Math.abs((self.mouse-x - self.pressed-x) / 1px) > 3) {
+            if (self.pressed && !self.travelled && Math.abs((self.mouse-x - self.pressed-x) / 1px) > 3) {
+                root.edit-started();
                 self.travelled = true;
             }
-            if (self.travelled) {
+            if (self.pressed && self.travelled) {
                 root.apply(self.origin
                     + ((self.mouse-x - self.pressed-x) / root.px-per-step)
                         * root.step * (self.shift ? 10 : self.alt ? 0.1 : 1),

@@ -437,6 +437,7 @@ mod tests {
         let project = dir.join("mixed-editable.comp");
         p.agent_save_comp(&project).unwrap();
         let job = CanvasExportJob {
+            account_scope: "local".into(),
             snapshot: p.save_data().unwrap(),
             project_path: Some(project.clone()),
             path: data.join("canvas-exports/mixed-text.png"),

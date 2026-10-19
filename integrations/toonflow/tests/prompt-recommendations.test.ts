@@ -46,7 +46,7 @@ for(const kind of ['image','video']) {
   await f.c.rewrite('one');
   expect(f.calls[1]).toEqual({operation:'rewrite',input:{prompt:'typed immediately before click',images:['ref-one','ref-two']}});
   expect(f.live.input.images).toEqual(['ref-one','ref-two']);expect(f.c.state.rewriting).toBe(false);
-  f.c.undoRewrite();expect(f.live.input.prompt).toBe('typed immediately before click');expect(f.live.input.images).toEqual(['ref-one','ref-two']);
+  await f.c.undoRewrite();expect(f.live.input.prompt).toBe('typed immediately before click');expect(f.live.input.images).toEqual(['ref-one','ref-two']);
   expect(f.applied.map(v=>v.operation)).toEqual(['rewrite','undo']);expect(f.calls.map(v=>v.operation)).toEqual(['recommend','rewrite']);
  });
  for(const change of ['draft','references','context','closed']) test(`${kind}: late rewrite cannot overwrite ${change} before next poll`,async()=>{
@@ -77,6 +77,29 @@ test('undo is scoped to unchanged rewrite and never restores over later edits or
  for(const change of ['draft','references','context']) {
   const f=liveFixture(async()=>({prompt:'rewritten'}));await f.ready();await f.c.rewrite('one');expect(f.c.state.canUndo).toBe(true);
   if(change==='draft')f.live.input.prompt='user edit';if(change==='references')f.live.input.images=['new ref'];if(change==='context')f.live.context='new account';
-  const latest=structuredClone(f.live);f.c.undoRewrite();expect(f.live).toEqual(latest);expect(f.applied).toHaveLength(1);expect(f.c.state.canUndo).toBe(false);
+  const latest=structuredClone(f.live);await f.c.undoRewrite();expect(f.live).toEqual(latest);expect(f.applied).toHaveLength(1);expect(f.c.state.canUndo).toBe(false);
  }
+});
+test('synchronous rich-editor model and text notifications cannot clear applied undo',async()=>{
+ let time=0;let live={input:input('original'),context:'account:canvas:node-A'};
+ let rich=[{type:'Mention',id:'ref-one',value:'reference'}],saved:any;
+ let c:PromptRecommendations;
+ c=new PromptRecommendations(async o=>o==='recommend'?{recommendations:[{id:'one',label:'棚拍'}]}:{prompt:'rewritten'},()=>{},(prompt,operation)=>{
+  if(operation==='rewrite'){saved=structuredClone(rich);rich=[{type:'Write',id:'',value:prompt}];}else rich=saved;
+  // Vue flush:sync can observe the changed model before the text v-model update.
+  c.sync();live.input.prompt=prompt;c.sync();
+ },new RecommendationGate(),()=>time,()=>live);
+ c.sync();time=1000;await c.tick();await c.rewrite('one');c.sync();
+ expect(c.state.status).toBe('为你推荐');expect(c.state.canUndo).toBe(true);expect(c.state.rewriting).toBe(false);
+ await c.undoRewrite();c.sync();expect(live.input.prompt).toBe('original');expect(rich).toEqual([{type:'Mention',id:'ref-one',value:'reference'}]);
+ await c.rewrite('one');live.input.prompt='later user input';c.sync();await c.undoRewrite();expect(live.input.prompt).toBe('later user input');
+});
+test('Vue next-tick partial props are fenced until the complete rewrite is published',async()=>{
+ let time=0;const live={input:input('original rich draft'),context:'account:canvas:node-a'};let c:PromptRecommendations;
+ c=new PromptRecommendations(async o=>o==='recommend'?{recommendations:[{id:'one',label:'棚拍'}]}:{prompt:'rewritten'},()=>{},async(prompt)=>{
+  c.sync();await Promise.resolve();c.sync();live.input.prompt=prompt;
+ },new RecommendationGate(),()=>time,()=>live);
+ c.sync();time=1000;await c.tick();await c.rewrite('one');
+ expect(c.state.canUndo).toBe(true);expect(c.state.status).toBe('为你推荐');expect(c.state.rewriting).toBe(false);
+ live.context='account:canvas:node-b';await c.undoRewrite();expect(live.input.prompt).toBe('rewritten');
 });

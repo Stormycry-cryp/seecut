@@ -204,6 +204,7 @@ fn c02_editable_project_export_asset_and_reimport() {
         assert!((*a as i16 - *b as i16).abs() <= 1);
     }
     let job = CanvasExportJob {
+        account_scope: "local".into(),
         snapshot: p.save_data().unwrap(),
         project_path: Some(project.clone()),
         path: data.join("canvas-exports/adjustments.png"),
@@ -267,4 +268,30 @@ fn c02_editable_project_export_asset_and_reimport() {
         "library_count":1,"editable_reopen":true,"canvas_reimport":true,
         "gpu_cpu_png_max_byte_delta":1,"clip_ui_reuse":"not verified", "actual_ui":"not verified"
     })).unwrap()).unwrap();
+}
+
+#[test]
+fn f2_lookup_gesture_values_follow_selection_undo_and_redo() {
+    let mut p = pane();
+    p.agent_adjustment_add(10);
+    let first = p.active.unwrap();
+    p.agent_adjustment_param(0, 0.25);
+    p.agent_adjustment_add(10);
+    let second = p.active.unwrap();
+    p.agent_adjustment_param(0, 0.6);
+    p.active = Some(first);
+    p.begin_parameter_gesture(ParameterTarget::Adjustment(first, 0));
+    p.set_adjustment_param_for(first, 0, 0.78);
+    p.finish_parameter_gesture(true);
+    assert_eq!(p.adjustment_state().1[0].1, 0.78);
+    p.agent_undo();
+    assert_eq!(p.adjustment_state().1[0].1, 0.25);
+    p.agent_redo();
+    assert_eq!(p.adjustment_state().1[0].1, 0.78);
+    p.active = Some(second);
+    assert_eq!(p.adjustment_state().1[0].1, 0.6);
+    p.begin_parameter_gesture(ParameterTarget::Adjustment(second, 0));
+    p.set_adjustment_param_for(second, 0, 0.4);
+    p.finish_parameter_gesture(false);
+    assert_eq!(p.adjustment_state().1[0].1, 0.6);
 }
