@@ -1,0 +1,3 @@
+   Compiling concat v0.2.2 (<repository>/src/crates/concat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7m 16s
+  Executable unittests src/lib.rs (../.toonflow/native-target/debug/deps/concat-6e5e5b3d2a17522d)

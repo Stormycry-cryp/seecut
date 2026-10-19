@@ -1,0 +1,15 @@
+{
+  "base": "ae349e504f85eb6f29c75d65ee911a907ff209a4",
+  "files": {
+    "src/crates/concat-canvas/src/compositor.rs": "faf095f7401fe20a4471e061464f2b12fc84602c2726cb7cfc600de5ec531afb",
+    "src/crates/concat-canvas/src/document.rs": "08c439c66f25739c638a0c62cf924b6b150ca4661019fa0980af15cb4485133d",
+    "src/crates/concat-canvas/src/gpu.rs": "e792717427143065d17b8a78b3a136a08a52ad40cb486508cf367bf33ef13ff7",
+    "src/crates/concat-canvas/src/lib.rs": "bf8031ae99a541465c5cad1410ff0c0e518710fee9420ed06bc724924319f2c2",
+    "src/crates/concat/src/lib.rs": "30721c5de609097fab2964d4645245f39da7e951edc88753e739cf05a4aa9a26",
+    "src/crates/concat/src/panes/canvas.rs": "cb6a01311dd2d9c4bc757e0578129a2d48edbd8051d018feb1141c0f8b449191",
+    "src/crates/concat/src/panes/canvas/shapes.rs": "1cafca7227394bb11d447be43a7593b37cde32a5ca6acd562bcf68dfee83f5df",
+    "src/crates/concat/ui/workspace/canvas-pane.slint": "5c10b94893ec5b6869359833513115af8edb1c5644e20337e5a513c501753704",
+    "src/crates/concat-canvas/src/vector_mask.rs": "9f25571ae2c1d14b722810f674286a6119519015a7e7f75b1bd224ed352b1708",
+    "src/crates/concat/src/panes/canvas/vector_masks.rs": "fd8e05dd5e6490223f0043ab83553409fd95819359161db41224bb4fec7cbe8c"
+  }
+}
