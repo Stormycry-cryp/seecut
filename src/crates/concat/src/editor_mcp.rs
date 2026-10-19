@@ -1331,7 +1331,7 @@ impl BridgeUi {
                 Response::ok(
                     json!({"appInstanceId":self.instance_id,"activeWorkspace":"flow","documents":[{
                         "kind":"flow","projectId":flow.project_id,"documentSessionId":flow.session_id,"sessionId":flow.session_id,
-                        "canvasId":flow.canvas_id,"accountScope":flow.account_scope,"revision":flow.revision,"contextRevision":flow.revision,"selectionRevision":flow.revision,
+                        "canvasId":flow.canvas_id,"accountScope":flow.account_scope,"revision":flow.revision,"contextRevision":flow.revision,"selectionRevision":flow.selection_revision,
                         "selectedObjectIds":flow.selected_node_ids,"dirty":false,"busy":if flow.busy {Some("saving")}else{None}
                     }]}),
                 )

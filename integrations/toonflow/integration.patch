@@ -2500,7 +2500,7 @@ index 3615205..db1e404 100644
  }
  
 diff --git a/apps/web/src/lib/mcpControl.ts b/apps/web/src/lib/mcpControl.ts
-index 729aa59..65781fd 100644
+index 729aa59..a4c5ef0 100644
 --- a/apps/web/src/lib/mcpControl.ts
 +++ b/apps/web/src/lib/mcpControl.ts
 @@ -6,14 +6,19 @@ import { invalidateNodeModels } from "@toonflow/nodes-scaffold/nodeAi";
@@ -2511,7 +2511,7 @@ index 729aa59..65781fd 100644
 +type ControlCall = { type: "call"; callId: string; name: string; args: Record<string, unknown>; directory?: string; expectedCanvasId?: string; expectedRevision?: number };
  type WorkspaceControl = {
 -  getState(): { directory: string | null; canvasId: string | null; panel: string; tools: NodeToolInfo[]; document?: unknown };
-+  getState(): { directory: string | null; canvasId: string | null; panel: string; canvasReady?: boolean; canvasListReady?: boolean; canvasLoadError?: string; tools: NodeToolInfo[]; document?: unknown; flowRevision?: number; selectedNodeIds?: string[]; projectName?: string; flowBusy?: boolean };
++  getState(): { directory: string | null; canvasId: string | null; panel: string; canvasReady?: boolean; canvasListReady?: boolean; canvasLoadError?: string; tools: NodeToolInfo[]; document?: unknown; flowRevision?: number; flowSelectionRevision?: number; selectedNodeIds?: string[]; projectName?: string; flowBusy?: boolean };
    call(request: ControlCall, signal: AbortSignal): Promise<unknown>;
    flushSave(): Promise<void>;
 +  assertCanLeave(): void;
@@ -2731,7 +2731,7 @@ index 0000000..40be100
 +}
 diff --git a/apps/web/src/lib/seecutFlowControl.ts b/apps/web/src/lib/seecutFlowControl.ts
 new file mode 100644
-index 0000000..0f7e028
+index 0000000..73d5412
 --- /dev/null
 +++ b/apps/web/src/lib/seecutFlowControl.ts
 @@ -0,0 +1,72 @@
@@ -2777,7 +2777,7 @@ index 0000000..0f7e028
 +      bindingKey = key; sessionId = crypto.randomUUID();
 +      lifetime.abort(new Error('FLOW_BINDING_CHANGED')); lifetime = new AbortController();
 +    }
-+    host({type:'seecut:flow-context', context:binding() ? {...binding(), selectedNodeIds:state?.selectedNodeIds ?? [], name:state?.projectName ?? '', busy:state?.flowBusy ?? false} : null});
++    host({type:'seecut:flow-context', context:binding() ? {...binding(), selectionRevision:state?.flowSelectionRevision, selectedNodeIds:state?.selectedNodeIds ?? [], name:state?.projectName ?? '', busy:state?.flowBusy ?? false} : null});
 +  }
 +  const gate = createFlowGate({ binding, account,
 +    receipt:(call, action, result) => request('operation', {call, action, result}),
@@ -3437,7 +3437,7 @@ index 0000000..12db544
 +}
 +</style>
 diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
-index 61cddd7..75bc490 100644
+index 61cddd7..e08b540 100644
 --- a/apps/web/src/pages/workspace/index.vue
 +++ b/apps/web/src/pages/workspace/index.vue
 @@ -1,5 +1,19 @@
@@ -3552,11 +3552,12 @@ index 61cddd7..75bc490 100644
  const agentWidth = ref(0);
  const settingsVisible = ref(false);
  const helpVisible = ref(false);
-@@ -199,16 +217,26 @@ registerWorkspaceControl({
+@@ -199,16 +217,27 @@ registerWorkspaceControl({
      directory: workspaceStore.project?.directory ?? null,
      canvasId: canvasPanelRef.value?.canvasId || null,
      panel: activePanel.value,
 +    flowRevision: canvasPanelRef.value?.getAgentState().revision ?? 0,
++    flowSelectionRevision: canvasPanelRef.value?.getAgentState().selectionRevision ?? 0,
 +    selectedNodeIds: canvasPanelRef.value?.getAgentState().selectedNodeIds ?? [],
 +    projectName: workspaceStore.project?.name ?? "",
 +    flowBusy: canvasPanelRef.value?.saveBusy ?? true,
@@ -3579,7 +3580,7 @@ index 61cddd7..75bc490 100644
        if (directory !== workspaceStore.project?.directory) throw new Error("工作区已切换，本次调用已停止");
      };
      checkDirectory();
-@@ -237,12 +265,84 @@ registerWorkspaceControl({
+@@ -237,12 +266,84 @@ registerWorkspaceControl({
    },
  });
  
@@ -3664,7 +3665,7 @@ index 61cddd7..75bc490 100644
    if (canvasPanelRef.value?.saveBusy) {
      ElMessage.warning("画布操作尚未完成，请稍后退出");
      return false;
-@@ -343,6 +443,20 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
+@@ -343,6 +444,20 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
    height: 100dvh;
    background-color: var(--el-bg-color);
  
@@ -3718,7 +3719,7 @@ index 70683a6..e4448ba 100644
    const transfer = event.dataTransfer;
    if (!transfer) return;
 diff --git a/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue b/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue
-index 23cb7da..dc8e4ea 100644
+index 23cb7da..3803576 100644
 --- a/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue
 +++ b/apps/web/src/pages/workspace/panels/canvas/canvasHost.vue
 @@ -40,6 +40,7 @@ const activeInstance = computed(() => instances.get(activeKey.value));
@@ -3735,7 +3736,7 @@ index 23cb7da..dc8e4ea 100644
  
 -defineExpose({ canvasId, canvasReady, canvasListReady, getCanvasContext, readDocumentNode, readDocumentNodes, focusDocumentNode, saveDocumentNode, mountDocumentNode, observeDocumentNode, resolveDocumentNodeFile, performFileAction, flushSave, cancelSave,
 +defineExpose({ canvasId, canvasReady, canvasListReady, loadError,
-+  getAgentState: () => activeInstance.value?.getAgentState() ?? { revision: 0, selectedNodeIds: [] },
++  getAgentState: () => activeInstance.value?.getAgentState() ?? { revision: 0, selectionRevision: 0, selectedNodeIds: [] },
 +  getSaveState: () => {
 +    const states = [...instances.values()].map(panel => panel.getSaveState());
 +    return { conflict: states.some(state => state.conflict), dirty: states.some(state => state.dirty), error: states.find(state => state.error)?.error || "" };
@@ -4159,7 +4160,7 @@ index 0000000..cdac424
 +.previewMedia { display: block; width: 100%; max-height: 65dvh; }
 +</style>
 diff --git a/apps/web/src/pages/workspace/panels/canvas/index.vue b/apps/web/src/pages/workspace/panels/canvas/index.vue
-index 649c61b..bc78443 100644
+index 649c61b..5564b95 100644
 --- a/apps/web/src/pages/workspace/panels/canvas/index.vue
 +++ b/apps/web/src/pages/workspace/panels/canvas/index.vue
 @@ -66,8 +66,9 @@
@@ -4235,7 +4236,7 @@ index 649c61b..bc78443 100644
  let canvasController = new AbortController();
  let workspaceController = new AbortController();
  const createCanvasContext = useCanvasTools({
-@@ -288,8 +304,18 @@ function getCanvasContext() {
+@@ -288,8 +304,25 @@ function getCanvasContext() {
    return canvasId.value || canvasMenuRef.value?.initialized ? createCanvasContext(canvasId.value, canvasController.signal, workspaceController.signal) : undefined;
  }
  const canvasReady = computed(() => !!canvasId.value && !nodeListLoading.value && nodeLoads.size === 0);
@@ -4247,15 +4248,22 @@ index 649c61b..bc78443 100644
  provide("canvas", getCanvasContext);
 -defineExpose({ canvasId, canvasReady, getCanvasContext, addNodeAtPointer, readDocumentNode, saveDocumentNode, mountDocumentNode, observeDocumentNode, prepareCanvasDelete, flushSave: flushCanvasSave, cancelSave: cancelCanvasSave,
 +const flowAgentRevision = ref(0);
++const flowSelectionRevision = ref(0);
++// Task results and viewport updates change content, not the user's selection.
++// A synchronous counter also retains select-away-and-back changes between host observations.
++watch(() => JSON.stringify([
++  flow.getSelectedNodes.value.map(node => node.id).sort(),
++  flow.getSelectedEdges.value.map(edge => edge.id).sort(),
++]), () => flowSelectionRevision.value++, { flush: "sync" });
 +watch(() => JSON.stringify(toObject()), () => flowAgentRevision.value++, { flush: "sync" });
 +defineExpose({ canvasId, canvasReady, getCanvasContext,
-+  getAgentState: () => ({ revision: flowAgentRevision.value, selectedNodeIds: flow.getSelectedNodes.value.map(node => node.id) }),
++  getAgentState: () => ({ revision: flowAgentRevision.value, selectionRevision: flowSelectionRevision.value, selectedNodeIds: flow.getSelectedNodes.value.map(node => node.id).sort() }),
 +  saveRecoveryCopy,
 +  getSaveState: () => ({ conflict: canvasSaveConflict.value, dirty: canvasDirty.value || [...nodeDocument.states.values()].some(state => state.dirty), error: canvasSaveError.value || [...nodeDocument.states.values()].find(state => state.error)?.error || "" }), addNodeAtPointer, readDocumentNode, saveDocumentNode, mountDocumentNode, observeDocumentNode, prepareCanvasDelete, flushSave: flushCanvasSave, cancelSave: cancelCanvasSave,
    getCanvases: (signal?: AbortSignal) => {
      if (!canvasMenuRef.value) throw new Error("画布菜单尚未就绪");
      return canvasMenuRef.value.getCanvases(signal);
-@@ -514,6 +540,56 @@ function selectFiles(position: { x: number; y: number }) {
+@@ -514,6 +547,56 @@ function selectFiles(position: { x: number; y: number }) {
    input.click();
  }
  
@@ -4312,7 +4320,7 @@ index 649c61b..bc78443 100644
  function openNodeMenu(event: MouseEvent) {
    if (event.target instanceof Element && event.target.classList.contains("vue-flow__pane")) nodeMenuRef.value?.openMenu(event, true);
  }
-@@ -559,14 +635,20 @@ let saveRevision = 0;
+@@ -559,14 +642,20 @@ let saveRevision = 0;
  const saveCanvas = debounce((directory: string, fileName: string) => {
    const flow = toObject();
    const revision = saveRevision;
@@ -4336,7 +4344,7 @@ index 649c61b..bc78443 100644
        saveError = err;
        canvasSaveError.value = axios.isAxiosError<{ message?: string }>(err) ? err.response?.data.message || err.message : err instanceof Error ? err.message : "画布保存失败";
        ElMessage.error(
-@@ -581,15 +663,16 @@ const saveCanvas = debounce((directory: string, fileName: string) => {
+@@ -581,15 +670,16 @@ const saveCanvas = debounce((directory: string, fileName: string) => {
  }, 500);
  
  function scheduleCanvasSave() {
@@ -4356,7 +4364,7 @@ index 649c61b..bc78443 100644
  }
  
  function scheduleCanvasChange() {
-@@ -670,6 +753,10 @@ watch(
+@@ -670,6 +760,10 @@ watch(
        canvasController.abort(new Error("画布已重新加载，本次画布调用已停止"));
        canvasController = new AbortController();
      }
@@ -4367,7 +4375,7 @@ index 649c61b..bc78443 100644
      if (!savePaused) saveCanvas.flush();
    },
    { flush: "sync" }
-@@ -699,7 +786,10 @@ async function saveCanvasState(action?: () => Promise<void>) {
+@@ -699,7 +793,10 @@ async function saveCanvasState(action?: () => Promise<void>) {
    await Promise.all(flow.getNodes.value.map((node) => useNodeEvent(node.id, flow).emit("save")));
    await nextTick();
    if (saveCancelled) throw new Error("画布保存已取消");
@@ -4379,7 +4387,7 @@ index 649c61b..bc78443 100644
    if (action) savePaused = true;
    try {
      let revision: number;
-@@ -728,6 +818,34 @@ async function saveCanvasState(action?: () => Promise<void>) {
+@@ -728,6 +825,34 @@ async function saveCanvasState(action?: () => Promise<void>) {
    }
  }
  
@@ -4414,7 +4422,7 @@ index 649c61b..bc78443 100644
  function cancelCanvasSave() {
    saveCancelled = true;
    savePaused = true;
-@@ -964,6 +1082,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
+@@ -964,6 +1089,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
      && shortcutPressed(event, getShortcutBindings(shortcuts.pan).filter(binding => binding !== "None").join(" / "), pressedCodes);
    updateCanvasSelection(event);
    if (event.type === "keyup" || event.defaultPrevented || event.isComposing || !inCanvas || editing) return;
@@ -4426,7 +4434,7 @@ index 649c61b..bc78443 100644
    const action = ([
      "group", "mergeGroup", "ungroup", "addNode", "moveTool", "handTool", "arrange", "search",
      "delete", "copy", "paste", "undo", "redo", "zoomIn", "zoomOut", "fitView",
-@@ -1005,6 +1128,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
+@@ -1005,6 +1135,11 @@ function updateCanvasKeys(event: KeyboardEvent) {
    else void flow[action]();
  }
  
@@ -4438,7 +4446,7 @@ index 649c61b..bc78443 100644
  function resetCanvasKeys() {
    pressedCodes.clear();
    gestureScale = undefined;
-@@ -1012,7 +1140,7 @@ function resetCanvasKeys() {
+@@ -1012,7 +1147,7 @@ function resetCanvasKeys() {
    panKeyPressed.value = false;
    selectionKeyPressed.value = getShortcutBindings(generalSettings.value.canvasShortcuts.selection).includes("None");
    flow.multiSelectionActive.value = false;
@@ -4447,7 +4455,7 @@ index 649c61b..bc78443 100644
  }
  
  watch([() => props.active, () => props.settingsVisible, () => generalSettings.value.canvasShortcuts], resetCanvasKeys, { deep: true, flush: "sync", immediate: true });
-@@ -1028,6 +1156,8 @@ onMounted(() => {
+@@ -1028,6 +1163,8 @@ onMounted(() => {
    window.addEventListener("keydown", updateCanvasKeys, true);
    window.addEventListener("keyup", updateCanvasKeys, true);
    window.addEventListener("blur", resetCanvasKeys);
@@ -4456,7 +4464,7 @@ index 649c61b..bc78443 100644
    window.addEventListener("toonflow:plugin-installed", refreshInstalled);
    window.addEventListener("toonflow:node-config-updated", refreshNodeConfig);
    document.addEventListener("paste", pasteNode);
-@@ -1040,6 +1170,8 @@ onBeforeUnmount(() => {
+@@ -1040,6 +1177,8 @@ onBeforeUnmount(() => {
    window.removeEventListener("keydown", updateCanvasKeys, true);
    window.removeEventListener("keyup", updateCanvasKeys, true);
    window.removeEventListener("blur", resetCanvasKeys);
@@ -4465,7 +4473,7 @@ index 649c61b..bc78443 100644
    window.removeEventListener("toonflow:plugin-installed", refreshInstalled);
    window.removeEventListener("toonflow:node-config-updated", refreshNodeConfig);
    document.removeEventListener("paste", pasteNode);
-@@ -1181,6 +1313,17 @@ const defaultEdgeOptions = markRaw({
+@@ -1181,6 +1320,17 @@ const defaultEdgeOptions = markRaw({
  .canvas {
    width: 100%;
    height: 100%;
