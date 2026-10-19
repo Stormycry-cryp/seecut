@@ -8361,7 +8361,8 @@ fn save_preferences(app: &App, state: &Rc<RefCell<Cloud>>) {
         "generation_choice": c.saved_generation_choice,
         "folder": c.folder,
         "reduced_motion": app.global::<SeeCut>().get_reduced_motion(),
-        "creator_mode": app.global::<SeeCut>().get_creator_mode(),
+        // Preserve the legacy preference key as quick for older clients.
+        "creator_mode": 0,
     });
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -8385,12 +8386,8 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         });
     app.global::<SeeCut>()
         .set_reduced_motion(saved["reduced_motion"].as_bool().unwrap_or(false));
-    app.global::<SeeCut>().set_creator_mode(
-        saved["creator_mode"]
-            .as_i64()
-            .map(|v| v.clamp(0, 1) as i32)
-            .unwrap_or(-1),
-    );
+    // Legacy professional/undecided preferences normalize to the sole quick layout.
+    // Generation choices, folders and persisted drafts are read independently.
     app.global::<SeeCut>()
         .set_local_folder(folder.to_string_lossy().into_owned().into());
     app.global::<SeeCut>().set_page(1);
@@ -8667,13 +8664,6 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         "order-refresh"=>job(&app,&shared,"order".into(),request("POST",format!("/api/orders/{id}/refresh"),Value::Null)),
         "navigate"=>navigate(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
         "navigate-resume"=>navigate_unchecked(&app,&shared,id.parse::<i32>().unwrap_or_else(|_|ui.get_page())),
-        "creator-mode"=>{
-            if let Ok(mode) = id.parse::<i32>() {
-                ui.set_creator_mode(mode.clamp(0, 1));
-                ui.set_prompt_context_revision(ui.get_prompt_context_revision().wrapping_add(1));
-                save_preferences(&app, &shared);
-            }
-        },
         "project-assets"=>begin_asset_picker(&app,&shared,"import",0),
         "canvas-assets"=>begin_asset_picker(&app,&shared,"canvas",0),
         "export-copy-cancel"=>{

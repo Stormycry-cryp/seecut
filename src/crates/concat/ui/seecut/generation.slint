@@ -15,11 +15,11 @@ export component GenerationForm inherits Rectangle {
     property <int> mention-index;
     property <string> cleared-prompt;
     in property <bool> compact;
-    property <int> reference-columns: SeeCut.creator-mode == 1 ? 3 : 2;
-    property <int> reference-visible-count: SeeCut.creator-mode == 1 ? 6 : 4;
+    property <int> reference-columns: 2;
+    property <int> reference-visible-count: 4;
     property <int> reference-shown: SeeCut.references-expanded ? SeeCut.references.length : Math.min(SeeCut.references.length, root.reference-visible-count);
     property <length> reference-card-width: (root.width - (root.compact ? 16px : 32px) - (root.reference-columns - 1) * 8px) / root.reference-columns;
-    property <length> reference-card-height: root.width < 380px ? (SeeCut.creator-mode == 1 ? 72px : 96px) : SeeCut.creator-mode == 1 ? 88px : 120px;
+    property <length> reference-card-height: root.width < 380px ? 96px : 120px;
     property <bool> model-valid: SeeCut.model-index >= 0 && SeeCut.model-index < SeeCut.model-names.length;
     property <string> duration-label: SeeCut.durations.length == 0 ? "默认时长" : SeeCut.duration-index >= 0 && SeeCut.duration-index < SeeCut.durations.length ? SeeCut.durations[SeeCut.duration-index] : "请选择时长";
     VerticalLayout {
@@ -40,11 +40,6 @@ export component GenerationForm inherits Rectangle {
             if SeeCut.inspiration-can-restore: WorkspaceIcon {
                 glyph: Glyph.undo; label: "恢复原草稿"; enabled: !SeeCut.working && !SeeCut.prompt-rewriting;
                 clicked => { SeeCut.action("inspiration-restore", ""); }
-            }
-            AppButton {
-                label: SeeCut.creator-mode == 1 ? "专业" : "快速";
-                subtle: true;
-                clicked => { SeeCut.action("creator-mode", SeeCut.creator-mode == 1 ? "0" : "1"); }
             }
         }
         if SeeCut.signed-in && SeeCut.generation-effort-names.length > 0: WorkspaceSelect {
@@ -107,7 +102,7 @@ export component GenerationForm inherits Rectangle {
                     if SeeCut.references.length == 0: empty-reference := Rectangle {
                         property <bool> can-add: !SeeCut.prompt-rewriting && !SeeCut.working && (!SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max);
                         property <bool> ring;
-                        height: SeeCut.creator-mode == 1 ? 112px : 156px;
+                        height: 156px;
                         background: upload-touch.has-hover && self.can-add ? Theme.field-hover : Theme.well;
                         border-radius: Theme.r-lg;
                         border-width: 1px;
@@ -292,7 +287,7 @@ export component GenerationForm inherits Rectangle {
             }
         if SeeCut.signed-in: VerticalLayout {
             spacing: 4px;
-            if SeeCut.creator-mode == 0: HorizontalLayout {
+            HorizontalLayout {
                 height: Theme.workbench-h;
                 spacing: 8px;
                 if SeeCut.model-names.length > 0: WorkspaceSelect {
@@ -301,64 +296,6 @@ export component GenerationForm inherits Rectangle {
                     changed(index) => { SeeCut.model-index = index; SeeCut.changed("model", index); }
                 }
                 WorkspaceIcon { glyph: Glyph.sliders; label: SeeCut.generation-parameters-open ? "收起参数" : "展开参数"; clicked => { SeeCut.generation-parameters-open = !SeeCut.generation-parameters-open; } }
-            }
-            if SeeCut.creator-mode == 1: VerticalLayout {
-                spacing: 12px;
-                Label { text: "模型"; }
-                if SeeCut.model-names.length > 0: WorkspaceSelect {
-                    options: SeeCut.model-names; current: SeeCut.model-index;
-                    placeholder: "请选择模型";
-                    changed(index) => { SeeCut.model-index = index; SeeCut.changed("model", index); }
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    if SeeCut.ratios.length > 0: Label { text: "画面比例"; horizontal-stretch: 1; }
-                    if SeeCut.resolutions.length > 0: Label { text: SeeCut.mode == 0 ? "分辨率" : "清晰度"; horizontal-stretch: 1; }
-                }
-                HorizontalLayout {
-                    height: Theme.workbench-h; spacing: 8px;
-                    if SeeCut.ratios.length > 0: WorkspaceSelect {
-                        options: SeeCut.ratios; current: SeeCut.ratio-index;
-                        placeholder: "比例"; horizontal-stretch: 1;
-                        changed(index) => { SeeCut.ratio-index = index; SeeCut.changed("ratio", index); }
-                    }
-                    if SeeCut.resolutions.length > 0: WorkspaceSelect {
-                        options: SeeCut.resolutions; current: SeeCut.resolution-index;
-                        placeholder: SeeCut.mode == 0 ? "尺寸" : "清晰度"; horizontal-stretch: 1;
-                        changed(index) => { SeeCut.resolution-index = index; SeeCut.changed("resolution", index); }
-                    }
-                }
-                more-parameters := Rectangle {
-                    height: 40px;
-                    property <bool> expanded: SeeCut.generation-parameters-open;
-                    changed expanded => {
-                        if !self.expanded && SeeCut.page == 1 && !SeeCut.media-preview-open && !SeeCut.result-preview-open && !SeeCut.asset-picker-open && !SeeCut.handoff-open {
-                            focus.focus();
-                        }
-                    }
-                    property <bool> ring;
-                    accessible-role: button;
-                    accessible-label: SeeCut.generation-parameters-open ? "收起更多参数" : "展开更多参数";
-                    accessible-action-default => { SeeCut.generation-parameters-open = !SeeCut.generation-parameters-open; }
-                    HorizontalLayout {
-                        width: parent.width; height: parent.height;
-                        Text { text: SeeCut.generation-parameters-open ? "收起更多参数" : "更多参数"; color: Theme.fg; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
-                        Rectangle { width: 16px; height: 40px; Icon { y: (parent.height - self.height) / 2; glyph: SeeCut.generation-parameters-open ? Glyph.chevron-up : Glyph.chevron-down; size: 16px; tint: Theme.fg-muted; } }
-                    }
-                    focus := FocusScope {
-                        focus-gained(reason) => { more-parameters.ring = reason == FocusReason.tab-navigation; }
-                        focus-lost(reason) => { more-parameters.ring = false; }
-                        key-pressed(event) => {
-                            if event.text == " " || event.text == "\n" {
-                                SeeCut.generation-parameters-open = !SeeCut.generation-parameters-open;
-                                return EventResult.accept;
-                            }
-                            return EventResult.reject;
-                        }
-                    }
-                    TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); SeeCut.generation-parameters-open = !SeeCut.generation-parameters-open; } }
-                    FocusRing { active: more-parameters.ring; radius: Theme.r; }
-                }
             }
             if SeeCut.mode == 1 && SeeCut.generation-parameters-open && (SeeCut.durations.length > 0 || SeeCut.supports-generation-audio): HorizontalLayout {
                 height: Theme.workbench-h;
@@ -376,7 +313,7 @@ export component GenerationForm inherits Rectangle {
                 if SeeCut.supports-generation-audio: Text { text: SeeCut.generate-audio ? "开启" : "关闭"; color: Theme.fg-muted; vertical-alignment: center; }
                 if SeeCut.supports-generation-audio: Switch { checked <=> SeeCut.generate-audio; toggled(checked) => { SeeCut.changed("generate-audio", ""); } }
             }
-            if SeeCut.signed-in && SeeCut.creator-mode == 0 && SeeCut.generation-parameters-open: HorizontalLayout {
+            if SeeCut.signed-in && SeeCut.generation-parameters-open: HorizontalLayout {
                 height: Theme.workbench-h; spacing: 8px;
                 if SeeCut.resolutions.length > 0: WorkspaceSelect { options: SeeCut.resolutions; current: SeeCut.resolution-index; placeholder: "尺寸"; horizontal-stretch: 1; changed(index) => { SeeCut.resolution-index = index; SeeCut.changed("resolution", index); } }
                 if SeeCut.ratios.length > 0: WorkspaceSelect { options: SeeCut.ratios; current: SeeCut.ratio-index; placeholder: "比例"; horizontal-stretch: 1; changed(index) => { SeeCut.ratio-index = index; SeeCut.changed("ratio", index); } }
@@ -750,36 +687,6 @@ export component GenerationPage inherits Rectangle {
         }
     }
     InspirationPreview { }
-    Modal {
-        open: SeeCut.creator-mode < 0;
-        title: "选择工作模式";
-        title-at-start: true;
-        dismissable: false;
-        surface-width: Math.min(520px, root.width - 32px);
-        VerticalLayout {
-            padding-left: 24px; padding-right: 24px; padding-bottom: 24px;
-            spacing: 16px;
-            Text {
-                text: "快速模式更简洁，专业模式可调整更多参数。随时可切换。";
-                color: Theme.fg-muted;
-                font-size: Theme.workbench-font;
-                wrap: word-wrap;
-            }
-            HorizontalLayout {
-                spacing: 12px;
-                AppButton {
-                    width: (parent.width - 12px) / 2;
-                    label: "快速模式"; primary: true;
-                    clicked => { SeeCut.action("creator-mode", "0"); }
-                }
-                AppButton {
-                    width: (parent.width - 12px) / 2;
-                    label: "专业模式";
-                    clicked => { SeeCut.action("creator-mode", "1"); }
-                }
-            }
-        }
-    }
     Modal {
         open: SeeCut.result-preview-open && SeeCut.selected-task >= 0 && SeeCut.selected-task < SeeCut.tasks.length && SeeCut.tasks[SeeCut.selected-task].failed;
         title: "生成失败详情"; glyph: Glyph.info;
