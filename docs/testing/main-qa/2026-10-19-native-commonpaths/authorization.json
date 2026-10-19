@@ -1,0 +1,10 @@
+{
+  "authorizedAtUTC": "2026-10-19T17:20:42.491199+00:00",
+  "localIncrementalQaBuildAllowedBeforeCiCompletion": true,
+  "source": "272bcf1f4b2e822b0d7ed94cf8b67b6e27289c95",
+  "weeklyRemainingPercent": 53,
+  "weeklyStopAtPercent": 30,
+  "cuAAllowed": true,
+  "releaseAllowed": false,
+  "productionOrSecretsAllowed": false
+}

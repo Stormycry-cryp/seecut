@@ -1,0 +1,18 @@
+[
+  {
+    "id": "gen_66p2DaQHssxUKnMyf88RxQ",
+    "kind": "image",
+    "model": "nano-banana-2.1",
+    "status": "failed",
+    "error_code": "REFERENCE_URL_UNAVAILABLE",
+    "error_message": "参考素材需要可公开访问的 HTTPS 服务"
+  },
+  {
+    "id": "gen_L0vCvQN2gBudxhiEFNTGIg",
+    "kind": "image",
+    "model": "nano-banana-2.1",
+    "status": "failed",
+    "error_code": "REFERENCE_URL_UNAVAILABLE",
+    "error_message": "参考素材需要可公开访问的 HTTPS 服务"
+  }
+]

@@ -1,0 +1,48 @@
+{
+  "completedAtUTC": "2026-10-19T18:07:07.876961+00:00",
+  "status": "partial; permission blocked; not releasable",
+  "baseSource": "272bcf1f4b2e822b0d7ed94cf8b67b6e27289c95",
+  "fixSource": "35a7600f69015ebcadcc75ae45e4f7cac915885e",
+  "builds": {
+    "base": "pass 4m18s",
+    "fix": "pass 4m16s"
+  },
+  "passedBase": [
+    "LUT slider/numeric/undo/redo/save/reopen",
+    "native text edit/save/reopen",
+    "canvas export content dedupe/trash/reexport",
+    "PSD nested layers/visibility/opacity/save/reopen/export",
+    "truncated PSD rejection preserves document",
+    "vector mask anchor/handle/undo/redo/unlink/save/reopen",
+    "synthetic Jev candidate selection",
+    "synthetic GLM rewrite/undo",
+    "light/dark and 1000x760 native layout"
+  ],
+  "fixUiRetest": "blocked after synthetic login: main thread std::fs::read/open; Documents TCC prompt",
+  "notPassed": [
+    "Flow full chain",
+    "actual Agent tool chain",
+    "reference-image synthetic generation: HTTPS reference guard",
+    "text-only generation automatic library registration in this round",
+    "full CI",
+    "reference removal after fix UI click"
+  ],
+  "paidCalls": 0,
+  "deployed": false,
+  "permissionsModified": false,
+  "originalAppsAndWipPreserved": true,
+  "cleanup": {
+    "baseAppPid16253": "exited normally",
+    "fixAppPid36626": "terminated with SIGTERM after permission-blocked main thread",
+    "fixturePid15968": "SIGTERM stopped",
+    "ownedPidsAbsent": true,
+    "originalInputSourceRestored": "com.apple.inputmethod.SCIM.ITABC"
+  },
+  "quota": {
+    "checkedAtUTC": "2026-10-19T18:06:30.664Z",
+    "windowMinutes": 10080,
+    "remainingPercent": 50,
+    "resetUTC": "2026-10-25T01:02:41Z",
+    "latestCoordinatedStopPercent": 30
+  }
+}

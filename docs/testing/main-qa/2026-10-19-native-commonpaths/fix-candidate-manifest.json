@@ -1,0 +1,19 @@
+{
+  "source": "35a7600f69015ebcadcc75ae45e4f7cac915885e",
+  "baseSource": "272bcf1f4b2e822b0d7ed94cf8b67b6e27289c95",
+  "qaOnly": true,
+  "distributable": false,
+  "scope": "Native reference-removal regression only; Flow intentionally disabled after Documents TCC gate; no permission retries",
+  "app": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Frontend-QA-35a7600.app",
+  "binarySha256": "db855a6b85bb0ee4aaebd67d01d92d58972e46807974292ce93144666eef855d",
+  "rawBinarySha256": "8b5a6f917341491824ece0448c1cee8f67caeb15f82cf92c8bd90eeda72c17b8",
+  "changedFilesFromSealedBase": [
+    "Contents/Info.plist",
+    "Contents/MacOS/seecut"
+  ],
+  "agentAndFlowUnchanged": true,
+  "privateParent": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "signedAdHoc": true,
+  "notarized": false,
+  "createdAtUTC": "2026-10-19T18:02:22.472725+00:00"
+}
