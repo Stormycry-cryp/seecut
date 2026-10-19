@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "publicSource": "0aef137ec50f73365a208ef89d2e5de404124277",
+  "base": "1e3fedbf46597c973594afed0540e69aa07b38d4",
+  "privateSource": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "privateRuntimeChanged": false,
+  "app": ".toonflow/SeeCut-Cloud-Conflicts-QA.app",
+  "bundleId": "cloud.stormycry.seecut.cloud-conflicts-qa",
+  "apiUrl": "http://127.0.0.1:18743",
+  "nativeSourceAndBinaryReusedFrom": "05867eb3dd71ed532cd965a81f3a1bc07bef15b4",
+  "rawBinarySha256": "3b1f217c03d6c8649c57511658dfebea8ab21c3906f03e41bcfa331562248683",
+  "packagedBinarySha256": "769428f9427944501a7c0371f2bb0a67b25e4ade0ae2c8f11dedb6c56a23d7b0",
+  "toonflowPatchSha256": "e332086914faa8fa87c8b8764bc02a1ce0f2a4ac8da3ac8acf6f7d83e88c8783",
+  "nodeBundlesUnchanged": {
+    "imageGenerationNode": "5edab6ea8bb036cebde7d7933e1c67bc48f85269aad2f2caf347f8e290e895af",
+    "videoGenerationNode": "11b1bb6284a9623785f1821f02324e908428d7d4796392c5f685e7891ed590eb",
+    "audioGenerationNode": "c1da49117b338b2768a8cf19669db6dde8a2f8f15f2f16dc3a6e0213a3a15353",
+    "textNode": "8b8ba144d5c17bc0c6089899a669674c76218b8be2f0ff7fff6ef9842c81c31e",
+    "imageNode": "e1d90c199886fedb863e7568689775dbe3138cc174a4dbc4628598701ac8a96c",
+    "director3dNode": "661cbf30ba21b4b53e142f339869e289a933423876b5a5b33901138852d3a126"
+  },
+  "rebuiltServerSha256": "2a1ea167f262083574dca5befd44b8fe4c41d7c964a3fc8ee29e29c0f9a33c90",
+  "rebuiltHostSha256": "58787785107355db3c991f92400ab5769b5c78900212b487994b54f156587d3a",
+  "fileCount": 6380,
+  "filesSha256": "a67f0b267f004d3b4ec01d801fb7b4ddea0c2de68536f46f41acbdca5dc0fb1d",
+  "filesDigestAlgorithm": "SHA256 of compact sorted-key JSON mapping POSIX relative regular-file paths to SHA256; symlink file contents followed",
+  "codesignVerified": true,
+  "agentManifestFiles": 5135,
+  "actualWindowVerified": false,
+  "installed": false,
+  "launched": false,
+  "paidCalls": 0
+}

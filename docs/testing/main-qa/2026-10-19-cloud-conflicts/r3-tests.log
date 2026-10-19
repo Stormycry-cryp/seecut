@@ -1,0 +1,25 @@
+bun test v1.3.14 (0d9b296a)
+
+integrations/toonflow/tests/cloudConflicts.test.ts:
+(pass) A/B HTTP round trip: local, full recovery and continued sync [79.45ms]
+(pass) A/B HTTP round trip: cloud, full recovery and continued sync [62.43ms]
+(pass) late download does not replace current content: edit [49.72ms]
+(pass) late download does not replace current content: account [47.50ms]
+(pass) late download does not replace current content: close [45.99ms]
+(pass) late download does not replace current content: remote [50.37ms]
+(pass) late download does not replace current content: downloadFailure [41.46ms]
+(pass) duplicate clicks share one adopted recovery; replay returns the same receipt [46.46ms]
+(pass) account change after extraction stops adoption [43.97ms]
+(pass) cancelled session and stale confirmation do not create copies or download [34.96ms]
+(pass) unknown upload replays original immutable request before resolving a newer cloud [46.62ms]
+(pass) unconfirmed original upload is retained, with no replacement key [46.69ms]
+(pass) corrupted download never replaces either local or recovery content [41.84ms]
+(pass) interrupted replacement rolls back on reopen: beforeRename [1.34ms]
+(pass) interrupted replacement rolls back on reopen: afterOldRename [1.17ms]
+(pass) interrupted replacement rolls back on reopen: afterAdopt [1.31ms]
+Disposable real HTTP service counts: {"generation_tasks":0,"generation_billings":0,"ledger_entries":0,"flow_snapshot_requests":32,"flow_snapshots":32}
+
+ 16 pass
+ 0 fail
+ 386 expect() calls
+Ran 16 tests across 1 file. [1447.00ms]

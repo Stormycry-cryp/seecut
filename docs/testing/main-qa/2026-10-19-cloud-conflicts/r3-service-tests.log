@@ -1,0 +1,14 @@
+test_http_concurrent_cas_and_same_key_replay (test_flow_projects.FlowProjectsHTTPTest.test_http_concurrent_cas_and_same_key_replay) ... ok
+test_http_rejects_hash_type_oversize_and_truncated_body (test_flow_projects.FlowProjectsHTTPTest.test_http_rejects_hash_type_oversize_and_truncated_body) ... ok
+test_http_roundtrip_authentication_and_immutable_receipts (test_flow_projects.FlowProjectsHTTPTest.test_http_roundtrip_authentication_and_immutable_receipts) ... ok
+test_account_isolation_and_same_uuid_independent_ownership (test_flow_projects.FlowProjectsTest.test_account_isolation_and_same_uuid_independent_ownership) ... ok
+test_concurrent_compare_and_swap_only_commits_one_version (test_flow_projects.FlowProjectsTest.test_concurrent_compare_and_swap_only_commits_one_version) ... ok
+test_database_failure_after_blob_creation_preserves_previous_snapshot (test_flow_projects.FlowProjectsTest.test_database_failure_after_blob_creation_preserves_previous_snapshot) ... ok
+test_idempotency_retains_original_revision_and_rejects_different_payload (test_flow_projects.FlowProjectsTest.test_idempotency_retains_original_revision_and_rejects_different_payload) ... ok
+test_invalid_upload_does_not_change_previous_snapshot (test_flow_projects.FlowProjectsTest.test_invalid_upload_does_not_change_previous_snapshot) ... ok
+test_stream_is_chunked_and_input_validation_is_bounded (test_flow_projects.FlowProjectsTest.test_stream_is_chunked_and_input_validation_is_bounded) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.257s
+
+OK
