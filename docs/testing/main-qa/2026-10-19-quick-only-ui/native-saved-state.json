@@ -1,0 +1,48 @@
+[
+  {
+    "name": "Color Lookup · 可编辑",
+    "style": {
+      "align": "Center",
+      "background": "",
+      "color": "#244580",
+      "content": "Color Lookup · 可编辑",
+      "font_family": "Helvetica",
+      "font_size": 0.07777777777777778,
+      "font_weight": 400.0,
+      "italic": false,
+      "line_height": 1.2,
+      "max_width": 0.8,
+      "shadow": false,
+      "stroke_color": "#FFFFFF",
+      "stroke_width": 0.0,
+      "tracking": 0.0
+    }
+  },
+  {
+    "name": "Color Lookup",
+    "amount": 0.800000011920929
+  },
+  {
+    "name": "Color Lookup 副本",
+    "amount": 0.7799999713897705
+  },
+  {
+    "name": "SeeCut UI QA",
+    "style": {
+      "align": "Left",
+      "background": "",
+      "color": "#244580",
+      "content": "SeeCut UI QA",
+      "font_family": "Helvetica",
+      "font_size": 0.13333333333333333,
+      "font_weight": 700.0,
+      "italic": false,
+      "line_height": 1.2,
+      "max_width": 0.8,
+      "shadow": false,
+      "stroke_color": "#FFFFFF",
+      "stroke_width": 0.0,
+      "tracking": 0.0
+    }
+  }
+]

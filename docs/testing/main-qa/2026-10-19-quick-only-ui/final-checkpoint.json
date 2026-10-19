@@ -1,0 +1,41 @@
+{
+  "quota": {
+    "time": {
+      "current_time": "2026-10-19 04:31:30 UTC"
+    },
+    "windows": [
+      {
+        "bucket": "codex",
+        "window": "primary",
+        "minutes": 10080,
+        "remainingPercent": 81,
+        "resetsAtUTC": "2026-10-25T01:02:41.000Z"
+      }
+    ]
+  },
+  "writers": {
+    "related": [
+      {
+        "id": "01a13d59-b243-78f2-af46-6dfddae535ea",
+        "status": "notLoaded",
+        "cwd": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut"
+      },
+      {
+        "id": "01a13edc-0d96-7539-a26e-f5b492b3f030",
+        "status": "active",
+        "cwd": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut"
+      },
+      {
+        "id": "01a15187-a0a6-7143-817f-7f23cb0e2010",
+        "status": "idle",
+        "cwd": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1"
+      }
+    ],
+    "unavailableHosts": []
+  },
+  "qaApplicationStopped": true,
+  "syntheticServiceStopped": true,
+  "productionTouched": false,
+  "installed": false,
+  "paidModelCalls": 0
+}

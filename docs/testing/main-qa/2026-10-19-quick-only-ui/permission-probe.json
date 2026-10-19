@@ -1,0 +1,18 @@
+{
+  "timestampUTC": "2026-10-19T03:47:22Z",
+  "screenCapturePreflight": true,
+  "accessibilityTrusted": true,
+  "permissionRequestsMade": false,
+  "permissionsChanged": false,
+  "route": "CGPreflightScreenCaptureAccess + AXIsProcessTrusted; owned-app CGEvent/AX and /usr/sbin/screencapture",
+  "initialApp": ".toonflow/SeeCut-Color-Lookup-QA.app",
+  "initialSource": "e6dcc3b73ef610cd7bb8436f66c4b10d800690a7",
+  "initialPid": 61607,
+  "initialWindow": 3282,
+  "initialPackagedBinarySha256": "44007f3387bfaccb8f7440c50f1f97f487ed49e3d63f75b568e606f3fef0ca07",
+  "initialStoppedGracefully": true,
+  "syntheticService": "127.0.0.1:18743",
+  "syntheticServiceDirectory": ".toonflow/macos-ui-20261019-service",
+  "productionUsed": false,
+  "initialLogin": "not completed; email field was not focused, normal validation message shown"
+}

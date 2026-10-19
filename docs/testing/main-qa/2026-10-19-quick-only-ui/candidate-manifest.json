@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "publicSource": "3cf81760848d8502134e64994a7409e34aa210ce",
+  "baseline": "c7196c4ad0678bb5793b83bdc71f90708d01533a",
+  "privateSource": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "privateRuntimeChanged": false,
+  "app": ".toonflow/SeeCut-Quick-Only-QA.app",
+  "bundleId": "cloud.stormycry.seecut.quick-only-qa",
+  "apiUrl": "http://127.0.0.1:18743",
+  "rawBinarySha256": "9193d18865c2871a2667893581dc7d34010517357eb5bb48c2d0d93192666e15",
+  "packagedBinarySha256": "353989cb5824498c45603680cfe6c3c82999b0b40d292262c542940c5f8ec18d",
+  "toonflowBuildReusedFromR3": true,
+  "toonflowBuildSha256": "eac44cb292e28f27dddf955087f4a6f5240fec2d5e756c2f8559154c0f0a2eac",
+  "fileCount": 6380,
+  "filesSha256": "6d082cfe07b241f99c2fbb6a05b6552f8d8b644d91126aca49f066db573f94d3",
+  "digestAlgorithm": "SHA256 of compact sorted-key JSON mapping relative regular-file paths to SHA256; symlink file contents followed",
+  "codesignVerified": true,
+  "actualWindowVerified": false,
+  "actualImeVerified": false,
+  "installed": false,
+  "launched": false,
+  "paidCalls": 0
+}

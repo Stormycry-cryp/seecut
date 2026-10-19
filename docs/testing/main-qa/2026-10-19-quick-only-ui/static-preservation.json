@@ -1,0 +1,25 @@
+{
+  "kind": "bounded static preservation check, not runtime or unit-test evidence",
+  "timestampUTC": "2026-10-19T03:53:58.504461+00:00",
+  "publicSource": "3cf81760848d8502134e64994a7409e34aa210ce",
+  "removedModeSwitchReferences": true,
+  "retainedControls": [
+    "model",
+    "generation effort",
+    "ratios",
+    "resolutions",
+    "durations",
+    "audio",
+    "qualities",
+    "expanded references"
+  ],
+  "sourceFiles": {
+    "src/crates/concat/src/cloud.rs": "ca891e0642dc5ffd63be8375cf104423c389b9826ddb4c9287a5c27a81928aa5",
+    "src/crates/concat/src/cloud/prompt_assistance.rs": "d087ef0a1edf4b8b58e21fbbaa9df0e31bb576de89e25648c4206831c4407e4c",
+    "src/crates/concat/src/ui_preview.rs": "e55d546906933cf4f25167624e7936d5d669f6a992ae0daafed75e9cd00acb59",
+    "src/crates/concat/ui/app.slint": "2e2491720f7212a5e70ea115392604cb1af31b0489af7500fe84e58513badc01",
+    "src/crates/concat/ui/dialogs/settings.slint": "3eaecaf51b9607be87aee0ed7d46e4ed29a700e841123fa704923d555d202136",
+    "src/crates/concat/ui/seecut/generation.slint": "e214b21b798c3f4b0eaf3dd46f3d46e7439deacfc0567c1870581af16d22dd60",
+    "src/crates/concat/ui/seecut/state.slint": "345558a2445a3800aeaff082800eed34e8e44a42fd8fc6283f2dde345096ab6c"
+  }
+}
