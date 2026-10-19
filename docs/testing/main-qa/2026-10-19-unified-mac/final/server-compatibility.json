@@ -1,0 +1,12 @@
+{
+  "candidatePublicSource": "11c7d8eccf67ca780217b8938749fe746a828d9f",
+  "matchingServerSourceTree": "84c4b936dc558e61bf0f6d85759900c8bcfb4769",
+  "serverLastChangedCommit": "f3f0e3f3b53b711c1e579d4afc4c8a39da91a820",
+  "lastPrivilegedProductionCheck": "2026-10-19 01:45\u201301:52 UTC (historical)",
+  "lastVerifiedProductionCommit": "84f1165955cf12b5c6f84557a57d6a2d70bf9459",
+  "freshProductionCommitVerified": false,
+  "freshPublicStatusFile": "public-service-status.json",
+  "deploymentPerformed": false,
+  "candidateEndpoint": "http://127.0.0.1:18745",
+  "candidateServerStarted": false
+}

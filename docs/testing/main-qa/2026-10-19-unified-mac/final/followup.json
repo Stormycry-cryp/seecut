@@ -1,0 +1,27 @@
+{
+  "source": "11c7d8eccf67ca780217b8938749fe746a828d9f",
+  "originalEvidenceCommit": "4a64da954672a2c02812248ea672ffc5ec9059d0",
+  "changes": [
+    "document.rs bitmap_bounds validation: equivalent let-chain",
+    "gpu.rs LUT cache match: equivalent let-chain",
+    "psd/tests.rs fixture padding: equivalent is_multiple_of"
+  ],
+  "checks": [
+    {
+      "command": "cargo fmt -p concat-canvas --check",
+      "result": "passed"
+    },
+    {
+      "command": "cargo clippy -p concat-canvas --features gpu --all-targets --offline -- -D warnings",
+      "result": "passed",
+      "seconds": 0.9
+    }
+  ],
+  "testSuitesRerun": false,
+  "allowAdded": false,
+  "appLaunched": false,
+  "installed": false,
+  "productionChanged": false,
+  "privateRuntimeChanged": false,
+  "pr": "https://github.com/Stormycry-cryp/seecut/pull/21"
+}

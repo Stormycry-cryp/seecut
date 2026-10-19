@@ -1,0 +1,15 @@
+{
+  "checkedAtUTC": "2026-10-19T09:21:47.252Z",
+  "windows": [
+    {
+      "windowDurationMins": 10080,
+      "remainingPercent": 66,
+      "resetsAtUTC": "2026-10-25T01:02:41.000Z"
+    },
+    {
+      "windowDurationMins": 10080,
+      "remainingPercent": 66,
+      "resetsAtUTC": "2026-10-25T01:02:41.000Z"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "checkedAtUTC": "2026-10-19T09:21:30.402107+00:00",
+  "nodeVersion": "v24.15.0",
+  "syntaxFiles": [
+    "canvas-tools.mjs",
+    "cli.mjs",
+    "editor.mjs",
+    "embedded-flow-tools.mjs",
+    "ipc.mjs",
+    "managed-billing.mjs",
+    "managed-operation-store.mjs",
+    "managed-policy.mjs",
+    "managed-provider.mjs",
+    "media-store.mjs",
+    "providers.mjs",
+    "runtime.mjs",
+    "security.mjs"
+  ],
+  "importContract": "runtime IPC exports and packaged dependencies resolved",
+  "runtimeInitialized": false,
+  "ipcStarted": false,
+  "appLaunched": false,
+  "providerCalls": 0
+}

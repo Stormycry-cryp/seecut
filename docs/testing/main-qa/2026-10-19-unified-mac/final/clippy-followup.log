@@ -1,0 +1,14 @@
+    Checking concat-core v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-core)
+    Checking concat-text v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-text)
+    Checking concat-canvas v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-canvas)
+error: manual implementation of `.is_multiple_of()`
+  --> crates/concat-canvas/src/psd/tests.rs:21:8
+   |
+21 |     if data.len() % 2 != 0 {
+   |        ^^^^^^^^^^^^^^^^^^^ help: replace with: `!data.len().is_multiple_of(2)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_is_multiple_of
+   = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: could not compile `concat-canvas` (lib test) due to 1 previous error
