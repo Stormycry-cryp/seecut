@@ -1,0 +1,9 @@
+
+running 4 tests
+test editor_mcp::canvas_policy::tests::async_receipts_keep_original_owner_scope_and_sequence ... ok
+test editor_mcp::canvas_policy::tests::explicit_permit_is_exact_one_shot_revocable_and_bounded_by_five_minutes ... ok
+test editor_mcp::canvas_policy::tests::named_approval_rejects_extra_paths_and_unmanaged_operation_fields ... ok
+test editor_mcp::canvas_policy::tests::retired_flow_tools_cannot_obtain_a_native_permit ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 497 filtered out; finished in 0.00s
+

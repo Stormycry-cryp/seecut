@@ -1,0 +1,10 @@
+
+running 5 tests
+test editor_mcp::assistant_permission_tests::assistant_expiry_withholds_token_and_explicit_renew_rotates_it ... ok
+test editor_mcp::assistant_permission_tests::foreign_active_and_expired_leases_cannot_be_exposed_or_changed ... ok
+test editor_mcp::assistant_permission_tests::no_active_document_and_changed_identity_never_reveal_background_credentials ... ok
+test editor_mcp::assistant_permission_tests::read_only_is_not_preview_or_editing_and_grants_are_separate ... ok
+test editor_mcp::assistant_permission_tests::settings_redacts_assistant_credentials_and_preserves_external_setup ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 496 filtered out; finished in 0.00s
+

@@ -1,0 +1,12 @@
+test_authentication_expiry_and_revocation_before_lookup (test_generation_request_recovery.GenerationRequestRecoveryTest.test_authentication_expiry_and_revocation_before_lookup) ... ok
+test_batch_lookup_preserves_all_tasks_and_order_without_new_holds (test_generation_request_recovery.GenerationRequestRecoveryTest.test_batch_lookup_preserves_all_tasks_and_order_without_new_holds) ... ok
+test_lookup_does_not_weaken_existing_same_key_payload_conflict (test_generation_request_recovery.GenerationRequestRecoveryTest.test_lookup_does_not_weaken_existing_same_key_payload_conflict) ... ok
+test_lost_http_response_recovers_original_identity_without_mutation (test_generation_request_recovery.GenerationRequestRecoveryTest.test_lost_http_response_recovers_original_identity_without_mutation) ... ok
+test_missing_invalid_and_unknown_keys_do_not_create_business_records (test_generation_request_recovery.GenerationRequestRecoveryTest.test_missing_invalid_and_unknown_keys_do_not_create_business_records) ... ok
+test_owner_isolation_and_same_key_for_two_accounts (test_generation_request_recovery.GenerationRequestRecoveryTest.test_owner_isolation_and_same_key_for_two_accounts) ... ok
+test_unknown_recovers_after_price_policy_and_quote_change_without_dispatch (test_generation_request_recovery.GenerationRequestRecoveryTest.test_unknown_recovers_after_price_policy_and_quote_change_without_dispatch) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 1.198s
+
+OK
