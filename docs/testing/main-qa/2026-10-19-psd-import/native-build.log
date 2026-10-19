@@ -1,0 +1,4 @@
+   Compiling concat-canvas v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-canvas)
+   Compiling concat v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 11s
+  Executable unittests src/lib.rs (../.toonflow/native-target/debug/deps/concat-6e5e5b3d2a17522d)

@@ -1,0 +1,40 @@
+
+running 35 tests
+test compositor::tests::a_clip_chain_narrows_through_both_links ... ok
+test compositor::tests::a_clip_link_keeps_the_layer_where_its_base_is_opaque ... ok
+test compositor::tests::a_curve_holds_its_endpoints_and_lerps_between ... ok
+test compositor::tests::a_disabled_mask_changes_nothing ... ok
+test compositor::tests::a_gradient_map_lays_the_ramp_over_luminance ... ok
+test compositor::tests::a_hidden_base_drops_the_clip_rather_than_the_layer ... ok
+test compositor::tests::a_horizontal_flip_mirrors_the_layer ... ok
+test compositor::tests::a_mask_hides_where_it_is_black ... ok
+test compositor::tests::a_missing_clip_source_draws_the_layer_unclipped ... ok
+test compositor::tests::a_nested_group_composes_through_both_levels ... ok
+test compositor::tests::a_two_point_curve_is_a_straight_line ... ok
+test compositor::tests::a_zero_scale_draws_nothing ... ok
+test compositor::tests::an_adjustment_obeys_its_mask ... ok
+test compositor::tests::an_adjustment_only_touches_what_is_beneath_it ... ok
+test compositor::tests::an_adjustment_rewrites_the_backdrop_beneath_it ... ok
+test compositor::tests::an_adjustment_weighs_by_its_opacity ... ok
+test compositor::tests::an_empty_document_is_transparent ... ok
+test compositor::tests::an_identity_layer_draws_its_pixels_where_they_land ... ok
+test compositor::tests::clip_coverage_honours_the_base_opacity ... ok
+test compositor::tests::double_scale_with_nearest_sampling_makes_the_dot_a_block ... ok
+test compositor::tests::exposure_doubles_per_stop ... ok
+test compositor::tests::grain_is_deterministic_and_bounded ... ok
+test compositor::tests::group_opacity_applies_to_the_composite_as_a_unit ... ok
+test compositor::tests::hidden_layers_draw_nothing ... ok
+test compositor::tests::hue_rotation_keeps_luma_grey_where_it_started ... ok
+test compositor::tests::invert_flips_each_channel ... ok
+test compositor::tests::layers_composite_back_to_front ... ok
+test compositor::tests::levels_clamp_out_of_range ... ok
+test compositor::tests::levels_stretch_the_range ... ok
+test compositor::tests::linked_mask_hole_moves_with_the_image_and_remains_click_through ... ok
+test compositor::tests::opacity_weighs_the_layer ... ok
+test compositor::tests::picking_respects_a_parent_group_mask_and_clipping_source ... ok
+test compositor::tests::quarter_turn_rotation_moves_the_dot ... ok
+test compositor::tests::saturation_zero_greys_a_colour ... ok
+test compositor::tests::translation_moves_the_layer ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 144 filtered out; finished in 0.00s
+
