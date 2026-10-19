@@ -1575,6 +1575,32 @@ pub fn run() -> Result<(), slint::PlatformError> {
             crate::panes::canvas::CanvasMsg::LayerMaskPaint(index),
         ));
     }));
+    editor.on_canvas_lookup_import(on_window!(|state| {
+        let target = match state.canvas.begin_lookup_import() {
+            Ok(target) => target,
+            Err(error) => {
+                state.notify(&error, true);
+                return;
+            }
+        };
+        platform::pick_files_async(
+            "导入三维 LUT",
+            Some(("Cube LUT", &["cube"])),
+            move |paths| {
+                let Some(path) = paths.into_iter().next() else {
+                    return;
+                };
+                std::thread::spawn(move || {
+                    let result = crate::panes::canvas::lookup::read_cube(&path);
+                    on_ui(move |studio, _, _| {
+                        studio.handle(Msg::Canvas(
+                            crate::panes::canvas::CanvasMsg::LookupImported(target, result),
+                        ))
+                    });
+                });
+            },
+        );
+    }));
     editor.on_canvas_gradient_color_changed(on_window!(|state, slot: i32, index: i32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::GradientColor(
             slot, index,

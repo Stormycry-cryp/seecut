@@ -1,0 +1,17 @@
+{
+  "actual_ui": "not verified",
+  "asset": {
+    "asset_id": "576771ee-a080-411b-9f35-f727a5a30537",
+    "version": {
+      "registration_id": "operation:color-lookup-review-export",
+      "sha256": "70a032e30a53a9cebdce7b6c548c56763dbcdd73612ca530314d7545729f8fa9"
+    }
+  },
+  "canvas_reimport": true,
+  "clip_ui_reuse": "not verified",
+  "editable_reopen": true,
+  "library_count": 1,
+  "lut_sha256": "e9d5865a781f8bea3fadc54706219f427b207795097f366c0237aac39ea91376",
+  "sha256": "70a032e30a53a9cebdce7b6c548c56763dbcdd73612ca530314d7545729f8fa9",
+  "source_file_deleted": true
+}

@@ -587,6 +587,16 @@ fn bilinear(frame: &Frame, bx: f32, by: f32) -> Option<[u8; 4]> {
 pub fn apply_one(adjustment: &Adjustment, pixel: [u8; 4]) -> [u8; 4] {
     let rgb = [pixel[0], pixel[1], pixel[2]];
     let out = match adjustment {
+        Adjustment::ColorLookup { lut, amount } => {
+            let Some(lut) = lut.as_ref().filter(|_| *amount > 0.0) else {
+                return pixel;
+            };
+            let input = rgb.map(|v| v as f32 / 255.0);
+            let mapped = lut.sample(input);
+            std::array::from_fn(|c| {
+                ((input[c] + (mapped[c] - input[c]) * amount).clamp(0.0, 1.0) * 255.0).round() as u8
+            })
+        }
         Adjustment::Vibrance { amount } => {
             if *amount == 0.0 {
                 return pixel;

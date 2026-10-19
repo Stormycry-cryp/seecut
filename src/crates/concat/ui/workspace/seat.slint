@@ -243,6 +243,7 @@ export component Seat inherits Rectangle {
             active-blend: Editor.canvas-active-blend;
             checker: Editor.canvas-checker;
             adjustment-kind: Editor.canvas-adjustment-kind;
+            lookup-name: Editor.canvas-lookup-name;
             adjustment-params <=> Editor.canvas-adjustment-params;
             curve-red <=> Editor.canvas-curve-red;
             curve-green <=> Editor.canvas-curve-green;
@@ -312,6 +313,7 @@ export component Seat inherits Rectangle {
             layer-mask-enable-toggled => { Editor.canvas-layer-mask-enable-toggled(); }
             layer-mask-paint-toggled(index) => { Editor.canvas-layer-mask-paint-toggled(index); }
             gradient-color-changed(slot, index) => { Editor.canvas-gradient-color-changed(slot, index); }
+            lookup-import => { Editor.canvas-lookup-import(); }
             adjustment-added(kind) => { Editor.canvas-adjustment-added(kind); }
             adjustment-param-changed(index, value) => { Editor.canvas-adjustment-param-changed(index, value); }
             adjustment-param-begin(index) => { Editor.canvas-adjustment-param-begin(index); }

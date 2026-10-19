@@ -7095,6 +7095,7 @@ impl Studio {
         editor.set_canvas_checker(self.canvas.checker.clone());
         let (kind, parameters) = self.canvas.adjustment_state();
         editor.set_canvas_adjustment_kind(kind);
+        editor.set_canvas_lookup_name(self.canvas.lookup_name().into());
         let params: Vec<CanvasAdjustmentParam> = parameters
             .into_iter()
             .map(|(label, value, minimum, maximum)| CanvasAdjustmentParam {

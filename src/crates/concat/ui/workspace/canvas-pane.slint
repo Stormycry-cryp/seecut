@@ -549,6 +549,7 @@ export component CanvasPane inherits Rectangle {
     in property <int> ants;
     /// The active gradient map's two colours, as the swatches read them.
     in property <color> gradient-low: black;
+    in property <string> lookup-name: "未选择 LUT";
     in property <color> gradient-high: white;
     /// The layers panel's adjustment popup, open or not. Local state: no
     /// round trip, the panel decides nothing else about it.
@@ -697,6 +698,7 @@ export component CanvasPane inherits Rectangle {
     /// The active gradient map's low (`0`) or high (`1`) swatch recoloured
     /// from the tray palette's `index`.
     callback gradient-color-changed(slot: int, index: int);
+    callback lookup-import();
     /// The adjustment panel: a kind picked out of the popup, and one of
     /// the active adjustment's knobs turned.
     callback adjustment-added(kind: int);
@@ -1395,9 +1397,14 @@ export component CanvasPane inherits Rectangle {
                                 }
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "移除蒙版"; danger: true; clicked => { root.layer-mask-removed(); } }
                             }
+                            if root.adjustment-kind == 10: HorizontalLayout {
+                                height: 32px; spacing: 8px;
+                                Text { text: root.lookup-name; color: Theme.fg; font-size: 13px; overflow: elide; vertical-alignment: center; }
+                                WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.folder; label: "导入或替换 LUT"; clicked => { root.lookup-import(); } }
+                            }
                             for param[i] in root.adjustment-params: PropertySlider {
                                 label: root.adjustment-kind == 2 ? "曝光" : I18n.t(param.label); value: param.value; minimum: param.minimum; maximum: param.maximum; step: root.adjustment-kind == 9 ? 0.001 : 0.01; precision: root.adjustment-kind == 9 ? 3 : 2;
-                                default-value: root.adjustment-kind == 9 ? (i == 0 ? 0.299 : i == 1 ? 0.587 : 0.114) : root.adjustment-kind == 3 && i == 2 ? 1 : root.adjustment-kind == 3 && (i == 1 || i == 4) ? 1 : 0;
+                                default-value: root.adjustment-kind == 10 ? 1 : root.adjustment-kind == 9 ? (i == 0 ? 0.299 : i == 1 ? 0.587 : 0.114) : root.adjustment-kind == 3 && i == 2 ? 1 : root.adjustment-kind == 3 && (i == 1 || i == 4) ? 1 : 0;
                                 unit: root.adjustment-kind == 2 ? "档" : "";
                                 changed(value) => { root.adjustment-param-changed(i, value); }
                                 gesture-started => { root.adjustment-param-begin(i); }
@@ -1564,6 +1571,7 @@ export component CanvasPane inherits Rectangle {
                                         { id: 5, name: "渐变映射", glyph: Glyph.filter },
                                         { id: 1, name: "反相", glyph: Glyph.moon },
                                         { id: 6, name: "颗粒", glyph: Glyph.rows },
+                                        { id: 10, name: "颜色查找", glyph: Glyph.filter },
                                     ]: WorkspaceIcon {
                                         width: 32px; height: 32px; side: 32px; icon-size: 17px;
                                         label: kind.name; glyph: kind.glyph;
@@ -1706,7 +1714,8 @@ export component CanvasPane inherits Rectangle {
                                                     : layer.adjustment-kind == 6 ? Glyph.rows
                                                     : layer.adjustment-kind == 7 ? Glyph.waveform
                                                     : layer.adjustment-kind == 8 ? Glyph.sun
-                                                    : layer.adjustment-kind == 9 ? Glyph.moon : Glyph.sliders;
+                                                    : layer.adjustment-kind == 9 ? Glyph.moon
+                                                    : layer.adjustment-kind == 10 ? Glyph.filter : Glyph.sliders;
                                                 size: 16px; tint: Theme.fg-muted;
                                             }
                                             CanvasChipAction {

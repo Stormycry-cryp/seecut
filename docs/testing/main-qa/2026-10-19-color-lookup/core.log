@@ -1,0 +1,14 @@
+   Compiling concat-canvas v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-canvas)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.91s
+     Running unittests src/lib.rs (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/native-target/debug/deps/concat_canvas-0758f481093fd153)
+
+running 7 tests
+test lookup_tests::lookup_tetrahedra_have_known_nontrilinear_result ... ok
+test lookup_tests::lookup_domain_bounds_strength_and_alpha ... ok
+test lookup_tests::lookup_digest_immutable_clone_and_tamper_rejection ... ok
+test lookup_tests::lookup_bad_inputs_are_rejected_without_unbounded_allocation ... ok
+test lookup_tests::lookup_fractional_resource_survives_manifest_value_round_trip ... ok
+test lookup_tests::lookup_common_sizes_order_and_identity ... ok
+test gpu::tests::lookup_gpu_matches_domain_tetrahedra_strength_masks_and_blends ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 157 filtered out; finished in 0.86s

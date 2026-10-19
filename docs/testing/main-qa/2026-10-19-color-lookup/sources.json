@@ -1,0 +1,31 @@
+{
+  "adobeSpec": {
+    "title": "Cube LUT Specification Version 1.0",
+    "author": "Adobe Systems Incorporated",
+    "year": 2013,
+    "sections": [
+      "5.5\u20135.8",
+      "7",
+      "8"
+    ],
+    "publisherUrl": "https://wwwimages2.adobe.com/content/dam/acom/en/products/speedgrade/cc/pdfs/cube-lut-specification-1.0.pdf",
+    "publisherUrlStatus": "404",
+    "retrievedCopy": "https://drive.google.com/file/d/143Eh08ZYncCAMwJ1q4gWxVOqR_OSWYvs/view",
+    "sha256": "a5aedbaefc4271d5d3b7541adb222886b2d73ef70b34a2ec28d722eb78903316",
+    "redistributed": false
+  },
+  "photocraft": {
+    "revision": "48c17214704d4768ad7b1f28c5d2767b1d87110c",
+    "files": [
+      "crates/cms/src/lutfile.rs",
+      "crates/cms/src/lut3d.rs"
+    ],
+    "license": "MIT selected; existing full notice retained",
+    "copiedImplementation": false
+  },
+  "ocio": {
+    "revision": "22dd9c4faa0d1b7cfb3d64d1a6e9cb454acc6cfd",
+    "file": "src/OpenColorIO/fileformats/FileFormatIridasCube.cpp",
+    "copiedImplementation": false
+  }
+}
