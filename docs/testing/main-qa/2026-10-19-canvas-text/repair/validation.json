@@ -1,0 +1,44 @@
+{
+  "base": "917a0c0bb578fcde0b8dbcf892162cbfd7ad349e",
+  "recordedAt": "2026-10-19T02:33:20.270713+00:00",
+  "sourceFiles": {
+    "src/crates/concat-canvas/src/text.rs": "87ee454639f0781ba4cc9568d02f94f3e478c262e8cbf49d6db266378ee814e9",
+    "src/crates/concat-canvas/src/gpu.rs": "46b2d9424ad5142511abaaf540e50a4deca9507989c50c388b2beedae87229ec",
+    "src/crates/concat-text/src/lib.rs": "f6f079b9a255fc081d280cf40a95b90aa6e99cab24a6c92893a6f7fde2b68f6f",
+    "src/crates/concat/src/panes/canvas/text.rs": "481615b1d7a7d443fa27954a5ac63925f039395feadeee1afcd7a5059037b85b"
+  },
+  "tests": {
+    "title": 10,
+    "coreAndGpu": 6,
+    "nativeAlignmentAndExport": 2,
+    "passed": 18
+  },
+  "gpuComparison": "alpha byte delta <=1; visible premultiplied channel delta <=1, including transparent edges",
+  "artifacts": {
+    "alignment-artifacts/center.comp/images/1.png": "b7bf86ff544983ed2998fcd0ac36cd695cdf192597b1e4a5d70195ffc2a24161",
+    "alignment-artifacts/center.comp/manifest.json": "e400612d33a3e2ac615fb02a13c62b43f487e4cf165c3341b21a90d88cae9d6d",
+    "alignment-artifacts/center.comp/preview.png": "94fdb2b89831a2cbc273d8ecf9bd3c45a2cb43bdabe055ae4cb73f9e3673745d",
+    "alignment-artifacts/center.png": "b7bf86ff544983ed2998fcd0ac36cd695cdf192597b1e4a5d70195ffc2a24161",
+    "alignment-artifacts/left.comp/images/1.png": "8d3a2d4ae411fd0988156bf8fe8c2a049257c909741a310843f5e9f421c60f1f",
+    "alignment-artifacts/left.comp/manifest.json": "8d0ea084165b78fe075c2fcdeac475c4a3efe83b1a7ff1b4363bdad34f558c94",
+    "alignment-artifacts/left.comp/preview.png": "0a0bebba9f72ef9dedf10a3be4bf3801701028fae9154668cb3105c39cca3b2b",
+    "alignment-artifacts/left.png": "56144bdabcb1bbd6f3a2b2ffcdc72ba09fa87bb53fe7b12119849e48050444d3",
+    "alignment-artifacts/right.comp/images/1.png": "7f1ad3ba3fef4c6ddd2eda5b581d9fad630eb1e88dc7ee5d89fa6505bda32dff",
+    "alignment-artifacts/right.comp/manifest.json": "dcf7f6c57072249ca4215e2f079998cd94b55ed6fec52765adec9837be58b83f",
+    "alignment-artifacts/right.comp/preview.png": "59476dd51e7f73e08984d01fd286879e646e54d9d1e49f5957f40e1453ae4108",
+    "alignment-artifacts/right.png": "622aeee86a87c38837ac6fc697cd913d313c70aa1d7378a05839a1a206441757"
+  },
+  "actualIme": false,
+  "actualUi": false,
+  "clipUi": false,
+  "appColdStart": false,
+  "paidCalls": 0,
+  "deployment": false,
+  "fontOrDependencyAdded": false,
+  "rawLogs": ".toonflow/c03-repair; committed copies omit trailing blank lines",
+  "candidate": ".toonflow/SeeCut-Canvas-Text-Repair-QA.app",
+  "candidateManifest": ".toonflow/c03-repair/candidate-manifest.json",
+  "weeklyRemainingBeforeNativeBuild": 89,
+  "nativeBuild": "passed",
+  "rawBinarySha256": "bec736dd321a8dcd93e58708f360efc69b88c80fcc26d98147d2542ff8ef0087"
+}

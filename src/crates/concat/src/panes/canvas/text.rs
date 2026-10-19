@@ -516,4 +516,72 @@ mod tests {
         )
         .unwrap();
     }
+    #[test]
+    fn aligned_long_text_survives_png_save_reopen_and_movement() {
+        let root =
+            std::env::temp_dir().join(format!("seecut-c03-alignment-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut mass = Vec::new();
+        for (field, name) in [(0.0, "left"), (1.0, "center"), (2.0, "right")] {
+            let mut p = pane();
+            p.text_start(0, 0.0, 0.0).unwrap();
+            p.text_change(0, "中文 English 中文 English", 0.0).unwrap();
+            p.text_change(2, "", 40.0).unwrap();
+            p.text_change(6, "", field).unwrap();
+            p.text_change(7, "", 2.0).unwrap();
+            p.text_change(9, "", 1.0).unwrap();
+            p.text_finish(true);
+            let source = p.selected_text().unwrap().clone();
+            let rendered = concat_text::render_layer_frame(
+                concat_text::system_fonts(),
+                &source.style,
+                640,
+                360,
+            )
+            .unwrap();
+            p.begin_history();
+            p.document
+                .as_mut()
+                .unwrap()
+                .layer_mut(p.active.unwrap())
+                .unwrap()
+                .transform
+                .x = -(rendered.block_dx as f32);
+            p.commit_history();
+            let expected = concat_canvas::compose(p.document.as_ref().unwrap(), &p.store);
+            mass.push(
+                expected
+                    .pixels()
+                    .chunks_exact(4)
+                    .map(|p| p[3] as u64)
+                    .sum::<u64>(),
+            );
+            let png = root.join(format!("{name}.png"));
+            p.agent_export_png(&png).unwrap();
+            assert_eq!(
+                decode_png(&std::fs::read(&png).unwrap(), None).unwrap().2,
+                expected.pixels()
+            );
+            let path = root.join(format!("{name}.comp"));
+            p.agent_save_comp(&path).unwrap();
+            drop(p);
+            let mut reopened = CanvasPane::default();
+            reopened.load_comp(&path, None).unwrap();
+            assert_eq!(reopened.selected_text(), Some(&source));
+            assert_eq!(
+                concat_canvas::compose(reopened.document.as_ref().unwrap(), &reopened.store)
+                    .pixels(),
+                expected.pixels()
+            );
+            reopened.text_start(1, 0.0, 0.0).unwrap();
+            reopened.text_change(0, "仍可编辑 Editable", 0.0).unwrap();
+            reopened.text_finish(true);
+        }
+        assert!(mass.iter().all(|m| *m as f64 > mass[1] as f64 * 0.98));
+        if let Some(destination) = std::env::var_os("SEECUT_C03_ALIGNMENT_ARTIFACTS") {
+            std::fs::rename(&root, PathBuf::from(destination)).unwrap();
+        } else {
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
 }

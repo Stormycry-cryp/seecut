@@ -613,6 +613,26 @@ pub fn render_frame(
     height: u32,
 ) -> Result<RenderedFrame, Error> {
     let (canvas, block) = paint(fonts, style, width, height)?;
+    straight_frame(canvas, block)
+}
+
+/// An editable layer cache, centred on the same anchor as the document.
+/// Unlike a timeline title, this bitmap grows symmetrically to retain off-canvas
+/// glyphs, strokes and shadows for later layer movement. Dimensions may exceed
+/// the document; the ordinary layer transform maps its centre exactly once.
+/// Font size remains the document-relative source value without timeline clamping.
+pub fn render_layer_frame(
+    fonts: &Fonts,
+    style: &TitleStyle,
+    width: u32,
+    height: u32,
+) -> Result<RenderedFrame, Error> {
+    let (canvas, block) = paint_with_mode(fonts, style, width, height, true)?;
+    straight_frame(canvas, block)
+}
+
+fn straight_frame(canvas: Pixmap, block: Block) -> Result<RenderedFrame, Error> {
+    let (width, height) = (canvas.width(), canvas.height());
     // tiny-skia keeps premultiplied pixels; a frame carries straight alpha.
     let mut rgba = Vec::with_capacity(canvas.pixels().len() * 4);
     for pixel in canvas.pixels() {
@@ -645,9 +665,24 @@ fn paint(
     width: u32,
     height: u32,
 ) -> Result<(Pixmap, Block), Error> {
+    paint_with_mode(fonts, style, width, height, false)
+}
+
+fn paint_with_mode(
+    fonts: &Fonts,
+    style: &TitleStyle,
+    mut width: u32,
+    mut height: u32,
+    layer_cache: bool,
+) -> Result<(Pixmap, Block), Error> {
     let mut canvas = Pixmap::new(width, height).ok_or(Error::Canvas(width, height))?;
     let frame_h = height as f32;
-    let em = (style.font_size.clamp(0.005, 1.0) as f32) * frame_h;
+    let relative_size = if layer_cache {
+        style.font_size
+    } else {
+        style.font_size.clamp(0.005, 1.0)
+    };
+    let em = relative_size as f32 * frame_h;
     let tracking = style.tracking as f32 * frame_h;
     let pitch = em * (style.line_height.max(0.5) as f32);
 
@@ -717,8 +752,8 @@ fn paint(
         Align::Center => anchor_x - outer_w / 2.0,
         Align::Right => anchor_x - outer_w,
     };
-    let left = outer_left + pad_x;
-    let top = (frame_h - outer_h) / 2.0 + pad_y;
+    let mut left = outer_left + pad_x;
+    let mut top = (frame_h - outer_h) / 2.0 + pad_y;
     let block_dx = (outer_left + outer_w / 2.0 - anchor_x).round() as i32;
 
     // One path for all the words, placed. Each line is aligned within the
@@ -738,12 +773,52 @@ fn paint(
             .expect("a translated glyph path stays finite");
         words.push_path(&placed);
     }
-    let Some(words) = words.finish() else {
+    let Some(mut words) = words.finish() else {
         return Ok((
             canvas,
             (outer_w.round() as u32, outer_h.round() as u32, block_dx, 0),
         ));
     };
+
+    if layer_cache {
+        let bounds = words.bounds();
+        // Two box-blur passes each expand by radius. Include glyph overhangs,
+        // the full outline, shadow offset and an antialias guard ring.
+        let shadow_pad = if style.shadow {
+            2.0 * (em * 0.04).round().max(1.0) + em * 0.07
+        } else {
+            0.0
+        };
+        let pad = (style.stroke_width.max(0.0) as f32 * frame_h).max(shadow_pad) + 2.0;
+        let mut l = bounds.left();
+        let mut r = bounds.right();
+        let mut t = bounds.top();
+        let mut b = bounds.bottom();
+        if plate.is_some() {
+            l = l.min(left - pad_x);
+            r = r.max(left - pad_x + outer_w);
+            t = t.min(top - pad_y);
+            b = b.max(top - pad_y + outer_h);
+        }
+        let grow_x = (pad - l).max(r + pad - width as f32).max(0.0).ceil() as u64;
+        let grow_y = (pad - t).max(b + pad - height as f32).max(0.0).ceil() as u64;
+        let cache_w = width as u64 + 2 * grow_x;
+        let cache_h = height as u64 + 2 * grow_y;
+        // Match the canvas bitmap dimension and aggregate RGBA ceilings before allocating.
+        if cache_w > 32_768 || cache_h > 32_768 || cache_w * cache_h > 128 * 1024 * 1024 {
+            return Err(Error::Canvas(width, height));
+        }
+        if grow_x > 0 || grow_y > 0 {
+            width = cache_w as u32;
+            height = cache_h as u32;
+            canvas = Pixmap::new(width, height).ok_or(Error::Canvas(width, height))?;
+            words = words
+                .transform(Transform::from_translate(grow_x as f32, grow_y as f32))
+                .ok_or(Error::Canvas(width, height))?;
+            left += grow_x as f32;
+            top += grow_y as f32;
+        }
+    }
 
     let mut paint = Paint {
         anti_alias: true,
@@ -1041,5 +1116,28 @@ mod tests {
         let plated = render(&fonts, &plated, 640, 360).expect("renders");
         assert!(plated.block_width > one.block_width);
         assert!(plated.block_height > one.block_height);
+    }
+    #[test]
+    fn timeline_title_keeps_fixed_frame_anchor_and_legacy_size_clamp() {
+        let fonts = Fonts::new();
+        let mut s = style("Title");
+        s.font_size = 8.0 / 2160.0;
+        for align in [Align::Left, Align::Center, Align::Right] {
+            s.align = align;
+            let tiny = render_frame(&fonts, &s, 640, 2160).unwrap();
+            let mut minimum = s.clone();
+            minimum.font_size = 0.005;
+            let expected = render_frame(&fonts, &minimum, 640, 2160).unwrap();
+            assert_eq!(tiny.rgba, expected.rgba);
+            assert_eq!((tiny.width, tiny.height), (640, 2160));
+            assert_eq!(
+                tiny.block_dx.signum(),
+                match align {
+                    Align::Left => 1,
+                    Align::Center => 0,
+                    Align::Right => -1,
+                }
+            );
+        }
     }
 }

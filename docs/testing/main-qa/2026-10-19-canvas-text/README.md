@@ -1,5 +1,7 @@
 # R4 / C03 可编辑画布文字
 
+本页保留首轮交付记录。最新对齐与像素字号修复见 [repair/README.md](repair/README.md)，初版候选和证据未覆盖。
+
 从干净 R3 `d546262ad6fc28016b8e47f411ba250f916c6b69` 整合。旧候选位于顶层验收目录 `2026-10-12-agent-canvas-mcp-loop/public-candidate`；477 个文件与 `pane-6` / `native-2` 记录完全匹配，原目录未改写。仅提取文字相关差异，旧原生 Flow、Agent、服务和旧锁文件未带入。
 
 ## 行为

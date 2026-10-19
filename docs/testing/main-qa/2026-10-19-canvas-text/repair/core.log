@@ -1,0 +1,13 @@
+   Compiling concat-canvas v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-canvas)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.01s
+     Running unittests src/lib.rs (.toonflow/native-target/debug/deps/concat_canvas-5cb6b0b49014e7ef)
+
+running 6 tests
+test text::tests::text_export_provenance_keeps_exact_float_values_after_json_reload ... ok
+test text::tests::editable_text_source_is_versioned_and_exclusive_with_vector ... ok
+test text::tests::pixel_sizes_work_on_hd_4k_and_small_canvases ... ok
+test gpu::tests::editable_text_cache_matches_gpu_cpu_after_content_and_style_changes ... ok
+test text::tests::long_mixed_line_keeps_all_pixels_when_alignment_changes ... ok
+test gpu::tests::long_text_alignment_expanded_cache_matches_gpu_after_repositioning ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 147 filtered out; finished in 0.94s

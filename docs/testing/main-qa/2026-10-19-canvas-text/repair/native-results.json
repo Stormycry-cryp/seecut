@@ -1,0 +1,21 @@
+[
+  {
+    "name": "alignment",
+    "args": [
+      "panes::canvas::text::tests::aligned_long_text_survives_png_save_reopen_and_movement",
+      "--exact",
+      "--test-threads=1"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "mixed-export",
+    "args": [
+      "panes::canvas::text::tests::mixed_text_export_registers_once_and_reimports_existing_asset",
+      "--exact",
+      "--ignored",
+      "--test-threads=1"
+    ],
+    "exit": 0
+  }
+]

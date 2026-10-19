@@ -19,7 +19,7 @@ impl CanvasText {
             style: TitleStyle {
                 content: "文字".into(),
                 font_family: "Helvetica".into(),
-                font_size: (48.0 / f64::from(height.max(1))).clamp(0.005, 1.0),
+                font_size: 48.0 / f64::from(height.max(1)),
                 font_weight: 400.0,
                 italic: false,
                 color: "#244580".into(),
@@ -34,7 +34,9 @@ impl CanvasText {
             },
         }
     }
-    /// Bounded finite values accepted by the shared renderer.
+    /// Relative source values remain compatible with v1 documents. Bounds admit
+    /// the inspector pixel ranges even on a one-pixel document; raster allocation
+    /// is separately bounded by the layer renderer.
     pub fn validate(&self) -> bool {
         let s = &self.style;
         let color = |v: &str| {
@@ -46,15 +48,16 @@ impl CanvasText {
             && s.content.len() <= 32768
             && s.font_family.len() <= 256
             && s.font_size.is_finite()
-            && (0.005..=1.0).contains(&s.font_size)
+            && s.font_size > 0.0
+            && s.font_size <= 1000.0
             && s.font_weight.is_finite()
             && (100.0..=900.0).contains(&s.font_weight)
             && s.stroke_width.is_finite()
-            && (0.0..=0.1).contains(&s.stroke_width)
+            && (0.0..=100.0).contains(&s.stroke_width)
             && s.line_height.is_finite()
             && (0.5..=5.0).contains(&s.line_height)
             && s.tracking.is_finite()
-            && (-0.1..=0.1).contains(&s.tracking)
+            && (-20.0..=20.0).contains(&s.tracking)
             && s.max_width.is_finite()
             && (0.0..=1.0).contains(&s.max_width)
             && color(&s.color)
@@ -66,9 +69,14 @@ impl CanvasText {
         if !self.validate() {
             return Err("无效文字样式".into());
         }
-        let r = concat_text::render_frame(concat_text::system_fonts(), &self.style, width, height)
-            .map_err(|e| e.to_string())?;
-        concat_core::frame::Frame::from_rgba(width, height, r.rgba)
+        let r = concat_text::render_layer_frame(
+            concat_text::system_fonts(),
+            &self.style,
+            width,
+            height,
+        )
+        .map_err(|e| e.to_string())?;
+        concat_core::frame::Frame::from_rgba(r.width, r.height, r.rgba)
             .ok_or_else(|| "无法创建文字预览".into())
     }
 }
@@ -108,5 +116,77 @@ mod tests {
         let restored: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(restored, original);
         assert_eq!(serde_json::to_vec(&restored).unwrap(), encoded);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn long_mixed_line_keeps_all_pixels_when_alignment_changes() {
+        let mut t = CanvasText::new(240);
+        t.style.content = "中文 English 中文 English".into();
+        t.style.font_size = 40.0 / 240.0;
+        t.style.stroke_width = 2.0 / 240.0;
+        t.style.shadow = true;
+        let measure =
+            concat_text::render_frame(concat_text::system_fonts(), &t.style, 640, 240).unwrap();
+        assert!(
+            (384..512).contains(&measure.block_width),
+            "representative line: {}",
+            measure.block_width
+        );
+        let mass = |f: &concat_core::frame::Frame| {
+            f.pixels().chunks_exact(4).map(|p| p[3] as u64).sum::<u64>()
+        };
+        let center = t.rasterize(640, 240).unwrap();
+        for align in [Align::Left, Align::Right] {
+            t.style.align = align;
+            let frame = t.rasterize(640, 240).unwrap();
+            assert!(
+                mass(&frame) as f64 > mass(&center) as f64 * 0.98,
+                "{align:?} clipped: {} / {}",
+                mass(&frame),
+                mass(&center)
+            );
+            // A transparent guard ring proves stroke/blur were not cut at cache edges.
+            for x in 0..frame.width() {
+                assert_eq!(frame.pixel(x, 0).unwrap()[3], 0);
+                assert_eq!(frame.pixel(x, frame.height() - 1).unwrap()[3], 0);
+            }
+            for y in 0..frame.height() {
+                assert_eq!(frame.pixel(0, y).unwrap()[3], 0);
+                assert_eq!(frame.pixel(frame.width() - 1, y).unwrap()[3], 0);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pixel_sizes_work_on_hd_4k_and_small_canvases() {
+        for height in [64, 1080, 2160] {
+            let mut t = CanvasText::new(height);
+            t.style.content = "Ab中".into();
+            t.style.font_size = 8.0 / height as f64;
+            assert!(t.validate(), "8px at {height}");
+            let frame = t.rasterize(320, height).unwrap();
+            let rows: Vec<_> = (0..frame.height())
+                .filter(|y| (0..frame.width()).any(|x| frame.pixel(x, *y).unwrap()[3] > 0))
+                .collect();
+            assert!(
+                (5..=12).contains(&rows.len()),
+                "8px must not be silently clamped: {height} -> {} rows",
+                rows.len()
+            );
+            t.style.content = "A".into();
+            t.style.font_size = 6.0 / height as f64;
+            t.style.stroke_width = 100.0 / height as f64;
+            t.style.tracking = -20.0 / height as f64;
+            assert!(
+                t.validate(),
+                "inspector minimum font/max stroke at {height}"
+            );
+            assert!(t.rasterize(320, height).is_ok());
+            t.style.font_size = 1000.0 / height as f64;
+            t.style.stroke_width = 0.0;
+            t.style.tracking = 20.0 / height as f64;
+            assert!(t.validate(), "1000px at {height}");
+            assert!(t.rasterize(320, height).is_ok());
+        }
     }
 }
