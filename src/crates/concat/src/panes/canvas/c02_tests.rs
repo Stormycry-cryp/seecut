@@ -2,7 +2,7 @@
 use super::*;
 use concat_canvas::BlendMode;
 
-fn pane() -> CanvasPane {
+pub(super) fn pane() -> CanvasPane {
     let mut p = CanvasPane::default();
     let mut frame = Frame::transparent(640, 360);
     let colors = [
@@ -33,8 +33,8 @@ fn pane() -> CanvasPane {
 #[test]
 fn c02_parameters_defaults_history_cancel_and_pinned_target() {
     let mut p = pane();
-    assert_eq!(p.agent_adjustment_kinds().len(), 9);
-    for kind in 1..=9 {
+    assert_eq!(p.agent_adjustment_kinds().len(), 10);
+    for kind in 1..=10 {
         let a = default_adjustment(kind).unwrap();
         assert_eq!(adjustment_kind(&a), kind);
     }

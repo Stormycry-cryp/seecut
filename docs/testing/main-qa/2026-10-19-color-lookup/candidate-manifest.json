@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "publicSource": "e6dcc3b73ef610cd7bb8436f66c4b10d800690a7",
+  "baseline": "80e17999fe24c93394bf98fa23c3cb49a2bf219e",
+  "privateSource": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "privateRuntimeChanged": false,
+  "app": ".toonflow/SeeCut-Color-Lookup-QA.app",
+  "bundleId": "cloud.stormycry.seecut.color-lookup-qa",
+  "apiUrl": "http://127.0.0.1:18743",
+  "rawBinarySha256": "ed2f7d920c19f9cb3d06feedbff0a75fb87852dc27db03d9841c0115f640f980",
+  "packagedBinarySha256": "44007f3387bfaccb8f7440c50f1f97f487ed49e3d63f75b568e606f3fef0ca07",
+  "toonflowBuildReusedFromR3": true,
+  "toonflowBuildSha256": "eac44cb292e28f27dddf955087f4a6f5240fec2d5e756c2f8559154c0f0a2eac",
+  "fileCount": 6380,
+  "filesSha256": "1401cb1e7096eb2c5c687c7dfa82167d130979ebab7217baef44a00826d95a9a",
+  "digestAlgorithm": "SHA256 of compact sorted-key JSON mapping relative regular-file paths to SHA256; symlink file contents followed",
+  "codesignVerified": true,
+  "actualWindowVerified": false,
+  "actualImeVerified": false,
+  "installed": false,
+  "launched": false,
+  "paidCalls": 0
+}

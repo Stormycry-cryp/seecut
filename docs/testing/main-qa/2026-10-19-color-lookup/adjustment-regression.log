@@ -1,0 +1,12 @@
+
+running 8 tests
+test compositor::tests::an_adjustment_only_touches_what_is_beneath_it ... ok
+test compositor::tests::an_adjustment_rewrites_the_backdrop_beneath_it ... ok
+test compositor::tests::an_adjustment_obeys_its_mask ... ok
+test compositor::tests::an_adjustment_weighs_by_its_opacity ... ok
+test document::tests::a_clip_to_a_group_or_an_adjustment_is_refused ... ok
+test gpu::tests::a_masked_adjustment_matches ... ok
+test gpu::tests::adjustments_match ... ok
+test gpu::tests::c02_adjustments_match_with_masks_alpha_and_all_blends ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 155 filtered out; finished in 0.70s

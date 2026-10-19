@@ -42,6 +42,7 @@ use crate::studio::Studio;
 
 #[cfg(test)]
 mod c02_tests;
+pub(crate) mod lookup;
 mod shapes;
 mod text;
 use shapes::ShapeDrag;
@@ -332,7 +333,9 @@ impl CanvasExportJob {
 }
 
 fn canvas_manifest(data: &CanvasSaveData) -> String {
-    let version = if data.document.walk().iter().any(|n| matches!(n,
+    let version = if data.document.walk().iter().any(|n| matches!(n,LayerNode::Adjustment(a) if matches!(a.adjustment,Adjustment::ColorLookup { .. }))) {
+        5
+    } else if data.document.walk().iter().any(|n| matches!(n,
         LayerNode::Adjustment(a) if matches!(a.adjustment, Adjustment::Vibrance { .. } | Adjustment::BlackWhite { .. }))) {
         4
     } else if data
@@ -373,6 +376,35 @@ struct AutoSaveInFlight {
 }
 
 impl CanvasSnapshot {
+    /// Count immutable LUT buffers once per snapshot, alongside the existing
+    /// pixel retention budget. Parameter edits and layer clones share tables.
+    fn unshared_bytes(&self, other: &Self) -> usize {
+        let tables = |doc: &ImageDocument| {
+            doc.walk()
+                .into_iter()
+                .filter_map(|node| {
+                    let LayerNode::Adjustment(a) = node else {
+                        return None;
+                    };
+                    let Adjustment::ColorLookup { lut: Some(lut), .. } = &a.adjustment else {
+                        return None;
+                    };
+                    Some((
+                        lut.values().as_ptr() as usize,
+                        std::mem::size_of_val(lut.values()),
+                    ))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let theirs = tables(&other.document);
+        self.store.unshared_bytes(&other.store).saturating_add(
+            tables(&self.document)
+                .into_iter()
+                .filter(|(id, _)| !theirs.contains_key(id))
+                .map(|(_, bytes)| bytes)
+                .sum::<usize>(),
+        )
+    }
     fn same_state(&self, other: &Self) -> bool {
         self.document == other.document
             && self.store.same_versions(&other.store)
@@ -710,6 +742,10 @@ pub enum CanvasMsg {
     /// The active gradient map's low (`0`) or high (`1`) colour, as an
     /// index into the tray's [`PALETTE`].
     GradientColor(i32, i32),
+    LookupImported(
+        lookup::LookupTarget,
+        Result<concat_canvas::lookup::CubeLut, String>,
+    ),
     /// The adjustment panel's picker: one of the kinds
     /// [`ADJUSTMENT_KINDS`] lists, added above the active layer so it
     /// colours everything beneath it.
@@ -824,6 +860,7 @@ pub struct CanvasPane {
     /// The state before the current gesture or immediate command.
     pending_history: Option<(CanvasSnapshot, u8)>,
     parameter_gesture: Option<ParameterGesture>,
+    lookup_import_sequence: u64,
     object_drag: Option<ObjectDrag>,
     transform_session: Option<concat_canvas::LayerId>,
     shape_session: Option<concat_canvas::LayerId>,
@@ -929,6 +966,7 @@ impl Default for CanvasPane {
             redo_stack: Vec::new(),
             pending_history: None,
             parameter_gesture: None,
+            lookup_import_sequence: 0,
             object_drag: None,
             transform_session: None,
             shape_session: None,
@@ -1735,6 +1773,12 @@ impl CanvasPane {
                 self.mask_chip_click(index);
                 self.sync_view();
             }
+            CanvasMsg::LookupImported(target, result) => {
+                if let Err(error) = self.finish_lookup_import(target, result) {
+                    studio.notify(&error, true);
+                }
+                self.render(studio);
+            }
             CanvasMsg::GradientColor(slot, index) => {
                 self.set_gradient_color(slot, index);
                 self.render(studio);
@@ -2538,16 +2582,14 @@ impl CanvasPane {
             last.after = after;
             last.retained_bytes = last
                 .before
-                .store
-                .unshared_bytes(&last.after.store)
-                .max(last.after.store.unshared_bytes(&last.before.store));
+                .unshared_bytes(&last.after)
+                .max(last.after.unshared_bytes(&last.before));
             self.redo_stack.clear();
             return;
         }
         let retained_bytes = before
-            .store
-            .unshared_bytes(&after.store)
-            .max(after.store.unshared_bytes(&before.store));
+            .unshared_bytes(&after)
+            .max(after.unshared_bytes(&before));
         self.undo_stack.push(CanvasHistoryEntry {
             before,
             after,
@@ -3927,6 +3969,11 @@ impl CanvasPane {
         };
         let value = value.clamp(*minimum, *maximum);
         match &mut adjustment.adjustment {
+            Adjustment::ColorLookup { amount, .. } => {
+                if index == 0 {
+                    *amount = value;
+                }
+            }
             Adjustment::Vibrance { amount } => {
                 if index == 0 {
                     *amount = value;
@@ -4796,6 +4843,9 @@ impl CanvasPane {
                 .map_err(|e| format!("save: {e}"))?;
             }
             let manifest = canvas_manifest(data);
+            if manifest.len() as u64 > PROJECT_FILE_LIMIT {
+                return Err("save: project manifest exceeds 64 MiB".into());
+            }
             std::fs::write(staging.join("manifest.json"), manifest)
                 .map_err(|e| format!("save: {e}"))?;
             let preview = concat_canvas::compose(document, &data.store);
@@ -4867,7 +4917,7 @@ impl CanvasPane {
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("open: {e}"))?;
         if !matches!(
             manifest.get("concat-project").and_then(|v| v.as_u64()),
-            Some(1..=4)
+            Some(1..=5)
         ) {
             return Err("open: not a concat project".into());
         }
@@ -4888,6 +4938,9 @@ impl CanvasPane {
             && document.walk().iter().any(|n| matches!(n, LayerNode::Adjustment(a)
                 if matches!(a.adjustment, Adjustment::Vibrance { .. } | Adjustment::BlackWhite { .. }))) {
             return Err("open: vibrance and black & white require project version 4".into());
+        }
+        if manifest["concat-project"].as_u64().unwrap_or(0) < 5 && document.walk().iter().any(|n| matches!(n,LayerNode::Adjustment(a) if matches!(a.adjustment,Adjustment::ColorLookup { .. }))) {
+            return Err("open: Color Lookup requires project version 5".into());
         }
         let saved_view: Option<CanvasSavedView> = manifest
             .get("view")
@@ -5967,7 +6020,7 @@ impl CanvasPane {
     }
 
     /// Adds an adjustment of `kind` above the active layer - the kinds
-    /// [`ADJUSTMENT_KINDS`] numbers, `1` Invert through `9` Black & White - and
+    /// [`ADJUSTMENT_KINDS`] numbers, `1` Invert through `10` Color Lookup - and
     /// makes it the active row.
     pub fn agent_adjustment_add(&mut self, kind: i32) {
         self.history_edit(|pane| pane.add_adjustment(kind));
@@ -6236,7 +6289,7 @@ fn node_image_pixels(node: &LayerNode) -> Option<PixelId> {
 
 /// The adjustment kinds the panel offers, as the boundary numbers them:
 /// `1` Invert, `2` Exposure, `3` Levels, `4` Hue & Saturation, `5`
-/// Gradient map, `6` Grain, `7` Curves, `8` Vibrance, `9` Black & White.
+/// Gradient map, `6` Grain, `7` Curves, `8` Vibrance, `9` Black & White, `10` Color Lookup.
 /// `0` means "not an adjustment". Existing kind numbers stay stable.
 const ADJUSTMENT_KINDS: &[(i32, &str)] = &[
     (1, "Invert"),
@@ -6248,6 +6301,7 @@ const ADJUSTMENT_KINDS: &[(i32, &str)] = &[
     (7, "Curves"),
     (8, "Vibrance"),
     (9, "Black & White"),
+    (10, "Color Lookup"),
 ];
 
 /// One drawn stroke of a curves polyline, as the editor draws it: both
@@ -6382,6 +6436,7 @@ fn adjustment_kind(adjustment: &Adjustment) -> i32 {
         Adjustment::Curves { .. } => 7,
         Adjustment::Vibrance { .. } => 8,
         Adjustment::BlackWhite { .. } => 9,
+        Adjustment::ColorLookup { .. } => 10,
     }
 }
 
@@ -6399,6 +6454,10 @@ fn adjustment_label(kind: i32) -> String {
 /// starts at Rec.601 luminance, like gradient map/invert it changes colour.
 fn default_adjustment(kind: i32) -> Option<Adjustment> {
     match kind {
+        10 => Some(Adjustment::ColorLookup {
+            lut: None,
+            amount: 1.0,
+        }),
         8 => Some(Adjustment::Vibrance { amount: 0.0 }),
         9 => Some(Adjustment::BlackWhite {
             red: 0.299,
@@ -6439,6 +6498,7 @@ fn default_adjustment(kind: i32) -> Option<Adjustment> {
 /// nothing.
 fn adjustment_parameters(adjustment: &Adjustment) -> Vec<(String, f32, f32, f32)> {
     match adjustment {
+        Adjustment::ColorLookup { amount, .. } => vec![(tf("Intensity", &[]), *amount, 0.0, 1.0)],
         Adjustment::Vibrance { amount } => vec![(tf("Amount", &[]), *amount, -1.0, 1.0)],
         Adjustment::BlackWhite { red, green, blue } => vec![
             (tf("Red contribution", &[]), *red, 0.0, 2.0),

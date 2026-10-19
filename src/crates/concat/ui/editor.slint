@@ -314,6 +314,7 @@ export global Editor {
     in-out property <int> canvas-ants: 0;
     /// The active gradient map's two colours, as the swatches read them.
     in-out property <color> canvas-gradient-low: black;
+    in-out property <string> canvas-lookup-name: "未选择 LUT";
     in-out property <color> canvas-gradient-high: white;
 
     /// The wheel or trackpad scroll: pixel deltas, whether ctrl/cmd makes it
@@ -400,6 +401,7 @@ export global Editor {
     /// The active gradient map's low (`0`) or high (`1`) swatch
     /// recoloured from the tray palette's `index`.
     callback canvas-gradient-color-changed(slot: int, index: int);
+    callback canvas-lookup-import();
     /// The adjustment panel.
     callback canvas-adjustment-added(kind: int);
     callback canvas-adjustment-param-changed(index: int, value: float);

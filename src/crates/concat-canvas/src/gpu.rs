@@ -75,6 +75,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
 @group(0) @binding(4) var<uniform> p: Params;
 @group(0) @binding(5) var clip_texture: texture_2d<f32>;
 @group(0) @binding(6) var lut_texture: texture_2d<f32>;
+@group(0) @binding(7) var cube_texture: texture_2d<f32>;
 
 struct Params {
     pass_kind: u32,
@@ -312,6 +313,29 @@ fn blend_one(back: vec4<f32>, src: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(byte(co.r), byte(co.g), byte(co.b), byte(a_o));
 }
 
+// Manual float32 tetrahedral lookup, same four weights and red-fastest
+// ordering as lookup::CubeLut. No optional float filtering GPU feature.
+fn cube_sample(rgb: vec3<f32>) -> vec3<f32> {
+    let n = u32(p.ty);
+    let pos = clamp((rgb - vec3<f32>(p.a,p.b,p.c)) / (vec3<f32>(p.d,p.e,p.f) - vec3<f32>(p.a,p.b,p.c)), vec3<f32>(0.0), vec3<f32>(1.0)) * f32(n-1u);
+    let lo = min(vec3<u32>(floor(pos)),vec3<u32>(n-2u));
+    let f = pos-vec3<f32>(lo);
+    let width = textureDimensions(cube_texture).x;
+    var axes = array<u32,3>(0u,1u,2u);
+    for(var i=0u;i<2u;i++) {for(var j=i+1u;j<3u;j++) {
+        if f[axes[j]]>f[axes[i]] {let tmp=axes[i];axes[i]=axes[j];axes[j]=tmp;}
+    }}
+    var corners = array<vec3<u32>,4>(lo,lo,lo,lo+vec3<u32>(1u));
+    corners[1][axes[0]]+=1u;
+    corners[2]=corners[1];corners[2][axes[1]]+=1u;
+    let weights=array<f32,4>(1.0-f[axes[0]],f[axes[0]]-f[axes[1]],f[axes[1]]-f[axes[2]],f[axes[2]]);
+    var out=vec3<f32>(0.0);
+    for(var i=0u;i<4u;i++) {
+        let corner=corners[i]; let index=corner.z*n*n+corner.y*n+corner.x;
+        out+=textureLoad(cube_texture,vec2<i32>(i32(index%width),i32(index/width)),0).rgb*weights[i];
+    }
+    return out;
+}
 fn adjust_one(back: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     if back.a <= 0.0 {
         return back;
@@ -371,10 +395,16 @@ fn adjust_one(back: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     } else if p.kind == 8u {
         rgb = vec3<f32>(rgb.r * p.a + rgb.g * p.b + rgb.b * p.c);
     }
+    if p.kind == 9u {
+        if p.ty < 2.0 || p.sx <= 0.0 { return back; }
+        rgb = rgb + (cube_sample(rgb)-rgb)*p.sx;
+    }
     rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     // The adjusted pixel, snapped to bytes like the CPU's `apply_one`.
     let adjusted = vec3<f32>(byte(rgb.r), byte(rgb.g), byte(rgb.b));
-    if all(adjusted == back.rgb) { return back; }
+    // UNORM texture loads and division by 255 can differ by one float ULP.
+    // Compare the bytes the CPU compares before applying a non-normal blend.
+    if all(round(adjusted * 255.0) == round(back.rgb * 255.0)) { return back; }
     var weight = p.opacity;
     if (p.flags & 1u) != 0u {
         weight *= mask_red(uv);
@@ -615,6 +645,8 @@ pub struct CanvasGpu {
     /// The 1x1 white every absent aux binding falls back to - sampled
     /// values of one change nothing.
     white: Option<wgpu::Texture>,
+    /// A single bounded float table upload, keyed by normalized-content SHA256.
+    lookup: Option<(String, wgpu::Texture)>,
     canvas: Option<(u32, u32)>,
 }
 
@@ -668,6 +700,16 @@ impl CanvasGpu {
                 },
                 Self::texture_entry(5),
                 Self::texture_entry(6),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -729,6 +771,7 @@ impl CanvasGpu {
             pool: Vec::new(),
             coverage: HashMap::new(),
             white: None,
+            lookup: None,
             canvas: None,
         }
     }
@@ -1065,6 +1108,7 @@ impl CanvasGpu {
             mask.as_ref(),
             clip.as_ref(),
             None,
+            None,
             &mut target,
         );
         pair.1 = std::mem::replace(&mut pair.0, target);
@@ -1112,6 +1156,7 @@ impl CanvasGpu {
             mask.as_ref(),
             clip.as_ref(),
             None,
+            None,
             &mut target,
         );
         pair.1 = std::mem::replace(&mut pair.0, target);
@@ -1130,7 +1175,20 @@ impl CanvasGpu {
             ..Params::default()
         };
         let mut lut = None;
+        let mut cube = None;
         match &adjustment.adjustment {
+            Adjustment::ColorLookup { lut, amount } => {
+                params.kind = 9;
+                params.ty = 0.0;
+                params.sx = *amount;
+                if let Some(lut) = lut {
+                    params.ty = lut.size() as f32;
+                    let (min, max) = lut.domain();
+                    [params.a, params.b, params.c] = min;
+                    [params.d, params.e, params.f] = max;
+                    cube = Some(self.lookup_texture(lut));
+                }
+            }
             Adjustment::Vibrance { amount } => {
                 params.kind = 7;
                 params.a = *amount;
@@ -1199,9 +1257,63 @@ impl CanvasGpu {
             mask.as_ref(),
             None,
             lut.as_ref(),
+            cube.as_ref(),
             &mut target,
         );
         pair.1 = std::mem::replace(&mut pair.0, target);
+    }
+
+    fn lookup_texture(&mut self, lut: &crate::lookup::CubeLut) -> wgpu::Texture {
+        if let Some((key, texture)) = &self.lookup {
+            if key == lut.digest() {
+                return texture.clone();
+            }
+        }
+        let count = lut.values().len() as u32;
+        let width = count.min(256);
+        let height = count.div_ceil(width);
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("canvas color lookup f32"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let mut bytes = vec![0u8; (width * height * 16) as usize];
+        for (i, rgb) in lut.values().iter().enumerate() {
+            for c in 0..4 {
+                let v = if c < 3 { rgb[c] } else { 1.0f32 };
+                bytes[i * 16 + c * 4..i * 16 + c * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 16),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.lookup = Some((lut.digest().to_owned(), texture.clone()));
+        texture
     }
 
     /// The 256-entry byte LUT for a curves adjustment: one channel per
@@ -1303,6 +1415,7 @@ impl CanvasGpu {
             &backdrop,
             mask.as_ref(),
             upstream.as_ref(),
+            None,
             None,
             &mut target,
         );
@@ -1488,6 +1601,7 @@ impl CanvasGpu {
         mask: Option<&wgpu::Texture>,
         clip: Option<&wgpu::Texture>,
         lut: Option<&wgpu::Texture>,
+        cube: Option<&wgpu::Texture>,
         target: &mut wgpu::Texture,
     ) {
         let white = self.white_texture();
@@ -1522,6 +1636,10 @@ impl CanvasGpu {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(&view(lut.unwrap_or(&white))),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&view(cube.unwrap_or(&white))),
                 },
             ],
         });
@@ -2076,6 +2194,75 @@ mod tests {
         let top = world.with_layer("Top", solid(16, 16, [0, 130, 250, 255]));
         world.document.layer_mut(top).expect("layer").clips_to = Some(base);
         assert_parity(&world);
+    }
+
+    #[test]
+    fn lookup_gpu_matches_domain_tetrahedra_strength_masks_and_blends() {
+        let mut gpu = required_gpu();
+        let cubes = [
+            crate::lookup_tests::cube(2, 0),
+            crate::lookup_tests::cube(2, 2),
+            crate::lookup_tests::cube(65, 1),
+            format!(
+                "DOMAIN_MIN -0.25 -0.1 0.1\nDOMAIN_MAX 0.8 1.2 0.9\n{}",
+                crate::lookup_tests::cube(17, 3)
+            ),
+        ];
+        for text in cubes {
+            let lut = crate::lookup::CubeLut::parse(&text, "test").unwrap();
+            for amount in [0.0, 0.4, 1.0] {
+                for blend in [
+                    BlendMode::Normal,
+                    BlendMode::Multiply,
+                    BlendMode::Luminosity,
+                ] {
+                    let mut world = World::new();
+                    let mut source = Frame::transparent(16, 16);
+                    let mut mask = Frame::transparent(16, 16);
+                    for y in 0..16 {
+                        for x in 0..16 {
+                            source.set_pixel(
+                                x,
+                                y,
+                                [
+                                    (x * 17) as u8,
+                                    (y * 17) as u8,
+                                    ((x * 53 + y * 7) % 256) as u8,
+                                    [0, 64, 128, 255][y as usize % 4],
+                                ],
+                            );
+                            let v = [0, 128, 255][x as usize % 3];
+                            mask.set_pixel(x, y, [v, v, v, 255]);
+                        }
+                    }
+                    world.with_layer("Synthetic", source);
+                    let pixels = world.store.put(mask);
+                    let id = world.document.new_adjustment(
+                        "LUT",
+                        Adjustment::ColorLookup {
+                            lut: Some(lut.clone()),
+                            amount,
+                        },
+                    );
+                    let a = world.document.adjustment_mut(id).unwrap();
+                    a.blend = blend;
+                    a.opacity = 0.8;
+                    a.mask = Some(crate::LayerMask::new(pixels));
+                    assert_parity_on(&world, &mut gpu);
+                    world
+                        .document
+                        .adjustment_mut(id)
+                        .unwrap()
+                        .mask
+                        .as_mut()
+                        .unwrap()
+                        .enabled = false;
+                    assert_parity_on(&world, &mut gpu);
+                    world.document.adjustment_mut(id).unwrap().hidden = true;
+                    assert_parity_on(&world, &mut gpu);
+                }
+            }
+        }
     }
 
     #[test]

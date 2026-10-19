@@ -1,0 +1,38 @@
+[
+  {
+    "name": "import-guards",
+    "test": "panes::canvas::lookup::tests::lookup_import_failure_cancel_stale_and_copy_isolation",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "file-bounds",
+    "test": "panes::canvas::lookup::tests::lookup_file_reader_rejects_wrong_extension_encoding_and_large_input",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "mixed-export",
+    "test": "panes::canvas::lookup::tests::lookup_project_owns_resource_after_source_deletion_and_export_deduplicates",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "adjustment-parameters",
+    "test": "panes::canvas::c02_tests::c02_parameters_defaults_history_cancel_and_pinned_target",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "legacy-v2",
+    "test": "panes::canvas::shapes::tests::shape_project_reopens_geometry_and_rebuilds_cache",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "legacy-v3",
+    "test": "panes::canvas::text::tests::text_project_reopens_editable_source_and_png_matches_compositor",
+    "exit": 0,
+    "oneTestPassed": true
+  }
+]

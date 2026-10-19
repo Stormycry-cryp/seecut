@@ -213,6 +213,9 @@ impl ImageDocument {
         for node in self.walk() {
             if let LayerNode::Adjustment(layer) = node {
                 let valid = match &layer.adjustment {
+                    Adjustment::ColorLookup { amount, .. } => {
+                        amount.is_finite() && (0.0..=1.0).contains(amount)
+                    }
                     Adjustment::Vibrance { amount } => {
                         amount.is_finite() && (-1.0..=1.0).contains(amount)
                     }
@@ -787,6 +790,13 @@ impl LayerMask {
 /// modes when it does.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Adjustment {
+    /// A user-imported immutable 3D .cube resource; None is visibly unselected.
+    ColorLookup {
+        /// Full canonical table and digest, embedded in the project document.
+        lut: Option<crate::lookup::CubeLut>,
+        /// Strength in 0..=1; zero is identity.
+        amount: f32,
+    },
     /// Selective saturation in -1..=1, zero is identity. Positive values
     /// scale HSL saturation by 1 + amount * (1 - saturation); negative
     /// values scale it by 1 + amount. Hue/lightness and alpha are retained.

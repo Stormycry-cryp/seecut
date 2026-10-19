@@ -37,6 +37,7 @@ pub mod document;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod history;
+pub mod lookup;
 pub mod pixels;
 pub mod selection;
 pub mod vector;
@@ -63,3 +64,6 @@ pub mod text;
 
 #[cfg(test)]
 mod c02_tests;
+
+#[cfg(test)]
+mod lookup_tests;

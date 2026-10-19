@@ -26,6 +26,7 @@ serde = { version = "1", features = ["derive"] }
 # Preserve exact floating styles/transforms and immutable export provenance across reload.
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
+sha2 = "0.10.9"
 tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
