@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "publicSource": "d938ca67ff90efc66f64a5630fdcf9b5451b1569",
+  "r2Source": "5d6429e373d731478494f480afb2a18d02a8a9e3",
+  "privateSource": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "privateRuntimeChanged": false,
+  "app": ".toonflow/SeeCut-Flow-Selection-QA.app",
+  "bundleId": "cloud.stormycry.seecut.flow-selection-qa",
+  "apiUrl": "http://127.0.0.1:18743",
+  "rawBinarySha256": "af8e0ac56da4f7d8e0ee5829debdf4d52464eca3242ef69222271ed0341d76fb",
+  "packagedBinarySha256": "85f7ed0098b8fa74b6cfbb75bce108cf276a149e11c8a52c747d1ce11d62ffcd",
+  "toonflowPatchSha256": "79a9ec0371814428d1c46ad20559b024d4e7dda8b2422c12d146a248f5c92f5c",
+  "fileCount": 6380,
+  "filesSha256": "be48a912a3280ea6c992d9dc59aa14ae11fb2bad5248f851a8acd7e97e157005",
+  "filesDigestAlgorithm": "SHA256 of compact sorted-key JSON mapping POSIX relative regular-file paths to SHA256; symlink file contents followed",
+  "codesignVerified": true,
+  "agentManifestFiles": 5135,
+  "actualWindowVerified": false,
+  "installed": false,
+  "paidCalls": 0
+}
