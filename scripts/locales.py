@@ -29,6 +29,7 @@ SLINT_CALL = re.compile(r"I18n\.t[12]?\(\s*" + LITERAL)
 RUST_CALL = re.compile(r"(?<![A-Za-z_])(?:i18n::)?tf?\(\s*" + LITERAL)
 TOML_FIELD = re.compile(r'^(name|description|category|label|group)\s*=\s*' + LITERAL, re.M)
 PRESET = re.compile(r'look\(\s*"[^"]+",\s*' + LITERAL)
+ADJUSTMENT_NAMES = re.compile(r"const ADJUSTMENT_KINDS\s*:[^=]*=\s*&\[(.*?)\];", re.S)
 
 
 def unescape(text: str) -> str:
@@ -49,6 +50,10 @@ def keys() -> set[str]:
         # Code only: not the comments that describe the call, and not the
         # tests, whose keys are made up.
         text = path.read_text(encoding="utf-8")
+        # An external test module declaration can precede production code.
+        # Remove only that declaration before locating the inline test section;
+        # otherwise canvas.rs loses all of its real UI strings from the inventory.
+        text = re.sub(r"(?m)^#\[cfg\(test\)\]\s*mod\s+\w+\s*;", "", text)
         test_section = re.search(r"(?m)^#\[cfg\(test\)\]", text)
         if test_section:
             text = text[:test_section.start()]
@@ -57,6 +62,10 @@ def keys() -> set[str]:
             out.add(unescape(match.group(1)))
         for match in PRESET.finditer(text):
             out.add(unescape(match.group(1)))
+        # Canvas translates these registered names through tf(key).
+        for table in ADJUSTMENT_NAMES.finditer(text):
+            for match in re.finditer(LITERAL, table.group(1)):
+                out.add(unescape(match.group(1)))
     for manifest in PACKAGES.glob("*/effect.toml"):
         for match in TOML_FIELD.finditer(manifest.read_text(encoding="utf-8")):
             value = unescape(match.group(2))
