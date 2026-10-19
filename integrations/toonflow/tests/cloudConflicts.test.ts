@@ -1,21 +1,29 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createSeecutProjects } from "../../../external/toonflow/apps/server/src/seecutProjects";
 const express = createRequire(new URL("../../../external/toonflow/apps/server/package.json", import.meta.url))("express");
-let service: any, base: string;
+let service: any, base: string, serviceReader: ReadableStreamDefaultReader<Uint8Array>;
 const digest = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
 beforeAll(async () => {
   service = Bun.spawn(["python3", "integrations/toonflow/tests/cloudConflictFixture.py"], { stdin: "pipe", stdout: "pipe", stderr: "inherit", env: { ...process.env, PYTHONPATH: resolve("services/seecut-server/src") } });
-  const reader = service.stdout.getReader();
+  const reader = service.stdout.getReader(); serviceReader = reader;
   let line = "";
   while (!line.includes("\n")) line += new TextDecoder().decode((await reader.read()).value);
   base = `http://127.0.0.1:${JSON.parse(line.split("\n")[0]).port}`;
 });
-afterAll(async () => { service.stdin.write("stop\n"); service.stdin.end(); await service.exited; });
+afterAll(async () => {
+  service.stdin.write("stop\n"); service.stdin.end();
+  let output = "";
+  while (true) { const chunk = await serviceReader.read(); if (chunk.done) break; output += new TextDecoder().decode(chunk.value); }
+  expect(await service.exited).toBe(0);
+  const counts = JSON.parse(output.trim()).finalCounts;
+  expect(counts.generation_tasks).toBe(0); expect(counts.generation_billings).toBe(0); expect(counts.ledger_entries).toBe(0);
+  console.info("Disposable real HTTP service counts:", JSON.stringify(counts));
+});
 async function remote(path: string, init: RequestInit = {}) {
   const r = await fetch(base + path, { ...init, headers: { Authorization: "Bearer token-one", ...init.headers } });
   if (!r.ok) { const body: any = await r.json(); throw Object.assign(new Error(body.error?.message || body.message), { code: body.error?.code || body.code, status: r.status }); }
@@ -60,7 +68,7 @@ async function device() {
     async edit(id: string, value: string) {
       const folder = await projects.directory(id);
       await projects.withProjectWrite(folder, async () => {
-        await writeFile(join(folder, "canvas.json"), JSON.stringify({ nodes: [{ id: "image", text: value }], edges: [{ source: "text", target: "image" }], viewport: { x: 14, y: 28, zoom: .9 } }));
+        await writeFile(join(folder, "canvas.json"), JSON.stringify({ nodes: [{ id: "image", text: value, source: { path: "assets/image.png", assetId: "original-asset", version: { sha256: digest(new Uint8Array([1, 2, 3, 4])), revision: 1 } } }], edges: [{ source: "text", target: "image" }], viewport: { x: 14, y: 28, zoom: .9 } }));
         await writeFile(join(folder, "document.md"), value);
         await mkdir(join(folder, "assets"), { recursive: true }); await writeFile(join(folder, "assets/image.png"), new Uint8Array([1, 2, 3, 4]));
       });
@@ -91,7 +99,9 @@ for (const choice of ["local", "cloud"] as const) test(`A/B HTTP round trip: ${c
     const folder = await p.a.projects.directory(p.id), copy = await p.a.projects.directory(result.recovery.id);
     expect(await readFile(join(folder, "document.md"), "utf8")).toBe(choice === "local" ? "A2" : "B2");
     expect(await readFile(join(copy, "document.md"), "utf8")).toBe("A2");
-    expect(await readFile(join(copy, "canvas.json"))).toEqual(await readFile(join(p.a.root, "workspaces", choice === "local" ? p.id : result.recovery.id, "canvas.json")));
+    const canvas = JSON.parse(await readFile(join(copy, "canvas.json"), "utf8"));
+    expect(canvas).toEqual({ nodes: [{ id: "image", text: "A2", source: { path: "assets/image.png", assetId: "original-asset", version: { sha256: digest(new Uint8Array([1, 2, 3, 4])), revision: 1 } } }], edges: [{ source: "text", target: "image" }], viewport: { x: 14, y: 28, zoom: .9 } });
+    expect(JSON.parse(await readFile(join(folder, "canvas.json"), "utf8")).nodes[0].text).toBe(choice === "local" ? "A2" : "B2");
     expect(digest(await readFile(join(copy, "assets/image.png")))).toBe(digest(new Uint8Array([1, 2, 3, 4])));
     const index = JSON.parse(await readFile(join(p.a.root, "seecutProjects.json"), "utf8"));
     expect(index.projects.find((x: any) => x.id === result.recovery.id).cloud).toBeUndefined();
@@ -205,3 +215,22 @@ test("corrupted download never replaces either local or recovery content", async
     expect(await readFile(join(await p.a.projects.directory(p.id), "document.md"), "utf8")).toBe("A2");
   } finally { await p.close(); }
 }, 30_000);
+for (const phase of ["beforeRename", "afterOldRename", "afterAdopt"] as const) test(`interrupted replacement rolls back on reopen: ${phase}`, async () => {
+  const root = await mkdtemp(join(tmpdir(), "seecut-r3-interrupt-"));
+  const id = randomUUID(), backup = `.resolve-backup-${randomUUID()}`, stage = `.resolved-${randomUUID()}`;
+  const folder = join(root, "workspaces");
+  try {
+    await mkdir(join(folder, id), { recursive: true });
+    await writeFile(join(folder, id, "document.md"), "original");
+    await mkdir(join(folder, stage)); await writeFile(join(folder, stage, "document.md"), "downloaded");
+    await writeFile(join(root, "seecutProjects.json"), JSON.stringify({ projects: [{ id, name: "crash", local: true, createdAt: 1, updatedAt: 1, replacing: { backup, stage }, cloud: { scopeKey: "one", revision: 1 } }] }));
+    if (phase !== "beforeRename") await rename(join(folder, id), join(folder, backup));
+    if (phase === "afterAdopt") await rename(join(folder, stage), join(folder, id));
+    const projects = await createSeecutProjects(root, (async () => { throw new Error("No network during recovery"); }) as any);
+    expect(await readFile(join(await projects.directory(id), "document.md"), "utf8")).toBe("original");
+    expect(await readFile(join(folder, stage, "document.md"), "utf8")).toBe("downloaded");
+    const saved = JSON.parse(await readFile(join(root, "seecutProjects.json"), "utf8")).projects[0];
+    expect(saved.replacing).toBeUndefined(); expect(saved.cloud.revision).toBe(1);
+    await projects.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

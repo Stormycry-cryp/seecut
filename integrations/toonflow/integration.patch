@@ -1624,10 +1624,10 @@ index 0000000..c937fca
 +}
 diff --git a/apps/server/src/seecutProjects.ts b/apps/server/src/seecutProjects.ts
 new file mode 100644
-index 0000000..8d83b4f
+index 0000000..a997e50
 --- /dev/null
 +++ b/apps/server/src/seecutProjects.ts
-@@ -0,0 +1,480 @@
+@@ -0,0 +1,518 @@
 +import express, { type RequestHandler } from "express";
 +import { randomUUID, createHash } from "node:crypto";
 +import { join, resolve, relative, isAbsolute, sep, dirname } from "node:path";
@@ -1638,7 +1638,7 @@ index 0000000..8d83b4f
 +
 +type Remote = { id: string; revision: number; sha256: string; size_bytes: number; name: string };
 +type Cloud = { scopeKey: string; revision: number; sha256?: string; pending?: { requestId: string; path: string; sha256: string; baseRevision: number } };
-+type Project = { id: string; name: string; createdAt: number; updatedAt: number; local: boolean; dirty?: boolean; needsNativeImport?: boolean; restoreError?: string; recoveryOf?: string; resolution?: { requestId: string; choice: string; accountScope: string; recoveryId: string }; cloud?: Cloud };
++type Project = { id: string; name: string; createdAt: number; updatedAt: number; local: boolean; dirty?: boolean; needsNativeImport?: boolean; restoreError?: string; recoveryOf?: string; replacing?: { backup: string; stage: string }; resolution?: { requestId: string; choice: string; accountScope: string; recoveryId: string }; cloud?: Cloud };
 +type Sync = { state: "local" | "pending" | "syncing" | "synced" | "error" | "conflict" | "signedOut"; error?: string; remoteRevision?: number };
 +const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 +const snapshotLimit = 256 * 1024 * 1024;
@@ -1656,12 +1656,36 @@ index 0000000..8d83b4f
 +    if (!uuid.test(item.id) || typeof item.name !== "string") throw new Error("Flow 项目身份无效");
 +    projects.set(item.id, item);
 +  }
++  // A process interruption between the two directory renames is rolled back
++  // before serving any workspace. The index is the durable commit point.
++  let recovered = false;
++  for (const project of projects.values()) {
++    if (!project.replacing) continue;
++    const { backup, stage } = project.replacing;
++    if (!/^\.resolve-backup-[a-f0-9-]{36}$/.test(backup) || !/^\.resolved-[a-f0-9-]{36}$/.test(stage)) throw failure("项目恢复事务无效，文件已保留");
++    const exists = async (name: string) => {
++      const info = await lstat(join(root, name)).catch((error: any) => { if (error.code === "ENOENT") return undefined; throw error; });
++      if (info && (!info.isDirectory() || info.isSymbolicLink())) throw failure("项目恢复目录无效，文件已保留");
++      return Boolean(info);
++    };
++    if (await exists(backup)) {
++      if (await exists(project.id)) {
++        if (await exists(stage)) throw failure("项目恢复目录存在冲突，请保留三个目录后恢复");
++        await rename(join(root, project.id), join(root, stage));
++      }
++      await rename(join(root, backup), join(root, project.id));
++    }
++    delete project.replacing; recovered = true;
++  }
++  if (recovered) await writeAtomic(index, JSON.stringify({ version: 1, projects: [...projects.values()] }));
 +  const states = new Map<string, Sync>();
 +  const timers = new Map<string, ReturnType<typeof setTimeout>>();
 +  const running = new Map<string, Promise<void>>();
 +  const snapshots = new Map<string, Promise<void>>();
 +  const sessions = new Map<string, string>();
 +  const resolving = new Set<string>();
++  const committing = new Set<string>();
++  const activeWrites = new Map<string, number>();
 +  const remotes = new Map<string, Remote>();
 +  const restoring = new Map<string, Promise<void>>();
 +  let writing = Promise.resolve();
@@ -1995,6 +2019,8 @@ index 0000000..8d83b4f
 +      await refreshNow(); validSession(); await checkAccount(account);
 +      if (remotes.get(projectId)?.revision !== remote.revision) throw failure("云端已有新版本，请重新选择", 409, "FLOW_REVISION_CONFLICT");
 +      const target = await directory(projectId);
++      committing.add(projectId);
++      if (activeWrites.get(projectId)) throw failure("本机仍在保存，请稍后重试", 409, "FLOW_LOCAL_CONFLICT");
 +      const release = lockWorkspaceFiles([target]);
 +      try {
 +        await call("generation.exportProject", { projectId, expectedScopeKey: cloud.scopeKey });
@@ -2011,6 +2037,8 @@ index 0000000..8d83b4f
 +          cloud.revision = receipt.revision; cloud.sha256 = snapshot.sha256; delete cloud.pending;
 +        } else {
 +          const backup = join(root, `.resolve-backup-${randomUUID()}`);
++          project.replacing = { backup: backup.split(sep).at(-1)!, stage: stage!.split(sep).at(-1)! };
++          await persist();
 +          await rename(target, backup);
 +          try {
 +            await rename(stage!, target);
@@ -2018,13 +2046,14 @@ index 0000000..8d83b4f
 +          } catch (error) {
 +            // Keep the verified download and restore the exact original directory.
 +            if (await lstat(target).catch(() => undefined)) await rename(target, stage!);
-+            await rename(backup, target); throw error;
++            await rename(backup, target); delete project.replacing; await persist(); throw error;
 +          }
 +          replaced = { backup, stage: stage! };
 +          cloud.revision = remote.revision; cloud.sha256 = remote.sha256; delete cloud.pending;
 +          project.needsNativeImport = true;
 +        }
 +        project.dirty = false;
++        delete project.replacing;
 +        project.resolution = { requestId: input.requestId, choice: input.choice, accountScope: input.accountScope, recoveryId: recovery.id };
 +        try { await persist(); }
 +        catch (error) {
@@ -2041,7 +2070,7 @@ index 0000000..8d83b4f
 +    } catch (error: any) {
 +      states.set(projectId, { state: ["FLOW_REVISION_CONFLICT", "FLOW_LOCAL_CONFLICT"].includes(error.code) ? "conflict" : "error", remoteRevision: remotes.get(projectId)?.revision, error: error.message });
 +      throw error;
-+    } finally { resolving.delete(projectId); }
++    } finally { resolving.delete(projectId); committing.delete(projectId); }
 +  }
 +  const router = express.Router();
 +  router.use(express.json({ limit: "16kb" }));
@@ -2078,6 +2107,13 @@ index 0000000..8d83b4f
 +  router.post("/projects/:id/sync", async (request, response) => { get(request.params.id); await sync(request.params.id); response.json({ sync: publicProject(get(request.params.id)).sync }); });
 +  router.use((error: any, _request: any, response: any, _next: any) => { response.status(error.status || 500).json({ error: { code: error.code || "FLOW_ERROR", message: error.message || "Flow 操作失败" } }); });
 +  const observeWrites: RequestHandler = async (request, response, next) => {
++    const source = typeof request.query.directory === "string" ? request.query.directory : request.body?.directory;
++    const projectId = typeof source === "string" ? relative(root, resolve(source)) : "";
++    if (uuid.test(projectId) && request.path.startsWith("/api/workspaces/files/") && ["PUT", "POST", "DELETE"].includes(request.method)) {
++      if (committing.has(projectId)) return next(failure("项目正在替换，请重新打开后操作", 409, "FLOW_BUSY"));
++      activeWrites.set(projectId, (activeWrites.get(projectId) || 0) + 1);
++      response.once("close", () => activeWrites.set(projectId, Math.max(0, (activeWrites.get(projectId) || 1) - 1)));
++    }
 +    if (["PUT", "POST", "DELETE"].includes(request.method) && request.path.startsWith("/api/workspaces/files/")) response.once("close", () => {
 +      if (response.statusCode >= 400) return;
 +      const source = typeof request.query.directory === "string" ? request.query.directory : request.body?.directory;
@@ -2096,7 +2132,9 @@ index 0000000..8d83b4f
 +    if (!uuid.test(id) || !projects.has(id)) throw failure("该工作目录不属于当前 Flow 项目", 403);
 +    const deadline = Date.now() + 15000;
 +    while (true) {
++      if (committing.has(id)) throw failure("项目正在替换，请重新打开后操作", 409, "FLOW_BUSY");
 +      await restoring.get(id); await snapshots.get(id);
++      if (committing.has(id)) throw failure("项目正在替换，请重新打开后操作", 409, "FLOW_BUSY");
 +      let release: (() => void) | undefined;
 +      try { release = lockWorkspaceFiles([path]); }
 +      catch (error: any) {
@@ -3644,7 +3682,7 @@ index 0000000..12db544
 +}
 +</style>
 diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
-index 61cddd7..3ca3586 100644
+index 61cddd7..3f196fa 100644
 --- a/apps/web/src/pages/workspace/index.vue
 +++ b/apps/web/src/pages/workspace/index.vue
 @@ -1,17 +1,37 @@
@@ -3658,12 +3696,12 @@ index 61cddd7..3ca3586 100644
 +      <el-button v-if="localCanvasState?.conflict" text size="small" :loading="retryingSave" @click="saveRecoveryCopies">另存并切换恢复副本</el-button>
 +      <el-button v-if="localSaveError" text size="small" :loading="retryingSave" @click="retryLocalSave">重试保存</el-button>
 +      <span class="seecutSyncStatus" :title="syncError || seecutSync?.error">{{ syncStatusLabel }}</span>
-+      <el-button v-if="syncError" text size="small" :loading="syncBusy" @click="updateSync(false, true)">刷新状态</el-button>
++      <el-button text size="small" :icon="IconRefresh" :loading="syncBusy" :disabled="seecutResolvingConflict" aria-label="刷新云端状态" title="刷新云端状态" @click="updateSync(false, true)" />
 +      <template v-if="seecutSync?.state === 'conflict'">
 +        <el-button text size="small" :loading="seecutResolvingConflict" :disabled="syncBusy" @click="chooseConflict('local')">保留本机副本</el-button>
 +        <el-button text size="small" :disabled="syncBusy || seecutResolvingConflict" @click="chooseConflict('cloud')">使用云端</el-button>
 +      </template>
-+      <el-button v-else-if="seecutSync?.state === 'error'" text size="small" :loading="syncBusy" @click="updateSync(true)">重试同步</el-button>
++      <el-button v-else-if="seecutSync?.state === 'error'" text size="small" :loading="syncBusy" :disabled="seecutResolvingConflict" @click="updateSync(true)">重试同步</el-button>
 +    </header>
 +    <div v-if="isSeecutEmbedded && (seecutOpeningProject || seecutWorkspaceError)" class="seecutWorkspaceLoading" role="status">
 +      <template v-if="seecutWorkspaceError"><p>{{ seecutWorkspaceError }}</p><el-button @click="reloadProjects">返回项目列表重试</el-button></template>
@@ -3736,7 +3774,7 @@ index 61cddd7..3ca3586 100644
  import { onBeforeRouteLeave } from "vue-router";
  import axios from "axios";
 -import { IconVector, IconFileText, IconPointer, IconHandStop, IconPlus, IconHelp, IconBook, IconBug, IconBrandWechat, IconBriefcase } from "@tabler/icons-vue";
-+import { IconArrowLeft, IconVector, IconFileText, IconPointer, IconHandStop, IconPlus, IconHelp, IconBook, IconBug, IconBrandWechat, IconBriefcase } from "@tabler/icons-vue";
++import { IconRefresh, IconArrowLeft, IconVector, IconFileText, IconPointer, IconHandStop, IconPlus, IconHelp, IconBook, IconBug, IconBrandWechat, IconBriefcase } from "@tabler/icons-vue";
  import { ElMessage, ElMessageBox } from "element-plus";
  import { QRCode } from "tdesign-vue-next";
 -import settings from "@/components/settings/index.vue";

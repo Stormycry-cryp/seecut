@@ -22,4 +22,8 @@ try:
     sys.stdin.readline()
 finally:
     server.shutdown()
+    with fixture.db.connect() as connection:
+        counts = {table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                  for table in ("generation_tasks", "generation_billings", "ledger_entries", "flow_snapshot_requests", "flow_snapshots")}
+    print(json.dumps({"finalCounts": counts}), flush=True)
     fixture.doCleanups()
