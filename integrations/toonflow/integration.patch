@@ -5045,21 +5045,48 @@ index 5d797df..87bb27d 100644
  }
 diff --git a/packages/nodeScaffold/src/floatingControls.ts b/packages/nodeScaffold/src/floatingControls.ts
 new file mode 100644
-index 0000000..39204e5
+index 0000000..250f27e
 --- /dev/null
 +++ b/packages/nodeScaffold/src/floatingControls.ts
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,39 @@
 +export type Rect = {left:number;top:number;width:number;height:number};
-+// Viewport coordinates only: this never changes nodes or the canvas transform.
-+export function floatingControls(anchor:Rect,viewport:Rect,width:number,height:number,side:'top'|'bottom') {
-+ const gap=12, margin=12, footer=64;
++type ControlSize = {width:number;height:number};
++type ControlPosition = {left:number;top:number;width:number;maxHeight:number};
++const margin=12, gap=12, footer=64;
++const clamp=(value:number,min:number,max:number)=>Math.max(min,Math.min(value,max));
++
++// Viewport coordinates only: never changes nodes or the canvas transform.
++export function floatingControls(anchor:Rect,viewport:Rect,width:number,height:number,side:'top'|'bottom'):ControlPosition {
 + const w=Math.max(1,Math.min(width,viewport.width-margin*2));
-+ const maxHeight=Math.max(1,Math.min(side==='bottom'?360:260,viewport.height-footer-margin*2));
-+ const h=Math.min(height,maxHeight);
-+ const left=Math.max(margin,Math.min(anchor.left+anchor.width/2-w/2,viewport.width-margin-w));
-+ const desired=side==='bottom'?anchor.top+anchor.height+gap:anchor.top-gap-h;
-+ const top=Math.max(margin,Math.min(desired,viewport.height-footer-h));
++ const maxHeight=Math.max(1,Math.min(height,side==='bottom'?360:260,viewport.height-footer-margin*2));
++ const left=clamp(anchor.left+anchor.width/2-w/2,margin,viewport.width-margin-w);
++ const desired=side==='bottom'?anchor.top+anchor.height+gap:anchor.top-gap-maxHeight;
++ const top=clamp(desired,margin,viewport.height-footer-margin-maxHeight);
 + return {left,width:w,top,maxHeight};
++}
++
++// Allocate a shared vertical budget before positioning either teleported panel.
++// Short viewports keep the toolbar compact and scroll the generation panel;
++// overflow:auto on both panels keeps every action reachable without moving nodes.
++export function floatingControlPair(anchor:Rect,viewport:Rect,topSize:ControlSize|null,bottomSize:ControlSize|null) {
++ const top=topSize?floatingControls(anchor,viewport,topSize.width,topSize.height,'top'):null;
++ const bottom=bottomSize?floatingControls(anchor,viewport,bottomSize.width,bottomSize.height,'bottom'):null;
++ if(!top||!bottom)return {top,bottom};
++ const available=Math.max(2,viewport.height-footer-margin*2);
++ const separation=Math.min(gap,available/10);
++ if(top.maxHeight+separation+bottom.maxHeight>available){
++  // Reserve a compact toolbar; prioritize the prompt and primary action panel.
++  top.maxHeight=Math.min(top.maxHeight,44,(available-separation)/4);
++  bottom.maxHeight=Math.min(bottom.maxHeight,available-separation-top.maxHeight);
++ }
++ const end=margin+available;
++ top.top=clamp(anchor.top-gap-top.maxHeight,margin,end-top.maxHeight);
++ bottom.top=clamp(anchor.top+anchor.height+gap,margin,end-bottom.maxHeight);
++ if(top.top+top.maxHeight+separation>bottom.top){
++  top.top=clamp(top.top,margin,end-top.maxHeight-separation-bottom.maxHeight);
++  bottom.top=top.top+top.maxHeight+separation;
++ }
++ return {top,bottom};
 +}
 diff --git a/packages/nodeScaffold/src/nodeAi.ts b/packages/nodeScaffold/src/nodeAi.ts
 index 63e67ee..4184bb3 100644
@@ -5348,7 +5375,7 @@ index 63e67ee..4184bb3 100644
 +  return { getModels, getMediaModels, getMediaPrice, generateImage, generateVideo, generateAudio, generate, getMediaGeneration, getMediaGenerationHistory, recoverRecordedMedia, resumeRecordedMedia };
  }
 diff --git a/packages/nodeScaffold/src/nodeSkeleton.vue b/packages/nodeScaffold/src/nodeSkeleton.vue
-index 3bb727f..fe4573b 100644
+index 3bb727f..bade74a 100644
 --- a/packages/nodeScaffold/src/nodeSkeleton.vue
 +++ b/packages/nodeScaffold/src/nodeSkeleton.vue
 @@ -14,7 +14,7 @@
@@ -5360,7 +5387,7 @@ index 3bb727f..fe4573b 100644
            <el-dropdown-item :divided="!!(assetOutputs.length && saveNodeToAssets)" command="copy" :icon="IconCopy">复制节点</el-dropdown-item>
            <el-dropdown-item command="duplicate" :icon="IconCopyPlus">创建副本</el-dropdown-item>
            <el-dropdown-item command="delete" :icon="IconTrash">删除节点</el-dropdown-item>
-@@ -24,10 +24,12 @@
+@@ -24,10 +24,13 @@
          </el-dropdown-menu>
        </template>
      </el-dropdown>
@@ -5370,12 +5397,13 @@ index 3bb727f..fe4573b 100644
        v-if="documentTarget || (topVisible && slotsVisible)"
 -      class="floatingSlot topSlot nodrag nopan nowheel"
 -      :style="{ width: typeof topWidth === 'number' ? `${topWidth}px` : topWidth }"
++      @toggle.capture="placeControls"
 +      class="floatingSlot topSlot nodrag nopan nowheel" :class="{seecutFloating:boundedControls}"
 +      :style="boundedControls ? topControlStyle : { width: typeof topWidth === 'number' ? `${topWidth}px` : topWidth }"
        @pointerdown.stop
        @mousedown.stop
        @dblclick.stop
-@@ -36,16 +38,19 @@
+@@ -36,16 +39,19 @@
        <slot name="top">
          <el-card class="mediaToolbar" shadow="never" :bodyStyle="{ padding: '6px' }">
            <el-button
@@ -5401,7 +5429,7 @@ index 3bb727f..fe4573b 100644
              :tag="downloadUrl ? 'a' : 'button'"
              :href="downloadUrl || undefined"
              :download="downloadName"
-@@ -59,7 +64,7 @@
+@@ -59,7 +65,7 @@
              @downloadstate="downloading = $event.detail"
              @click.stop />
            <el-button
@@ -5410,7 +5438,7 @@ index 3bb727f..fe4573b 100644
              :icon="IconMaximize"
              :disabled="!downloadUrl"
              text
-@@ -69,10 +74,13 @@
+@@ -69,10 +75,13 @@
          </el-card>
        </slot>
      </div>
@@ -5426,7 +5454,7 @@ index 3bb727f..fe4573b 100644
        @pointerdown.stop
        @mousedown.stop
        @dblclick.stop
-@@ -80,6 +88,7 @@
+@@ -80,6 +89,7 @@
        @contextmenu.stop>
        <slot name="bottom" />
      </div>
@@ -5434,15 +5462,15 @@ index 3bb727f..fe4573b 100644
      <div v-show="!documentTarget" class="titleBar">
        <component :is="icon ?? IconBox" class="titleIcon" :size="16" aria-hidden="true" />
        <input
-@@ -161,6 +170,7 @@
+@@ -161,6 +171,7 @@
  </template>
  
  <script setup lang="ts">
-+import { floatingControls } from "./floatingControls";
++import { floatingControlPair } from "./floatingControls";
  import { computed, inject, nextTick, onScopeDispose, ref, shallowRef, watch, watchEffect, type Component, type ShallowRef } from "vue";
  import { Handle, Position, getTransformForBounds, pointToRendererPoint, useNode, useVueFlow, wheelDelta } from "@vue-flow/core";
  import {
-@@ -178,7 +188,7 @@ import {
+@@ -178,7 +189,7 @@ import {
  } from "@tabler/icons-vue";
  import { ElCard, ElButton, ElDivider, ElDropdown, ElDropdownMenu, ElDropdownItem, ElMessage } from "element-plus";
  import type { DropdownInstance } from "element-plus";
@@ -5451,7 +5479,7 @@ index 3bb727f..fe4573b 100644
  import { useNodeEvent } from "./nodeEvent";
  import type { NodeConnectionFeedback, NodeData, NodeHandle } from "./connection";
  import type { NodeOutput } from "./values";
-@@ -411,6 +421,36 @@ async function deleteNode() {
+@@ -411,6 +422,39 @@ async function deleteNode() {
  
  const copyNodeToClipboard = inject<((node: { type?: string; data: NodeData }) => Promise<void>) | undefined>("copyNodeToClipboard", undefined);
  const copyingToClipboard = ref(false);
@@ -5467,10 +5495,13 @@ index 3bb727f..fe4573b 100644
 +  if(!boundedControls.value||!flow||!node)return;
 +  const bounds=flow.getBoundingClientRect(), anchor=node.getBoundingClientRect();
 +  const agentWidth=Math.max(0,parseFloat(getComputedStyle(flow).getPropertyValue("--agentWidth"))||0);
-+  for(const [side,element,target] of [["top",topControls.value,topControlStyle],["bottom",bottomControls.value,bottomControlStyle]] as const){
-+   if(!element)continue;
-+   const rect=floatingControls({left:anchor.left-bounds.left,top:anchor.top-bounds.top,width:anchor.width,height:anchor.height},
-+    {left:0,top:0,width:bounds.width-agentWidth,height:bounds.height},side==="top"?320:660,element.scrollHeight,side);
++  const pair=floatingControlPair(
++   {left:anchor.left-bounds.left,top:anchor.top-bounds.top,width:anchor.width,height:anchor.height},
++   {left:0,top:0,width:bounds.width-agentWidth,height:bounds.height},
++   topControls.value?{width:320,height:topControls.value.scrollHeight}:null,
++   bottomControls.value?{width:660,height:bottomControls.value.scrollHeight}:null);
++  for(const [rect,target] of [[pair.top,topControlStyle],[pair.bottom,bottomControlStyle]] as const){
++   if(!rect)continue;
 +   const next={left:`${rect.left}px`,top:`${rect.top}px`,width:`${rect.width}px`,maxHeight:`${rect.maxHeight}px`};
 +   if(JSON.stringify(target.value)!==JSON.stringify(next))target.value=next;
 +  }
@@ -5488,7 +5519,7 @@ index 3bb727f..fe4573b 100644
  const saveNodeToAssets = inject<((label: string, outputs: { label: string; output: NodeOutput }[]) => void) | undefined>(
    "saveNodeToAssets",
    undefined
-@@ -418,7 +458,7 @@ const saveNodeToAssets = inject<((label: string, outputs: { label: string; outpu
+@@ -418,7 +462,7 @@ const saveNodeToAssets = inject<((label: string, outputs: { label: string; outpu
  const assetOutputs = computed(() =>
    props.handles.flatMap((handle) => {
      const output = props.outputs[handle.id];
@@ -5497,7 +5528,7 @@ index 3bb727f..fe4573b 100644
      return [{ label: handle.label ?? handle.id, output }];
    })
  );
-@@ -776,3 +816,17 @@ watch(
+@@ -776,3 +820,17 @@ watch(
    }
  }
  </style>

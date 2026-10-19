@@ -270,7 +270,10 @@ impl CanvasExportJob {
         });
         let bytes = encode_png(&frame)?;
         let sha256 = format!("{:x}", Sha256::digest(&bytes));
-        let content_registration = format!("canvas:{}:{sha256}", self.account_scope);
+        let content_registration = format!(
+            "canvas:{}:{sha256}:export:{}",
+            self.account_scope, self.registration_id
+        );
         let provenance = canvas_export_provenance(&self.snapshot, self.project_path.clone())?;
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -291,6 +294,7 @@ impl CanvasExportJob {
                 &self.path,
                 &self.export_stem,
                 &self.account_scope,
+                &self.registration_id,
                 &bytes,
                 provenance,
             );
@@ -305,7 +309,17 @@ impl CanvasExportJob {
             sha256,
             width: frame.width(),
             height: frame.height(),
-            registration_id: content_registration.clone(),
+            registration_id: asset
+                .as_ref()
+                .and_then(|asset| asset.version.as_ref())
+                .map(|version| {
+                    version
+                        .registration_id
+                        .strip_prefix("operation:")
+                        .unwrap_or(&version.registration_id)
+                        .to_owned()
+                })
+                .unwrap_or(content_registration),
             asset,
             recovery: registration_error.as_ref().map(|_| recovery),
             registration_error,
