@@ -1,0 +1,6 @@
+$ bun scripts/build.ts
+$ bun scripts/build.ts
+MCP 已构建到 /Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/external/toonflow/build/mcp
+Bundled 3091 modules in 193ms
+
+  index.js  22.62 MB  (entry point)

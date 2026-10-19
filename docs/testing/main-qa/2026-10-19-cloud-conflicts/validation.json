@@ -1,0 +1,34 @@
+{
+  "source": "0aef137ec50f73365a208ef89d2e5de404124277",
+  "recordedAtUtc": "2026-10-19T01:42:17.226783+00:00",
+  "tests": {
+    "localHttpConflicts": 16,
+    "existingServiceContracts": 9,
+    "existingNativeBridge": 17,
+    "totalPassed": 42
+  },
+  "isolatedRealServiceCounts": {
+    "generation_tasks": 0,
+    "generation_billings": 0,
+    "ledger_entries": 0,
+    "flow_snapshot_requests": 32,
+    "flow_snapshots": 32
+  },
+  "nativeRpcInHttpTests": "injected adapter; native App end-to-end not tested",
+  "builds": {
+    "web": "passed",
+    "server": "passed",
+    "host": "passed",
+    "nativeAndNodes": "unchanged; reused with matching SHA"
+  },
+  "typecheck": {
+    "web": "blocked: existing Electrobun declaration missing, TS2307",
+    "server": "blocked: existing Electrobun declaration missing, TS2307"
+  },
+  "patchSourceVerification": "passed",
+  "actualWindow": "not run: unavailable window/CUA tools; prior R2 and recommendation UI remain pending",
+  "screenshots": "none for this candidate",
+  "deployment": "none",
+  "credentials": "no real credentials read or configured",
+  "providers": "none"
+}

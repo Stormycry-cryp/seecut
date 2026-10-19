@@ -1624,10 +1624,10 @@ index 0000000..c937fca
 +}
 diff --git a/apps/server/src/seecutProjects.ts b/apps/server/src/seecutProjects.ts
 new file mode 100644
-index 0000000..7a85aea
+index 0000000..a997e50
 --- /dev/null
 +++ b/apps/server/src/seecutProjects.ts
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,518 @@
 +import express, { type RequestHandler } from "express";
 +import { randomUUID, createHash } from "node:crypto";
 +import { join, resolve, relative, isAbsolute, sep, dirname } from "node:path";
@@ -1636,15 +1636,16 @@ index 0000000..7a85aea
 +import { lockWorkspaceFiles } from "./utils/workspace/files";
 +import { nativeCall, type SeecutAccount } from "./seecutNative";
 +
++type Remote = { id: string; revision: number; sha256: string; size_bytes: number; name: string };
 +type Cloud = { scopeKey: string; revision: number; sha256?: string; pending?: { requestId: string; path: string; sha256: string; baseRevision: number } };
-+type Project = { id: string; name: string; createdAt: number; updatedAt: number; local: boolean; dirty?: boolean; needsNativeImport?: boolean; restoreError?: string; cloud?: Cloud };
-+type Sync = { state: "local" | "pending" | "syncing" | "synced" | "error" | "conflict" | "signedOut"; error?: string };
++type Project = { id: string; name: string; createdAt: number; updatedAt: number; local: boolean; dirty?: boolean; needsNativeImport?: boolean; restoreError?: string; recoveryOf?: string; replacing?: { backup: string; stage: string }; resolution?: { requestId: string; choice: string; accountScope: string; recoveryId: string }; cloud?: Cloud };
++type Sync = { state: "local" | "pending" | "syncing" | "synced" | "error" | "conflict" | "signedOut"; error?: string; remoteRevision?: number };
 +const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 +const snapshotLimit = 256 * 1024 * 1024;
 +const excluded = (name: string) => name === ".seecut-sync" || name === ".DS_Store" || /^\.write-.*\.tmp$/.test(name);
 +const failure = (message: string, status = 400, code = "FLOW_INVALID_REQUEST") => Object.assign(new Error(message), { status, code });
 +
-+export async function createSeecutProjects(dataDirectory: string) {
++export async function createSeecutProjects(dataDirectory: string, call: typeof nativeCall = nativeCall) {
 +  const root = resolve(dataDirectory, "workspaces");
 +  await mkdir(root, { recursive: true });
 +  const index = resolve(dataDirectory, "seecutProjects.json");
@@ -1655,10 +1656,37 @@ index 0000000..7a85aea
 +    if (!uuid.test(item.id) || typeof item.name !== "string") throw new Error("Flow 项目身份无效");
 +    projects.set(item.id, item);
 +  }
++  // A process interruption between the two directory renames is rolled back
++  // before serving any workspace. The index is the durable commit point.
++  let recovered = false;
++  for (const project of projects.values()) {
++    if (!project.replacing) continue;
++    const { backup, stage } = project.replacing;
++    if (!/^\.resolve-backup-[a-f0-9-]{36}$/.test(backup) || !/^\.resolved-[a-f0-9-]{36}$/.test(stage)) throw failure("项目恢复事务无效，文件已保留");
++    const exists = async (name: string) => {
++      const info = await lstat(join(root, name)).catch((error: any) => { if (error.code === "ENOENT") return undefined; throw error; });
++      if (info && (!info.isDirectory() || info.isSymbolicLink())) throw failure("项目恢复目录无效，文件已保留");
++      return Boolean(info);
++    };
++    if (await exists(backup)) {
++      if (await exists(project.id)) {
++        if (await exists(stage)) throw failure("项目恢复目录存在冲突，请保留三个目录后恢复");
++        await rename(join(root, project.id), join(root, stage));
++      }
++      await rename(join(root, backup), join(root, project.id));
++    }
++    delete project.replacing; recovered = true;
++  }
++  if (recovered) await writeAtomic(index, JSON.stringify({ version: 1, projects: [...projects.values()] }));
 +  const states = new Map<string, Sync>();
 +  const timers = new Map<string, ReturnType<typeof setTimeout>>();
 +  const running = new Map<string, Promise<void>>();
 +  const snapshots = new Map<string, Promise<void>>();
++  const sessions = new Map<string, string>();
++  const resolving = new Set<string>();
++  const committing = new Set<string>();
++  const activeWrites = new Map<string, number>();
++  const remotes = new Map<string, Remote>();
 +  const restoring = new Map<string, Promise<void>>();
 +  let writing = Promise.resolve();
 +  let closed = false;
@@ -1691,7 +1719,7 @@ index 0000000..7a85aea
 +      : project.cloud && project.cloud.scopeKey !== accountScope ? { state: "error", error: "此项目已关联其他云端账户" } : undefined;
 +    return { id: project.id, name: project.name, createdAt: project.createdAt, updatedAt: project.updatedAt, sync: accountState ?? states.get(project.id) ?? (project.restoreError ? { state: "error", error: project.restoreError } : { state: project.cloud?.pending || project.dirty ? "pending" : project.cloud?.sha256 ? "synced" : "local" }) };
 +  }
-+  async function archive(project: Project) {
++  async function archive(project: Project, locked = false) {
 +    const folder = await directory(project.id);
 +    let unblock!: () => void;
 +    snapshots.set(project.id, new Promise<void>(resolve => { unblock = resolve; }));
@@ -1699,7 +1727,7 @@ index 0000000..7a85aea
 +    const temporary = join(folder, ".seecut-sync", `${randomUUID()}.zip`);
 +    let handle: Awaited<ReturnType<typeof open>> | undefined;
 +    try {
-+      release = lockWorkspaceFiles([folder]);
++      if (!locked) release = lockWorkspaceFiles([folder]);
 +      await mkdir(dirname(temporary), { recursive: true });
 +      handle = await open(temporary, "wx", 0o600);
 +      const digest = createHash("sha256");
@@ -1748,37 +1776,46 @@ index 0000000..7a85aea
 +    } finally { await handle?.close(); release?.(); snapshots.delete(project.id); unblock(); }
 +  }
 +  async function sync(projectId: string) {
++    if (resolving.has(projectId)) return;
 +    if (running.has(projectId)) return running.get(projectId)!;
 +    const work = (async () => {
 +      const project = get(projectId);
 +      if (!project.local) return;
 +      const changedAt = project.updatedAt;
 +      try {
-+        const account = await nativeCall<SeecutAccount>("account.status");
++        const account = await call<SeecutAccount>("account.status");
 +        accountChecked = true; accountScope = account.signedIn ? account.scopeKey : undefined;
 +        if (!account.signedIn || !account.scopeKey) { states.set(projectId, { state: "signedOut" }); return; }
 +        if (project.cloud && project.cloud.scopeKey !== account.scopeKey) throw failure("此项目已关联其他云端账户，请切回原账户", 409, "FLOW_ACCOUNT_CHANGED");
++        await refreshNow();
++        if (states.get(projectId)?.state === "conflict" && !project.cloud?.pending) return;
 +        project.cloud ??= { scopeKey: account.scopeKey, revision: 0 };
 +        states.set(projectId, { state: "syncing" });
 +        if (project.needsNativeImport) await importNativeProject(project);
 +        const pending = project.cloud.pending;
 +        if (pending) {
 +          // 重放原快照和原请求身份，未知结果不得生成新请求覆盖。
-+          const receipt = await nativeCall<any>("projects.cloud.upload", { projectId, name: project.name, ...pending, expectedScopeKey: project.cloud.scopeKey }, 125000);
++          const receipt = await call<any>("projects.cloud.upload", { projectId, name: project.name, ...pending, expectedScopeKey: project.cloud.scopeKey }, 125000);
 +          if (!Number.isSafeInteger(receipt.revision) || receipt.sha256 !== pending.sha256) throw new Error("云端未返回匹配的原快照回执");
++          await checkAccount(account);
 +          project.cloud.revision = receipt.revision;
 +          project.cloud.sha256 = pending.sha256;
 +          delete project.cloud.pending;
 +          await persist();
 +          await unlink(pending.path).catch(() => {});
 +        }
-+        await nativeCall("generation.exportProject", { projectId, expectedScopeKey: project.cloud.scopeKey });
++        await refreshNow();
++        if (remotes.get(projectId) && remotes.get(projectId)!.revision > project.cloud.revision) {
++          states.set(projectId, { state: "conflict", remoteRevision: remotes.get(projectId)!.revision, error: "云端有较新版本，本机内容已保留" }); return;
++        }
++        await call("generation.exportProject", { projectId, expectedScopeKey: project.cloud.scopeKey });
 +        const snapshot = await archive(project);
 +        if (snapshot.sha256 !== project.cloud.sha256) {
 +          project.cloud.pending = { requestId: randomUUID(), baseRevision: project.cloud.revision, ...snapshot };
 +          await persist();
-+          const receipt = await nativeCall<any>("projects.cloud.upload", { projectId, name: project.name, ...project.cloud.pending, expectedScopeKey: project.cloud.scopeKey }, 125000);
++          const receipt = await call<any>("projects.cloud.upload", { projectId, name: project.name, ...project.cloud.pending, expectedScopeKey: project.cloud.scopeKey }, 125000);
 +          if (!Number.isSafeInteger(receipt.revision) || receipt.sha256 !== snapshot.sha256) throw new Error("云端未返回匹配的快照回执");
++          await checkAccount(account);
 +          project.cloud.revision = receipt.revision;
 +          project.cloud.sha256 = snapshot.sha256;
 +          delete project.cloud.pending;
@@ -1801,31 +1838,44 @@ index 0000000..7a85aea
 +  }
 +  async function touch(projectId: string) {
 +    const project = get(projectId); project.updatedAt = Math.max(Date.now(), project.updatedAt + 1); project.dirty = true;
-+    states.set(projectId, { state: "pending" });
++    if (states.get(projectId)?.state !== "conflict") states.set(projectId, { state: "pending" });
 +    await persist();
 +    clearTimeout(timers.get(projectId));
 +    if (!closed) timers.set(projectId, setTimeout(() => { timers.delete(projectId); void sync(projectId); }, 1500));
 +  }
 +  async function refreshCloud() {
 +    try {
-+      const account = await nativeCall<SeecutAccount>("account.status");
++      const account = await call<SeecutAccount>("account.status");
 +      accountChecked = true;
 +      accountScope = account.signedIn ? account.scopeKey : undefined;
-+      if (!account.signedIn || !account.scopeKey) return;
-+      const response = await nativeCall<any>("projects.cloud.list", { expectedScopeKey: account.scopeKey });
++      if (!account.signedIn || !account.scopeKey) { remotes.clear(); return; }
++      const response = await call<any>("projects.cloud.list", { expectedScopeKey: account.scopeKey });
++      await checkAccount(account);
++      remotes.clear();
 +      for (const item of response.items ?? []) {
 +        if (!uuid.test(item.id) || !Number.isSafeInteger(item.revision)) continue;
++        remotes.set(item.id, item);
 +        const existing = projects.get(item.id);
 +        // 恢复期间固定下载版本；列表刷新不可把旧内容标记成较新的云版本。
-+        if (restoring.has(item.id)) continue;
++        if (restoring.has(item.id) || resolving.has(item.id)) continue;
 +        if (!existing) projects.set(item.id, { id: item.id, name: item.name, createdAt: item.updated_at * 1000, updatedAt: item.updated_at * 1000, local: false, cloud: { scopeKey: account.scopeKey, revision: item.revision, sha256: item.sha256 } });
 +        else if (existing.cloud?.scopeKey === account.scopeKey && existing.cloud.revision < item.revision) {
-+          if (existing.local) states.set(item.id, { state: "conflict", error: "云端有较新版本，本机内容已保留" });
++          if (existing.local) states.set(item.id, { state: "conflict", remoteRevision: item.revision, error: "云端有较新版本，本机内容已保留" });
 +          else { existing.cloud.revision = item.revision; existing.cloud.sha256 = item.sha256; existing.name = item.name; existing.updatedAt = item.updated_at * 1000; states.delete(item.id); }
 +        }
 +      }
 +      await persist();
 +    } catch (error: any) { cloudError = error.message || "云端项目检查失败"; }
++  }
++  async function checkAccount(expected: SeecutAccount) {
++    const current = await call<SeecutAccount>("account.status");
++    accountChecked = true; accountScope = current.signedIn ? current.scopeKey : undefined;
++    if (!current.signedIn || current.scopeKey !== expected.scopeKey || current.epoch !== expected.epoch) throw failure("账户已变化，本次操作已停止", 409, "FLOW_ACCOUNT_CHANGED");
++  }
++  async function refreshNow() {
++    beginCloudRefresh(true);
++    await cloudRefreshing;
++    if (cloudError) throw failure(cloudError, 503, "FLOW_REFRESH_FAILED");
 +  }
 +  function beginCloudRefresh(force = false) {
 +    if (cloudRefreshing || (!force && Date.now() - cloudCheckedAt < 30000)) return;
@@ -1845,7 +1895,7 @@ index 0000000..7a85aea
 +  }
 +  async function importNativeProject(project: Project) {
 +    try {
-+      await nativeCall("generation.importProject", { projectId: project.id, expectedScopeKey: project.cloud?.scopeKey });
++      await call("generation.importProject", { projectId: project.id, expectedScopeKey: project.cloud?.scopeKey });
 +      delete project.needsNativeImport; delete project.restoreError;
 +      states.delete(project.id);
 +      await persist();
@@ -1856,7 +1906,7 @@ index 0000000..7a85aea
 +    }
 +  }
 +  async function restoreProject(project: Project) {
-+    const account = await nativeCall<SeecutAccount>("account.status");
++    const account = await call<SeecutAccount>("account.status");
 +    const cloud = project.cloud ? { ...project.cloud } : undefined;
 +    if (!cloud || !account.signedIn || account.scopeKey !== cloud.scopeKey) throw failure("请登录此项目所属账户", 401, "SIGNED_OUT");
 +    const target = join(root, project.id);
@@ -1865,24 +1915,12 @@ index 0000000..7a85aea
 +    await directory(project.id);
 +    const syncFolder = join(target, ".seecut-sync"); await mkdir(syncFolder, { recursive: true });
 +    const path = join(syncFolder, `restore-${randomUUID()}.zip`);
-+    const response = await nativeCall<any>("projects.cloud.download", { projectId: project.id, path, revision: cloud.revision, expectedScopeKey: cloud.scopeKey }, 125000);
++    const response = await call<any>("projects.cloud.download", { projectId: project.id, path, revision: cloud.revision, expectedScopeKey: cloud.scopeKey }, 125000);
 +    const bytes = await readFile(path);
 +    if (bytes.length > snapshotLimit || createHash("sha256").update(bytes).digest("hex") !== cloud.sha256 || response.verifiedSha256 !== cloud.sha256) throw failure("云端快照校验失败，未恢复");
-+    let total = 0, count = 0;
-+    const files = unzipSync(bytes, { filter(entry) {
-+      const key = entry.name;
-+      if (!key || /[\\:\x00-\x1f]/.test(key) || key.startsWith("/") || key.split("/").some(part => part === ".." || part === ".seecut-sync")) throw failure("云端快照包含无效路径");
-+      if (++count > 10000 || (total += entry.originalSize) > snapshotLimit) throw failure("云端快照超过恢复限制", 413);
-+      return !key.endsWith("/");
-+    } });
-+    const stage = join(syncFolder, `stage-${randomUUID()}`); await mkdir(stage);
-+    const names = new Set<string>();
-+    for (const [key, content] of Object.entries(files)) {
-+      if (names.has(key.toLowerCase())) throw failure("云端快照包含重复路径"); names.add(key.toLowerCase());
-+      const destination = resolve(stage, key);
-+      if (!destination.startsWith(stage + sep)) throw failure("云端快照路径越界");
-+      await mkdir(dirname(destination), { recursive: true }); await writeAtomic(destination, content, { exclusive: true });
-+    }
++    const stage = join(syncFolder, `stage-${randomUUID()}`);
++    await extractSnapshot(bytes, stage);
++    await checkAccount(account);
 +    // 验证完整后原子替换空目录；原快照保留在独立恢复备份，失败可恢复目录。
 +    if ((await readdir(target)).some(name => name !== ".seecut-sync")) throw failure("下载期间本机项目已变化，未覆盖", 409, "FLOW_LOCAL_CONFLICT");
 +    const backup = join(root, `.restore-backup-${randomUUID()}`);
@@ -1892,6 +1930,147 @@ index 0000000..7a85aea
 +    project.local = true; project.dirty = false; project.needsNativeImport = true; await persist();
 +    await importNativeProject(project);
 +    states.set(project.id, { state: "synced" });
++  }
++  async function extractSnapshot(bytes: Uint8Array, stage: string) {
++    let total = 0, count = 0;
++    const files = unzipSync(bytes, { filter(entry) {
++      const key = entry.name;
++      if (!key || /[\\:\x00-\x1f]/.test(key) || key.startsWith("/") || key.split("/").some(part => part === ".." || part === ".seecut-sync")) throw failure("云端快照包含无效路径");
++      if (++count > 10000 || (total += entry.originalSize) > snapshotLimit) throw failure("云端快照超过恢复限制", 413);
++      return !key.endsWith("/");
++    } });
++    await mkdir(stage);
++    const names = new Set<string>();
++    for (const [key, content] of Object.entries(files)) {
++      if (names.has(key.toLowerCase())) throw failure("云端快照包含重复路径"); names.add(key.toLowerCase());
++      const destination = resolve(stage, key);
++      if (!destination.startsWith(stage + sep)) throw failure("云端快照路径越界");
++      await mkdir(dirname(destination), { recursive: true }); await writeAtomic(destination, content, { exclusive: true });
++    }
++  }
++  // A recovery project is a normal local project with a fresh identity. Original
++  // generation journals remain historical: never rebind paid attempts to its UUID.
++  async function recoveryCopy(project: Project, snapshot: { path: string; sha256: string }) {
++    const id = randomUUID(), stage = join(root, `.recovery-${id}`), target = join(root, id);
++    const bytes = await readFile(snapshot.path);
++    if (createHash("sha256").update(bytes).digest("hex") !== snapshot.sha256) throw failure("本机恢复副本校验失败");
++    await extractSnapshot(bytes, stage);
++    const journal = join(stage, ".seecut", "native-generation.json");
++    try { await rename(journal, join(stage, ".seecut", "recovery-native-generation.json")); }
++    catch (error: any) { if (error.code !== "ENOENT") throw error; }
++    await rename(stage, target);
++    const copy: Project = { id, name: `${project.name.slice(0, 95)} · 本机恢复副本`, createdAt: Date.now(), updatedAt: Date.now(), local: true, recoveryOf: project.id };
++    projects.set(id, copy); await persist();
++    return copy;
++  }
++  async function resolveConflict(projectId: string, input: any) {
++    const project = get(projectId);
++    if (!uuid.test(input.requestId)) throw failure("缺少冲突处理请求编号");
++    const completed = project.resolution;
++    if (completed && completed.requestId === input.requestId) {
++      const account = await call<SeecutAccount>("account.status");
++      if (!account.signedIn || `${account.scopeKey}:${account.epoch}` !== completed.accountScope || input.choice !== completed.choice) throw failure("账户或选择已变化", 409, "FLOW_ACCOUNT_CHANGED");
++      return { project: publicProject(project), recovery: publicProject(get(completed.recoveryId)) };
++    }
++    if (resolving.has(projectId) || running.has(projectId) || restoring.has(projectId)) throw failure("项目同步处理中，请稍候", 409, "FLOW_BUSY");
++    if (!["local", "cloud"].includes(input.choice) || typeof input.session !== "string" || sessions.get(projectId) !== input.session || !Number.isSafeInteger(input.remoteRevision) || input.updatedAt !== project.updatedAt) throw failure("项目已变化，请刷新后重新选择", 409, "FLOW_LOCAL_CONFLICT");
++    resolving.add(projectId); clearTimeout(timers.get(projectId));
++    const changedAt = project.updatedAt;
++    const cloud = project.cloud;
++    let recovery: Project | undefined;
++    const validSession = () => {
++      if (closed || sessions.get(projectId) !== input.session || project.updatedAt !== changedAt || get(projectId) !== project) throw failure("项目或本地内容已变化，已保留当前内容", 409, "FLOW_LOCAL_CONFLICT");
++    };
++    try {
++      const account = await call<SeecutAccount>("account.status");
++      if (!cloud || !account.signedIn || account.scopeKey !== cloud.scopeKey || input.accountScope !== `${account.scopeKey}:${account.epoch}`) throw failure("账户已变化，请刷新后重试", 409, "FLOW_ACCOUNT_CHANGED");
++      // Unknown operations retain their original ID/path/base until a real receipt
++      // or a definitive CAS rejection is received; transport failure keeps pending.
++      if (cloud.pending) {
++        const pending = cloud.pending;
++        try {
++          const receipt = await call<any>("projects.cloud.upload", { projectId, name: project.name, ...pending, expectedScopeKey: cloud.scopeKey }, 125000);
++          if (!Number.isSafeInteger(receipt.revision) || receipt.sha256 !== pending.sha256) throw failure("原同步回执不匹配");
++          await checkAccount(account);
++          cloud.revision = receipt.revision; cloud.sha256 = pending.sha256;
++        } catch (error: any) {
++          if (error.code !== "FLOW_REVISION_CONFLICT") throw error;
++          await checkAccount(account);
++        }
++        delete cloud.pending; await persist(); // preserve original ZIP for recovery
++      }
++      await refreshNow(); validSession(); await checkAccount(account);
++      const remote = remotes.get(projectId);
++      if (!remote || remote.revision !== input.remoteRevision) throw failure("云端已有新版本，请重新选择", 409, "FLOW_REVISION_CONFLICT");
++      await call("generation.exportProject", { projectId, expectedScopeKey: cloud.scopeKey });
++      const snapshot = await archive(project);
++      validSession();
++      recovery = await recoveryCopy(project, snapshot);
++      let stage: string | undefined;
++      if (input.choice === "cloud") {
++        const path = join(await directory(projectId), ".seecut-sync", `resolve-${randomUUID()}.zip`);
++        const response = await call<any>("projects.cloud.download", { projectId, path, revision: remote.revision, expectedScopeKey: cloud.scopeKey }, 125000);
++        const bytes = await readFile(path);
++        if (bytes.length !== remote.size_bytes || bytes.length > snapshotLimit || createHash("sha256").update(bytes).digest("hex") !== remote.sha256 || response.verifiedSha256 !== remote.sha256 || response.metadata?.revision !== remote.revision) throw failure("云端快照校验失败，未替换");
++        stage = join(root, `.resolved-${randomUUID()}`);
++        await extractSnapshot(bytes, stage);
++      }
++      // Download has completed, but no local replacement has happened yet.
++      await refreshNow(); validSession(); await checkAccount(account);
++      if (remotes.get(projectId)?.revision !== remote.revision) throw failure("云端已有新版本，请重新选择", 409, "FLOW_REVISION_CONFLICT");
++      const target = await directory(projectId);
++      committing.add(projectId);
++      if (activeWrites.get(projectId)) throw failure("本机仍在保存，请稍后重试", 409, "FLOW_LOCAL_CONFLICT");
++      const release = lockWorkspaceFiles([target]);
++      try {
++        await call("generation.exportProject", { projectId, expectedScopeKey: cloud.scopeKey });
++        const current = await archive(project, true);
++        if (current.sha256 !== snapshot.sha256) throw failure("下载期间本地内容已变化，未替换", 409, "FLOW_LOCAL_CONFLICT");
++        await checkAccount(account); validSession();
++        const previousCloud = { ...cloud }, previousDirty = project.dirty, previousImport = project.needsNativeImport, previousResolution = project.resolution;
++        let replaced: { backup: string; stage: string } | undefined;
++        if (input.choice === "local") {
++          cloud.pending = { requestId: randomUUID(), baseRevision: remote.revision, ...snapshot }; await persist();
++          const receipt = await call<any>("projects.cloud.upload", { projectId, name: project.name, ...cloud.pending, expectedScopeKey: cloud.scopeKey }, 125000);
++          if (!Number.isSafeInteger(receipt.revision) || receipt.sha256 !== snapshot.sha256) throw failure("云端回执不匹配");
++          await checkAccount(account); validSession();
++          cloud.revision = receipt.revision; cloud.sha256 = snapshot.sha256; delete cloud.pending;
++        } else {
++          const backup = join(root, `.resolve-backup-${randomUUID()}`);
++          project.replacing = { backup: backup.split(sep).at(-1)!, stage: stage!.split(sep).at(-1)! };
++          await persist();
++          await rename(target, backup);
++          try {
++            await rename(stage!, target);
++            await checkAccount(account); validSession();
++          } catch (error) {
++            // Keep the verified download and restore the exact original directory.
++            if (await lstat(target).catch(() => undefined)) await rename(target, stage!);
++            await rename(backup, target); delete project.replacing; await persist(); throw error;
++          }
++          replaced = { backup, stage: stage! };
++          cloud.revision = remote.revision; cloud.sha256 = remote.sha256; delete cloud.pending;
++          project.needsNativeImport = true;
++        }
++        project.dirty = false;
++        delete project.replacing;
++        project.resolution = { requestId: input.requestId, choice: input.choice, accountScope: input.accountScope, recoveryId: recovery.id };
++        try { await persist(); }
++        catch (error) {
++          if (replaced) {
++            await rename(target, replaced.stage); await rename(replaced.backup, target);
++            project.cloud = previousCloud; project.dirty = previousDirty; project.needsNativeImport = previousImport; project.resolution = previousResolution;
++          }
++          throw error;
++        }
++        states.set(projectId, { state: "synced" });
++      } finally { release(); }
++      if (project.needsNativeImport) { try { await importNativeProject(project); } catch { /* Adopted files must still cause the client to discard old buffers. */ } }
++      return { project: publicProject(project), recovery: publicProject(recovery) };
++    } catch (error: any) {
++      states.set(projectId, { state: ["FLOW_REVISION_CONFLICT", "FLOW_LOCAL_CONFLICT"].includes(error.code) ? "conflict" : "error", remoteRevision: remotes.get(projectId)?.revision, error: error.message });
++      throw error;
++    } finally { resolving.delete(projectId); committing.delete(projectId); }
 +  }
 +  const router = express.Router();
 +  router.use(express.json({ limit: "16kb" }));
@@ -1906,15 +2085,35 @@ index 0000000..7a85aea
 +    response.json({ project: { ...publicProject(project), directory: await directory(project.id) } });
 +  });
 +  router.post("/projects/:id/open", async (request, response) => {
-+    const project = get(request.params.id); if (!project.local) await restore(project);
++    const project = get(request.params.id);
++    try { await refreshNow(); } catch (error) { if (!project.local) throw error; }
++    if (!project.local) await restore(project);
 +    if (project.needsNativeImport) { try { await importNativeProject(project); } catch { /* 本地工程可打开，恢复错误仍显示且保留待重试状态。 */ } }
-+    if (project.dirty && !running.has(project.id)) void sync(project.id);
-+    response.json({ project: { ...publicProject(project), directory: await directory(project.id) } });
++    if (project.dirty && states.get(project.id)?.state !== "conflict" && !running.has(project.id)) void sync(project.id);
++    const session = randomUUID(); sessions.set(project.id, session);
++    response.json({ session, project: { ...publicProject(project), directory: await directory(project.id) } });
 +  });
-+  router.get("/projects/:id/sync", async (request, response) => { response.json({ sync: publicProject(get(request.params.id)).sync }); });
++  router.post("/projects/:id/close", (request, response) => {
++    if (sessions.get(request.params.id) === request.body?.session) sessions.delete(request.params.id);
++    response.json({ closed: true });
++  });
++  router.post("/projects/:id/resolve", async (request, response) => { response.json(await resolveConflict(request.params.id, request.body)); });
++  router.get("/projects/:id/sync", async (request, response) => {
++    if (request.query.refresh === "1") await refreshNow();
++    const project = get(request.params.id), account = await call<SeecutAccount>("account.status");
++    accountChecked = true; accountScope = account.signedIn ? account.scopeKey : undefined;
++    response.json({ sync: publicProject(project).sync, updatedAt: project.updatedAt, remoteRevision: remotes.get(project.id)?.revision, accountScope: account.signedIn ? `${account.scopeKey}:${account.epoch}` : undefined, resolutionId: project.resolution?.requestId });
++  });
 +  router.post("/projects/:id/sync", async (request, response) => { get(request.params.id); await sync(request.params.id); response.json({ sync: publicProject(get(request.params.id)).sync }); });
 +  router.use((error: any, _request: any, response: any, _next: any) => { response.status(error.status || 500).json({ error: { code: error.code || "FLOW_ERROR", message: error.message || "Flow 操作失败" } }); });
 +  const observeWrites: RequestHandler = async (request, response, next) => {
++    const source = typeof request.query.directory === "string" ? request.query.directory : request.body?.directory;
++    const projectId = typeof source === "string" ? relative(root, resolve(source)) : "";
++    if (uuid.test(projectId) && request.path.startsWith("/api/workspaces/files/") && ["PUT", "POST", "DELETE"].includes(request.method)) {
++      if (committing.has(projectId)) return next(failure("项目正在替换，请重新打开后操作", 409, "FLOW_BUSY"));
++      activeWrites.set(projectId, (activeWrites.get(projectId) || 0) + 1);
++      response.once("close", () => activeWrites.set(projectId, Math.max(0, (activeWrites.get(projectId) || 1) - 1)));
++    }
 +    if (["PUT", "POST", "DELETE"].includes(request.method) && request.path.startsWith("/api/workspaces/files/")) response.once("close", () => {
 +      if (response.statusCode >= 400) return;
 +      const source = typeof request.query.directory === "string" ? request.query.directory : request.body?.directory;
@@ -1933,7 +2132,9 @@ index 0000000..7a85aea
 +    if (!uuid.test(id) || !projects.has(id)) throw failure("该工作目录不属于当前 Flow 项目", 403);
 +    const deadline = Date.now() + 15000;
 +    while (true) {
++      if (committing.has(id)) throw failure("项目正在替换，请重新打开后操作", 409, "FLOW_BUSY");
 +      await restoring.get(id); await snapshots.get(id);
++      if (committing.has(id)) throw failure("项目正在替换，请重新打开后操作", 409, "FLOW_BUSY");
 +      let release: (() => void) | undefined;
 +      try { release = lockWorkspaceFiles([path]); }
 +      catch (error: any) {
@@ -2950,21 +3151,28 @@ index 0000000..077cef7
 +}
 diff --git a/apps/web/src/lib/seecutWorkspaceBridge.ts b/apps/web/src/lib/seecutWorkspaceBridge.ts
 new file mode 100644
-index 0000000..003a028
+index 0000000..f6ff82a
 --- /dev/null
 +++ b/apps/web/src/lib/seecutWorkspaceBridge.ts
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,154 @@
 +import { nextTick, ref } from "vue";
 +import { getWorkspaceControl, waitForControlValue } from "@/lib/mcpControl";
 +import { saveSettings } from "@/stores/settings";
 +import { useWorkspaceStore } from "@/stores/workspace";
 +
-+export type SeecutSync = { state: "local" | "pending" | "syncing" | "synced" | "error" | "conflict" | "signedOut"; error?: string };
++export type SeecutSync = { state: "local" | "pending" | "syncing" | "synced" | "error" | "conflict" | "signedOut"; error?: string; remoteRevision?: number };
 +export type SeecutProject = { id: string; name: string; createdAt: string | number; updatedAt: string | number; sync: SeecutSync; directory?: string };
 +export const currentSeecutProjectId = ref<string>();
 +export const seecutOpeningProject = ref(false);
 +export const seecutWorkspaceError = ref("");
 +export const seecutSync = ref<SeecutSync>();
++let projectSession: string | undefined;
++export const seecutResolvingConflict = ref(false);
++window.addEventListener("pagehide", () => {
++  if (currentSeecutProjectId.value && projectSession) void fetch(`/__seecut/projects/${currentSeecutProjectId.value}/close`, {
++    method: "POST", credentials: "same-origin", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session: projectSession }),
++  }).catch(() => {});
++});
 +const projectIdPattern = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
 +
 +export async function seecutProjectRequest(path = "", body?: object, signal?: AbortSignal): Promise<unknown> {
@@ -2973,14 +3181,14 @@ index 0000000..003a028
 +    ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
 +  });
 +  const data = await response.json();
-+  if (!response.ok) throw new Error(typeof data?.error?.message === "string" ? data.error.message : typeof data?.error === "string" ? data.error : typeof data?.message === "string" ? data.message : `Flow 项目请求失败（${response.status}）`);
++  if (!response.ok) throw Object.assign(new Error(typeof data?.error?.message === "string" ? data.error.message : typeof data?.error === "string" ? data.error : typeof data?.message === "string" ? data.message : `Flow 项目请求失败（${response.status}）`), { status: response.status });
 +  return data;
 +}
 +
 +export function readSeecutSync(value: unknown): SeecutSync {
 +  if (!value || typeof value !== "object" || !("state" in value)
 +    || !["local", "pending", "syncing", "synced", "error", "conflict", "signedOut"].includes(String(value.state))) throw new Error("云端同步状态无效");
-+  return { state: value.state as SeecutSync["state"], ...("error" in value && typeof value.error === "string" ? { error: value.error } : {}) };
++  return { state: value.state as SeecutSync["state"], ...("remoteRevision" in value && Number.isSafeInteger(value.remoteRevision) ? { remoteRevision: value.remoteRevision as number } : {}), ...("error" in value && typeof value.error === "string" ? { error: value.error } : {}) };
 +}
 +
 +export function readSeecutProject(value: unknown): SeecutProject {
@@ -3008,7 +3216,9 @@ index 0000000..003a028
 +  const signal = AbortSignal.timeout(120_000);
 +  try {
 +    await flushSeecutProject();
-+    const data = await seecutProjectRequest(`/${encodeURIComponent(projectId)}/open`, {}, signal) as { project?: unknown };
++    await closeSeecutSession();
++    const data = await seecutProjectRequest(`/${encodeURIComponent(projectId)}/open`, {}, signal) as { project?: unknown; session?: string };
++    projectSession = data.session;
 +    const project = readSeecutProject(data.project);
 +    if (project.id !== projectId || !project.directory?.trim()) throw new Error("Flow 工作区信息无效");
 +    const workspace = useWorkspaceStore();
@@ -3029,6 +3239,7 @@ index 0000000..003a028
 +
 +export async function returnToSeecutProjects() {
 +  await flushSeecutProject();
++  await closeSeecutSession();
 +  const router = (await import("@/router")).default;
 +  await router.replace("/seecut/projects");
 +  if (router.currentRoute.value.path !== "/seecut/projects") throw new Error("项目尚未保存，无法返回");
@@ -3036,12 +3247,46 @@ index 0000000..003a028
 +  seecutSync.value = undefined;
 +}
 +
-+export async function refreshSeecutSync(retry = false) {
++export async function refreshSeecutSync(retry = false, remote = false) {
 +  const id = currentSeecutProjectId.value;
 +  if (!id) return;
-+  const result = await seecutProjectRequest(`/${encodeURIComponent(id)}/sync`, retry ? {} : undefined, AbortSignal.timeout(retry ? 125_000 : 20_000)) as { sync?: unknown; project?: { sync?: unknown } };
++  const result = await seecutProjectRequest(`/${encodeURIComponent(id)}/sync${remote ? "?refresh=1" : ""}`, retry ? {} : undefined, AbortSignal.timeout(retry ? 125_000 : 20_000)) as { sync?: unknown; project?: { sync?: unknown } };
 +  const sync = readSeecutSync(result.sync ?? result.project?.sync ?? result);
 +  if (id === currentSeecutProjectId.value) seecutSync.value = sync;
++}
++
++export async function closeSeecutSession() {
++  if (currentSeecutProjectId.value && projectSession) await seecutProjectRequest(`/${currentSeecutProjectId.value}/close`, { session: projectSession }, AbortSignal.timeout(20_000));
++  projectSession = undefined;
++}
++
++export async function resolveSeecutConflict(choice: "local" | "cloud", confirm: () => Promise<boolean>) {
++  if (seecutResolvingConflict.value) return;
++  const id = currentSeecutProjectId.value, session = projectSession;
++  if (!id || !session) throw new Error("请重新打开项目");
++  seecutResolvingConflict.value = true;
++  let uncertain = false, dispatched = false;
++  try {
++    await flushSeecutProject();
++    const state = await seecutProjectRequest(`/${id}/sync?refresh=1`, undefined, AbortSignal.timeout(20_000)) as { updatedAt: number; remoteRevision: number; accountScope: string };
++    if (!await confirm()) return;
++    if (id !== currentSeecutProjectId.value || session !== projectSession) throw new Error("工作区已变化，未替换");
++    dispatched = true;
++    const result = await seecutProjectRequest(`/${id}/resolve`, { choice, session, ...state, requestId: crypto.randomUUID() }, AbortSignal.timeout(300_000)) as { recovery?: { name: string } };
++    if (id !== currentSeecutProjectId.value || session !== projectSession) return;
++    // Discard mounted buffers only after the server has durably adopted the new
++    // project. A full reload prevents an old canvas autosave overwriting it.
++    await closeSeecutSession();
++    window.location.replace(`${window.location.href.split("#")[0]}#/seecut/projects`);
++    window.location.reload();
++    return result;
++  } catch (error) {
++    if (dispatched && (!(error as { status?: number }).status || (error as { status: number }).status >= 500)) {
++      uncertain = true;
++      seecutWorkspaceError.value = "冲突处理结果尚未确认。请返回项目列表重新打开，当前文件和恢复副本均已保留。";
++    }
++    throw error;
++  } finally { if (!uncertain) seecutResolvingConflict.value = false; }
 +}
 +
 +async function waitForSeecutWorkspace(directory: string, signal: AbortSignal) {
@@ -3437,22 +3682,26 @@ index 0000000..12db544
 +}
 +</style>
 diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
-index 61cddd7..e08b540 100644
+index 61cddd7..3f196fa 100644
 --- a/apps/web/src/pages/workspace/index.vue
 +++ b/apps/web/src/pages/workspace/index.vue
-@@ -1,5 +1,19 @@
+@@ -1,17 +1,37 @@
  <template>
 -  <main class="workspacePage" :style="{ '--agentWidth': `${agentVisible ? agentWidth : 0}px` }">
 +  <main class="workspacePage" :class="{ seecutWorkspace: isSeecutEmbedded }" :style="{ '--agentWidth': `${agentVisible ? agentWidth : 0}px` }">
 +    <header v-if="isSeecutEmbedded" class="seecutWorkspaceBar">
-+      <el-button text :icon="IconArrowLeft" :loading="leavingProject" :disabled="seecutOpeningProject" @click="leaveProject">项目列表</el-button>
++      <el-button text :icon="IconArrowLeft" :loading="leavingProject" :disabled="seecutOpeningProject || seecutResolvingConflict" @click="leaveProject">项目列表</el-button>
 +      <span class="seecutProjectName">{{ workspaceStore.project?.name }}</span>
 +      <span class="seecutSaveStatus" :class="{ failed: !!localSaveError }" :title="localSaveError" role="status">{{ localSaveLabel }}</span>
 +      <el-button v-if="localCanvasState?.conflict" text size="small" :loading="retryingSave" @click="saveRecoveryCopies">另存并切换恢复副本</el-button>
 +      <el-button v-if="localSaveError" text size="small" :loading="retryingSave" @click="retryLocalSave">重试保存</el-button>
 +      <span class="seecutSyncStatus" :title="syncError || seecutSync?.error">{{ syncStatusLabel }}</span>
-+      <el-button v-if="syncError" text size="small" :loading="syncBusy" @click="updateSync(false)">刷新状态</el-button>
-+      <el-button v-else-if="seecutSync?.state === 'error' || seecutSync?.state === 'conflict'" text size="small" :loading="syncBusy" @click="updateSync(true)">重试同步</el-button>
++      <el-button text size="small" :icon="IconRefresh" :loading="syncBusy" :disabled="seecutResolvingConflict" aria-label="刷新云端状态" title="刷新云端状态" @click="updateSync(false, true)" />
++      <template v-if="seecutSync?.state === 'conflict'">
++        <el-button text size="small" :loading="seecutResolvingConflict" :disabled="syncBusy" @click="chooseConflict('local')">保留本机副本</el-button>
++        <el-button text size="small" :disabled="syncBusy || seecutResolvingConflict" @click="chooseConflict('cloud')">使用云端</el-button>
++      </template>
++      <el-button v-else-if="seecutSync?.state === 'error'" text size="small" :loading="syncBusy" :disabled="seecutResolvingConflict" @click="updateSync(true)">重试同步</el-button>
 +    </header>
 +    <div v-if="isSeecutEmbedded && (seecutOpeningProject || seecutWorkspaceError)" class="seecutWorkspaceLoading" role="status">
 +      <template v-if="seecutWorkspaceError"><p>{{ seecutWorkspaceError }}</p><el-button @click="reloadProjects">返回项目列表重试</el-button></template>
@@ -3461,27 +3710,35 @@ index 61cddd7..e08b540 100644
      <canvasPanel
        :key="workspaceStore.project?.directory"
        v-model:selectedTool="selectedTool"
-@@ -12,6 +26,7 @@
+       ref="canvasPanelRef"
+       class="canvasPanel"
+       :class="{ backgroundPanel: activePanel !== 'canvas' }"
+-      :inert="activePanel !== 'canvas'"
++      :inert="activePanel !== 'canvas' || seecutResolvingConflict"
+       :aria-hidden="activePanel !== 'canvas'"
+       :active="activePanel === 'canvas'"
        :settingsVisible="settingsVisible" />
      <keep-alive :max="1">
        <documentPanel
 +        class="workspaceDocument"
++        :inert="seecutResolvingConflict"
          v-if="activePanel === 'document'"
          :key="workspaceStore.project?.directory"
          :ref="setDocumentPanel"
-@@ -25,9 +40,9 @@
+@@ -25,9 +45,9 @@
          :fileAction="performFileAction"
          :saveNode="saveDocumentNode" />
      </keep-alive>
 -    <workspaceMenu class="workspaceMenu" @openSettings="settingsVisible = true" />
-+    <workspaceMenu v-if="!isSeecutEmbedded" class="workspaceMenu" @openSettings="settingsVisible = true" />
-     <div class="workspaceTools">
+-    <div class="workspaceTools">
 -      <el-segmented :modelValue="activePanel" class="panelSwitcher" :options="panelOptions" size="small" aria-label="切换面板" @change="switchPanel">
++    <workspaceMenu v-if="!isSeecutEmbedded" class="workspaceMenu" @openSettings="settingsVisible = true" />
++    <div class="workspaceTools" :inert="seecutResolvingConflict">
 +      <el-segmented v-if="!isSeecutEmbedded" :modelValue="activePanel" class="panelSwitcher" :options="panelOptions" size="small" aria-label="切换面板" @change="switchPanel">
          <template #default="{ item }">
            <span class="panelOption">
              <component :is="item.icon" :size="14" aria-hidden="true" />
-@@ -54,7 +69,7 @@
+@@ -54,7 +74,7 @@
                  <component :is="selectedTool === 'move' ? IconPointer : IconHandStop" :size="18" aria-hidden="true" />
                </el-button>
              </el-tooltip>
@@ -3490,7 +3747,7 @@ index 61cddd7..e08b540 100644
                <span class="toolTrigger">
                  <el-popover v-model:visible="helpVisible" trigger="click" placement="top-end" :width="196">
                    <template #reference>
-@@ -94,7 +109,7 @@
+@@ -94,7 +114,7 @@
              </el-tooltip>
            </div>
          </el-card>
@@ -3499,7 +3756,7 @@ index 61cddd7..e08b540 100644
            <el-button
              class="agentButton"
              :class="{ standalone: activePanel !== 'canvas' }"
-@@ -105,9 +120,9 @@
+@@ -105,9 +125,9 @@
          </el-tooltip>
        </div>
      </div>
@@ -3512,18 +3769,18 @@ index 61cddd7..e08b540 100644
        <div class="contactContent">
          <q-r-code
            :value="contactInfo.url"
-@@ -128,31 +143,34 @@
+@@ -128,31 +148,34 @@
  import { computed, defineAsyncComponent, nextTick, onMounted, onScopeDispose, provide, ref, shallowRef, watch, type ComponentPublicInstance } from "vue";
  import { onBeforeRouteLeave } from "vue-router";
  import axios from "axios";
 -import { IconVector, IconFileText, IconPointer, IconHandStop, IconPlus, IconHelp, IconBook, IconBug, IconBrandWechat, IconBriefcase } from "@tabler/icons-vue";
-+import { IconArrowLeft, IconVector, IconFileText, IconPointer, IconHandStop, IconPlus, IconHelp, IconBook, IconBug, IconBrandWechat, IconBriefcase } from "@tabler/icons-vue";
++import { IconRefresh, IconArrowLeft, IconVector, IconFileText, IconPointer, IconHandStop, IconPlus, IconHelp, IconBook, IconBug, IconBrandWechat, IconBriefcase } from "@tabler/icons-vue";
  import { ElMessage, ElMessageBox } from "element-plus";
  import { QRCode } from "tdesign-vue-next";
 -import settings from "@/components/settings/index.vue";
  import { useWorkspaceStore } from "@/stores/workspace";
 +import { saveSettings } from "@/stores/settings";
-+import { currentSeecutProjectId, refreshSeecutSync, returnToSeecutProjects, seecutOpeningProject, seecutSync, seecutWorkspaceError } from "@/lib/seecutWorkspaceBridge";
++import { closeSeecutSession, resolveSeecutConflict, seecutResolvingConflict, currentSeecutProjectId, refreshSeecutSync, returnToSeecutProjects, seecutOpeningProject, seecutSync, seecutWorkspaceError } from "@/lib/seecutWorkspaceBridge";
 +import { isSeecutEmbedded, registerSeecutFlush } from "@/lib/seecutEmbedded";
  import { registerWorkspaceControl, waitForControlValue } from "@/lib/mcpControl";
  import anonymousData from "@/lib/anonymousData";
@@ -3552,7 +3809,7 @@ index 61cddd7..e08b540 100644
  const agentWidth = ref(0);
  const settingsVisible = ref(false);
  const helpVisible = ref(false);
-@@ -199,16 +217,27 @@ registerWorkspaceControl({
+@@ -199,16 +222,28 @@ registerWorkspaceControl({
      directory: workspaceStore.project?.directory ?? null,
      canvasId: canvasPanelRef.value?.canvasId || null,
      panel: activePanel.value,
@@ -3560,7 +3817,7 @@ index 61cddd7..e08b540 100644
 +    flowSelectionRevision: canvasPanelRef.value?.getAgentState().selectionRevision ?? 0,
 +    selectedNodeIds: canvasPanelRef.value?.getAgentState().selectedNodeIds ?? [],
 +    projectName: workspaceStore.project?.name ?? "",
-+    flowBusy: canvasPanelRef.value?.saveBusy ?? true,
++    flowBusy: seecutResolvingConflict.value || (canvasPanelRef.value?.saveBusy ?? true),
 +    canvasReady: canvasPanelRef.value?.canvasReady ?? false,
 +    canvasListReady: canvasPanelRef.value?.canvasListReady ?? false,
 +    canvasLoadError: canvasPanelRef.value?.loadError ?? "",
@@ -3570,6 +3827,7 @@ index 61cddd7..e08b540 100644
    flushSave,
 +  assertCanLeave,
    async call(request, signal) {
++    if (seecutResolvingConflict.value) throw new Error("云端冲突处理中，请稍后操作");
      const directory = workspaceStore.project?.directory;
      if (!directory) throw new Error("请先打开工作区");
      const callSignal = AbortSignal.any([signal, controlLifetime.signal]);
@@ -3580,7 +3838,7 @@ index 61cddd7..e08b540 100644
        if (directory !== workspaceStore.project?.directory) throw new Error("工作区已切换，本次调用已停止");
      };
      checkDirectory();
-@@ -237,12 +266,84 @@ registerWorkspaceControl({
+@@ -237,12 +272,94 @@ registerWorkspaceControl({
    },
  });
  
@@ -3603,12 +3861,12 @@ index 61cddd7..e08b540 100644
 +  : seecutSync.value ? syncLabels[seecutSync.value.state] : "正在读取云端状态");
 +let syncTimer: ReturnType<typeof setTimeout> | undefined;
 +let syncDisposed = false;
-+async function updateSync(retry = false) {
++async function updateSync(retry = false, remote = false) {
 +  if (!isSeecutEmbedded || syncBusy.value) return;
 +  syncBusy.value = true;
 +  syncError.value = "";
 +  clearTimeout(syncTimer);
-+  try { await refreshSeecutSync(retry); }
++  try { await refreshSeecutSync(retry, remote); }
 +  catch (error) { if (!syncDisposed) syncError.value = error instanceof Error ? error.message : "云端状态读取失败"; }
 +  finally {
 +    syncBusy.value = false;
@@ -3618,7 +3876,17 @@ index 61cddd7..e08b540 100644
 +watch([currentSeecutProjectId, localSaveLabel], () => {
 +  if (isSeecutEmbedded && currentSeecutProjectId.value && localSaveLabel.value === "本地已保存") void updateSync();
 +}, { immediate: true });
-+onMounted(() => { if (isSeecutEmbedded) void updateSync(); });
++const refreshOnFocus = () => { if (isSeecutEmbedded && !seecutResolvingConflict.value) void updateSync(false, true); };
++onMounted(() => { refreshOnFocus(); window.addEventListener("focus", refreshOnFocus); });
++onScopeDispose(() => window.removeEventListener("focus", refreshOnFocus));
++async function chooseConflict(choice: "local" | "cloud") {
++  try {
++    await resolveSeecutConflict(choice, () => ElMessageBox.confirm(
++      choice === "local" ? "保存完整恢复副本后，将本机内容同步到云端。" : "保存完整本机恢复副本后，打开云端版本。",
++      choice === "local" ? "保留本机副本" : "使用云端", { confirmButtonText: "继续", cancelButtonText: "取消", closeOnClickModal: false },
++    ).then(() => true, () => false));
++  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "冲突处理失败，本机内容已保留"); await updateSync(false, true); }
++}
 +onScopeDispose(() => { syncDisposed = true; clearTimeout(syncTimer); });
 +async function saveRecoveryCopies() {
 +  retryingSave.value = true;
@@ -3659,13 +3927,13 @@ index 61cddd7..e08b540 100644
  
  onBeforeRouteLeave(async () => {
 +  if (isSeecutEmbedded) {
-+    try { assertCanLeave(); await flushSave(); return true; }
++    try { if (seecutResolvingConflict.value) return false; assertCanLeave(); await flushSave(); await closeSeecutSession(); return true; }
 +    catch (error) { ElMessage.error(error instanceof Error ? error.message : "项目尚未保存，无法返回"); return false; }
 +  }
    if (canvasPanelRef.value?.saveBusy) {
      ElMessage.warning("画布操作尚未完成，请稍后退出");
      return false;
-@@ -343,6 +444,20 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
+@@ -343,6 +460,20 @@ function saveDocumentNode(directory: string, canvasPath: string, nodeId: string,
    height: 100dvh;
    background-color: var(--el-bg-color);
  

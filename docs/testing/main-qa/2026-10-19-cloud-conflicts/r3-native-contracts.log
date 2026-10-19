@@ -1,0 +1,29 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.97s
+     Running unittests src/lib.rs (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/native-target/debug/deps/concat-43f68f387d0dae03)
+
+running 17 tests
+test toonflow_bridge::tests::bridge_data_lock_child_probe ... ok
+test toonflow_bridge::tests::bridge_data_lock_rejects_nonregular_paths ... ok
+test toonflow_bridge::tests::bridge_scope_rejects_cross_rpc_account_switch_before_any_business_work ... ok
+test toonflow_bridge::tests::bridge_scope_asset_reads_require_current_identity ... ok
+test toonflow_bridge::tests::bridge_framing_rejects_truncated_and_oversized_requests ... ok
+test toonflow_bridge::tests::generation_find_only_marks_actual_not_found_as_definitely_absent ... ok
+test toonflow_bridge::tests::bridge_scope_requires_frozen_identity_for_generation_and_cloud ... ok
+test toonflow_bridge::tests::generation_prompt_counts_unicode_characters_instead_of_utf8_bytes ... ok
+test toonflow_bridge::tests::bridge_paths_reject_symlink_escape_for_upload_and_download ... ok
+test toonflow_bridge::tests::bridge_paths_reject_cross_project_traversal_and_outside_absolute_paths ... ok
+test toonflow_bridge::tests::bridge_private_handshake_rejects_wrong_token_and_never_dispatches ... ok
+test toonflow_bridge::tests::bridge_private_rpc_has_one_call_and_an_explicit_allowlist ... ok
+test toonflow_bridge::tests::imported_valid_local_binding_is_preserved ... ok
+test toonflow_bridge::tests::imported_failed_or_rejected_attempt_keeps_its_terminal_phase ... ok
+test toonflow_bridge::tests::imported_missing_asset_can_register_locally_without_changing_request_or_task ... ok
+
+running 1 test
+test toonflow_bridge::tests::bridge_data_lock_child_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.00s
+
+test toonflow_bridge::tests::bridge_data_lock_rejects_another_process_then_releases_without_truncation ... ok
+test toonflow_bridge::tests::bridge_nonblocking_listener_waits_for_delayed_auth_and_request_frames ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 464 filtered out; finished in 0.11s
