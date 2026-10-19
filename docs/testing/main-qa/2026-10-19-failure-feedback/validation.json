@@ -1,0 +1,32 @@
+{
+  "checkedAtUTC": "2026-10-19T18:25:39.015374+00:00",
+  "status": "targeted offline checks passed; native permission-dependent checks pending",
+  "source": "source.json",
+  "binarySha256": "d786f4d14b7e3e698994eba8af0050e843d92b5e3d87b8bc257b6d25ce77a372",
+  "build": "pass, pinned Rust 1.93, 3m55s",
+  "mappingTests": 2,
+  "productionStateAssertions": 8,
+  "fmt": "pass",
+  "diffCheck": "pass",
+  "screenshots": {
+    "failure-dark-1000.png": "cc5b7c1696fd4bc2c67abe9d7a6adc48d945601c39544445b4f81d5ae085a804",
+    "failure-dark-900.png": "17c72fb3553cf76ae9653eb44a901769ef2ba0120dc35f74e129dc6e214e10ef",
+    "failure-details-dark.png": "765fc2c061da9babcc51d16d8b80232a44d21a1fb567742dccb2de885a7d15a4",
+    "failure-details-light.png": "f367accef94f3b7f9fa7f3bb4b6270d235f215e8c9be37ee6b31c2597983301f",
+    "failure-legacy-no-edit.png": "decaa81505bb8028dccf6a9113722b4cd685bb28c209ee1f12c108f55e107306",
+    "failure-light-1000.png": "5e5364cf81285c8aacfdcd41e5f4a8286beda18fbf59fa99d9bc2a00e6388cd1",
+    "failure-light-900.png": "3455cf16af9f0d3f4a7fa7c4019e4595d55e75b89f0a0c13999c9484fc6ae9d3"
+  },
+  "visualReview": "all seven original software-rendered PNGs inspected; 1000x760 and 900x640 reasons visible, long titles elide, details icon preserved, safe detail wraps, legacy modal has no edit action",
+  "nativeUiRetested": false,
+  "fullSuiteRun": false,
+  "remoteCiPolled": false,
+  "paidCalls": 0,
+  "deployed": false,
+  "permissionChanges": false,
+  "remainingBlockers": [
+    "Documents TCC: native reference removal after 35a7600",
+    "Agent/Flow full chain",
+    "full CI owned by coordinator"
+  ]
+}

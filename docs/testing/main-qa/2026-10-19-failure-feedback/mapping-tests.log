@@ -1,0 +1,7 @@
+
+running 2 tests
+test failure_feedback::tests::arbitrary_codes_are_not_echoed_or_interpreted_as_safe_copy ... ok
+test failure_feedback::tests::distinct_recoverable_causes_and_unknown_outcomes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

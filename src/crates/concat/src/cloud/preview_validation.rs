@@ -3,6 +3,109 @@
 use super::*;
 use std::path::Path;
 
+/// Targeted, signed-out fixture: production mapping, history refill and render.
+/// No cloud callbacks, timers, HTTP client or personal library are attached.
+pub(super) fn failure_recovery(app: &App, directory: &Path) -> Result<(), String> {
+    let ui = app.global::<SeeCut>();
+    ui.set_signed_in(false);
+    let state = Rc::new(RefCell::new(Cloud::default()));
+    state.borrow_mut().models = vec![json!({
+        "id":"offline-image", "name":"离线模型", "kind":"image", "available":true,
+        "parameters":{
+            "size":{"values":["1024x1024"],"default":"1024x1024"},
+            "quality":{"values":["standard"],"default":"standard"},
+            "quantity":{"values":[1],"default":1},
+            "reference_asset_ids":{"max_items":4,"accepted_media":["image/*"]}
+        }
+    })];
+    let task = |id: &str, code: &str| {
+        json!({
+            "id":id,"batch_id":"offline-failures", "kind":"image", "status":"failed",
+            "prompt":"长标题用于检查窄窗截断：保持主体细节与暖色光线，再生成一张横版海报",
+            "model":"offline-image", "captured_credits":0,
+            "request":{"model":"offline-image","prompt":"恢复的原始草稿", "size":"1024x1024",
+                "quality":"standard","quantity":1,"reference_asset_ids":["missing-reference"]},
+            "error":{"code":code,"message":"https://private.invalid/?token=SECRET Bearer SECRET"}
+        })
+    };
+    let originals = vec![
+        task("reference", "REFERENCE_URL_UNAVAILABLE"),
+        task("service", "XIANGXIN_UNAVAILABLE"),
+        json!({"id":"legacy","batch_id":"offline-failures","kind":"image","status":"failed",
+            "prompt":"", "error":{"code":"unknown","message":"SECRET"}}),
+    ];
+    // JSON round trip represents reopening persisted task history, not a new submission.
+    state.borrow_mut().tasks =
+        serde_json::from_str(&serde_json::to_string(&originals).unwrap()).unwrap();
+    update_model_options(app, &state);
+    render_tasks(app, &state);
+    let rows = ui.get_tasks();
+    let check = |ok: bool, reason: &str| {
+        if ok {
+            Ok(())
+        } else {
+            Err(format!("failure fixture: {reason}"))
+        }
+    };
+    check(
+        rows.row_data(0).unwrap().status == "参考图不可用",
+        "reference mapping",
+    )?;
+    check(
+        rows.row_data(1).unwrap().status == "服务暂不可用",
+        "service mapping",
+    )?;
+    check(
+        !rows.row_data(2).unwrap().refillable,
+        "legacy task has no edit action",
+    )?;
+    check(
+        rows.iter()
+            .all(|row| !row.detail.contains("SECRET") && !row.detail.contains("https://")),
+        "raw errors hidden",
+    )?;
+    ui.set_result_preview_open(true);
+    ui.set_generation_step(1);
+    refill_task(app, &state, "reference")?;
+    check(ui.get_prompt() == "恢复的原始草稿", "draft restored")?;
+    check(
+        !ui.get_result_preview_open() && ui.get_generation_step() == 0,
+        "edit opens form and closes details",
+    )?;
+    check(
+        ui.get_references().row_count() == 1 && !ui.get_references().row_data(0).unwrap().ready,
+        "missing reference slot preserved for replacement",
+    )?;
+    check(
+        state.borrow().tasks == originals,
+        "original tasks and billing unchanged",
+    )?;
+    check(
+        state.borrow().active_name != "generate"
+            && state
+                .borrow()
+                .pending
+                .iter()
+                .all(|(name, _)| name != "generate"),
+        "editing cannot submit generation",
+    )?;
+    check(
+        refill_task(app, &state, "legacy").is_err(),
+        "legacy task cannot invent configuration",
+    )?;
+    ui.set_page(1);
+    ui.set_generation_step(1);
+    ui.set_generation_browse_tab(0);
+    ui.set_selected_task(0);
+    std::fs::write(directory.join("failure-state-validation.json"), serde_json::to_vec_pretty(&json!({
+        "mode":"offline production state fixture, not native UI",
+        "passed":["known/unknown failure copy", "JSON history reopen", "raw provider message excluded",
+            "refill retains missing reference slot", "refill opens form and closes modal",
+            "original task and captured credits unchanged", "no generation scheduled", "legacy refill rejected"],
+        "networkCalls":0,"paidCalls":0
+    })).unwrap()).map_err(|error| error.to_string())
+}
+
 pub(super) fn run(app: &App, directory: &Path) -> Result<(), String> {
     let ui = app.global::<SeeCut>();
     // Never attach the normal cloud callbacks, heartbeat, library, or HTTP client.

@@ -1,0 +1,15 @@
+{
+  "mode": "offline production state fixture, not native UI",
+  "networkCalls": 0,
+  "paidCalls": 0,
+  "passed": [
+    "known/unknown failure copy",
+    "JSON history reopen",
+    "raw provider message excluded",
+    "refill retains missing reference slot",
+    "refill opens form and closes modal",
+    "original task and captured credits unchanged",
+    "no generation scheduled",
+    "legacy refill rejected"
+  ]
+}

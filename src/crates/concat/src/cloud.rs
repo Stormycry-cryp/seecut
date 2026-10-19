@@ -20,6 +20,7 @@ use std::{
 };
 use url::Url;
 
+mod failure_feedback;
 mod flow_generation;
 mod flow_parameters;
 mod generation_state;
@@ -32,6 +33,10 @@ pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, me
 /// a signed-out synthetic Cloud. Normal startup never invokes this entry.
 pub(crate) fn validate_preview_state(app: &App, directory: &std::path::Path) -> Result<(), String> {
     preview_validation::run(app, directory)
+}
+
+pub(crate) fn validate_failure_preview(app: &App, directory: &Path) -> Result<(), String> {
+    preview_validation::failure_recovery(app, directory)
 }
 
 fn project_media_error() -> String {
@@ -4253,7 +4258,8 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
                 .cloned()
                 .or_else(|| server_task_snapshot(v).ok());
             item.refillable = snapshot.is_some();
-            if item.kind.as_str() == "video"
+            if !item.failed
+                && item.kind.as_str() == "video"
                 && let Some(snapshot) = snapshot.as_ref()
                 && let Some(duration) = snapshot.parameters.get("duration")
             {
@@ -7714,6 +7720,7 @@ fn cancel_project_import(app: &App, state: &Rc<RefCell<Cloud>>) {
 }
 fn task_item(v: &Value) -> CloudItem {
     let status = text(v, "status");
+    let failure = failure_feedback::copy(&text(&v["error"], "code"));
     let completed_spec = if text(v, "kind") == "video" {
         let duration = v["request"]["duration"].as_u64();
         let resolution = text(&v["request"], "resolution");
@@ -7737,12 +7744,7 @@ fn task_item(v: &Value) -> CloudItem {
         id: text(v, "id").into(),
         name: text(v, "prompt").into(),
         detail: if status == "failed" {
-            let message = text(&v["error"], "message");
-            if message.is_empty() {
-                "未返回失败原因".into()
-            } else {
-                message
-            }
+            failure.1.to_owned()
         } else {
             text(v, "model")
         }
@@ -7752,7 +7754,7 @@ fn task_item(v: &Value) -> CloudItem {
             "submitting" | "provider_accepted" | "processing" => "生成中",
             "validating" => "保存结果",
             "succeeded" => &completed_spec,
-            "failed" => "生成失败",
+            "failed" => failure.0,
             _ => "待核实",
         }
         .into(),
@@ -8820,6 +8822,8 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
             ui.set_selected_task(selected_task_index(&shared.borrow().tasks, id.as_str()).unwrap_or(-1));
             let task=shared.borrow().tasks.iter().find(|task|text(task,"id")==id.as_str()).cloned();
             let Some(task)=task else {ui.set_error("未找到该生成结果，请刷新后重试".into());ui.set_result_preview_open(false);return;};
+            // Failure selection opens its recovery details, not a media download.
+            if text(&task,"status")=="failed" { return; }
             let local=shared.borrow().local.get(id.as_str()).filter(|path|std::path::Path::new(path).is_file()).cloned();
             if local.is_none() {
                 if text(&task,"status")!="succeeded" {
@@ -10291,10 +10295,25 @@ mod reference_tests {
     }
 
     #[test]
-    fn failed_task_exposes_raw_failure_state_and_a_fallback_reason() {
+    fn failed_task_exposes_safe_failure_state_and_a_fallback_reason() {
         let item = task_item(&json!({"id":"task-1","kind":"image","status":"failed"}));
         assert!(item.failed);
-        assert_eq!(item.detail.as_str(), "未返回失败原因");
+        assert_eq!(item.status.as_str(), "生成未完成");
+        assert!(item.detail.contains("无法确认"));
+        for code in [
+            "REFERENCE_URL_UNAVAILABLE",
+            "XIANGXIN_UNAVAILABLE",
+            "unknown",
+        ] {
+            let task = json!({"id":"task-1","kind":"image","status":"failed",
+                "error":{"code":code,"message":"https://private.invalid/?token=SECRET Bearer SECRET"}});
+            let reopened: Value = serde_json::from_str(&task.to_string()).unwrap();
+            let item = task_item(&reopened);
+            assert_eq!(item.status.as_str(), failure_feedback::copy(code).0);
+            assert_eq!(item.detail.as_str(), failure_feedback::copy(code).1);
+            assert!(!item.ready);
+            assert!(!item.detail.contains("SECRET"));
+        }
     }
 
     #[test]

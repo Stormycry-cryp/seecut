@@ -304,6 +304,28 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_reference_max(4);
     state.set_accepts_references(true);
     state.set_reference_limit("最多 4 张参考图片".into());
+    if std::env::var("SEECUT_UI_PREVIEW_SCENE").as_deref() == Ok("failure-feedback") {
+        crate::cloud::validate_failure_preview(&app, directory)
+            .map_err(slint::PlatformError::Other)?;
+        for (dark, theme) in [(false, "light"), (true, "dark")] {
+            app.global::<Theme>().set_dark(dark);
+            capture(&app, directory, &format!("failure-{theme}-1000"), 1000, 760)?;
+            capture(&app, directory, &format!("failure-{theme}-900"), 900, 640)?;
+            state.set_result_preview_open(true);
+            capture(
+                &app,
+                directory,
+                &format!("failure-details-{theme}"),
+                900,
+                640,
+            )?;
+            state.set_result_preview_open(false);
+        }
+        state.set_selected_task(2);
+        state.set_result_preview_open(true);
+        capture(&app, directory, "failure-legacy-no-edit", 900, 640)?;
+        return Ok(());
+    }
     if std::env::var("SEECUT_UI_PREVIEW_SCENE").as_deref() == Ok("f03") {
         return run_f03(&app, directory);
     }

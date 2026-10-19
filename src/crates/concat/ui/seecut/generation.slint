@@ -530,7 +530,7 @@ component GenerationResults inherits Rectangle {
                                     fill-frame: true;
                                     fallback-glyph: item.ready ? (item.kind == "video" ? Glyph.film : Glyph.image) : Glyph.none;
                                     interactive: item.ready || item.failed;
-                                    accessible-name: item.failed ? item.name + "，生成失败" : "预览" + item.name;
+                                    accessible-name: item.failed ? item.name + "，" + item.status + "，查看详情" : "预览" + item.name;
                                     activated => {
                                         if SeeCut.task-selection-mode {
                                             SeeCut.action("task-select-toggle", item.id);
@@ -552,7 +552,8 @@ component GenerationResults inherits Rectangle {
                                     TouchArea { mouse-cursor: pointer; clicked => { SeeCut.action("task-select-toggle", item.id); } }
                                 }
                                 if item.failed: Text {
-                                    width: 100%; height: 100%; text: "生成失败";
+                                    x: 12px; width: parent.width - 24px; height: 100%; text: item.status;
+                                    font-size: 14px; overflow: elide;
                                     color: Theme.danger; horizontal-alignment: center; vertical-alignment: center;
                                 }
                                 if !item.ready && !item.failed: Text {
@@ -620,7 +621,15 @@ component GenerationResults inherits Rectangle {
                             HorizontalLayout {
                                 x: 0px; y: grid.media-height + 8px; width: 100%; height: 22px;
                                 Text { text: item.name; color: Theme.fg; font-size: 13px; min-width: 0px; overflow: elide; horizontal-stretch: 1; }
-                                Text { text: item.status; color: item.failed ? Theme.danger : Theme.fg-muted; font-size: 12px; }
+                                if !item.failed: Text { text: item.status; color: Theme.fg-muted; font-size: 12px; }
+                                if item.failed: WorkspaceIcon {
+                                    width: 28px; height: 22px; glyph: Glyph.info; label: "查看失败原因与处理建议";
+                                    clicked => {
+                                        SeeCut.focus-return-kind = "generation-result"; SeeCut.focus-return-id = item.id; SeeCut.focus-return-claimed = false;
+                                        SeeCut.action("task-select", item.id);
+                                        SeeCut.result-preview-open = true;
+                                    }
+                                }
                             }
                         }
                     }
@@ -691,7 +700,7 @@ export component GenerationPage inherits Rectangle {
     InspirationPreview { }
     Modal {
         open: SeeCut.result-preview-open && SeeCut.selected-task >= 0 && SeeCut.selected-task < SeeCut.tasks.length && SeeCut.tasks[SeeCut.selected-task].failed;
-        title: "生成失败详情"; glyph: Glyph.info;
+        title: SeeCut.selected-task >= 0 && SeeCut.selected-task < SeeCut.tasks.length ? SeeCut.tasks[SeeCut.selected-task].status : "生成未完成"; glyph: Glyph.info;
         surface-width: Math.min(560px, root.width - 32px); surface-height: Math.min(320px, root.height - 32px);
         closed => { SeeCut.result-preview-open = false; }
         if SeeCut.selected-task >= 0 && SeeCut.selected-task < SeeCut.tasks.length: FocusScope {
@@ -718,7 +727,7 @@ export component GenerationPage inherits Rectangle {
                     }
                 }
                 HorizontalLayout { spacing: 8px; height: 34px;
-                    AppButton { label: SeeCut.tasks[SeeCut.selected-task].refillable ? (SeeCut.tasks[SeeCut.selected-task].failed ? "修改后重试" : "回填") : "无历史配置"; enabled: SeeCut.tasks[SeeCut.selected-task].refillable && !SeeCut.working; clicked => { SeeCut.action("task-refill", SeeCut.tasks[SeeCut.selected-task].id); } }
+                    if SeeCut.tasks[SeeCut.selected-task].refillable: AppButton { label: "编辑输入"; enabled: !SeeCut.working; clicked => { SeeCut.action("task-refill", SeeCut.tasks[SeeCut.selected-task].id); } }
                     Rectangle { horizontal-stretch: 1; }
                     AppButton { label: "关闭"; clicked => { SeeCut.result-preview-open = false; } }
                 }
