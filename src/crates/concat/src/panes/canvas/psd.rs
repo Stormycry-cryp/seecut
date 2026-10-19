@@ -352,7 +352,7 @@ mod tests {
             results.push(serde_json::json!({"name":name,"layers_and_groups":p.document.as_ref().unwrap().walk().len(),"width":expected.width(),"height":expected.height(),"sha256":receipt.sha256}));
         }
         let library =
-            crate::personal_library::Library::load_for_relink(&data.join("personal-library"))
+            crate::personal_library::Library::load_for_relink(data.join("personal-library"))
                 .unwrap();
         assert_eq!(library.items().len(), 2);
         std::fs::write(dir.join("result.json"),serde_json::to_vec_pretty(&serde_json::json!({"samples":results,"library_items":2,"gpu_required":true,"ui_verified":false})).unwrap()).unwrap();

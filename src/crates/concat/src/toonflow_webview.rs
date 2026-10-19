@@ -271,10 +271,10 @@ mod native {
                     }
                     let show = visible && host.loaded && host.app_ready;
                     let assistant_open = app.global::<crate::Assistant>().get_open();
-                    if host.visible != show {
-                        if let Err(error) = webview.set_visible(show) {
-                            log::warn!("Flow WebView visibility: {error}");
-                        }
+                    if host.visible != show
+                        && let Err(error) = webview.set_visible(show)
+                    {
+                        log::warn!("Flow WebView visibility: {error}");
                     }
                     if host.visible != show || host.assistant_open != assistant_open {
                         let _ = if show && !assistant_open {
