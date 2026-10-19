@@ -1,0 +1,16 @@
+{
+  "timeUTC": "2026-10-19T06:34:41.285107+00:00",
+  "desktopInputStopped": true,
+  "lastDesktopActionUTC": "2026-10-19T06:33:37.607607+00:00",
+  "ongoingInputScript": false,
+  "sharedDesktopNotIsolated": true,
+  "furtherUIAutomation": false,
+  "originalInputSource": "com.apple.inputmethod.SCIM.ITABC",
+  "testInputSource": "com.apple.keylayout.ABC",
+  "inputSourceRestored": false,
+  "reasonNotRestored": "User prohibited further input source switching; no desktop actions after instruction.",
+  "ownedSyntheticServicePID": 66228,
+  "serviceStopRequested": true,
+  "qaAppPID": 83883,
+  "qaAppLeftUntouched": true
+}

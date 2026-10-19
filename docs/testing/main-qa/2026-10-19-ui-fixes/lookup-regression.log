@@ -1,0 +1,8 @@
+
+running 3 tests
+test panes::canvas::lookup::tests::lookup_file_reader_rejects_wrong_extension_encoding_and_large_input ... ok
+test panes::canvas::lookup::tests::lookup_import_failure_cancel_stale_and_copy_isolation ... ok
+test panes::canvas::lookup::tests::lookup_project_owns_resource_after_source_deletion_and_export_deduplicates ... ignored, requires isolated portable executable and SEECUT_LOOKUP_FIXTURE_DIR
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 491 filtered out; finished in 0.01s
+

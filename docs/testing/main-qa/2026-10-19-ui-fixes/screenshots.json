@@ -1,0 +1,12 @@
+[
+  {
+    "file": "screenshots/06-flow-open.png",
+    "sha256": "bcebb6e8c3a81d1dfc01948870705cf8ecdc1c29fbf1d70a29369411e7ecc757",
+    "evidence": "Initial Flow smoke only; not F1-F4 acceptance"
+  },
+  {
+    "file": "screenshots/07-image-node.png",
+    "sha256": "2a70ad405e05afb23ff16573f56be3cad4797f7372b53cc7bb609f1f099f8086",
+    "evidence": "Initial Flow smoke only; not F1-F4 acceptance"
+  }
+]

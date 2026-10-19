@@ -1,0 +1,33 @@
+bun test v1.3.14 (0d9b296a)
+
+integrations/toonflow/tests/floating-controls.test.ts:
+(pass) controls remain reachable after pan/zoom and in narrow viewports without moving nodes [3.55ms]
+
+integrations/toonflow/tests/prompt-recommendations.test.ts:
+(pass) debounce and shared start interval retain latest input [3.27ms]
+(pass) concurrent editors share interval and no parallel calls [0.34ms]
+(pass) old account or draft reply cannot repopulate recommendations [0.49ms]
+(pass) rewrite changes only prompt, and does not recursively recommend [0.50ms]
+(pass) failed rewrite retains original and can be explicitly retried [0.86ms]
+(pass) 429 retains draft and observes supplier retry after [0.36ms]
+(pass) switch or unmount fences pending rewrite [0.41ms]
+(pass) image: click snapshots current draft and images without waiting for polling [0.65ms]
+(pass) image: late rewrite cannot overwrite draft before next poll [0.19ms]
+(pass) image: late rewrite cannot overwrite references before next poll [0.04ms]
+(pass) image: late rewrite cannot overwrite context before next poll [0.05ms]
+(pass) image: late rewrite cannot overwrite closed before next poll [0.04ms]
+(pass) video: click snapshots current draft and images without waiting for polling [0.11ms]
+(pass) video: late rewrite cannot overwrite draft before next poll [0.05ms]
+(pass) video: late rewrite cannot overwrite references before next poll [0.04ms]
+(pass) video: late rewrite cannot overwrite context before next poll [0.05ms]
+(pass) video: late rewrite cannot overwrite closed before next poll [0.64ms]
+(pass) in-flight rewrite cannot be entered twice; failed response preserves full draft [0.28ms]
+(pass) synchronous edit notification fences edit-away-and-back and scope-away-and-back [0.27ms]
+(pass) undo is scoped to unchanged rewrite and never restores over later edits or references [0.51ms]
+(pass) synchronous rich-editor model and text notifications cannot clear applied undo [0.39ms]
+(pass) Vue next-tick partial props are fenced until the complete rewrite is published [0.31ms]
+
+ 23 pass
+ 0 fail
+ 1056 expect() calls
+Ran 23 tests across 2 files. [116.00ms]
