@@ -36,7 +36,6 @@ fn signature(app: &App, cloud: &Cloud) -> String {
         ui.get_prompt_draft_revision(),
         ui.get_canvas_prompt_open(),
         ui.get_mode(),
-        ui.get_creator_mode(),
         selected_model(&ui, cloud),
         current_template_parameters(&ui, cloud),
         cloud.effort_selection,

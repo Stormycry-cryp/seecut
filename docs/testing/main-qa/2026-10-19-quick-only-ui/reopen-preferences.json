@@ -1,0 +1,10 @@
+{
+  "creatorModeBeforeReopen": 0,
+  "legacyValueInjectedWhileClosed": 1,
+  "creatorModeAfterNormalQuit": 1,
+  "generationChoiceUnchanged": true,
+  "exportFolderUnchanged": true,
+  "loginRestored": false,
+  "draftRestored": false,
+  "notes": "Reopened UI was logged out with empty draft; generation choice and export folder persisted. Legacy creator_mode=1 was ignored by layout but remained on disk because quit did not trigger a preference save. No claim of cross-restart draft/reference persistence."
+}

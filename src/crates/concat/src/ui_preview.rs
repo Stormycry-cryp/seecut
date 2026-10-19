@@ -293,7 +293,6 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     });
     state.on_personal_can_drop(|id, index| id == "fixture-0" && index == 3);
     state.set_auth_open(false);
-    state.set_creator_mode(1);
     state.set_reduced_motion(true);
     state.set_signed_in(true);
     state.set_prompt("以参考素材为基础，制作一张暖色几何海报，保留主体轮廓与材质细节。".into());

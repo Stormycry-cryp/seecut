@@ -1,0 +1,41 @@
+[
+  {
+    "id": "6a5a5175-a445-4fe1-8782-8f2300ca2329",
+    "name": "Flow 图片",
+    "kind": "image",
+    "source": "generated",
+    "version": {
+      "sha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
+      "registration_id": "operation:generation:709847c788c7b1297ec39df6d3448b1eb6c636114ffd0126cbc4637e92287ca7:gen_VeziOBWsETL9WkcdfifPXA:out_eZeALySDNqzw-Fd9Kur_xA"
+    },
+    "provenanceKind": "flow_image",
+    "actualSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
+    "size": 68
+  },
+  {
+    "id": "b4c39661-1634-439b-a536-0a8fbbce9251",
+    "name": "legacy-v4",
+    "kind": "image",
+    "source": "generated",
+    "version": {
+      "sha256": "e0d32737b2c2bf4ed24c7247b121e29df4ddec0c27c19485c22ae9b2b730824b",
+      "registration_id": "operation:8eee7adb-db44-4545-bd53-0f092bdd217d"
+    },
+    "provenanceKind": "canvas_export",
+    "actualSha256": "e0d32737b2c2bf4ed24c7247b121e29df4ddec0c27c19485c22ae9b2b730824b",
+    "size": 46378
+  },
+  {
+    "id": "63ca2acc-0ad9-4bae-a465-e2b491fb1317",
+    "name": "legacy-v4",
+    "kind": "image",
+    "source": "generated",
+    "version": {
+      "sha256": "e0d32737b2c2bf4ed24c7247b121e29df4ddec0c27c19485c22ae9b2b730824b",
+      "registration_id": "operation:6addee17-ba31-46cc-bf3e-764428097d64"
+    },
+    "provenanceKind": "canvas_export",
+    "actualSha256": "e0d32737b2c2bf4ed24c7247b121e29df4ddec0c27c19485c22ae9b2b730824b",
+    "size": 46378
+  }
+]

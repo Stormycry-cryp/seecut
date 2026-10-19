@@ -774,36 +774,13 @@ export component SettingsDialog inherits Rectangle {
             }
 
             // This is the page the settings entry opens, including when the
-            // local workbench is used without an account. Mode and appearance
-            // are independent; both choices act in place on the current work.
+            // local workbench is used without an account. Appearance changes
+            // act in place without changing the current work.
             if root.data.tab == 0: HorizontalLayout {
                 Rectangle { width: 64px; }
                 VerticalLayout {
                     width: Math.max(0px, Math.min(640px, parent.width - 96px));
                     spacing: 0px;
-
-                HorizontalLayout {
-                    height: 74px;
-                    Text {
-                        text: "工作模式";
-                        color: Theme.fg;
-                        font-size: 16px;
-                        vertical-alignment: center;
-                    }
-                    Rectangle { horizontal-stretch: 1; }
-                    VerticalLayout {
-                        width: 188px;
-                        alignment: center;
-                        SettingsChoice {
-                            label: "工作模式";
-                            options: ["快速", "专业"];
-                            current: SeeCut.creator-mode == 1 ? 1 : 0;
-                            reduced-motion: SeeCut.reduced-motion;
-                            changed(index) => { SeeCut.action("creator-mode", index == 1 ? "1" : "0"); }
-                        }
-                    }
-                }
-                Rectangle { height: 1px; background: Theme.line; }
 
                 HorizontalLayout {
                     height: 74px;

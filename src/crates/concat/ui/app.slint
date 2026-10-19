@@ -128,7 +128,7 @@ export component App inherits Window {
         }
     }
     property <bool> assistant-modal-active: root.workflow-modal-open || root.sheet-open
-        || (SeeCut.page == 1 && SeeCut.creator-mode < 0) || SeeCut.save-team-task != ""
+        || SeeCut.save-team-task != ""
         || SeeCut.canvas-create-open || SeeCut.team-dialog > 0 || SeeCut.team-menu > 0;
     property <bool> assistant-modal-exiting;
     changed assistant-modal-active => {
