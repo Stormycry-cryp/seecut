@@ -1,0 +1,11 @@
+   Compiling concat-canvas v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-canvas)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.62s
+     Running unittests src/lib.rs (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/native-target/debug/deps/concat_canvas-f9e2e6a1bb65ab0b)
+
+running 4 tests
+test c02_tests::c02_black_white_independent_weights_and_alpha ... ok
+test c02_tests::c02_vibrance_selective_gain_neutrals_and_alpha ... ok
+test c02_tests::c02_document_validation_and_round_trip ... ok
+test gpu::tests::c02_adjustments_match_with_masks_alpha_and_all_blends ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 153 filtered out; finished in 1.06s

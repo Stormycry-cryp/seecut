@@ -1396,8 +1396,8 @@ export component CanvasPane inherits Rectangle {
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.trash; label: "移除蒙版"; danger: true; clicked => { root.layer-mask-removed(); } }
                             }
                             for param[i] in root.adjustment-params: PropertySlider {
-                                label: root.adjustment-kind == 2 ? "曝光" : I18n.t(param.label); value: param.value; minimum: param.minimum; maximum: param.maximum; step: 0.01; precision: 2;
-                                default-value: root.adjustment-kind == 3 && i == 2 ? 1 : root.adjustment-kind == 3 && (i == 1 || i == 4) ? 1 : 0;
+                                label: root.adjustment-kind == 2 ? "曝光" : I18n.t(param.label); value: param.value; minimum: param.minimum; maximum: param.maximum; step: root.adjustment-kind == 9 ? 0.001 : 0.01; precision: root.adjustment-kind == 9 ? 3 : 2;
+                                default-value: root.adjustment-kind == 9 ? (i == 0 ? 0.299 : i == 1 ? 0.587 : 0.114) : root.adjustment-kind == 3 && i == 2 ? 1 : root.adjustment-kind == 3 && (i == 1 || i == 4) ? 1 : 0;
                                 unit: root.adjustment-kind == 2 ? "档" : "";
                                 changed(value) => { root.adjustment-param-changed(i, value); }
                                 gesture-started => { root.adjustment-param-begin(i); }
@@ -1538,24 +1538,39 @@ export component CanvasPane inherits Rectangle {
                         height: right-panel.inspector-height;
                         accessible-role: tab-panel;
                         accessible-label: "调整";
-                        VerticalLayout {
-                        HorizontalLayout {
-                            height: 32px; spacing: 8px; alignment: start;
-                            for kind in [
-                                { id: 2, name: "曝光", glyph: Glyph.sun },
-                                { id: 3, name: "色阶", glyph: Glyph.sliders },
-                                { id: 7, name: "曲线", glyph: Glyph.waveform },
-                                { id: 4, name: "色相与饱和度", glyph: Glyph.sparkle },
-                                { id: 5, name: "渐变映射", glyph: Glyph.filter },
-                                { id: 1, name: "反相", glyph: Glyph.moon },
-                                { id: 6, name: "颗粒", glyph: Glyph.rows },
-                            ]: WorkspaceIcon {
-                                width: right-panel.width < 304px ? 30px : 32px;
-                                height: 32px; side: right-panel.width < 304px ? 30px : 32px; icon-size: 17px;
-                                label: kind.name; glyph: kind.glyph;
-                                clicked => { root.adjustment-added(kind.id); root.inspector-tab = 0; }
+                        ScrollView {
+                            viewport-width: right-panel.width - 24px;
+                            horizontal-scrollbar-policy: always-off;
+                            VerticalLayout {
+                                spacing: 8px; alignment: start;
+                                HorizontalLayout {
+                                    height: 32px; spacing: 8px; alignment: start;
+                                    for kind in [
+                                        { id: 2, name: "曝光", glyph: Glyph.sun },
+                                        { id: 3, name: "色阶", glyph: Glyph.sliders },
+                                        { id: 7, name: "曲线", glyph: Glyph.waveform },
+                                        { id: 4, name: "色相与饱和度", glyph: Glyph.sparkle },
+                                        { id: 8, name: "自然饱和度", glyph: Glyph.sun },
+                                    ]: WorkspaceIcon {
+                                        width: 32px; height: 32px; side: 32px; icon-size: 17px;
+                                        label: kind.name; glyph: kind.glyph;
+                                        clicked => { root.adjustment-added(kind.id); root.inspector-tab = 0; }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 32px; spacing: 8px; alignment: start;
+                                    for kind in [
+                                        { id: 9, name: "黑白", glyph: Glyph.moon },
+                                        { id: 5, name: "渐变映射", glyph: Glyph.filter },
+                                        { id: 1, name: "反相", glyph: Glyph.moon },
+                                        { id: 6, name: "颗粒", glyph: Glyph.rows },
+                                    ]: WorkspaceIcon {
+                                        width: 32px; height: 32px; side: 32px; icon-size: 17px;
+                                        label: kind.name; glyph: kind.glyph;
+                                        clicked => { root.adjustment-added(kind.id); root.inspector-tab = 0; }
+                                    }
+                                }
                             }
-                        }
                         }
                     }
                     Rectangle {
@@ -1689,7 +1704,9 @@ export component CanvasPane inherits Rectangle {
                                                     : layer.adjustment-kind == 4 ? Glyph.sparkle
                                                     : layer.adjustment-kind == 5 ? Glyph.filter
                                                     : layer.adjustment-kind == 6 ? Glyph.rows
-                                                    : layer.adjustment-kind == 7 ? Glyph.waveform : Glyph.sliders;
+                                                    : layer.adjustment-kind == 7 ? Glyph.waveform
+                                                    : layer.adjustment-kind == 8 ? Glyph.sun
+                                                    : layer.adjustment-kind == 9 ? Glyph.moon : Glyph.sliders;
                                                 size: 16px; tint: Theme.fg-muted;
                                             }
                                             CanvasChipAction {

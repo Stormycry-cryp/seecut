@@ -1,0 +1,5 @@
+
+running 1 test
+test panes::canvas::tests::a_curves_adjustment_round_trips_through_the_editor_protocol ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 0.02s

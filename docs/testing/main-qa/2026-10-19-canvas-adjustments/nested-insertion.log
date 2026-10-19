@@ -1,0 +1,5 @@
+
+running 1 test
+test panes::canvas::tests::nested_adjustment_and_group_stay_in_the_selected_parent ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 0.00s

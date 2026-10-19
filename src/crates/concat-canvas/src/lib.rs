@@ -60,3 +60,6 @@ pub use viewport::{CanvasViewport, NavInput, Navigator};
 
 /// Editable text stored independently from its raster cache.
 pub mod text;
+
+#[cfg(test)]
+mod c02_tests;

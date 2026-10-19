@@ -587,6 +587,24 @@ fn bilinear(frame: &Frame, bx: f32, by: f32) -> Option<[u8; 4]> {
 pub fn apply_one(adjustment: &Adjustment, pixel: [u8; 4]) -> [u8; 4] {
     let rgb = [pixel[0], pixel[1], pixel[2]];
     let out = match adjustment {
+        Adjustment::Vibrance { amount } => {
+            if *amount == 0.0 {
+                return pixel;
+            }
+            let (h, s, l) = rgb_to_hsl(rgb);
+            let factor = if *amount >= 0.0 {
+                1.0 + amount * (1.0 - s)
+            } else {
+                1.0 + amount
+            };
+            hsl_to_rgb(h, (s * factor).clamp(0.0, 1.0), l)
+        }
+        Adjustment::BlackWhite { red, green, blue } => {
+            let v = (rgb[0] as f32 * red + rgb[1] as f32 * green + rgb[2] as f32 * blue)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            [v; 3]
+        }
         Adjustment::Invert => [255 - rgb[0], 255 - rgb[1], 255 - rgb[2]],
         Adjustment::Exposure { stops } => {
             let factor = 2.0_f32.powf(*stops);

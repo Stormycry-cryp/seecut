@@ -211,6 +211,20 @@ impl ImageDocument {
     /// which is where a dangling link can appear.
     pub fn validate(&self) -> Result<(), DocumentError> {
         for node in self.walk() {
+            if let LayerNode::Adjustment(layer) = node {
+                let valid = match &layer.adjustment {
+                    Adjustment::Vibrance { amount } => {
+                        amount.is_finite() && (-1.0..=1.0).contains(amount)
+                    }
+                    Adjustment::BlackWhite { red, green, blue } => [red, green, blue]
+                        .iter()
+                        .all(|v| v.is_finite() && (0.0..=2.0).contains(*v)),
+                    _ => true, // Preserve the seven legacy adjustment contracts.
+                };
+                if !valid {
+                    return Err(DocumentError::InvalidAdjustment(layer.id));
+                }
+            }
             let LayerNode::Layer(layer) = node else {
                 continue;
             };
@@ -290,6 +304,9 @@ pub const CLIP_CHAIN_LIMIT: usize = 256;
 /// Why a document cannot be drawn: a live alpha link that does not resolve.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DocumentError {
+    /// A colour adjustment contains an out-of-range or non-finite parameter.
+    #[error("invalid adjustment parameters in layer {0:?}")]
+    InvalidAdjustment(LayerId),
     /// Invalid or unsupported editable geometry.
     #[error("layer {0:?} has invalid or unsupported vector geometry")]
     InvalidShape(LayerId),
@@ -770,6 +787,24 @@ impl LayerMask {
 /// modes when it does.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Adjustment {
+    /// Selective saturation in -1..=1, zero is identity. Positive values
+    /// scale HSL saturation by 1 + amount * (1 - saturation); negative
+    /// values scale it by 1 + amount. Hue/lightness and alpha are retained.
+    Vibrance {
+        /// Selective saturation strength.
+        amount: f32,
+    },
+    /// Gray = clamp(red*R + green*G + blue*B, 0, 1), straight RGB.
+    /// Weights are independent 0..=2 gains (not normalized); default
+    /// Rec.601 weights 0.299/0.587/0.114 retain neutral gray luminance.
+    BlackWhite {
+        /// Red contribution.
+        red: f32,
+        /// Green contribution.
+        green: f32,
+        /// Blue contribution.
+        blue: f32,
+    },
     /// Hue shift in degrees, saturation and lightness in `-1.0..=1.0`.
     HueSaturation {
         /// Degrees of hue rotation, wrapping.
