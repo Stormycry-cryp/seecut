@@ -41,6 +41,7 @@ pub mod lookup;
 pub mod pixels;
 pub mod selection;
 pub mod vector;
+pub mod vector_mask;
 pub mod viewport;
 
 pub use blend::BlendMode;

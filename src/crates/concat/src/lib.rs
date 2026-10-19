@@ -612,6 +612,17 @@ pub fn run() -> Result<(), slint::PlatformError> {
             commit,
         )));
     }));
+    controls.on_vector_mask_add(on_window!(|state, kind: i32| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::VectorMaskAdd(
+            kind,
+        )));
+    }));
+    controls.on_vector_mask_link(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::VectorMaskLink));
+    }));
+    controls.on_vector_mask_exit(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::VectorMaskExit));
+    }));
     controls.on_shape_pointer(on_window!(|state, event: i32, x: f32, y: f32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::ShapePointer(
             event, x as f64, y as f64,

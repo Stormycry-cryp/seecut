@@ -12,48 +12,103 @@ pub(super) struct ShapeDrag {
 
 impl CanvasPane {
     fn selected_shape(&self) -> Option<&VectorShape> {
-        let LayerNode::Layer(layer) = self.document.as_ref()?.find(self.active?)? else {
+        let node = self.document.as_ref()?.find(self.active?)?;
+        if self.paint_mask {
+            return node.mask()?.vector.as_ref().map(|v| &v.geometry);
+        }
+        let LayerNode::Layer(layer) = node else {
             return None;
         };
         layer.vector.as_ref()
     }
 
-    fn shape_point(&self, x: f64, y: f64) -> Option<[f32; 2]> {
-        let doc = self.document.as_ref()?;
-        let p = self.to_document(x, y);
-        let size = (doc.width as f32, doc.height as f32);
-        let point = if let Some(LayerNode::Layer(layer)) = self.active.and_then(|id| doc.find(id)) {
-            layer
-                .transform
-                .to_bitmap((p.0 as f32, p.1 as f32), size, size)?
-        } else {
-            (p.0 as f32, p.1 as f32)
-        };
-        Some([point.0, point.1])
-    }
-
-    fn shape_screen_point(&self, p: [f32; 2]) -> Option<(f64, f64)> {
-        let doc = self.document.as_ref()?;
-        let LayerNode::Layer(layer) = doc.find(self.active?)? else {
+    fn selected_shape_mut(&mut self) -> Option<&mut VectorShape> {
+        let node = self.document.as_mut()?.find_mut(self.active?)?;
+        if self.paint_mask {
+            return node
+                .mask_slot_mut()
+                .as_mut()?
+                .vector
+                .as_mut()
+                .map(|v| &mut v.geometry);
+        }
+        let LayerNode::Layer(layer) = node else {
             return None;
         };
-        let size = (doc.width as f32, doc.height as f32);
-        let p = layer.transform.from_bitmap((p[0], p[1]), size, size)?;
+        layer.vector.as_mut()
+    }
+
+    fn shape_space(
+        &self,
+    ) -> Option<(
+        Option<concat_canvas::LayerTransform>,
+        (f32, f32),
+        (f32, f32),
+    )> {
+        let doc = self.document.as_ref()?;
+        let canvas = (doc.width as f32, doc.height as f32);
+        let node = doc.find(self.active?)?;
+        let current = match node {
+            LayerNode::Layer(l) => Some(l.transform),
+            _ => None,
+        };
+        if self.paint_mask {
+            let mask = node.mask()?;
+            let vector = mask.vector.as_ref()?;
+            let placement = current.map(|t| {
+                if mask.linked {
+                    t
+                } else {
+                    mask.anchor.unwrap_or(t)
+                }
+            });
+            return Some((
+                placement,
+                (vector.width as f32, vector.height as f32),
+                canvas,
+            ));
+        }
+        Some((current, canvas, canvas))
+    }
+
+    fn shape_point(&self, x: f64, y: f64) -> Option<[f32; 2]> {
+        let (placement, bitmap, canvas) = self.shape_space()?;
+        let p = self.to_document(x, y);
+        let p = (p.0 as f32, p.1 as f32);
+        let p = match placement {
+            Some(t) => t.to_bitmap(p, bitmap, canvas)?,
+            None => p,
+        };
+        Some([p.0, p.1])
+    }
+
+    pub(super) fn shape_screen_point(&self, p: [f32; 2]) -> Option<(f64, f64)> {
+        let (placement, bitmap, canvas) = self.shape_space()?;
+        let p = match placement {
+            Some(t) => t.from_bitmap((p[0], p[1]), bitmap, canvas)?,
+            None => (p[0], p[1]),
+        };
         Some(
             self.nav
                 .viewport()
-                .view_point((p.0 as f64, p.1 as f64), (size.0 as f64, size.1 as f64)),
+                .view_point((p.0 as f64, p.1 as f64), (canvas.0 as f64, canvas.1 as f64)),
         )
     }
 
     fn refresh_shape(&mut self) {
+        if self.editing_vector_mask() {
+            self.refresh_vector_mask();
+            return;
+        }
         let Some(doc) = self.document.as_ref() else {
             return;
         };
         let Some(LayerNode::Layer(layer)) = self.active.and_then(|id| doc.find(id)) else {
             return;
         };
-        let Some(shape) = &layer.vector else { return };
+        let Some(shape) = &layer.vector else {
+            return;
+        };
         let Some(frame) = shape.rasterize(doc.width, doc.height) else {
             return;
         };
@@ -118,12 +173,7 @@ impl CanvasPane {
                     self.shape_finish(true, true);
                     return;
                 }
-                let Some(shape) = self
-                    .document
-                    .as_mut()
-                    .and_then(|d| d.layer_mut(self.active?))
-                    .and_then(|l| l.vector.as_mut())
-                else {
+                let Some(shape) = self.selected_shape_mut() else {
                     return;
                 };
                 if shape.knots.len() >= 4096 {
@@ -175,22 +225,18 @@ impl CanvasPane {
             let Some(p) = self.shape_point(x, y) else {
                 return;
             };
-            let Some(shape) = self
-                .document
-                .as_mut()
-                .and_then(|d| d.layer_mut(self.active?))
-                .and_then(|l| l.vector.as_mut())
-            else {
+            let tool = self.tool;
+            let Some(shape) = self.selected_shape_mut() else {
                 return;
             };
             let before = shape.clone();
-            if matches!(self.tool, 7 | 8) {
+            if matches!(tool, 7 | 8) {
                 *shape = VectorShape::new(shape.kind, drag.start, p);
-            } else if self.tool == 9 {
+            } else if tool == 9 {
                 let k = &mut shape.knots[drag.knot];
                 k.outgoing = p;
                 k.incoming = [2.0 * k.anchor[0] - p[0], 2.0 * k.anchor[1] - p[1]];
-            } else if self.tool == 10 {
+            } else if tool == 10 {
                 shape.kind = ShapeKind::Path;
                 let k = &mut shape.knots[drag.knot];
                 match drag.handle {
@@ -225,11 +271,7 @@ impl CanvasPane {
         });
         if commit && valid {
             if self.tool == 9
-                && let Some(shape) = self
-                    .document
-                    .as_mut()
-                    .and_then(|d| d.layer_mut(self.active?))
-                    .and_then(|l| l.vector.as_mut())
+                && let Some(shape) = self.selected_shape_mut()
             {
                 shape.closed = closed;
             }
@@ -247,7 +289,7 @@ impl CanvasPane {
     }
 
     pub(super) fn shape_style(&mut self, field: i32, text: &str, value: f32) {
-        if self.shape_session.is_some() {
+        if self.shape_session.is_some() || self.editing_vector_mask() {
             return;
         }
         let color = || {
@@ -313,7 +355,8 @@ impl CanvasPane {
         use slint::{ModelRc, VecModel};
         let controls = app.global::<crate::CanvasControls>();
         let shape = self.selected_shape();
-        controls.set_shape_selected(shape.is_some());
+        controls.set_shape_selected(shape.is_some() && !self.paint_mask);
+        self.publish_vector_mask_controls(app);
         controls.set_shape_drawing(self.shape_session.is_some() && self.tool == 9);
         controls.set_shape_editing(self.shape_session.is_some());
         let hex = |c: Option<[u8; 4]>| {
