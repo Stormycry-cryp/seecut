@@ -17,6 +17,7 @@ pub(crate) struct Context {
     pub session_id: String,
     pub account_scope: String,
     pub revision: u64,
+    pub selection_revision: u64,
     #[serde(default)]
     pub selected_node_ids: Vec<String>,
     #[serde(default)]
