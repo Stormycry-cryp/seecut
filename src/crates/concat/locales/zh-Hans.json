@@ -759,5 +759,8 @@
   "Could not start opening: {0}": "无法打开：{0}",
   "Could not update recent projects: {0}": "无法更新最近项目：{0}",
   "Dismiss error": "关闭提示",
-  "Could not prepare project media.": "无法准备项目素材。"
+  "Could not prepare project media.": "无法准备项目素材。",
+  "Red contribution": "红色权重",
+  "Green contribution": "绿色权重",
+  "Blue contribution": "蓝色权重"
 }

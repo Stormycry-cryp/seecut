@@ -361,15 +361,33 @@ fn adjust_one(back: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
         let g = textureSampleLevel(lut_texture, tex_sampler, vec2<f32>((round(rgb.g * 255.0) + 0.5) / 256.0, 0.5), 0.0).g;
         let b = textureSampleLevel(lut_texture, tex_sampler, vec2<f32>((round(rgb.b * 255.0) + 0.5) / 256.0, 0.5), 0.0).b;
         rgb = vec3<f32>(r, g, b);
+    } else if p.kind == 7u {
+        // Vibrance: same HSL selective gain as CPU apply_one.
+        if p.a == 0.0 { return back; }
+        var hsl = rgb_to_hsl(rgb);
+        let factor = select(1.0 + p.a, 1.0 + p.a * (1.0 - hsl.y), p.a >= 0.0);
+        hsl.y = clamp(hsl.y * factor, 0.0, 1.0);
+        rgb = hsl_to_rgb(hsl);
+    } else if p.kind == 8u {
+        rgb = vec3<f32>(rgb.r * p.a + rgb.g * p.b + rgb.b * p.c);
     }
     rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     // The adjusted pixel, snapped to bytes like the CPU's `apply_one`.
     let adjusted = vec3<f32>(byte(rgb.r), byte(rgb.g), byte(rgb.b));
+    if all(adjusted == back.rgb) { return back; }
     var weight = p.opacity;
     if (p.flags & 1u) != 0u {
         weight *= mask_red(uv);
     }
     let a = back.a * weight;
+    // Adjustment passes have no source transform; tx carries the blend
+    // mode. Follow the existing CPU blend_pixel semantics for non-normal.
+    if p.tx != 0.0 {
+        let ao = a + back.a * (1.0 - a);
+        let b = blended(u32(p.tx), back.rgb, adjusted);
+        let co = (a * (1.0 - back.a) * adjusted + back.a * (1.0 - a) * back.rgb + a * back.a * b) / ao;
+        return vec4<f32>(byte(co.r), byte(co.g), byte(co.b), byte(ao));
+    }
     let out_rgb = back.rgb * (1.0 - a) + adjusted * a;
     return vec4<f32>(byte(out_rgb.r), byte(out_rgb.g), byte(out_rgb.b), back.a);
 }
@@ -1107,11 +1125,20 @@ impl CanvasGpu {
     ) {
         let mut params = Params {
             pass_kind: 1,
+            tx: adjustment.blend as u32 as f32,
             opacity: adjustment.opacity.clamp(0.0, 1.0),
             ..Params::default()
         };
         let mut lut = None;
         match &adjustment.adjustment {
+            Adjustment::Vibrance { amount } => {
+                params.kind = 7;
+                params.a = *amount;
+            }
+            Adjustment::BlackWhite { red, green, blue } => {
+                params.kind = 8;
+                [params.a, params.b, params.c] = [*red, *green, *blue];
+            }
             Adjustment::Invert => params.kind = 0,
             Adjustment::Exposure { stops } => {
                 params.kind = 1;
@@ -2049,6 +2076,80 @@ mod tests {
         let top = world.with_layer("Top", solid(16, 16, [0, 130, 250, 255]));
         world.document.layer_mut(top).expect("layer").clips_to = Some(base);
         assert_parity(&world);
+    }
+
+    #[test]
+    fn c02_adjustments_match_with_masks_alpha_and_all_blends() {
+        let mut gpu = required_gpu();
+        let cases = [
+            Adjustment::Vibrance { amount: -1.0 },
+            Adjustment::Vibrance { amount: 0.0 },
+            Adjustment::Vibrance { amount: 0.75 },
+            Adjustment::Vibrance { amount: 1.0 },
+            Adjustment::BlackWhite {
+                red: 0.299,
+                green: 0.587,
+                blue: 0.114,
+            },
+            Adjustment::BlackWhite {
+                red: 2.0,
+                green: 0.0,
+                blue: 0.0,
+            },
+            Adjustment::BlackWhite {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+            },
+        ];
+        let colors = [
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [128, 128, 128],
+            [140, 110, 110],
+            [240, 10, 10],
+            [255, 255, 255],
+            [0, 0, 0],
+        ];
+        for adjustment in cases {
+            for blend in BlendMode::ALL {
+                let mut world = World::new();
+                let mut frame = Frame::transparent(16, 16);
+                let mut mask = Frame::transparent(16, 16);
+                for y in 0..16 {
+                    for x in 0..16 {
+                        let rgb = colors[x as usize % colors.len()];
+                        frame.set_pixel(
+                            x,
+                            y,
+                            [rgb[0], rgb[1], rgb[2], [0, 64, 128, 255][y as usize % 4]],
+                        );
+                        let v = [0, 128, 255][(y as usize / 4) % 3];
+                        mask.set_pixel(x, y, [v, v, v, 255]);
+                    }
+                }
+                world.with_layer("Photo", frame);
+                let mask_id = world.store.put(mask);
+                let id = world.document.new_adjustment("Adj", adjustment.clone());
+                let adj = world.document.adjustment_mut(id).unwrap();
+                adj.blend = blend;
+                adj.opacity = 0.7;
+                adj.mask = Some(crate::document::LayerMask::new(mask_id));
+                assert_parity_on(&world, &mut gpu);
+                world
+                    .document
+                    .adjustment_mut(id)
+                    .unwrap()
+                    .mask
+                    .as_mut()
+                    .unwrap()
+                    .enabled = false;
+                assert_parity_on(&world, &mut gpu);
+                world.document.adjustment_mut(id).unwrap().hidden = true;
+                assert_parity_on(&world, &mut gpu);
+            }
+        }
     }
 
     #[test]

@@ -1,0 +1,17 @@
+{
+  "actual_ui": "not verified",
+  "asset": {
+    "asset_id": "60140688-40fd-41fe-af26-9e03eaa44dde",
+    "version": {
+      "registration_id": "operation:c02-review-export",
+      "sha256": "553adc3596f1db84011df8251a9298776ebf53439cff6edfe123e1591bc64869"
+    }
+  },
+  "canvas_reimport": true,
+  "clip_ui_reuse": "not verified",
+  "editable_reopen": true,
+  "gpu_cpu_png_max_byte_delta": 1,
+  "library_count": 1,
+  "registration_id": "c02-review-export",
+  "sha256": "553adc3596f1db84011df8251a9298776ebf53439cff6edfe123e1591bc64869"
+}

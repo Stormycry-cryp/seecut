@@ -1,0 +1,18 @@
+{
+  "baseline": "c97aa9406055cf6ae57302f51dae0f27b14513dd",
+  "plan": "db6000e30fc7f0acaca82b53792937350a389f0d:docs/SEECUT-DELIVERY-PLAN.md#42.13",
+  "branch": "codex/seecut-adjustments-c02",
+  "features": [
+    "Vibrance",
+    "Black & White"
+  ],
+  "deferred": [
+    "Color Lookup",
+    "vector masks",
+    "actual window interaction/screenshots"
+  ],
+  "privateRuntimeChanged": false,
+  "deployed": false,
+  "paidCalls": 0,
+  "secretValuesRead": false
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "name": "parameters",
+    "test": "panes::canvas::c02_tests::c02_parameters_defaults_history_cancel_and_pinned_target",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "mixed-export",
+    "test": "panes::canvas::c02_tests::c02_editable_project_export_asset_and_reimport",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "legacy-curves",
+    "test": "panes::canvas::tests::a_curves_adjustment_round_trips_through_the_editor_protocol",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "nested-insertion",
+    "test": "panes::canvas::tests::nested_adjustment_and_group_stay_in_the_selected_parent",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "autosave-gesture",
+    "test": "panes::canvas::tests::expired_auto_save_waits_for_parameter_cancel_or_commit",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "legacy-v2",
+    "test": "panes::canvas::shapes::tests::shape_project_reopens_geometry_and_rebuilds_cache",
+    "exit": 0,
+    "oneTestPassed": true
+  },
+  {
+    "name": "legacy-v3",
+    "test": "panes::canvas::text::tests::text_project_reopens_editable_source_and_png_matches_compositor",
+    "exit": 0,
+    "oneTestPassed": true
+  }
+]

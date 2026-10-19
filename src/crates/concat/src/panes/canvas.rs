@@ -40,6 +40,8 @@ use slint::{ComponentHandle, SharedPixelBuffer};
 use crate::i18n::tf;
 use crate::studio::Studio;
 
+#[cfg(test)]
+mod c02_tests;
 mod shapes;
 mod text;
 use shapes::ShapeDrag;
@@ -330,7 +332,10 @@ impl CanvasExportJob {
 }
 
 fn canvas_manifest(data: &CanvasSaveData) -> String {
-    let version = if data
+    let version = if data.document.walk().iter().any(|n| matches!(n,
+        LayerNode::Adjustment(a) if matches!(a.adjustment, Adjustment::Vibrance { .. } | Adjustment::BlackWhite { .. }))) {
+        4
+    } else if data
         .document
         .walk()
         .iter()
@@ -3922,6 +3927,17 @@ impl CanvasPane {
         };
         let value = value.clamp(*minimum, *maximum);
         match &mut adjustment.adjustment {
+            Adjustment::Vibrance { amount } => {
+                if index == 0 {
+                    *amount = value;
+                }
+            }
+            Adjustment::BlackWhite { red, green, blue } => match index {
+                0 => *red = value,
+                1 => *green = value,
+                2 => *blue = value,
+                _ => {}
+            },
             Adjustment::Exposure { stops } => {
                 if index == 0 {
                     *stops = value;
@@ -4851,7 +4867,7 @@ impl CanvasPane {
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("open: {e}"))?;
         if !matches!(
             manifest.get("concat-project").and_then(|v| v.as_u64()),
-            Some(1..=3)
+            Some(1..=4)
         ) {
             return Err("open: not a concat project".into());
         }
@@ -4868,6 +4884,11 @@ impl CanvasPane {
         validate_canvas_dimensions(document.width, document.height, texture_limit)
             .map_err(|error| format!("open: {error}"))?;
         document.validate().map_err(|e| format!("open: {e}"))?;
+        if manifest["concat-project"].as_u64().unwrap_or(0) < 4
+            && document.walk().iter().any(|n| matches!(n, LayerNode::Adjustment(a)
+                if matches!(a.adjustment, Adjustment::Vibrance { .. } | Adjustment::BlackWhite { .. }))) {
+            return Err("open: vibrance and black & white require project version 4".into());
+        }
         let saved_view: Option<CanvasSavedView> = manifest
             .get("view")
             .map(|value| serde_json::from_value(value.clone()))
@@ -4925,9 +4946,7 @@ impl CanvasPane {
             if let LayerNode::Layer(layer) = node
                 && let Some(shape) = &layer.vector
             {
-                if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(2)
-                    && manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(3)
-                {
+                if manifest["concat-project"].as_u64().unwrap_or(0) < 2 {
                     return Err("open: vector geometry requires project version 2".into());
                 }
                 let frame = shape
@@ -4941,7 +4960,7 @@ impl CanvasPane {
             if let LayerNode::Layer(layer) = node
                 && let Some(text) = &layer.text
             {
-                if manifest.get("concat-project").and_then(|v| v.as_u64()) != Some(3) {
+                if manifest["concat-project"].as_u64().unwrap_or(0) < 3 {
                     return Err("open: text requires project version 3".into());
                 }
                 store.replace(
@@ -5641,6 +5660,7 @@ impl CanvasPane {
     /// pick, toggle visibility, set opacity (0..1), add, delete, and move
     /// (`direction` -1 up, 1 down) - the panel's own verbs, on its rows.
     pub fn agent_layer_pick(&mut self, row: i32) {
+        self.finish_parameter_gesture(false);
         if self
             .route_transform_boundary(CanvasMsg::LayerPick(row))
             .is_none()
@@ -5947,7 +5967,7 @@ impl CanvasPane {
     }
 
     /// Adds an adjustment of `kind` above the active layer - the kinds
-    /// [`ADJUSTMENT_KINDS`] numbers, `1` Invert through `7` Curves - and
+    /// [`ADJUSTMENT_KINDS`] numbers, `1` Invert through `9` Black & White - and
     /// makes it the active row.
     pub fn agent_adjustment_add(&mut self, kind: i32) {
         self.history_edit(|pane| pane.add_adjustment(kind));
@@ -6216,9 +6236,8 @@ fn node_image_pixels(node: &LayerNode) -> Option<PixelId> {
 
 /// The adjustment kinds the panel offers, as the boundary numbers them:
 /// `1` Invert, `2` Exposure, `3` Levels, `4` Hue & Saturation, `5`
-/// Gradient map, `6` Grain. `0` means "not an adjustment"; `7` is Curves,
-/// which the document round-trips but the popup does not yet offer, a
-/// curve wanting handles rather than knobs.
+/// Gradient map, `6` Grain, `7` Curves, `8` Vibrance, `9` Black & White.
+/// `0` means "not an adjustment". Existing kind numbers stay stable.
 const ADJUSTMENT_KINDS: &[(i32, &str)] = &[
     (1, "Invert"),
     (2, "Exposure"),
@@ -6227,6 +6246,8 @@ const ADJUSTMENT_KINDS: &[(i32, &str)] = &[
     (5, "Gradient map"),
     (6, "Grain"),
     (7, "Curves"),
+    (8, "Vibrance"),
+    (9, "Black & White"),
 ];
 
 /// One drawn stroke of a curves polyline, as the editor draws it: both
@@ -6359,6 +6380,8 @@ fn adjustment_kind(adjustment: &Adjustment) -> i32 {
         Adjustment::GradientMap { .. } => 5,
         Adjustment::Grain { .. } => 6,
         Adjustment::Curves { .. } => 7,
+        Adjustment::Vibrance { .. } => 8,
+        Adjustment::BlackWhite { .. } => 9,
     }
 }
 
@@ -6372,10 +6395,16 @@ fn adjustment_label(kind: i32) -> String {
     tf(key, &[])
 }
 
-/// A fresh adjustment of `kind`, its parameters at their neutral values -
-/// the ones that change nothing until a knob moves.
+/// A fresh adjustment of `kind`. Vibrance starts neutral; black & white
+/// starts at Rec.601 luminance, like gradient map/invert it changes colour.
 fn default_adjustment(kind: i32) -> Option<Adjustment> {
     match kind {
+        8 => Some(Adjustment::Vibrance { amount: 0.0 }),
+        9 => Some(Adjustment::BlackWhite {
+            red: 0.299,
+            green: 0.587,
+            blue: 0.114,
+        }),
         1 => Some(Adjustment::Invert),
         2 => Some(Adjustment::Exposure { stops: 0.0 }),
         3 => Some(Adjustment::Levels {
@@ -6410,6 +6439,12 @@ fn default_adjustment(kind: i32) -> Option<Adjustment> {
 /// nothing.
 fn adjustment_parameters(adjustment: &Adjustment) -> Vec<(String, f32, f32, f32)> {
     match adjustment {
+        Adjustment::Vibrance { amount } => vec![(tf("Amount", &[]), *amount, -1.0, 1.0)],
+        Adjustment::BlackWhite { red, green, blue } => vec![
+            (tf("Red contribution", &[]), *red, 0.0, 2.0),
+            (tf("Green contribution", &[]), *green, 0.0, 2.0),
+            (tf("Blue contribution", &[]), *blue, 0.0, 2.0),
+        ],
         Adjustment::Invert | Adjustment::GradientMap { .. } | Adjustment::Curves { .. } => {
             Vec::new()
         }
