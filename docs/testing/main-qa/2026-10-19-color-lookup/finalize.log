@@ -1,0 +1,4 @@
+{"action": "seal", "verified_files": 5135}
+/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Color-Lookup-QA.app: replacing existing signature
+{"action": "verify", "verified_files": 5135}
+{"source": "e6dcc3b73ef610cd7bb8436f66c4b10d800690a7", "app": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Color-Lookup-QA.app", "fileCount": 6380, "manifest": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/color-lookup-evidence/candidate-manifest.json"}

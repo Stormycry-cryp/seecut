@@ -30,3 +30,17 @@
 - [原生结果](native-results.json)
 
 日志副本只去除末尾空行以满足补丁检查，原始文件仍在 `.toonflow/color-lookup-evidence`。只运行受影响定向验证，未跑无关模型或平台的全量测试。
+
+## 固定源码与候选应用
+
+源码 `e6dcc3b73ef610cd7bb8436f66c4b10d800690a7`，后续提交仅补充本目录证据。[草稿 PR #15](https://github.com/Stormycry-cryp/seecut/pull/15) 叠在 PR #14。最终原生构建通过（5 分 42 秒），源码在构建与打包期间未再修改。
+
+独立候选 `.toonflow/SeeCut-Color-Lookup-QA.app`，Bundle ID `cloud.stormycry.seecut.color-lookup-qa`，仅使用本地 QA API `http://127.0.0.1:18743`。已完成 ad-hoc 签名及 deep/strict 校验、5135 个 Agent 文件封装校验，整包 6380 个常规文件摘要见 [candidate-manifest.json](candidate-manifest.json)。签名仅用于本机候选校验，未宣称公证或发布。
+
+Web/Server/Node 成品逐文件摘要与 R3 候选相同，私有运行时仍为 `7a05ee22bc6889e3ac16e9e6b8a414ae823be53c`；检查了私有源码及打包运行时摘要。未安装或启动候选。
+
+- [验证清单及 20 个源码文件摘要](validation.json)
+- [最终构建日志](native-build.log)
+- [封装、签名与资源校验日志](finalize.log)
+
+截至 2026-10-19 03:43:29 UTC，官方 10080 分钟周额度剩余 85%，重置于 2026-10-25 01:02:41 UTC，高于 50% 停止线。可见线程快照中本执行者为唯一活跃 SeeCut 写入者，Astra 审核线程空闲；保留旧 WIP。完成本包后等待主协调复核，再决定后续工作。
