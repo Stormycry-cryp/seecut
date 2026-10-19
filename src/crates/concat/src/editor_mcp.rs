@@ -923,10 +923,9 @@ impl BridgeUi {
                 .flow_ids
                 .as_ref()
                 .is_none_or(|old| old.session != ids.session)
+                && let Some(old) = self.flow_ids.take()
             {
-                if let Some(old) = self.flow_ids.take() {
-                    self.grants.retain(|_, g| g.project != old.project);
-                }
+                self.grants.retain(|_, g| g.project != old.project);
             }
             self.sync_workspace(Some("flow"));
             self.flow_ids = Some(ids.clone());

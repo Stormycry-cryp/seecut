@@ -63,11 +63,9 @@ impl CanvasPane {
             shape.kind = kind;
             let points: Vec<_> = shape.knots.iter().map(|k| k.anchor).collect();
             for (i, k) in shape.knots.iter_mut().enumerate() {
-                for axis in 0..2 {
-                    k.incoming[axis] =
-                        k.anchor[axis] + (points[(i + 3) % 4][axis] - k.anchor[axis]) / 3.0;
-                    k.outgoing[axis] =
-                        k.anchor[axis] + (points[(i + 1) % 4][axis] - k.anchor[axis]) / 3.0;
+                for (axis, anchor) in k.anchor.into_iter().enumerate() {
+                    k.incoming[axis] = anchor + (points[(i + 3) % 4][axis] - anchor) / 3.0;
+                    k.outgoing[axis] = anchor + (points[(i + 1) % 4][axis] - anchor) / 3.0;
                 }
             }
         }

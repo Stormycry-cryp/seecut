@@ -29,6 +29,7 @@ thread_local! { static CONTEXT: RefCell<Option<Context>> = const { RefCell::new(
 pub(crate) fn context() -> Option<Context> {
     CONTEXT.with(|v| v.borrow().clone())
 }
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn update(value: Value) {
     CONTEXT.with(|v| {
         *v.borrow_mut() = serde_json::from_value::<Context>(value).ok().filter(|c| {
