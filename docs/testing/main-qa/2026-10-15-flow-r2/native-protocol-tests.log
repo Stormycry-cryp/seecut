@@ -1,0 +1,77 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling num-traits v0.2.19
+   Compiling syn v3.0.4
+   Compiling syn v2.0.119
+   Compiling memchr v2.8.3
+   Compiling once_cell v1.21.4
+   Compiling hashbrown v0.17.1
+   Compiling tracing-core v0.1.36
+   Compiling serde_json v1.0.151
+   Compiling indexmap v2.14.0
+   Compiling darling_core v0.24.1
+   Compiling serde_derive_internals v0.30.0
+   Compiling futures-macro v0.3.34
+   Compiling serde_derive v1.0.229
+   Compiling tokio-macros v2.7.2
+   Compiling ref-cast-impl v1.0.27
+   Compiling schemars_derive v1.2.2
+   Compiling thiserror-impl v2.0.20
+   Compiling tracing-attributes v0.1.31
+   Compiling ref-cast v1.0.27
+   Compiling darling_macro v0.24.1
+   Compiling futures-util v0.3.34
+   Compiling tokio v1.53.1
+   Compiling darling v0.24.1
+   Compiling thiserror v2.0.20
+   Compiling rmcp-macros v3.4.0
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling tracing v0.1.44
+   Compiling tokio-util v0.7.19
+   Compiling serde v1.0.229
+   Compiling chrono v0.4.45
+   Compiling schemars v1.2.2
+   Compiling rmcp v3.4.0
+   Compiling concat-editor-mcp v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-editor-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9m 19s
+     Running unittests src/lib.rs (.toonflow/native-target/debug/deps/concat_editor_mcp-2c2d933c0b0a4f36)
+
+running 18 tests
+test tests::layer_identity_rejects_zero_aliases_and_overflow ... ok
+test flow_workspace::tests::only_reads_can_omit_original_operation_identity ... ok
+test tests::move_requires_canonical_operation_and_finite_bounded_deltas ... ok
+test canvas::tests::operation_query_only_accepts_original_client_session_sequence ... ok
+test canvas::tests::targeted_layer_read_rejects_pagination_and_noncanonical_ids ... ok
+test canvas::tests::reads_cannot_become_writes_or_accept_unbounded_pages ... ok
+test canvas::tests::semantic_fields_cannot_smuggle_paths_or_non_finite_transform ... ok
+test canvas::tests::typed_writes_bind_method_and_original_identity ... ok
+test flow_workspace::tests::rejects_unbounded_or_unrecognized_call_fields ... ok
+test tests::preview_rejects_each_stale_axis ... ok
+test tests::operation_identity_is_versioned_canonical_and_length_delimited ... ok
+test tests::reads_keep_timeout_disconnect_and_partial_send_statuses ... ok
+test tests::rejects_oversized_ipc_before_allocating_body ... ok
+test tests::sent_move_timeout_disconnect_and_invalid_reply_are_unknown ... ok
+test tests::unrelated_write_methods_are_not_in_the_wire_protocol ... ok
+test tests::zero_sent_is_unavailable_partial_move_is_unknown_and_app_results_are_preserved ... ok
+test tests::move_wire_shape_rejects_unknown_missing_and_unrelated_fields ... ok
+test tests::explicit_instance_and_missing_app_have_distinct_results ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running unittests src/main.rs (.toonflow/native-target/debug/deps/seecut_editor_mcp-28d49c25c322e336)
+
+running 5 tests
+test tests::reads_and_move_use_independent_credentials ... ok
+test tests::move_without_write_credential_returns_not_authorized_before_ipc ... ok
+test tests::public_move_arguments_are_flat_and_reject_unrelated_fields ... ok
+test tests::retired_flow_tools_are_not_advertised ... ok
+test tests::embedded_flow_tools_are_explicit_and_have_frozen_identity_fields ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests concat_editor_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

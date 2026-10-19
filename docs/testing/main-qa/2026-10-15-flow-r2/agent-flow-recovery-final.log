@@ -1,0 +1,10 @@
+✔ unknown Flow write reconciles original receipt without another generation; restore=false (227.022834ms)
+✔ unknown Flow write reconciles original receipt without another generation; restore=true (172.477583ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 647.659166

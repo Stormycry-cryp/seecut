@@ -1,0 +1,135 @@
+   Compiling objc2-core-foundation v0.3.2
+   Compiling serde v1.0.229
+   Compiling indexmap v2.14.0
+   Compiling tracing-attributes v0.1.31
+   Compiling serde_json v1.0.151
+   Compiling slab v0.4.12
+   Compiling concat-core v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-core)
+   Compiling toml_edit v0.25.13+spec-1.1.0
+   Compiling futures-sink v0.3.34
+   Compiling futures-core v0.3.34
+   Compiling darling_core v0.24.1
+   Compiling futures-channel v0.3.34
+   Compiling futures-macro v0.3.34
+   Compiling chrono v0.4.45
+   Compiling naga v29.0.4
+   Compiling proc-macro-crate v3.5.0
+   Compiling objc2-foundation v0.3.2
+   Compiling objc2-core-video v0.3.2
+   Compiling objc2-core-text v0.3.2
+   Compiling skia-bindings v0.99.0
+   Compiling objc2-core-audio v0.3.2
+   Compiling concat-project v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-project)
+   Compiling i-slint-core-macros v1.17.1
+   Compiling futures-task v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling concat-media v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-media)
+   Compiling num_enum_derive v0.7.6
+   Compiling tokio-macros v2.7.2
+   Compiling ref-cast-impl v1.0.27
+   Compiling serde_derive_internals v0.30.0
+   Compiling wgpu-naga-bridge v29.0.4
+   Compiling futures-util v0.3.34
+   Compiling concat-effects v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-effects)
+   Compiling tracing v0.1.44
+   Compiling ort v2.0.0-rc.13
+   Compiling winit v0.30.13
+   Compiling num_enum v0.7.6
+   Compiling i-slint-compiler v1.17.1
+   Compiling objc2-metal v0.3.2
+   Compiling objc2-cloud-kit v0.3.2
+   Compiling objc2-core-data v0.3.2
+   Compiling objc2-core-image v0.3.2
+   Compiling fontique v0.10.0
+   Compiling objc2-audio-toolbox v0.3.2
+   Compiling i-slint-common v1.17.1
+   Compiling objc2-core-graphics v0.3.2
+   Compiling parley v0.10.0
+   Compiling coreaudio-rs v0.13.0
+   Compiling objc2-quartz-core v0.3.2
+   Compiling concat-vision v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-vision)
+   Compiling skia-safe v0.99.0
+   Compiling cpal v0.16.0
+   Compiling raw-window-metal v1.1.0
+   Compiling wgpu-hal v29.0.4
+   Compiling objc2-app-kit v0.3.2
+   Compiling softbuffer v0.4.8
+   Compiling darling_macro v0.24.1
+   Compiling schemars_derive v1.2.2
+   Compiling tokio v1.53.1
+   Compiling futures-executor v0.3.34
+   Compiling wgpu-core-deps-apple v29.0.4
+   Compiling wgpu-core v29.0.4
+   Compiling darling v0.24.1
+   Compiling ref-cast v1.0.27
+   Compiling ureq v2.12.1
+   Compiling wgpu v29.0.4
+   Compiling write-fonts v0.48.1
+   Compiling keyboard-types v0.7.0
+   Compiling concat-render v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-render)
+   Compiling concat-export v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-export)
+   Compiling concat-text v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-text)
+   Compiling dyn-clone v1.0.20
+   Compiling concat-host v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-host)
+   Compiling accesskit_winit v0.33.2
+   Compiling tokio-util v0.7.19
+   Compiling rmcp-macros v3.4.0
+   Compiling futures v0.3.34
+   Compiling slint-build v1.17.1
+   Compiling concat-api v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-api)
+   Compiling schemars v1.2.2
+   Compiling sherpa-onnx v1.13.7
+   Compiling concat-server v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-server)
+   Compiling concat-speech v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-speech)
+   Compiling concat-canvas v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-canvas)
+   Compiling seecut-flow-core v0.1.0 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/seecut-flow-core)
+   Compiling rmcp v3.4.0
+   Compiling i-slint-core v1.17.1
+   Compiling glutin v0.32.3
+   Compiling webbrowser v1.2.4
+   Compiling i-slint-renderer-software v1.17.1
+   Compiling i-slint-renderer-skia v1.17.1
+   Compiling muda v0.19.3
+   Compiling concat-editor-mcp v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-editor-mcp)
+   Compiling i-slint-backend-winit v1.17.1
+   Compiling i-slint-backend-selector v1.17.1
+   Compiling objc2-web-kit v0.3.2
+   Compiling wry v0.57.0
+   Compiling rfd v0.17.2
+   Compiling concat v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat)
+   Compiling slint-macros v1.17.1
+   Compiling slint v1.17.1
+error[E0133]: call to unsafe function `NSView::superview` is unsafe and requires unsafe block
+  --> crates/concat/src/toonflow_overlay_macos.rs:21:59
+   |
+21 |             let local = self.convertPoint_fromView(point, self.superview().as_deref());
+   |                                                           ^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+error[E0133]: call to unsafe function `NSView::superview` is unsafe and requires unsafe block
+  --> crates/concat/src/toonflow_overlay_macos.rs:38:26
+   |
+38 |         let Some(parent)=self.superview() else {return};
+   |                          ^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+error[E0133]: call to unsafe function `CALayer::setMask` is unsafe and requires unsafe block
+  --> crates/concat/src/toonflow_overlay_macos.rs:49:13
+   |
+49 |             layer.setMask(Some(&mask));
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+error[E0133]: call to unsafe function `CALayer::setMask` is unsafe and requires unsafe block
+  --> crates/concat/src/toonflow_overlay_macos.rs:50:18
+   |
+50 |         } else { layer.setMask(None); }
+   |                  ^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+For more information about this error, try `rustc --explain E0133`.
+error: could not compile `concat` (lib) due to 4 previous errors

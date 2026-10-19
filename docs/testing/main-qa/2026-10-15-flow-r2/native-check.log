@@ -1,0 +1,26 @@
+NOTE: overlapping early check outputs; diagnostic only, not final validation.
+    Blocking waiting for file lock on build directory
+    Checking concat-editor-mcp v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-editor-mcp)
+   Compiling concat v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat)
+error[E0369]: no implementation for `&str | &str`
+  --> crates/concat-editor-mcp/src/flow_workspace.rs:26:66
+   |
+26 | ...   && ((self.is_read() && self.name != "flow_get_operation" | "flow_get_node_config" | "flow_get_task") || self.operation_id.as_ref()....
+   |                                           -------------------- ^ ---------------------- &str
+   |                                           |
+   |                                           &str
+
+For more information about this error, try `rustc --explain E0369`.
+error: could not compile `concat-editor-mcp` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error[E0133]: call to unsafe function `NSView::superview` is unsafe and requires unsafe block
+  --> crates/concat/src/toonflow_overlay_macos.rs:30:47
+   |
+30 |         let web=webview.webview(); let parent=web.superview()?;
+   |                                               ^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+Some errors have detailed explanations: E0133, E0277, E0599.
+For more information about an error, try `rustc --explain E0133`.
+error: could not compile `concat` (lib) due to 9 previous errors

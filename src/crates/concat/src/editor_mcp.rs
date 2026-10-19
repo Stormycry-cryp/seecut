@@ -527,6 +527,10 @@ struct MoveFingerprint {
 /// Compact trusted-card content, parsed with the same exact named arguments
 /// used by the native permit. No raw paths or arbitrary instructions displayed.
 pub(crate) fn canvas_approval_view(tool: &str, args: Value) -> Option<(String, String)> {
+    if tool.starts_with("flow_") {
+        let call = crate::toonflow_agent::approval(tool, args)?;
+        return Some(("操作 Flow".into(), format!("{} · {}", call.name, call.args)));
+    }
     let intent = Intent::parse(tool, args)?;
     Some(match intent.action {
         Some(CanvasAction::Insert { asset_id, .. }) => {
@@ -570,6 +574,8 @@ pub(crate) struct BridgeUi {
     canvas_ids: Option<(String, DocumentIds)>,
     clip_ids: Option<(String, DocumentIds)>,
     active_canvas: bool,
+    active_flow: bool,
+    flow_ids: Option<DocumentIds>,
     active_clip: bool,
     writes: WriteRegistry<EditFingerprint, Response>,
     canvas_permits: Permits,
@@ -586,17 +592,22 @@ impl BridgeUi {
     pub(crate) fn assistant_snapshot(&mut self, studio: &Studio, app: &App) -> AssistantSnapshot {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
-        let canvas = active.as_ref().is_some_and(|(kind, _)| kind == "canvas");
+        let canvas = active
+            .as_ref()
+            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
         let project_name = match active.as_ref().map(|(kind, _)| kind.as_str()) {
             Some("canvas") => studio.canvas.name.clone(),
             Some("clip") => studio.project_name.clone(),
+            Some("flow") => crate::toonflow_agent::context()
+                .map(|c| c.name)
+                .unwrap_or_default(),
             _ => String::new(),
         };
         // A 40ms render tick must not validate filesystem ownership. This only
         // enables an explicit request; permission and writes recheck ownership.
         let ready = canvas
             && !modal_busy(studio, app, false)
-            && studio.canvas.mcp_move_permission_request_ready().is_ok();
+            && (self.active_flow || studio.canvas.mcp_move_permission_request_ready().is_ok());
         let mut snapshot = assistant_registry_snapshot(
             AssistantPermissionContext {
                 scope: scope.as_ref(),
@@ -626,6 +637,12 @@ impl BridgeUi {
             // Until then, the host keeps session creation and draft editing disabled.
             _ => String::new(),
         };
+        if self.active_flow {
+            snapshot.project_key = active
+                .as_ref()
+                .map(|(_, ids)| format!("flow:{}", ids.project))
+                .unwrap_or_default();
+        }
         snapshot
     }
 
@@ -640,7 +657,9 @@ impl BridgeUi {
     ) -> Result<(), AssistantPermissionError> {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
-        let canvas = active.as_ref().is_some_and(|(kind, _)| kind == "canvas");
+        let canvas = active
+            .as_ref()
+            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
         if matches!(
             action,
             AssistantPermission::RevokeRead | AssistantPermission::RevokeWrite
@@ -696,6 +715,36 @@ impl BridgeUi {
         tool: &str,
         arguments: Value,
     ) -> Result<u64, AssistantPermissionError> {
+        if tool.starts_with("flow_") {
+            let call = crate::toonflow_agent::approval(tool, arguments)
+                .ok_or(AssistantPermissionError::NotAllowed)?;
+            let Some((kind, ids)) = self.active_ids(studio, app) else {
+                return Err(AssistantPermissionError::NotAllowed);
+            };
+            let current =
+                crate::toonflow_agent::context().ok_or(AssistantPermissionError::NotAllowed)?;
+            if kind != "flow"
+                || ids.project != call.project_id
+                || ids.session != call.session_id
+                || current.canvas_id != call.canvas_id
+                || current.account_scope != call.account_scope
+                || current.revision != call.revision
+                || modal_busy(studio, app, false)
+            {
+                return Err(AssistantPermissionError::NotAllowed);
+            }
+            let scope = self.scope(&ids);
+            self.writes
+                .authorize(
+                    &scope,
+                    &scope,
+                    ASSISTANT_CLIENT_ID,
+                    &self.write_token,
+                    Instant::now(),
+                )
+                .map_err(|_| AssistantPermissionError::NotAllowed)?;
+            return Ok(crate::toonflow_agent::grant(call));
+        }
         let intent = Intent::parse(tool, arguments).ok_or(AssistantPermissionError::NotAllowed)?;
         let Some((kind, ids)) = self.active_ids(studio, app) else {
             return Err(AssistantPermissionError::NotAllowed);
@@ -780,6 +829,7 @@ impl BridgeUi {
 
     pub(crate) fn revoke_tool_permit(&mut self, id: u64) {
         self.canvas_permits.revoke(id);
+        crate::toonflow_agent::revoke(id);
     }
 
     pub fn new() -> Self {
@@ -791,6 +841,8 @@ impl BridgeUi {
             canvas_ids: None,
             clip_ids: None,
             active_canvas: false,
+            active_flow: false,
+            flow_ids: None,
             active_clip: false,
             writes: WriteRegistry::new(),
             canvas_permits: Permits::default(),
@@ -844,6 +896,30 @@ impl BridgeUi {
         } else if let Some((_, old)) = self.clip_ids.take() {
             self.grants.retain(|_, grant| grant.project != old.project);
         }
+        let flow = if app.global::<SeeCut>().get_page() == 8 {
+            crate::toonflow_agent::context()
+        } else {
+            None
+        };
+        if let Some(flow) = flow {
+            let ids = DocumentIds {
+                project: flow.project_id,
+                session: flow.session_id,
+            };
+            if self
+                .flow_ids
+                .as_ref()
+                .is_none_or(|old| old.session != ids.session)
+            {
+                if let Some(old) = self.flow_ids.take() {
+                    self.grants.retain(|_, g| g.project != old.project);
+                }
+            }
+            self.sync_workspace(Some("flow"));
+            self.flow_ids = Some(ids.clone());
+            self.writes.bind_scope(Some(self.scope(&ids)));
+            return Some(("flow".into(), ids));
+        }
         let kind = active_document_kind(
             app.global::<SeeCut>().get_page(),
             app.global::<SeeCut>().get_canvas_gallery_open(),
@@ -876,12 +952,15 @@ impl BridgeUi {
     }
 
     fn sync_workspace(&mut self, kind: Option<&str>) {
-        if self.active_canvas && kind != Some("canvas") {
+        if (self.active_canvas && kind != Some("canvas"))
+            || (self.active_flow && kind != Some("flow"))
+        {
             // Leaving the granted workspace withdraws E, but preserves this
             // document session's sequence/results so returning cannot replay an edit.
             self.revoke_move();
         }
         self.active_canvas = kind == Some("canvas");
+        self.active_flow = kind == Some("flow");
         self.active_clip = kind == Some("clip");
     }
 
@@ -905,6 +984,9 @@ impl BridgeUi {
     }
 
     fn current_scope(&self) -> Option<Scope> {
+        if self.active_flow {
+            return self.flow_ids.as_ref().map(|ids| self.scope(ids));
+        }
         (if self.active_canvas {
             self.canvas_ids.as_ref()
         } else {
@@ -926,6 +1008,11 @@ impl BridgeUi {
     }
 
     fn grant_ready(&self, studio: &Studio, app: &App) -> Result<Scope, String> {
+        if self.active_flow && !modal_busy(studio, app, false) {
+            return self
+                .current_scope()
+                .ok_or_else(|| "Flow unavailable".into());
+        }
         if !self.active_canvas {
             return Err(t("No canvas project"));
         }
@@ -1213,7 +1300,7 @@ impl BridgeUi {
                     client,
                     remaining_minutes,
                     scope,
-                } if kind == "canvas"
+                } if (kind == "canvas" || kind == "flow")
                     && client == request.client_id
                     && scope.project == ids.project =>
                 {
@@ -1224,17 +1311,33 @@ impl BridgeUi {
             };
             return UiReply::Response(Response::ok(json!({
                 "appInstanceId": self.instance_id,
-                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "insert_library_image", "transform_canvas_layer", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration"],
+                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "insert_library_image", "transform_canvas_layer", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
                 "namedToolApprovalRequired":["library_images","insert_library_image","transform_canvas_layer","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
                 "permissions": ["R", "M", "E"], "readOnly": false,
                 "writeAction": "moveSelectedImage", "writeLeaseSeconds": 300,
-                "writeWorkspace": "canvas", "maxMoveDelta": 32768, "maxMovePosition": 1_000_000,
+                "writeWorkspace": kind, "maxMoveDelta": 32768, "maxMovePosition": 1_000_000,
                 "writeAuthorization": "trustedUI", "writeTokenEnvironment": "SEECUT_MCP_WRITE_TOKEN",
                 "writeGrantRequired": true, "grantedPermissions": granted, "editLeaseRemainingMinutes": edit_minutes,
                 "maxPageSize": 100, "maxProjectObjects": MAX_PROJECT_OBJECTS,
                 "previewWorkspace": "canvas", "maxPreviewEdge": 256,
                 "maxPreviewSourcePixels": 4194304,
             })));
+        }
+        if kind == "flow" {
+            let Some(flow) = crate::toonflow_agent::context() else {
+                return UiReply::Response(Response::error("wrongProject"));
+            };
+            return UiReply::Response(if request.method == Method::Context {
+                Response::ok(
+                    json!({"appInstanceId":self.instance_id,"activeWorkspace":"flow","documents":[{
+                        "kind":"flow","projectId":flow.project_id,"documentSessionId":flow.session_id,"sessionId":flow.session_id,
+                        "canvasId":flow.canvas_id,"accountScope":flow.account_scope,"revision":flow.revision,"contextRevision":flow.revision,"selectionRevision":flow.selection_revision,
+                        "selectedObjectIds":flow.selected_node_ids,"dirty":false,"busy":if flow.busy {Some("saving")}else{None}
+                    }]}),
+                )
+            } else {
+                Response::error("unsupportedWorkspace")
+            });
         }
         let (generation, revision, busy) = if kind == "canvas" {
             studio.canvas.mcp_state()
@@ -1767,6 +1870,53 @@ fn dispatch(request: Request) -> Response {
     }
     if concat_editor_mcp::validate_request_shape(&request).is_err() {
         return Response::error("invalidInput");
+    }
+    if request.method == Method::FlowWorkspace {
+        let call = request.flow_workspace.clone().expect("validated Flow call");
+        return crate::toonflow_agent::call(call.clone(), request.client_id.clone(), move || {
+            let mut result = Err(Response::error("appUnavailable"));
+            Shell::with(|shell, app| {
+                let Ok(studio) = shell.studio.try_borrow() else {
+                    return;
+                };
+                let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+                    return;
+                };
+                let Some((kind, ids)) = bridge.active_ids(&studio, &app) else {
+                    result = Err(Response::error("wrongProject"));
+                    return;
+                };
+                if kind != "flow"
+                    || ids.project != call.project_id
+                    || (call.name != "flow_get_operation" && ids.session != call.session_id)
+                    || bridge.instance_id != request.instance_id
+                {
+                    result = Err(Response::error("wrongProject"));
+                    return;
+                }
+                if call.is_read() {
+                    result = if bridge.authorized(&request, &ids.project, true) {
+                        Ok(())
+                    } else {
+                        Err(Response::error("notAuthorized"))
+                    };
+                } else {
+                    let scope = bridge.scope(&ids);
+                    let permitted = matches!(bridge.current_lease_status(Instant::now()),LeaseStatus::Active{scope:active,client,..} if active==&scope && client==request.client_id)
+                        && !bridge.write_token.is_empty()
+                        && request.client_token == bridge.write_token
+                        && !modal_busy(&studio, &app, false)
+                        && (request.client_id != ASSISTANT_CLIENT_ID
+                            || crate::toonflow_agent::claim(&call));
+                    result = if permitted {
+                        Ok(())
+                    } else {
+                        Err(Response::error("notAuthorized"))
+                    };
+                }
+            });
+            result
+        });
     }
     if request.method.is_write() {
         return dispatch_write(request);
@@ -2346,6 +2496,7 @@ mod tests {
             library_query: None,
             operation_query: None,
             flow: None,
+            flow_workspace: None,
             instance_id: scope.instance.clone(),
             client_id: "writer".into(),
             client_token: "write-token".into(),
@@ -2758,6 +2909,7 @@ mod tests {
             library_query: None,
             operation_query: None,
             flow: None,
+            flow_workspace: None,
             instance_id: bridge.instance_id.clone(),
             client_id: "reader".into(),
             client_token: "token".into(),
