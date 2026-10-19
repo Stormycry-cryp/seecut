@@ -357,6 +357,7 @@ impl CanvasPane {
         let shape = self.selected_shape();
         controls.set_shape_selected(shape.is_some() && !self.paint_mask);
         self.publish_vector_mask_controls(app);
+        self.publish_psd_controls(app);
         controls.set_shape_drawing(self.shape_session.is_some() && self.tool == 9);
         controls.set_shape_editing(self.shape_session.is_some());
         let hex = |c: Option<[u8; 4]>| {

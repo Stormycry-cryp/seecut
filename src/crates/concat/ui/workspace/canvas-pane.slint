@@ -57,6 +57,11 @@ export struct CanvasCurveSegment {
 }
 
 export global CanvasControls {
+    in property <bool> psd-importing;
+    in property <string> psd-status;
+    in property <string> psd-details;
+    callback psd-cancel();
+    callback psd-dismiss();
     in-out property <bool> text-selected;
     in-out property <bool> text-editing;
     in-out property <string> text-content;
@@ -1950,4 +1955,26 @@ export component CanvasPane inherits Rectangle {
             GenerationSubmitBar { compact: true; }
         }
     }
+    if CanvasControls.psd-status != "": psd-card := Rectangle {
+        x: 16px; y: root.standalone ? 16px : 48px;
+        width: min(440px, parent.width - 32px);
+        height: psd-content.preferred-height + 24px;
+        background: Theme.panel; border-radius: 10px; border-width: 1px; border-color: Theme.line;
+        property <bool> expanded: false;
+        psd-content := VerticalLayout {
+            padding: 12px; spacing: 8px;
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: CanvasControls.psd-status; color: Theme.fg; wrap: word-wrap; vertical-alignment: center; }
+                if CanvasControls.psd-importing: AppButton { label: "取消"; clicked => { CanvasControls.psd-cancel(); } }
+                if !CanvasControls.psd-importing: AppButton { label: "关闭"; clicked => { CanvasControls.psd-dismiss(); } }
+            }
+            if CanvasControls.psd-details != "": AppButton { label: psd-card.expanded ? "收起详情" : "查看详情"; clicked => { psd-card.expanded = !psd-card.expanded; } }
+            if psd-card.expanded: ScrollView {
+                height: 128px;
+                Text { width: parent.width; text: CanvasControls.psd-details; color: Theme.fg-muted; wrap: word-wrap; font-size: 12px; }
+            }
+        }
+    }
+
 }

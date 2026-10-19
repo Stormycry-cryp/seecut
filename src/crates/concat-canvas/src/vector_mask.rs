@@ -60,7 +60,11 @@ impl VectorMask {
 impl LayerMask {
     /// Vector masks hide outside their geometry; legacy bitmaps show outside it.
     pub fn outside_coverage(&self) -> f32 {
-        if self.vector.is_some() { 0.0 } else { 1.0 }
+        if self.vector.is_some() {
+            0.0
+        } else {
+            self.bitmap_bounds.map_or(1.0, |b| b.outside as f32 / 255.0)
+        }
     }
 
     /// Document-pixel to cache-pixel affine map. The GPU receives the same six
@@ -93,9 +97,16 @@ impl LayerMask {
                 Some(p)
             }
         };
-        let o = map((0.0, 0.0))?;
-        let x = map((canvas.0, 0.0))?;
-        let y = map((0.0, canvas.1))?;
+        let cache = |p| {
+            let (x, y) = map(p)?;
+            Some(
+                self.bitmap_bounds
+                    .map_or((x, y), |b| (x - b.left as f32, y - b.top as f32)),
+            )
+        };
+        let o = cache((0.0, 0.0))?;
+        let x = cache((canvas.0, 0.0))?;
+        let y = cache((0.0, canvas.1))?;
         Some([x.0 - o.0, x.1 - o.1, y.0 - o.0, y.1 - o.1, o.0, o.1])
     }
 

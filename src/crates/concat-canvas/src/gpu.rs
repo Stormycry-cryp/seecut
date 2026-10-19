@@ -578,7 +578,7 @@ impl Params {
             )
             .unwrap_or([0.0, 0.0, 0.0, 0.0, -1.0, -1.0]);
         self.flags |= 32;
-        if mask.vector.is_some() {
+        if mask.outside_coverage() == 0.0 {
             self.flags |= 64;
         }
     }

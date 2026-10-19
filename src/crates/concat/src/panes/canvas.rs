@@ -43,6 +43,7 @@ use crate::studio::Studio;
 #[cfg(test)]
 mod c02_tests;
 pub(crate) mod lookup;
+mod psd;
 mod shapes;
 mod text;
 mod vector_masks;
@@ -329,7 +330,9 @@ impl CanvasExportJob {
 }
 
 fn canvas_manifest(data: &CanvasSaveData) -> String {
-    let version = if data.document.masks().iter().any(|(_,m)| m.vector.is_some()) {
+    let version = if data.document.masks().iter().any(|(_,m)| m.bitmap_bounds.is_some()) {
+        7
+    } else if data.document.masks().iter().any(|(_,m)| m.vector.is_some()) {
         6
     } else if data.document.walk().iter().any(|n| matches!(n,LayerNode::Adjustment(a) if matches!(a.adjustment,Adjustment::ColorLookup { .. }))) {
         5
@@ -446,6 +449,10 @@ struct ObjectDrag {
 #[derive(Clone, Copy)]
 enum PaintMapping {
     Document,
+    Coverage {
+        matrix: [f32; 6],
+        canvas: (f32, f32),
+    },
     Image {
         transform: concat_canvas::LayerTransform,
         bitmap: (f32, f32),
@@ -463,6 +470,10 @@ impl PaintMapping {
     fn to_target(self, point: (f32, f32)) -> Option<(f32, f32)> {
         match self {
             Self::Document => Some(point),
+            Self::Coverage { matrix: m, canvas } => {
+                let (u, v) = (point.0 / canvas.0, point.1 / canvas.1);
+                Some((m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]))
+            }
             Self::Image {
                 transform,
                 bitmap,
@@ -480,6 +491,17 @@ impl PaintMapping {
     fn to_document(self, point: (f32, f32)) -> Option<(f32, f32)> {
         match self {
             Self::Document => Some(point),
+            Self::Coverage { matrix: m, canvas } => {
+                let det = m[0] * m[3] - m[1] * m[2];
+                if !det.is_finite() || det.abs() < 1e-12 {
+                    return None;
+                }
+                let (x, y) = (point.0 - m[4], point.1 - m[5]);
+                Some((
+                    (m[3] * x - m[2] * y) / det * canvas.0,
+                    (-m[1] * x + m[0] * y) / det * canvas.1,
+                ))
+            }
             Self::Image {
                 transform,
                 bitmap,
@@ -607,6 +629,8 @@ impl CanvasImport {
 /// Everything that can happen to the canvas.
 #[derive(Debug)]
 pub enum CanvasMsg {
+    PsdCancel,
+    PsdDismiss,
     TextStart(i32, f64, f64),
     TextChange(i32, String, f32),
     TextFinish(bool),
@@ -918,6 +942,9 @@ pub struct CanvasPane {
     autosave_test_completion: Option<std::sync::mpsc::Sender<Result<bool, String>>>,
     /// A requested image/project held while the discard dialog is visible.
     pending_open: Option<PathBuf>,
+    psd_import: Option<psd::ImportTicket>,
+    psd_status: String,
+    psd_details: String,
     pending_handoff_paths: Option<Vec<CanvasImport>>,
     pub open_confirm: bool,
     /// The full path of the current `.comp` package, when this document has
@@ -1000,6 +1027,9 @@ impl Default for CanvasPane {
             #[cfg(test)]
             autosave_test_completion: None,
             pending_open: None,
+            psd_import: None,
+            psd_status: String::new(),
+            psd_details: String::new(),
             pending_handoff_paths: None,
             open_confirm: false,
             project_path: None,
@@ -1243,6 +1273,10 @@ impl CanvasPane {
         if let Err(error) = self.flush_pending_auto_save() {
             studio.notify(&format!("画布自动保存失败：{error}"), true);
         }
+        if self.revision != previous_revision && self.psd_import.is_some() {
+            self.cancel_psd();
+            self.psd_status = "画布已变化，PSD 导入已取消".into();
+        }
         if self.revision != previous_revision && self.is_modified() {
             self.schedule_auto_save(900);
         }
@@ -1254,6 +1288,14 @@ impl CanvasPane {
     /// submits from - the same rule the monitor's drawing keeps.
     fn update_inner(&mut self, msg: CanvasMsg, studio: &mut Studio) {
         match msg {
+            CanvasMsg::PsdCancel => {
+                self.cancel_psd();
+                self.psd_status = "PSD 导入已取消".into();
+            }
+            CanvasMsg::PsdDismiss => {
+                self.psd_status.clear();
+                self.psd_details.clear();
+            }
             CanvasMsg::TextStart(mode, x, y) => {
                 if let Err(e) = self.text_start(mode, x, y) {
                     studio.notify(&format!("文字不可用：{e}"), true);
@@ -3554,6 +3596,19 @@ impl CanvasPane {
         let frame = self.store.get(target)?;
         let bitmap = (frame.width() as f32, frame.height() as f32);
         let canvas = (document.width as f32, document.height as f32);
+        if let Some(mask) = node
+            .mask()
+            .filter(|m| m.pixels == target && m.bitmap_bounds.is_some())
+        {
+            let current = match node {
+                LayerNode::Layer(l) => Some(&l.transform),
+                _ => None,
+            };
+            return Some(PaintMapping::Coverage {
+                matrix: mask.coverage_mapping(current, bitmap, canvas)?,
+                canvas,
+            });
+        }
         match node {
             LayerNode::Layer(layer) if layer.pixels == target => Some(PaintMapping::Image {
                 transform: layer.transform,
@@ -4949,7 +5004,7 @@ impl CanvasPane {
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("open: {e}"))?;
         if !matches!(
             manifest.get("concat-project").and_then(|v| v.as_u64()),
-            Some(1..=6)
+            Some(1..=7)
         ) {
             return Err("open: not a concat project".into());
         }
@@ -4966,6 +5021,14 @@ impl CanvasPane {
         validate_canvas_dimensions(document.width, document.height, texture_limit)
             .map_err(|error| format!("open: {error}"))?;
         document.validate().map_err(|e| format!("open: {e}"))?;
+        if manifest["concat-project"].as_u64().unwrap_or(0) < 7
+            && document
+                .masks()
+                .iter()
+                .any(|(_, m)| m.bitmap_bounds.is_some())
+        {
+            return Err("open: positioned bitmap masks require project version 7".into());
+        }
         if manifest["concat-project"].as_u64().unwrap_or(0) < 6
             && document.masks().iter().any(|(_, m)| m.vector.is_some())
         {
@@ -5389,6 +5452,7 @@ impl CanvasPane {
     }
 
     fn request_open(&mut self, path: &Path, studio: &mut Studio) {
+        self.cancel_psd();
         match self.owns_canvas_path(path) {
             Ok(true) => {
                 if let Some(paths) = self.pending_handoff_paths.take() {
@@ -5433,6 +5497,13 @@ impl CanvasPane {
                     .as_ref()
                     .map(|device| device.limits().max_texture_dimension_2d)
             });
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("psd"))
+        {
+            self.start_psd(path, texture_limit.unwrap_or(8192), studio);
+            return;
+        }
         if path.is_dir() {
             match self.load_comp(path, texture_limit) {
                 Ok(()) => {
@@ -5486,24 +5557,43 @@ impl CanvasPane {
     }
 
     fn open_frame(&mut self, path: &Path, frame: Frame, studio: &mut Studio) {
-        self.invalidate_auto_save();
         let (width, height) = (frame.width(), frame.height());
         let mut document = ImageDocument::new(width, height);
-        self.store = PixelStore::new();
-        self.thumbnail_cache.clear();
-        self.content_bounds.clear();
-        self.pixel_revisions.clear();
-        if let Some(gpu) = &mut self.gpu {
-            gpu.reset_document();
-        }
-        let pixels = self.store.put(frame);
-        let base = document.new_layer(
+        let mut store = PixelStore::new();
+        let pixels = store.put(frame);
+        document.new_layer(
             path.file_stem().unwrap_or_default().to_string_lossy(),
             pixels,
         );
+        self.replace_imported_document(path, document, store);
+        self.render(studio);
+    }
+
+    fn replace_imported_document(
+        &mut self,
+        path: &Path,
+        document: ImageDocument,
+        store: PixelStore,
+    ) {
+        self.cancel_psd();
+        self.invalidate_auto_save();
+        let (width, height) = (document.width, document.height);
+        let base = document.walk().iter().rev().find_map(|n| match n {
+            LayerNode::Layer(l) => Some((l.id, l.pixels)),
+            _ => None,
+        });
+        self.store = store;
+        self.thumbnail_cache.clear();
+        self.content_bounds.clear();
+        self.pixel_revisions.clear();
+        self.collapsed.clear();
+        self.paint_mask = false;
+        if let Some(gpu) = &mut self.gpu {
+            gpu.reset_document();
+        }
         self.document = Some(document);
-        self.layer = Some(pixels);
-        self.active = Some(base);
+        self.layer = base.map(|(_, p)| p);
+        self.active = base.map(|(id, _)| id);
         self.selection = None;
         self.marquee = None;
         self.undo_stack.clear();
@@ -5536,7 +5626,6 @@ impl CanvasPane {
         let size = (f64::from(width), f64::from(height));
         self.nav.set_document(Some(size));
         self.nav.viewport_mut().fit(size);
-        self.render(studio);
     }
 
     /// Composites the document and publishes the picture. The GPU path
