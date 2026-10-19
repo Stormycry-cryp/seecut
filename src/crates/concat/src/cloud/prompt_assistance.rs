@@ -14,6 +14,7 @@ pub(crate) fn candidates() -> Value {
 
 #[derive(Default)]
 struct Assistance {
+    rewrite_backup: Option<Box<inspiration::Draft>>,
     epoch: u64,
     observed: String,
     changed: Option<Instant>,
@@ -32,8 +33,13 @@ fn signature(app: &App, cloud: &Cloud) -> String {
         cloud.epoch,
         ui.get_page(),
         ui.get_prompt_context_revision(),
+        ui.get_prompt_draft_revision(),
         ui.get_canvas_prompt_open(),
         ui.get_mode(),
+        ui.get_creator_mode(),
+        selected_model(&ui, cloud),
+        current_template_parameters(&ui, cloud),
+        cloud.effort_selection,
         ui.get_prompt().as_str(),
         cloud.references
     ]))
@@ -81,6 +87,16 @@ fn images(paths: Vec<PathBuf>) -> Result<Vec<String>, ClientError> {
 
 fn launch(app: &App, cloud: &Cloud, a: &mut Assistance, operation: &'static str, selected: String) {
     let ui = app.global::<SeeCut>();
+    if operation == "rewrite" {
+        match inspiration::capture_draft(app, cloud) {
+            Ok(backup) => a.rewrite_backup = Some(Box::new(backup)),
+            Err(error) => {
+                ui.set_prompt_rewriting(false);
+                ui.set_prompt_recommend_error(error.into());
+                return;
+            }
+        }
+    }
     let snapshot = current_task_snapshot(&ui, cloud);
     let paths = snapshot
         .references
@@ -128,7 +144,7 @@ fn tick(weak: slint::Weak<App>, cloud: Rc<RefCell<Cloud>>, state: Rc<RefCell<Ass
     slint::Timer::single_shot(Duration::from_millis(200), move || {
         let Some(app) = weak.upgrade() else { return };
         let ui = app.global::<SeeCut>();
-        let c = cloud.borrow();
+        let mut c = cloud.borrow_mut();
         let mut a = state.borrow_mut();
         if a.epoch != c.epoch {
             *a = Assistance {
@@ -138,6 +154,7 @@ fn tick(weak: slint::Weak<App>, cloud: Rc<RefCell<Cloud>>, state: Rc<RefCell<Ass
             ui.set_prompt_recommendations(rows(Vec::<crate::ui::PromptRecommendation>::new()));
             ui.set_prompt_rewriting(false);
             ui.set_prompt_apply_id("".into());
+            ui.set_prompt_apply_prompt("".into());
             ui.set_prompt_recommend_error("".into());
         }
         let fingerprint = signature(&app, &c);
@@ -185,6 +202,9 @@ fn tick(weak: slint::Weak<App>, cloud: Rc<RefCell<Cloud>>, state: Rc<RefCell<Ass
                     }
                     Ok(value) => {
                         if let Some(prompt) = value["prompt"].as_str() {
+                            // Reuse the existing full-draft restore transaction, including references.
+                            c.inspiration_backup = a.rewrite_backup.take();
+                            ui.set_inspiration_can_restore(c.inspiration_backup.is_some());
                             ui.set_prompt(prompt.into());
                             ui.set_prompt_cursor(prompt.len() as i32);
                             ui.set_prompt_focus_revision(ui.get_prompt_focus_revision() + 1);
@@ -214,6 +234,7 @@ fn tick(weak: slint::Weak<App>, cloud: Rc<RefCell<Cloud>>, state: Rc<RefCell<Ass
                 }
             }
             if operation == "rewrite" {
+                a.rewrite_backup = None;
                 ui.set_prompt_rewriting(false);
             }
         }
@@ -229,11 +250,26 @@ fn tick(weak: slint::Weak<App>, cloud: Rc<RefCell<Cloud>>, state: Rc<RefCell<Ass
             ui.set_prompt_recommendations(rows(Vec::<crate::ui::PromptRecommendation>::new()));
             ui.set_prompt_recommend_status("".into());
         }
-        if eligible && !selected.is_empty() {
-            // A clicked recipe freezes the form immediately. A pending read can
-            // finish in the background, but cannot overwrite this explicit apply.
-            a.pending = None;
-            launch(&app, &c, &mut a, "rewrite", selected.clone());
+        let rewriting = a
+            .pending
+            .as_ref()
+            .is_some_and(|(_, operation, _)| *operation == "rewrite");
+        let current_click = ui.get_prompt_apply_prompt() == ui.get_prompt()
+            && ui.get_prompt_apply_context() == ui.get_prompt_context_revision()
+            && ui.get_prompt_apply_draft() == ui.get_prompt_draft_revision();
+        ui.set_prompt_apply_prompt("".into());
+        match queued_apply(
+            !selected.is_empty(),
+            eligible && current_click && !ui.get_working(),
+            rewriting,
+        ) {
+            ApplyDecision::Launch => {
+                // Cancel only a pending read. An in-flight rewrite retains its identity and lock.
+                a.pending = None;
+                launch(&app, &c, &mut a, "rewrite", selected);
+            }
+            ApplyDecision::Cancel => ui.set_prompt_rewriting(false),
+            ApplyDecision::Keep => {}
         }
         if eligible && a.pending.is_none() {
             if a.capabilities.is_none() && a.context_failed != a.observed {
@@ -264,4 +300,36 @@ fn tick(weak: slint::Weak<App>, cloud: Rc<RefCell<Cloud>>, state: Rc<RefCell<Ass
         }
         tick(weak, cloud, state);
     });
+}
+
+#[derive(Debug, PartialEq)]
+enum ApplyDecision {
+    Launch,
+    Cancel,
+    Keep,
+}
+fn queued_apply(selected: bool, current: bool, rewriting: bool) -> ApplyDecision {
+    if !selected || rewriting {
+        ApplyDecision::Keep
+    } else if current {
+        ApplyDecision::Launch
+    } else {
+        ApplyDecision::Cancel
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn queued_choice_cancels_without_stranding_the_form() {
+        assert_eq!(queued_apply(true, true, false), ApplyDecision::Launch);
+        assert_eq!(queued_apply(true, false, false), ApplyDecision::Cancel);
+    }
+    #[test]
+    fn cancel_or_second_choice_never_unlocks_an_inflight_rewrite() {
+        assert_eq!(queued_apply(true, false, true), ApplyDecision::Keep);
+        assert_eq!(queued_apply(true, true, true), ApplyDecision::Keep);
+        assert_eq!(queued_apply(false, false, true), ApplyDecision::Keep);
+    }
 }

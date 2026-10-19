@@ -38,7 +38,7 @@ export component GenerationForm inherits Rectangle {
             }
             Rectangle { horizontal-stretch: 1; }
             if SeeCut.inspiration-can-restore: WorkspaceIcon {
-                glyph: Glyph.undo; label: "恢复原草稿"; enabled: !SeeCut.working;
+                glyph: Glyph.undo; label: "恢复原草稿"; enabled: !SeeCut.working && !SeeCut.prompt-rewriting;
                 clicked => { SeeCut.action("inspiration-restore", ""); }
             }
             AppButton {
@@ -233,7 +233,7 @@ export component GenerationForm inherits Rectangle {
                         border-color: SeeCut.prompt-recommend-pulse ? Theme.accent : Theme.line;
                         animate border-color { duration: SeeCut.reduced-motion ? 0ms : 700ms; }
                         enabled: !SeeCut.prompt-rewriting && !SeeCut.working;
-                        clicked => { SeeCut.prompt-rewriting = true; SeeCut.prompt-apply-id = item.id; }
+                        clicked => { SeeCut.prompt-apply-prompt = SeeCut.prompt; SeeCut.prompt-apply-context = SeeCut.prompt-context-revision; SeeCut.prompt-apply-draft = SeeCut.prompt-draft-revision; SeeCut.prompt-rewriting = true; SeeCut.prompt-apply-id = item.id; }
                     }
                 }
                 if SeeCut.prompt-recommend-error != "": Text { text: SeeCut.prompt-recommend-error; color: Theme.danger; font-size: 12px; wrap: word-wrap; }

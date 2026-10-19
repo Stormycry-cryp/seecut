@@ -139,10 +139,25 @@ fn replace_draft(
     Ok(())
 }
 
+pub(super) fn capture_draft(app: &App, cloud: &Cloud) -> Result<Draft, String> {
+    ensure_draft_replaceable(cloud)?;
+    let ui = app.global::<SeeCut>();
+    let snapshot = current_task_snapshot(&ui, cloud);
+    let reference_versions = recipes::freeze_references(&snapshot.references)?;
+    Ok(Draft {
+        epoch: cloud.epoch,
+        snapshot,
+        reference_versions,
+        template_id: ui.get_template_id().to_string(),
+        template_name: ui.get_template_name().to_string(),
+        warning: ui.get_recovery_warning().to_string(),
+    })
+}
+
 fn apply(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) -> Result<(), String> {
     let ui = app.global::<SeeCut>();
     ensure_draft_replaceable(&state.borrow())?;
-    if ui.get_working() {
+    if ui.get_working() || ui.get_prompt_rewriting() {
         return Err("请等待当前操作完成".into());
     }
     let template = templates()?
@@ -163,16 +178,7 @@ fn apply(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) -> Result<(), String> 
         &current_template_parameters(&ui, &cloud),
     )?;
     validate_configuration_references(model, &template.references, "模板")?;
-    let original = current_task_snapshot(&ui, &cloud);
-    let reference_versions = recipes::freeze_references(&original.references)?;
-    let backup = Draft {
-        epoch: cloud.epoch,
-        snapshot: original,
-        reference_versions,
-        template_id: ui.get_template_id().to_string(),
-        template_name: ui.get_template_name().to_string(),
-        warning: ui.get_recovery_warning().to_string(),
-    };
+    let backup = capture_draft(app, &cloud)?;
     let snapshot = TaskInputSnapshot {
         mode: ui.get_mode(),
         prompt: template.prompt,
@@ -197,7 +203,7 @@ fn apply(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) -> Result<(), String> 
 fn restore(app: &App, state: &Rc<RefCell<Cloud>>) -> Result<(), String> {
     let ui = app.global::<SeeCut>();
     ensure_draft_replaceable(&state.borrow())?;
-    if ui.get_working() {
+    if ui.get_working() || ui.get_prompt_rewriting() {
         return Err("请等待当前操作完成".into());
     }
     let backup = state

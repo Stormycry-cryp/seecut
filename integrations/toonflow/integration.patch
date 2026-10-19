@@ -5119,7 +5119,7 @@ index 3bb727f..3701318 100644
    })
  );
 diff --git a/packages/nodeShared/src/components/promptInput.vue b/packages/nodeShared/src/components/promptInput.vue
-index 03a5b56..3c17294 100644
+index 03a5b56..fed365a 100644
 --- a/packages/nodeShared/src/components/promptInput.vue
 +++ b/packages/nodeShared/src/components/promptInput.vue
 @@ -1,8 +1,16 @@
@@ -5127,9 +5127,9 @@ index 03a5b56..3c17294 100644
 -  <div class="promptInputWrap nodrag nopan nowheel">
 +  <div class="promptInputWrap nodrag nopan nowheel" :aria-busy="recommendState.rewriting">
 +    <div v-if="recommend && (recommendState.status || recommendState.cards.length || recommendState.rewriting)" class="seecutRecommendations" aria-live="polite">
-+      <div class="recommendationHeading"><span>✦ 为你推荐</span><span>{{ recommendState.rewriting ? '应用模板中…' : recommendState.status === '为你推荐' ? '点选后改写' : recommendState.status }}</span></div>
++      <div class="recommendationHeading"><span>✦ 为你推荐 <el-button v-if="recommendState.canUndo" :icon="IconArrowBackUp" text circle title="撤销改写" aria-label="撤销改写" :disabled="recommendState.rewriting" @mousedown.prevent @click.stop="recommendationController.undoRewrite()" /></span><span>{{ recommendState.rewriting ? '应用模板中…' : recommendState.status === '为你推荐' ? '点选后改写' : recommendState.status }}</span></div>
 +      <div class="recommendationChoices">
-+        <button v-for="card in recommendState.cards" :key="card.id" type="button" :disabled="recommendState.rewriting" @click.stop="recommendationController.rewrite(card.id)">{{ card.label }}</button>
++        <button v-for="card in recommendState.cards" :key="card.id" type="button" :disabled="recommendState.rewriting" @mousedown.prevent @click.stop="rewriteRecommendation(card.id)">{{ card.label }}</button>
 +        <span v-if="!recommendState.cards.length && recommendState.status" class="recommendationSkeleton" aria-hidden="true"><i/><i/><i/></span>
 +      </div>
 +    </div>
@@ -5148,7 +5148,8 @@ index 03a5b56..3c17294 100644
 -import { computed, nextTick, ref, watch } from "vue";
 +import { computed, nextTick, ref, watch, onUnmounted } from "vue";
  import { ElButton, ElDialog, ElImageViewer, useZIndex } from "element-plus";
- import { IconMaximize } from "@tabler/icons-vue";
+-import { IconMaximize } from "@tabler/icons-vue";
++import { IconMaximize, IconArrowBackUp } from "@tabler/icons-vue";
 +import { PromptRecommendations, type PromptState } from "../promptRecommendations";
  import xSender, { type AnyTagProps, type MentionItem } from "x-sender";
  import "x-sender/lib/XSender.css";
@@ -5158,30 +5159,83 @@ index 03a5b56..3c17294 100644
  const model = defineModel<AnyTagProps[][]>({ required: true });
  const text = defineModel<string>("text", { default: "" });
  const senderElement = ref<HTMLElement>();
-@@ -29,6 +38,22 @@ const previewReferenceId = ref<string>();
+@@ -29,6 +38,48 @@ const previewReferenceId = ref<string>();
  const previewUrl = computed(() => String(props.references.find(item => item.id === previewReferenceId.value)?.avatar ?? ""));
  let sender: xSender | undefined;
  let resetTask: Promise<void> | undefined;
 +const emit = defineEmits<{recommendBusy:[busy:boolean]}>();
-+const recommendState = ref<PromptState>({status:'',cards:[],rewriting:false,error:''});
++const recommendState = ref<PromptState>({status:'',cards:[],rewriting:false,error:'',canUndo:false});
 +const promptHost = () => (window as any).__SEECUT_PROMPTS__;
++let domDirty = false;
++let rewriteModel: AnyTagProps[][] | undefined;
++// XSender queues its change callback. Read the live text nodes before that callback
++// when a user types and immediately clicks a recipe or a model reply arrives.
++function liveModel() {
++  const value = domDirty && sender ? sender.getModel() : model.value;
++  if (!sender || !domDirty) return value;
++  return value.map((line, row) => line.map((tag, column) => {
++    const node = sender!.chatEditor.NODES[row]?.children[column];
++    if (!node || (tag.type !== "Write" && tag.type !== "Input")) return tag;
++    const element = tag.type === "Write" ? node.$el.children[0] : node.$el.children[0]?.children[0];
++    return {...tag, text:(element?.textContent ?? tag.text ?? "").replace(/\ufeff/g, "")};
++  }));
++}
++function currentRecommendationInput() {
++  const host = promptHost();
++  return {input:{prompt:domDirty ? getPromptText(liveModel()) : text.value, images:props.references.filter(item=>item.avatar).map(item=>String(item.avatar))},context:props.recommend&&host?host.context():""};
++}
 +const recommendationController = new PromptRecommendations(
 +  (operation,input,id) => promptHost().request(operation,input,id),
-+  state => {recommendState.value=state;emit('recommendBusy',state.rewriting);},
-+  value => {model.value=value.split('\n').map(text=>[{type:'Write' as const,text}]);text.value=value;void nextTick().then(()=>sender?.focus('mark'));},
++  state => {recommendState.value=state;if(!state.canUndo&&!state.rewriting)rewriteModel=undefined;emit('recommendBusy',state.rewriting);},
++  (value,operation) => {
++    const next = operation === "undo" && rewriteModel ? rewriteModel : value.split("\n").map(text=>[{type:"Write" as const,text}]);
++    if (operation === "rewrite") rewriteModel = JSON.parse(JSON.stringify(getStoredModel(liveModel())));
++    domDirty = false;
++    model.value = next;
++    text.value = value;
++    void nextTick().then(()=>sender?.focus('mark'));
++  },
++  undefined, undefined, currentRecommendationInput,
 +);
-+const recommendTimer=setInterval(()=>{
-+  const host=promptHost();
-+  const images=props.references.filter(item=>item.avatar).map(item=>String(item.avatar));
-+  recommendationController.update({prompt:text.value,images},props.recommend&&host?host.context():'');
-+  void recommendationController.tick();
-+},200);
++function rewriteRecommendation(id: string) {
++  if (sender?.chatEditor.isComposition) return;
++  void recommendationController.rewrite(id);
++}
++watch(() => [text.value, props.references, props.recommend, promptHost()?.context()], () => recommendationController.sync(), {deep:true,flush:"sync"});
++const recommendTimer=setInterval(()=>{void recommendationController.tick();},200);
 +onUnmounted(()=>{clearInterval(recommendTimer);recommendationController.dispose();emit('recommendBusy',false);});
 +
  
  function previewReference(event: MouseEvent) {
    const tag = event.target instanceof Element ? event.target.closest<HTMLElement>(".imageReference[data-reference-id]") : null;
-@@ -435,3 +460,18 @@ function handleMentionKey(event: KeyboardEvent) {
+@@ -159,7 +210,9 @@ function updateModel(value: AnyTagProps[][]) {
+   const next = getStoredModel(value);
+   // ACT: 旧模型中的预览地址随下次实际编辑清理，避免仅打开文档就触发保存。
+   if (JSON.stringify(getStoredModel(model.value)) !== JSON.stringify(next)) model.value = next;
++  domDirty = false;
+   text.value = getPromptText(next);
++  recommendationController.sync();
+ }
+ 
+ function getPromptText(value: AnyTagProps[][]) {
+@@ -260,6 +313,8 @@ watch(senderElement, (element, _previous, onCleanup) => {
+     const copied = event.clipboardData?.getData("application/chat-nodes");
+     if (copied) event.clipboardData?.setData("text/plain", getPromptText(JSON.parse(copied)));
+   };
++  const draftChanged = () => {domDirty = true;recommendationController.sync();};
++  editor.addEventListener("input", draftChanged, true);
+   editor.addEventListener("copy", copyText);
+   editor.addEventListener("cut", copyText);
+   const selectReference = (event: MouseEvent) => {
+@@ -283,6 +338,7 @@ watch(senderElement, (element, _previous, onCleanup) => {
+     updateModel(instance.getModel());
+     releaseNodeFocus(instance);
+     sender = undefined;
++    editor.removeEventListener("input", draftChanged, true);
+     editor.removeEventListener("copy", copyText);
+     editor.removeEventListener("cut", copyText);
+     document.removeEventListener("pointerdown", closeOutside, true);
+@@ -435,3 +491,18 @@ function handleMentionKey(event: KeyboardEvent) {
    }
  }
  </style>
@@ -5202,13 +5256,13 @@ index 03a5b56..3c17294 100644
 +</style>
 diff --git a/packages/nodeShared/src/promptRecommendations.ts b/packages/nodeShared/src/promptRecommendations.ts
 new file mode 100644
-index 0000000..3391ae8
+index 0000000..22cf322
 --- /dev/null
 +++ b/packages/nodeShared/src/promptRecommendations.ts
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,51 @@
 +export type PromptInput = {prompt:string; images:string[]};
 +export type Recommendation = {id:string;label:string};
-+export type PromptState = {status:string;cards:Recommendation[];rewriting:boolean;error:string};
++export type PromptState = {status:string;cards:Recommendation[];rewriting:boolean;error:string;canUndo:boolean};
 +export class RecommendationGate {
 +  next=0; busy=false;
 +  reserve(now:number) {if(this.busy||now<this.next)return false;this.busy=true;this.next=now+10000;return true;}
@@ -5216,32 +5270,44 @@ index 0000000..3391ae8
 +}
 +export const promptRecommendationGate=new RecommendationGate();
 +export class PromptRecommendations {
-+  state:PromptState={status:'',cards:[],rewriting:false,error:''};
++  state:PromptState={status:'',cards:[],rewriting:false,error:'',canUndo:false};
 +  input:PromptInput={prompt:'',images:[]}; context=''; private version=0; private changed=0; private completed=''; private running=false; private disposed=false; private fingerprint=''; private retries=0;
-+  constructor(private api:(operation:string,input:PromptInput,selected?:string)=>Promise<any>,private emit:(state:PromptState)=>void,private apply:(prompt:string)=>void,private gate=promptRecommendationGate,private now=()=>Date.now()){}
++  private undo?: {input:PromptInput; context:string; result:string};
++  constructor(private api:(operation:string,input:PromptInput,selected?:string)=>Promise<any>,private emit:(state:PromptState)=>void,private apply:(prompt:string,operation:'rewrite'|'undo')=>void,private gate=promptRecommendationGate,private now=()=>Date.now(),private readCurrent?:()=>{input:PromptInput;context:string}){}
++  sync(){if(this.readCurrent&&!this.disposed){const current=this.readCurrent();this.update(current.input,current.context);}}
 +  private publish(){if(!this.disposed)this.emit({...this.state,cards:[...this.state.cards]});}
 +  update(input:PromptInput,context:string){
 +    const fingerprint=JSON.stringify([context,input]);if(fingerprint===this.fingerprint)return;
 +    const switched=context!==this.context;this.context=context;this.input=structuredClone(input);this.fingerprint=fingerprint;this.changed=this.now();this.version++;this.retries=0;
 +    if(switched||!context||(!input.prompt.trim()&&!input.images.length))this.state.cards=[];
++    if(this.undo && (context!==this.undo.context || fingerprint!==this.undo.result)){this.undo=undefined;this.state.canUndo=false;}
 +    this.state.error='';this.state.status=context&&(input.prompt.trim()||input.images.length)?'等待更新':'';this.publish();
 +  }
 +  async tick(){
++    this.sync();
 +    if(this.disposed||this.running||this.state.rewriting||!this.context||(!this.input.prompt.trim()&&!this.input.images.length)||this.completed===this.fingerprint||this.now()-this.changed<1000)return;
 +    if(!this.gate.reserve(this.now()))return;
 +    this.running=true;const version=this.version;const frozen=this.fingerprint;const input=structuredClone(this.input);this.state.status='正在匹配…';this.publish();
-+    try {const result=await this.api('recommend',input);if(this.disposed||version!==this.version)return;
++    try {const result=await this.api('recommend',input);this.sync();if(this.disposed||version!==this.version)return;
 +      this.state.cards=result.recommendations.slice(0,3);this.completed=frozen;this.state.status='为你推荐';
 +    }catch(error:any){if(version===this.version){this.state.status='';this.completed=frozen;if(error.status===429 && this.retries++ < 1){this.gate.next=this.now()+Math.max(10,Math.min(3600,error.retryAfter||60))*1000;this.state.status='等待更新';this.completed='';}}}
 +    finally{this.running=false;this.gate.release();this.publish();}
 +  }
 +  async rewrite(id:string){
-+    if(this.disposed||this.state.rewriting||!this.state.cards.some(card=>card.id===id))return;
++    this.sync();
++    if(this.disposed||this.state.rewriting||!this.context||!this.state.cards.some(card=>card.id===id))return;
 +    this.version++;const version=this.version;const input=structuredClone(this.input);this.state.rewriting=true;this.state.error='';this.publish();
-+    try {const result=await this.api('rewrite',input,id);if(this.disposed||version!==this.version)return;
-+      this.input={...input,prompt:result.prompt};this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.state.status='为你推荐';this.apply(result.prompt);
-+    }catch{if(version===this.version)this.state.error='应用失败，原文已保留，请重试';}
++    try {const result=await this.api('rewrite',input,id);this.sync();if(this.disposed||version!==this.version)return;
++      this.input={...input,prompt:result.prompt};this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.state.status='为你推荐';this.undo={input,context:this.context,result:this.fingerprint};this.state.canUndo=true;this.apply(result.prompt,'rewrite');
++    }catch{this.sync();if(version===this.version)this.state.error='应用失败，原文已保留，请重试';}
 +    finally{this.state.rewriting=false;this.publish();}
++  }
++  undoRewrite(){
++    this.sync();
++    if(this.disposed||this.state.rewriting||!this.undo||this.undo.context!==this.context||this.undo.result!==this.fingerprint)return;
++    const input=this.undo.input;this.undo=undefined;this.state.canUndo=false;this.version++;
++    this.input=structuredClone(input);this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.state.error='';
++    this.apply(input.prompt,'undo');this.publish();
 +  }
 +  dispose(){this.disposed=true;this.version++;}
 +}

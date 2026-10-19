@@ -29,3 +29,54 @@ test('429 retains draft and observes supplier retry after',async()=>{
 test('switch or unmount fences pending rewrite',async()=>{
  let resolve:any;const f=fixture(async(o:string)=>o==='recommend'?{recommendations:[{id:'one',label:'棚拍'}]}:new Promise(r=>resolve=r));f.c.update(input('a'),'one');f.at(1000);await f.c.tick();const p=f.c.rewrite('one');f.c.update(input('b'),'two');resolve({prompt:'old'});await p;expect(f.applied).toEqual([]);f.c.dispose();
 });
+
+function liveFixture(rewrite:(input:any)=>Promise<any>,kind='image') {
+ let time=0,live={input:{prompt:'before',images:['ref-one']},context:`account:canvas:${kind}`};
+ const calls:any[]=[],applied:any[]=[];
+ const c=new PromptRecommendations(async(operation,input)=>{
+  calls.push({operation,input:structuredClone(input)});
+  return operation==='recommend'?{recommendations:[{id:'one',label:'棚拍'}]}:rewrite(input);
+ },()=>{},(prompt,operation)=>{live.input={...live.input,prompt};applied.push({prompt,operation});},new RecommendationGate(),()=>time,()=>live);
+ return {c,calls,applied,get live(){return live},set live(value){live=value},at:(value:number)=>time=value,ready:async()=>{c.sync();time=1000;await c.tick();}};
+}
+for(const kind of ['image','video']) {
+ test(`${kind}: click snapshots current draft and images without waiting for polling`,async()=>{
+  const f=liveFixture(async input=>({prompt:'rewrite '+input.prompt}),kind);await f.ready();
+  f.live.input={prompt:'typed immediately before click',images:['ref-one','ref-two']};
+  await f.c.rewrite('one');
+  expect(f.calls[1]).toEqual({operation:'rewrite',input:{prompt:'typed immediately before click',images:['ref-one','ref-two']}});
+  expect(f.live.input.images).toEqual(['ref-one','ref-two']);expect(f.c.state.rewriting).toBe(false);
+  f.c.undoRewrite();expect(f.live.input.prompt).toBe('typed immediately before click');expect(f.live.input.images).toEqual(['ref-one','ref-two']);
+  expect(f.applied.map(v=>v.operation)).toEqual(['rewrite','undo']);expect(f.calls.map(v=>v.operation)).toEqual(['recommend','rewrite']);
+ });
+ for(const change of ['draft','references','context','closed']) test(`${kind}: late rewrite cannot overwrite ${change} before next poll`,async()=>{
+  let resolve:any;const f=liveFixture(()=>new Promise(r=>resolve=r),kind);await f.ready();
+  const pending=f.c.rewrite('one');
+  if(change==='draft')f.live.input.prompt='new draft';
+  if(change==='references')f.live.input.images=['replacement'];
+  if(change==='context')f.live.context='another account or canvas';
+  if(change==='closed')f.live.context='';
+  resolve({prompt:'stale'});await pending;
+  expect(f.applied).toEqual([]);expect(f.c.state.rewriting).toBe(false);expect(f.c.state.canUndo).toBe(false);
+ });
+}
+test('in-flight rewrite cannot be entered twice; failed response preserves full draft',async()=>{
+ let reject:any;const f=liveFixture(()=>new Promise((_r,j)=>reject=j));await f.ready();
+ const first=f.c.rewrite('one');await f.c.rewrite('one');expect(f.calls).toHaveLength(2);
+ reject(Error('offline'));await first;expect(f.live.input).toEqual({prompt:'before',images:['ref-one']});expect(f.c.state.rewriting).toBe(false);expect(f.c.state.canUndo).toBe(false);
+});
+test('synchronous edit notification fences edit-away-and-back and scope-away-and-back',async()=>{
+ for(const change of ['draft','context']) {
+  let resolve:any;const f=liveFixture(()=>new Promise(r=>resolve=r));await f.ready();const pending=f.c.rewrite('one');
+  const original=structuredClone(f.live);
+  if(change==='draft')f.live.input.prompt='intermediate';else f.live.context='other';f.c.sync();
+  f.live=original;f.c.sync();resolve({prompt:'stale'});await pending;expect(f.applied).toEqual([]);
+ }
+});
+test('undo is scoped to unchanged rewrite and never restores over later edits or references',async()=>{
+ for(const change of ['draft','references','context']) {
+  const f=liveFixture(async()=>({prompt:'rewritten'}));await f.ready();await f.c.rewrite('one');expect(f.c.state.canUndo).toBe(true);
+  if(change==='draft')f.live.input.prompt='user edit';if(change==='references')f.live.input.images=['new ref'];if(change==='context')f.live.context='new account';
+  const latest=structuredClone(f.live);f.c.undoRewrite();expect(f.live).toEqual(latest);expect(f.applied).toHaveLength(1);expect(f.c.state.canUndo).toBe(false);
+ }
+});
