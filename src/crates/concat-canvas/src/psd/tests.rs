@@ -18,7 +18,7 @@ fn tag(b: &mut Vec<u8>, key: &[u8; 4], data: &[u8]) {
     b.extend(b"8BIM");
     b.extend(key);
     block(b, data);
-    if data.len() % 2 != 0 {
+    if !data.len().is_multiple_of(2) {
         b.push(0)
     }
 }
