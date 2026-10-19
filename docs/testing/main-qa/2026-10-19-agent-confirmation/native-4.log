@@ -1,0 +1,17 @@
+
+running 12 tests
+test editor_mcp::write_registry::tests::another_client_cannot_take_active_lease ... ok
+test editor_mcp::write_registry::tests::binding_changes_discard_unreachable_sessions_without_restoring_grants ... ok
+test editor_mcp::write_registry::tests::binding_identity_changes_revoke_without_implicit_extension ... ok
+test editor_mcp::write_registry::tests::default_denies_and_minutes_ceil_until_exact_expiry ... ok
+test editor_mcp::write_registry::tests::eviction_and_expiration_keep_highest_sequence ... ok
+test editor_mcp::write_registry::tests::explicit_renew_rotates_token_and_revoke_requires_new_grant ... ok
+test editor_mcp::write_registry::tests::failures_unchanged_and_post_commit_expiry_store_original_results ... ok
+test editor_mcp::write_registry::tests::in_progress_and_abandoned_entries_never_reexecute ... ok
+test editor_mcp::write_registry::tests::invalid_sequence_and_client_session_isolation ... ok
+test editor_mcp::write_registry::tests::mcp_cached_lookup_never_reserves_a_new_or_unauthenticated_sequence ... ok
+test editor_mcp::write_registry::tests::retry_authentication_precedes_cache_and_sequence ... ok
+test editor_mcp::write_registry::tests::successful_retry_keeps_original_versions_and_rejects_changed_params ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 489 filtered out; finished in 0.02s
+

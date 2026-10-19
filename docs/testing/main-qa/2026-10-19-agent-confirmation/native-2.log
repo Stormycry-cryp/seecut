@@ -1,0 +1,19 @@
+
+running 14 tests
+test agent_ui::desktop::tests::a_blank_view_cannot_release_another_sessions_pending_work ... ok
+test agent_ui::desktop::tests::approval_refresh_compares_every_frozen_field_not_display_text ... ok
+test agent_ui::desktop::tests::catalog_refresh_error_blocks_a_new_request_without_rewriting_policy ... ok
+test agent_ui::desktop::tests::completed_reply_survives_new_connection_buffer_reset ... ok
+test agent_ui::desktop::tests::lease_expiry_renewal_and_document_change_explain_new_confirmation ... ok
+test agent_ui::desktop::tests::only_new_sessions_adopt_default_effort_and_unavailable_defaults_stay_unavailable ... ok
+test agent_ui::desktop::tests::pending_sessions_can_change_next_effort_without_rewriting_original_request ... ok
+test agent_ui::desktop::tests::pending_tool_receipt_does_not_detach_streaming_body ... ok
+test agent_ui::desktop::tests::persisting_a_submitting_question_keeps_its_new_reply_row_attached ... ok
+test agent_ui::desktop::tests::provider_requires_http_without_userinfo_or_fragment ... ok
+test agent_ui::desktop::tests::rebuilding_the_same_session_cannot_reuse_worker_tickets ... ok
+test agent_ui::desktop::tests::restored_policy_rejects_same_revision_drift_but_not_availability_changes ... ok
+test agent_ui::desktop::tests::session_storage_creates_missing_parents_and_rejects_symlinks ... ok
+test agent_ui::desktop::tests::terminal_replies_detach_and_transport_failure_preserves_text ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 487 filtered out; finished in 0.00s
+

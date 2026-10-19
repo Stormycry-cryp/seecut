@@ -1,0 +1,122 @@
+{
+  "sourceCommit": "b4c4cbce2cd38ecb8b3fefa8344ceb02eac072f4",
+  "baseCommit": "10599172db41ffc4b7688a63665fcbb842914506",
+  "privateRuntimeCommit": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "native": {
+    "binary": "src/../.toonflow/native-target/debug/deps/concat-6e5e5b3d2a17522d",
+    "binarySha256": "59febcbe3664fda8ab0e68a58c9d7f886ee572e8784cef8043a045deda981742",
+    "groups": [
+      {
+        "filter": "editor_mcp::approval_view::tests",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-1.log"
+      },
+      {
+        "filter": "agent_ui::desktop::tests",
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-2.log"
+      },
+      {
+        "filter": "editor_mcp::assistant_permission_tests",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-3.log"
+      },
+      {
+        "filter": "editor_mcp::write_registry::tests",
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-4.log"
+      },
+      {
+        "filter": "editor_mcp::canvas_policy::tests",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-5.log"
+      },
+      {
+        "filter": "agent_controller::tests",
+        "passed": 61,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-6.log"
+      }
+    ],
+    "passed": 100
+  },
+  "nativeBuild": {
+    "status": "passed",
+    "elapsed": "7m 01s",
+    "log": "native-test-build-final.log",
+    "type": "test executable only; no app bundle rebuilt",
+    "compiledWorkingTreeBase": "10599172db41ffc4b7688a63665fcbb842914506",
+    "sourceIdentity": "all seven frozen file hashes equal sourceCommit contents"
+  },
+  "tests": [
+    {
+      "layer": "actual COTO / mocked MCP safety",
+      "passed": 59,
+      "log": "node-safety-tests.log"
+    },
+    {
+      "layer": "actual COTO / explicitly simulated editor chain",
+      "passed": 2,
+      "log": "simulated-editor-chain.log"
+    },
+    {
+      "layer": "loopback HTTP / SQLite / fake provider / mocked editor",
+      "passed": 3,
+      "log": "managed-http-final.log"
+    },
+    {
+      "layer": "generation request HTTP recovery / fake provider",
+      "passed": 7,
+      "log": "generation-http-recovery.log"
+    }
+  ],
+  "passedTotal": 171,
+  "publicFixtureAbsence": {
+    "passed": 0,
+    "skipped": 2,
+    "log": "public-fixture-absence.log"
+  },
+  "checks": {
+    "locale": "passed with existing missing translations",
+    "diffWhitespace": "passed",
+    "sourceHashMatch": "passed"
+  },
+  "quota": {
+    "checkedAtUtc": "2026-10-19 07:26:35 UTC",
+    "windowDurationMins": 10080,
+    "remainingPercent": 73,
+    "resetUtc": "2026-10-25 01:02:41 UTC",
+    "stopAtOrBelowPercent": 50
+  },
+  "writerSnapshot": {
+    "activeSeeCut": [
+      "01a13edc-0d96-7539-a26e-f5b492b3f030"
+    ],
+    "idleSeeCut": [
+      "01a13d59-b243-78f2-af46-6dfddae535ea",
+      "01a15187-a0a6-7143-817f-7f23cb0e2010"
+    ],
+    "unavailableHosts": []
+  },
+  "unverified": [
+    "native WebView complete Agent creation/config/connect/generation/asset registration chain",
+    "UI confirmation/cancel/details/scrolling/expiry interactions",
+    "real model generation"
+  ],
+  "desktopInput": false,
+  "newApplicationBundle": false,
+  "productionDeployment": false,
+  "paidModelCalls": false,
+  "privateRuntimeOrOldWipModified": false
+}

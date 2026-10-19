@@ -469,6 +469,10 @@ export component AssistantPanel inherits Rectangle {
     in property <bool> approval-visible;
     in property <string> approval-title;
     in property <string> approval-description;
+    in property <string> approval-details;
+    in property <int> approval-revision;
+    property <bool> approval-expanded: false;
+    changed approval-revision => { root.approval-expanded = false; }
     in property <bool> can-allow;
     in property <bool> can-reject;
 
@@ -729,13 +733,27 @@ export component AssistantPanel inherits Rectangle {
                 if root.approval-visible: VerticalLayout {
                     spacing: 8px;
                     AssistantText { text: root.approval-title; font-size: Theme.fs; }
-                    AssistantText { text: root.approval-description; font-size: 12px; color: Theme.fg-muted; }
+                    summary-scroll := ScrollView {
+                        height: min(96px, max(24px, summary-text.preferred-height));
+                        viewport-width: self.width; horizontal-scrollbar-policy: always-off;
+                        summary-text := AssistantText { width: summary-scroll.visible-width; text: root.approval-description; font-size: 12px; color: Theme.fg-muted; }
+                    }
                     HorizontalLayout {
                         spacing: 8px;
-                        IconButton { glyph: Glyph.close; label: "拒绝"; enabled: root.active && (root.can-reject); clicked => { root.reject(); } }
-                        IconButton { glyph: Glyph.check; label: "允许"; enabled: root.active && (root.can-allow); clicked => { root.allow(); } }
-                        Rectangle { horizontal-stretch: 1; }
+                        AppButton { label: "取消"; height: 32px; enabled: root.active && root.can-reject; clicked => { root.reject(); } }
+                        AppButton { label: "确认"; height: 32px; enabled: root.active && root.can-allow && !root.unknown; clicked => { root.allow(); } }
                     }
+                    if root.approval-details != "": AgentMenuAction {
+                        text: root.approval-expanded ? "收起参数详情" : "查看参数详情";
+                        glyph: root.approval-expanded ? Glyph.chevron-down : Glyph.chevron-right;
+                        clicked => { root.approval-expanded = !root.approval-expanded; }
+                    }
+                    if root.approval-expanded && root.approval-details != "": detail-scroll := ScrollView {
+                        height: min(160px, max(32px, detail-text.preferred-height));
+                        viewport-width: self.width; horizontal-scrollbar-policy: always-off;
+                        detail-text := AssistantText { width: detail-scroll.visible-width; text: root.approval-details; font-size: 12px; color: Theme.fg-muted; }
+                    }
+                    AssistantText { text: "确认等待计入本轮 120 秒时限；编辑授权另有 5 分钟期限。授权到期后请续期、重新连接并确认新操作。"; font-size: 11px; color: Theme.fg-dim; }
                 }
                 if root.settings-open: VerticalLayout {
                     spacing: 12px;
@@ -752,12 +770,12 @@ export component AssistantPanel inherits Rectangle {
                         HorizontalLayout {
                             spacing: 8px;
                             AppButton {
-                                label: root.can-renew-write ? "续期 · 5分钟" : "允许移动 · 5分钟";
+                                label: root.can-renew-write ? "续期 · 5分钟" : "允许编辑 · 5分钟";
                                 enabled: root.active && (root.can-renew-write || root.can-grant-write);
                                 height: 36px;
                                 clicked => { if root.can-renew-write { root.renew-write(); } else { root.grant-write(); } }
                             }
-                            if root.can-revoke-write: AppButton { label: "撤销"; accessible-name: "撤销移动权限"; enabled: root.active && (root.can-revoke-write); height: 36px; clicked => { root.revoke-write(); } }
+                            if root.can-revoke-write: AppButton { label: "撤销"; accessible-name: "撤销编辑权限"; enabled: root.active && (root.can-revoke-write); height: 36px; clicked => { root.revoke-write(); } }
                         }
                     }
                     if !root.developer-tools: VerticalLayout {

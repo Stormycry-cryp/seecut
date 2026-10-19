@@ -129,6 +129,22 @@ mod desktop {
             }
         }
     }
+    fn lease_change_notice(old: &Lease, next: &Lease, can_renew: bool) -> &'static str {
+        if old.document != next.document {
+            return "工程已变化，请重新连接；旧确认不再有效";
+        }
+        if old.write != next.write {
+            if next.write.is_some() {
+                return "编辑授权已更新，连接已断开；请重新连接并确认新操作";
+            }
+            if can_renew {
+                return "编辑授权已到期，连接已断开；请续期 5 分钟，再重新连接并确认新操作";
+            }
+            return "编辑授权已撤销，连接已断开；重新授权后连接并确认新操作";
+        }
+        "读取权限已变化，请检查授权并重新连接；旧确认不再有效"
+    }
+
     #[cfg(feature = "assistant-local-dev")]
     #[derive(Clone, Copy)]
     enum FileKind {
@@ -1040,7 +1056,12 @@ mod desktop {
                     state.selecting = false;
                     state.epoch = next_epoch();
                     state.approval = None;
-                    state.notice = "工程或权限已变化，请重新连接".into();
+                    state.notice = lease_change_notice(
+                        state.lease.as_ref().unwrap(),
+                        &next,
+                        snapshot.can_renew_write,
+                    )
+                    .into();
                 }
                 state.lease = Some(Lease::from_snapshot(snapshot));
             };
@@ -1082,12 +1103,14 @@ mod desktop {
                     .unwrap_or("操作结果待核实")
             } else if let Some(error) = view.error {
                 error.message()
+            } else if view.outcome == Some(TaskOutcome::Stopped) {
+                stopped_hint()
             } else if !outcome.is_empty() {
                 outcome
             } else {
                 match phase {
                     Phase::Running => "正在处理",
-                    Phase::AwaitingApproval => "等待你确认移动操作",
+                    Phase::AwaitingApproval => "等待你确认当前操作",
                     Phase::Stopping => "正在停止，等待结果",
                     Phase::Ready if busy => "已提交，等待 Agent 回应",
                     Phase::Ready => "可以发送问题",
@@ -1407,11 +1430,26 @@ mod desktop {
                         crate::editor_mcp::canvas_approval_view(&a.tool, a.arguments.clone())
                             .map(|(title, _)| title)
                     })
-                    .unwrap_or_else(|| "移动画布对象".into())
+                    .unwrap_or_else(|| {
+                        if approval.is_some_and(|a| a.tool == "move_selected_image") {
+                            "移动画布对象".into()
+                        } else {
+                            "核对操作".into()
+                        }
+                    })
                     .into(),
             );
             ui.set_approval_description(description.into());
-            ui.set_can_allow(view.can_approve && valid_approval);
+            ui.set_approval_details(
+                approval
+                    .map(|a| crate::editor_mcp::approval_details(&a.tool, &a.arguments))
+                    .unwrap_or_default()
+                    .into(),
+            );
+            if state.approval != frozen_approval {
+                ui.set_approval_revision(ui.get_approval_revision().wrapping_add(1));
+            }
+            ui.set_can_allow(view.can_approve && valid_approval && !unknown);
             ui.set_can_reject(view.can_approve);
             let next_row = update_streaming_reply(
                 &state.messages,
@@ -1666,7 +1704,7 @@ mod desktop {
             }
             let mut state = self.state.borrow_mut();
             if frozen != state.approval {
-                state.notice = "待确认操作已变化，请检查当前对象和位移".into();
+                state.notice = "待确认操作已变化，请重新核对当前动作、对象和参数".into();
             } else if let Some(approval) = frozen {
                 let mut permit = None;
                 let authorization = if allowed && approval.tool != "move_selected_image" {
@@ -2487,6 +2525,10 @@ mod desktop {
         binding
     }
 
+    fn stopped_hint() -> &'static str {
+        "本轮已停止；单轮上限 120 秒，编辑授权 5 分钟另计。重新发起需新输入，编辑动作需新确认"
+    }
+
     fn outcome_label(outcome: Option<TaskOutcome>) -> &'static str {
         match outcome {
             Some(TaskOutcome::Completed) => "已完成",
@@ -2689,6 +2731,53 @@ mod desktop {
             state.catalog.finish(ticket, Ok(directory));
             state.restore_catalog_selection()
         }
+        #[test]
+        fn approval_refresh_compares_every_frozen_field_not_display_text() {
+            let original = FrozenApproval {
+                tool: "flow_update_node".into(),
+                arguments: json!({"nodeId":"n","text":"one"}),
+                id: "a".into(),
+                turn_id: "t".into(),
+                object_id: Some("layer:1".into()),
+                delta_x: Some(1.0),
+                delta_y: Some(2.0),
+            };
+            for field in 0..7 {
+                let mut changed = original.clone();
+                match field {
+                    0 => changed.tool = "flow_delete_nodes".into(),
+                    1 => changed.arguments["text"] = json!("two"),
+                    2 => changed.id = "other".into(),
+                    3 => changed.turn_id = "other".into(),
+                    4 => changed.object_id = Some("layer:2".into()),
+                    5 => changed.delta_x = Some(3.0),
+                    _ => changed.delta_y = Some(4.0),
+                };
+                assert!(original != changed);
+            }
+        }
+        #[test]
+        fn lease_expiry_renewal_and_document_change_explain_new_confirmation() {
+            let old = Lease {
+                document: None,
+                read: Some("synthetic-read".into()),
+                write: Some("synthetic-write".into()),
+            };
+            let mut next = old.clone();
+            next.write = None;
+            assert!(lease_change_notice(&old, &next, true).contains("到期"));
+            assert!(lease_change_notice(&old, &next, true).contains("重新连接"));
+            assert!(lease_change_notice(&old, &next, false).contains("撤销"));
+            next.write = Some("synthetic-renewed".into());
+            assert!(lease_change_notice(&old, &next, true).contains("新操作"));
+            next = old.clone();
+            next.read = None;
+            assert!(lease_change_notice(&old, &next, false).contains("读取权限"));
+            assert!(!lease_change_notice(&old, &next, false).contains("synthetic"));
+            assert!(stopped_hint().contains("120 秒"));
+            assert_eq!(outcome_label(Some(TaskOutcome::Stopped)), "已停止");
+        }
+
         #[test]
         fn only_new_sessions_adopt_default_effort_and_unavailable_defaults_stay_unavailable() {
             let mut new = new_state(new_record(), Some(1));

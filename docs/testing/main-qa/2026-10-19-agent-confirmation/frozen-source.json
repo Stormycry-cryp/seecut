@@ -1,0 +1,13 @@
+{
+  "base": "10599172db41ffc4b7688a63665fcbb842914506",
+  "privateRuntime": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "files": {
+    "src/crates/concat/src/agent_ui.rs": "991466ce0fd0f19e645d3ef781ddfa57bf2ed366b5d399d699386c57fb81c51c",
+    "src/crates/concat/src/editor_mcp.rs": "94e825d2f12d68632f43c663c279bcae2d72d65d194d576e29cdd0c02c472340",
+    "src/crates/concat/src/editor_mcp_approval.rs": "526dcbb7542554bc6ea0d1e1a50e2ef4add2722ed204dbc651b978d76dfb9d89",
+    "src/crates/concat/ui/seecut/assistant.slint": "1b2aab5709f60daedb105197f8d573d42921e98f4d5670ed636a92a258c5d9dc",
+    "src/crates/concat/ui/seecut/assistant_dock.slint": "709feef96ed838a9d6b6c3b0230d8a8df873707fe97192c0a8e84fafb47cbe98",
+    "src/crates/concat/ui/seecut/assistant_state.slint": "e82e4c0292f599606ca3ef999bb36fb88cc9780ecc75e3dac07855902067e452",
+    "integrations/toonflow/tests/agent-confirmation-chain.test.mjs": "a6ee61d719f4bae098c223bd7920afd69fdf5e1b60fac22e16027bb4cf76d7e8"
+  }
+}

@@ -1,0 +1,11 @@
+✔ million v2 loopback两步累计0.2+0.2收费1，重启恢复原预算且零重POST (1579.936541ms)
+✔ UNKNOWN阻止新输入；进程恢复和显式核实只读原操作，不再次推理 (900.153042ms)
+✔ 等待审批时服务端取消，随后批准也不执行旧工具或下一步推理 (797.602541ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3862.282334
