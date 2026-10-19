@@ -1,0 +1,174 @@
+{
+  "sourceCommit": "023c2f9088bddeb84b9ee6474cc750ba596b2179",
+  "baseCommit": "742f4f8b62b62b9d6f490fb5d9cee163bcae76cb",
+  "core": {
+    "binary": ".toonflow/native-target/debug/deps/concat_canvas-0758f481093fd153",
+    "binarySha256": "2c5680bbafffdd6d3196017ce6d98cbe676c2133e4c6fd89d0fc776ab00c16e6",
+    "groups": [
+      {
+        "filter": "psd::tests",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 1,
+        "log": "core-1.log"
+      },
+      {
+        "filter": "vector_mask::tests",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "log": "core-2.log"
+      },
+      {
+        "filter": "gpu::tests",
+        "passed": 30,
+        "failed": 0,
+        "ignored": 0,
+        "log": "core-3.log"
+      },
+      {
+        "filter": "compositor::tests",
+        "passed": 35,
+        "failed": 0,
+        "ignored": 0,
+        "log": "core-4.log"
+      },
+      {
+        "filter": "document::tests",
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0,
+        "log": "core-5.log"
+      }
+    ]
+  },
+  "native": {
+    "binary": ".toonflow/native-target/debug/deps/concat-6e5e5b3d2a17522d",
+    "binarySha256": "9173b7dca5e33b814ce165e63155fa48ad95679d820696d01d38821cf5b45f76",
+    "groups": [
+      {
+        "filter": "panes::canvas::psd::tests",
+        "exit": 0,
+        "passed": 2,
+        "failed": 0,
+        "ignored": 1,
+        "log": "native-1.log"
+      },
+      {
+        "filter": "panes::canvas::vector_masks::tests",
+        "exit": 0,
+        "passed": 3,
+        "failed": 0,
+        "ignored": 1,
+        "log": "native-2.log"
+      },
+      {
+        "filter": "panes::canvas::tests::a_mask",
+        "exit": 0,
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-3.log"
+      },
+      {
+        "filter": "panes::canvas::tests::mask_",
+        "exit": 0,
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-4.log"
+      },
+      {
+        "filter": "panes::canvas::tests::a_project_package_round_trips",
+        "exit": 0,
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-5.log"
+      },
+      {
+        "filter": "panes::canvas::tests::mcp_canvas_transform",
+        "exit": 0,
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-6.log"
+      },
+      {
+        "filter": "panes::canvas::tests::mcp_move_keeps_existing_linked_and_unlinked_mask_anchors",
+        "exit": 0,
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-7.log"
+      },
+      {
+        "filter": "panes::canvas::tests::non_image_rows_without_a_selected_mask",
+        "exit": 0,
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-8.log"
+      }
+    ],
+    "isolatedPassed": 1
+  },
+  "totals": {
+    "core": 92,
+    "native": 15,
+    "passed": 107
+  },
+  "build": {
+    "native": "passed (4m 11s)",
+    "slint": "compiled as part of native build",
+    "applicationBundleBuilt": false
+  },
+  "isolated": {
+    "gpu_required": true,
+    "library_items": 2,
+    "samples": [
+      {
+        "height": 6,
+        "layers_and_groups": 5,
+        "name": "synthetic",
+        "sha256": "f889e5bcec8617760bd89e774172dc70723cfc2489f75f813fa1acfcedad1b2d",
+        "width": 8
+      },
+      {
+        "height": 55,
+        "layers_and_groups": 2,
+        "name": "external",
+        "sha256": "7a911f7c1707ea43ac8af10722204aced8358bd0957e161c86eee3100a771fe8",
+        "width": 101
+      }
+    ],
+    "ui_verified": false
+  },
+  "externalFidelity": {
+    "oracle": "Pillow independently decoded original PSD merged image",
+    "pillowVersion": "12.0.0",
+    "sample": "2layers.psd",
+    "dimensions": [
+      101,
+      55
+    ],
+    "maxChannelDelta": 1,
+    "differentChannels": 1278,
+    "channels": 22220,
+    "exact": false,
+    "colorManagementVerified": false,
+    "generalPhotoshopFidelityVerified": false
+  },
+  "desktopInteraction": false,
+  "uiVerified": false,
+  "productionChanged": false,
+  "paidCalls": false,
+  "secretsRead": false,
+  "quota": {
+    "checkedAt": "2026-10-19T08:37:39Z",
+    "windowMinutes": 10080,
+    "remainingPercent": 69,
+    "resetAt": "2026-10-25T01:02:41Z",
+    "stopAtRemainingPercent": 50
+  }
+}

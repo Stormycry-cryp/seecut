@@ -1,0 +1,8 @@
+
+running 3 tests
+test panes::canvas::psd::tests::psd_atomic_fences_cover_cancel_edit_undo_project_session_and_error ... ok
+test panes::canvas::psd::tests::psd_complete_edit_save_gpu_png_global_library_chain ... ignored, requires isolated portable executable and SEECUT_PSD_FIXTURE_DIR
+test panes::canvas::psd::tests::psd_mask_paint_mapping_and_v7_save_reopen_are_lossless ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 505 filtered out; finished in 0.04s
+

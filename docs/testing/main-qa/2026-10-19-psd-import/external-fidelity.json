@@ -1,0 +1,15 @@
+{
+  "oracle": "Pillow independently decoded original PSD merged image",
+  "pillowVersion": "12.0.0",
+  "sample": "2layers.psd",
+  "dimensions": [
+    101,
+    55
+  ],
+  "maxChannelDelta": 1,
+  "differentChannels": 1278,
+  "channels": 22220,
+  "exact": false,
+  "colorManagementVerified": false,
+  "generalPhotoshopFidelityVerified": false
+}

@@ -1,0 +1,21 @@
+{
+  "gpu_required": true,
+  "library_items": 2,
+  "samples": [
+    {
+      "height": 6,
+      "layers_and_groups": 5,
+      "name": "synthetic",
+      "sha256": "f889e5bcec8617760bd89e774172dc70723cfc2489f75f813fa1acfcedad1b2d",
+      "width": 8
+    },
+    {
+      "height": 55,
+      "layers_and_groups": 2,
+      "name": "external",
+      "sha256": "7a911f7c1707ea43ac8af10722204aced8358bd0957e161c86eee3100a771fe8",
+      "width": 101
+    }
+  ],
+  "ui_verified": false
+}

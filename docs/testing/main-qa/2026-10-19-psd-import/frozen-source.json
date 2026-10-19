@@ -1,0 +1,21 @@
+{
+  "captured": "2026-10-19T08:37:27.052520+00:00",
+  "files": {
+    "src/crates/concat-canvas/src/document.rs": "4c62359236b6e2d9b42f0148cf1ce9702405efc757d3e16547b0e0112d49c43d",
+    "src/crates/concat-canvas/src/gpu.rs": "3af6ac7616ab5730cdf3d02e7ce26e929309119b481610deaac431a83a952ceb",
+    "src/crates/concat-canvas/src/lib.rs": "b062866c2fea2242b75e65281ef3d61bc60d7c4a383bf3d191715643c18e8ded",
+    "src/crates/concat-canvas/src/vector_mask.rs": "1b946122cd303e45caa347cd50f48131bf05cebcde25e05ea3e11abc0c0ae3c7",
+    "src/crates/concat/src/lib.rs": "43816b67fae9125d33d3d2a9bd57bdf57ad65774d9a82e7c162c0216934cb7e9",
+    "src/crates/concat/src/panes/canvas.rs": "ac313544205a2fa6d355edf46543917973da57b2198946c09bce8e7e1f7576e5",
+    "src/crates/concat/src/panes/canvas/shapes.rs": "528ba0bd3657319c941a337700a753b115a50cacfece71ad6099dc5a6e6726cc",
+    "src/crates/concat/ui/workspace/canvas-pane.slint": "ca1ec4e3b9557c7635ce7e28a2ef1f2a17b581163d06cc6b6280bba36ee1661b",
+    "src/crates/concat-canvas/src/psd.rs": "9329bd20721d62409c79122ac84d4a91ed371360d527ca783df40f5e5021b3f7",
+    "src/crates/concat-canvas/src/psd/tests.rs": "88c319298d676ef794f149a233e03ec25929e932688f671323d4e8cdc202e38c",
+    "src/crates/concat-canvas/tests/fixtures/psd/2layers.psd": "406ddf7cbf5a1065b992b9c0d2a59be6290a371b90f23b9a04c0e6bbc94beb0c",
+    "src/crates/concat-canvas/tests/fixtures/psd/LICENSE": "79f7e019a30b97542cce6f6482a75ba26771b4204c374fec305dc8cf558d137f",
+    "src/crates/concat-canvas/tests/fixtures/psd/seecut-layered.psd": "23a5227d27642c95a929ab932dda40f4a55ea67d9a4a1a61c1db4019df22c6ff",
+    "src/crates/concat-canvas/tests/fixtures/psd/transparentbg-gimp.psd": "9c700d3e7ad0429ac3ea83a40bb02f364a3d4e7713e7d608e23a8e03014d3b9c",
+    "src/crates/concat/src/panes/canvas/psd.rs": "2f745ba58e83fb495130ddc6589cd65f34d3a5c275319e5696a81eb23740e828"
+  },
+  "sourceCommit": "023c2f9088bddeb84b9ee6474cc750ba596b2179"
+}

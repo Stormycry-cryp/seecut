@@ -1,0 +1,35 @@
+
+running 30 tests
+test brush_gpu::tests::a_hard_tip_matches_the_reference ... ok
+test brush_gpu::tests::a_run_across_tiles_matches_step_by_step ... ok
+test brush_gpu::tests::a_soft_click_matches_the_reference ... ok
+test brush_gpu::tests::repeated_flushes_stay_identical_on_the_gpu ... ok
+test brush_gpu::tests::sparse_and_dense_events_match_the_reference ... ok
+test brush_gpu::tests::the_gpu_composite_tracks_the_cpu_composite ... ok
+test brush_gpu::tests::the_tail_never_bakes_in_on_the_gpu ... ok
+test gpu::tests::a_clip_link_matches ... ok
+test gpu::tests::a_dirty_upload_matches_a_fresh_one ... ok
+test gpu::tests::a_disabled_mask_is_ignored_by_the_gpu_too ... ok
+test gpu::tests::a_group_with_opacity_matches ... ok
+test gpu::tests::a_linked_mask_keeps_cpu_gpu_parity_after_transform ... ok
+test gpu::tests::a_live_dirty_upload_refuses_the_stores_old_frame_until_release ... ok
+test gpu::tests::a_masked_adjustment_matches ... ok
+test gpu::tests::a_masked_layer_matches ... ok
+test gpu::tests::a_translated_layer_matches ... ok
+test gpu::tests::adjustments_match ... ok
+test gpu::tests::c02_adjustments_match_with_masks_alpha_and_all_blends ... ok
+test gpu::tests::editable_shape_cache_matches_gpu_cpu_and_invalidation ... ok
+test gpu::tests::editable_text_cache_matches_gpu_cpu_after_content_and_style_changes ... ok
+test gpu::tests::long_text_alignment_expanded_cache_matches_gpu_after_repositioning ... ok
+test gpu::tests::lookup_gpu_matches_domain_tetrahedra_strength_masks_and_blends ... ok
+test gpu::tests::nonseparable_modes_match ... ok
+test gpu::tests::one_layer_over_transparent_matches ... ok
+test gpu::tests::probe_print ... ok
+test gpu::tests::scaled_transparent_edges_preserve_color_in_export_readback ... ok
+test gpu::tests::shared_device_without_optional_features_matches_cpu ... ok
+test gpu::tests::the_whole_stack_matches ... ok
+test gpu::tests::two_layers_all_separable_modes_match ... ok
+test gpu::tests::vector_masks_match_cpu_for_transforms_clip_groups_adjustments_and_cache_replacement ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 149 filtered out; finished in 2.40s
+

@@ -225,6 +225,16 @@ impl ImageDocument {
     /// which is where a dangling link can appear.
     pub fn validate(&self) -> Result<(), DocumentError> {
         for (id, mask) in self.masks() {
+            if let Some(b) = mask.bitmap_bounds {
+                if mask.vector.is_some()
+                    || b.left.unsigned_abs() > 2_000_000
+                    || b.top.unsigned_abs() > 2_000_000
+                    || !matches!(b.outside, 0 | 255)
+                    || mask.anchor.is_some_and(|a| !a.is_invertible())
+                {
+                    return Err(DocumentError::InvalidMask(id));
+                }
+            }
             if let Some(vector) = &mask.vector {
                 if !vector.validate() || mask.anchor.is_some_and(|a| !a.is_invertible()) {
                     return Err(DocumentError::InvalidMask(id));
@@ -795,6 +805,10 @@ impl LayerTransform {
 /// transform when the layer's changes, so the mask can be moved on its own.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LayerMask {
+    /// PSD bitmap rectangle in document space and coverage outside it.
+    /// Retaining off-canvas samples keeps subsequent layer moves lossless.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitmap_bounds: Option<BitmapMaskBounds>,
     /// Editable geometry, when present. Pixels are then only a coverage cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vector: Option<crate::vector_mask::VectorMask>,
@@ -815,6 +829,7 @@ impl LayerMask {
     /// An enabled, linked mask over the named pixels.
     pub fn new(pixels: PixelId) -> Self {
         Self {
+            bitmap_bounds: None,
             vector: None,
             enabled: true,
             linked: true,
@@ -822,6 +837,17 @@ impl LayerMask {
             pixels,
         }
     }
+}
+
+/// Retained document-space placement and exterior value of an imported bitmap mask.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BitmapMaskBounds {
+    /// Document-space left edge.
+    pub left: i32,
+    /// Document-space top edge.
+    pub top: i32,
+    /// Exterior grayscale coverage, black or white.
+    pub outside: u8,
 }
 
 /// A non-destructive colour change over everything beneath it in its group:

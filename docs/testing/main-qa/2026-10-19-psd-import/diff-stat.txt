@@ -1,0 +1,20 @@
+ THIRD_PARTY_NOTICES.md                             |   8 +
+ .../main-qa/2026-10-19-psd-import/SUPPORT.md       |  32 +
+ src/crates/concat-canvas/src/document.rs           |  26 +
+ src/crates/concat-canvas/src/gpu.rs                |   2 +-
+ src/crates/concat-canvas/src/lib.rs                |   1 +
+ src/crates/concat-canvas/src/psd.rs                | 666 +++++++++++++++++++++
+ src/crates/concat-canvas/src/psd/tests.rs          | 428 +++++++++++++
+ src/crates/concat-canvas/src/vector_mask.rs        |  19 +-
+ .../concat-canvas/tests/fixtures/psd/2layers.psd   | Bin 0 -> 14176 bytes
+ .../concat-canvas/tests/fixtures/psd/LICENSE       |  19 +
+ .../concat-canvas/tests/fixtures/psd/README.md     |   7 +
+ .../tests/fixtures/psd/seecut-layered.psd          | Bin 0 -> 1296 bytes
+ .../concat-canvas/tests/fixtures/psd/sha256.json   |   5 +
+ .../tests/fixtures/psd/transparentbg-gimp.psd      | Bin 0 -> 2912 bytes
+ src/crates/concat/src/lib.rs                       |   8 +-
+ src/crates/concat/src/panes/canvas.rs              | 113 +++-
+ src/crates/concat/src/panes/canvas/psd.rs          | 360 +++++++++++
+ src/crates/concat/src/panes/canvas/shapes.rs       |   1 +
+ src/crates/concat/ui/workspace/canvas-pane.slint   |  27 +
+ 19 files changed, 1704 insertions(+), 18 deletions(-)

@@ -246,3 +246,11 @@ SOFTWARE.
 MIT 选项使用；对应许可随 Cargo 源码包提供。系统 WebView 由平台提供。
 实验运行时使用 Bun 1.3.14，来源 https://github.com/oven-sh/bun ，对应许可及
 第三方说明应在正式分发前与二进制一起核对。本分支的本地实验包不构成正式发布。
+
+## PSD test fixtures (psd-tools)
+
+The unchanged `2layers.psd` and `transparentbg-gimp.psd` files under
+`src/crates/concat-canvas/tests/fixtures/psd/` come from psd-tools/psd-tools,
+commit `b1b454baa5fdc4d72e26b9b4bd29b2e8ad1fb93b`, MIT licensed,
+copyright (c) 2019 Kota Yamaguchi. The complete license and provenance are
+retained beside those fixtures. No psd-tools parser code is linked into SeeCut.

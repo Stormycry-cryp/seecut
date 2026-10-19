@@ -39,6 +39,7 @@ pub mod gpu;
 pub mod history;
 pub mod lookup;
 pub mod pixels;
+pub mod psd;
 pub mod selection;
 pub mod vector;
 pub mod vector_mask;

@@ -1,0 +1,9 @@
+
+running 4 tests
+test panes::canvas::vector_masks::tests::vector_mask_complete_saved_gpu_png_global_library_chain ... ignored, requires an isolated portable executable and SEECUT_VECTOR_MASK_FIXTURE_DIR
+test panes::canvas::vector_masks::tests::vector_mask_link_toggle_copy_and_nonimage_targets_preserve_independent_sources ... ok
+test panes::canvas::vector_masks::tests::vector_mask_primitives_edit_in_intrinsic_space_with_history_and_no_brush_writes ... ok
+test panes::canvas::vector_masks::tests::vector_mask_v6_rebuild_and_legacy_versions_reject_corruption_without_replacing_document ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 504 filtered out; finished in 0.21s
+

@@ -612,6 +612,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
             commit,
         )));
     }));
+    controls.on_psd_cancel(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::PsdCancel));
+    }));
+    controls.on_psd_dismiss(on_window!(|state| {
+        state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::PsdDismiss));
+    }));
     controls.on_vector_mask_add(on_window!(|state, kind: i32| {
         state.handle(Msg::Canvas(crate::panes::canvas::CanvasMsg::VectorMaskAdd(
             kind,
@@ -1287,7 +1293,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             &i18n::t("Open image"),
             Some((
                 i18n::t("Images").as_str(),
-                &["png", "jpg", "jpeg", "webp", "bmp"],
+                &["png", "jpg", "jpeg", "webp", "bmp", "psd"],
             )),
             |paths| {
                 on_ui(move |studio, _app, _| {

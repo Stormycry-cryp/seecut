@@ -1,0 +1,16 @@
+
+running 11 tests
+test psd::tests::all_thirteen_blends_are_explicit_and_unknown_rejected ... ok
+test psd::tests::black_white_disabled_relative_and_linked_move_preserve_off_canvas_samples ... ok
+test psd::tests::excessive_metadata_is_rejected_before_diagnostic_growth ... ok
+test psd::tests::external_gimp_psds_preserve_real_records ... ok
+test psd::tests::isolated_group_mask_opacity_and_disabled_state_are_not_dropped ... ok
+test psd::tests::psd_actual_gpu_matches_cpu_for_blends_groups_and_moved_mask_boundaries ... ok
+test psd::tests::randomized_length_and_tag_mutations_are_bounded_and_never_panic ... ok
+test psd::tests::raw_rle_nested_order_names_positions_masks_and_pixels ... ok
+test psd::tests::truncated_malformed_and_cancelled_fail_without_panic ... ok
+test psd::tests::unsupported_semantics_and_limits_are_controlled_errors ... ok
+test psd::tests::write_synthetic ... ignored, writes generated PSD fixture only when SEECUT_PSD_SYNTHETIC is supplied
+
+test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 168 filtered out; finished in 0.15s
+
