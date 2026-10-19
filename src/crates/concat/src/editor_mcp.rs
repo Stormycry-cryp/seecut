@@ -201,19 +201,19 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
         write_status: if scope.is_none() {
             "请打开画布工程".into()
         } else if !canvas {
-            "当前工程不支持移动".into()
+            "当前工程不支持编辑".into()
         } else if conflict {
-            "移动权限由其他客户端持有".into()
+            "编辑权限由其他客户端持有".into()
         } else if !read_ready {
             "请先允许读取与预览".into()
         } else if active {
-            format!("已允许移动 · 剩余{minutes}分钟")
+            format!("已允许编辑 · 剩余{minutes}分钟")
         } else if expired {
-            "移动权限已到期，请续期".into()
+            "编辑权限已到期，请续期后重新连接".into()
         } else if !write_ready {
-            "当前画布暂不可移动".into()
+            "当前画布暂不可编辑".into()
         } else {
-            "未允许移动".into()
+            "未允许编辑".into()
         },
         can_grant_read: scope.is_some(),
         can_revoke_read: grant.is_some(),
@@ -524,12 +524,25 @@ struct MoveFingerprint {
     parameters: MoveParameters,
 }
 
+#[path = "editor_mcp_approval.rs"]
+mod approval_view;
+
+pub(crate) fn approval_details(tool: &str, args: &Value) -> String {
+    if tool.starts_with("flow_") {
+        return crate::toonflow_agent::approval(tool, args.clone())
+            .filter(|call| approval_view::flow_summary(call).is_some())
+            .map(|call| approval_view::details(&call.args))
+            .unwrap_or_default();
+    }
+    approval_view::details(args)
+}
+
 /// Compact trusted-card content, parsed with the same exact named arguments
 /// used by the native permit. No raw paths or arbitrary instructions displayed.
 pub(crate) fn canvas_approval_view(tool: &str, args: Value) -> Option<(String, String)> {
     if tool.starts_with("flow_") {
         let call = crate::toonflow_agent::approval(tool, args)?;
-        return Some(("操作 Flow".into(), format!("{} · {}", call.name, call.args)));
+        return approval_view::flow_summary(&call);
     }
     let intent = Intent::parse(tool, args)?;
     Some(match intent.action {
@@ -2140,7 +2153,7 @@ mod assistant_permission_tests {
             let view = snapshot(&scope, &grants, &writes, &token, at);
             assert!(view.write_token.is_none());
             assert!(!view.can_grant_write && !view.can_renew_write && !view.can_revoke_write);
-            assert!(view.write_status == "移动权限由其他客户端持有");
+            assert!(view.write_status == "编辑权限由其他客户端持有");
             for action in [
                 AssistantPermission::GrantWrite,
                 AssistantPermission::RenewWrite,
@@ -2222,7 +2235,7 @@ mod assistant_permission_tests {
         let view = snapshot(&scope, &grants, &writes, &token, at);
         assert!(view.write_token.is_none());
         assert!(!view.can_grant_write && view.can_renew_write && view.can_revoke_write);
-        assert!(view.write_status == "移动权限已到期，请续期");
+        assert!(view.write_status == "编辑权限已到期，请续期后重新连接");
         assert!(
             assistant_registry_permission(
                 AssistantPermissionContext {
@@ -2425,7 +2438,7 @@ mod assistant_permission_tests {
         );
         assert!(clip.read_token.is_some() && clip.write_token.is_none());
         assert!(!clip.can_grant_write && !clip.can_renew_write && !clip.can_revoke_write);
-        assert!(clip.project_name == "剪辑工程" && clip.write_status == "当前工程不支持移动");
+        assert!(clip.project_name == "剪辑工程" && clip.write_status == "当前工程不支持编辑");
     }
 }
 
