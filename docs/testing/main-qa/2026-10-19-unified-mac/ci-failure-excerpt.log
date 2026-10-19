@@ -1,0 +1,61 @@
+Engine tests and lints	Run free -h	2026-10-19T09:01:33.4813449Z    Compiling rfd v0.17.2
+Engine tests and lints	Run free -h	2026-10-19T09:01:33.5552851Z    Compiling concat v0.2.2 (/home/runner/work/seecut/seecut/src/crates/concat)
+Engine tests and lints	Run free -h	2026-10-19T09:01:34.3573683Z     Checking bstr v1.13.1
+Engine tests and lints	Run free -h	2026-10-19T09:01:34.5766154Z    Compiling slint-macros v1.17.1
+Engine tests and lints	Run free -h	2026-10-19T09:01:40.7256994Z     Checking slint v1.17.1
+Engine tests and lints	Run free -h	2026-10-19T09:01:40.8222622Z     Checking opener v0.8.5
+Engine tests and lints	Run free -h	2026-10-19T09:01:48.6622754Z     Checking concat-speech v0.2.2 (/home/runner/work/seecut/seecut/src/crates/concat-speech)
+Engine tests and lints	Run free -h	2026-10-19T09:01:48.8713630Z     Checking concat-canvas v0.2.2 (/home/runner/work/seecut/seecut/src/crates/concat-canvas)
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6487776Z error: this `if` statement can be collapsed
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6488417Z    --> crates/concat-canvas/src/document.rs:228:13
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6488829Z     |
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6489306Z 228 | /             if let Some(b) = mask.bitmap_bounds {
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6489935Z 229 | |                 if mask.vector.is_some()
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6490590Z 230 | |                     || b.left.unsigned_abs() > 2_000_000
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6491256Z 231 | |                     || b.top.unsigned_abs() > 2_000_000
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6491804Z ...   |
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6492197Z 237 | |             }
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6492617Z     | |_____________^
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6492965Z     |
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6493697Z     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#collapsible_if
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6505034Z     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6506200Z     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6506795Z help: collapse nested if block
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6507138Z     |
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6507510Z 228 ~             if let Some(b) = mask.bitmap_bounds
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6508030Z 229 ~                 && (mask.vector.is_some()
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6508594Z 230 |                     || b.left.unsigned_abs() > 2_000_000
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6509173Z 231 |                     || b.top.unsigned_abs() > 2_000_000
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6509698Z 232 |                     || !matches!(b.outside, 0 | 255)
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6510347Z 233 ~                     || mask.anchor.is_some_and(|a| !a.is_invertible()))
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6510912Z 234 |                 {
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6511513Z 235 |                     return Err(DocumentError::InvalidMask(id));
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6512031Z 236 ~                 }
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6512382Z     |
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.6512528Z
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7368009Z error: this `if` statement can be collapsed
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7368955Z     --> crates/concat-canvas/src/gpu.rs:1284:9
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7369510Z      |
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7369995Z 1284 | /         if let Some((key, texture)) = &self.lookup {
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7370647Z 1285 | |             if key == lut.digest() {
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7371291Z 1286 | |                 return texture.clone();
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7371856Z 1287 | |             }
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7372300Z 1288 | |         }
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7372714Z      | |_________^
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7373057Z      |
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7373818Z      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#collapsible_if
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7374551Z help: collapse nested if block
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7374882Z      |
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7375265Z 1284 ~         if let Some((key, texture)) = &self.lookup
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7376023Z 1285 ~             && key == lut.digest() {
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7376544Z 1286 |                 return texture.clone();
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7376990Z 1287 ~             }
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7377346Z      |
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.7377502Z
+Engine tests and lints	Run free -h	2026-10-19T09:01:49.8833613Z error: could not compile `concat-canvas` (lib) due to 2 previous errors
+Engine tests and lints	Run free -h	2026-10-19T09:01:50.0267312Z Command exited with non-zero status 101
+Engine tests and lints	Run free -h	2026-10-19T09:01:50.0267817Z 	Command being timed: "cargo clippy --workspace --all-targets -- -D warnings"
+Engine tests and lints	Run free -h	2026-10-19T09:01:50.0268203Z 	User time (seconds): 974.28
+Engine tests and lints	Run free -h	2026-10-19T09:01:50.0268448Z 	System time (seconds): 44.04
+Engine tests and lints	Run free -h	2026-10-19T09:01:50.0268701Z 	Percent of CPU this job got: 98%
+Engine tests and lints	Run free -h	2026-10-19T09:01:50.0269025Z 	Elapsed (wall clock) time (h:mm:ss or m:ss): 17:19.10

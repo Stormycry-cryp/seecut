@@ -1,0 +1,1482 @@
+{
+  "Contents/Frameworks/libSvtAv1Enc.4.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [
+      "@loader_path/../lib"
+    ],
+    "install_names": [
+      "@rpath/libSvtAv1Enc.4.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libSvtAv1Enc.4.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libSvtAv1Enc.4.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "63a4ca25fbc8fa71d1274be8525d0d482d0f5dd28124c1db1686584b38204717",
+    "bytes": 3090576
+  },
+  "Contents/Frameworks/libavcodec.63.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libavcodec.63.dylib",
+      "@rpath/libswresample.7.dylib",
+      "@rpath/libavutil.61.dylib",
+      "@rpath/libvpx.12.dylib",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libiconv.2.dylib",
+      "@rpath/liblzma.5.dylib",
+      "@rpath/libdav1d.7.dylib",
+      "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+      "@rpath/libmp3lame.0.dylib",
+      "@rpath/libopus.0.dylib",
+      "@rpath/libSvtAv1Enc.4.dylib",
+      "@rpath/libx264.165.dylib",
+      "@rpath/libx265.217.dylib",
+      "/usr/lib/libz.1.dylib",
+      "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+      "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+      "@rpath/libssl.3.dylib",
+      "@rpath/libcrypto.3.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libavcodec.63.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libavcodec.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libswresample.7.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libswresample.7.dylib"
+      },
+      {
+        "install_name": "@rpath/libavutil.61.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavutil.61.dylib"
+      },
+      {
+        "install_name": "@rpath/libvpx.12.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libvpx.12.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libiconv.2.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/liblzma.5.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/liblzma.5.dylib"
+      },
+      {
+        "install_name": "@rpath/libdav1d.7.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libdav1d.7.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libmp3lame.0.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libmp3lame.0.dylib"
+      },
+      {
+        "install_name": "@rpath/libopus.0.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libopus.0.dylib"
+      },
+      {
+        "install_name": "@rpath/libSvtAv1Enc.4.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libSvtAv1Enc.4.dylib"
+      },
+      {
+        "install_name": "@rpath/libx264.165.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libx264.165.dylib"
+      },
+      {
+        "install_name": "@rpath/libx265.217.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libx265.217.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libz.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libssl.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libssl.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libcrypto.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libcrypto.3.dylib"
+      }
+    ],
+    "sha256": "ed30e6eec5734c8c0c4a25013ffda5199189235068d109726520cbba0e333044",
+    "bytes": 9792192
+  },
+  "Contents/Frameworks/libavdevice.63.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libavdevice.63.dylib",
+      "@rpath/libavfilter.12.dylib",
+      "@rpath/libswscale.10.dylib",
+      "@rpath/libavformat.63.dylib",
+      "@rpath/libavcodec.63.dylib",
+      "@rpath/libswresample.7.dylib",
+      "@rpath/libavutil.61.dylib",
+      "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+      "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+      "/System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio",
+      "/usr/lib/libSystem.B.dylib",
+      "/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation",
+      "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+      "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+      "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+      "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+      "/usr/lib/libz.1.dylib",
+      "@rpath/libvmaf.3.dylib",
+      "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+      "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+      "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage",
+      "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+      "/usr/lib/libbz2.1.0.dylib",
+      "@rpath/libssl.3.dylib",
+      "@rpath/libcrypto.3.dylib",
+      "@rpath/libvpx.12.dylib",
+      "/usr/lib/libiconv.2.dylib",
+      "@rpath/liblzma.5.dylib",
+      "@rpath/libdav1d.7.dylib",
+      "@rpath/libmp3lame.0.dylib",
+      "@rpath/libopus.0.dylib",
+      "@rpath/libSvtAv1Enc.4.dylib",
+      "@rpath/libx264.165.dylib",
+      "@rpath/libx265.217.dylib",
+      "/usr/lib/libobjc.A.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libavdevice.63.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libavdevice.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libavfilter.12.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavfilter.12.dylib"
+      },
+      {
+        "install_name": "@rpath/libswscale.10.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libswscale.10.dylib"
+      },
+      {
+        "install_name": "@rpath/libavformat.63.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavformat.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libavcodec.63.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavcodec.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libswresample.7.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libswresample.7.dylib"
+      },
+      {
+        "install_name": "@rpath/libavutil.61.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavutil.61.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libz.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libvmaf.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libvmaf.3.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libbz2.1.0.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libssl.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libssl.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libcrypto.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libcrypto.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libvpx.12.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libvpx.12.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libiconv.2.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/liblzma.5.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/liblzma.5.dylib"
+      },
+      {
+        "install_name": "@rpath/libdav1d.7.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libdav1d.7.dylib"
+      },
+      {
+        "install_name": "@rpath/libmp3lame.0.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libmp3lame.0.dylib"
+      },
+      {
+        "install_name": "@rpath/libopus.0.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libopus.0.dylib"
+      },
+      {
+        "install_name": "@rpath/libSvtAv1Enc.4.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libSvtAv1Enc.4.dylib"
+      },
+      {
+        "install_name": "@rpath/libx264.165.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libx264.165.dylib"
+      },
+      {
+        "install_name": "@rpath/libx265.217.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libx265.217.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libobjc.A.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "68a80f6717e40ab236f4bc6c221f4add8b114e4ac41a92994fa3e7f2367b844b",
+    "bytes": 148848
+  },
+  "Contents/Frameworks/libavfilter.12.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libavfilter.12.dylib",
+      "@rpath/libswscale.10.dylib",
+      "@rpath/libavformat.63.dylib",
+      "@rpath/libavcodec.63.dylib",
+      "@rpath/libswresample.7.dylib",
+      "@rpath/libavutil.61.dylib",
+      "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libz.1.dylib",
+      "@rpath/libvmaf.3.dylib",
+      "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+      "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+      "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage",
+      "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+      "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+      "/usr/lib/libbz2.1.0.dylib",
+      "@rpath/libssl.3.dylib",
+      "@rpath/libcrypto.3.dylib",
+      "@rpath/libvpx.12.dylib",
+      "/usr/lib/libiconv.2.dylib",
+      "@rpath/liblzma.5.dylib",
+      "@rpath/libdav1d.7.dylib",
+      "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+      "@rpath/libmp3lame.0.dylib",
+      "@rpath/libopus.0.dylib",
+      "@rpath/libSvtAv1Enc.4.dylib",
+      "@rpath/libx264.165.dylib",
+      "@rpath/libx265.217.dylib",
+      "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+      "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+      "/usr/lib/libobjc.A.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libavfilter.12.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libavfilter.12.dylib"
+      },
+      {
+        "install_name": "@rpath/libswscale.10.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libswscale.10.dylib"
+      },
+      {
+        "install_name": "@rpath/libavformat.63.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavformat.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libavcodec.63.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavcodec.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libswresample.7.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libswresample.7.dylib"
+      },
+      {
+        "install_name": "@rpath/libavutil.61.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavutil.61.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libz.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libvmaf.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libvmaf.3.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libbz2.1.0.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libssl.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libssl.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libcrypto.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libcrypto.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libvpx.12.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libvpx.12.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libiconv.2.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/liblzma.5.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/liblzma.5.dylib"
+      },
+      {
+        "install_name": "@rpath/libdav1d.7.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libdav1d.7.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libmp3lame.0.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libmp3lame.0.dylib"
+      },
+      {
+        "install_name": "@rpath/libopus.0.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libopus.0.dylib"
+      },
+      {
+        "install_name": "@rpath/libSvtAv1Enc.4.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libSvtAv1Enc.4.dylib"
+      },
+      {
+        "install_name": "@rpath/libx264.165.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libx264.165.dylib"
+      },
+      {
+        "install_name": "@rpath/libx265.217.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libx265.217.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libobjc.A.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "344c6c51c751979cd28e4dbb66c4e89b613d07870e4bfcc9c741491a5b088fce",
+    "bytes": 3047056
+  },
+  "Contents/Frameworks/libavformat.63.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libavformat.63.dylib",
+      "@rpath/libavcodec.63.dylib",
+      "@rpath/libswresample.7.dylib",
+      "@rpath/libavutil.61.dylib",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libbz2.1.0.dylib",
+      "/usr/lib/libz.1.dylib",
+      "@rpath/libssl.3.dylib",
+      "@rpath/libcrypto.3.dylib",
+      "@rpath/libvpx.12.dylib",
+      "/usr/lib/libiconv.2.dylib",
+      "@rpath/liblzma.5.dylib",
+      "@rpath/libdav1d.7.dylib",
+      "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+      "@rpath/libmp3lame.0.dylib",
+      "@rpath/libopus.0.dylib",
+      "@rpath/libSvtAv1Enc.4.dylib",
+      "@rpath/libx264.165.dylib",
+      "@rpath/libx265.217.dylib",
+      "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+      "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libavformat.63.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libavformat.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libavcodec.63.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavcodec.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libswresample.7.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libswresample.7.dylib"
+      },
+      {
+        "install_name": "@rpath/libavutil.61.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavutil.61.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libbz2.1.0.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libz.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libssl.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libssl.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libcrypto.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libcrypto.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libvpx.12.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libvpx.12.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libiconv.2.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/liblzma.5.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/liblzma.5.dylib"
+      },
+      {
+        "install_name": "@rpath/libdav1d.7.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libdav1d.7.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libmp3lame.0.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libmp3lame.0.dylib"
+      },
+      {
+        "install_name": "@rpath/libopus.0.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libopus.0.dylib"
+      },
+      {
+        "install_name": "@rpath/libSvtAv1Enc.4.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libSvtAv1Enc.4.dylib"
+      },
+      {
+        "install_name": "@rpath/libx264.165.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libx264.165.dylib"
+      },
+      {
+        "install_name": "@rpath/libx265.217.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libx265.217.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "kind": "system"
+      }
+    ],
+    "sha256": "b9f2691f5515bc0092deaf529d594e7b0af4785ecbc5fc8d47b89ef03ac75648",
+    "bytes": 2377568
+  },
+  "Contents/Frameworks/libavutil.61.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libavutil.61.dylib",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libz.1.dylib",
+      "@rpath/libssl.3.dylib",
+      "@rpath/libcrypto.3.dylib",
+      "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+      "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libavutil.61.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libavutil.61.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libz.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libssl.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libssl.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libcrypto.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libcrypto.3.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "kind": "system"
+      }
+    ],
+    "sha256": "ac996d603dbf612df21d57a2615c00676f60bfc80c7bb33e496f8ba339c95cfd",
+    "bytes": 657824
+  },
+  "Contents/Frameworks/libcrypto.3.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libcrypto.3.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libcrypto.3.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libcrypto.3.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "63e05cae305a531a1c8faaecaf9c3510907329bf697a80a800e6484b448d54c1",
+    "bytes": 4860512
+  },
+  "Contents/Frameworks/libdav1d.7.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libdav1d.7.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libdav1d.7.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libdav1d.7.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "bfddba39c42e5de3e17a0272d6600ee250cb94794dedf8ee27ba76b44ee03836",
+    "bytes": 859680
+  },
+  "Contents/Frameworks/liblzma.5.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/liblzma.5.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/liblzma.5.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/liblzma.5.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "b4744862bba3da16eb363a0fd9e8c887e0dba98104ba7fd9fe2e46ae7ba99a38",
+    "bytes": 184512
+  },
+  "Contents/Frameworks/libmp3lame.0.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libmp3lame.0.dylib",
+      "@rpath/libmpg123.0.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libmp3lame.0.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libmp3lame.0.dylib"
+      },
+      {
+        "install_name": "@rpath/libmpg123.0.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libmpg123.0.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "a43900bfc3602a464f265f15fa3c95c13eba811af1f2c71e114e68131fd8d4d9",
+    "bytes": 248656
+  },
+  "Contents/Frameworks/libmpg123.0.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libmpg123.0.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libmpg123.0.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libmpg123.0.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "1915f5e4cb840ce3f3c1be8db1e19dc51c24fba66df4f5fcb0ca63af77c8c604",
+    "bytes": 288320
+  },
+  "Contents/Frameworks/libopus.0.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libopus.0.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libopus.0.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libopus.0.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "635b2d9542adf59b5cc3c6f637eecfcd1c78c583e5a5e9b1e304d8d0d029b574",
+    "bytes": 373744
+  },
+  "Contents/Frameworks/libssl.3.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libssl.3.dylib",
+      "@rpath/libcrypto.3.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libssl.3.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libssl.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libcrypto.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libcrypto.3.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "f1af9bc02c40cb252926e24c069bb7e4ab0830526b7fa9895a0b76d65512131e",
+    "bytes": 900800
+  },
+  "Contents/Frameworks/libswresample.7.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libswresample.7.dylib",
+      "@rpath/libavutil.61.dylib",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libz.1.dylib",
+      "@rpath/libssl.3.dylib",
+      "@rpath/libcrypto.3.dylib",
+      "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+      "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libswresample.7.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libswresample.7.dylib"
+      },
+      {
+        "install_name": "@rpath/libavutil.61.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavutil.61.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libz.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libssl.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libssl.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libcrypto.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libcrypto.3.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "kind": "system"
+      }
+    ],
+    "sha256": "5b57b0c5fd0ca9828ca143a89f5e9f3147dc64a75b01da7d343f36b6c404a776",
+    "bytes": 120992
+  },
+  "Contents/Frameworks/libswscale.10.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libswscale.10.dylib",
+      "@rpath/libavutil.61.dylib",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libz.1.dylib",
+      "@rpath/libssl.3.dylib",
+      "@rpath/libcrypto.3.dylib",
+      "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+      "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libswscale.10.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libswscale.10.dylib"
+      },
+      {
+        "install_name": "@rpath/libavutil.61.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavutil.61.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libz.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libssl.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libssl.3.dylib"
+      },
+      {
+        "install_name": "@rpath/libcrypto.3.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libcrypto.3.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "kind": "system"
+      }
+    ],
+    "sha256": "e00fd8bf480d1b4766c67f0cc3959c44a78824ece83d0c12416175275b36a130",
+    "bytes": 719152
+  },
+  "Contents/Frameworks/libvmaf.3.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libvmaf.3.dylib",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libc++.1.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libvmaf.3.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libvmaf.3.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libc++.1.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "91dd1341e7bb3584b32ed204464f6ea0967463a97ab9a1b5b62bf80a9a379c11",
+    "bytes": 913840
+  },
+  "Contents/Frameworks/libvpx.12.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libvpx.12.dylib",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libc++.1.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libvpx.12.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libvpx.12.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libc++.1.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "1c78820120ade95f4f591ce85cdfaadedd5db3bf0c7f9fe7eb46fcd88f222944",
+    "bytes": 1772192
+  },
+  "Contents/Frameworks/libx264.165.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/libx264.165.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libx264.165.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libx264.165.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "e2aedd1a1f8bec2b119f7e6535c7afa166f58f25b9d38efa273123fffcb345bf",
+    "bytes": 1274304
+  },
+  "Contents/Frameworks/libx265.217.dylib": {
+    "minimum_macos": "15.0",
+    "rpaths": [
+      "@loader_path/../lib"
+    ],
+    "install_names": [
+      "@rpath/libx265.217.dylib",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libc++.1.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/libx265.217.dylib",
+        "kind": "dylib_id",
+        "target": "Contents/Frameworks/libx265.217.dylib"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libc++.1.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "53db86ee4f5d90da7f71debb67f7f292761ffe2e7559ded13305129dc020e459",
+    "bytes": 7657072
+  },
+  "Contents/MacOS/seecut": {
+    "minimum_macos": "11.0",
+    "rpaths": [
+      "@executable_path/../Frameworks"
+    ],
+    "install_names": [
+      "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit",
+      "/usr/lib/libc++.1.dylib",
+      "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+      "/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate",
+      "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+      "/System/Library/Frameworks/MetalKit.framework/Versions/A/MetalKit",
+      "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+      "/System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio",
+      "/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML",
+      "@rpath/libavutil.61.dylib",
+      "@rpath/libavformat.63.dylib",
+      "@rpath/libavdevice.63.dylib",
+      "@rpath/libavfilter.12.dylib",
+      "@rpath/libswscale.10.dylib",
+      "@rpath/libswresample.7.dylib",
+      "@rpath/libavcodec.63.dylib",
+      "/System/Library/Frameworks/Accessibility.framework/Versions/A/Accessibility",
+      "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+      "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices",
+      "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+      "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+      "/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libobjc.A.dylib",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/CoreData.framework/Versions/A/CoreData",
+      "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage",
+      "/System/Library/Frameworks/CloudKit.framework/Versions/A/CloudKit",
+      "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore",
+      "/usr/lib/libiconv.2.dylib",
+      "/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText",
+      "/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync",
+      "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+    ],
+    "dependencies": [
+      {
+        "install_name": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libc++.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/MetalKit.framework/Versions/A/MetalKit",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML",
+        "kind": "system"
+      },
+      {
+        "install_name": "@rpath/libavutil.61.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavutil.61.dylib"
+      },
+      {
+        "install_name": "@rpath/libavformat.63.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavformat.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libavdevice.63.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavdevice.63.dylib"
+      },
+      {
+        "install_name": "@rpath/libavfilter.12.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavfilter.12.dylib"
+      },
+      {
+        "install_name": "@rpath/libswscale.10.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libswscale.10.dylib"
+      },
+      {
+        "install_name": "@rpath/libswresample.7.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libswresample.7.dylib"
+      },
+      {
+        "install_name": "@rpath/libavcodec.63.dylib",
+        "kind": "bundled",
+        "target": "Contents/Frameworks/libavcodec.63.dylib"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Accessibility.framework/Versions/A/Accessibility",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libobjc.A.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreData.framework/Versions/A/CoreData",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CloudKit.framework/Versions/A/CloudKit",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libiconv.2.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "kind": "system"
+      }
+    ],
+    "sha256": "06d03072d812d1ef749525ca8292e4fa243ed31978427d5d51c347b7fe6e3a86",
+    "bytes": 583729248
+  },
+  "Contents/Resources/agent/bin/node": {
+    "minimum_macos": "13.5",
+    "rpaths": [
+      "@loader_path/../../../Frameworks"
+    ],
+    "install_names": [
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+      "/usr/lib/libc++.1.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libc++.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "4c9cb7646f07711ad406d0e18d1c3c7e796837c418b341aa8e34bec623f1c119",
+    "bytes": 119246080
+  },
+  "Contents/Resources/agent/bin/seecut-editor-mcp": {
+    "minimum_macos": "11.0",
+    "rpaths": [
+      "@loader_path/../../../Frameworks"
+    ],
+    "install_names": [
+      "/usr/lib/libiconv.2.dylib",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "/usr/lib/libiconv.2.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "6f561bf6633f0a3143e6d3e4a58d0cf167b3afae23d0572e3ac5bab7c6e76439",
+    "bytes": 8231728
+  },
+  "Contents/Resources/toonflow/bin/bun": {
+    "minimum_macos": "13.0",
+    "rpaths": [],
+    "install_names": [
+      "/usr/lib/libicucore.A.dylib",
+      "/usr/lib/libresolv.9.dylib",
+      "/usr/lib/libc++.1.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "/usr/lib/libicucore.A.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libresolv.9.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libc++.1.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "b1cf43a06b03bf1b3c194f9a80f66d93582b216b5f540cc2aac7a3a5f284a755",
+    "bytes": 63095392
+  },
+  "Contents/Resources/toonflow/build/server/node_modules/@firecrawl/anydoc-darwin-arm64/anydoc.darwin-arm64.node": {
+    "minimum_macos": "11.0",
+    "rpaths": [],
+    "install_names": [
+      "@rpath/anydoc.darwin-arm64.node",
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/usr/lib/libSystem.B.dylib",
+      "/usr/lib/libiconv.2.dylib"
+    ],
+    "dependencies": [
+      {
+        "install_name": "@rpath/anydoc.darwin-arm64.node",
+        "kind": "dylib_id",
+        "target": "Contents/Resources/toonflow/build/server/node_modules/@firecrawl/anydoc-darwin-arm64/anydoc.darwin-arm64.node"
+      },
+      {
+        "install_name": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libSystem.B.dylib",
+        "kind": "system"
+      },
+      {
+        "install_name": "/usr/lib/libiconv.2.dylib",
+        "kind": "system"
+      }
+    ],
+    "sha256": "c56d529cd0fd23d75c76055d14c5e603a344e5108bef330fdae3348f8f85e5e9",
+    "bytes": 6984672
+  }
+}
