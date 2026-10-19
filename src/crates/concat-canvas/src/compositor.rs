@@ -396,24 +396,15 @@ impl<'a> Composer<'a> {
         y: u32,
     ) -> f32 {
         let Some(frame) = fetch(self.store, mask.pixels) else {
-            return 1.0;
+            return mask.outside_coverage();
         };
-        if mask.linked
-            && let (Some(current), Some(anchor)) = (layer, mask.anchor)
-        {
-            let bitmap = (frame.width() as f32, frame.height() as f32);
-            let canvas = (self.document.width as f32, self.document.height as f32);
-            let point = (x as f32 + 0.5, y as f32 + 0.5);
-            if let Some(local) = current.to_bitmap(point, bitmap, canvas)
-                && let Some(old_document) = anchor.from_bitmap(local, bitmap, canvas)
-            {
-                if old_document.0 < 0.0 || old_document.1 < 0.0 {
-                    return 1.0;
-                }
-                return sample_channel(&frame, old_document.0 as u32, old_document.1 as u32, 0);
-            }
-        }
-        sample_channel(&frame, x, y, 0)
+        mask.coverage(
+            &frame,
+            layer,
+            (self.document.width, self.document.height),
+            x,
+            y,
+        )
     }
 
     // ----- sampling -------------------------------------------------
@@ -523,15 +514,6 @@ fn sample_alpha(
 
 /// One channel of a mask bitmap at a canvas point, untransformed: masks read
 /// in document coordinates. `0..4` picks the channel.
-fn sample_channel(frame: &Frame, x: u32, y: u32, channel: usize) -> f32 {
-    if x >= frame.width() || y >= frame.height() {
-        // Off the mask is unmasked: a smaller mask covers only part of the
-        // canvas, and the rest lets everything through.
-        return 1.0;
-    }
-    frame.pixel(x, y).map_or(1.0, |p| p[channel] as f32 / 255.0)
-}
-
 /// Bilinear over the bitmap's own pixels, alpha-weighted so edges keep
 /// their coverage instead of bleeding black.
 fn bilinear(frame: &Frame, bx: f32, by: f32) -> Option<[u8; 4]> {

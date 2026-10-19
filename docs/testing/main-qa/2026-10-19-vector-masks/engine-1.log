@@ -1,0 +1,8 @@
+
+running 3 tests
+test vector_mask::tests::geometry_alpha_coverage_has_antialiasing_and_zero_outside ... ok
+test vector_mask::tests::intrinsic_mapping_linked_detached_hit_and_clipping_share_coverage ... ok
+test vector_mask::tests::malformed_closed_source_and_shared_cache_are_rejected ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 0.00s
+

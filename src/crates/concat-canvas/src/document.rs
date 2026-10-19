@@ -109,6 +109,20 @@ impl ImageDocument {
         out
     }
 
+    /// All masks, including the root group's document-space mask.
+    pub fn masks(&self) -> Vec<(LayerId, &LayerMask)> {
+        self.root
+            .mask
+            .iter()
+            .map(|m| (self.root.id, m))
+            .chain(
+                self.walk()
+                    .into_iter()
+                    .filter_map(|n| n.mask().map(|m| (n.id(), m))),
+            )
+            .collect()
+    }
+
     /// The node an id names, at any depth.
     pub fn find(&self, id: LayerId) -> Option<&LayerNode> {
         self.root.find(id)
@@ -210,6 +224,18 @@ impl ImageDocument {
     /// after loading a save and after any edit that removes or moves layers,
     /// which is where a dangling link can appear.
     pub fn validate(&self) -> Result<(), DocumentError> {
+        for (id, mask) in self.masks() {
+            if let Some(vector) = &mask.vector {
+                if !vector.validate() || mask.anchor.is_some_and(|a| !a.is_invertible()) {
+                    return Err(DocumentError::InvalidMask(id));
+                }
+                let mut pixels = Vec::new();
+                self.collect_pixels(&mut pixels);
+                if pixels.iter().filter(|p| **p == mask.pixels).count() != 1 {
+                    return Err(DocumentError::InvalidMask(id));
+                }
+            }
+        }
         for node in self.walk() {
             if let LayerNode::Adjustment(layer) = node {
                 let valid = match &layer.adjustment {
@@ -307,6 +333,9 @@ pub const CLIP_CHAIN_LIMIT: usize = 256;
 /// Why a document cannot be drawn: a live alpha link that does not resolve.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DocumentError {
+    /// Invalid editable mask geometry, placement or shared derived cache.
+    #[error("layer {0:?} has an invalid vector mask")]
+    InvalidMask(LayerId),
     /// A colour adjustment contains an out-of-range or non-finite parameter.
     #[error("invalid adjustment parameters in layer {0:?}")]
     InvalidAdjustment(LayerId),
@@ -404,6 +433,15 @@ impl LayerNode {
             Self::Layer(layer) => layer.blend,
             Self::Group(group) => group.blend,
             Self::Adjustment(adjustment) => adjustment.blend,
+        }
+    }
+
+    /// The single mutually exclusive bitmap/vector mask slot.
+    pub fn mask_slot_mut(&mut self) -> &mut Option<LayerMask> {
+        match self {
+            Self::Layer(layer) => &mut layer.mask,
+            Self::Group(group) => &mut group.mask,
+            Self::Adjustment(adjustment) => &mut adjustment.mask,
         }
     }
 
@@ -755,8 +793,11 @@ impl LayerTransform {
 ///
 /// `linked` follows Compositor's vocabulary: an unlinked mask keeps its own
 /// transform when the layer's changes, so the mask can be moved on its own.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LayerMask {
+    /// Editable geometry, when present. Pixels are then only a coverage cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<crate::vector_mask::VectorMask>,
     /// Whether the mask is applied at all.
     pub enabled: bool,
     /// Whether the mask follows the layer's transform or holds its own.
@@ -774,6 +815,7 @@ impl LayerMask {
     /// An enabled, linked mask over the named pixels.
     pub fn new(pixels: PixelId) -> Self {
         Self {
+            vector: None,
             enabled: true,
             linked: true,
             anchor: None,

@@ -108,21 +108,13 @@ fn mask_red(uv: vec2<f32>) -> f32 {
     if (p.flags & 32u) == 0u {
         return textureSampleLevel(mask_texture, tex_sampler, uv, 0.0).r;
     }
-    let canvas = vec2<f32>(textureDimensions(backdrop_texture).xy);
-    let d = uv * canvas - (canvas / 2.0 + vec2<f32>(p.tx, p.ty));
-    let u = vec2<f32>(d.x * p.cs - d.y * p.sn, d.x * p.sn + d.y * p.cs);
-    let s = u / vec2<f32>(p.sx, p.sy);
-    let local = vec2<f32>(
-        select(s.x, -s.x, (p.flags & 8u) != 0u),
-        select(s.y, -s.y, (p.flags & 16u) != 0u));
-    let a = local * vec2<f32>(p.msx, p.msy);
-    let old_doc = canvas / 2.0 + vec2<f32>(p.mx, p.my)
-        + vec2<f32>(a.x * p.mcos - a.y * p.msin, a.x * p.msin + a.y * p.mcos);
+    let point = vec2<f32>(p.mx * uv.x + p.msx * uv.y + p.mcos,
+                           p.my * uv.x + p.msy * uv.y + p.msin);
     let size = vec2<f32>(textureDimensions(mask_texture).xy);
-    if old_doc.x < 0.0 || old_doc.y < 0.0 || old_doc.x >= size.x || old_doc.y >= size.y {
-        return 1.0;
+    if point.x < 0.0 || point.y < 0.0 || point.x >= size.x || point.y >= size.y {
+        return select(1.0, 0.0, (p.flags & 64u) != 0u);
     }
-    return textureLoad(mask_texture, vec2<i32>(floor(old_doc)), 0).r;
+    return textureLoad(mask_texture, vec2<i32>(floor(point)), 0).r;
 }
 
 // A float snapped to the byte grid: the shader-side twin of the CPU's
@@ -460,7 +452,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // the same mapping `compositor.rs` walks per pixel.
     var uv_src = uv;
     if (p.flags & 4u) != 0u {
-        let canvas = vec2<f32>(textureDimensions(backdrop_texture).xy);
+        var canvas = vec2<f32>(textureDimensions(backdrop_texture).xy);
+        if p.pass_kind == 2u { canvas = vec2<f32>(p.a, p.b); }
         let d = uv * canvas - (canvas / 2.0 + vec2<f32>(p.tx, p.ty));
         let u = vec2<f32>(d.x * p.cs - d.y * p.sn, d.x * p.sn + d.y * p.cs);
         let s = u / vec2<f32>(p.sx, p.sy);
@@ -470,6 +463,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if b.x < 0.0 || b.y < 0.0 || b.x >= p.bw || b.y >= p.bh {
             // Off the bitmap: the backdrop passes through untouched, as
             // the CPU walk's `None` does.
+            if p.pass_kind == 2u { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
             return back;
         }
         uv_src = b / vec2<f32>(p.bw, p.bh);
@@ -569,17 +563,24 @@ impl Params {
         out
     }
 
-    fn mask_anchor(&mut self, anchor: &LayerTransform) {
-        let (sin, cos) = anchor.rotation.sin_cos();
-        self.pad = [
-            anchor.x,
-            anchor.y,
-            anchor.scale_x * if anchor.flip_h { -1.0 } else { 1.0 },
-            anchor.scale_y * if anchor.flip_v { -1.0 } else { 1.0 },
-            cos,
-            sin,
-        ];
+    fn mask_mapping(
+        &mut self,
+        mask: &crate::LayerMask,
+        current: Option<&LayerTransform>,
+        texture: &wgpu::Texture,
+        canvas: (u32, u32),
+    ) {
+        self.pad = mask
+            .coverage_mapping(
+                current,
+                (texture.width() as f32, texture.height() as f32),
+                (canvas.0 as f32, canvas.1 as f32),
+            )
+            .unwrap_or([0.0, 0.0, 0.0, 0.0, -1.0, -1.0]);
         self.flags |= 32;
+        if mask.vector.is_some() {
+            self.flags |= 64;
+        }
     }
 
     /// The transform payload from a layer transform and its bitmap size.
@@ -1047,7 +1048,16 @@ impl CanvasGpu {
                         .as_ref()
                         .and_then(|m| self.mask_texture(m, store));
                     let source = composite.clone();
-                    self.overdraw(&source, inner.opacity, inner.blend, mask, None, None, pair);
+                    self.overdraw(
+                        &source,
+                        inner.opacity,
+                        inner.blend,
+                        mask,
+                        inner.mask.as_ref(),
+                        None,
+                        None,
+                        pair,
+                    );
                     self.pool.push((composite, inner_pair.1));
                 }
                 LayerNode::Adjustment(adjustment) => {
@@ -1085,13 +1095,13 @@ impl CanvasGpu {
             ..Params::default()
         };
         params.transform(&layer.transform, frame.width(), frame.height());
-        if let Some(anchor) = layer
-            .mask
-            .as_ref()
-            .filter(|mask| mask.enabled && mask.linked)
-            .and_then(|mask| mask.anchor)
-        {
-            params.mask_anchor(&anchor);
+        if let (Some(source), Some(texture)) = (layer.mask.as_ref(), mask.as_ref()) {
+            params.mask_mapping(
+                source,
+                Some(&layer.transform),
+                texture,
+                self.canvas.expect("canvas"),
+            );
         }
         if mask.is_some() {
             params.flags |= 1;
@@ -1123,6 +1133,7 @@ impl CanvasGpu {
         opacity: f32,
         blend: BlendMode,
         mask: Option<wgpu::Texture>,
+        mask_source: Option<&crate::LayerMask>,
         clip: Option<wgpu::Texture>,
         transform: Option<(&LayerTransform, u32, u32)>,
         pair: &mut (wgpu::Texture, wgpu::Texture),
@@ -1140,6 +1151,9 @@ impl CanvasGpu {
             None => {
                 params.tx = 0.0;
             }
+        }
+        if let (Some(source), Some(texture)) = (mask_source, mask.as_ref()) {
+            params.mask_mapping(source, None, texture, self.canvas.expect("canvas"));
         }
         if mask.is_some() {
             params.flags |= 1;
@@ -1244,6 +1258,9 @@ impl CanvasGpu {
             .mask
             .as_ref()
             .and_then(|m| self.mask_texture(m, store));
+        if let (Some(source), Some(texture)) = (adjustment.mask.as_ref(), mask.as_ref()) {
+            params.mask_mapping(source, None, texture, self.canvas.expect("canvas"));
+        }
         if mask.is_some() {
             params.flags |= 1;
         }
@@ -1389,17 +1406,19 @@ impl CanvasGpu {
             .and_then(|m| self.mask_texture(m, store));
         let mut params = Params {
             pass_kind: 2,
+            a: width as f32,
+            b: height as f32,
             opacity: layer.opacity.clamp(0.0, 1.0),
             ..Params::default()
         };
         params.transform(&layer.transform, frame.width(), frame.height());
-        if let Some(anchor) = layer
-            .mask
-            .as_ref()
-            .filter(|mask| mask.enabled && mask.linked)
-            .and_then(|mask| mask.anchor)
-        {
-            params.mask_anchor(&anchor);
+        if let (Some(source), Some(texture)) = (layer.mask.as_ref(), mask.as_ref()) {
+            params.mask_mapping(
+                source,
+                Some(&layer.transform),
+                texture,
+                self.canvas.expect("canvas"),
+            );
         }
         if mask.is_some() {
             params.flags |= 1;
@@ -1436,10 +1455,12 @@ impl CanvasGpu {
         if !mask.enabled {
             return None;
         }
-        if let Some(resident) = self.masks.get(&mask.pixels) {
+        let frame = store.get(mask.pixels)?;
+        if let Some(resident) = self.masks.get(&mask.pixels)
+            && (resident.frame_id == frame.id() || resident.live)
+        {
             return Some(resident.texture.clone());
         }
-        let frame = store.get(mask.pixels)?;
         self.upload_mask(mask.pixels, &frame);
         self.masks.get(&mask.pixels).map(|r| r.texture.clone())
     }
@@ -1832,6 +1853,85 @@ mod tests {
     /// silently returning would turn a skipped hardware path into a pass.
     fn required_gpu() -> CanvasGpu {
         CanvasGpu::new().expect("this GPU regression requires a usable wgpu adapter")
+    }
+
+    #[test]
+    fn vector_masks_match_cpu_for_transforms_clip_groups_adjustments_and_cache_replacement() {
+        use crate::{
+            vector::{ShapeKind, VectorShape},
+            vector_mask::VectorMask,
+        };
+        let mut gpu = required_gpu();
+        for kind in [ShapeKind::Rectangle, ShapeKind::Ellipse, ShapeKind::Path] {
+            let mut world = World::new();
+            let id = world.with_layer("base", solid(12, 10, [150, 90, 60, 128]));
+            let mut shape = VectorShape::new(
+                if kind == ShapeKind::Path {
+                    ShapeKind::Rectangle
+                } else {
+                    kind
+                },
+                [1.25, 1.25],
+                [10.75, 8.75],
+            );
+            shape.kind = kind;
+            let source = VectorMask::new(shape, 12, 10).unwrap();
+            let pixels = world.store.put(source.rasterize().unwrap());
+            let mut mask = LayerMask::new(pixels);
+            mask.vector = Some(source);
+            world.document.layer_mut(id).unwrap().mask = Some(mask);
+            for (x, rotation, sx, sy, flip) in [
+                (0.0, 0.0, 1.0, 1.0, false),
+                (2.0, 0.23, 1.2, 0.8, false),
+                (-3.0, -0.4, -1.1, 1.3, true),
+            ] {
+                world.document.layer_mut(id).unwrap().transform = LayerTransform {
+                    x,
+                    rotation,
+                    scale_x: sx,
+                    scale_y: sy,
+                    flip_h: flip,
+                    ..Default::default()
+                };
+                assert_parity_on(&world, &mut gpu);
+            }
+            let clip = world.with_layer("clipped", solid(16, 16, [50, 80, 200, 200]));
+            world.document.layer_mut(clip).unwrap().clips_to = Some(id);
+            assert_parity_on(&world, &mut gpu);
+            let layer = world.document.layer_mut(id).unwrap();
+            let mask = layer.mask.as_mut().unwrap();
+            mask.linked = false;
+            mask.anchor = Some(layer.transform);
+            layer.transform.x += 1.0;
+            assert_parity_on(&world, &mut gpu);
+            let mask = world.document.layer_mut(id).unwrap().mask.as_mut().unwrap();
+            let v = mask.vector.as_mut().unwrap();
+            v.geometry.knots[0].move_anchor([4.0, 2.0]);
+            world.store.replace(pixels, v.rasterize().unwrap());
+            // No explicit refresh: the replaced frame identity invalidates the resident.
+            assert_parity_on(&world, &mut gpu);
+            let group = world.document.new_group("masked group");
+            world.document.move_node(id, Some(group), 0);
+            world.document.move_node(clip, Some(group), 1);
+            let source = VectorMask::new(
+                VectorShape::new(ShapeKind::Ellipse, [2.0, 1.0], [14.0, 15.0]),
+                16,
+                16,
+            )
+            .unwrap();
+            let mut mask = LayerMask::new(world.store.put(source.rasterize().unwrap()));
+            mask.vector = Some(source);
+            world.document.group_mut(group).unwrap().mask = Some(mask.clone());
+            assert_parity_on(&world, &mut gpu);
+            let adj = world
+                .document
+                .new_adjustment("masked invert", crate::Adjustment::Invert);
+            mask.pixels = world
+                .store
+                .put(mask.vector.as_ref().unwrap().rasterize().unwrap());
+            world.document.adjustment_mut(adj).unwrap().mask = Some(mask);
+            assert_parity_on(&world, &mut gpu);
+        }
     }
 
     #[test]

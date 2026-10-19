@@ -1,0 +1,7 @@
+
+running 2 tests
+test panes::canvas::tests::mcp_canvas_transform_does_not_anchor_a_linked_mask_to_invalid_source ... ok
+test panes::canvas::tests::mcp_canvas_transform_keeps_signed_mirror_mask_anchor_and_one_undo ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 503 filtered out; finished in 0.00s
+

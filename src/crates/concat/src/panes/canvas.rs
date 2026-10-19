@@ -45,6 +45,7 @@ mod c02_tests;
 pub(crate) mod lookup;
 mod shapes;
 mod text;
+mod vector_masks;
 use shapes::ShapeDrag;
 
 /// What [`CanvasPane::edit_selection`] does to a selection.
@@ -328,7 +329,9 @@ impl CanvasExportJob {
 }
 
 fn canvas_manifest(data: &CanvasSaveData) -> String {
-    let version = if data.document.walk().iter().any(|n| matches!(n,LayerNode::Adjustment(a) if matches!(a.adjustment,Adjustment::ColorLookup { .. }))) {
+    let version = if data.document.masks().iter().any(|(_,m)| m.vector.is_some()) {
+        6
+    } else if data.document.walk().iter().any(|n| matches!(n,LayerNode::Adjustment(a) if matches!(a.adjustment,Adjustment::ColorLookup { .. }))) {
         5
     } else if data.document.walk().iter().any(|n| matches!(n,
         LayerNode::Adjustment(a) if matches!(a.adjustment, Adjustment::Vibrance { .. } | Adjustment::BlackWhite { .. }))) {
@@ -610,6 +613,9 @@ pub enum CanvasMsg {
     ShapePointer(i32, f64, f64),
     ShapeFinish(bool, bool),
     ShapeStyle(i32, String, f32),
+    VectorMaskAdd(i32),
+    VectorMaskLink,
+    VectorMaskExit,
     /// The picker came back with files; the first image is the one opened.
     Picked(Vec<std::path::PathBuf>),
     /// Adds images to the current document as separate editable layers.
@@ -1066,6 +1072,9 @@ impl CanvasPane {
             | CanvasMsg::LayerDelete(..)
             | CanvasMsg::LayerMove(..)
             | CanvasMsg::LayerDrop(..)
+            | CanvasMsg::VectorMaskAdd(..)
+            | CanvasMsg::VectorMaskLink
+            | CanvasMsg::VectorMaskExit
             | CanvasMsg::LayerMaskAdd
             | CanvasMsg::LayerMaskRemove
             | CanvasMsg::LayerMaskToggle
@@ -1213,6 +1222,7 @@ impl CanvasPane {
             CanvasMsg::LayerAddGroup => Some(0),
             CanvasMsg::LayerDelete(_) => Some(0),
             CanvasMsg::LayerMove(_, _) | CanvasMsg::LayerDrop(_, _, _) => Some(0),
+            CanvasMsg::VectorMaskAdd(..) | CanvasMsg::VectorMaskLink => Some(0),
             CanvasMsg::LayerMaskAdd => Some(0),
             CanvasMsg::LayerMaskRemove => Some(0),
             CanvasMsg::LayerMaskToggle => Some(0),
@@ -1752,6 +1762,19 @@ impl CanvasPane {
                 self.move_row_onto(source, target, below);
                 self.render(studio);
             }
+            CanvasMsg::VectorMaskAdd(kind) => {
+                self.add_vector_mask(kind);
+                self.render(studio);
+            }
+            CanvasMsg::VectorMaskLink => {
+                self.toggle_vector_mask_link();
+                self.render(studio);
+            }
+            CanvasMsg::VectorMaskExit => {
+                self.paint_mask = false;
+                self.set_tool(0);
+                self.sync_view();
+            }
             CanvasMsg::LayerMaskAdd => {
                 self.add_mask();
                 self.render(studio);
@@ -1847,6 +1870,9 @@ impl CanvasPane {
     /// brush with its erasing bit on, so the settings stay shared.
     pub fn set_tool(&mut self, tool: i32) {
         let next = (tool.max(0) as usize).min(10);
+        if self.editing_vector_mask() && matches!(next, 3 | 4) {
+            return;
+        }
         if (self.transform_session.is_some()
             || self.shape_session.is_some()
             || self.text_session.is_some())
@@ -3509,7 +3535,7 @@ impl CanvasPane {
             && let Some(node) = self.active.and_then(|id| document.find(id))
             && let Some(mask) = node.mask()
         {
-            return Some(mask.pixels);
+            return mask.vector.is_none().then_some(mask.pixels);
         }
         let document = self.document.as_ref()?;
         let id = self.active?;
@@ -3542,6 +3568,7 @@ impl CanvasPane {
             {
                 match layer
                     .mask
+                    .as_ref()
                     .and_then(|mask| mask.linked.then_some(mask.anchor).flatten())
                 {
                     Some(anchor) => Some(PaintMapping::LinkedMask {
@@ -3685,7 +3712,7 @@ impl CanvasPane {
         self.active = Some(id);
         self.layer = pixels;
         self.paint_mask = true;
-        self.tool = 3;
+        self.tool = if self.editing_vector_mask() { 10 } else { 3 };
         self.brush.erasing = false;
         self.sync_view();
     }
@@ -4804,6 +4831,7 @@ impl CanvasPane {
             return Ok(false);
         }
         let document = &data.document;
+        document.validate().map_err(|e| format!("save: {e}"))?;
         // Every bitmap the document names, layers and masks at any depth.
         let mut used = Vec::new();
         document.collect_pixels(&mut used);
@@ -4829,6 +4857,13 @@ impl CanvasPane {
         let result = (|| {
             std::fs::create_dir_all(staging.join("images")).map_err(|e| format!("save: {e}"))?;
             for id in &used {
+                if document
+                    .masks()
+                    .iter()
+                    .any(|(_, m)| m.pixels == *id && m.vector.is_some())
+                {
+                    continue;
+                }
                 let Some(frame) = data.store.get(*id) else {
                     return Err(format!("save: pixels {id:?} are gone"));
                 };
@@ -4914,7 +4949,7 @@ impl CanvasPane {
             serde_json::from_slice(&manifest_bytes).map_err(|e| format!("open: {e}"))?;
         if !matches!(
             manifest.get("concat-project").and_then(|v| v.as_u64()),
-            Some(1..=5)
+            Some(1..=6)
         ) {
             return Err("open: not a concat project".into());
         }
@@ -4931,6 +4966,11 @@ impl CanvasPane {
         validate_canvas_dimensions(document.width, document.height, texture_limit)
             .map_err(|error| format!("open: {error}"))?;
         document.validate().map_err(|e| format!("open: {e}"))?;
+        if manifest["concat-project"].as_u64().unwrap_or(0) < 6
+            && document.masks().iter().any(|(_, m)| m.vector.is_some())
+        {
+            return Err("open: vector masks require project version 6".into());
+        }
         if manifest["concat-project"].as_u64().unwrap_or(0) < 4
             && document.walk().iter().any(|n| matches!(n, LayerNode::Adjustment(a)
                 if matches!(a.adjustment, Adjustment::Vibrance { .. } | Adjustment::BlackWhite { .. }))) {
@@ -4970,6 +5010,22 @@ impl CanvasPane {
         let mut pixel_bytes = 0;
         let mut store = PixelStore::new();
         for id in &used {
+            if let Some(vector) = document
+                .masks()
+                .iter()
+                .find(|(_, m)| m.pixels == *id)
+                .and_then(|(_, m)| m.vector.as_ref())
+            {
+                validate_canvas_dimensions(vector.width, vector.height, texture_limit)
+                    .map_err(|e| format!("open: {e}"))?;
+                pixel_bytes = checked_project_pixel_bytes(pixel_bytes, vector.width, vector.height)
+                    .ok_or("open: project pixel data is too large")?;
+                let frame = vector
+                    .rasterize()
+                    .ok_or("open: cannot rebuild vector mask")?;
+                store.restore(*id, frame);
+                continue;
+            }
             let file = path.join("images").join(format!("{}.png", id.as_u64()));
             if std::fs::metadata(&file)
                 .map_err(|e| format!("open: {e}"))?
@@ -6943,7 +6999,7 @@ mod tests {
         let LayerNode::Layer(layer) = layer else {
             panic!("image")
         };
-        assert_eq!(layer.mask.unwrap().anchor, Some(old));
+        assert_eq!(layer.mask.as_ref().unwrap().anchor, Some(old));
         assert_eq!(pane.undo_stack.len(), 1);
         assert!(pane.pending_history.is_none());
         pane.undo();
@@ -8872,7 +8928,7 @@ mod tests {
                 ..old
             }
         );
-        assert_eq!(layer.mask.unwrap().anchor, Some(old));
+        assert_eq!(layer.mask.as_ref().unwrap().anchor, Some(old));
         assert_eq!(pane.undo_stack.len(), 1);
         assert!(pane.is_modified());
         assert!(pane.pending_history.is_none());
@@ -8916,7 +8972,7 @@ mod tests {
                     panic!("current image selection");
                 };
                 assert_eq!(layer.transform, old);
-                assert!(layer.mask.unwrap().anchor.is_none());
+                assert!(layer.mask.as_ref().unwrap().anchor.is_none());
                 Err(7_u8)
             });
             assert!(called, "unchanged also requires the final commit check");

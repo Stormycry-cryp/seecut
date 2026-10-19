@@ -1,0 +1,4 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling concat-canvas v0.2.2 (<repository>/src/crates/concat-canvas)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 22s
+  Executable unittests src/lib.rs (../.toonflow/native-target/debug/deps/concat_canvas-0758f481093fd153)

@@ -1,0 +1,19 @@
+
+running 14 tests
+test document::tests::a_chain_past_the_ceiling_is_refused ... ok
+test document::tests::a_clean_document_validates ... ok
+test document::tests::a_clip_loop_is_refused ... ok
+test document::tests::a_clip_to_a_group_or_an_adjustment_is_refused ... ok
+test document::tests::a_clip_to_something_absent_is_refused ... ok
+test document::tests::a_node_cannot_move_into_a_non_group_without_being_lost ... ok
+test document::tests::a_node_cannot_move_into_its_own_subtree ... ok
+test document::tests::a_self_clip_is_refused ... ok
+test document::tests::collect_pixels_names_layers_and_masks_at_depth ... ok
+test document::tests::find_reaches_nested_nodes ... ok
+test document::tests::ids_are_unique_across_layers_and_groups ... ok
+test document::tests::json_round_trips_preserving_ids ... ok
+test document::tests::node_count_counts_the_root_group ... ok
+test document::tests::remove_takes_only_the_named_node ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 154 filtered out; finished in 0.15s
+

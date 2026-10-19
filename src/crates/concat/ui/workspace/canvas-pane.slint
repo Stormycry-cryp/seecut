@@ -10,7 +10,7 @@ import { Glyph, Icon } from "../icons.slint";
 import { IconButton } from "../primitives/panel.slint";
 import { NumberField } from "../primitives/number-field.slint";
 import { Focus } from "../util.slint";
-import { WorkspaceIcon, WorkspaceSelect, MenuAction } from "../seecut/components.slint";
+import { AppButton, WorkspaceIcon, WorkspaceSelect, MenuAction } from "../seecut/components.slint";
 import { SeeCut } from "../seecut/state.slint";
 import { GenerationForm, GenerationSubmitBar } from "../seecut/generation.slint";
 import { Pane, PaneHeader } from "pane.slint";
@@ -80,6 +80,14 @@ export global CanvasControls {
     callback text-start(int,float,float);
     callback text-change(int,string,float);
     callback text-finish(bool);
+    in-out property <bool> vector-mask-selected;
+    in-out property <bool> vector-mask-present;
+    in-out property <bool> vector-mask-linked;
+    in-out property <bool> vector-mask-linkable;
+    in-out property <bool> vector-mask-can-add;
+    callback vector-mask-add(int);
+    callback vector-mask-link();
+    callback vector-mask-exit();
     in-out property <bool> shape-selected;
     in-out property <bool> shape-drawing;
     in-out property <bool> shape-editing;
@@ -878,7 +886,7 @@ export component CanvasPane inherits Rectangle {
                         { glyph: Glyph.search, label: "缩放工具" }, { glyph: Glyph.brush, label: "画笔工具" },
                         { glyph: Glyph.eraser, label: "橡皮擦" }, { glyph: Glyph.box-select, label: "矩形选区" },
                         { glyph: Glyph.wand, label: "魔棒选区" },
-                    ]: WorkspaceIcon { glyph: t.glyph; label: t.label; checkable: true; checked: root.tool == i; enabled: root.has-document; clicked => { if i >= 7 { root.inspector-tab = 0; } root.tool-changed(i); } }
+                    ]: WorkspaceIcon { glyph: t.glyph; label: t.label; checkable: true; checked: root.tool == i; enabled: root.has-document && !(CanvasControls.vector-mask-selected && (i == 3 || i == 4)); clicked => { if i >= 7 { root.inspector-tab = 0; } root.tool-changed(i); } }
                     WorkspaceIcon { glyph: Glyph.text-mark; label: "添加文字"; enabled: root.has-document; clicked => { root.inspector-tab=0; CanvasControls.text-start(0,0,0); } }
                     shape-tool := WorkspaceIcon {
                         glyph: root.tool == 8 ? Glyph.ellipse : root.tool == 9 ? Glyph.bezier : root.tool == 10 ? Glyph.nodes : Glyph.maximize;
@@ -1347,6 +1355,22 @@ export component CanvasPane inherits Rectangle {
                                 }
                                 if CanvasControls.text-font-warning!="": Text {text:CanvasControls.text-font-warning;color:Theme.fg-muted;font-size:12px;wrap:word-wrap;}
                             }
+                            if root.active-layer >= 0 && !root.layers[root.active-layer].masked: VerticalLayout {
+                                spacing: 6px;
+                                Text { text: "添加矢量蒙版"; color: Theme.fg-muted; font-size: 12px; }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    AppButton { label: "矩形"; height: 32px; enabled: CanvasControls.vector-mask-can-add; clicked => { CanvasControls.vector-mask-add(0); } }
+                                    AppButton { label: "椭圆"; height: 32px; enabled: CanvasControls.vector-mask-can-add; clicked => { CanvasControls.vector-mask-add(1); } }
+                                    AppButton { label: "路径"; height: 32px; enabled: CanvasControls.vector-mask-can-add; clicked => { CanvasControls.vector-mask-add(2); } }
+                                }
+                            }
+                            if CanvasControls.vector-mask-present: VerticalLayout {
+                                spacing: 6px;
+                                Text { text: CanvasControls.vector-mask-selected ? "正在编辑矢量蒙版 · 拖动锚点与手柄" : "矢量蒙版 · 点击图层旁的蒙版缩略图编辑"; wrap: word-wrap; color: Theme.fg-muted; font-size: 12px; }
+                                if CanvasControls.vector-mask-linkable: AppButton { label: CanvasControls.vector-mask-linked ? "已链接图层 · 解除链接" : "未链接图层 · 重新链接"; height: 32px; enabled: !CanvasControls.shape-editing; clicked => { CanvasControls.vector-mask-link(); } }
+                                if CanvasControls.vector-mask-selected: AppButton { label: "返回图层操作"; height: 32px; enabled: !CanvasControls.shape-editing; clicked => { CanvasControls.vector-mask-exit(); } }
+                            }
                             if CanvasControls.shape-selected: VerticalLayout {
                                 spacing: 8px;
                                 HorizontalLayout {
@@ -1382,7 +1406,7 @@ export component CanvasPane inherits Rectangle {
                                 NumberField { property <bool> owns-transform; block-editor-shortcuts: true; prefix-glyph: Glyph.angle; value <=> root.object-doc-angle; unit: "°"; precision: 1; changed(value) => { root.transform-set(4, value); } edit-started => { self.owns-transform = !root.transforming; if self.owns-transform { root.transform-start(); } } edit-finished(commit) => { if self.owns-transform { root.transform-finish(commit); } self.owns-transform = false; } }
                             }
                             if root.has-selection && root.active-layer >= 0
-                                && (root.layers[root.active-layer].kind == 0 || root.layers[root.active-layer].mask-paint): HorizontalLayout {
+                                && !CanvasControls.vector-mask-selected && (root.layers[root.active-layer].kind == 0 || root.layers[root.active-layer].mask-paint): HorizontalLayout {
                                 height: 32px; spacing: 8px;
                                 Text { text: "选区"; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.paint-bucket; label: "填充选区"; clicked => { root.fill-selection(); } }

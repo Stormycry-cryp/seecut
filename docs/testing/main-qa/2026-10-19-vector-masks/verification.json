@@ -1,0 +1,190 @@
+{
+  "sourceCommit": "87539f507db4fd88c9430ae2b4573eb075d45f65",
+  "baseCommit": "ae349e504f85eb6f29c75d65ee911a907ff209a4",
+  "native": {
+    "binary": ".toonflow/native-target/debug/deps/concat-6e5e5b3d2a17522d",
+    "binarySha256": "317406c03af374085f9c5b16372fd477c3a5948430a455796eef9ea938d4850d",
+    "groups": [
+      {
+        "filter": "panes::canvas::vector_masks::tests",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 1,
+        "log": "native-1.log"
+      },
+      {
+        "filter": "panes::canvas::shapes::tests",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-2.log"
+      },
+      {
+        "filter": "panes::canvas::tests::a_mask",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-3.log"
+      },
+      {
+        "filter": "panes::canvas::tests::mask_",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-4.log"
+      },
+      {
+        "filter": "panes::canvas::tests::non_image_rows_without_a_selected_mask",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-5.log"
+      },
+      {
+        "filter": "panes::canvas::tests::mcp_canvas_transform",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-6.log"
+      },
+      {
+        "filter": "panes::canvas::tests::mcp_move_keeps_existing_linked_and_unlinked_mask_anchors",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-7.log"
+      },
+      {
+        "filter": "panes::canvas::tests::a_project_package_round_trips",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-8.log"
+      },
+      {
+        "filter": "panes::canvas::tests::save_current_writes",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-9.log"
+      },
+      {
+        "filter": "panes::canvas::tests::failed_canvas_load_or_save",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-10.log"
+      },
+      {
+        "filter": "vector_mask_complete_saved_gpu_png_global_library_chain --exact --ignored",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "log": "native-complete-chain.log"
+      }
+    ],
+    "passed": 18
+  },
+  "engine": {
+    "binary": ".toonflow/native-target/debug/deps/concat_canvas-0758f481093fd153",
+    "binarySha256": "570bc749bb810fbd312e767a88ab3966a7570c6e88e5d55662186ec90208929e",
+    "groups": [
+      {
+        "filter": "vector_mask::tests",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "log": "engine-1.log"
+      },
+      {
+        "filter": "gpu::tests",
+        "passed": 30,
+        "failed": 0,
+        "ignored": 0,
+        "log": "engine-2.log"
+      },
+      {
+        "filter": "compositor::tests",
+        "passed": 35,
+        "failed": 0,
+        "ignored": 0,
+        "log": "engine-3.log"
+      },
+      {
+        "filter": "document::tests",
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0,
+        "log": "engine-4.log"
+      }
+    ],
+    "passed": 82
+  },
+  "passedTotal": 100,
+  "builds": {
+    "nativeTests": {
+      "status": "passed",
+      "elapsed": "7m 16s",
+      "log": "native-test-build-final.log"
+    },
+    "engineTests": {
+      "status": "passed",
+      "reportedElapsedIncludingLockWait": "3m 22s",
+      "log": "core-test-build-final.log"
+    },
+    "applicationBundleRebuilt": false,
+    "identity": "test binaries compiled from working tree; all ten frozen file hashes equal sourceCommit"
+  },
+  "checks": {
+    "locale": "passed with pre-existing missing translations",
+    "diffWhitespace": "passed",
+    "sourceHashMatch": "passed"
+  },
+  "fullChain": {
+    "editable_masks": 3,
+    "gpu_required": true,
+    "height": 120,
+    "library_items": 1,
+    "sha256": "54c5c9ee9a6a74843a54e6663f6bb7142314127a84f1f306e5583c709e9f5ad2",
+    "ui_verified": false,
+    "width": 160
+  },
+  "samplesSha256": {
+    "samples/result.json": "12ec3faac9a681fb63a5e4470ddde852dca5061c6c19e9d71d9f4551c5b8c492",
+    "samples/vector-mask-editable.comp/images/1.png": "92162a5ea05500e9c5d2ddffacbcc7f8fa6db91b4cc2fcbfe6a9367a05db5c03",
+    "samples/vector-mask-editable.comp/images/3.png": "92162a5ea05500e9c5d2ddffacbcc7f8fa6db91b4cc2fcbfe6a9367a05db5c03",
+    "samples/vector-mask-editable.comp/images/6.png": "92162a5ea05500e9c5d2ddffacbcc7f8fa6db91b4cc2fcbfe6a9367a05db5c03",
+    "samples/vector-mask-editable.comp/manifest.json": "8844b52a59f14f3a1cc4a0c1b25d5f70a58f6f8139383ec014dde70ecb8c5d17",
+    "samples/vector-mask-editable.comp/preview.png": "41201df5ff6b681544f1fa6f7abb25be4bb4c4e5baa75baf416a7376b9025996",
+    "samples/vector-mask-editable.comp.zip": "122cbf3123649aaead638a6b43fa0ff73af54a6c374a46656838203278a86892",
+    "samples/vector-mask-render.png": "54c5c9ee9a6a74843a54e6663f6bb7142314127a84f1f306e5583c709e9f5ad2"
+  },
+  "quota": {
+    "checkedAtUtc": "2026-10-19 07:59:00 UTC",
+    "windowDurationMins": 10080,
+    "remainingPercent": 71,
+    "resetUtc": "2026-10-25 01:02:41 UTC",
+    "stopAtOrBelowPercent": 50
+  },
+  "writerSnapshot": {
+    "active": [
+      "01a13edc-0d96-7539-a26e-f5b492b3f030"
+    ],
+    "idle": [
+      "01a13d59-b243-78f2-af46-6dfddae535ea",
+      "01a15187-a0a6-7143-817f-7f23cb0e2010"
+    ],
+    "unavailableHosts": []
+  },
+  "unverified": [
+    "actual UI clicks, handles, themes, narrow windows and IME",
+    "R3 actual window paths",
+    "production two-device validation"
+  ],
+  "desktopInput": false,
+  "deployment": false,
+  "newApplicationBundle": false,
+  "realProviderCalls": false,
+  "credentialsChanged": false,
+  "privateRuntimeOrOldWipModified": false
+}
