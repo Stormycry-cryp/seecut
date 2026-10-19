@@ -1444,10 +1444,11 @@ index 0000000..526ffd0
 +}
 diff --git a/apps/server/src/seecutHost.ts b/apps/server/src/seecutHost.ts
 new file mode 100644
-index 0000000..264e06c
+index 0000000..e35d097
 --- /dev/null
 +++ b/apps/server/src/seecutHost.ts
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,103 @@
++import { createSeecutPrompts } from "./seecutPrompts";
 +import { createSeecutFlowOperations } from "./seecutFlowOperations";
 +import express from "express";
 +import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -1519,6 +1520,7 @@ index 0000000..264e06c
 +
 +const projects = await createSeecutProjects(dataDirectory);
 +app.use("/__seecut", createSeecutFlowOperations(dataDirectory));
++app.use("/__seecut", createSeecutPrompts());
 +setSeecutGenerationObserver(directory => projects.touch(projects.projectIdForDirectory(directory)));
 +setSeecutGenerationWriteBarrier(projects.withProjectWrite);
 +app.use("/__seecut", projects.router);
@@ -1942,6 +1944,41 @@ index 0000000..7a85aea
 +    }
 +  }
 +  return { router, observeWrites, touch, directory, withProjectWrite, async close() { closed = true; for (const timer of timers.values()) clearTimeout(timer); await writing; }, projectIdForDirectory(path: string) { const id = relative(root, resolve(path)); if (!uuid.test(id) || !projects.has(id)) throw failure("该工作目录不属于当前 Flow 项目", 403); return id; } };
++}
+diff --git a/apps/server/src/seecutPrompts.ts b/apps/server/src/seecutPrompts.ts
+new file mode 100644
+index 0000000..4ded7d0
+--- /dev/null
++++ b/apps/server/src/seecutPrompts.ts
+@@ -0,0 +1,29 @@
++import express from 'express';
++import { nativeCall, type SeecutAccount } from './seecutNative';
++export function createSeecutPrompts(call = nativeCall) {
++  const router = express.Router();
++  const account = async () => {
++    const a = await call<SeecutAccount>('account.status');
++    if (!a.signedIn || !a.scopeKey) throw Object.assign(new Error('请先登录'), {code:'SIGNED_OUT'});
++    return {key:a.scopeKey, identity:`${a.scopeKey}:${a.epoch}`};
++  };
++  router.get('/prompts/context', async (_req,res,next) => {
++    try {
++      const a=await account(); const result=await call('prompts.context',{expectedScopeKey:a.key});
++      if ((await account()).identity!==a.identity) throw new Error('账户已切换');
++      res.json({...result as object,accountScope:a.identity});
++    } catch(error) {next(error);}
++  });
++  router.post('/prompts/:operation',express.json({limit:'12mb'}),async(req,res,next)=>{
++    try {
++      if (!['recommend','rewrite'].includes(req.params.operation)) return res.sendStatus(404);
++      const a=await account();
++      if (req.body.accountScope!==a.identity) throw Object.assign(new Error('账户已切换'),{code:'FLOW_ACCOUNT_CHANGED'});
++      const result=await call(`prompts.${req.params.operation}`,{expectedScopeKey:a.key,requestId:req.body.requestId,body:req.body.input},55000);
++      if ((await account()).identity!==a.identity) throw new Error('账户已切换');
++      res.json(result);
++    } catch(error) {next(error);}
++  });
++  router.use((error:any,_req:any,res:any,_next:any)=>res.status(error.code==='PROMPT_RATE_LIMITED'?429:error.code==='SIGNED_OUT'?401:409).json({error:error.code||'PROMPT_FAILED',retryAfter:error.details?.retry_after??60}));
++  return router;
 +}
 diff --git a/apps/server/src/utils/media/generation.ts b/apps/server/src/utils/media/generation.ts
 index 63a2918..354cdec 100644
@@ -2694,10 +2731,10 @@ index 0000000..40be100
 +}
 diff --git a/apps/web/src/lib/seecutFlowControl.ts b/apps/web/src/lib/seecutFlowControl.ts
 new file mode 100644
-index 0000000..4e163c3
+index 0000000..73d5412
 --- /dev/null
 +++ b/apps/web/src/lib/seecutFlowControl.ts
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,72 @@
 +import { watch } from 'vue';
 +import { getWorkspaceControl } from './mcpControl';
 +import { currentSeecutProjectId, seecutOpeningProject } from './seecutWorkspaceBridge';
@@ -2733,6 +2770,7 @@ index 0000000..4e163c3
 +  }
 +  function publish() {
 +    if (stopped) return;
++    window.__SEECUT_PROMPT_ACCOUNT__ = accountScope;
 +    const state = getWorkspaceControl()?.getState();
 +    const key = JSON.stringify([currentSeecutProjectId.value, state?.canvasId, accountScope, state?.canvasReady, seecutOpeningProject.value]);
 +    if (key !== bindingKey) {
@@ -2876,6 +2914,40 @@ index 0000000..9585d7e
 +    } finally { if (ownsBusy) busy = false; }
 +  };
 +}
+diff --git a/apps/web/src/lib/seecutPromptAssistance.ts b/apps/web/src/lib/seecutPromptAssistance.ts
+new file mode 100644
+index 0000000..077cef7
+--- /dev/null
++++ b/apps/web/src/lib/seecutPromptAssistance.ts
+@@ -0,0 +1,28 @@
++import { isSeecutEmbedded } from './seecutEmbedded';
++import { currentSeecutProjectId } from './seecutWorkspaceBridge';
++import { getWorkspaceControl } from './mcpControl';
++import type { PromptInput } from '../../../../packages/nodeShared/src/promptRecommendations';
++
++declare global {interface Window { __SEECUT_PROMPTS__?:{context:()=>string;request:(operation:string,input:PromptInput,id?:string)=>Promise<any>}; __SEECUT_PROMPT_ACCOUNT__?:string;}}
++export function installSeecutPromptAssistance(){
++  if(!isSeecutEmbedded)return;
++  const context=()=>JSON.stringify([window.__SEECUT_PROMPT_ACCOUNT__,currentSeecutProjectId.value,getWorkspaceControl()?.getState().canvasId]);
++  async function json(path:string,body?:unknown){
++    const r=await fetch(`/__seecut/prompts/${path}`,{credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(60000),...(body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})});
++    const value=await r.json();if(!r.ok)throw Object.assign(new Error(value.error),{status:r.status,retryAfter:value.retryAfter});return value;
++  }
++  async function imageData(url:string){
++    if(!url.startsWith('data:image/')&&new URL(url,location.href).origin!==location.origin)throw new Error('参考图来源不可用');
++    const response=await fetch(url,{credentials:'same-origin',signal:AbortSignal.timeout(10000)});if(!response.ok)throw new Error('参考图不可用');
++    const blob=await response.blob();if(blob.size>32*1024*1024)throw new Error('参考图过大');
++    const image=await createImageBitmap(blob);const scale=Math.min(1,512/Math.max(image.width,image.height));const w=Math.round(image.width*scale),h=Math.round(image.height*scale);
++    const canvas=document.createElement('canvas');canvas.width=Math.max(280,w);canvas.height=Math.max(280,h);const draw=canvas.getContext('2d')!;draw.fillStyle='#ffffff';draw.fillRect(0,0,canvas.width,canvas.height);draw.drawImage(image,(canvas.width-w)/2,(canvas.height-h)/2,w,h);image.close();return canvas.toDataURL('image/jpeg',.8);
++  }
++  window.__SEECUT_PROMPTS__={context:()=>window.__SEECUT_PROMPT_ACCOUNT__&&currentSeecutProjectId.value?context():'',request:async(operation,input,id)=>{
++    const frozen=context();const setup=await json('context');if(frozen!==context()||setup.accountScope!==window.__SEECUT_PROMPT_ACCOUNT__)throw new Error('草稿已切换');
++    if(!setup.capabilities[operation])throw new Error('推荐尚未连接');
++    const images=await Promise.all(input.images.map(imageData));if(frozen!==context())throw new Error('草稿已切换');
++    const result=await json(operation,{accountScope:setup.accountScope,requestId:crypto.randomUUID(),input:{prompt:input.prompt,images,templates:setup.templates,...(id?{templateId:id}:{})}});
++    if(frozen!==context())throw new Error('草稿已切换');return result;
++  }};
++}
 diff --git a/apps/web/src/lib/seecutWorkspaceBridge.ts b/apps/web/src/lib/seecutWorkspaceBridge.ts
 new file mode 100644
 index 0000000..003a028
@@ -2993,10 +3065,11 @@ index 0000000..003a028
 +  }, signal);
 +}
 diff --git a/apps/web/src/main.ts b/apps/web/src/main.ts
-index 61061f8..c9af700 100644
+index 61061f8..1e99471 100644
 --- a/apps/web/src/main.ts
 +++ b/apps/web/src/main.ts
-@@ -1,9 +1,12 @@
+@@ -1,9 +1,13 @@
++import { installSeecutPromptAssistance } from "@/lib/seecutPromptAssistance";
 +import { installSeecutFlowControl } from "@/lib/seecutFlowControl";
  import { createApp, h, nextTick, ref } from "vue";
  import { ElButton, ElResult } from "element-plus";
@@ -3009,7 +3082,7 @@ index 61061f8..c9af700 100644
  import "element-plus/es/components/message-box/style/css";
  import "element-plus/es/components/button/style/css";
  import "element-plus/es/components/result/style/css";
-@@ -15,13 +18,55 @@ import { isMobile, isDesktop, isRemoteConnection } from "@/lib/platform";
+@@ -15,13 +19,56 @@ import { isMobile, isDesktop, isRemoteConnection } from "@/lib/platform";
  import "@/lib/mobile";
  import { getMissingBrowserFeatures } from "@/lib/browserCapabilities";
  import { registerAnonymousData } from "@/lib/anonymousData";
@@ -3024,6 +3097,7 @@ index 61061f8..c9af700 100644
 +app.onUnmount(registerSeecutTheme());
 +app.onUnmount(installSeecutFlowControl());
 +if (isSeecutEmbedded) {
++  installSeecutPromptAssistance();
 +  let flushing: Promise<void> | undefined;
 +  const flush = () => {
 +    if (flushing) return flushing;
@@ -3067,7 +3141,7 @@ index 61061f8..c9af700 100644
  const requiresWebView2Update = isDesktop && /Windows/i.test(navigator.userAgent)
    && [Map.groupBy, URL.canParse, Promise.withResolvers].some(method => typeof method !== "function");
  const requiresMobileWebViewUpdate = isMobile && getMissingBrowserFeatures().length > 0;
-@@ -42,17 +87,20 @@ async function notifyDesktopReady(failed = false) {
+@@ -42,17 +89,20 @@ async function notifyDesktopReady(failed = false) {
    ? Promise.reject(new Error("当前 Microsoft Edge WebView2 Runtime 版本过旧。请以管理员身份运行微软最新版安装器；若仍提示已安装，请修复 WebView2 或联系管理员检查更新服务。更新完成后，请完全退出 Toonflow 再重新打开。"))
    : requiresMobileWebViewUpdate
    ? Promise.reject(new Error("当前移动端浏览器内核缺少 Toonflow 所需能力。请更新 Toonflow 和系统浏览器内核；部分系统需要通过系统更新升级。更新完成后，请完全退出并重新打开 Toonflow。"))
@@ -3091,7 +3165,7 @@ index 61061f8..c9af700 100644
    // ACT: 隐藏的 WebView 不依赖 requestAnimationFrame；等待首页挂载和页面资源就绪。
    if (document.readyState !== "complete") {
      await new Promise<void>((resolve) => window.addEventListener("load", () => resolve(), { once: true }));
-@@ -96,6 +144,7 @@ async function notifyDesktopReady(failed = false) {
+@@ -96,6 +146,7 @@ async function notifyDesktopReady(failed = false) {
      }),
    }).mount("#app");
    await nextTick();
@@ -5044,6 +5118,199 @@ index 3bb727f..3701318 100644
      return [{ label: handle.label ?? handle.id, output }];
    })
  );
+diff --git a/packages/nodeShared/src/components/promptInput.vue b/packages/nodeShared/src/components/promptInput.vue
+index 03a5b56..fed365a 100644
+--- a/packages/nodeShared/src/components/promptInput.vue
++++ b/packages/nodeShared/src/components/promptInput.vue
+@@ -1,8 +1,16 @@
+ <template>
+-  <div class="promptInputWrap nodrag nopan nowheel">
++  <div class="promptInputWrap nodrag nopan nowheel" :aria-busy="recommendState.rewriting">
++    <div v-if="recommend && (recommendState.status || recommendState.cards.length || recommendState.rewriting)" class="seecutRecommendations" aria-live="polite">
++      <div class="recommendationHeading"><span>✦ 为你推荐 <el-button v-if="recommendState.canUndo" :icon="IconArrowBackUp" text circle title="撤销改写" aria-label="撤销改写" :disabled="recommendState.rewriting" @mousedown.prevent @click.stop="recommendationController.undoRewrite()" /></span><span>{{ recommendState.rewriting ? '应用模板中…' : recommendState.status === '为你推荐' ? '点选后改写' : recommendState.status }}</span></div>
++      <div class="recommendationChoices">
++        <button v-for="card in recommendState.cards" :key="card.id" type="button" :disabled="recommendState.rewriting" @mousedown.prevent @click.stop="rewriteRecommendation(card.id)">{{ card.label }}</button>
++        <span v-if="!recommendState.cards.length && recommendState.status" class="recommendationSkeleton" aria-hidden="true"><i/><i/><i/></span>
++      </div>
++    </div>
++    <p v-if="recommendState.error" class="recommendationError" role="status">{{ recommendState.error }}</p>
+     <el-button v-if="expandable" class="expandButton" :icon="IconMaximize" text circle title="展开编辑提示词" aria-label="展开编辑提示词" @mousedown.prevent @click.stop="expanded = true" />
+     <teleport :to="expandedTarget || 'body'" :disabled="!expanded || !expandedTarget">
+-      <div ref="senderElement" class="promptInput nodrag nopan nowheel" :class="{ expandedInput: expanded }" @keydown.capture="handleMentionKey" @click.capture="previewReference" />
++      <div ref="senderElement" :inert="recommendState.rewriting" class="promptInput nodrag nopan nowheel" :class="{ expandedInput: expanded }" @keydown.capture="handleMentionKey" @click.capture="previewReference" />
+     </teleport>
+   </div>
+   <el-dialog v-if="expandable" v-model="expanded" class="promptEditorDialog" title="生成提示词" width="80%" alignCenter appendToBody :closeOnClickModal="false" @opened="sender?.focus('mark')" @close="expanded = false" @closed="sender?.focus('mark')">
+@@ -12,13 +20,14 @@
+ </template>
+ 
+ <script setup lang="ts">
+-import { computed, nextTick, ref, watch } from "vue";
++import { computed, nextTick, ref, watch, onUnmounted } from "vue";
+ import { ElButton, ElDialog, ElImageViewer, useZIndex } from "element-plus";
+-import { IconMaximize } from "@tabler/icons-vue";
++import { IconMaximize, IconArrowBackUp } from "@tabler/icons-vue";
++import { PromptRecommendations, type PromptState } from "../promptRecommendations";
+ import xSender, { type AnyTagProps, type MentionItem } from "x-sender";
+ import "x-sender/lib/XSender.css";
+ 
+-const props = defineProps<{ references: (MentionItem & { value: string })[]; expandable?: boolean; placeholder?: string }>();
++const props = defineProps<{ references: (MentionItem & { value: string })[]; expandable?: boolean; placeholder?: string; recommend?: boolean }>();
+ const model = defineModel<AnyTagProps[][]>({ required: true });
+ const text = defineModel<string>("text", { default: "" });
+ const senderElement = ref<HTMLElement>();
+@@ -29,6 +38,48 @@ const previewReferenceId = ref<string>();
+ const previewUrl = computed(() => String(props.references.find(item => item.id === previewReferenceId.value)?.avatar ?? ""));
+ let sender: xSender | undefined;
+ let resetTask: Promise<void> | undefined;
++const emit = defineEmits<{recommendBusy:[busy:boolean]}>();
++const recommendState = ref<PromptState>({status:'',cards:[],rewriting:false,error:'',canUndo:false});
++const promptHost = () => (window as any).__SEECUT_PROMPTS__;
++let domDirty = false;
++let rewriteModel: AnyTagProps[][] | undefined;
++// XSender queues its change callback. Read the live text nodes before that callback
++// when a user types and immediately clicks a recipe or a model reply arrives.
++function liveModel() {
++  const value = domDirty && sender ? sender.getModel() : model.value;
++  if (!sender || !domDirty) return value;
++  return value.map((line, row) => line.map((tag, column) => {
++    const node = sender!.chatEditor.NODES[row]?.children[column];
++    if (!node || (tag.type !== "Write" && tag.type !== "Input")) return tag;
++    const element = tag.type === "Write" ? node.$el.children[0] : node.$el.children[0]?.children[0];
++    return {...tag, text:(element?.textContent ?? tag.text ?? "").replace(/\ufeff/g, "")};
++  }));
++}
++function currentRecommendationInput() {
++  const host = promptHost();
++  return {input:{prompt:domDirty ? getPromptText(liveModel()) : text.value, images:props.references.filter(item=>item.avatar).map(item=>String(item.avatar))},context:props.recommend&&host?host.context():""};
++}
++const recommendationController = new PromptRecommendations(
++  (operation,input,id) => promptHost().request(operation,input,id),
++  state => {recommendState.value=state;if(!state.canUndo&&!state.rewriting)rewriteModel=undefined;emit('recommendBusy',state.rewriting);},
++  (value,operation) => {
++    const next = operation === "undo" && rewriteModel ? rewriteModel : value.split("\n").map(text=>[{type:"Write" as const,text}]);
++    if (operation === "rewrite") rewriteModel = JSON.parse(JSON.stringify(getStoredModel(liveModel())));
++    domDirty = false;
++    model.value = next;
++    text.value = value;
++    void nextTick().then(()=>sender?.focus('mark'));
++  },
++  undefined, undefined, currentRecommendationInput,
++);
++function rewriteRecommendation(id: string) {
++  if (sender?.chatEditor.isComposition) return;
++  void recommendationController.rewrite(id);
++}
++watch(() => [text.value, props.references, props.recommend, promptHost()?.context()], () => recommendationController.sync(), {deep:true,flush:"sync"});
++const recommendTimer=setInterval(()=>{void recommendationController.tick();},200);
++onUnmounted(()=>{clearInterval(recommendTimer);recommendationController.dispose();emit('recommendBusy',false);});
++
+ 
+ function previewReference(event: MouseEvent) {
+   const tag = event.target instanceof Element ? event.target.closest<HTMLElement>(".imageReference[data-reference-id]") : null;
+@@ -159,7 +210,9 @@ function updateModel(value: AnyTagProps[][]) {
+   const next = getStoredModel(value);
+   // ACT: 旧模型中的预览地址随下次实际编辑清理，避免仅打开文档就触发保存。
+   if (JSON.stringify(getStoredModel(model.value)) !== JSON.stringify(next)) model.value = next;
++  domDirty = false;
+   text.value = getPromptText(next);
++  recommendationController.sync();
+ }
+ 
+ function getPromptText(value: AnyTagProps[][]) {
+@@ -260,6 +313,8 @@ watch(senderElement, (element, _previous, onCleanup) => {
+     const copied = event.clipboardData?.getData("application/chat-nodes");
+     if (copied) event.clipboardData?.setData("text/plain", getPromptText(JSON.parse(copied)));
+   };
++  const draftChanged = () => {domDirty = true;recommendationController.sync();};
++  editor.addEventListener("input", draftChanged, true);
+   editor.addEventListener("copy", copyText);
+   editor.addEventListener("cut", copyText);
+   const selectReference = (event: MouseEvent) => {
+@@ -283,6 +338,7 @@ watch(senderElement, (element, _previous, onCleanup) => {
+     updateModel(instance.getModel());
+     releaseNodeFocus(instance);
+     sender = undefined;
++    editor.removeEventListener("input", draftChanged, true);
+     editor.removeEventListener("copy", copyText);
+     editor.removeEventListener("cut", copyText);
+     document.removeEventListener("pointerdown", closeOutside, true);
+@@ -435,3 +491,18 @@ function handleMentionKey(event: KeyboardEvent) {
+   }
+ }
+ </style>
++
++<style scoped>
++.seecutRecommendations{padding:8px 12px 5px;position:relative;z-index:1;}
++.recommendationHeading{padding-right:24px;display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--el-text-color-secondary);margin-bottom:7px;}
++.recommendationHeading>span:first-child{color:var(--el-color-primary);font-weight:600;}
++.recommendationChoices{display:flex;gap:6px;min-height:28px;}
++.recommendationChoices button{flex:1;min-width:0;padding:6px 9px;border:1px solid var(--el-border-color);border-radius:8px;background:var(--el-fill-color-light);color:var(--el-text-color-primary);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer;animation:recipeAppear 1.4s ease-out 1;}
++.recommendationChoices button:hover{border-color:var(--el-color-primary);background:var(--el-fill-color);}
++.recommendationChoices button:focus-visible{outline:2px solid var(--el-color-primary);outline-offset:2px;}
++.recommendationChoices button:disabled{opacity:.55;cursor:wait;}
++.recommendationSkeleton{display:flex;gap:6px;width:100%;}.recommendationSkeleton i{flex:1;height:28px;border-radius:8px;background:var(--el-fill-color);}
++.recommendationError{font-size:12px;margin:4px 12px;color:var(--el-color-danger);}
++@keyframes recipeAppear{0%,100%{border-color:var(--el-border-color)}45%{border-color:var(--el-color-primary);box-shadow:0 0 0 2px var(--el-color-primary-light-9)}}
++@media(prefers-reduced-motion:reduce){.recommendationChoices button{animation:none}}
++</style>
+diff --git a/packages/nodeShared/src/promptRecommendations.ts b/packages/nodeShared/src/promptRecommendations.ts
+new file mode 100644
+index 0000000..22cf322
+--- /dev/null
++++ b/packages/nodeShared/src/promptRecommendations.ts
+@@ -0,0 +1,51 @@
++export type PromptInput = {prompt:string; images:string[]};
++export type Recommendation = {id:string;label:string};
++export type PromptState = {status:string;cards:Recommendation[];rewriting:boolean;error:string;canUndo:boolean};
++export class RecommendationGate {
++  next=0; busy=false;
++  reserve(now:number) {if(this.busy||now<this.next)return false;this.busy=true;this.next=now+10000;return true;}
++  release() {this.busy=false;}
++}
++export const promptRecommendationGate=new RecommendationGate();
++export class PromptRecommendations {
++  state:PromptState={status:'',cards:[],rewriting:false,error:'',canUndo:false};
++  input:PromptInput={prompt:'',images:[]}; context=''; private version=0; private changed=0; private completed=''; private running=false; private disposed=false; private fingerprint=''; private retries=0;
++  private undo?: {input:PromptInput; context:string; result:string};
++  constructor(private api:(operation:string,input:PromptInput,selected?:string)=>Promise<any>,private emit:(state:PromptState)=>void,private apply:(prompt:string,operation:'rewrite'|'undo')=>void,private gate=promptRecommendationGate,private now=()=>Date.now(),private readCurrent?:()=>{input:PromptInput;context:string}){}
++  sync(){if(this.readCurrent&&!this.disposed){const current=this.readCurrent();this.update(current.input,current.context);}}
++  private publish(){if(!this.disposed)this.emit({...this.state,cards:[...this.state.cards]});}
++  update(input:PromptInput,context:string){
++    const fingerprint=JSON.stringify([context,input]);if(fingerprint===this.fingerprint)return;
++    const switched=context!==this.context;this.context=context;this.input=structuredClone(input);this.fingerprint=fingerprint;this.changed=this.now();this.version++;this.retries=0;
++    if(switched||!context||(!input.prompt.trim()&&!input.images.length))this.state.cards=[];
++    if(this.undo && (context!==this.undo.context || fingerprint!==this.undo.result)){this.undo=undefined;this.state.canUndo=false;}
++    this.state.error='';this.state.status=context&&(input.prompt.trim()||input.images.length)?'等待更新':'';this.publish();
++  }
++  async tick(){
++    this.sync();
++    if(this.disposed||this.running||this.state.rewriting||!this.context||(!this.input.prompt.trim()&&!this.input.images.length)||this.completed===this.fingerprint||this.now()-this.changed<1000)return;
++    if(!this.gate.reserve(this.now()))return;
++    this.running=true;const version=this.version;const frozen=this.fingerprint;const input=structuredClone(this.input);this.state.status='正在匹配…';this.publish();
++    try {const result=await this.api('recommend',input);this.sync();if(this.disposed||version!==this.version)return;
++      this.state.cards=result.recommendations.slice(0,3);this.completed=frozen;this.state.status='为你推荐';
++    }catch(error:any){if(version===this.version){this.state.status='';this.completed=frozen;if(error.status===429 && this.retries++ < 1){this.gate.next=this.now()+Math.max(10,Math.min(3600,error.retryAfter||60))*1000;this.state.status='等待更新';this.completed='';}}}
++    finally{this.running=false;this.gate.release();this.publish();}
++  }
++  async rewrite(id:string){
++    this.sync();
++    if(this.disposed||this.state.rewriting||!this.context||!this.state.cards.some(card=>card.id===id))return;
++    this.version++;const version=this.version;const input=structuredClone(this.input);this.state.rewriting=true;this.state.error='';this.publish();
++    try {const result=await this.api('rewrite',input,id);this.sync();if(this.disposed||version!==this.version)return;
++      this.input={...input,prompt:result.prompt};this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.state.status='为你推荐';this.undo={input,context:this.context,result:this.fingerprint};this.state.canUndo=true;this.apply(result.prompt,'rewrite');
++    }catch{this.sync();if(version===this.version)this.state.error='应用失败，原文已保留，请重试';}
++    finally{this.state.rewriting=false;this.publish();}
++  }
++  undoRewrite(){
++    this.sync();
++    if(this.disposed||this.state.rewriting||!this.undo||this.undo.context!==this.context||this.undo.result!==this.fingerprint)return;
++    const input=this.undo.input;this.undo=undefined;this.state.canUndo=false;this.version++;
++    this.input=structuredClone(input);this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.state.error='';
++    this.apply(input.prompt,'undo');this.publish();
++  }
++  dispose(){this.disposed=true;this.version++;}
++}
 diff --git a/packages/nodes/audioGenerationNode/src/index.vue b/packages/nodes/audioGenerationNode/src/index.vue
 index c45117f..4b5792c 100644
 --- a/packages/nodes/audioGenerationNode/src/index.vue
@@ -5072,13 +5339,14 @@ index c45117f..4b5792c 100644
      if (busy.value) {
        modelsRefreshPending = true;
 diff --git a/packages/nodes/imageGenerationNode/src/index.vue b/packages/nodes/imageGenerationNode/src/index.vue
-index 88a4df3..438645f 100644
+index 88a4df3..b725387 100644
 --- a/packages/nodes/imageGenerationNode/src/index.vue
 +++ b/packages/nodes/imageGenerationNode/src/index.vue
-@@ -46,6 +46,17 @@
+@@ -46,26 +46,37 @@
        <div v-else-if="multiAngleVisible" ref="multiAngleTarget" />
        <el-card v-else class="promptCard" shadow="never" :bodyStyle="{ padding: '14px 16px 12px' }">
          <el-button v-if="inpaintGuideUrl && editor?.mode !== 'inpaint'" class="inpaintInfo" text :icon="IconBrush" @click="inpaintPreviewVisible = true">查看重绘标注</el-button>
+-        <referenceItem
 +        <div v-if="savedGeneration" class="seecutGenerationRecord">
 +          <span>{{ generationStatusText(savedGeneration.status) }}</span>
 +          <span class="seecutActualCredits" aria-label="实际累计积分">{{ savedGeneration.capturedCredits ?? 0 }}</span>
@@ -5090,11 +5358,16 @@ index 88a4df3..438645f 100644
 +          <p v-if="savedGeneration.error">{{ savedGeneration.error }}</p>
 +          <ol v-if="generationRecordsExpanded"><li v-for="record in generationRecords" :key="record.clientRequestId">{{ generationStatusText(record.status) }} · {{ record.modelId }} · {{ record.capturedCredits ?? 0 }}<small>{{ record.clientRequestId }}</small></li></ol>
 +        </div>
-         <referenceItem
++        <referenceItem :inert="promptRewriting"
            v-if="refList.length"
            v-model="refList"
-@@ -56,16 +67,16 @@
-         <div class="promptFooter">
+           @preview="setReferencePreview"
+           @remove="removeReference" />
+         <promptInput v-if="editor?.mode === 'inpaint'" v-model="data.inpaintPromptModel" v-model:text="data.inpaintPrompt" :references="referenceMentions" expandable />
+-        <promptInput v-else v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" expandable />
+-        <div class="promptFooter">
++        <promptInput v-else v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" :recommend="isSeecutEmbedded && node.selected" @recommend-busy="promptRewriting = $event" expandable />
++        <div class="promptFooter" :inert="promptRewriting">
            <el-select
              v-if="editor?.mode !== 'inpaint'"
 -            v-model="data.model"
@@ -5166,15 +5439,16 @@ index 88a4df3..438645f 100644
  import { groupNodeModels } from "@toonflow/node-shared/groupNodeModels";
  import { showNodeError } from "@toonflow/node-shared/showNodeError";
  import { useNodeGeneration } from "@toonflow/node-shared/useNodeGeneration";
-@@ -139,6 +166,7 @@ defineOptions({
+@@ -139,6 +166,8 @@ defineOptions({
    ] satisfies NodeHandle[],
  });
  const vLoading = ElLoading.directive;
++const promptRewriting = ref(false);
 +const isSeecutEmbedded = document.documentElement.dataset.seecutEmbedded === "true";
  const { id, node, nodeProps, nodeEvent, outputs, files, ai, updateNodeInternals } = useNode({
    label: "图片生成",
  });
-@@ -177,13 +205,74 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
+@@ -177,13 +206,74 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
  const { generating } = generationState;
  let generation: Promise<void> | undefined;
  let modelsRequest: Promise<void> | undefined;
@@ -5253,7 +5527,7 @@ index 88a4df3..438645f 100644
      // ACT: 现有分辨率使用 K 单位；出现其他单位时再统一换算，未知名称排在数值选项之后。
      if (!sizeOptions.value.includes(data.value.size)) data.value.size = sizeOptions.value.toSorted((left, right) =>
        (Number.parseFloat(left) || Infinity) - (Number.parseFloat(right) || Infinity)
-@@ -208,10 +297,10 @@ const generationInput = computed<Omit<NodeImageRequest, "directory"> | undefined
+@@ -208,10 +298,10 @@ const generationInput = computed<Omit<NodeImageRequest, "directory"> | undefined
    const references = refList.value.filter(item => !inpaint || item.dataType !== "IMAGE" || item.value?.url !== inpaint.source);
    const input = {
      providerId: choice.providerId,
@@ -5266,7 +5540,7 @@ index 88a4df3..438645f 100644
      outputDirectory: `assets/${id}`,
      images: references.flatMap(item => item.dataType === "IMAGE" && item.value ? [{ path: item.value.url, mimeType: item.value.mimeType }] : []),
    };
-@@ -285,10 +374,10 @@ async function replaceOutput(event: Event) {
+@@ -285,10 +375,10 @@ async function replaceOutput(event: Event) {
    }
  }
  
@@ -5280,15 +5554,16 @@ index 88a4df3..438645f 100644
      if (disposed || generating.value || deleting.value) return;
      models.value = items.filter((item) => item.type === "image");
      // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
-@@ -317,6 +406,7 @@ async function confirmInpaint() {
+@@ -317,6 +407,8 @@ async function confirmInpaint() {
  }
  
  async function startGeneration() {
++  if (promptRewriting.value) throw new Error("请等待提示词应用完成");
 +  if (generationBlocked.value) throw new Error("此节点已有未确认任务，请先查询原任务，避免重复生成");
    const input = generationInput.value;
    if (generating.value) throw new Error("图片正在生成，请等待完成");
    if (panorama.value?.visible) throw new Error("请先关闭全景图，再启动图片生成");
-@@ -334,7 +424,7 @@ async function startGeneration() {
+@@ -334,7 +426,7 @@ async function startGeneration() {
    const controller = new AbortController();
    const inpaintData = data.value.inpaint;
    generationController = controller;
@@ -5297,7 +5572,7 @@ index 88a4df3..438645f 100644
    generation = generationState.run(() => workspace.list()
      .then(({ directory }) => {
        controller.signal.throwIfAborted();
-@@ -404,11 +494,21 @@ function startEditor(mode: "inpaint" | "mark") {
+@@ -404,11 +496,21 @@ function startEditor(mode: "inpaint" | "mark") {
    editor.value?.start(mode);
  }
  
@@ -5320,7 +5595,7 @@ index 88a4df3..438645f 100644
        size: data.value.size,
        ratio: data.value.ratio,
      },
-@@ -444,13 +544,13 @@ nodeTools.register({
+@@ -444,13 +546,13 @@ nodeTools.register({
      signal?.throwIfAborted();
      if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
      const choice = args.modelId === undefined ? selectedModel.value
@@ -5337,7 +5612,7 @@ index 88a4df3..438645f 100644
      if (args.size !== undefined) data.value.size = args.size;
      if (args.ratio !== undefined) data.value.ratio = args.ratio;
      return getConfig();
-@@ -556,4 +656,13 @@ nodeTools.register({
+@@ -556,4 +658,13 @@ nodeTools.register({
      }
    }
  }
@@ -5474,13 +5749,14 @@ index 511e06b..22073d6 100644
        });
      }
 diff --git a/packages/nodes/videoGenerationNode/src/index.vue b/packages/nodes/videoGenerationNode/src/index.vue
-index 77a0535..18bf244 100644
+index 77a0535..bec9c98 100644
 --- a/packages/nodes/videoGenerationNode/src/index.vue
 +++ b/packages/nodes/videoGenerationNode/src/index.vue
-@@ -42,6 +42,17 @@
+@@ -42,7 +42,18 @@
      </div>
      <template #bottom>
        <el-card class="promptCard" shadow="never" :bodyStyle="{ padding: '14px 16px 12px' }">
+-        <referenceItem
 +        <div v-if="savedGeneration" class="seecutGenerationRecord">
 +          <span>{{ generationStatusText(savedGeneration.status) }}</span>
 +          <span class="seecutActualCredits" aria-label="实际累计积分">{{ savedGeneration.capturedCredits ?? 0 }}</span>
@@ -5492,12 +5768,18 @@ index 77a0535..18bf244 100644
 +          <p v-if="savedGeneration.error">{{ savedGeneration.error }}</p>
 +          <ol v-if="generationRecordsExpanded"><li v-for="record in generationRecords" :key="record.clientRequestId">{{ generationStatusText(record.status) }} · {{ record.modelId }} · {{ record.capturedCredits ?? 0 }}<small>{{ record.clientRequestId }}</small></li></ol>
 +        </div>
-         <referenceItem
++        <referenceItem :inert="promptRewriting"
            v-if="refList.length"
            v-model="refList"
-@@ -53,16 +64,16 @@
-         <promptInput v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" expandable />
-         <div class="promptFooter">
+           @preview="setReferencePreview"
+@@ -50,19 +61,19 @@
+         <div v-if="frameMode" class="referenceHint">
+           {{ selectedMode === "startFrameOptional" ? "仅一张图片时作为尾帧；两张图片按顺序作为首帧、尾帧" : "图片引用按顺序作为首帧、尾帧" }}
+         </div>
+-        <promptInput v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" expandable />
+-        <div class="promptFooter">
++        <promptInput v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" :recommend="isSeecutEmbedded && node.selected" @recommend-busy="promptRewriting = $event" expandable />
++        <div class="promptFooter" :inert="promptRewriting">
            <el-select
 -            v-model="data.model"
 +            v-model="modelSelection"
@@ -5555,15 +5837,16 @@ index 77a0535..18bf244 100644
  import { groupNodeModels } from "@toonflow/node-shared/groupNodeModels";
  import { showNodeError } from "@toonflow/node-shared/showNodeError";
  import { useNodeGeneration } from "@toonflow/node-shared/useNodeGeneration";
-@@ -124,6 +141,7 @@ defineOptions({
+@@ -124,6 +141,8 @@ defineOptions({
    ] satisfies NodeHandle[],
  });
  const vLoading = ElLoading.directive;
++const promptRewriting = ref(false);
 +const isSeecutEmbedded = document.documentElement.dataset.seecutEmbedded === "true";
  const { id, node, nodeProps, nodeEvent, outputs, files, ai, updateNodeInternals } = useNode({
    label: "视频生成",
  });
-@@ -151,9 +169,50 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
+@@ -151,9 +170,50 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
  const { generating } = generationState;
  let generation: Promise<void> | undefined;
  let modelsRequest: Promise<void> | undefined;
@@ -5617,7 +5900,7 @@ index 77a0535..18bf244 100644
  const selectedMode = computed(() => selectedModel.value?.mode?.find((item) => JSON.stringify(item) === data.value.mode) as NodeVideoRequest["mode"]);
  const frameMode = computed(() => ["startEndRequired", "endFrameOptional", "startFrameOptional"].includes(String(selectedMode.value)));
  const mediaCounts = computed(() => ({
-@@ -202,7 +261,7 @@ watch([selectedModel, () => data.value.duration], ([choice]) => {
+@@ -202,7 +262,7 @@ watch([selectedModel, () => data.value.duration], ([choice]) => {
    if (!durations.includes(data.value.duration!)) data.value.duration = durations[0];
    const resolutions = getResolutions(choice, data.value.duration);
    if (!resolutions.includes(data.value.resolution)) data.value.resolution = resolutions[0] ?? "";
@@ -5626,7 +5909,7 @@ index 77a0535..18bf244 100644
    if (choice.audio !== "optional") data.value.generateAudio = choice.audio === true;
  }, { flush: "sync" });
  const modelGroups = computed(() => groupNodeModels(models.value));
-@@ -220,7 +279,7 @@ const generationInput = computed<Omit<NodeVideoRequest, "directory"> | undefined
+@@ -220,7 +280,7 @@ const generationInput = computed<Omit<NodeVideoRequest, "directory"> | undefined
    const images = refList.value.flatMap(item => item.dataType === "IMAGE" && item.value ? [{ path: item.value.url, mimeType: item.value.mimeType }] : []);
    return {
      providerId: choice.providerId,
@@ -5635,7 +5918,7 @@ index 77a0535..18bf244 100644
      prompt: generationPrompt.value,
      mode: selectedMode.value,
      duration: data.value.duration,
-@@ -287,10 +346,10 @@ async function replaceOutput(event: Event) {
+@@ -287,10 +347,10 @@ async function replaceOutput(event: Event) {
    }
  }
  
@@ -5649,15 +5932,16 @@ index 77a0535..18bf244 100644
      if (disposed || generating.value || deleting.value) return;
      models.value = items.filter((item) => item.type === "video");
      // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
-@@ -306,6 +365,7 @@ function loadModels() {
+@@ -306,6 +366,8 @@ function loadModels() {
  }
  
  async function startGeneration() {
++  if (promptRewriting.value) throw new Error("请等待提示词应用完成");
 +  if (generationBlocked.value) throw new Error("此节点已有未确认任务，请先查询原任务，避免重复生成");
    const choice = selectedModel.value;
    const input = generationInput.value;
    if (generating.value) throw new Error("视频正在生成，请等待完成");
-@@ -318,7 +378,7 @@ async function startGeneration() {
+@@ -318,7 +380,7 @@ async function startGeneration() {
    const workspace = files.getWorkspaceFiles();
    const controller = new AbortController();
    generationController = controller;
@@ -5666,7 +5950,7 @@ index 77a0535..18bf244 100644
    generation = generationState.run(() => workspace
      .list()
      .then(({ directory }) => {
-@@ -360,11 +420,21 @@ async function resizeVideo(event: Event) {
+@@ -360,11 +422,21 @@ async function resizeVideo(event: Event) {
    updateNodeInternals();
  }
  
@@ -5689,7 +5973,7 @@ index 77a0535..18bf244 100644
        duration: data.value.duration,
        resolution: data.value.resolution,
        ratio: data.value.ratio,
-@@ -372,7 +442,7 @@ function getConfig() {
+@@ -372,7 +444,7 @@ function getConfig() {
        generateAudio: data.value.generateAudio,
      },
      models: models.value,
@@ -5698,7 +5982,7 @@ index 77a0535..18bf244 100644
      matchingModes: matchingModes.value,
    };
  }
-@@ -397,7 +467,7 @@ nodeTools.register({
+@@ -397,7 +469,7 @@ nodeTools.register({
      modelId: z.string().min(1).optional(),
      duration: z.number().positive().optional(),
      resolution: z.string().min(1).optional(),
@@ -5707,7 +5991,7 @@ index 77a0535..18bf244 100644
      mode: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
      generateAudio: z.boolean().optional(),
    }).refine((args) => (args.providerId === undefined) === (args.modelId === undefined), "providerId 与 modelId 必须同时提供"),
-@@ -408,17 +478,18 @@ nodeTools.register({
+@@ -408,17 +480,18 @@ nodeTools.register({
      signal?.throwIfAborted();
      if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
      const choice = args.modelId === undefined ? selectedModel.value
@@ -5728,7 +6012,7 @@ index 77a0535..18bf244 100644
      data.value.duration = duration;
      data.value.resolution = resolution;
      if (args.ratio !== undefined) data.value.ratio = args.ratio;
-@@ -519,4 +590,12 @@ nodeTools.register({
+@@ -519,4 +592,12 @@ nodeTools.register({
      }
    }
  }

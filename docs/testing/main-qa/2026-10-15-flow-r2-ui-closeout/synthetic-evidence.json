@@ -1,0 +1,373 @@
+{
+  "syntheticOnly": true,
+  "app": "/tmp/SeeCut-Prompt-Recommendations-Final.app",
+  "publicR2": "8c82ae7f091bf1c91f70adb4ddca912b884b4c44",
+  "privateR2": "aaaeae4cb9632baa65bda42b53f0a6a6743f9f54",
+  "packagedCode": "fa12270",
+  "projectId": "85d47627-eabf-43a1-9b8f-05f7536a7a10",
+  "nodeId": "b80951d2-70d2-433d-a6c4-1c029b14d2c0",
+  "edges": [
+    {
+      "id": "e7f9df18-7845-4a42-ad2f-ee2663b556bb",
+      "type": "simple-bezier",
+      "source": "92795d45-4af7-4e84-8660-070e6f3a90e9",
+      "target": "b80951d2-70d2-433d-a6c4-1c029b14d2c0",
+      "sourceHandle": "text",
+      "targetHandle": "in",
+      "updatable": false,
+      "selectable": false,
+      "focusable": false,
+      "data": {},
+      "label": "",
+      "interactionWidth": 40,
+      "animated": false,
+      "sourceX": 241,
+      "sourceY": 130,
+      "targetX": 419,
+      "targetY": 179
+    }
+  ],
+  "recordAfterReopen": {
+    "clientRequestId": "8cb72bc6-2cfa-4778-9608-7c020a8edc10",
+    "mediaType": "image",
+    "outputDirectory": "assets/b80951d2-70d2-433d-a6c4-1c029b14d2c0",
+    "providerId": "seecut",
+    "modelId": "sc222325dfc5edf08c4ad8594a79d18c9c",
+    "prompt": "参考 1：\nSynthetic fixture white square",
+    "params": {
+      "ratio": "1:1",
+      "size": "1K"
+    },
+    "status": "completed",
+    "capturedCredits": 2,
+    "createdAt": "2026-10-15T14:13:03.999Z",
+    "updatedAt": "2026-10-15T14:13:16.014Z",
+    "results": [
+      {
+        "path": "assets/b80951d2-70d2-433d-a6c4-1c029b14d2c0/seecut-d9b35fb2d53b475640398f3bf647ce3e.png",
+        "mimeType": "image/png",
+        "mediaType": "image",
+        "source": {
+          "providerId": "seecut",
+          "attemptId": "8cb72bc6-2cfa-4778-9608-7c020a8edc10",
+          "assetId": "b1ba97ea-f871-451b-9b65-955f50cea475",
+          "version": {
+            "registration_id": "operation:generation:74b1e584eae793c36c908f029ca1897b805cef5d53f1a0f78e40cbbe312e1321:gen_ecXjwt1_Kj-x0cMS_gRnaQ:out_yAFEEkupiQeBw6trLjA36g",
+            "sha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"
+          }
+        }
+      }
+    ],
+    "dispatched": true,
+    "readyToSubmit": true
+  },
+  "successfulOriginalTaskQuery": {
+    "timestamp": "2026-10-15T14:16:53.752Z",
+    "type": "tool.completed",
+    "result": {
+      "status": "ok",
+      "data": {
+        "history": [
+          {
+            "capturedCredits": 2,
+            "clientRequestId": "8cb72bc6-2cfa-4778-9608-7c020a8edc10",
+            "createdAt": "2026-10-15T14:13:03.999Z",
+            "dispatched": true,
+            "mediaType": "image",
+            "modelId": "sc222325dfc5edf08c4ad8594a79d18c9c",
+            "outputDirectory": "assets/b80951d2-70d2-433d-a6c4-1c029b14d2c0",
+            "params": {
+              "ratio": "1:1",
+              "size": "1K"
+            },
+            "prompt": "参考 1：\nSynthetic fixture white square",
+            "providerId": "seecut",
+            "readyToSubmit": true,
+            "results": [
+              {
+                "mediaType": "image",
+                "mimeType": "image/png",
+                "path": "assets/b80951d2-70d2-433d-a6c4-1c029b14d2c0/seecut-d9b35fb2d53b475640398f3bf647ce3e.png",
+                "source": {
+                  "assetId": "b1ba97ea-f871-451b-9b65-955f50cea475",
+                  "attemptId": "8cb72bc6-2cfa-4778-9608-7c020a8edc10",
+                  "providerId": "seecut",
+                  "version": {
+                    "registration_id": "operation:generation:74b1e584eae793c36c908f029ca1897b805cef5d53f1a0f78e40cbbe312e1321:gen_ecXjwt1_Kj-x0cMS_gRnaQ:out_yAFEEkupiQeBw6trLjA36g",
+                    "sha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"
+                  }
+                }
+              }
+            ],
+            "status": "completed",
+            "updatedAt": "2026-10-15T14:13:16.014Z"
+          }
+        ],
+        "outputs": {
+          "image": {
+            "dataType": "IMAGE",
+            "value": {
+              "mimeType": "image/png",
+              "url": "assets/b80951d2-70d2-433d-a6c4-1c029b14d2c0/seecut-d9b35fb2d53b475640398f3bf647ce3e.png"
+            }
+          }
+        },
+        "record": {
+          "capturedCredits": 2,
+          "clientRequestId": "8cb72bc6-2cfa-4778-9608-7c020a8edc10",
+          "createdAt": "2026-10-15T14:13:03.999Z",
+          "dispatched": true,
+          "mediaType": "image",
+          "modelId": "sc222325dfc5edf08c4ad8594a79d18c9c",
+          "outputDirectory": "assets/b80951d2-70d2-433d-a6c4-1c029b14d2c0",
+          "params": {
+            "ratio": "1:1",
+            "size": "1K"
+          },
+          "prompt": "参考 1：\nSynthetic fixture white square",
+          "providerId": "seecut",
+          "readyToSubmit": true,
+          "results": [
+            {
+              "mediaType": "image",
+              "mimeType": "image/png",
+              "path": "assets/b80951d2-70d2-433d-a6c4-1c029b14d2c0/seecut-d9b35fb2d53b475640398f3bf647ce3e.png",
+              "source": {
+                "assetId": "b1ba97ea-f871-451b-9b65-955f50cea475",
+                "attemptId": "8cb72bc6-2cfa-4778-9608-7c020a8edc10",
+                "providerId": "seecut",
+                "version": {
+                  "registration_id": "operation:generation:74b1e584eae793c36c908f029ca1897b805cef5d53f1a0f78e40cbbe312e1321:gen_ecXjwt1_Kj-x0cMS_gRnaQ:out_yAFEEkupiQeBw6trLjA36g",
+                  "sha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"
+                }
+              }
+            }
+          ],
+          "status": "completed",
+          "updatedAt": "2026-10-15T14:13:16.014Z"
+        },
+        "running": false
+      }
+    }
+  },
+  "libraryMatches": [
+    {
+      "id": "b1ba97ea-f871-451b-9b65-955f50cea475",
+      "name": "Flow 图片",
+      "path": "/private/tmp/SeeCut-Prompt-Recommendations-Final.app/Contents/MacOS/portable/personal-library/generated/431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460.png",
+      "kind": "image",
+      "source": "generated",
+      "version": {
+        "sha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
+        "registration_id": "operation:generation:74b1e584eae793c36c908f029ca1897b805cef5d53f1a0f78e40cbbe312e1321:gen_ecXjwt1_Kj-x0cMS_gRnaQ:out_yAFEEkupiQeBw6trLjA36g"
+      },
+      "original_path": "/Users/chenyunzhe/Movies/SeeCut/scopes/74b1e584eae793c36c908f029ca1897b805cef5d53f1a0f78e40cbbe312e1321/gen_ecXjwt1_Kj-x0cMS_gRnaQ-out_yAFEEkupiQeBw6trLjA36g.png",
+      "provenance": {
+        "kind": "flow_image",
+        "project_path": null,
+        "document_sha256": "5440bac49e1c8cdc099b954cf9348b30ced8bd39f4f6bfba0544acb09447ee09",
+        "inputs": [],
+        "parameters": {
+          "attempt_id": "8cb72bc6-2cfa-4778-9608-7c020a8edc10",
+          "document_id": "85d47627-eabf-43a1-9b8f-05f7536a7a10",
+          "frozen_input": {
+            "capability_version": "75b06611fa0872fe008739e7a4e8902a2acad1b438de61cb7bd8b9a47f7ef68f",
+            "context": {
+              "document_id": "85d47627-eabf-43a1-9b8f-05f7536a7a10",
+              "graph_id": "main",
+              "node_id": "8cb72bc6-2cfa-4778-9608-7c020a8edc10",
+              "revision": 0,
+              "scope": {
+                "account": "usr_l4uU7Fsqy10Co5I2cLYJfg",
+                "service": "7c9cc747d286821752faf813b3d81a5f052e44ab66300ee43faf5e4ad3992947"
+              }
+            },
+            "media_kind": "Image",
+            "model_id": "nano-banana-2.1",
+            "parameters": {
+              "aspect_ratio": "1:1",
+              "effort_id": "low",
+              "policy_revision": "synthetic-v1",
+              "quantity": 1,
+              "size": "1K"
+            },
+            "prompt": "参考 1：\nSynthetic fixture white square",
+            "references": []
+          },
+          "graph_id": "main",
+          "node_id": "8cb72bc6-2cfa-4778-9608-7c020a8edc10",
+          "request": {
+            "aspect_ratio": "1:1",
+            "effort_id": "low",
+            "model": "nano-banana-2.1",
+            "operation": "generate",
+            "policy_revision": "synthetic-v1",
+            "prompt": "参考 1：\nSynthetic fixture white square",
+            "quantity": 1,
+            "quote_id": "quote_B6I78N2Bezcpnf63zo6aUg",
+            "size": "1K"
+          }
+        }
+      },
+      "created_at": 1792073595981,
+      "trashed": false,
+      "favorite": false
+    }
+  ],
+  "generationTasks": [
+    {
+      "id": "gen_TbAoexFUJS_hkl5zYM7gTQ",
+      "status": "succeeded",
+      "upstream_task_id": "synthetic-001b6828d5a74b8e97d1a3594383eeda",
+      "created_at": 1792070789,
+      "updated_at": 1792070799
+    },
+    {
+      "id": "gen_ecXjwt1_Kj-x0cMS_gRnaQ",
+      "status": "succeeded",
+      "upstream_task_id": "synthetic-6ce32752c80e47b39e12ce96a477f39a",
+      "created_at": 1792073584,
+      "updated_at": 1792073594
+    }
+  ],
+  "mutationReceipts": [
+    {
+      "stage": "text_tools",
+      "operationId": "scm2:1:16:seecut-assistant:36:756b6e28-2bbd-42cb-8478-cca981007b70:1",
+      "status": "completed",
+      "saved": true,
+      "result": {
+        "node": {
+          "id": "92795d45-4af7-4e84-8660-070e6f3a90e9",
+          "label": "R2 Agent text",
+          "position": {
+            "x": 0,
+            "y": 0
+          },
+          "selected": false,
+          "type": "remote-textNode"
+        }
+      }
+    },
+    {
+      "stage": "create_image",
+      "operationId": "scm2:1:16:seecut-assistant:36:756b6e28-2bbd-42cb-8478-cca981007b70:2",
+      "status": "completed",
+      "saved": true,
+      "result": {
+        "text": "Synthetic fixture white square"
+      }
+    },
+    {
+      "stage": "image_config",
+      "operationId": "scm2:1:16:seecut-assistant:36:756b6e28-2bbd-42cb-8478-cca981007b70:3",
+      "status": "completed",
+      "saved": true,
+      "result": {
+        "node": {
+          "id": "b80951d2-70d2-433d-a6c4-1c029b14d2c0",
+          "label": "R2 Agent image",
+          "position": {
+            "x": 440,
+            "y": 0
+          },
+          "selected": false,
+          "type": "remote-imageGenerationNode"
+        }
+      }
+    },
+    {
+      "stage": "ports",
+      "operationId": "scm2:1:16:seecut-assistant:36:756b6e28-2bbd-42cb-8478-cca981007b70:4",
+      "status": "completed",
+      "saved": true,
+      "result": {
+        "config": {
+          "modelId": "sc222325dfc5edf08c4ad8594a79d18c9c",
+          "providerId": "seecut",
+          "ratio": "1:1",
+          "size": "1K"
+        }
+      }
+    },
+    {
+      "stage": 2,
+      "operationId": "scm2:1:16:seecut-assistant:36:0c273e65-4048-4549-a3c6-9e7f880fed85:1",
+      "status": "completed",
+      "saved": true,
+      "result": {
+        "edges": [
+          {
+            "id": "e7f9df18-7845-4a42-ad2f-ee2663b556bb",
+            "source": "92795d45-4af7-4e84-8660-070e6f3a90e9",
+            "sourceHandle": "text",
+            "target": "b80951d2-70d2-433d-a6c4-1c029b14d2c0",
+            "targetHandle": "in"
+          }
+        ]
+      }
+    },
+    {
+      "stage": 3,
+      "operationId": "scm2:1:16:seecut-assistant:36:0c273e65-4048-4549-a3c6-9e7f880fed85:2",
+      "status": "completed",
+      "saved": true,
+      "result": {
+        "status": "generating"
+      }
+    }
+  ],
+  "interruptionsAndFinalTurnFailure": [
+    {
+      "timestamp": "2026-10-15T14:05:33.532Z",
+      "type": "tool.cancelled",
+      "data": {
+        "invocationId": "b228e1a2-2681-4039-a3ad-22c9541e4d2d_e1e717ca5f364f72a02ab62ee40776a7",
+        "message": {
+          "id": "98774fd5-d8d3-4256-b38b-fca516c66a91",
+          "role": "tool",
+          "content": [
+            {
+              "type": "text",
+              "text": "Operation aborted"
+            }
+          ],
+          "toolCallId": "e1e717ca5f364f72a02ab62ee40776a7",
+          "toolName": "flow_connect_nodes",
+          "isError": true
+        },
+        "executed": false
+      }
+    },
+    {
+      "timestamp": "2026-10-15T14:13:06.864Z",
+      "type": "turn.failed",
+      "data": {
+        "result": {
+          "turnId": "a81ccc8f-b960-4ddc-a5ac-d6f77d79e250",
+          "status": "failed",
+          "text": "",
+          "reason": "Agent 服务返回了无效状态"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-10-15T14:16:53.778Z",
+      "type": "turn.failed",
+      "data": {
+        "result": {
+          "turnId": "4d279ae5-6049-4ff1-acb4-3c5b756add34",
+          "status": "failed",
+          "text": "",
+          "reason": "用户选择已改变，本轮编辑已停止"
+        }
+      }
+    }
+  ],
+  "quota": {
+    "checkedAt": "2026-10-15T14:17:50Z",
+    "windowMinutes": 10080,
+    "remainingPercent": 51,
+    "resetsAt": 1792649598
+  }
+}

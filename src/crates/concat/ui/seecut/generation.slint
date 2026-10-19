@@ -10,7 +10,7 @@ import { AppButton, AssetPreview, CloudField, Label, EmptyState, WorkspaceSelect
 
 import { InspirationPanel, InspirationPreview } from "inspiration.slint";
 
-component GenerationForm inherits Rectangle {
+export component GenerationForm inherits Rectangle {
     background: Theme.panel;
     property <int> mention-index;
     property <string> cleared-prompt;
@@ -38,7 +38,7 @@ component GenerationForm inherits Rectangle {
             }
             Rectangle { horizontal-stretch: 1; }
             if SeeCut.inspiration-can-restore: WorkspaceIcon {
-                glyph: Glyph.undo; label: "恢复原草稿"; enabled: !SeeCut.working;
+                glyph: Glyph.undo; label: "恢复原草稿"; enabled: !SeeCut.working && !SeeCut.prompt-rewriting;
                 clicked => { SeeCut.action("inspiration-restore", ""); }
             }
             AppButton {
@@ -81,7 +81,7 @@ component GenerationForm inherits Rectangle {
                         if SeeCut.reference-max > 0: Text { text: "" + SeeCut.references.length; color: Theme.fg-muted; vertical-alignment: center; }
                         picker-return := FocusScope {
                             width: Theme.workbench-h; height: Theme.workbench-h;
-                            enabled: !SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max;
+                            enabled: !SeeCut.prompt-rewriting && (!SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max);
                             focus-on-tab-navigation: false;
                             property <bool> picker-open: SeeCut.asset-picker-open;
                             changed picker-open => {
@@ -97,15 +97,15 @@ component GenerationForm inherits Rectangle {
                                 }
                                 return EventResult.reject;
                             }
-                            WorkspaceIcon { glyph: Glyph.folder; label: "从资产库添加参考素材"; enabled: !SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max; clicked => {
+                            WorkspaceIcon { glyph: Glyph.folder; label: "从资产库添加参考素材"; enabled: !SeeCut.prompt-rewriting && (!SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max); clicked => {
                                 SeeCut.focus-return-kind = "generation-picker"; SeeCut.focus-return-id = ""; SeeCut.focus-return-claimed = false;
                                 SeeCut.action("reference-team", "");
                             } }
                         }
-                        WorkspaceIcon { glyph: Glyph.plus; label: SeeCut.mode == 0 ? "从本机添加图片参考" : "从本机添加图片、视频或音频参考"; enabled: !SeeCut.working && (!SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max); clicked => { SeeCut.action("reference-browse", ""); } }
+                        WorkspaceIcon { glyph: Glyph.plus; label: SeeCut.mode == 0 ? "从本机添加图片参考" : "从本机添加图片、视频或音频参考"; enabled: !SeeCut.prompt-rewriting && !SeeCut.working && (!SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max); clicked => { SeeCut.action("reference-browse", ""); } }
                     }
                     if SeeCut.references.length == 0: empty-reference := Rectangle {
-                        property <bool> can-add: !SeeCut.working && (!SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max);
+                        property <bool> can-add: !SeeCut.prompt-rewriting && !SeeCut.working && (!SeeCut.signed-in || SeeCut.references.length < SeeCut.reference-max);
                         property <bool> ring;
                         height: SeeCut.creator-mode == 1 ? 112px : 156px;
                         background: upload-touch.has-hover && self.can-add ? Theme.field-hover : Theme.well;
@@ -222,7 +222,22 @@ component GenerationForm inherits Rectangle {
                     font-size: 12px;
                     wrap: word-wrap;
                 }
-                Label { text: "提示词"; color: Theme.fg; }
+                HorizontalLayout {
+                    Label { text: "提示词"; color: Theme.fg; horizontal-stretch: 1; }
+                    Text { text: SeeCut.prompt-rewriting ? "应用模板中…" : SeeCut.prompt-recommend-status; color: Theme.fg-muted; font-size: 12px; vertical-alignment: center; }
+                }
+                if SeeCut.prompt-recommendations.length > 0: HorizontalLayout {
+                    spacing: 6px;
+                    for item in SeeCut.prompt-recommendations: AppButton {
+                        label: item.label; height: 30px; horizontal-stretch: 1;
+                        border-color: SeeCut.prompt-recommend-pulse ? Theme.accent : Theme.line;
+                        animate border-color { duration: SeeCut.reduced-motion ? 0ms : 700ms; }
+                        enabled: !SeeCut.prompt-rewriting && !SeeCut.working;
+                        clicked => { SeeCut.prompt-apply-prompt = SeeCut.prompt; SeeCut.prompt-apply-context = SeeCut.prompt-context-revision; SeeCut.prompt-apply-draft = SeeCut.prompt-draft-revision; SeeCut.prompt-rewriting = true; SeeCut.prompt-apply-id = item.id; }
+                    }
+                }
+                if SeeCut.prompt-recommend-error != "": Text { text: SeeCut.prompt-recommend-error; color: Theme.danger; font-size: 12px; wrap: word-wrap; }
+
 
                 Rectangle {
                 height: 148px;
@@ -230,6 +245,9 @@ component GenerationForm inherits Rectangle {
                     width: 100%; height: 100%;
                     background: Theme.panel;
                     value <=> SeeCut.prompt;
+                    enabled: !SeeCut.prompt-rewriting;
+                    property <int> focus-revision: SeeCut.prompt-focus-revision;
+                    changed focus-revision => { self.focus-at(SeeCut.prompt-cursor); }
                     multiline: true;
                     text-size: Theme.fs-input;
                     multiline-footer-space: 40px;
@@ -258,7 +276,7 @@ component GenerationForm inherits Rectangle {
                     x: parent.width - self.width - 8px; y: parent.height - self.height - 8px;
                     glyph: SeeCut.prompt == "" && root.cleared-prompt != "" ? Glyph.undo : Glyph.trash;
                     label: SeeCut.prompt == "" && root.cleared-prompt != "" ? "恢复提示词" : "清空提示词";
-                    enabled: SeeCut.prompt != "" || root.cleared-prompt != "";
+                    enabled: !SeeCut.prompt-rewriting && (SeeCut.prompt != "" || root.cleared-prompt != "");
                     clicked => {
                         if SeeCut.prompt == "" && root.cleared-prompt != "" {
                             SeeCut.prompt = root.cleared-prompt;
@@ -412,7 +430,7 @@ component GenerationForm inherits Rectangle {
     }
 }
 
-component GenerationSubmitBar inherits Rectangle {
+export component GenerationSubmitBar inherits Rectangle {
     in property <bool> compact;
     property <bool> model-valid: SeeCut.model-index >= 0 && SeeCut.model-index < SeeCut.model-names.length;
     height: SeeCut.signed-in && (SeeCut.quantities.length > 0 || root.model-valid) ? 134px : 60px;
@@ -445,7 +463,7 @@ component GenerationSubmitBar inherits Rectangle {
                 label: !SeeCut.signed-in ? "登录后生成" : SeeCut.insufficient-credits ? (SeeCut.payment-enabled ? "充值积分" : "查看积分") : SeeCut.working ? "请稍候" : !root.model-valid ? "请选择模型" : "生成";
                 glyph: SeeCut.signed-in ? Glyph.sparkle : Glyph.lock;
                 primary: true;
-                enabled: !SeeCut.working && (!SeeCut.signed-in || SeeCut.insufficient-credits || (SeeCut.can-generate && root.model-valid));
+                enabled: !SeeCut.prompt-rewriting && !SeeCut.working && (!SeeCut.signed-in || SeeCut.insufficient-credits || (SeeCut.can-generate && root.model-valid));
                 clicked => {
                     if !SeeCut.signed-in { SeeCut.action("auth-open", ""); }
                     else if SeeCut.insufficient-credits { SeeCut.action("navigate", "3"); }
@@ -827,7 +845,7 @@ export component GenerationPage inherits Rectangle {
                     AppButton {
                         label: "确认上传";
                         primary: true;
-                        enabled: !SeeCut.working && SeeCut.team-index >= 0 && SeeCut.team-index < SeeCut.team-names.length;
+                        enabled: !SeeCut.prompt-rewriting && !SeeCut.working && SeeCut.team-index >= 0 && SeeCut.team-index < SeeCut.team-names.length;
                         clicked => {
                             SeeCut.action("task-save-team", SeeCut.save-team-task);
                             SeeCut.save-team-task = "";

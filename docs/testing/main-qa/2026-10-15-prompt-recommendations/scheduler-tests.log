@@ -1,0 +1,15 @@
+bun test v1.3.14 (0d9b296a)
+
+integrations/toonflow/tests/prompt-recommendations.test.ts:
+(pass) debounce and shared start interval retain latest input [9.18ms]
+(pass) concurrent editors share interval and no parallel calls [0.85ms]
+(pass) old account or draft reply cannot repopulate recommendations [0.45ms]
+(pass) rewrite changes only prompt, and does not recursively recommend [1.35ms]
+(pass) failed rewrite retains original and can be explicitly retried [4.52ms]
+(pass) 429 retains draft and observes supplier retry after [3.01ms]
+(pass) switch or unmount fences pending rewrite [0.43ms]
+
+ 7 pass
+ 0 fail
+ 18 expect() calls
+Ran 7 tests across 1 file. [179.00ms]

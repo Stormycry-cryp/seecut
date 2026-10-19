@@ -25,6 +25,7 @@ mod flow_parameters;
 mod generation_state;
 mod inspiration;
 mod preview_validation;
+pub(crate) mod prompt_assistance;
 pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, media_kind};
 
 /// The opt-in software-rendered fixture exercises local state transitions with
@@ -8669,6 +8670,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         "creator-mode"=>{
             if let Ok(mode) = id.parse::<i32>() {
                 ui.set_creator_mode(mode.clamp(0, 1));
+                ui.set_prompt_context_revision(ui.get_prompt_context_revision().wrapping_add(1));
                 save_preferences(&app, &shared);
             }
         },
@@ -8886,6 +8888,24 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         if shared.borrow().updating_model_options {
             return;
         }
+        if matches!(
+            field.as_str(),
+            "prompt"
+                | "ratio"
+                | "resolution"
+                | "quality"
+                | "duration"
+                | "generate-audio"
+                | "quantity"
+                | "generation-effort"
+        ) {
+            let ui = app.global::<SeeCut>();
+            ui.set_prompt_draft_revision(ui.get_prompt_draft_revision().wrapping_add(1));
+        }
+        if matches!(field.as_str(), "mode" | "model") {
+            let ui = app.global::<SeeCut>();
+            ui.set_prompt_context_revision(ui.get_prompt_context_revision().wrapping_add(1));
+        }
         if field == "account-history-tab" || field == "ledger-filter" {
             load_history(&app, &shared, field == "ledger-filter");
             return;
@@ -8991,6 +9011,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
     });
     refresh_canvas_projects(app, &state);
     auth_countdown(app.as_weak());
+    prompt_assistance::start(app.as_weak(), state.clone());
     heartbeat(app.as_weak(), state);
     account
 }

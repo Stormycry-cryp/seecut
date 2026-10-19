@@ -151,3 +151,26 @@ With complete merchant configuration, `POST /api/orders` returns:
 ```
 
 The URL is an RSA2-signed `alipay.trade.page.pay` request. `POST /api/orders/{orderId}/refresh` performs signed `alipay.trade.query` compensation and requires a valid RSA2 signature on the response before checking status, amount, order number and seller when returned. Asynchronous notification settlement remains authoritative and idempotent, and validates `app_id`, `seller_id`, amount, order and RSA2 signature.
+
+### Prompt recommendations and rewrite
+
+Authenticated `GET /api/prompts/capabilities` advertises separate `recommend` and
+`rewrite` availability. `POST /api/prompts/recommend` and `/api/prompts/rewrite`
+require `Idempotency-Key` (16–100 ASCII letters/digits/hyphens/underscores).
+The JSON input contains `prompt`, PNG/JPEG data-URL `images` (up to four), and
+`templates: [{id,name,prompt}]`; rewrite additionally requires `templateId`.
+SeeCut desktop supplies the curated candidate pool through its native bridge.
+Recent history is read server-side for the authenticated account; client history
+never overrides it. Responses return `recommendations` or `prompt`, exact model,
+observed token usage, elapsed milliseconds, and `userCredits: 0`.
+
+Jev uses `jev-1.14-free` at BeatAPI `/v1/systemone`; only supplied candidate keys
+are accepted. GLM uses the existing domestic `glm-5.3-flash` server configuration
+and text-only input. Image bytes are never sent to GLM or fabricated as descriptions.
+Prompt assistance never starts media generation or mutates the wallet.
+
+Accepted requests persist before upstream dispatch; replay returns the original
+completed reply, changed bodies conflict, and uncertain replies are not silently
+resent. Recommendation starts share a 10-second account interval; 429 returns
+`retry_after` seconds. Both desktop clients retain the original draft and fence
+outdated replies after account, page, canvas or input changes.

@@ -1,0 +1,31 @@
+bun test v1.3.14 (0d9b296a)
+
+integrations/toonflow/tests/prompt-recommendations.test.ts:
+(pass) debounce and shared start interval retain latest input [2.69ms]
+(pass) concurrent editors share interval and no parallel calls [0.34ms]
+(pass) old account or draft reply cannot repopulate recommendations [0.08ms]
+(pass) rewrite changes only prompt, and does not recursively recommend [0.20ms]
+(pass) failed rewrite retains original and can be explicitly retried [0.32ms]
+(pass) 429 retains draft and observes supplier retry after [0.33ms]
+(pass) switch or unmount fences pending rewrite [0.06ms]
+(pass) image: click snapshots current draft and images without waiting for polling [0.27ms]
+(pass) image: late rewrite cannot overwrite draft before next poll [0.06ms]
+(pass) image: late rewrite cannot overwrite references before next poll [0.02ms]
+(pass) image: late rewrite cannot overwrite context before next poll [0.01ms]
+(pass) image: late rewrite cannot overwrite closed before next poll [0.01ms]
+(pass) video: click snapshots current draft and images without waiting for polling [0.02ms]
+(pass) video: late rewrite cannot overwrite draft before next poll [0.01ms]
+(pass) video: late rewrite cannot overwrite references before next poll [0.01ms]
+(pass) video: late rewrite cannot overwrite context before next poll [0.01ms]
+(pass) video: late rewrite cannot overwrite closed before next poll [0.01ms]
+(pass) in-flight rewrite cannot be entered twice; failed response preserves full draft [0.06ms]
+(pass) synchronous edit notification fences edit-away-and-back and scope-away-and-back [0.10ms]
+(pass) undo is scoped to unchanged rewrite and never restores over later edits or references [0.10ms]
+
+integrations/toonflow/tests/prompt-router.test.ts:
+(pass) prompt bridge binds native account and fences a changed login epoch [19.34ms]
+
+ 21 pass
+ 0 fail
+ 86 expect() calls
+Ran 21 tests across 2 files. [178.00ms]

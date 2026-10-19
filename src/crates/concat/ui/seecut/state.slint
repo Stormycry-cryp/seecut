@@ -46,9 +46,27 @@ export struct AccountEntry {
     value: string,
 }
 
+export struct PromptRecommendation { id: string, label: string }
+
 export global SeeCut {
+    in-out property <[PromptRecommendation]> prompt-recommendations;
+    in-out property <string> prompt-recommend-status;
+    in-out property <string> prompt-recommend-error;
+    in-out property <string> prompt-apply-id;
+    in-out property <string> prompt-apply-prompt;
+    in-out property <int> prompt-apply-context;
+    in-out property <int> prompt-apply-draft;
+    in-out property <int> prompt-draft-revision;
+    in-out property <bool> prompt-rewriting;
+    in-out property <int> prompt-focus-revision;
+    in-out property <bool> prompt-recommend-pulse;
+    in-out property <bool> canvas-prompt-open;
+    changed canvas-prompt-open => { self.prompt-context-revision += 1; }
+    in-out property <int> prompt-context-revision;
+    changed canvas-gallery-open => { if self.canvas-gallery-open { self.canvas-prompt-open = false; self.prompt-context-revision += 1; } }
     in-out property <int> page: 1;
     changed page => {
+        self.prompt-context-revision += 1;
         self.personal-relink-view += 1;
         self.personal-relink-context-changed();
     }
@@ -200,6 +218,7 @@ export global SeeCut {
     in-out property <string> reference-limit;
     in-out property <int> reference-max;
     in-out property <[CloudItem]> references;
+    changed references => { self.prompt-draft-revision += 1; }
     in-out property <[string]> generation-effort-names;
     in-out property <int> generation-effort-index: -1;
     in-out property <string> generation-actual-cost: "0";

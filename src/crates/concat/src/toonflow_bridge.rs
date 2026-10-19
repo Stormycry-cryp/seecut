@@ -66,6 +66,10 @@ impl RpcError {
                     .get("details")
                     .cloned()
                     .unwrap_or_else(|| json!({"status":status}));
+                if code == "PROMPT_RATE_LIMITED" {
+                    result.details["retry_after"] =
+                        value.get("retry_after").cloned().unwrap_or(json!(60));
+                }
                 if status == 404 && code == "NOT_FOUND" {
                     result.code = "FLOW_STORAGE_UNAVAILABLE".into();
                     result.message = "当前云服务尚未提供 Flow 项目存储，请升级服务端。".into();
@@ -574,7 +578,8 @@ fn asset_value(asset: &crate::personal_library::Asset) -> Value {
 }
 
 fn check_expected_scope(method: &str, params: &Value, current: &str) -> Result<()> {
-    let required = method.starts_with("generation.")
+    let required = method.starts_with("prompts.")
+        || method.starts_with("generation.")
         || method.starts_with("projects.cloud.")
         || method.starts_with("assets.");
     match params.get("expectedScopeKey") {
@@ -591,6 +596,9 @@ fn dispatch(state: &State, method: &str, params: Value) -> Result<Value> {
     if !matches!(
         method,
         "account.status"
+            | "prompts.context"
+            | "prompts.recommend"
+            | "prompts.rewrite"
             | "generation.catalog"
             | "generation.prepare"
             | "generation.find"
@@ -632,6 +640,21 @@ fn dispatch(state: &State, method: &str, params: Value) -> Result<Value> {
     })?;
     check_expected_scope(method, &params, &client.key())?;
     let mut result = match method {
+        "prompts.context" | "prompts.recommend" | "prompts.rewrite" => {
+            let operation = method.trim_start_matches("prompts.");
+            let key = if operation == "context" {
+                ""
+            } else {
+                argument(&params, "requestId")?
+            };
+            {
+                let mut body = params.get("body").cloned().unwrap_or(Value::Null);
+                if body.is_object() {
+                    body["templates"] = crate::cloud::prompt_assistance::candidates();
+                }
+                client.image.prompt_assistance(operation, body, key)
+            }
+        }
         "generation.catalog" => {
             let mut catalog = client.image.catalog()?;
             client.recheck()?;

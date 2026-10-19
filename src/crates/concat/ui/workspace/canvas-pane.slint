@@ -12,6 +12,7 @@ import { NumberField } from "../primitives/number-field.slint";
 import { Focus } from "../util.slint";
 import { WorkspaceIcon, MenuAction } from "../seecut/components.slint";
 import { SeeCut } from "../seecut/state.slint";
+import { GenerationForm, GenerationSubmitBar } from "../seecut/generation.slint";
 import { Pane, PaneHeader } from "pane.slint";
 import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
 
@@ -455,6 +456,7 @@ export component CanvasPane inherits Rectangle {
     in property <bool> sidebar-open: true;
     /// The open image's name, as the header readout.
     in property <string> document-name;
+    changed document-name => { SeeCut.canvas-prompt-open = false; SeeCut.prompt-context-revision += 1; }
     /// The view's zoom, in percent. 100 is one image pixel to one screen
     /// pixel at the current scale.
     in property <float> zoom;
@@ -1777,6 +1779,35 @@ export component CanvasPane inherits Rectangle {
                 Text { text: root.has-document ? (root.tool == 3 ? "画笔" : root.tool == 4 ? "橡皮擦" : root.tool == 5 ? "矩形选区" : root.tool == 6 ? "魔棒选区" : root.tool == 7 ? "矩形" : root.tool == 8 ? "椭圆" : root.tool == 9 ? "路径" : root.tool == 10 ? "锚点" : root.tool == 1 ? "平移" : root.tool == 2 ? "缩放" : "移动") : "打开图片开始编辑"; font-size: 13px; color: Theme.fg-muted; vertical-alignment: center; horizontal-stretch: 1; }
                 if root.has-document: Text { text: Math.round(root.zoom) + "%"; font-size: 13px; color: Theme.fg-muted; vertical-alignment: center; }
             }
+        }
+    }
+
+    if root.has-document && SeeCut.page == 6: WorkspaceIcon {
+        x: parent.width - 58px; y: 8px; width: 40px; height: 36px;
+        glyph: Glyph.sparkle; label: SeeCut.canvas-prompt-open ? "收起灵感推荐" : "灵感推荐";
+        checkable: true; checked: SeeCut.canvas-prompt-open;
+        clicked => { SeeCut.canvas-prompt-open = !SeeCut.canvas-prompt-open; }
+    }
+    if root.has-document && SeeCut.page == 6 && SeeCut.canvas-prompt-open: Rectangle {
+        x: parent.width - self.width - 16px; y: 52px;
+        width: Math.min(390px, parent.width - 32px); height: Math.max(220px, parent.height - 70px);
+        background: Theme.panel; border-radius: 14px; border-width: 1px; border-color: Theme.line;
+        // Eat canvas gestures in the floating editor, retaining the viewport size.
+        TouchArea { }
+        VerticalLayout {
+            spacing: 0px;
+            HorizontalLayout {
+                height: 48px; padding-left: 16px; padding-right: 8px;
+                Text { text: "灵感推荐"; font-size: 15px; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; }
+                WorkspaceIcon { glyph: Glyph.close; label: "关闭灵感推荐"; clicked => { SeeCut.canvas-prompt-open = false; } }
+            }
+            HorizontalLayout { padding-left: 16px; padding-right: 16px; Text { text: "选提示词、按需求改写，生成结果自动进入资产库"; color: Theme.fg-muted; font-size: 12px; wrap: word-wrap; } }
+            prompt-scroll := ScrollView {
+                vertical-stretch: 1; viewport-width: self.visible-width; horizontal-scrollbar-policy: always-off;
+                viewport-height: Math.max(self.visible-height, canvas-prompt-form.height);
+                canvas-prompt-form := GenerationForm { width: prompt-scroll.visible-width; compact: true; height: Math.max(prompt-scroll.visible-height, self.min-height); }
+            }
+            GenerationSubmitBar { compact: true; }
         }
     }
 }

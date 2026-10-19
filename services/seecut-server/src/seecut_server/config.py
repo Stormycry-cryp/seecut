@@ -133,6 +133,7 @@ class Config:
     efforts: tuple = ()
     grsai_base_url: str = "https://grsai.dakka.com.cn"
     grsai_api_key: str = ""
+    beatapi_api_key: str = ""
 
     def __post_init__(self):
         if self.grsai_base_url not in {"https://grsai.dakka.com.cn", "https://grsaiapi.com"}:
@@ -234,6 +235,7 @@ class Config:
             expose_test_tokens=_bool("SECUT_EXPOSE_TEST_TOKENS", False),
             grsai_base_url=os.getenv("SECUT_GRSAI_BASE_URL", "https://grsai.dakka.com.cn").rstrip("/"),
             grsai_api_key=os.getenv("SECUT_GRSAI_API_KEY", ""),
+            beatapi_api_key=os.getenv("BEATAPI_API_KEY", ""),
             xiangxin_base_url=os.getenv("SECUT_XIANGXIN_BASE_URL", "https://xiangxinai123.xyz").rstrip("/"),
             xiangxin_api_key=os.getenv("SECUT_XIANGXIN_API_KEY", ""),
             image2_base_url="https://qwe.g-aisc.com/v1",

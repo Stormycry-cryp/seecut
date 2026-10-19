@@ -45,7 +45,7 @@ import { Seat } from "workspace/seat.slint";
 import { Modal, Glyph, Icon, FocusRing } from "primitives/primitives.slint";
 import { AppButton, WorkspaceIcon, MenuAction } from "seecut/components.slint";
 import { Workspace } from "workspace/workspace.slint";
-import { AppRail, CloudWorkbench, SeeCut, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup, GenerationBatch } from "seecut/workbench.slint";
+import { AppRail, CloudWorkbench, SeeCut, PromptRecommendation, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup, GenerationBatch } from "seecut/workbench.slint";
 import { AuthDialog, EditorBridgeBar, WorkflowFeedback, WorkflowToast } from "seecut/shell.slint";
 import { CanvasProjectsPage } from "seecut/project-gallery.slint";
 import { LauncherSafeArea } from "seecut/launcher-safe-area.slint";
@@ -69,7 +69,7 @@ export {
     SelectedClipData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
-    CaptionsSheetData, SpeechSheetData, SeeCut, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup, GenerationBatch,
+    CaptionsSheetData, SpeechSheetData, SeeCut, PromptRecommendation, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup, GenerationBatch,
 }
 
 export component App inherits Window {
@@ -539,7 +539,7 @@ export component App inherits Window {
             if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.template-delete-id = ""; return accept; }
             if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } return accept; }
             if event.text == Key.Escape && root.settings.open { root.settings-closed(); return accept; }
-            if (SeeCut.page == 6 && !SeeCut.canvas-gallery-open && !root.workflow-modal-open && !root.sheet-open) {
+            if (SeeCut.page == 6 && !SeeCut.canvas-gallery-open && !SeeCut.canvas-prompt-open && !root.workflow-modal-open && !root.sheet-open) {
                 if (event.modifiers.control || event.modifiers.meta) {
                     let shortcut = event.text.to-lowercase();
                     if (shortcut == "z") { if event.modifiers.shift { if Editor.canvas-can-redo { Editor.canvas-redo(); } } else { if Editor.canvas-can-undo { Editor.canvas-undo(); } } return accept; }
