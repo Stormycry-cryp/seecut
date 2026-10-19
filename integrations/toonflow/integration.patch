@@ -5043,6 +5043,51 @@ index 5d797df..87bb27d 100644
  export function translate(message: string | core.MessageDescriptor, values?: Record<string, unknown>) {
    return core.translate(message, values, locale.value);
  }
+diff --git a/packages/nodeScaffold/src/floatingControls.ts b/packages/nodeScaffold/src/floatingControls.ts
+new file mode 100644
+index 0000000..250f27e
+--- /dev/null
++++ b/packages/nodeScaffold/src/floatingControls.ts
+@@ -0,0 +1,39 @@
++export type Rect = {left:number;top:number;width:number;height:number};
++type ControlSize = {width:number;height:number};
++type ControlPosition = {left:number;top:number;width:number;maxHeight:number};
++const margin=12, gap=12, footer=64;
++const clamp=(value:number,min:number,max:number)=>Math.max(min,Math.min(value,max));
++
++// Viewport coordinates only: never changes nodes or the canvas transform.
++export function floatingControls(anchor:Rect,viewport:Rect,width:number,height:number,side:'top'|'bottom'):ControlPosition {
++ const w=Math.max(1,Math.min(width,viewport.width-margin*2));
++ const maxHeight=Math.max(1,Math.min(height,side==='bottom'?360:260,viewport.height-footer-margin*2));
++ const left=clamp(anchor.left+anchor.width/2-w/2,margin,viewport.width-margin-w);
++ const desired=side==='bottom'?anchor.top+anchor.height+gap:anchor.top-gap-maxHeight;
++ const top=clamp(desired,margin,viewport.height-footer-margin-maxHeight);
++ return {left,width:w,top,maxHeight};
++}
++
++// Allocate a shared vertical budget before positioning either teleported panel.
++// Short viewports keep the toolbar compact and scroll the generation panel;
++// overflow:auto on both panels keeps every action reachable without moving nodes.
++export function floatingControlPair(anchor:Rect,viewport:Rect,topSize:ControlSize|null,bottomSize:ControlSize|null) {
++ const top=topSize?floatingControls(anchor,viewport,topSize.width,topSize.height,'top'):null;
++ const bottom=bottomSize?floatingControls(anchor,viewport,bottomSize.width,bottomSize.height,'bottom'):null;
++ if(!top||!bottom)return {top,bottom};
++ const available=Math.max(2,viewport.height-footer-margin*2);
++ const separation=Math.min(gap,available/10);
++ if(top.maxHeight+separation+bottom.maxHeight>available){
++  // Reserve a compact toolbar; prioritize the prompt and primary action panel.
++  top.maxHeight=Math.min(top.maxHeight,44,(available-separation)/4);
++  bottom.maxHeight=Math.min(bottom.maxHeight,available-separation-top.maxHeight);
++ }
++ const end=margin+available;
++ top.top=clamp(anchor.top-gap-top.maxHeight,margin,end-top.maxHeight);
++ bottom.top=clamp(anchor.top+anchor.height+gap,margin,end-bottom.maxHeight);
++ if(top.top+top.maxHeight+separation>bottom.top){
++  top.top=clamp(top.top,margin,end-top.maxHeight-separation-bottom.maxHeight);
++  bottom.top=top.top+top.maxHeight+separation;
++ }
++ return {top,bottom};
++}
 diff --git a/packages/nodeScaffold/src/nodeAi.ts b/packages/nodeScaffold/src/nodeAi.ts
 index 63e67ee..4184bb3 100644
 --- a/packages/nodeScaffold/src/nodeAi.ts
@@ -5330,7 +5375,7 @@ index 63e67ee..4184bb3 100644
 +  return { getModels, getMediaModels, getMediaPrice, generateImage, generateVideo, generateAudio, generate, getMediaGeneration, getMediaGenerationHistory, recoverRecordedMedia, resumeRecordedMedia };
  }
 diff --git a/packages/nodeScaffold/src/nodeSkeleton.vue b/packages/nodeScaffold/src/nodeSkeleton.vue
-index 3bb727f..3701318 100644
+index 3bb727f..bade74a 100644
 --- a/packages/nodeScaffold/src/nodeSkeleton.vue
 +++ b/packages/nodeScaffold/src/nodeSkeleton.vue
 @@ -14,7 +14,7 @@
@@ -5342,24 +5387,90 @@ index 3bb727f..3701318 100644
            <el-dropdown-item :divided="!!(assetOutputs.length && saveNodeToAssets)" command="copy" :icon="IconCopy">复制节点</el-dropdown-item>
            <el-dropdown-item command="duplicate" :icon="IconCopyPlus">创建副本</el-dropdown-item>
            <el-dropdown-item command="delete" :icon="IconTrash">删除节点</el-dropdown-item>
-@@ -36,12 +36,13 @@
+@@ -24,10 +24,13 @@
+         </el-dropdown-menu>
+       </template>
+     </el-dropdown>
++    <teleport :to="vueFlowRef ?? 'body'" :disabled="!boundedControls">
+     <div
++      ref="topControls"
+       v-if="documentTarget || (topVisible && slotsVisible)"
+-      class="floatingSlot topSlot nodrag nopan nowheel"
+-      :style="{ width: typeof topWidth === 'number' ? `${topWidth}px` : topWidth }"
++      @toggle.capture="placeControls"
++      class="floatingSlot topSlot nodrag nopan nowheel" :class="{seecutFloating:boundedControls}"
++      :style="boundedControls ? topControlStyle : { width: typeof topWidth === 'number' ? `${topWidth}px` : topWidth }"
+       @pointerdown.stop
+       @mousedown.stop
+       @dblclick.stop
+@@ -36,16 +39,19 @@
        <slot name="top">
          <el-card class="mediaToolbar" shadow="never" :bodyStyle="{ padding: '6px' }">
            <el-button
-+            v-if="!assetOutputFilter || handles.some(handle => handle.type === 'source' && ['IMAGE', 'VIDEO', 'AUDIO'].some(type => isTypeCompatible(type, handle.dataType)))"
++            v-if="(!boundedControls || assetOutputs.length) && (!assetOutputFilter || handles.some(handle => handle.type === 'source' && ['IMAGE', 'VIDEO', 'AUDIO'].some(type => isTypeCompatible(type, handle.dataType))))"
              :icon="IconFolderPlus"
              :disabled="!assetOutputs.length || !saveNodeToAssets"
              text
 -            title="添加到素材库"
 -            aria-label="添加到素材库"
 -            @click.stop="handleCommand('saveAsset')">添加到素材库</el-button>
+-          <slot name="topActions" />
+-          <el-divider direction="vertical" />
+-          <slot name="topRightActions" />
 +            :title="'添加到' + assetLibraryLabel"
 +            :aria-label="'添加到' + assetLibraryLabel"
 +            @click.stop="handleCommand('saveAsset')">{{ '添加到' + assetLibraryLabel }}</el-button>
-           <slot name="topActions" />
-           <el-divider direction="vertical" />
-           <slot name="topRightActions" />
-@@ -178,7 +179,7 @@ import {
++          <details v-if="boundedControls" class="seecutMoreActions"><summary>更多</summary><div><slot name="topActions" /></div></details>
++          <slot v-else name="topActions" />
++          <el-divider v-if="!boundedControls || downloadUrl" direction="vertical" />
++          <slot v-if="!boundedControls || downloadUrl" name="topRightActions" />
+           <el-button
++            v-if="!boundedControls || downloadUrl"
+             :tag="downloadUrl ? 'a' : 'button'"
+             :href="downloadUrl || undefined"
+             :download="downloadName"
+@@ -59,7 +65,7 @@
+             @downloadstate="downloading = $event.detail"
+             @click.stop />
+           <el-button
+-            v-if="fullscreenVisible"
++            v-if="fullscreenVisible && (!boundedControls || downloadUrl)"
+             :icon="IconMaximize"
+             :disabled="!downloadUrl"
+             text
+@@ -69,10 +75,13 @@
+         </el-card>
+       </slot>
+     </div>
++    </teleport>
++    <teleport :to="vueFlowRef ?? 'body'" :disabled="!boundedControls">
+     <div
++      ref="bottomControls"
+       v-if="$slots.bottom && (documentTarget || (bottomVisible && slotsVisible))"
+-      class="floatingSlot bottomSlot nodrag nopan nowheel"
+-      :style="{ width: typeof bottomWidth === 'number' ? `${bottomWidth}px` : bottomWidth }"
++      class="floatingSlot bottomSlot nodrag nopan nowheel" :class="{seecutFloating:boundedControls}"
++      :style="boundedControls ? bottomControlStyle : { width: typeof bottomWidth === 'number' ? `${bottomWidth}px` : bottomWidth }"
+       @pointerdown.stop
+       @mousedown.stop
+       @dblclick.stop
+@@ -80,6 +89,7 @@
+       @contextmenu.stop>
+       <slot name="bottom" />
+     </div>
++    </teleport>
+     <div v-show="!documentTarget" class="titleBar">
+       <component :is="icon ?? IconBox" class="titleIcon" :size="16" aria-hidden="true" />
+       <input
+@@ -161,6 +171,7 @@
+ </template>
+ 
+ <script setup lang="ts">
++import { floatingControlPair } from "./floatingControls";
+ import { computed, inject, nextTick, onScopeDispose, ref, shallowRef, watch, watchEffect, type Component, type ShallowRef } from "vue";
+ import { Handle, Position, getTransformForBounds, pointToRendererPoint, useNode, useVueFlow, wheelDelta } from "@vue-flow/core";
+ import {
+@@ -178,7 +189,7 @@ import {
  } from "@tabler/icons-vue";
  import { ElCard, ElButton, ElDivider, ElDropdown, ElDropdownMenu, ElDropdownItem, ElMessage } from "element-plus";
  import type { DropdownInstance } from "element-plus";
@@ -5368,16 +5479,47 @@ index 3bb727f..3701318 100644
  import { useNodeEvent } from "./nodeEvent";
  import type { NodeConnectionFeedback, NodeData, NodeHandle } from "./connection";
  import type { NodeOutput } from "./values";
-@@ -411,6 +412,8 @@ async function deleteNode() {
+@@ -411,6 +422,39 @@ async function deleteNode() {
  
  const copyNodeToClipboard = inject<((node: { type?: string; data: NodeData }) => Promise<void>) | undefined>("copyNodeToClipboard", undefined);
  const copyingToClipboard = ref(false);
 +const assetLibraryLabel = inject<string>("assetLibraryLabel", "素材库");
++const boundedControls = computed(()=>assetLibraryLabel === "资产库" && !documentTarget.value);
++const topControls = ref<HTMLElement>(), bottomControls = ref<HTMLElement>();
++const topControlStyle = ref<Record<string,string>>({}), bottomControlStyle = ref<Record<string,string>>({});
++let controlsFrame = 0;
++function placeControls() {
++ cancelAnimationFrame(controlsFrame);
++ controlsFrame=requestAnimationFrame(()=>{
++  const flow=vueFlowRef.value, node=skeletonElement.value;
++  if(!boundedControls.value||!flow||!node)return;
++  const bounds=flow.getBoundingClientRect(), anchor=node.getBoundingClientRect();
++  const agentWidth=Math.max(0,parseFloat(getComputedStyle(flow).getPropertyValue("--agentWidth"))||0);
++  const pair=floatingControlPair(
++   {left:anchor.left-bounds.left,top:anchor.top-bounds.top,width:anchor.width,height:anchor.height},
++   {left:0,top:0,width:bounds.width-agentWidth,height:bounds.height},
++   topControls.value?{width:320,height:topControls.value.scrollHeight}:null,
++   bottomControls.value?{width:660,height:bottomControls.value.scrollHeight}:null);
++  for(const [rect,target] of [[pair.top,topControlStyle],[pair.bottom,bottomControlStyle]] as const){
++   if(!rect)continue;
++   const next={left:`${rect.left}px`,top:`${rect.top}px`,width:`${rect.width}px`,maxHeight:`${rect.maxHeight}px`};
++   if(JSON.stringify(target.value)!==JSON.stringify(next))target.value=next;
++  }
++ });
++}
++watch(()=>[viewport.value.x,viewport.value.y,viewport.value.zoom,node.position.x,node.position.y],placeControls,{flush:"post"});
++watchEffect(onCleanup=>{
++ const observer=new ResizeObserver(placeControls);
++ for(const element of [vueFlowRef.value,skeletonElement.value,topControls.value,bottomControls.value])if(element)observer.observe(element);
++ placeControls();onCleanup(()=>observer.disconnect());
++});
++onScopeDispose(()=>cancelAnimationFrame(controlsFrame));
++
 +const assetOutputFilter = inject<((output: NodeOutput) => boolean) | undefined>("assetOutputFilter", undefined);
  const saveNodeToAssets = inject<((label: string, outputs: { label: string; output: NodeOutput }[]) => void) | undefined>(
    "saveNodeToAssets",
    undefined
-@@ -418,7 +421,7 @@ const saveNodeToAssets = inject<((label: string, outputs: { label: string; outpu
+@@ -418,7 +462,7 @@ const saveNodeToAssets = inject<((label: string, outputs: { label: string; outpu
  const assetOutputs = computed(() =>
    props.handles.flatMap((handle) => {
      const output = props.outputs[handle.id];
@@ -5386,8 +5528,26 @@ index 3bb727f..3701318 100644
      return [{ label: handle.label ?? handle.id, output }];
    })
  );
+@@ -776,3 +820,17 @@ watch(
+   }
+ }
+ </style>
++
++<style scoped>
++.seecutFloating{position:absolute!important;transform:none!important;bottom:auto!important;z-index:12;overflow:auto;overscroll-behavior:contain;border-radius:12px;box-shadow:0 4px 18px #0001;}
++.seecutFloating :deep(.el-card__body){max-width:100%;box-sizing:border-box;}
++.seecutFloating :deep(.mediaToolbar .el-card__body){display:flex;align-items:center;flex-wrap:wrap;gap:4px;}
++.seecutFloating :deep(.el-button){margin-left:0;}
++.seecutFloating :deep(.promptFooter){flex-wrap:wrap;gap:8px;}
++.seecutFloating :deep(.seecutImageSizeSettings){flex-wrap:wrap;max-width:100%;}
++.seecutFloating :deep(.promptInput){min-height:90px;max-height:140px;overflow:auto;}
++.seecutMoreActions{font-size:13px;}
++.seecutMoreActions summary{cursor:pointer;padding:8px 12px;list-style:none;}
++.seecutMoreActions>div{display:flex;flex-wrap:wrap;gap:4px;padding:6px;max-height:170px;overflow:auto;}
++.seecutMoreActions :deep(.el-button:disabled){display:none;}
++</style>
 diff --git a/packages/nodeShared/src/components/promptInput.vue b/packages/nodeShared/src/components/promptInput.vue
-index 03a5b56..fed365a 100644
+index 03a5b56..b66c941 100644
 --- a/packages/nodeShared/src/components/promptInput.vue
 +++ b/packages/nodeShared/src/components/promptInput.vue
 @@ -1,8 +1,16 @@
@@ -5423,11 +5583,11 @@ index 03a5b56..fed365a 100644
  import "x-sender/lib/XSender.css";
  
 -const props = defineProps<{ references: (MentionItem & { value: string })[]; expandable?: boolean; placeholder?: string }>();
-+const props = defineProps<{ references: (MentionItem & { value: string })[]; expandable?: boolean; placeholder?: string; recommend?: boolean }>();
++const props = defineProps<{ references: (MentionItem & { value: string })[]; expandable?: boolean; placeholder?: string; recommend?: boolean; nodeId?: string }>();
  const model = defineModel<AnyTagProps[][]>({ required: true });
  const text = defineModel<string>("text", { default: "" });
  const senderElement = ref<HTMLElement>();
-@@ -29,6 +38,48 @@ const previewReferenceId = ref<string>();
+@@ -29,6 +38,49 @@ const previewReferenceId = ref<string>();
  const previewUrl = computed(() => String(props.references.find(item => item.id === previewReferenceId.value)?.avatar ?? ""));
  let sender: xSender | undefined;
  let resetTask: Promise<void> | undefined;
@@ -5450,18 +5610,19 @@ index 03a5b56..fed365a 100644
 +}
 +function currentRecommendationInput() {
 +  const host = promptHost();
-+  return {input:{prompt:domDirty ? getPromptText(liveModel()) : text.value, images:props.references.filter(item=>item.avatar).map(item=>String(item.avatar))},context:props.recommend&&host?host.context():""};
++  return {input:{prompt:domDirty ? getPromptText(liveModel()) : text.value, images:props.references.filter(item=>item.avatar).map(item=>String(item.avatar))},context:props.recommend&&host&&host.context()?JSON.stringify([host.context(),props.nodeId]):""};
 +}
 +const recommendationController = new PromptRecommendations(
 +  (operation,input,id) => promptHost().request(operation,input,id),
 +  state => {recommendState.value=state;if(!state.canUndo&&!state.rewriting)rewriteModel=undefined;emit('recommendBusy',state.rewriting);},
-+  (value,operation) => {
++  async (value,operation) => {
 +    const next = operation === "undo" && rewriteModel ? rewriteModel : value.split("\n").map(text=>[{type:"Write" as const,text}]);
 +    if (operation === "rewrite") rewriteModel = JSON.parse(JSON.stringify(getStoredModel(liveModel())));
 +    domDirty = false;
 +    model.value = next;
 +    text.value = value;
-+    void nextTick().then(()=>sender?.focus('mark'));
++    await nextTick();
++    sender?.focus('mark');
 +  },
 +  undefined, undefined, currentRecommendationInput,
 +);
@@ -5476,7 +5637,7 @@ index 03a5b56..fed365a 100644
  
  function previewReference(event: MouseEvent) {
    const tag = event.target instanceof Element ? event.target.closest<HTMLElement>(".imageReference[data-reference-id]") : null;
-@@ -159,7 +210,9 @@ function updateModel(value: AnyTagProps[][]) {
+@@ -159,7 +211,9 @@ function updateModel(value: AnyTagProps[][]) {
    const next = getStoredModel(value);
    // ACT: 旧模型中的预览地址随下次实际编辑清理，避免仅打开文档就触发保存。
    if (JSON.stringify(getStoredModel(model.value)) !== JSON.stringify(next)) model.value = next;
@@ -5486,7 +5647,7 @@ index 03a5b56..fed365a 100644
  }
  
  function getPromptText(value: AnyTagProps[][]) {
-@@ -260,6 +313,8 @@ watch(senderElement, (element, _previous, onCleanup) => {
+@@ -260,6 +314,8 @@ watch(senderElement, (element, _previous, onCleanup) => {
      const copied = event.clipboardData?.getData("application/chat-nodes");
      if (copied) event.clipboardData?.setData("text/plain", getPromptText(JSON.parse(copied)));
    };
@@ -5495,7 +5656,7 @@ index 03a5b56..fed365a 100644
    editor.addEventListener("copy", copyText);
    editor.addEventListener("cut", copyText);
    const selectReference = (event: MouseEvent) => {
-@@ -283,6 +338,7 @@ watch(senderElement, (element, _previous, onCleanup) => {
+@@ -283,6 +339,7 @@ watch(senderElement, (element, _previous, onCleanup) => {
      updateModel(instance.getModel());
      releaseNodeFocus(instance);
      sender = undefined;
@@ -5503,7 +5664,7 @@ index 03a5b56..fed365a 100644
      editor.removeEventListener("copy", copyText);
      editor.removeEventListener("cut", copyText);
      document.removeEventListener("pointerdown", closeOutside, true);
-@@ -435,3 +491,18 @@ function handleMentionKey(event: KeyboardEvent) {
+@@ -435,3 +492,18 @@ function handleMentionKey(event: KeyboardEvent) {
    }
  }
  </style>
@@ -5524,10 +5685,10 @@ index 03a5b56..fed365a 100644
 +</style>
 diff --git a/packages/nodeShared/src/promptRecommendations.ts b/packages/nodeShared/src/promptRecommendations.ts
 new file mode 100644
-index 0000000..22cf322
+index 0000000..0bf8518
 --- /dev/null
 +++ b/packages/nodeShared/src/promptRecommendations.ts
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,57 @@
 +export type PromptInput = {prompt:string; images:string[]};
 +export type Recommendation = {id:string;label:string};
 +export type PromptState = {status:string;cards:Recommendation[];rewriting:boolean;error:string;canUndo:boolean};
@@ -5540,11 +5701,13 @@ index 0000000..22cf322
 +export class PromptRecommendations {
 +  state:PromptState={status:'',cards:[],rewriting:false,error:'',canUndo:false};
 +  input:PromptInput={prompt:'',images:[]}; context=''; private version=0; private changed=0; private completed=''; private running=false; private disposed=false; private fingerprint=''; private retries=0;
++  private applying = false;
 +  private undo?: {input:PromptInput; context:string; result:string};
-+  constructor(private api:(operation:string,input:PromptInput,selected?:string)=>Promise<any>,private emit:(state:PromptState)=>void,private apply:(prompt:string,operation:'rewrite'|'undo')=>void,private gate=promptRecommendationGate,private now=()=>Date.now(),private readCurrent?:()=>{input:PromptInput;context:string}){}
++  constructor(private api:(operation:string,input:PromptInput,selected?:string)=>Promise<any>,private emit:(state:PromptState)=>void,private apply:(prompt:string,operation:'rewrite'|'undo')=>void|Promise<void>,private gate=promptRecommendationGate,private now=()=>Date.now(),private readCurrent?:()=>{input:PromptInput;context:string}){}
 +  sync(){if(this.readCurrent&&!this.disposed){const current=this.readCurrent();this.update(current.input,current.context);}}
 +  private publish(){if(!this.disposed)this.emit({...this.state,cards:[...this.state.cards]});}
 +  update(input:PromptInput,context:string){
++    if(this.applying)return;
 +    const fingerprint=JSON.stringify([context,input]);if(fingerprint===this.fingerprint)return;
 +    const switched=context!==this.context;this.context=context;this.input=structuredClone(input);this.fingerprint=fingerprint;this.changed=this.now();this.version++;this.retries=0;
 +    if(switched||!context||(!input.prompt.trim()&&!input.images.length))this.state.cards=[];
@@ -5566,16 +5729,20 @@ index 0000000..22cf322
 +    if(this.disposed||this.state.rewriting||!this.context||!this.state.cards.some(card=>card.id===id))return;
 +    this.version++;const version=this.version;const input=structuredClone(this.input);this.state.rewriting=true;this.state.error='';this.publish();
 +    try {const result=await this.api('rewrite',input,id);this.sync();if(this.disposed||version!==this.version)return;
-+      this.input={...input,prompt:result.prompt};this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.state.status='为你推荐';this.undo={input,context:this.context,result:this.fingerprint};this.state.canUndo=true;this.apply(result.prompt,'rewrite');
++      this.input={...input,prompt:result.prompt};this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.state.status='为你推荐';this.undo={input,context:this.context,result:this.fingerprint};this.state.canUndo=true;await this.applyChange(result.prompt,'rewrite');
 +    }catch{this.sync();if(version===this.version)this.state.error='应用失败，原文已保留，请重试';}
 +    finally{this.state.rewriting=false;this.publish();}
 +  }
-+  undoRewrite(){
++  async undoRewrite(){
 +    this.sync();
 +    if(this.disposed||this.state.rewriting||!this.undo||this.undo.context!==this.context||this.undo.result!==this.fingerprint)return;
 +    const input=this.undo.input;this.undo=undefined;this.state.canUndo=false;this.version++;
 +    this.input=structuredClone(input);this.fingerprint=JSON.stringify([this.context,this.input]);this.completed=this.fingerprint;this.state.error='';
-+    this.apply(input.prompt,'undo');this.publish();
++    this.state.status='为你推荐';this.state.rewriting=true;try{await this.applyChange(input.prompt,'undo');}finally{this.state.rewriting=false;this.publish();}
++  }
++  private async applyChange(prompt:string,operation:'rewrite'|'undo'){
++    this.applying=true;try{await this.apply(prompt,operation);}finally{this.applying=false;}
++    this.sync();
 +  }
 +  dispose(){this.disposed=true;this.version++;}
 +}
@@ -5607,7 +5774,7 @@ index c45117f..4b5792c 100644
      if (busy.value) {
        modelsRefreshPending = true;
 diff --git a/packages/nodes/imageGenerationNode/src/index.vue b/packages/nodes/imageGenerationNode/src/index.vue
-index 88a4df3..b725387 100644
+index 88a4df3..b10b623 100644
 --- a/packages/nodes/imageGenerationNode/src/index.vue
 +++ b/packages/nodes/imageGenerationNode/src/index.vue
 @@ -46,26 +46,37 @@
@@ -5631,10 +5798,11 @@ index 88a4df3..b725387 100644
            v-model="refList"
            @preview="setReferencePreview"
            @remove="removeReference" />
-         <promptInput v-if="editor?.mode === 'inpaint'" v-model="data.inpaintPromptModel" v-model:text="data.inpaintPrompt" :references="referenceMentions" expandable />
+-        <promptInput v-if="editor?.mode === 'inpaint'" v-model="data.inpaintPromptModel" v-model:text="data.inpaintPrompt" :references="referenceMentions" expandable />
 -        <promptInput v-else v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" expandable />
 -        <div class="promptFooter">
-+        <promptInput v-else v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" :recommend="isSeecutEmbedded && node.selected" @recommend-busy="promptRewriting = $event" expandable />
++        <promptInput :nodeId="id" v-if="editor?.mode === 'inpaint'" v-model="data.inpaintPromptModel" v-model:text="data.inpaintPrompt" :references="referenceMentions" expandable />
++        <promptInput :nodeId="id" v-else v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" :recommend="isSeecutEmbedded && node.selected" @recommend-busy="promptRewriting = $event" expandable />
 +        <div class="promptFooter" :inert="promptRewriting">
            <el-select
              v-if="editor?.mode !== 'inpaint'"
@@ -6017,7 +6185,7 @@ index 511e06b..22073d6 100644
        });
      }
 diff --git a/packages/nodes/videoGenerationNode/src/index.vue b/packages/nodes/videoGenerationNode/src/index.vue
-index 77a0535..bec9c98 100644
+index 77a0535..71d8cf6 100644
 --- a/packages/nodes/videoGenerationNode/src/index.vue
 +++ b/packages/nodes/videoGenerationNode/src/index.vue
 @@ -42,7 +42,18 @@
@@ -6046,7 +6214,7 @@ index 77a0535..bec9c98 100644
          </div>
 -        <promptInput v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" expandable />
 -        <div class="promptFooter">
-+        <promptInput v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" :recommend="isSeecutEmbedded && node.selected" @recommend-busy="promptRewriting = $event" expandable />
++        <promptInput :nodeId="id" v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" :recommend="isSeecutEmbedded && node.selected" @recommend-busy="promptRewriting = $event" expandable />
 +        <div class="promptFooter" :inert="promptRewriting">
            <el-select
 -            v-model="data.model"

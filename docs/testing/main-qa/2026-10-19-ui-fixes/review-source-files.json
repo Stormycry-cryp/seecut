@@ -1,0 +1,6 @@
+{
+  "integrations/toonflow/integration.patch": "5be89ea808d94139660b4a64a909b09daa59be897e48e1c88e082bfe449f46a0",
+  "integrations/toonflow/tests/floating-controls.test.ts": "217515d4db8db88e7883495792135f239116a19e495c6255e2c8661a35d308d2",
+  "src/crates/concat/src/panes/canvas.rs": "1c333da56a3bb50715517e284e3279b7f94e4cf56c5e50bf2b279a0f14aeb27f",
+  "src/crates/concat/src/registration_retry.rs": "d37f146404d6648733db3c66ba3be55a49527c7198642ea4dc8af9eda9e9b42e"
+}

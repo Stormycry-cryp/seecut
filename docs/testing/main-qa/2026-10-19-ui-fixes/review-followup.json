@@ -1,0 +1,33 @@
+{
+  "source": "89e77c2f1877a1245b049fe9964cb970fe720ec9",
+  "scope": [
+    "F4 paired panel collisions",
+    "F3 explicit re-export after trash"
+  ],
+  "focusedTests": {
+    "layout": 4,
+    "registration": 17,
+    "exportSlot": 1,
+    "total": 22
+  },
+  "layoutAssertions": 29064,
+  "pairedMatrixCases": 2160,
+  "nodeTypecheck": "passed",
+  "nativeTestBuild": "passed (9m48s)",
+  "patchVerification": "passed",
+  "diffCheck": "passed",
+  "appRebuilt": false,
+  "newUIScreenshots": false,
+  "desktopActions": 0,
+  "actualUIRetest": "unverified",
+  "oldCandidateSource": "ee3b502fd7a1a2a53432cf189548b12232b7d2df",
+  "paidCalls": 0,
+  "productionChanged": false,
+  "quota": {
+    "checkedUTC": "2026-10-19T06:57:00Z",
+    "windowMinutes": 10080,
+    "remainingPercent": 76,
+    "resetUTC": "2026-10-25T01:02:41Z"
+  },
+  "otherKnownSeeCutWriters": "none active in available snapshot; old embedding and reviewer idle; unavailableHosts empty"
+}

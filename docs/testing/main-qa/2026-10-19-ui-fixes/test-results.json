@@ -1,0 +1,17 @@
+{
+  "source": "ee3b502fd7a1a2a53432cf189548b12232b7d2df",
+  "webPromptAndLayout": 23,
+  "nativeRegistration": 16,
+  "nativeLookupState": 1,
+  "nativeLookupRegression": 2,
+  "nativeExportSlot": 1,
+  "isolatedLookupExportFixture": 1,
+  "totalPassed": 44,
+  "nodeTypecheck": "passed",
+  "toonflowBuild": "passed",
+  "nativeAppBuild": "passed",
+  "actualWindow": "partial smoke only; F1-F4 interaction retest unverified after desktop-input stop",
+  "allTestsRun": false,
+  "actualWindowVerified": false,
+  "fullAcceptance": false
+}

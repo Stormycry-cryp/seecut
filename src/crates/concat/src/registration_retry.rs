@@ -313,6 +313,62 @@ pub(crate) fn register_output_with_provenance(
         Err(error) => Err(format!("{error}；刷新资产库可重试入库")),
     }
 }
+/// Canvas repeats reuse a live account/content version. Each explicit export
+/// keeps its own registration identity so a trashed version stays trashed.
+/// Use the frozen owned PNG bytes, never re-read an external file.
+pub(crate) fn register_canvas_output(
+    root: &Path,
+    path: &Path,
+    name: &str,
+    scope: &str,
+    export_id: &str,
+    bytes: &[u8],
+    provenance: crate::personal_library::OutputProvenance,
+) -> Result<crate::personal_library::AssetReference, String> {
+    use sha2::{Digest, Sha256};
+    let sha = format!("{:x}", Sha256::digest(bytes));
+    let content_operation = format!("canvas:{scope}:{sha}");
+    let operation = format!("{content_operation}:export:{export_id}");
+    let expected = format!("operation:{operation}");
+    let legacy = format!("operation:{content_operation}");
+    let family = format!("{legacy}:export:");
+    let library = Library::load(root)?;
+    if let Some(asset) = library.items().iter().rev().find(|asset| {
+        !asset.trashed
+            && asset.version.as_ref().is_some_and(|v| {
+                v.sha256 == sha
+                    && (v.registration_id == legacy || v.registration_id.starts_with(&family))
+            })
+    }) {
+        crate::personal_library::checked_managed_version_path(root, asset)?;
+        return Ok(crate::personal_library::AssetReference {
+            asset_id: asset.id.clone(),
+            version: asset.version.clone(),
+        });
+    }
+    // Replaying a deleted operation must not resurrect it. A new explicit
+    // export has a fresh export_id and may create a new live version.
+    if library.items().iter().any(|asset| {
+        asset.trashed
+            && asset
+                .version
+                .as_ref()
+                .is_some_and(|v| v.registration_id == expected)
+    }) {
+        return Err("该导出已被移入回收站；请重新导出".into());
+    }
+    drop(library);
+    register_output_with_provenance(
+        root,
+        path,
+        Some(name),
+        Some(&operation),
+        Some(bytes),
+        Some(provenance),
+    )?;
+    registered_operation(root, &expected, &sha)?.ok_or_else(|| "画布导出登记回执不可用".into())
+}
+
 /// Retry snapshots only. No generation, download or wallet request is made.
 pub(crate) fn retry(root: &Path) -> Result<Outcome, String> {
     let mut entries = load(root)?;
@@ -425,6 +481,135 @@ mod tests {
     };
     use serde_json::json;
     use std::{fs, path::PathBuf};
+
+    #[test]
+    fn f3_canvas_content_registration_reuses_identity_and_keeps_scopes_and_old_assets() {
+        let t = Temp::new();
+        let root = t.0.join("library");
+        let source = t.0.join("canvas.png");
+        fs::write(&source, b"external file is not the owned snapshot").unwrap();
+        let provenance = crate::personal_library::OutputProvenance {
+            kind: "canvas_export".into(),
+            project_path: None,
+            document_sha256: "synthetic".into(),
+            inputs: vec![],
+            parameters: json!({}),
+        };
+        let register = |scope, bytes: &[u8]| {
+            registration_retry::register_canvas_output(
+                &root,
+                &source,
+                "canvas",
+                scope,
+                "test-export",
+                bytes,
+                provenance.clone(),
+            )
+            .unwrap()
+        };
+        let first = register("account-a", b"first owned PNG");
+        assert_eq!(first, register("account-a", b"first owned PNG"));
+        let other_account = register("account-b", b"first owned PNG");
+        assert_ne!(first.asset_id, other_account.asset_id);
+        let changed = register("account-a", b"changed owned PNG");
+        assert_ne!(first.asset_id, changed.asset_id);
+        let library = Library::load(&root).unwrap();
+        assert_eq!(library.items().len(), 3);
+        assert_eq!(
+            fs::read(&library.get(&first.asset_id).unwrap().path).unwrap(),
+            b"first owned PNG"
+        );
+        assert_eq!(
+            fs::read(&library.get(&changed.asset_id).unwrap().path).unwrap(),
+            b"changed owned PNG"
+        );
+        drop(library);
+        assert_eq!(first, register("account-a", b"first owned PNG"));
+        assert_eq!(Library::load(&root).unwrap().items().len(), 3);
+    }
+
+    #[test]
+    fn f3_canvas_reexport_after_trash_keeps_deleted_record_and_retries_new_identity() {
+        let t = Temp::new();
+        let root = t.0.join("library");
+        let source = t.0.join("canvas.png");
+        let bytes = b"owned canvas PNG";
+        fs::write(&source, bytes).unwrap();
+        let provenance = crate::personal_library::OutputProvenance {
+            kind: "canvas_export".into(),
+            project_path: None,
+            document_sha256: "synthetic".into(),
+            inputs: vec![],
+            parameters: json!({}),
+        };
+        let register = |id| {
+            registration_retry::register_canvas_output(
+                &root,
+                &source,
+                "canvas",
+                "account-a",
+                id,
+                bytes,
+                provenance.clone(),
+            )
+        };
+        use sha2::{Digest, Sha256};
+        let sha = format!("{:x}", Sha256::digest(bytes));
+        let legacy_operation = format!("canvas:account-a:{sha}");
+        registration_retry::register_output_with_provenance(
+            &root,
+            &source,
+            Some("canvas"),
+            Some(&legacy_operation),
+            Some(bytes),
+            Some(provenance.clone()),
+        )
+        .unwrap();
+        let first = register("first").unwrap();
+        assert_eq!(
+            first.version.as_ref().unwrap().registration_id,
+            format!("operation:{legacy_operation}")
+        );
+        let mut library = Library::load(&root).unwrap();
+        library.trash(&first.asset_id).unwrap();
+        let deleted = library.get(&first.asset_id).unwrap().clone();
+        drop(library);
+        fail_next_manifest_save(&root);
+        assert!(register("second").is_err());
+        let prepared = super::load(&root).unwrap().pop().unwrap().prepared.unwrap();
+        let operation = prepared.registration_id.strip_prefix("operation:").unwrap();
+        let second =
+            registration_retry::retry_operation(&root, operation, &prepared.sha256).unwrap();
+        assert_ne!(first.asset_id, second.asset_id);
+        assert_eq!(
+            second,
+            registration_retry::retry_operation(&root, operation, &prepared.sha256).unwrap()
+        );
+        assert_eq!(second, register("third").unwrap());
+        assert_eq!(registration_retry::retry(&root).unwrap().remaining, 0);
+        let library = Library::load(&root).unwrap();
+        assert_eq!(library.items().len(), 2);
+        let old = library.get(&first.asset_id).unwrap();
+        assert!(old.trashed);
+        assert_eq!(old.version, deleted.version);
+        assert_eq!(old.path, deleted.path);
+        assert_eq!(fs::read(&old.path).unwrap(), bytes);
+        assert!(!library.get(&second.asset_id).unwrap().trashed);
+        drop(library);
+        let mut library = Library::load(&root).unwrap();
+        library.trash(&second.asset_id).unwrap();
+        drop(library);
+        assert!(
+            register("second").is_err(),
+            "retry cannot restore a deleted export"
+        );
+        let third = register("fourth").unwrap();
+        assert_ne!(third.asset_id, second.asset_id);
+        assert_eq!(third, register("fifth").unwrap());
+        let library = Library::load(&root).unwrap();
+        assert_eq!(library.items().len(), 3);
+        assert_eq!(library.items().iter().filter(|a| a.trashed).count(), 2);
+    }
 
     #[test]
     fn mcp_canvas_registration_retry_uses_only_one_original_frozen_snapshot() {

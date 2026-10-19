@@ -1,0 +1,25 @@
+{
+  "timeUTC": "2026-10-19T06:35:52.543255+00:00",
+  "source": "ee3b502fd7a1a2a53432cf189548b12232b7d2df",
+  "launched": true,
+  "actualWindowVerified": false,
+  "F1": "unit regression passed; actual interaction unverified",
+  "F2": "model regression passed; actual controls unverified",
+  "F3": "registration integration passed; actual repeated export unverified",
+  "F4": "geometry regression passed; initial panel visible; edge/zoom/narrow interactions unverified",
+  "syntheticTasks": 0,
+  "paidCalls": 0,
+  "productionChanged": false,
+  "installed": false,
+  "desktopInputStopped": true,
+  "serviceStopped": true,
+  "qaAppLeftUntouched": true,
+  "inputSourceRestored": false,
+  "quota": {
+    "checkedUTC": "2026-10-19T06:34:15Z",
+    "windowDurationMins": 10080,
+    "remainingPercent": 77,
+    "resetUTC": "2026-10-25T01:02:41Z"
+  },
+  "otherKnownSeeCutWriters": "none active in available thread snapshot; old embedding and reviewer idle; unavailableHosts empty"
+}

@@ -1,0 +1,26 @@
+{"action": "seal", "verified_files": 5135}
+/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-UI-Fixes-QA.app: replacing existing signature
+{"action": "verify", "verified_files": 5135}
+{
+  "schema": 1,
+  "sealedAtUTC": "2026-10-19T06:28:34.985426+00:00",
+  "publicSource": "ee3b502fd7a1a2a53432cf189548b12232b7d2df",
+  "baseline": "75952c120314afd33a5c7e848d2bf7cb1d6d2ced",
+  "privateSource": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "privateRuntimeChanged": false,
+  "app": ".toonflow/SeeCut-UI-Fixes-QA.app",
+  "bundleId": "cloud.stormycry.seecut.ui-fixes-qa",
+  "apiUrl": "http://127.0.0.1:18744",
+  "rawBinarySha256": "7f7e64b05ad0b8fd02dcda46099e05f7e792ade868869b02ec7177ec127331a5",
+  "packagedBinarySha256": "84a7595a004a8d3e87677e6a7be5a4fb312f173ea5d8325492f2280d8fed19f5",
+  "toonflowPatchSha256": "2d5e4fff057abb5f8f12fad332545e8796d781c606b3231364bfe779f329129f",
+  "toonflowBuildRebuilt": true,
+  "toonflowBuildSha256": "a489cf574dbfc816137224fda078229bacc8352106d19d4833e67eba7da002d7",
+  "fileCount": 6380,
+  "filesSha256": "fde24909a02d4da52574a0de9803d0bac5278287fe2f7f93ad42bf888d0d6b9f",
+  "codesignVerified": true,
+  "actualWindowVerified": false,
+  "installed": false,
+  "launched": false,
+  "paidCalls": 0
+}

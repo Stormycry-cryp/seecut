@@ -43,6 +43,22 @@ fn project_media_error() -> String {
 pub(crate) struct AccountAccess {
     state: std::rc::Weak<RefCell<Cloud>>,
 }
+// Export identity is captured on the UI thread before any background work.
+thread_local! {
+    static EXPORT_ACCOUNT: RefCell<std::rc::Weak<RefCell<Cloud>>> = const { RefCell::new(std::rc::Weak::new()) };
+}
+pub(crate) fn canvas_output_scope() -> String {
+    EXPORT_ACCOUNT
+        .with(|slot| {
+            let state = slot.borrow().upgrade()?;
+            let cloud = state.borrow();
+            if cloud.token.is_empty() {
+                return None;
+            }
+            flow_generation::output_identity(&cloud, "canvas:scope").map(|identity| identity.scope)
+        })
+        .unwrap_or_else(|| "local".into())
+}
 pub(crate) struct AccountSnapshot {
     pub epoch: u64,
     pub base: String,
@@ -8408,6 +8424,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
     let account = AccountAccess {
         state: Rc::downgrade(&state),
     };
+    EXPORT_ACCOUNT.with(|slot| *slot.borrow_mut() = Rc::downgrade(&state));
     let started_state = state.clone();
     app.on_clip_open_started(move |id, target, created| {
         let Ok(id) = id.as_str().parse::<u64>() else {
