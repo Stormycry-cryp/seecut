@@ -74,6 +74,10 @@ jobs:
       FFMPEG_LINUX: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-shared-8.1.tar.xz
       # See build-app.yml: the version the ort crate is built against.
       ORT_VERSION: 1.28.0
+      # Keep Clippy, test codegen and the later gRPC feature build consistent.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_BUILD_JOBS: "1"
     steps:
       - uses: actions/checkout@v7
       - name: Verify the requested window candidate
@@ -227,32 +231,84 @@ jobs:
       # engine's tables are what a download is checked against. This keeps
       # the two saying the same thing. See models/manifest.toml.
       - run: python3 scripts/models.py --check
+      - name: Check CI supervisor
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
+        timeout-minutes: 2
+        run: python3 -m unittest discover -s scripts -p test_ci_engine_step.py -v
       # -D warnings covers rustc lints too (missing_docs among them), so a
       # public item without documentation fails here, not in review. Lints
       # before tests: they finish in a fraction of the time and catch the
       # most.
-      - run: |
-          free -h
-          df -h .
-          /usr/bin/time -v cargo clippy --workspace --all-targets -- -D warnings
+      # Compile and execute separately without dropping unit, integration or doc tests.
+      # Cargo can still compile doctests in the execution steps. Phase deadlines leave
+      # time for cleanup and diagnostic upload inside the existing job deadline.
+      - name: Lint the workspace
         if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
+        timeout-minutes: 65
         working-directory: src
-        env:
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_BUILD_JOBS: "1"
-      - run: cargo test --workspace -j 1
+        run: >-
+          python3 ../scripts/ci-engine-step.py
+          --phase workspace-clippy --timeout 3600
+          --output "$RUNNER_TEMP/seecut-engine-diagnostics"
+          -- cargo clippy --workspace --all-targets -- -D warnings
+      - name: Compile workspace tests
         if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
+        timeout-minutes: 95
         working-directory: src
-        env:
-          CARGO_PROFILE_DEV_DEBUG: "0"
-      # The gRPC transport is a feature nothing else in the workspace turns
-      # on, so it is linted and tested here on its own. See concat-server.
-      - run: cargo clippy -p concat-server -p concat-cli --features grpc --all-targets -- -D warnings
+        run: >-
+          python3 ../scripts/ci-engine-step.py
+          --phase workspace-compile --timeout 5400
+          --output "$RUNNER_TEMP/seecut-engine-diagnostics"
+          -- cargo test --workspace --no-run
+      - name: Run workspace tests and doctests
         if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
+        timeout-minutes: 35
         working-directory: src
-      - run: cargo test -p concat-server --features grpc
+        run: >-
+          python3 ../scripts/ci-engine-step.py
+          --phase workspace-test --timeout 1800
+          --output "$RUNNER_TEMP/seecut-engine-diagnostics"
+          -- cargo test --workspace
+      - name: Lint the gRPC transport
         if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
+        timeout-minutes: 35
         working-directory: src
+        run: >-
+          python3 ../scripts/ci-engine-step.py
+          --phase grpc-clippy --timeout 1800
+          --output "$RUNNER_TEMP/seecut-engine-diagnostics"
+          -- cargo clippy -p concat-server -p concat-cli --features grpc --all-targets -- -D warnings
+      - name: Compile gRPC tests
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
+        timeout-minutes: 50
+        working-directory: src
+        run: >-
+          python3 ../scripts/ci-engine-step.py
+          --phase grpc-compile --timeout 2700
+          --output "$RUNNER_TEMP/seecut-engine-diagnostics"
+          -- cargo test -p concat-server --features grpc --no-run
+      - name: Run gRPC tests and doctests
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
+        timeout-minutes: 25
+        working-directory: src
+        run: >-
+          python3 ../scripts/ci-engine-step.py
+          --phase grpc-test --timeout 1200
+          --output "$RUNNER_TEMP/seecut-engine-diagnostics"
+          -- cargo test -p concat-server --features grpc
+
+      # always() retains diagnostics for command failures and phase deadlines. A
+      # destroyed runner cannot execute this step; live output is also streamed
+      # to the GitHub job log instead of claiming artifact delivery in that case.
+      - name: Upload engine diagnostics
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true)
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v7
+        with:
+          name: seecut-engine-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/seecut-engine-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Build the normal window candidate
         if: github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && inputs.qa_source_run_id == '' && inputs.qa_source_artifact_id == '' && inputs.qa_source_head == ''

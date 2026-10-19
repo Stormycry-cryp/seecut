@@ -1,0 +1,14 @@
+2026-10-19T14:10:27.2405354Z No cache found.
+2026-10-19T14:51:10.4416252Z 	Maximum resident set size (kbytes): 12587148
+2026-10-19T15:47:23.1142567Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.
+2026-10-19T15:47:23.2431826Z ##[error]The operation was canceled.
+
+Last compilation output (not a test result):
+2026-10-19T15:03:34.4933674Z [1m[92m   Compiling[0m rfd v0.17.2
+2026-10-19T15:03:37.6843873Z [1m[92m   Compiling[0m utf8parse v0.2.2
+2026-10-19T15:03:37.7189033Z [1m[92m   Compiling[0m anstyle-parse v1.0.0
+2026-10-19T15:03:37.8195242Z [1m[92m   Compiling[0m is_terminal_polyfill v1.70.2
+2026-10-19T15:03:37.8482866Z [1m[92m   Compiling[0m colorchoice v1.0.5
+2026-10-19T15:03:37.8833839Z [1m[92m   Compiling[0m anstyle-query v1.1.5
+2026-10-19T15:03:37.9163565Z [1m[92m   Compiling[0m anstyle v1.0.14
+2026-10-19T15:03:38.0550858Z [1m[92m   Compiling[0m anstream v1.0.0
