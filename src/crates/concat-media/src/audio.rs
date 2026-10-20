@@ -334,7 +334,7 @@ const MIX_FORMAT: Sample = Sample::F32(ffmpeg::util::format::sample::Type::Plana
 /// graph its frames go.
 struct MixInput {
     path: std::path::PathBuf,
-    input: ffmpeg::format::context::Input,
+    input: crate::input::Input,
     stream: usize,
     decoder: ffmpeg::codec::decoder::Audio,
     label: String,
@@ -348,6 +348,7 @@ struct MixInput {
 impl MixInput {
     /// One decoded frame, or `None` at the end of the file.
     fn next(&mut self) -> Result<Option<Audio>> {
+        self.input.check_policy()?;
         if self.done {
             return Ok(None);
         }
@@ -364,8 +365,8 @@ impl MixInput {
             }
             loop {
                 let mut packet = ffmpeg::Packet::empty();
-                match packet.read(&mut self.input) {
-                    Ok(()) => {
+                match self.input.read_packet(&mut packet)? {
+                    true => {
                         if packet.stream() != self.stream {
                             continue;
                         }
@@ -375,11 +376,10 @@ impl MixInput {
                             Err(error) => return Err(ffi::fail("send packet", &self.path, error)),
                         }
                     }
-                    Err(ffmpeg::Error::Eof) => {
+                    false => {
                         let _ = self.decoder.send_eof();
                         break;
                     }
-                    Err(error) => return Err(ffi::fail("read", &self.path, error)),
                 }
             }
         }
@@ -390,6 +390,16 @@ impl MixInput {
 ///
 /// Every clip's file must contain an audio stream; see [`mix_graph`].
 pub fn mix_to_file(clips: &[AudioClip], duration: f64, destination: &Path) -> Result<()> {
+    mix_to_file_with_policy(clips, duration, destination, crate::InputPolicy::default())
+}
+
+/// Mix every source with the same explicit input resource policy.
+pub fn mix_to_file_with_policy(
+    clips: &[AudioClip],
+    duration: f64,
+    destination: &Path,
+    policy: crate::InputPolicy,
+) -> Result<()> {
     ffi::init();
     // A bad chain is refused before any file is opened.
     for clip in clips {
@@ -408,8 +418,7 @@ pub fn mix_to_file(clips: &[AudioClip], duration: f64, destination: &Path) -> Re
     let mut graph = filter::Graph::new();
     for (index, clip) in clips.iter().enumerate() {
         let path = clip.path.as_path();
-        let mut input =
-            ffmpeg::format::input(path).map_err(|error| ffi::fail("open", path, error))?;
+        let mut input = crate::input::Input::open(path, policy)?;
         let stream_index =
             crate::probe::audio_stream_index(&input, clip.stream).ok_or_else(|| {
                 Error::NoAudioStream {
@@ -425,7 +434,10 @@ pub fn mix_to_file(clips: &[AudioClip], duration: f64, destination: &Path) -> Re
         // rest, by the lead measured off the first frame below.
         if clip.source_start > 0.0 {
             let target = (clip.source_start * f64::from(ffmpeg::sys::AV_TIME_BASE)) as i64;
-            let _ = input.seek(target, ..=target);
+            let result = input.seek_checked(target, ..=target);
+            if policy == crate::InputPolicy::SelfContainedLocal {
+                result?;
+            }
         }
         let label = format!("{index}:a");
         let mut mix_input = MixInput {
@@ -694,9 +706,19 @@ pub fn mix_to_file(clips: &[AudioClip], duration: f64, destination: &Path) -> Re
 /// asked, and a second pass would cost time and a generation of quality.
 /// The result ends with the shorter of the two.
 pub fn mux(video: &Path, audio: &Path, output: &Path) -> Result<()> {
+    mux_with_policy(video, audio, output, crate::InputPolicy::default())
+}
+
+/// Mux both inputs under the same resource policy, including generated intermediates.
+pub fn mux_with_policy(
+    video: &Path,
+    audio: &Path,
+    output: &Path,
+    policy: crate::InputPolicy,
+) -> Result<()> {
     ffi::init();
-    let video_in = ffmpeg::format::input(video).map_err(|error| ffi::fail("open", video, error))?;
-    let audio_in = ffmpeg::format::input(audio).map_err(|error| ffi::fail("open", audio, error))?;
+    let video_in = crate::input::Input::open(video, policy)?;
+    let audio_in = crate::input::Input::open(audio, policy)?;
     let video_stream = video_in
         .streams()
         .best(ffmpeg::media::Type::Video)
@@ -749,8 +771,8 @@ pub fn mux(video: &Path, audio: &Path, output: &Path) -> Result<()> {
     // keeps the two abreast however their packet rates compare, and in
     // seconds rather than ticks, since the two files' time bases differ.
     let mut feeds = [
-        Feed::new(video_in, video_index, video_tb, out_video_tb, 0, video),
-        Feed::new(audio_in, audio_index, audio_tb, out_audio_tb, 1, audio),
+        Feed::new(video_in, video_index, video_tb, out_video_tb, 0),
+        Feed::new(audio_in, audio_index, audio_tb, out_audio_tb, 1),
     ];
     loop {
         for feed in &mut feeds {
@@ -785,29 +807,27 @@ pub fn mux(video: &Path, audio: &Path, output: &Path) -> Result<()> {
 
 /// One input of the mux: its demuxer, which of its streams is wanted, and
 /// the packet of that stream waiting to be written.
-struct Feed<'a> {
-    input: ffmpeg::format::context::Input,
+struct Feed {
+    input: crate::input::Input,
     wanted: usize,
     /// The input stream's time base, and the output stream's.
     from: ffmpeg::Rational,
     to: ffmpeg::Rational,
     /// The output stream the packets go to.
     stream: usize,
-    path: &'a Path,
     next: Option<ffmpeg::Packet>,
     done: bool,
     /// When the packet last written stops showing, in seconds.
     end: Rational,
 }
 
-impl<'a> Feed<'a> {
+impl Feed {
     fn new(
-        input: ffmpeg::format::context::Input,
+        input: crate::input::Input,
         wanted: usize,
         from: ffmpeg::Rational,
         to: ffmpeg::Rational,
         stream: usize,
-        path: &'a Path,
     ) -> Self {
         Self {
             input,
@@ -815,7 +835,6 @@ impl<'a> Feed<'a> {
             from,
             to,
             stream,
-            path,
             next: None,
             done: false,
             end: Rational::ZERO,
@@ -825,16 +844,16 @@ impl<'a> Feed<'a> {
     /// Reads ahead to the next packet of the wanted stream, unless one is
     /// already waiting or the input has ended.
     fn fill(&mut self) -> Result<()> {
+        self.input.check_policy()?;
         while self.next.is_none() && !self.done {
             let mut packet = ffmpeg::Packet::empty();
-            match packet.read(&mut self.input) {
-                Ok(()) => {
+            match self.input.read_packet(&mut packet)? {
+                true => {
                     if packet.stream() == self.wanted {
                         self.next = Some(packet);
                     }
                 }
-                Err(ffmpeg::Error::Eof) => self.done = true,
-                Err(error) => return Err(ffi::fail("read", self.path, error)),
+                false => self.done = true,
             }
         }
         Ok(())
@@ -1208,6 +1227,114 @@ mod tests {
             "volume=0.5",
         ] {
             assert!(validate_chain(good).is_ok(), "{good:?} should be fine");
+        }
+    }
+    /// A zero-duration last packet made MP4's edit list discard the last
+    /// picture, despite the file containing every encoded packet.
+    #[test]
+    fn exact_tail_frames_survive_real_h264_aac_mux() {
+        use crate::{
+            AudioDecoder, AudioOptions, DecodeOptions, Decoder, EncodeOptions, Encoder, FrameSink,
+            FrameSource, SampleFormat,
+        };
+        use concat_core::frame::Frame;
+        use concat_core::time::FrameRate;
+
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        fn expect_picture(path: &Path, expected: usize) {
+            let mut reader = Decoder::open(path, &DecodeOptions::default().in_software())
+                .expect("opens complete software decoder");
+            let mut count = 0;
+            let mut last = None;
+            while let Some(frame) = reader.next_frame().expect("decodes a complete frame") {
+                count += 1;
+                last = frame.pixel(frame.width() / 2, frame.height() / 2);
+            }
+            assert_eq!(
+                count,
+                expected,
+                "{}: exact displayed frame count",
+                path.display()
+            );
+            let [r, g, b, _] = last.expect("the video has a final frame");
+            assert!(
+                r < 40 && g > 180 && b < 40,
+                "{}: submitted final green picture must display, got {last:?}",
+                path.display()
+            );
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after the epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("concat-exact-tail-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&path).expect("creates an exclusive test directory");
+        let scratch = Scratch(path);
+        for (seconds, rate, expected) in [
+            (6.0, FrameRate::new(Rational::new(25, 1)), 150usize),
+            (29.0, FrameRate::NTSC_30, 869usize),
+        ] {
+            let silent = scratch.0.join(format!("picture-{expected}.mp4"));
+            let source = scratch.0.join(format!("source-{expected}.m4a"));
+            let mixed = scratch.0.join(format!("mix-{expected}.m4a"));
+            let output = scratch.0.join(format!("joined-{expected}.mp4"));
+            let options = EncodeOptions {
+                preset: "ultrafast".to_owned(),
+                crf: 18,
+                hardware: true,
+                ..EncodeOptions::default()
+            };
+            let mut encoder = Encoder::create(&silent, 64, 64, rate, &options)
+                .expect("creates the renderer's H264 encoder");
+            let black = Frame::black(64, 64);
+            let mut tail = Frame::black(64, 64);
+            tail.fill([0, 240, 0, 255]);
+            for index in 0..expected {
+                encoder
+                    .write_frame(if index + 1 == expected { &tail } else { &black })
+                    .expect("submits every planned picture");
+            }
+            assert_eq!(encoder.written(), expected as u64);
+            encoder.finish().expect("finishes the silent video");
+            assert_eq!(
+                packets_of(&silent)[0],
+                expected,
+                "all submitted picture packets survive encoding"
+            );
+            expect_picture(&silent, expected);
+
+            silent_aac(&source, seconds);
+            let mut input = clip(source.to_str().expect("temporary test path is UTF8"));
+            input.duration = seconds;
+            mix_to_file(&[input], seconds, &mixed).expect("mixes to the exact timeline duration");
+            mux(&silent, &mixed, &output).expect("muxes the exact picture and real AAC mix");
+            assert_eq!(
+                packets_of(&output)[0],
+                expected,
+                "all picture packets survive muxing"
+            );
+            expect_picture(&output, expected);
+            let mut audio = AudioDecoder::open(
+                &output,
+                &AudioOptions {
+                    format: SampleFormat::F32,
+                    ..AudioOptions::default()
+                },
+            )
+            .expect("the finished video includes AAC");
+            let samples = audio.collect_f32().expect("decodes the complete AAC track");
+            let actual = samples.len() as f64 / 2.0 / f64::from(MIX_RATE);
+            assert!(
+                (actual - seconds).abs() < 0.05,
+                "{expected} pictures: AAC duration {actual} differs from timeline {seconds}"
+            );
         }
     }
 }

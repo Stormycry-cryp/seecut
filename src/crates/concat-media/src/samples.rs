@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use ffmpeg_the_third as ffmpeg;
 use ffmpeg_the_third::codec::decoder;
 use ffmpeg_the_third::filter;
-use ffmpeg_the_third::format;
 use ffmpeg_the_third::util::frame::audio::Audio;
 
 use crate::error::{Error, Result};
@@ -124,7 +123,7 @@ fn audio_filter(options: &AudioOptions) -> String {
 /// Decodes a file's audio through libavcodec and libavfilter.
 pub struct AudioDecoder {
     path: PathBuf,
-    input: format::context::Input,
+    input: crate::input::Input,
     stream: usize,
     time_base: ffmpeg::Rational,
     decoder: decoder::Audio,
@@ -137,8 +136,22 @@ pub struct AudioDecoder {
 }
 
 impl AudioDecoder {
+    #[cfg(test)]
+    pub(crate) fn deny_input_for_test(&mut self) {
+        self.input.deny_for_test();
+    }
+
     /// Opens the audio stream `options.stream` names, or `path`'s first.
     pub fn open(path: impl AsRef<Path>, options: &AudioOptions) -> Result<Self> {
+        Self::open_with_policy(path, options, crate::InputPolicy::default())
+    }
+
+    /// Open with an explicit resource policy, retained through reads, EOF and seeks.
+    pub fn open_with_policy(
+        path: impl AsRef<Path>,
+        options: &AudioOptions,
+        policy: crate::InputPolicy,
+    ) -> Result<Self> {
         ffi::init();
         for chain in &options.filters {
             crate::audio::validate_chain(chain)?;
@@ -154,8 +167,7 @@ impl AudioDecoder {
         }
 
         let path = path.as_ref();
-        let mut input =
-            ffmpeg::format::input(path).map_err(|error| ffi::fail("open", path, error))?;
+        let mut input = crate::input::Input::open(path, policy)?;
         let stream_index =
             crate::probe::audio_stream_index(&input, options.stream).ok_or_else(|| {
                 Error::NoAudioStream {
@@ -177,9 +189,7 @@ impl AudioDecoder {
             && start > 0.0
         {
             let target = (start * f64::from(ffmpeg::sys::AV_TIME_BASE)) as i64;
-            input
-                .seek(target, ..=target)
-                .map_err(|error| ffi::fail("seek", path, error))?;
+            input.seek_checked(target, ..=target)?;
         }
 
         Ok(Self {
@@ -256,8 +266,8 @@ impl AudioDecoder {
             }
             loop {
                 let mut packet = ffmpeg::Packet::empty();
-                match packet.read(&mut self.input) {
-                    Ok(()) => {
+                match self.input.read_packet(&mut packet)? {
+                    true => {
                         if packet.stream() != self.stream {
                             continue;
                         }
@@ -267,11 +277,10 @@ impl AudioDecoder {
                             Err(error) => return Err(ffi::fail("send packet", &self.path, error)),
                         }
                     }
-                    Err(ffmpeg::Error::Eof) => {
+                    false => {
                         let _ = self.decoder.send_eof();
                         break;
                     }
-                    Err(error) => return Err(ffi::fail("read", &self.path, error)),
                 }
             }
         }
@@ -280,6 +289,7 @@ impl AudioDecoder {
     /// The next frame out of the graph: interleaved samples at the requested
     /// rate and layout, or `None` once the window is exhausted.
     pub fn next_frame(&mut self) -> Result<Option<Audio>> {
+        self.input.check_policy()?;
         loop {
             if self.done {
                 return Ok(None);

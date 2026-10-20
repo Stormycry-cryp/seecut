@@ -22,6 +22,8 @@ pub mod brush;
 pub mod cutout;
 pub mod dirs;
 pub mod export;
+pub mod export_snapshot;
+pub mod export_verification;
 pub mod jobs;
 pub mod logs;
 pub mod media;

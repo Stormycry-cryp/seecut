@@ -419,6 +419,12 @@ impl Encoder {
             let mut packet = ffmpeg::Packet::empty();
             match self.encoder.receive_packet(&mut packet) {
                 Ok(()) => {
+                    // Each submitted picture spans one encoder-clock tick.
+                    // Some encoders leave duration unknown; MP4 otherwise ends
+                    // its edit list at the last PTS and discards that picture.
+                    if packet.duration() <= 0 {
+                        packet.set_duration(1);
+                    }
                     packet.set_stream(0);
                     packet.rescale_ts(self.encoder_time_base, self.stream_time_base);
                     packet

@@ -14,6 +14,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// you will ask six months from now is "which file, and what did FFmpeg say".
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// A strict input requested a path or an additional resource it cannot use.
+    #[error("input policy rejected {path}: {detail}")]
+    InputPolicy {
+        /// The explicitly opened primary file.
+        path: PathBuf,
+        /// The failed policy condition.
+        detail: String,
+    },
+
     /// A libav* call failed.
     #[error("{operation} failed for {path}: {detail}")]
     Ffi {

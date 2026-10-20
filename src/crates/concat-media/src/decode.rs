@@ -31,7 +31,7 @@ use concat_core::time::{FrameRate, Rational};
 use ffmpeg_the_third as ffmpeg;
 use ffmpeg_the_third::codec::decoder;
 use ffmpeg_the_third::filter;
-use ffmpeg_the_third::format::{self, Pixel};
+use ffmpeg_the_third::format::Pixel;
 use ffmpeg_the_third::util::frame::video::Video;
 
 use crate::error::{Error, Result};
@@ -186,6 +186,67 @@ impl DecodeOptions {
     }
 }
 
+/// Optional checks on every decoded source frame, before rotation, scaling,
+/// filtering, seek discards or frame pacing can hide its original dimensions.
+///
+/// `max_pixels` also limits the codec context before it opens. This is a codec
+/// constraint, not a process memory limit or a sandbox: container probing and
+/// codec implementation allocations have their own resource behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceFrameLimits {
+    /// Exact source width after applying the stream display rotation.
+    pub displayed_width: u32,
+    /// Exact source height after applying the stream display rotation.
+    pub displayed_height: u32,
+    /// Maximum coded or decoded frame pixels accepted by the codec.
+    /// Allow codec padding, for example coded 1920x1088 for displayed 1920x1080.
+    pub max_pixels: u64,
+}
+
+impl SourceFrameLimits {
+    fn validate(self, path: &Path) -> Result<()> {
+        let pixels = u64::from(self.displayed_width) * u64::from(self.displayed_height);
+        if self.displayed_width == 0
+            || self.displayed_height == 0
+            || self.displayed_width > i32::MAX as u32
+            || self.displayed_height > i32::MAX as u32
+            || self.max_pixels == 0
+            || self.max_pixels > i64::MAX as u64
+            || pixels > self.max_pixels
+        {
+            return Err(Error::Probe {
+                path: path.to_path_buf(),
+                detail: "invalid source frame limits".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn check_frame(self, path: &Path, frame: &Video, rotation: i64) -> Result<()> {
+        let width = frame.width();
+        let height = frame.height();
+        let displayed = ffi::displayed(width, height, rotation);
+        if width == 0
+            || height == 0
+            || displayed != (self.displayed_width, self.displayed_height)
+            || u64::from(width) * u64::from(height) > self.max_pixels
+        {
+            return Err(Error::Probe {
+                path: path.to_path_buf(),
+                detail: format!(
+                    "source frame displays as {}x{}, expected {}x{} within {} pixels",
+                    displayed.0,
+                    displayed.1,
+                    self.displayed_width,
+                    self.displayed_height,
+                    self.max_pixels,
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// How a stream says its colour is encoded: the tags in its container,
 /// as libavcodec reads them. Unspecified where it says nothing, which is
 /// most SD and a lot of HD, and then it is taken for BT.709.
@@ -302,12 +363,13 @@ struct Source {
 /// Decodes a file through libavcodec and libavfilter.
 pub struct Decoder {
     path: PathBuf,
-    input: format::context::Input,
+    input: crate::input::Input,
     stream: usize,
     time_base: ffmpeg::Rational,
     decoder: decoder::Video,
     rotation: i64,
     options: DecodeOptions,
+    source_limits: Option<SourceFrameLimits>,
     width: u32,
     height: u32,
     /// Built on the first frame, once its format and size are known;
@@ -339,8 +401,45 @@ pub struct Decoder {
 }
 
 impl Decoder {
+    #[cfg(test)]
+    pub(crate) fn deny_input_for_test(&mut self) {
+        self.input.deny_for_test();
+    }
+
     /// Opens `path` for decoding.
     pub fn open(path: impl AsRef<Path>, options: &DecodeOptions) -> Result<Self> {
+        Self::open_with_policy(path, options, crate::InputPolicy::default())
+    }
+
+    /// Open with an explicit resource policy, retained through reads, EOF and seeks.
+    pub fn open_with_policy(
+        path: impl AsRef<Path>,
+        options: &DecodeOptions,
+        policy: crate::InputPolicy,
+    ) -> Result<Self> {
+        Self::open_internal(path.as_ref(), options, policy, None)
+    }
+
+    /// Opens with checks on every source frame before any output transforms.
+    /// The same codec pixel limit survives hardware fallback and seeks.
+    pub fn open_with_source_limits(
+        path: impl AsRef<Path>,
+        options: &DecodeOptions,
+        policy: crate::InputPolicy,
+        limits: SourceFrameLimits,
+    ) -> Result<Self> {
+        Self::open_internal(path.as_ref(), options, policy, Some(limits))
+    }
+
+    fn open_internal(
+        path: &Path,
+        options: &DecodeOptions,
+        policy: crate::InputPolicy,
+        source_limits: Option<SourceFrameLimits>,
+    ) -> Result<Self> {
+        if let Some(limits) = source_limits {
+            limits.validate(path)?;
+        }
         ffi::init();
         // No slot rule on the chain, unlike the audio mix's: this graph is
         // the clip's own, in to out, and a chain that branches and rejoins
@@ -349,8 +448,7 @@ impl Decoder {
         // rule, every one of them failed to open on the CPU renderer. A
         // chain that is not a graph fails at the parse, with its error.
 
-        let path = path.as_ref();
-        let input = ffmpeg::format::input(path).map_err(|error| ffi::fail("open", path, error))?;
+        let input = crate::input::Input::open(path, policy)?;
         let stream = input
             .streams()
             .best(ffmpeg::media::Type::Video)
@@ -370,14 +468,20 @@ impl Decoder {
         // reader is none the wiser past a line in the log.
         let device = options.hardware.device().and_then(hardware::device);
         let (decoder, accelerated) = match device {
-            Some(device) => match Self::open_codec(path, &stream, options, Some(&device)) {
-                Ok(opened) => opened,
-                Err(error) => {
-                    hardware::note_fallback(device.kind(), "open the decoder", &error.to_string());
-                    Self::open_codec(path, &stream, options, None)?
+            Some(device) => {
+                match Self::open_codec(path, &stream, options, Some(&device), source_limits) {
+                    Ok(opened) => opened,
+                    Err(error) => {
+                        hardware::note_fallback(
+                            device.kind(),
+                            "open the decoder",
+                            &error.to_string(),
+                        );
+                        Self::open_codec(path, &stream, options, None, source_limits)?
+                    }
                 }
-            },
-            None => Self::open_codec(path, &stream, options, None)?,
+            }
+            None => Self::open_codec(path, &stream, options, None, source_limits)?,
         };
         let color = ColorSignal {
             primaries: decoder.color_primaries(),
@@ -405,6 +509,7 @@ impl Decoder {
             decoder,
             rotation,
             options: options.clone(),
+            source_limits,
             width,
             height,
             graph: None,
@@ -437,6 +542,7 @@ impl Decoder {
         stream: &ffmpeg::format::stream::Stream<'_>,
         options: &DecodeOptions,
         device: Option<&Device>,
+        source_limits: Option<SourceFrameLimits>,
     ) -> Result<(decoder::Video, Option<(HwDevice, Pixel)>)> {
         let mut context = ffmpeg::codec::Context::from_parameters(stream.parameters())
             .map_err(|error| ffi::fail("codec parameters", path, error))?;
@@ -452,6 +558,12 @@ impl Decoder {
             let raw = context.as_mut_ptr();
             (*raw).thread_type = ffmpeg::sys::FF_THREAD_FRAME | ffmpeg::sys::FF_THREAD_SLICE;
             (*raw).thread_count = 0;
+            // Set before avcodec_open2 (inside .decoder().video()). Use the
+            // resource ceiling, not the expected displayed pixel count: codecs
+            // may validate padded coded dimensions before producing a frame.
+            if let Some(limits) = source_limits {
+                (*raw).max_pixels = limits.max_pixels as i64;
+            }
         }
         let accelerated = device.and_then(|device| {
             device
@@ -494,13 +606,11 @@ impl Decoder {
                 .ok_or_else(|| Error::NoVideoStream {
                     path: self.path.clone(),
                 })?;
-            Self::open_codec(&self.path, &stream, &self.options, None)?.0
+            Self::open_codec(&self.path, &stream, &self.options, None, self.source_limits)?.0
         };
         let at = from.unwrap_or(self.origin);
         let target = ffi::av_ticks(at);
-        self.input
-            .seek(target, ..=target)
-            .map_err(|error| ffi::fail("seek", &self.path, error))?;
+        self.input.seek_checked(target, ..=target)?;
         self.decoder = decoder;
         self.hardware = None;
         if !self.options.keyframes_only {
@@ -516,9 +626,7 @@ impl Decoder {
     /// The container seek, and the state reset that goes with it.
     fn jump(&mut self, to: Rational) -> Result<()> {
         let target = ffi::av_ticks(to);
-        self.input
-            .seek(target, ..=target)
-            .map_err(|error| ffi::fail("seek", &self.path, error))?;
+        self.input.seek_checked(target, ..=target)?;
         self.decoder.flush();
         // Keyframes only: the picture the container landed on is the one
         // wanted, and discarding up to the target would throw it away and
@@ -543,6 +651,9 @@ impl Decoder {
             let mut frame = Video::empty();
             match self.decoder.receive_frame(&mut frame) {
                 Ok(()) => {
+                    if let Some(limits) = self.source_limits {
+                        limits.check_frame(&self.path, &frame, self.rotation)?;
+                    }
                     let pts = frame
                         .timestamp()
                         .and_then(|ticks| ffi::seconds(ticks, self.time_base));
@@ -606,8 +717,8 @@ impl Decoder {
             // frames come out at all.
             loop {
                 let mut packet = ffmpeg::Packet::empty();
-                match packet.read(&mut self.input) {
-                    Ok(()) => {
+                match self.input.read_packet(&mut packet)? {
+                    true => {
                         if packet.stream() != self.stream {
                             continue;
                         }
@@ -627,11 +738,10 @@ impl Decoder {
                             Err(error) => return Err(ffi::fail("send packet", &self.path, error)),
                         }
                     }
-                    Err(ffmpeg::Error::Eof) => {
+                    false => {
                         let _ = self.decoder.send_eof();
                         break;
                     }
-                    Err(error) => return Err(ffi::fail("read", &self.path, error)),
                 }
             }
         }
@@ -820,6 +930,7 @@ impl FrameSource for Decoder {
     }
 
     fn next_frame(&mut self) -> Result<Option<Frame>> {
+        self.input.check_policy()?;
         if self
             .options
             .max_frames
@@ -1260,3 +1371,7 @@ mod tests {
         assert_ne!(decoder.hardware(), Some(absent));
     }
 }
+
+#[cfg(test)]
+#[path = "source_frame_limits_tests.rs"]
+mod source_frame_limits_tests;
