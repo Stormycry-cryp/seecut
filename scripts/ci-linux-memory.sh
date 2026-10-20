@@ -56,6 +56,17 @@ inspect_cgroup() {
   done
 }
 
+swap_is_active() {
+  local swap_file=$1 active_swap=$2 active_name
+  while IFS= read -r active_name; do
+    # A runner directory alias may differ from the name reported by swapon.
+    if [[ $active_name == "$swap_file" || $active_name -ef $swap_file ]]; then
+      return 0
+    fi
+  done <<< "$active_swap"
+  return 1
+}
+
 cleanup() {
   require_runner || return 1
   [[ -f "$memory_dir/swap.path" ]] || return 0
@@ -67,11 +78,22 @@ cleanup() {
   fi
   local active_swap
   active_swap=$(swapon --show --noheadings --raw --output NAME) || return 1
-  if grep -Fxq -- "$swap_file" <<< "$active_swap"; then
+  printf 'Temporary swap cleanup path: %s\nActive swap before cleanup:\n%s\n' "$swap_file" "$active_swap"
+  if swap_is_active "$swap_file" "$active_swap"; then
     # On failure retain both the file and path, so a retry remains possible.
+    printf 'Disabling temporary swap: %s\n' "$swap_file"
     sudo swapoff "$swap_file" || return 1
   fi
-  rm -- "$swap_file" "$memory_dir/swap.path"
+  active_swap=$(swapon --show --noheadings --raw --output NAME) || return 1
+  printf 'Active swap after cleanup:\n%s\n' "$active_swap"
+  if swap_is_active "$swap_file" "$active_swap"; then
+    echo 'Temporary swap is still active; retaining file and recovery path' >&2
+    return 1
+  fi
+  # rm may continue to its next operand after a failed unlink. Keep the
+  # recovery path until the swap file has actually been removed.
+  rm -- "$swap_file" || return 1
+  rm -- "$memory_dir/swap.path"
 }
 
 prepare() (

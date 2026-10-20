@@ -130,6 +130,66 @@ sudo() {{
         self.assertEqual(list(self.root.glob("seecut-linux-swap.*")), [])
         self.assertFalse((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
 
+    def test_cleanup_recognizes_same_file_through_directory_alias(self):
+        alias = self.root / "runner-alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        result = self.shell(self.prepare_mocks() + r'''
+prepare
+swap_file=$(cat "$memory_dir/swap.path")
+printf '%s/%s\n' "$RUNNER_TEMP/runner-alias" "${swap_file##*/}" > "$RUNNER_TEMP/active"
+cleanup
+''')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("swapoff " + str(self.root / "seecut-linux-swap."),
+                      (self.root / "calls").read_text())
+        self.assertFalse((self.root / "active").exists())
+
+    def test_cleanup_rechecks_swapoff_before_removing_file(self):
+        result = self.shell(self.prepare_mocks() + r'''
+prepare
+sudo() { printf '%s\n' "$*" >> "$RUNNER_TEMP/calls"; }
+rm() { echo UNEXPECTED_RM >&2; return 98; }
+cleanup
+''')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("still active", result.stdout + result.stderr)
+        self.assertNotIn("UNEXPECTED_RM", result.stdout + result.stderr)
+        self.assertTrue((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
+        self.assertEqual(len(list(self.root.glob("seecut-linux-swap.*"))), 1)
+
+    def test_unlink_failure_keeps_path_for_retry(self):
+        result = self.shell(self.prepare_mocks() + r'''
+prepare
+rm() {
+  local path status=0
+  for path in "$@"; do
+    [[ $path == -- ]] && continue
+    if [[ $path == "$RUNNER_TEMP"/seecut-linux-swap.* ]]; then
+      echo "rm: cannot remove '$path': Operation not permitted" >&2
+      status=1
+    else
+      command rm -- "$path"
+    fi
+  done
+  return "$status"
+}
+cleanup
+''')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Operation not permitted", result.stdout + result.stderr)
+        self.assertTrue((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
+        self.assertEqual(len(list(self.root.glob("seecut-linux-swap.*"))), 1)
+
+    def test_cleanup_listing_failure_keeps_file_and_path(self):
+        result = self.shell(self.prepare_mocks() + r'''
+prepare
+swapon() { return 1; }
+cleanup
+''')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
+        self.assertEqual(len(list(self.root.glob("seecut-linux-swap.*"))), 1)
+
     def test_swapoff_failure_keeps_file_for_retry(self):
         result = self.shell(self.prepare_mocks() + '''
 prepare
