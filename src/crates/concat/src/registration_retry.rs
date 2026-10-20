@@ -6,6 +6,7 @@ use std::{
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use uuid::Uuid;
 const PENDING: &str = "pending-generated.json";
@@ -275,9 +276,20 @@ pub(crate) fn register_output_with_provenance(
     bytes: Option<&[u8]>,
     provenance: Option<crate::personal_library::OutputProvenance>,
 ) -> Result<(), String> {
-    let mut entries = load(root)?;
+    let entries = load(root)?;
     let mut prepared = prepare_generated(root, path, name, operation, bytes)?;
     prepared.provenance = provenance;
+    register_prepared_output(root, name, &prepared, entries)
+}
+
+/// The shared durable path for both ordinary and fully verified outputs.
+/// Callers finish any extra content checks before entering this function.
+fn register_prepared_output(
+    root: &Path,
+    name: Option<&str>,
+    prepared: &PreparedGenerated,
+    mut entries: Vec<Entry>,
+) -> Result<(), String> {
     if let Some(previous) = entries
         .iter()
         .filter_map(|entry| entry.prepared.as_ref())
@@ -295,7 +307,7 @@ pub(crate) fn register_output_with_provenance(
         save(root, &entries).map_err(|e| format!("无法保存重试记录：{e}，输出副本已保留"))?;
     }
     let result = Library::load(root).and_then(|mut library| {
-        library.commit_generated(&prepared)?;
+        library.commit_generated(prepared)?;
         Ok(())
     });
     match result {
@@ -313,6 +325,167 @@ pub(crate) fn register_output_with_provenance(
         Err(error) => Err(format!("{error}；刷新资产库可重试入库")),
     }
 }
+
+/// Registers the bytes of an actual fully decoded native video output.
+/// The caller supplies its captured original identity and holds the library
+/// write lock. This does not acquire that lock again or authorize any caller.
+/// An error means this call did not establish a verified managed reference;
+/// it does not imply that the original operation has no registered asset.
+pub(crate) fn register_verified_video_output(
+    root: &Path,
+    path: &Path,
+    name: Option<&str>,
+    operation: &str,
+    proof: &concat_host::export_verification::VerifiedOutput,
+    provenance: Option<crate::personal_library::OutputProvenance>,
+    cancel: &AtomicBool,
+) -> Result<crate::personal_library::AssetReference, String> {
+    register_verified_video_output_with_commit_check(
+        root,
+        path,
+        name,
+        operation,
+        proof,
+        provenance,
+        cancel,
+        || Ok(()),
+    )
+}
+
+/// 在实际受管副本核验完成后、任何登记写入前执行本次授权提交检查。
+pub(crate) fn register_verified_video_output_with_commit_check(
+    root: &Path,
+    path: &Path,
+    name: Option<&str>,
+    operation: &str,
+    proof: &concat_host::export_verification::VerifiedOutput,
+    provenance: Option<crate::personal_library::OutputProvenance>,
+    cancel: &AtomicBool,
+    before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<crate::personal_library::AssetReference, String> {
+    register_verified_video_with_checkpoint_and_commit_check(
+        root,
+        path,
+        name,
+        operation,
+        proof,
+        provenance,
+        cancel,
+        &mut |_, _| {},
+        before_commit,
+    )
+}
+
+// Synchronous per-call test boundaries; no global hooks or background races.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VideoRegistrationCheckpoint {
+    SourceRechecked,
+    Prepared,
+    Registered,
+    ManagedPathChecked,
+}
+
+fn video_registration_not_cancelled(cancel: &AtomicBool) -> Result<(), String> {
+    if cancel.load(Ordering::Acquire) {
+        return Err("视频登记核验已取消；请查询原操作状态".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn register_verified_video_with_checkpoint(
+    root: &Path,
+    path: &Path,
+    name: Option<&str>,
+    operation: &str,
+    proof: &concat_host::export_verification::VerifiedOutput,
+    provenance: Option<crate::personal_library::OutputProvenance>,
+    cancel: &AtomicBool,
+    checkpoint: &mut impl FnMut(VideoRegistrationCheckpoint, &Path),
+) -> Result<crate::personal_library::AssetReference, String> {
+    register_verified_video_with_checkpoint_and_commit_check(
+        root,
+        path,
+        name,
+        operation,
+        proof,
+        provenance,
+        cancel,
+        checkpoint,
+        || Ok(()),
+    )
+}
+
+fn register_verified_video_with_checkpoint_and_commit_check(
+    root: &Path,
+    path: &Path,
+    name: Option<&str>,
+    operation: &str,
+    proof: &concat_host::export_verification::VerifiedOutput,
+    provenance: Option<crate::personal_library::OutputProvenance>,
+    cancel: &AtomicBool,
+    checkpoint: &mut impl FnMut(VideoRegistrationCheckpoint, &Path),
+    before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<crate::personal_library::AssetReference, String> {
+    if operation.is_empty() {
+        return Err("视频登记缺少原操作身份".into());
+    }
+    video_registration_not_cancelled(cancel)?;
+    proof.recheck_same_content(path, cancel)?;
+    checkpoint(VideoRegistrationCheckpoint::SourceRechecked, path);
+    video_registration_not_cancelled(cancel)?;
+
+    let entries = load(root)?;
+    // The existing path streams the source into managed storage. Its returned
+    // SHA describes the actual copy, not the earlier source-path observation.
+    let mut prepared = prepare_generated(root, path, name, Some(operation), None)?;
+    prepared.provenance = provenance;
+    checkpoint(VideoRegistrationCheckpoint::Prepared, &prepared.path);
+    video_registration_not_cancelled(cancel)?;
+    let summary = proof.summary();
+    let metadata = fs::symlink_metadata(&prepared.path).map_err(|error| error.to_string())?;
+    if prepared.sha256 != summary.sha256
+        || !metadata.is_file()
+        || metadata.len() != summary.bytes
+        || prepared.kind != crate::personal_library::AssetKind::Video
+    {
+        // prepare_generated may reuse a content-addressed file. It is unsafe
+        // to delete it here; another operation may already own that file.
+        return Err("视频入库副本与完整解码核验结果不一致；本次未写入待登记记录或索引".into());
+    }
+    // The copied file may change after prepare_generated calculated its SHA.
+    // Reopen and hash those actual bytes before recording any recovery intent.
+    proof.recheck_same_content(&prepared.path, cancel)?;
+    video_registration_not_cancelled(cancel)?;
+    before_commit()?;
+    register_prepared_output(root, name, &prepared, entries)?;
+
+    // From here on registration may already be durable, including a replay.
+    // Preserve that fact even when cancellation or the managed check fails.
+    checkpoint(VideoRegistrationCheckpoint::Registered, &prepared.path);
+    let checked = (|| {
+        video_registration_not_cancelled(cancel)?;
+        let reference = registered_operation(root, &prepared.registration_id, &summary.sha256)?
+            .ok_or("原视频登记没有可用的固定素材版本")?;
+        let version = reference.version.as_ref().ok_or("视频登记未返回固定版本")?;
+        if version.registration_id != prepared.registration_id || version.sha256 != summary.sha256 {
+            return Err("原视频登记版本与核验结果不一致".into());
+        }
+        let library = Library::load_for_relink(root)?;
+        let asset = library
+            .get(&reference.asset_id)
+            .filter(|asset| !asset.trashed && asset.version.as_ref() == Some(version))
+            .ok_or("原视频素材已移除或固定版本已变化")?;
+        let managed = crate::personal_library::checked_managed_version_path(root, asset)?;
+        checkpoint(VideoRegistrationCheckpoint::ManagedPathChecked, &managed);
+        proof.recheck_same_content(&managed, cancel)?;
+        Ok(reference)
+    })();
+    checked.map_err(|error: String| {
+        format!("已执行原视频登记，但本次未取得受管副本核验成功；请查询原操作状态：{error}")
+    })
+}
+
 /// Canvas repeats reuse a live account/content version. Each explicit export
 /// keeps its own registration identity so a trashed version stays trashed.
 /// Use the frozen owned PNG bytes, never re-read an external file.
@@ -684,6 +857,591 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+
+    mod verified_video {
+        use super::Temp;
+        use crate::personal_library::{AssetKind, OutputProvenance, with_library_write_lock};
+        use crate::registration_retry::{self, VideoRegistrationCheckpoint as Checkpoint};
+        use concat_core::{frame::Frame, time::FrameRate};
+        use concat_host::export_verification::{
+            OutputExpectation, VerificationLimits, VerifiedOutput, verify_output,
+        };
+        use concat_media::{EncodeOptions, Encoder, FrameSink, VideoCodec};
+        use concat_project::model::VideoSettings;
+        use std::{
+            fs,
+            path::Path,
+            sync::atomic::{AtomicBool, Ordering},
+        };
+
+        fn movie(path: &Path, tint: u8) {
+            let mut encoder = Encoder::create(
+                path,
+                64,
+                64,
+                FrameRate::THIRTY,
+                &EncodeOptions {
+                    codec: VideoCodec::H264,
+                    hardware: false,
+                    preset: "ultrafast".into(),
+                    crf: 20,
+                    ..Default::default()
+                },
+            )
+            .expect("required real software H264 encoder must work; never skip");
+            for n in 0..6 {
+                let mut frame = Frame::black(64, 64);
+                frame.fill([tint, 40 + n * 10, 160, 255]);
+                encoder.write_frame(&frame).unwrap();
+            }
+            encoder.finish().unwrap();
+        }
+
+        fn proof(path: &Path) -> VerifiedOutput {
+            verify_output(
+                path,
+                OutputExpectation {
+                    video: VideoSettings {
+                        width: 64,
+                        height: 64,
+                        rate_num: 30,
+                        rate_den: 1,
+                    },
+                    frames: 6,
+                    codec: VideoCodec::H264,
+                    ten_bit: false,
+                    audio_expected: false,
+                },
+                VerificationLimits::default(),
+                &AtomicBool::new(false),
+            )
+            .expect("the actual file must pass complete independent decoding")
+        }
+
+        fn provenance() -> OutputProvenance {
+            OutputProvenance {
+                kind: "clip_export".into(),
+                project_path: None,
+                document_sha256: "test-frozen-document".into(),
+                inputs: vec![],
+                parameters: serde_json::json!({"width": 64, "height": 64, "frames": 6}),
+            }
+        }
+
+        fn register(
+            root: &Path,
+            source: &Path,
+            operation: &str,
+            verified: &VerifiedOutput,
+        ) -> Result<crate::personal_library::AssetReference, String> {
+            registration_retry::register_verified_video_output(
+                root,
+                source,
+                Some("verified video"),
+                operation,
+                verified,
+                Some(provenance()),
+                &AtomicBool::new(false),
+            )
+        }
+
+        fn state(root: &Path) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+            (
+                fs::read(root.join(crate::personal_library::MANIFEST_NAME)).ok(),
+                fs::read(root.join(registration_retry::PENDING)).ok(),
+            )
+        }
+
+        // Test fixtures are tiny. Production code never reads a whole MP4
+        // into memory; this exact-size mutation isolates the SHA boundary.
+        fn change_same_length(path: &Path) {
+            let mut bytes = fs::read(path).unwrap();
+            assert!(!bytes.is_empty());
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0x80;
+            fs::write(path, bytes).unwrap();
+        }
+
+        #[test]
+        fn real_h264_registration_returns_fixed_independently_verified_managed_copy() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 30);
+                let verified = proof(&source);
+                assert_eq!(verified.summary().video_frames, 6);
+                let reference = register(&root, &source, "original-export", &verified).unwrap();
+                let version = reference.version.as_ref().unwrap();
+                assert_eq!(version.registration_id, "operation:original-export");
+                assert_eq!(version.sha256, verified.summary().sha256);
+                let library = crate::personal_library::Library::load_for_relink(&root).unwrap();
+                assert_eq!(library.items().len(), 1);
+                let asset = library.get(&reference.asset_id).unwrap();
+                assert!(!asset.trashed);
+                assert_eq!(asset.kind, AssetKind::Video);
+                assert_eq!(asset.version, reference.version);
+                assert_eq!(asset.provenance, Some(provenance()));
+                let managed =
+                    crate::personal_library::checked_managed_version_path(&root, asset).unwrap();
+                assert_ne!(managed, source.canonicalize().unwrap());
+                assert_eq!(proof(&managed).summary().sha256, verified.summary().sha256);
+                assert!(registration_retry::load(&root).unwrap().is_empty());
+                assert_eq!(
+                    registration_retry::registered_operation(
+                        &root,
+                        "operation:original-export",
+                        &verified.summary().sha256,
+                    )
+                    .unwrap(),
+                    Some(reference),
+                );
+            });
+        }
+
+        #[test]
+        fn same_operation_reuses_identity_and_does_not_restore_trashed_asset() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 40);
+                let verified = proof(&source);
+                let reference = register(&root, &source, "repeat", &verified).unwrap();
+                assert_eq!(
+                    register(&root, &source, "repeat", &verified).unwrap(),
+                    reference
+                );
+                let mut library = crate::personal_library::Library::load_for_relink(&root).unwrap();
+                assert_eq!(library.items().len(), 1);
+                library.trash(&reference.asset_id).unwrap();
+                let manifest = state(&root).0;
+                let error = register(&root, &source, "repeat", &verified).unwrap_err();
+                assert!(error.contains("本次未取得受管副本核验成功"), "{error}");
+                let library = crate::personal_library::Library::load_for_relink(&root).unwrap();
+                assert_eq!(library.items().len(), 1);
+                assert!(library.get(&reference.asset_id).unwrap().trashed);
+                assert_eq!(state(&root).0, manifest);
+            });
+        }
+
+        #[test]
+        fn source_changed_after_full_decode_is_rejected_before_any_registration() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 50);
+                let verified = proof(&source);
+                change_same_length(&source);
+                let error = register(&root, &source, "changed", &verified).unwrap_err();
+                assert!(error.contains("output content differs"), "{error}");
+                assert!(!root.exists());
+                assert!(source.exists());
+            });
+        }
+
+        #[test]
+        fn copied_sha_is_checked_after_source_recheck_before_journal_or_commit() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 60);
+                let verified = proof(&source);
+                let existing = register(&root, &source, "existing", &verified).unwrap();
+                let mut pending = crate::personal_library::prepare_generated(
+                    &root,
+                    &source,
+                    None,
+                    Some("keep-pending"),
+                    None,
+                )
+                .unwrap();
+                pending.provenance = Some(provenance());
+                registration_retry::save(
+                    &root,
+                    &[registration_retry::Entry {
+                        path: pending.source_path.clone(),
+                        name: None,
+                        prepared: Some(pending),
+                    }],
+                )
+                .unwrap();
+                let before = state(&root);
+                let mut prepared_copy = None;
+                let error = registration_retry::register_verified_video_with_checkpoint(
+                    &root,
+                    &source,
+                    None,
+                    "changed-after-recheck",
+                    &verified,
+                    Some(provenance()),
+                    &AtomicBool::new(false),
+                    &mut |point, path| match point {
+                        Checkpoint::SourceRechecked => change_same_length(path),
+                        Checkpoint::Prepared => prepared_copy = Some(path.to_path_buf()),
+                        _ => panic!("unverified bytes must never reach registration"),
+                    },
+                )
+                .unwrap_err();
+                assert!(
+                    error.contains("视频入库副本与完整解码核验结果不一致"),
+                    "{error}"
+                );
+                let prepared_copy = prepared_copy.expect("must exercise the actual copy boundary");
+                assert_eq!(
+                    fs::metadata(&prepared_copy).unwrap().len(),
+                    verified.summary().bytes
+                );
+                assert_ne!(
+                    prepared_copy.file_stem().unwrap().to_str().unwrap(),
+                    verified.summary().sha256,
+                );
+                assert_eq!(
+                    state(&root),
+                    before,
+                    "both original durable records must be unchanged"
+                );
+                assert_eq!(
+                    registration_retry::registered_operation(
+                        &root,
+                        "operation:existing",
+                        &verified.summary().sha256,
+                    )
+                    .unwrap(),
+                    Some(existing),
+                );
+                assert!(
+                    prepared_copy.exists(),
+                    "do not delete a potentially shared managed file"
+                );
+            });
+        }
+
+        #[test]
+        fn changed_prepared_length_is_rejected_before_writing_pending_or_index() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 70);
+                let verified = proof(&source);
+                let mut saw_prepared = false;
+                let error = registration_retry::register_verified_video_with_checkpoint(
+                    &root,
+                    &source,
+                    None,
+                    "prepared-length",
+                    &verified,
+                    None,
+                    &AtomicBool::new(false),
+                    &mut |point, path| {
+                        if point == Checkpoint::Prepared {
+                            saw_prepared = true;
+                            fs::OpenOptions::new()
+                                .write(true)
+                                .open(path)
+                                .unwrap()
+                                .set_len(verified.summary().bytes + 1)
+                                .unwrap();
+                        }
+                    },
+                )
+                .unwrap_err();
+                assert!(saw_prepared);
+                assert!(
+                    error.contains("视频入库副本与完整解码核验结果不一致"),
+                    "{error}"
+                );
+                assert_eq!(state(&root), (None, None));
+            });
+        }
+
+        #[test]
+        fn same_length_prepared_change_preserves_pending_index_and_shared_file() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 75);
+                let verified = proof(&source);
+                let existing = register(&root, &source, "existing-shared", &verified).unwrap();
+                let mut pending = crate::personal_library::prepare_generated(
+                    &root,
+                    &source,
+                    None,
+                    Some("keep-pending"),
+                    None,
+                )
+                .unwrap();
+                pending.provenance = Some(provenance());
+                registration_retry::save(
+                    &root,
+                    &[registration_retry::Entry {
+                        path: pending.source_path.clone(),
+                        name: None,
+                        prepared: Some(pending),
+                    }],
+                )
+                .unwrap();
+                let before = state(&root);
+                let mut changed = None;
+                let error = registration_retry::register_verified_video_with_checkpoint(
+                    &root,
+                    &source,
+                    None,
+                    "changed-prepared",
+                    &verified,
+                    Some(provenance()),
+                    &AtomicBool::new(false),
+                    &mut |point, path| match point {
+                        Checkpoint::SourceRechecked => {}
+                        Checkpoint::Prepared => {
+                            // This is the original verified SHA's shared file:
+                            // the cached hash and the length both still match.
+                            assert_eq!(
+                                path.file_stem().unwrap().to_str().unwrap(),
+                                verified.summary().sha256,
+                            );
+                            change_same_length(path);
+                            assert_eq!(fs::metadata(path).unwrap().len(), verified.summary().bytes);
+                            changed = Some(path.to_path_buf());
+                        }
+                        _ => panic!("changed managed bytes must never reach registration"),
+                    },
+                )
+                .unwrap_err();
+                assert!(error.contains("output content differs"), "{error}");
+                let changed = changed.expect("must exercise a same-length prepared-file change");
+                assert_eq!(state(&root), before);
+                assert!(
+                    changed.exists(),
+                    "never delete the pre-existing shared managed file"
+                );
+                let library = crate::personal_library::Library::load_for_relink(&root).unwrap();
+                assert_eq!(library.items().len(), 1);
+                let asset = library.get(&existing.asset_id).unwrap();
+                assert_eq!(asset.path, changed);
+                assert_eq!(asset.version, existing.version);
+                assert!(!asset.trashed);
+                // The fixture deliberately corrupts that shared file; the
+                // unchanged source still matches the original decode proof.
+                verified
+                    .recheck_same_content(&source, &AtomicBool::new(false))
+                    .unwrap();
+            });
+        }
+
+        #[test]
+        fn original_pending_identity_is_not_overwritten_by_different_verified_bytes() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 80);
+                let original = proof(&source);
+                let existing = register(&root, &source, "existing", &original).unwrap();
+                crate::personal_library::fail_next_manifest_save(&root);
+                assert!(register(&root, &source, "pending-operation", &original).is_err());
+                let before = state(&root);
+                let pending = registration_retry::load(&root).unwrap();
+                assert_eq!(pending.len(), 1);
+                assert_eq!(
+                    pending[0].prepared.as_ref().unwrap().sha256,
+                    original.summary().sha256
+                );
+                movie(&source, 130);
+                let replacement = proof(&source);
+                assert_ne!(replacement.summary().sha256, original.summary().sha256);
+                let error =
+                    register(&root, &source, "pending-operation", &replacement).unwrap_err();
+                assert!(error.contains("同一待入库输出的内容已变化"), "{error}");
+                assert_eq!(state(&root), before);
+                let recovered = registration_retry::retry_operation(
+                    &root,
+                    "pending-operation",
+                    &original.summary().sha256,
+                )
+                .unwrap();
+                let library = crate::personal_library::Library::load_for_relink(&root).unwrap();
+                assert_eq!(library.items().len(), 2);
+                assert!(library.get(&existing.asset_id).is_some());
+                let managed = &library.get(&recovered.asset_id).unwrap().path;
+                original
+                    .recheck_same_content(managed, &AtomicBool::new(false))
+                    .unwrap();
+                assert_eq!(recovered.version.unwrap().sha256, original.summary().sha256);
+            });
+        }
+
+        #[test]
+        fn cancellation_before_registration_never_writes_pending_or_index() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let source = t.0.join("output.mp4");
+                movie(&source, 90);
+                let verified = proof(&source);
+                for point in [
+                    None,
+                    Some(Checkpoint::SourceRechecked),
+                    Some(Checkpoint::Prepared),
+                ] {
+                    let root = t.0.join(format!("cancel-{point:?}"));
+                    let cancel = AtomicBool::new(point.is_none());
+                    let mut saw_point = point.is_none();
+                    let error = registration_retry::register_verified_video_with_checkpoint(
+                        &root,
+                        &source,
+                        None,
+                        "cancel-original",
+                        &verified,
+                        None,
+                        &cancel,
+                        &mut |current, _| {
+                            if point == Some(current) {
+                                saw_point = true;
+                                cancel.store(true, Ordering::Release);
+                            }
+                        },
+                    )
+                    .unwrap_err();
+                    assert!(saw_point);
+                    assert!(error.contains("视频登记核验已取消"), "{error}");
+                    assert_eq!(state(&root), (None, None));
+                    assert!(source.exists());
+                }
+            });
+        }
+
+        #[test]
+        fn cancellation_after_commit_preserves_original_receipt_and_retry_identity() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 100);
+                let verified = proof(&source);
+                let cancel = AtomicBool::new(false);
+                let mut registered = false;
+                let error = registration_retry::register_verified_video_with_checkpoint(
+                    &root,
+                    &source,
+                    None,
+                    "cancel-after-commit",
+                    &verified,
+                    Some(provenance()),
+                    &cancel,
+                    &mut |point, _| {
+                        if point == Checkpoint::Registered {
+                            registered = true;
+                            cancel.store(true, Ordering::Release);
+                        }
+                    },
+                )
+                .unwrap_err();
+                assert!(registered);
+                assert!(error.contains("已执行原视频登记"), "{error}");
+                assert!(error.contains("视频登记核验已取消"), "{error}");
+                let reference = registration_retry::registered_operation(
+                    &root,
+                    "operation:cancel-after-commit",
+                    &verified.summary().sha256,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    register(&root, &source, "cancel-after-commit", &verified).unwrap(),
+                    reference
+                );
+                assert_eq!(
+                    crate::personal_library::Library::load_for_relink(&root)
+                        .unwrap()
+                        .items()
+                        .len(),
+                    1
+                );
+            });
+        }
+
+        #[test]
+        fn managed_change_after_path_check_fails_independent_proof_without_undoing_commit() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 110);
+                let verified = proof(&source);
+                let mut changed = None;
+                let error = registration_retry::register_verified_video_with_checkpoint(
+                    &root,
+                    &source,
+                    None,
+                    "managed-change",
+                    &verified,
+                    Some(provenance()),
+                    &AtomicBool::new(false),
+                    &mut |point, path| {
+                        if point == Checkpoint::ManagedPathChecked {
+                            changed = Some(path.to_path_buf());
+                            change_same_length(path);
+                        }
+                    },
+                )
+                .unwrap_err();
+                assert!(error.contains("已执行原视频登记"), "{error}");
+                assert!(error.contains("output content differs"), "{error}");
+                let changed = changed.expect("must exercise the final independent proof check");
+                assert!(changed.exists());
+                let library = crate::personal_library::Library::load_for_relink(&root).unwrap();
+                assert_eq!(library.items().len(), 1);
+                let asset = &library.items()[0];
+                assert!(!asset.trashed);
+                assert_eq!(asset.path, changed);
+                let version = asset.version.as_ref().unwrap();
+                assert_eq!(version.registration_id, "operation:managed-change");
+                assert_eq!(version.sha256, verified.summary().sha256);
+                assert!(registration_retry::load(&root).unwrap().is_empty());
+                verified
+                    .recheck_same_content(&source, &AtomicBool::new(false))
+                    .unwrap();
+            });
+        }
+
+        #[test]
+        fn original_index_provenance_is_not_replaced_by_a_conflicting_replay() {
+            with_library_write_lock(|| {
+                let t = Temp::new();
+                let root = t.0.join("library");
+                let source = t.0.join("output.mp4");
+                movie(&source, 120);
+                let verified = proof(&source);
+                let original = register(&root, &source, "original-provenance", &verified).unwrap();
+                let before = state(&root).0;
+                let mut changed = provenance();
+                changed.document_sha256 = "another-document".into();
+                let error = registration_retry::register_verified_video_output(
+                    &root,
+                    &source,
+                    None,
+                    "original-provenance",
+                    &verified,
+                    Some(changed),
+                    &AtomicBool::new(false),
+                )
+                .unwrap_err();
+                assert!(error.contains("同一输出的内容已变化"), "{error}");
+                assert_eq!(state(&root).0, before);
+                let library = crate::personal_library::Library::load_for_relink(&root).unwrap();
+                assert_eq!(library.items().len(), 1);
+                assert_eq!(
+                    library.get(&original.asset_id).unwrap().provenance,
+                    Some(provenance())
+                );
+            });
+        }
+    }
+
     fn legacy_fixture(t: &Temp, ids: &[&str]) -> (PathBuf, PathBuf, serde_json::Value) {
         let root = t.0.join("library");
         let source = t.0.join("legacy.png");

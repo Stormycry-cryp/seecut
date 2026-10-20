@@ -169,6 +169,20 @@ pub(super) fn execute_clip(request: &Request, studio: &mut Studio, app: &App) ->
         permit
     };
     let generation = studio.mcp_clip_state().0;
+    if matches!(
+        &p.action.edit,
+        concat_editor_mcp::ClipEdit::ExportVideo { .. }
+    ) {
+        let response = clip_export::queue_export(request, &scope, &permit, studio, app);
+        let mut bridge = studio.editor_mcp.borrow_mut();
+        bridge
+            .canvas_receipts
+            .finish(&scope, &request.client_id, p, response.clone());
+        let _ = bridge
+            .writes
+            .finish(&scope, &key, response.clone(), Instant::now());
+        return (response, false);
+    }
     if matches!(&p.action.edit, concat_editor_mcp::ClipEdit::Save {}) {
         let response = clip_save::queue_save(request, &scope, &permit, studio, app);
         let mut bridge = studio.editor_mcp.borrow_mut();

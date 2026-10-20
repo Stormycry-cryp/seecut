@@ -66,12 +66,13 @@ export global SeeCut {
     callback app-page-navigation-changed();
     // Synchronous pre-change gate; changed-property notifications are too late.
     callback clip-source-will-change();
+    callback clip-export-scope-will-change();
     public function change-page(next: int) {
-        if self.page != next { self.clip-source-will-change(); }
+        if self.page != next { self.clip-export-scope-will-change(); self.clip-source-will-change(); }
         self.page = next;
     }
     public function change-canvas-gallery-open(next: bool) {
-        if self.canvas-gallery-open != next { self.clip-source-will-change(); }
+        if self.canvas-gallery-open != next { self.clip-export-scope-will-change(); self.clip-source-will-change(); }
         self.canvas-gallery-open = next;
     }
     public function change-auth-open(next: bool) {

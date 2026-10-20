@@ -577,7 +577,7 @@ pub(crate) fn plan(
             clip_id: clip(tl, clip_id)?.id.clone(),
             property: property(*p),
         },
-        Save {} => return Err(ClipEditError::InvalidInput),
+        Save {} | ExportVideo { .. } => return Err(ClipEditError::InvalidInput),
         Undo => return Ok(ClipPlan::Undo),
         Redo => return Ok(ClipPlan::Redo),
     };
@@ -1095,7 +1095,13 @@ fn related(edit: &ClipEdit) -> Vec<String> {
         | SetKey { clip_id, .. }
         | ClearKey { clip_id, .. }
         | ClearKeys { clip_id, .. } => vec![clip_id.clone()],
-        Save {} | ImportLibrary { .. } | AddTrack | AddTimeline | Undo | Redo => vec![],
+        Save {}
+        | ExportVideo { .. }
+        | ImportLibrary { .. }
+        | AddTrack
+        | AddTimeline
+        | Undo
+        | Redo => vec![],
     }
 }
 #[derive(PartialEq)]
@@ -1266,6 +1272,12 @@ pub(crate) fn approval_preflight(
         concat_editor_mcp::validate_library_asset(asset_id, version)
             .map_err(|_| ClipEditError::InvalidInput)?;
         active(studio.project(), &action.timeline_id)?;
+        return Ok(());
+    }
+    if matches!(action.edit, ClipEdit::ExportVideo { .. }) {
+        active(studio.project(), &action.timeline_id)?;
+        super::clip_export::validate_action(studio.project(), action)
+            .map_err(|_| ClipEditError::InvalidInput)?;
         return Ok(());
     }
     if matches!(action.edit, ClipEdit::Save {}) {

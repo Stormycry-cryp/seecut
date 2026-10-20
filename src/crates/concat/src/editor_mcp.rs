@@ -41,6 +41,8 @@ mod canvas_edit;
 mod clip_edit;
 #[path = "editor_mcp_clip_execute.rs"]
 mod clip_execute;
+#[path = "editor_mcp_clip_export.rs"]
+mod clip_export;
 #[path = "editor_mcp_clip_import.rs"]
 mod clip_import;
 #[path = "editor_mcp_clip_save.rs"]
@@ -287,6 +289,17 @@ fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
         return None;
     }
     let scope = scope?;
+    if matches!(
+        action,
+        AssistantPermission::GrantRead
+            | AssistantPermission::RevokeRead
+            | AssistantPermission::RevokeWrite
+    ) {
+        crate::clip_export_fence::revoke_client(
+            ASSISTANT_CLIENT_ID,
+            concat_host::export_publication::PublishRevocation::Revoked,
+        );
+    }
     crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
     match action {
         AssistantPermission::GrantRead => {
@@ -882,7 +895,10 @@ impl BridgeUi {
             return Err(AssistantPermissionError::NotAllowed);
         };
         let current = self.scope(&ids);
-        let is_clip = intent.clip_action.is_some() || intent.clip_query;
+        let is_clip = intent.clip_action.is_some()
+            || intent.clip_query
+            || intent.clip_export_control_action.is_some()
+            || intent.clip_export_output;
         let is_library_assets = intent.library_assets.is_some();
         if (!is_library_assets && kind != if is_clip { "clip" } else { "canvas" })
             || (is_library_assets && !matches!(kind.as_str(), "canvas" | "clip" | "flow"))
@@ -901,7 +917,39 @@ impl BridgeUi {
         };
         let now = Instant::now();
         let mut clip_save_origin = None;
+        let mut clip_export_origin = None;
         if let Some(query) = &intent.operation {
+            if intent.clip_export_control_action.is_some() || intent.clip_export_output {
+                if claimed != current
+                    || self
+                        .canvas_receipts
+                        .clip_export(&claimed, ASSISTANT_CLIENT_ID, query, now)
+                        .is_none_or(|attachment| !attachment.origin_matches(self))
+                {
+                    return Err(AssistantPermissionError::NotAllowed);
+                }
+            } else if intent.clip_query
+                && self
+                    .canvas_receipts
+                    .clip_export(&claimed, ASSISTANT_CLIENT_ID, query, now)
+                    .is_some_and(|attachment| !attachment.origin_matches(self))
+            {
+                return Err(AssistantPermissionError::NotAllowed);
+            }
+            if intent.clip_export_control_action.is_some() {
+                studio
+                    .mcp_clip_permission_ready()
+                    .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
+                self.writes
+                    .authorize(
+                        &current,
+                        &claimed,
+                        ASSISTANT_CLIENT_ID,
+                        &self.write_token,
+                        now,
+                    )
+                    .map_err(|_| AssistantPermissionError::NotAllowed)?;
+            }
             if intent.retry_registration {
                 studio
                     .canvas
@@ -932,7 +980,9 @@ impl BridgeUi {
             }
             if let Some(action) = &intent.clip_action {
                 let is_save = matches!(action.edit, concat_editor_mcp::ClipEdit::Save {});
-                if is_save {
+                let is_export =
+                    matches!(action.edit, concat_editor_mcp::ClipEdit::ExportVideo { .. });
+                if is_save || is_export {
                     studio.mcp_clip_permission_ready()
                 } else {
                     studio.mcp_clip_writer_ready()
@@ -959,6 +1009,16 @@ impl BridgeUi {
                         AssistantPermissionError::NotAllowed
                     }
                 })?;
+                if is_export {
+                    clip_export_origin = Some(
+                        clip_export::ApprovedSource::capture(
+                            studio.project(),
+                            studio.mcp_clip_state().0,
+                            action,
+                        )
+                        .map_err(|_| AssistantPermissionError::NotAllowed)?,
+                    );
+                }
                 if is_save {
                     clip_save_origin = Some(
                         clip_save::ApprovedSource::capture(
@@ -1025,19 +1085,33 @@ impl BridgeUi {
                 }
             }
         }
-        let permit = match clip_save_origin {
-            Some(origin) => self.canvas_permits.grant_with_clip_save_origin(
+        let permit = if clip_export_origin.is_some() {
+            self.canvas_permits.grant_with_clip_origins(
                 claimed,
                 ASSISTANT_CLIENT_ID.into(),
                 intent,
                 now,
-                Some(origin),
-            ),
-            None => self
-                .canvas_permits
-                .grant(claimed, ASSISTANT_CLIENT_ID.into(), intent, now),
+                clip_save_origin,
+                clip_export_origin,
+            )
+        } else if clip_save_origin.is_some() {
+            self.canvas_permits.grant_with_clip_save_origin(
+                claimed,
+                ASSISTANT_CLIENT_ID.into(),
+                intent,
+                now,
+                clip_save_origin,
+            )
+        } else {
+            self.canvas_permits
+                .grant(claimed, ASSISTANT_CLIENT_ID.into(), intent, now)
         };
         permit.ok_or(AssistantPermissionError::NotAllowed)
+    }
+
+    pub(crate) fn forget_tool_permit(&mut self, id: u64) {
+        self.canvas_permits.forget(id);
+        crate::toonflow_agent::revoke(id);
     }
 
     pub(crate) fn revoke_tool_permit(&mut self, id: u64) {
@@ -1318,12 +1392,20 @@ impl BridgeUi {
 
     pub(crate) fn bind_assistant_session(&mut self, session: Option<String>) {
         if self.assistant_session != session {
+            crate::clip_export_fence::revoke_client(
+                ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
             self.revoke_assistant_for_account_change();
             self.assistant_session = session;
         }
     }
 
     pub(crate) fn revoke_assistant_for_account_change(&mut self) {
+        crate::clip_export_fence::revoke_client(
+            ASSISTANT_CLIENT_ID,
+            concat_host::export_publication::PublishRevocation::AccountChanged,
+        );
         crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::AccountChanged);
         self.app_controls.revoke();
         self.assistant_session = None;
@@ -1339,6 +1421,9 @@ impl BridgeUi {
     }
 
     pub(crate) fn revoke_move(&mut self) {
+        crate::clip_export_fence::invalidate(
+            concat_host::export_publication::PublishRevocation::Revoked,
+        );
         crate::toonflow_agent::revoke_all();
         self.canvas_permits.clear();
         self.writes.revoke();
@@ -1474,6 +1559,10 @@ impl BridgeUi {
             return;
         }
         let client = client.to_owned();
+        crate::clip_export_fence::revoke_client(
+            &client,
+            concat_host::export_publication::PublishRevocation::Revoked,
+        );
         let Some((_, ids)) = self.active_ids(studio, app) else {
             return;
         };
@@ -1489,6 +1578,10 @@ impl BridgeUi {
     }
 
     pub fn revoke(&mut self) {
+        crate::clip_export_fence::revoke_client(
+            self.client_draft.trim(),
+            concat_host::export_publication::PublishRevocation::Revoked,
+        );
         crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.grants.remove(self.client_draft.trim());
         self.canvas_permits.clear();
@@ -1565,9 +1658,11 @@ impl BridgeUi {
             };
             return UiReply::Response(Response::ok(json!({
                 "appInstanceId": self.instance_id,
-                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit", "clip_edit", "clip_operation", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
-                "namedToolApprovalRequired":["library_images","library_assets","insert_library_image","transform_canvas_layer","canvas_edit","clip_edit","clip_operation","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
+                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit", "clip_edit", "clip_operation", "clip_export_control", "clip_export_output", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
+                "namedToolApprovalRequired":["library_images","library_assets","insert_library_image","transform_canvas_layer","canvas_edit","clip_edit","clip_operation","clip_export_control","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
                 "clipSaveProtocolVersion": if kind == "clip" { Some(1) } else { None },
+                "clipExportProtocolVersion": if kind == "clip" { Some(1) } else { None },
+                "clipExportOutputProtocolVersion": if kind == "clip" { Some(1) } else { None },
                 "clipPersistedReadProtocolVersion": if kind == "clip" { Some(1) } else { None },
                 "clipEditVersion":1,"clipEditMaxParametersBytes":16384,"clipEditMaxTargets":128,"clipEditMaxReceiptBytes":57344,"clipEditMaxStateBytes":16777216,"clipEditMaxPreviewWork":16777216,"clipEditMaxDetachedAudioClips":128,"clipEditVideoFreeze":false,
                 "canvasEditVersion":1,"canvasEditMaxStrokePoints":2048,"canvasEditMaxNewPixels":16777216,"canvasEditMaxReferencedPixels":67108864,"canvasEditMaxBrushWork":16777216,
@@ -1709,6 +1804,9 @@ impl BridgeUi {
             }
             return UiReply::Response(response);
         }
+        if request.method == Method::ClipExportOutput {
+            return clip_export::prepare_read(self, request, studio, app, &kind, &ids);
+        }
         if request.method == Method::ClipOperation {
             if kind != "clip" || !self.authorized(request, &ids.project, true) {
                 return UiReply::Response(Response::error("notAuthorized"));
@@ -1716,6 +1814,25 @@ impl BridgeUi {
             let Some(scope) = request_scope(request) else {
                 return UiReply::Response(Response::error("invalidInput"));
             };
+            if let Some(query) = request.operation_query.as_ref()
+                && self
+                    .canvas_receipts
+                    .clip_export(&scope, &request.client_id, query, Instant::now())
+                    .is_some()
+            {
+                return UiReply::Response(
+                    match clip_export::owned_read_attachment(self, request, &self.scope(&ids)) {
+                        Ok(_) => self.canvas_receipts.query_family(
+                            &scope,
+                            &request.client_id,
+                            query,
+                            Instant::now(),
+                            true,
+                        ),
+                        Err(error) => error,
+                    },
+                );
+            }
             let Some(intent) = Intent::from_request(request) else {
                 return UiReply::Response(Response::error("invalidInput"));
             };
@@ -1723,6 +1840,21 @@ impl BridgeUi {
                 .canvas_permits
                 .claim(&scope, &request.client_id, &intent, Instant::now())
                 .is_none()
+            {
+                return UiReply::Response(Response::error("notAuthorized"));
+            }
+            if self
+                .canvas_receipts
+                .clip_export(
+                    &scope,
+                    &request.client_id,
+                    request
+                        .operation_query
+                        .as_ref()
+                        .expect("validated clip query"),
+                    Instant::now(),
+                )
+                .is_some_and(|attachment| !attachment.origin_matches(self))
             {
                 return UiReply::Response(Response::error("notAuthorized"));
             }
@@ -1911,6 +2043,7 @@ enum UiReply {
     Preview(Box<PreviewJob>),
     AppPreview(Box<app_read::AppPreviewJob>),
     PersistedClip(Box<clip_save::ReadJob>),
+    ClipExport(Box<clip_export::ReadJob>),
 }
 
 fn preview_slot() -> &'static Mutex<()> {
@@ -2254,6 +2387,8 @@ fn dispatch_write(request: Request) -> Response {
                 execute_move(&request, &mut studio, &app)
             } else if request.method == Method::RetryCanvasRegistration {
                 execute_registration_retry(&request, &mut studio, &app)
+            } else if request.method == Method::ClipExportControl {
+                clip_export::execute_control(&request, &mut studio, &app)
             } else if request.method == Method::ClipEdit {
                 clip_execute::execute_clip(&request, &mut studio, &app)
             } else {
@@ -2371,6 +2506,7 @@ fn dispatch(request: Request) -> Response {
     match reply {
         UiReply::Response(response) => response,
         UiReply::PersistedClip(job) => clip_save::dispatch_read(*job),
+        UiReply::ClipExport(job) => clip_export::dispatch_read(*job),
         UiReply::Library(job) => {
             if job.request.method == Method::LibraryAssets {
                 library_assets::dispatch_library_assets(*job)
@@ -3070,6 +3206,7 @@ mod tests {
             read_source: None,
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
             clip_parameters: None,
             object_ids: None,
             library_query: None,
@@ -3492,6 +3629,7 @@ mod tests {
             read_source: None,
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
             clip_parameters: None,
             object_ids: None,
             library_query: None,

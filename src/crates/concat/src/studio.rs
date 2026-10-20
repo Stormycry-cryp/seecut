@@ -5435,6 +5435,7 @@ impl Studio {
     }
 
     fn begin_project_open(&mut self, target: OpenTarget) -> u64 {
+        crate::clip_export_fence::document_will_change();
         if self.repair_unresolved() {
             self.open_sequence = self.open_sequence.wrapping_add(1).max(1);
             let id = self.open_sequence;
@@ -5592,6 +5593,7 @@ impl Studio {
     }
 
     fn adopt_project_session(&mut self, info: ProjectInfo, session: Session, remember: bool) {
+        crate::clip_export_fence::document_will_change();
         crate::clip_save_fence::invalidate(projects::SaveInvalidation::DocumentChanged);
         // Callers have settled the outgoing save lane (normal open) or retained
         // the untouched source (repair). No disk I/O or close runs in adoption.
@@ -5754,6 +5756,7 @@ impl Studio {
     /// The canvas is deliberately independent: closing the clip project must
     /// not discard an open canvas document.
     pub fn close_project(&mut self) -> Result<(), String> {
+        crate::clip_export_fence::document_will_change();
         crate::clip_save_fence::invalidate(projects::SaveInvalidation::DocumentChanged);
         if self.repair_unresolved() {
             let message = "请先另存修复工程或取消修复".to_owned();
@@ -5819,6 +5822,7 @@ impl Studio {
     /// request, and File > Close Window. A dirty canvas opens the global
     /// confirmation sheet; a clean canvas proceeds to the clip save.
     pub fn request_window_close(&mut self) -> bool {
+        crate::clip_export_fence::document_will_change();
         crate::clip_save_fence::invalidate(projects::SaveInvalidation::Discarded);
         if self.repair_unresolved() {
             self.notify("请先另存修复工程或取消修复", true);

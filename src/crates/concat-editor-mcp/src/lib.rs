@@ -23,9 +23,18 @@ pub use library_assets::{LibraryAssetKind, LibraryAssetsQuery, validate_library_
 mod canvas;
 mod clip;
 pub mod clip_edit;
+pub mod clip_export;
 pub mod clip_save;
 pub use clip::{ClipAction, ClipParameters, validate_clip_parameters};
 pub use clip_edit::ClipEdit;
+pub use clip_export::{
+    CLIP_EXPORT_CONTROL_PROTOCOL_VERSION, CLIP_EXPORT_OUTPUT_PROTOCOL_VERSION,
+    CLIP_EXPORT_PROTOCOL_VERSION, ClipExportAsset, ClipExportAudioStream, ClipExportCodec,
+    ClipExportControlAction, ClipExportControlData, ClipExportControlResult, ClipExportData,
+    ClipExportDurability, ClipExportExpected, ClipExportOutputData, ClipExportOutputSource,
+    ClipExportPhase, ClipExportProof, ClipExportPublication, ClipExportQuality, ClipExportReason,
+    ClipExportStage, ClipExportSummary,
+};
 pub use clip_save::{
     ClipManifestName, ClipPersistedState, ClipSaveData, ClipSaveProof, ProjectReadSource,
 };
@@ -126,6 +135,9 @@ pub struct Request {
     #[serde(default)]
     /// Owner-only original-operation query.
     pub operation_query: Option<OperationQuery>,
+    /// Closed owner-bound export control action, only on ClipExportControl.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_export_control_action: Option<ClipExportControlAction>,
     #[serde(default)]
     /// Typed current-Flow identity and bounded action.
     pub flow: Option<FlowParameters>,
@@ -191,6 +203,10 @@ pub enum Method {
     ClipEdit,
     /// Query the original timeline operation without replay.
     ClipOperation,
+    /// Cancel or resume registration of the original owner-bound export.
+    ClipExportControl,
+    /// Independently re-open the original verified video and exact asset/version.
+    ClipExportOutput,
     /// Save the existing canvas binding asynchronously.
     SaveCanvasProject,
     /// Formally export PNG and register it in the existing library.
@@ -218,6 +234,7 @@ impl Method {
                 | Self::TransformCanvasLayer
                 | Self::CanvasEdit
                 | Self::ClipEdit
+                | Self::ClipExportControl
                 | Self::SaveCanvasProject
                 | Self::ExportCanvasPng
                 | Self::RetryCanvasRegistration
@@ -244,6 +261,8 @@ impl Method {
             Self::CanvasEdit => "canvas_edit",
             Self::ClipEdit => "clip_edit",
             Self::ClipOperation => "clip_operation",
+            Self::ClipExportControl => "clip_export_control",
+            Self::ClipExportOutput => "clip_export_output",
             Self::SaveCanvasProject => "save_canvas_project",
             Self::ExportCanvasPng => "export_canvas_png",
             Self::CanvasOperation => "canvas_operation",
@@ -312,6 +331,14 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if request.clip_export_control_action.is_some()
+        || matches!(
+            request.method,
+            Method::ClipExportControl | Method::ClipExportOutput
+        )
+    {
+        return clip_export::validate_request(request);
+    }
     if request.read_source.is_some() {
         return clip_save::validate_persisted_request(request);
     }
@@ -359,13 +386,14 @@ pub fn validate_request_shape(request: &Request) -> Result<(), String> {
         }
         return match request.method {
             Method::ClipEdit if request.operation_query.is_none() && request.revision.is_some() => {
-                if request
-                    .clip_parameters
-                    .as_ref()
-                    .is_some_and(|p| matches!(p.action.edit, ClipEdit::Save {}))
-                    && request
-                        .revision
-                        .is_some_and(|revision| revision > 9_007_199_254_740_991)
+                if request.clip_parameters.as_ref().is_some_and(|p| {
+                    matches!(
+                        p.action.edit,
+                        ClipEdit::Save {} | ClipEdit::ExportVideo { .. }
+                    )
+                }) && request
+                    .revision
+                    .is_some_and(|revision| revision > 9_007_199_254_740_991)
                 {
                     return Err("invalidInput: unsafe save revision".into());
                 }
@@ -787,6 +815,7 @@ mod tests {
         Request {
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
             clip_parameters: None,
             object_ids: None,
             read_source: None,
@@ -1118,6 +1147,7 @@ mod tests {
         let mut request = Request {
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
             clip_parameters: None,
             object_ids: None,
             read_source: None,
@@ -1161,6 +1191,7 @@ mod tests {
         let first = Request {
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
             clip_parameters: None,
             object_ids: None,
             read_source: None,

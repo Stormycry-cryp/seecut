@@ -548,6 +548,9 @@ mod desktop {
     }
     impl Drop for Binding {
         fn drop(&mut self) {
+            crate::clip_export_fence::invalidate(
+                concat_host::export_publication::PublishRevocation::DocumentChanged,
+            );
             crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
             Self::fence_app_control_native(true);
             self.timer.stop();
@@ -565,6 +568,9 @@ mod desktop {
     impl Binding {
         /// Start bounded process shutdown before the app's exit-only reaping hook.
         pub(crate) fn shutdown(&self, app: &App) {
+            crate::clip_export_fence::invalidate(
+                concat_host::export_publication::PublishRevocation::DocumentChanged,
+            );
             crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
             Self::fence_app_control_native(true);
             self.state.borrow_mut().record.draft =
@@ -623,6 +629,10 @@ mod desktop {
             if !self.retiring.borrow().is_empty() {
                 return;
             }
+            crate::clip_export_fence::revoke_client(
+                crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
             crate::clip_save_fence::invalidate(
                 concat_host::projects::SaveInvalidation::ConversationChanged,
             );
@@ -776,6 +786,10 @@ mod desktop {
             Ok(())
         }
         fn new_session(&self, app: &App) {
+            crate::clip_export_fence::revoke_client(
+                crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
             crate::clip_save_fence::invalidate(
                 concat_host::projects::SaveInvalidation::ConversationChanged,
             );
@@ -966,6 +980,10 @@ mod desktop {
             }
         }
         fn select_session(&self, app: &App, index: i32) {
+            crate::clip_export_fence::revoke_client(
+                crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
             crate::clip_save_fence::invalidate(
                 concat_host::projects::SaveInvalidation::ConversationChanged,
             );
@@ -2366,6 +2384,10 @@ mod desktop {
                 return;
             }
             if matches!(action, TaskCommand::Pause | TaskCommand::Stop) {
+                crate::clip_export_fence::revoke_client(
+                    crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                    concat_host::export_publication::PublishRevocation::Stopped,
+                );
                 crate::clip_save_fence::invalidate(
                     concat_host::projects::SaveInvalidation::Stopped,
                 );
@@ -2599,6 +2621,10 @@ mod desktop {
             // The conversation, draft, active request and pending approval survive hiding.
         }
         fn disconnect(&self, app: &App) {
+            crate::clip_export_fence::revoke_client(
+                crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
             crate::clip_save_fence::invalidate(
                 concat_host::projects::SaveInvalidation::ConversationChanged,
             );
@@ -2616,6 +2642,17 @@ mod desktop {
             self.refresh(app);
         }
         fn permission(&self, app: &App, action: AssistantPermission) {
+            if matches!(
+                action,
+                AssistantPermission::GrantRead
+                    | AssistantPermission::RevokeRead
+                    | AssistantPermission::RevokeWrite
+            ) {
+                crate::clip_export_fence::revoke_client(
+                    crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                    concat_host::export_publication::PublishRevocation::Revoked,
+                );
+            }
             self.refresh(app);
             let ui = app.global::<Assistant>();
             let allowed = match action {
@@ -3346,7 +3383,7 @@ mod desktop {
             let studio = shell.studio.borrow();
             let mut bridge = studio.editor_mcp.borrow_mut();
             for (id, _) in permits {
-                bridge.revoke_tool_permit(id);
+                bridge.forget_tool_permit(id);
             }
         });
     }
@@ -3652,6 +3689,10 @@ mod desktop {
             let app = app.as_weak();
             move || {
                 if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    crate::clip_export_fence::revoke_client(
+                        crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                        concat_host::export_publication::PublishRevocation::Stopped,
+                    );
                     crate::clip_save_fence::invalidate(
                         concat_host::projects::SaveInvalidation::Stopped,
                     );

@@ -1,6 +1,6 @@
 # Clip 视频导出协议 v1
 
-状态：原生接线前的实现合同；工具、回执和Task尚未接入。引擎、输入副本、完整解码、内部发布原语与位深检查已分别验证。本文不表示Agent已经能够导出。macOS优先，Android暂缓。
+状态：工具、原回执、原生接线和持久Task已按本合同实现，适用检查见[导出QA](../testing/main-qa/2026-10-21-clip-export/README.md)。源码和逻辑检查不等于真实App、模型创作或作品验收。macOS优先，Android暂缓。
 
 ## 工具与固定来源
 
@@ -68,12 +68,20 @@ clip_operation保持只查询原操作，不隐式取消、登记或重新渲染
 
 新增clip_export_output只读工具，参数为projectId/documentSessionId/operationId/clientSequence。原生必须先找到同一原成功或已核实成片回执及原账户/会话归属，模型不提供路径、assetId、version或期望hash。只有verified可给出当前交付成功读取；registrationPending只返回尚待登记的明确状态，不能完成Task。
 
+后台原操作查询和独立成片核对可以发生在两次推理轮次之间。仅存在真实原导出附件、当前read/media权限且原scope/client/账户/会话一致时，原clip_operation及clip_export_output沿受管原结果读取，不要求再启动模型轮次取得named permit。其它clip_operation保留既有审批；该例外不开放宽泛素材检索或任何写入，control始终要求当前写权和本次精确许可。
+
 成功读取的封闭数据为clipExportOutputProtocolVersion:1、source:freshExport、appInstanceId/clientId/projectId/documentSessionId/operationId/clientSequence、outputId/registrationId、inputManifestSha256、asset、summary、checkedAtUnixMs。实际新开原输出与精确asset/version对应的managed文件，字节/摘要一致可沿用原完整解码事实。不同版本、回收站、文件丢失/变化、来源或许可失效均不能返回成功。只读核对不恢复写权或原发布历史，普通同工程revision变化不冒充原素材变化。
 
 ## 运行时与Task
 
 导出沿现有OperationJournal和原调用证据保存，pending/partial/unknown只查询原操作；受理后resourceLimit、leaseExpired或查询ioFailure不是原任务未发布证明。所有回复先核原完整身份、来源、原输出身份、封闭schema及字段交叉约束，不接受模型自行填写成功证明。
 
+首次合法回执确定的outputId/registrationId不能被后续回复替换。通用无证明查询失败保留原合法内容事实；registrationPending只能沿同一输入清单、期待、成片摘要和登记身份推进到verified。notPublished及verified是原操作终态，后续取消或查询失败不能把它们改写；当前文件核对失败单独保留当前读取未确认。已经确认的publishClaimed或历史publication不能倒退，已知总帧数也不能由完成回执换成另一份成片。
+
 Task增加kind:clip-video、workspace:clip，仍沿既有id/description/stepId；通过当前步骤真实轮次的原exportVideo及native-operation evidenceRef关联。完成前独立调用clip_export_output，精确匹配原outputId/registrationId、固定asset/version、summary摘要与inputManifestSha256，再保存当前deliverableProof。历史allowDetached只保留原历史事实，当前读回仍pending，不能完成新视频交付。
+
+同一步可以制作多份成片，也可以在已证明未发布的可恢复失败后继续尝试。新的尝试仍须当前来源、权限、预算和独立原操作，保留旧终态。原任务尚未明确、尚待登记或只恢复了历史成功却未重新读取成片时，先核实原任务；不能靠新导出替代核实。已经取得当前固定成片读取成功后，才可继续同一步的下一份合法导出；多份独立视频交付分别关联各自原操作。
+
+已确认原生受理的pending导出由现有Task coordinator自动查询，轮询元数据保存在同一原journal的related invocation，重启不清零。先结束原轮次和推理预算，等待期间只真实查询原clip_operation；按1/2/4/8/15秒退避、最多240次，仍受原Task总时限、暂停/停止代次、账户、文档、当前权限、费用和容量限制。初始ioFailure/超时且没有合法受理证明时继续UNKNOWN，不能自动视为正在运行。原成片完成并独立读取成功后才自动续轮，不新增导出或等待期间的推理费用。
 
 Task仍单文档，原生回执仍24小时/1024条内存记录及重启可能丢失；本批不增加第二套业务账本、不放宽单轮120秒/32步或工具/回执预算。实际App、模型创作、画面/字幕/声音与正式分发分别验收。

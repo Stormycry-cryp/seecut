@@ -8284,6 +8284,9 @@ fn update_model_options_inner(
 }
 
 fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bool) {
+    crate::clip_export_fence::invalidate(
+        concat_host::export_publication::PublishRevocation::AccountChanged,
+    );
     crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::AccountChanged);
     let mut cloud = state.borrow_mut();
     cloud.token.clear();
@@ -8649,6 +8652,8 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         .on_app_page_navigation_changed(app_page_navigation_changed);
     app.global::<SeeCut>()
         .on_clip_source_will_change(crate::clip_save_fence::before_change);
+    app.global::<SeeCut>()
+        .on_clip_export_scope_will_change(crate::clip_export_fence::document_will_change);
     inspiration::render(app);
     let account = AccountAccess {
         state: Rc::downgrade(&state),

@@ -23,6 +23,8 @@ pub(super) struct Intent {
     pub retry_registration: bool,
     pub clip_action: Option<concat_editor_mcp::ClipAction>,
     pub clip_query: bool,
+    pub clip_export_control_action: Option<concat_editor_mcp::ClipExportControlAction>,
+    pub clip_export_output: bool,
     pub move_action: Option<MoveAction>,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -41,6 +43,12 @@ impl Intent {
         }
         if self.clip_action.is_some() {
             return Method::ClipEdit;
+        }
+        if self.clip_export_control_action.is_some() {
+            return Method::ClipExportControl;
+        }
+        if self.clip_export_output {
+            return Method::ClipExportOutput;
         }
         if self.clip_query {
             return Method::ClipOperation;
@@ -83,6 +91,8 @@ impl Intent {
             clip_action: request.clip_parameters.as_ref().map(|p| p.action.clone()),
             library_assets: request.library_assets_query.clone(),
             clip_query: request.method == Method::ClipOperation,
+            clip_export_control_action: request.clip_export_control_action,
+            clip_export_output: request.method == Method::ClipExportOutput,
             move_action: request.move_parameters.as_ref().map(|p| MoveAction {
                 object_id: p.object_id.clone(),
                 delta_x: p.delta_x,
@@ -106,6 +116,8 @@ impl Intent {
                     retry_registration: false,
                     clip_action: None,
                     clip_query: false,
+                    clip_export_control_action: None,
+                    clip_export_output: false,
                     move_action: None,
                     library_assets: Some(concat_editor_mcp::LibraryAssetsQuery {
                         kind: a.kind,
@@ -135,10 +147,15 @@ impl Intent {
                     clip_action: None,
                     library_assets: None,
                     clip_query: false,
+                    clip_export_control_action: None,
+                    clip_export_output: false,
                     move_action: None,
                 }
             }
-            "canvas_operation" | "retry_canvas_registration" | "clip_operation" => {
+            "canvas_operation"
+            | "retry_canvas_registration"
+            | "clip_operation"
+            | "clip_export_output" => {
                 let a: OperationArgs = serde_json::from_value(args).ok()?;
                 Self {
                     project: a.project_id,
@@ -151,6 +168,30 @@ impl Intent {
                     clip_action: None,
                     library_assets: None,
                     clip_query: tool == "clip_operation",
+                    clip_export_control_action: None,
+                    clip_export_output: tool == "clip_export_output",
+                    move_action: None,
+                    operation: Some(OperationQuery {
+                        operation_id: a.operation_id,
+                        client_sequence: a.client_sequence,
+                    }),
+                }
+            }
+            "clip_export_control" => {
+                let a: ClipExportControlArgs = serde_json::from_value(args).ok()?;
+                Self {
+                    project: a.project_id,
+                    session: a.document_session_id,
+                    revision: None,
+                    selection_revision: None,
+                    action: None,
+                    library: None,
+                    library_assets: None,
+                    retry_registration: false,
+                    clip_action: None,
+                    clip_query: false,
+                    clip_export_control_action: Some(a.action),
+                    clip_export_output: false,
                     move_action: None,
                     operation: Some(OperationQuery {
                         operation_id: a.operation_id,
@@ -172,6 +213,8 @@ impl Intent {
                     clip_action: None,
                     library_assets: None,
                     clip_query: false,
+                    clip_export_control_action: None,
+                    clip_export_output: false,
                     move_action: Some(MoveAction {
                         object_id: a.object_id,
                         delta_x: a.delta_x,
@@ -192,6 +235,8 @@ impl Intent {
                     retry_registration: false,
                     library_assets: None,
                     clip_query: false,
+                    clip_export_control_action: None,
+                    clip_export_output: false,
                     move_action: None,
                     clip_action: Some(concat_editor_mcp::ClipAction {
                         timeline_id: a.timeline_id,
@@ -265,6 +310,7 @@ impl Intent {
         request.library_query = intent.library.clone();
         request.library_assets_query = intent.library_assets.clone();
         request.operation_query = intent.operation.clone();
+        request.clip_export_control_action = intent.clip_export_control_action;
         if let Some(action) = &intent.action {
             request.canvas_parameters = Some(CanvasParameters {
                 operation_id: concat_editor_mcp::operation_id(
@@ -328,6 +374,8 @@ impl Intent {
             clip_action: None,
             library_assets: None,
             clip_query: false,
+            clip_export_control_action: None,
+            clip_export_output: false,
             move_action: None,
         }
     }
@@ -435,6 +483,16 @@ struct OperationArgs {
     client_sequence: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClipExportControlArgs {
+    project_id: String,
+    document_session_id: String,
+    operation_id: String,
+    client_sequence: u64,
+    action: concat_editor_mcp::ClipExportControlAction,
+}
+
 #[derive(Clone)]
 pub(super) struct Permit {
     pub id: u64,
@@ -443,6 +501,7 @@ pub(super) struct Permit {
     pub intent: Intent,
     pub expires_at: Instant,
     pub clip_save_origin: Option<super::clip_save::ApprovedSource>,
+    pub clip_export_origin: Option<super::clip_export::ApprovedSource>,
     used: bool,
 }
 #[derive(Default)]
@@ -455,8 +514,14 @@ impl Permits {
         crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.entries.clear();
     }
+    /// 批准卡过期/轮次清理不撤销已经受理的原导出。
+    pub fn forget(&mut self, id: u64) {
+        crate::clip_save_fence::revoke_permit(id);
+        self.entries.retain(|p| p.id != id);
+    }
     pub fn revoke(&mut self, id: u64) {
         crate::clip_save_fence::revoke_permit(id);
+        crate::clip_export_fence::revoke_permit(id);
         self.entries.retain(|p| p.id != id);
     }
     pub fn grant(
@@ -478,6 +543,24 @@ impl Permits {
         now: Instant,
         clip_save_origin: Option<super::clip_save::ApprovedSource>,
     ) -> Option<u64> {
+        self.grant_with_clip_origins(scope, client, intent, now, clip_save_origin, None)
+    }
+    pub fn grant_with_clip_origins(
+        &mut self,
+        scope: Scope,
+        client: String,
+        intent: Intent,
+        now: Instant,
+        clip_save_origin: Option<super::clip_save::ApprovedSource>,
+        clip_export_origin: Option<super::clip_export::ApprovedSource>,
+    ) -> Option<u64> {
+        if clip_export_origin.is_some()
+            && !intent.clip_action.as_ref().is_some_and(|action| {
+                matches!(action.edit, concat_editor_mcp::ClipEdit::ExportVideo { .. })
+            })
+        {
+            return None;
+        }
         if clip_save_origin.is_some()
             && !intent
                 .clip_action
@@ -499,6 +582,7 @@ impl Permits {
             intent,
             expires_at: now.checked_add(Duration::from_secs(300))?,
             clip_save_origin,
+            clip_export_origin,
             used: false,
         });
         Some(id)
@@ -530,6 +614,7 @@ impl Permits {
                 && p.client == permit.client
                 && p.intent == permit.intent
                 && p.clip_save_origin == permit.clip_save_origin
+                && p.clip_export_origin == permit.clip_export_origin
                 && p.expires_at > now
         })
     }
@@ -544,6 +629,7 @@ struct Receipt {
     response: Response,
     clip: bool,
     origin_capture: Option<OutputOriginCapture>,
+    clip_export: Option<super::clip_export::Attachment>,
 }
 
 pub(super) trait OperationIdentity {
@@ -606,6 +692,7 @@ impl Receipts {
             response: Response::error("outcomeUnknown"),
             clip: parameters.is_clip(),
             origin_capture: None,
+            clip_export: None,
         });
         true
     }
@@ -699,7 +786,12 @@ impl Receipts {
                     && r.clip == clip
                     && now.saturating_duration_since(r.at) < Duration::from_secs(86400)
             })
-            .map(|r| r.response.clone())
+            .map(|r| {
+                r.clip_export.as_ref().map_or_else(
+                    || r.response.clone(),
+                    |attachment| attachment.observed(&r.response),
+                )
+            })
             .unwrap_or_else(|| Response::error("outcomeUnknown"))
     }
 }
@@ -1321,5 +1413,97 @@ mod library_assets_approval_tests {
         assert!(permits.claim(&scope, "client", &intent, now).is_none());
         permits.revoke(permit.id);
         assert!(!permits.valid(&permit, now));
+    }
+}
+
+impl Receipts {
+    pub fn attach_clip_export(
+        &mut self,
+        scope: &Scope,
+        client: &str,
+        parameters: &concat_editor_mcp::ClipParameters,
+        attachment: super::clip_export::Attachment,
+    ) -> bool {
+        let Some(r) = self.entries.iter_mut().find(|r| {
+            r.clip
+                && r.scope == *scope
+                && r.client == client
+                && r.sequence == parameters.client_sequence
+                && r.operation_id == parameters.operation_id
+                && r.clip_export.is_none()
+        }) else {
+            return false;
+        };
+        r.clip_export = Some(attachment);
+        true
+    }
+    pub fn clip_export(
+        &self,
+        scope: &Scope,
+        client: &str,
+        query: &OperationQuery,
+        now: Instant,
+    ) -> Option<&super::clip_export::Attachment> {
+        self.entries
+            .iter()
+            .find(|r| {
+                r.clip
+                    && r.scope == *scope
+                    && r.client == client
+                    && r.sequence == query.client_sequence
+                    && r.operation_id == query.operation_id
+                    && now.saturating_duration_since(r.at) < Duration::from_secs(86400)
+            })?
+            .clip_export
+            .as_ref()
+    }
+    pub fn clip_export_mut(
+        &mut self,
+        scope: &Scope,
+        client: &str,
+        query: &OperationQuery,
+        now: Instant,
+    ) -> Option<&mut super::clip_export::Attachment> {
+        self.entries
+            .iter_mut()
+            .find(|r| {
+                r.clip
+                    && r.scope == *scope
+                    && r.client == client
+                    && r.sequence == query.client_sequence
+                    && r.operation_id == query.operation_id
+                    && now.saturating_duration_since(r.at) < Duration::from_secs(86400)
+            })?
+            .clip_export
+            .as_mut()
+    }
+    pub fn complete_clip_export(
+        &mut self,
+        scope: &Scope,
+        client: &str,
+        query: &OperationQuery,
+        output_id: &str,
+        response: Response,
+        material: Option<super::clip_export::worker::VerifiedMaterial>,
+    ) -> bool {
+        let Some(r) = self.entries.iter_mut().find(|r| {
+            r.clip
+                && r.scope == *scope
+                && r.client == client
+                && r.sequence == query.client_sequence
+                && r.operation_id == query.operation_id
+        }) else {
+            return false;
+        };
+        let Some(attachment) = r
+            .clip_export
+            .as_mut()
+            .filter(|a| a.output_id() == output_id)
+        else {
+            return false;
+        };
+        attachment.complete(material);
+        r.response = response;
+        true
     }
 }

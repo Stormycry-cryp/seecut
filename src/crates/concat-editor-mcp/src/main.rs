@@ -175,6 +175,16 @@ struct OperationArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClipExportControlArgs {
+    project_id: String,
+    document_session_id: String,
+    operation_id: String,
+    client_sequence: u64,
+    action: concat_editor_mcp::ClipExportControlAction,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AppContextArgs {
     app_session_id: String,
 }
@@ -209,6 +219,7 @@ impl Bridge {
         Request {
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
             clip_parameters: None,
             object_ids: None,
             read_source: None,
@@ -677,7 +688,7 @@ impl Bridge {
         )
     }
     #[tool(
-        description = "Apply one explicit bounded ClipEdit to the current owned native Session and fixed timeline. Stable media/track/clip/timeline IDs only; no paths or scripts. importLibrary accepts only an existing local assetId and immutable version, probes one asset asynchronously with an 8GiB bound, then returns mediaId for placeMedia. Freeze project.clipState.editStateId before native approval; revision, selection and complete edit state must match. All direct and indirect locked-track changes are refused, including history. Save requires native clipSaveProtocolVersion:1 and clipPersistedReadProtocolVersion:1; edit:{kind:save} saves the whole current original project asynchronously with no path, edit revision increment or undo entry. Only the typed original saveProof and independent project readSource:persistedClip verify current delivery; dirty=false does not. Actions cover existing-bin placement, tracks/timelines, move/trim/split/delete/merge, image freeze, rate/curve, transform/properties, audio detach/reattach, text and keyframes, undo/redo. Video still extraction is unavailable. Typed action at most16KiB; each native source/staged/history state at most16MiB (checked without a second allocation); audio detach at most128 generated clips and conservative16Mi lane-scan work, with copied clip/title bytes budgeted before preview; full untruncated receipt at most56KiB, otherwise refuse before mutation. UNKNOWN only queries the original clip_operation; never replay a new sequence."
+        description = "Apply one explicit bounded ClipEdit to the current owned native Session and fixed timeline. Stable media/track/clip/timeline IDs only; no paths or scripts. importLibrary accepts only an existing local assetId and immutable version, probes one asset asynchronously with an 8GiB bound, then returns mediaId for placeMedia. Freeze project.clipState.editStateId before native approval; revision, selection and complete edit state must match. All direct and indirect locked-track changes are refused, including history. Save requires native clipSaveProtocolVersion:1 and clipPersistedReadProtocolVersion:1; edit:{kind:save} saves the whole current original project asynchronously with no path, edit revision increment or undo entry. Only the typed original saveProof and independent project readSource:persistedClip verify current delivery; dirty=false does not. Actions cover existing-bin placement, tracks/timelines, move/trim/split/delete/merge, image freeze, rate/curve, transform/properties, audio detach/reattach, text and keyframes, undo/redo. exportVideo requires BOTH native clipExportProtocolVersion:1 and clipExportOutputProtocolVersion:1; fields name/codec/shortSide/fps/quality/tenBit are all required, no output path. Accepted export is asynchronous; query only its unchanged clip_operation, control only its original identity, and independently clip_export_output-read verified content before delivery. Export never increments edit revision or saves the project. Video still extraction is unavailable. Typed action at most16KiB; each native source/staged/history state at most16MiB (checked without a second allocation); audio detach at most128 generated clips and conservative16Mi lane-scan work, with copied clip/title bytes budgeted before preview; full untruncated receipt at most56KiB, otherwise refuse before mutation. UNKNOWN only queries the original clip_operation; never replay a new sequence."
     )]
     fn clip_edit(&self, Parameters(args): Parameters<ClipEditArgs>) -> String {
         let mut request = self.request(Method::ClipEdit);
@@ -704,6 +715,38 @@ impl Bridge {
         request.project_id = Some(args.project_id);
         request.document_session_id = Some(args.document_session_id);
         request.operation_query = Some(concat_editor_mcp::OperationQuery {
+            operation_id: args.operation_id,
+            client_sequence: args.client_sequence,
+        });
+        self.dispatch(request)
+    }
+    #[tool(
+        annotations(read_only_hint = false, open_world_hint = false),
+        description = "Control only this client's original exportVideo using unchanged projectId/documentSessionId/operationId/clientSequence. action is cancel or retryRegistration; independent exact native write approval is required. No new export operation or sequence, no paths and no implicit render. retryRegistration only resumes the original verified registrationPending output. Control status ok alone does not mean the original export completed; inspect the untouched original Response."
+    )]
+    fn clip_export_control(&self, Parameters(args): Parameters<ClipExportControlArgs>) -> String {
+        if self.write_token.is_none() {
+            return serde_json::to_string(&Response::error("notAuthorized")).unwrap_or_default();
+        }
+        let mut request = self.request(Method::ClipExportControl);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.operation_query = Some(OperationQuery {
+            operation_id: args.operation_id,
+            client_sequence: args.client_sequence,
+        });
+        request.clip_export_control_action = Some(args.action);
+        self.dispatch(request)
+    }
+    #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Independently read this client's original verified exportVideo and exact managed asset/version using unchanged projectId/documentSessionId/operationId/clientSequence. No model paths, hashes, assets or expectations. Returns successful freshExport only after original output and fixed library bytes match the original proof. registrationPending remains non-success; this read never cancels, registers or renders."
+    )]
+    fn clip_export_output(&self, Parameters(args): Parameters<OperationArgs>) -> String {
+        let mut request = self.request(Method::ClipExportOutput);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.operation_query = Some(OperationQuery {
             operation_id: args.operation_id,
             client_sequence: args.client_sequence,
         });
@@ -1225,6 +1268,149 @@ mod tests {
             "read-credential"
         );
     }
+    #[test]
+    fn export_tools_are_two_closed_original_identity_routes_with_separate_credentials() {
+        let tools = Bridge::tool_router().list_all();
+        assert_eq!(tools.len(), 36, "34 existing tools plus two export routes");
+        for (name, keys) in [
+            (
+                "clip_export_control",
+                vec![
+                    "projectId",
+                    "documentSessionId",
+                    "operationId",
+                    "clientSequence",
+                    "action",
+                ],
+            ),
+            (
+                "clip_export_output",
+                vec![
+                    "projectId",
+                    "documentSessionId",
+                    "operationId",
+                    "clientSequence",
+                ],
+            ),
+        ] {
+            let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+            let schema = serde_json::to_value(&tool.input_schema).unwrap();
+            assert_eq!(schema["additionalProperties"], false);
+            assert_eq!(schema["properties"].as_object().unwrap().len(), keys.len());
+            assert_eq!(schema["required"].as_array().unwrap().len(), keys.len());
+            for key in keys {
+                assert!(
+                    schema["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&serde_json::json!(key))
+                );
+            }
+        }
+        let adapter = bridge(Some("write-credential".into()));
+        assert_eq!(
+            adapter.request(Method::ClipExportControl).client_token,
+            "write-credential"
+        );
+        assert_eq!(
+            adapter.request(Method::ClipExportOutput).client_token,
+            "read-credential"
+        );
+        assert!(Method::ClipExportControl.is_write());
+        assert!(!Method::ClipExportOutput.is_write());
+        assert_eq!(Method::ClipExportControl.tool_name(), "clip_export_control");
+        assert_eq!(Method::ClipExportOutput.tool_name(), "clip_export_output");
+        let rejected: Response = serde_json::from_str(&bridge(None).clip_export_control(
+            Parameters(ClipExportControlArgs {
+                project_id: "p".into(),
+                document_session_id: "s".into(),
+                operation_id: "unchanged-original".into(),
+                client_sequence: 7,
+                action: concat_editor_mcp::ClipExportControlAction::Cancel,
+            }),
+        ))
+        .unwrap();
+        assert_eq!(rejected.status, "notAuthorized");
+        for value in [
+            serde_json::json!({"projectId":"p","documentSessionId":"s","operationId":"o","clientSequence":1}),
+            serde_json::json!({"projectId":"p","documentSessionId":"s","operationId":"o","clientSequence":1,"action":"stop"}),
+            serde_json::json!({"projectId":"p","documentSessionId":"s","operationId":"o","clientSequence":1,"action":"cancel","path":"/tmp/f"}),
+        ] {
+            assert!(serde_json::from_value::<ClipExportControlArgs>(value).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_control_and_output_dispatch_exact_original_query_without_new_operation() {
+        use std::os::unix::net::UnixListener;
+        let path = std::env::temp_dir().join(format!(
+            "scx-{}.sock",
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
+        ));
+        let listener = UnixListener::bind(&path).unwrap();
+        let original = concat_editor_mcp::operation_id("client", "s", 7).unwrap();
+        let expected = original.clone();
+        let server = std::thread::spawn(move || {
+            for method in [Method::ClipExportControl, Method::ClipExportOutput] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request: Request = concat_editor_mcp::read_message(&mut stream).unwrap();
+                assert_eq!(request.method, method);
+                assert!(concat_editor_mcp::validate_request_shape(&request).is_ok());
+                let query = request.operation_query.unwrap();
+                assert_eq!(query.operation_id, expected);
+                assert_eq!(query.client_sequence, 7);
+                assert_eq!(request.project_id.as_deref(), Some("p"));
+                assert_eq!(request.document_session_id.as_deref(), Some("s"));
+                assert_eq!(
+                    request.client_token,
+                    if method.is_write() {
+                        "w"
+                    } else {
+                        "read-credential"
+                    }
+                );
+                assert_eq!(
+                    request.clip_export_control_action,
+                    if method.is_write() {
+                        Some(concat_editor_mcp::ClipExportControlAction::Cancel)
+                    } else {
+                        None
+                    }
+                );
+                concat_editor_mcp::write_message(
+                    &mut stream,
+                    &Response::ok(serde_json::json!({"adapterDispatchOnly":true})),
+                )
+                .unwrap();
+            }
+        });
+        let mut adapter = bridge(Some("w".into()));
+        adapter.socket = path.clone();
+        let control: Response = serde_json::from_str(&adapter.clip_export_control(Parameters(
+            ClipExportControlArgs {
+                project_id: "p".into(),
+                document_session_id: "s".into(),
+                operation_id: original.clone(),
+                client_sequence: 7,
+                action: concat_editor_mcp::ClipExportControlAction::Cancel,
+            },
+        )))
+        .unwrap();
+        assert_eq!(control.status, "ok");
+        let output: Response =
+            serde_json::from_str(&adapter.clip_export_output(Parameters(OperationArgs {
+                project_id: "p".into(),
+                document_session_id: "s".into(),
+                operation_id: original,
+                client_sequence: 7,
+            })))
+            .unwrap();
+        assert_eq!(output.status, "ok");
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn clip_public_call_reaches_exact_typed_ipc_and_returns_original_receipt() {

@@ -151,6 +151,30 @@ pub enum ClipEdit {
     /// Save the whole current owned project at its original location. No path,
     /// document JSON, revision increment or undo entry is accepted.
     Save {},
+    /// Freeze and export a managed video from the original active timeline.
+    /// No path, project JSON, filter or proof fields are accepted.
+    ExportVideo {
+        /// Trimmed display name, 1..256 UTF-8 bytes, without separators or controls.
+        name: String,
+        /// Closed video standard.
+        codec: crate::clip_export::ClipExportCodec,
+        /// Exactly 720, 1080, 1440 or 2160, preserving native aspect ratio.
+        #[cfg_attr(
+            feature = "stdio",
+            schemars(schema_with = "crate::clip_export::short_side_schema")
+        )]
+        short_side: u32,
+        /// Exactly 24, 30 or 60 frames per second.
+        #[cfg_attr(
+            feature = "stdio",
+            schemars(schema_with = "crate::clip_export::fps_schema")
+        )]
+        fps: u32,
+        /// Existing CRF16/20/26 quality choice, preset veryfast.
+        quality: crate::clip_export::ClipExportQuality,
+        /// True requires actual 10-bit output; false actual 8-bit.
+        ten_bit: bool,
+    },
     /// Probe and import one exact managed library version into the current media bin.
     /// Paths, unversioned assets and implicit import targets are not accepted.
     ImportLibrary {
@@ -440,6 +464,17 @@ impl ClipEdit {
         use ClipEdit::*;
         match self {
             Save {} => {}
+            ExportVideo {
+                name,
+                short_side,
+                fps,
+                ..
+            } => {
+                crate::clip_export::validate_export_name(name)?;
+                if ![720, 1080, 1440, 2160].contains(short_side) || ![24, 30, 60].contains(fps) {
+                    return Err("invalidExportOptions");
+                }
+            }
             ImportLibrary { asset_id, version } => {
                 crate::validate_library_asset(asset_id, version)
                     .map_err(|_| "invalidLibraryVersion")?;

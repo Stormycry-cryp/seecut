@@ -65,6 +65,7 @@ struct ActiveExport {
     id: u64,
     to_library: bool,
     output: String,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The export sheet's state.
@@ -201,10 +202,7 @@ impl ExportPane {
             }
             ExportMsg::Start => self.start(studio),
             ExportMsg::Cancel => {
-                if let Some(job) = self.active_job.take() {
-                    self.cancelled_jobs.insert(job.id);
-                    studio.host.exporter.cancel();
-                }
+                self.cancel_active();
                 self.phase = ExportPhase::Idle;
                 self.progress = 0.0;
                 if self.to_library {
@@ -250,6 +248,15 @@ impl ExportPane {
         }
     }
 
+    fn cancel_active(&mut self) {
+        if let Some(job) = self.active_job.take() {
+            self.cancelled_jobs.insert(job.id);
+            // A completed worker can release the shared slot before its UI
+            // completion arrives. Never cancel a newer occupant of that slot.
+            job.cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
     fn take_finished_job(&mut self, job_id: u64) -> Option<ActiveExport> {
         if self.active_job.as_ref().is_some_and(|job| job.id == job_id) {
             self.active_job.take()
@@ -291,13 +298,7 @@ impl ExportPane {
     pub fn size(&self, studio: &Studio) -> (u32, u32) {
         let short = EXPORT_SHORT_SIDES[self.resolution.min(EXPORT_SHORT_SIDES.len() - 1)];
         let (project_w, project_h) = studio.output_size();
-        let (project_w, project_h) = (project_w.max(1) as f64, project_h.max(1) as f64);
-        let even = |side: f64| ((side / 2.0).round() as u32 * 2).max(2);
-        if project_w >= project_h {
-            (even(short as f64 * project_w / project_h), short)
-        } else {
-            (short, even(short as f64 * project_h / project_w))
-        }
+        normalized_size(project_w, project_h, short).unwrap_or((short, short))
     }
 
     /// A rough size of the file at one quality tier, in bytes.
@@ -405,6 +406,7 @@ impl ExportPane {
             id: job_id,
             to_library: self.to_library,
             output: output.clone(),
+            cancel: job.cancel_handle(),
         });
 
         let registration_id = uuid::Uuid::new_v4().to_string();
@@ -569,6 +571,26 @@ fn unique_export_path(requested: &std::path::Path) -> Result<(std::path::PathBuf
     Err("此目录中同名导出文件过多".to_owned())
 }
 
+/// 与手动面板共用短边与偶数像素规则；极端比例不能溢出整数。
+pub(crate) fn normalized_size(width: u32, height: u32, short: u32) -> Option<(u32, u32)> {
+    let (width, height) = (f64::from(width.max(1)), f64::from(height.max(1)));
+    let long = if width >= height {
+        f64::from(short) * width / height
+    } else {
+        f64::from(short) * height / width
+    };
+    let half = (long / 2.0).round();
+    if !half.is_finite() || half > f64::from(u32::MAX / 2) {
+        return None;
+    }
+    let even = (half as u32).checked_mul(2)?.max(2);
+    Some(if width >= height {
+        (even, short)
+    } else {
+        (short, even)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,6 +602,7 @@ mod tests {
                 id: 2,
                 to_library: true,
                 output: "new.mp4".into(),
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }),
             ..Default::default()
         };
@@ -588,6 +611,37 @@ mod tests {
         assert_eq!(finished.id, 2);
         assert_eq!(finished.output, "new.mp4");
         assert!(pane.take_finished_job(2).is_none());
+    }
+
+    #[test]
+    fn delayed_manual_cancel_does_not_stop_a_new_agent_publication() {
+        use concat_host::export_publication::{PublishState, new_publish_gate};
+        use std::sync::atomic::Ordering;
+
+        let exporter = concat_host::export::Exporter::new();
+        let manual = exporter.begin().unwrap();
+        let original_cancel = manual.cancel_handle();
+        let mut pane = ExportPane {
+            active_job: Some(ActiveExport {
+                id: 1,
+                to_library: true,
+                output: "manual.mp4".into(),
+                cancel: manual.cancel_handle(),
+            }),
+            ..Default::default()
+        };
+        // The worker completed; the queued Finished event has not reached UI.
+        drop(manual);
+        let agent = exporter.begin().unwrap();
+        let (permit, revoker) = new_publish_gate(agent.cancel_handle(), None);
+        let _claim = permit.try_claim().unwrap();
+        pane.cancel_active();
+        assert!(original_cancel.load(Ordering::Acquire));
+        assert!(!agent.cancelled());
+        assert_eq!(revoker.state(), PublishState::Publishing);
+        assert!(exporter.is_busy());
+        assert!(pane.cancelled_jobs.contains(&1));
+        assert!(pane.take_finished_job(1).is_none());
     }
 
     #[test]

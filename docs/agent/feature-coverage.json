@@ -1038,6 +1038,36 @@
       "acceptance": "pending",
       "evidence": []
     },
+    "tool:clip_export_control": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "clip_export_control",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "clip_export_control"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "logic",
+      "evidence": [
+        "src/crates/concat-editor-mcp/src/clip_export_tests.rs",
+        "docs/testing/main-qa/2026-10-21-clip-export/README.md"
+      ]
+    },
+    "tool:clip_export_output": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "clip_export_output",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "clip_export_output"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "logic",
+      "evidence": [
+        "src/crates/concat-editor-mcp/src/clip_export_tests.rs",
+        "docs/testing/main-qa/2026-10-21-clip-export/README.md"
+      ]
+    },
     "tool:clip_operation": {
       "source": "src/crates/concat-editor-mcp/src/main.rs",
       "symbol": "clip_operation",
@@ -1914,6 +1944,7 @@
       "action",
       "app-page-navigation-changed",
       "changed",
+      "clip-export-scope-will-change",
       "clip-source-will-change",
       "personal-can-drop",
       "personal-relink-context-changed",
@@ -2412,12 +2443,21 @@
         "App.export-again",
         "App.export-reveal"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
-      "acceptance": "source",
-      "notes": "未做运行验证。导出任务完成、实际文件可解码和资产注册分别验收。",
+      "mcpTools": [
+        "clip_edit",
+        "clip_operation",
+        "clip_export_control",
+        "clip_export_output"
+      ],
+      "agentStatus": "partial",
+      "acceptance": "logic",
+      "notes": "首批接入结构化编码选项、受管目录导出、原操作查询/取消/登记恢复、实际成片与个人库固定版本读取及Task交付。原生真实短片与合成CLI/运行时分别验证；实际App、模型与作品未验。任意UI目标目录、浏览和Finder显示仍未映射。",
       "statePrerequisites": [
         "已打开剪辑工程"
+      ],
+      "evidence": [
+        "src/crates/concat/src/editor_mcp_clip_export.rs",
+        "docs/testing/main-qa/2026-10-21-clip-export/README.md"
       ]
     },
     {

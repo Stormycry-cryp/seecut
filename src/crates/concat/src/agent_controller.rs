@@ -688,6 +688,10 @@ impl Controller {
             .ipc_generation
             .checked_add(1)
             .ok_or(UiError::Protocol)?;
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::SessionChanged,
+        );
         self.tasks.begin_connection(self.ipc_generation);
         self.task_fenced = self.tasks.current_task_id.is_some();
         self.permissions_supported = false;
@@ -1039,6 +1043,15 @@ impl Controller {
                 self.retired_task_turns.push_back(turn);
             }
         }
+        if matches!(
+            next.status,
+            TaskStatus::Paused | TaskStatus::Stopped | TaskStatus::Failed
+        ) {
+            crate::clip_export_fence::revoke_session(
+                &self.session_id,
+                concat_host::export_publication::PublishRevocation::Stopped,
+            );
+        }
         if next.status == TaskStatus::Running
             && self.task_requested_epoch == Some(next.control_epoch)
         {
@@ -1181,6 +1194,10 @@ impl Controller {
                 previous_task_id,
             },
         )?;
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::Stopped,
+        );
         self.tasks.select_created_task(&task_id);
         self.task_fenced = false;
         self.retired_task_turns.clear();
@@ -1481,6 +1498,10 @@ impl Controller {
     }
     /// Enqueue isn't confirmation. Phase becomes Stopping only on the real {stopping:true} reply.
     pub fn stop(&mut self) -> Result<(), UiError> {
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::Stopped,
+        );
         crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Stopped);
         self.fence_app_control();
         if !self.view().can_stop {
@@ -1936,6 +1957,10 @@ impl Controller {
     }
     /// Stop the old runtime and close its session. Reconnection requires another explicit connect.
     pub fn disconnect(&mut self) {
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::SessionChanged,
+        );
         crate::clip_save_fence::invalidate(
             concat_host::projects::SaveInvalidation::ConversationChanged,
         );
@@ -1963,6 +1988,10 @@ impl Controller {
     /// App exit may use this immediately, without waiting for a session.close response.
     /// The actual process-exit wait is agent_process::shutdown_all_at_exit, never this UI call.
     pub fn shutdown_now(&mut self) {
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::SessionChanged,
+        );
         crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
         self.task_observation_supported = false;
         self.mark_interrupted_model();
@@ -2024,6 +2053,10 @@ impl Controller {
         }
     }
     fn fail(&mut self, error: UiError) {
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::SessionChanged,
+        );
         crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Stopped);
         self.mark_interrupted_model();
         if self.write_in_flight {
@@ -2270,6 +2303,10 @@ impl Controller {
                     previous_task_id, ..
                 } => {
                     self.tasks = TaskProjection::restored(previous_task_id).unwrap_or_default();
+                    crate::clip_export_fence::revoke_session(
+                        &self.session_id,
+                        concat_host::export_publication::PublishRevocation::SessionChanged,
+                    );
                     self.tasks.begin_connection(self.ipc_generation);
                     self.phase = if self.blocked() {
                         Phase::OutcomeUnknown

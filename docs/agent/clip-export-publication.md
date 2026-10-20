@@ -35,6 +35,8 @@ worker持有当前App同一Exporter分配的Job，直到实际终态才释放slo
 
 个人库登记仍沿同一原登记身份。登记前必须核实际prepared副本与原VerifiedOutput摘要，发生在pending journal和commit之前；登记后取得固定AssetReference，并独立核相同版本的受管文件。登记失败保留原输出和原身份，后续只恢复该次登记，不重渲染或创建新操作消除UNKNOWN。
 
+明确的retryRegistration是一次新的恢复写入。它使用本次真实写权限、原有限lease及独立取消/提交控制，在prepared实际副本核对后、写pending journal和commit之前竞争提交资格。撤销先成功则不得写入登记记录或索引；提交先成功则保留实际登记结果。它仍使用原registrationId和成片，不重新渲染，也不能把旧视频已获发布资格当作以后恢复写入的无限授权。
+
 本批内部原语只证明取消与发布资格的竞争，不证明最终文件持久化、个人库、原操作回执或真实App接线。所有成功与未知状态沿将来的原回执保留，不新建第二本业务账本。
 
 ## 验证要求

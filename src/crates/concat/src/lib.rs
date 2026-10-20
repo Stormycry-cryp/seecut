@@ -69,6 +69,7 @@ mod agent_tasks;
 mod agent_ui;
 mod asset_version;
 mod chips;
+mod clip_export_fence;
 mod clip_save_fence;
 mod cloud;
 mod cloud_files;
@@ -530,6 +531,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     });
     app.on_titlebar_close(|| {
+        crate::clip_export_fence::document_will_change();
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
             if toonflow_webview::defer_close(&app) {
@@ -548,6 +550,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     });
     // System-driven close (Alt+F4, taskbar close): the same road out.
     app.window().on_close_requested(|| {
+        crate::clip_export_fence::document_will_change();
         log::info!("close: system close request (Alt+F4 / taskbar)");
         let mut should_close = false;
         Shell::with(|shell, app| {
@@ -605,6 +608,15 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
     macro_rules! on_window {
         ($($handler:tt)*) => { handler!(publish, $($handler)*) };
+    }
+    macro_rules! on_document_window {
+        (|$state:ident $(, $arg:ident : $ty:ty)*| $body:block) => {{
+            let handler = on_window!(|$state $(, $arg : $ty)*| $body);
+            move |$($arg : $ty),*| {
+                crate::clip_export_fence::document_will_change();
+                handler($($arg),*);
+            }
+        }};
     }
     macro_rules! on_lanes {
         ($($handler:tt)*) => { handler!(publish_lanes, $($handler)*) };
@@ -709,13 +721,13 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_start_browse(on_window!(|state| {
         state.handle(Msg::Start(StartMsg::Browse));
     }));
-    app.on_start_create(on_window!(|state| {
+    app.on_start_create(on_document_window!(|state| {
         state.handle(Msg::Start(StartMsg::Create));
     }));
     app.on_project_open_cancel(on_window!(|state| {
         state.cancel_project_open(&i18n::t("Project opening cancelled"));
     }));
-    app.on_start_open_recent(on_window!(|state, path: SharedString| {
+    app.on_start_open_recent(on_document_window!(|state, path: SharedString| {
         state.handle(Msg::Start(StartMsg::OpenRecent(path.to_string())));
     }));
     app.on_start_forget_recent(on_window!(|state, path: SharedString| {
@@ -1281,7 +1293,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             }
         }
     ));
-    app.on_close_clip_project(on_window!(|state| {
+    app.on_close_clip_project(on_document_window!(|state| {
         if let Err(error) = state.close_project() {
             state.notify(&error, true);
         }
@@ -1995,6 +2007,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
         });
         app.on_settings_mcp_grant_r(|| {
             Shell::with(|shell, app| {
+                crate::clip_export_fence::revoke_client(
+                    app.get_settings().mcp_client.as_str(),
+                    concat_host::export_publication::PublishRevocation::Revoked,
+                );
                 let studio = shell.studio.borrow();
                 studio.editor_mcp.borrow_mut().grant(&studio, &app, false);
                 studio.publish(&app, &shell.models);
@@ -2002,6 +2018,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
         });
         app.on_settings_mcp_grant_m(|| {
             Shell::with(|shell, app| {
+                crate::clip_export_fence::revoke_client(
+                    app.get_settings().mcp_client.as_str(),
+                    concat_host::export_publication::PublishRevocation::Revoked,
+                );
                 let studio = shell.studio.borrow();
                 studio.editor_mcp.borrow_mut().grant(&studio, &app, true);
                 studio.publish(&app, &shell.models);
@@ -2009,6 +2029,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
         });
         app.on_settings_mcp_revoke(|| {
             Shell::with(|shell, app| {
+                crate::clip_export_fence::revoke_client(
+                    app.get_settings().mcp_client.as_str(),
+                    concat_host::export_publication::PublishRevocation::Revoked,
+                );
                 let studio = shell.studio.borrow();
                 studio.editor_mcp.borrow_mut().revoke();
                 studio.publish(&app, &shell.models);
@@ -2033,6 +2057,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
             });
         });
         app.on_settings_mcp_revoke_move(|| {
+            crate::clip_export_fence::invalidate(
+                concat_host::export_publication::PublishRevocation::Revoked,
+            );
             Shell::with(|shell, app| {
                 let studio = shell.studio.borrow();
                 {
@@ -2050,7 +2077,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
         app.on_settings_mcp_revoke(|| {});
         app.on_settings_mcp_grant_move(|| {});
         app.on_settings_mcp_renew_move(|| {});
-        app.on_settings_mcp_revoke_move(|| {});
+        app.on_settings_mcp_revoke_move(|| {
+            crate::clip_export_fence::invalidate(
+                concat_host::export_publication::PublishRevocation::Revoked,
+            );
+        });
     }
     app.on_model_activated(on_window!(|state, id: SharedString| {
         state.handle(Msg::Settings(SettingsMsg::ModelActivated(id.to_string())));
@@ -2122,7 +2153,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
         state.menu_bar_token += 1;
     }));
     app.on_app_menu_selected({
-        move |action| {
+        move |action: SharedString| {
+            if matches!(action.as_str(), "open" | "new" | "close-window") {
+                crate::clip_export_fence::document_will_change();
+            }
             Shell::with(|shell, app| {
                 {
                     let mut state = shell.studio.borrow_mut();
