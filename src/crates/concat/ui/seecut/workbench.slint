@@ -46,5 +46,5 @@ export component CloudWorkbench inherits Rectangle {
         if SeeCut.page == 3: CreditsPage { width: 100%; vertical-stretch: 1; }
         if SeeCut.page == 4: AccountPage { width: 100%; vertical-stretch: 1; }
     }
-    TemplateEditor { open: SeeCut.template-editor-open; current-config: SeeCut.template-editor-current; closed => { SeeCut.template-editor-open = false; } }
+    TemplateEditor { open: SeeCut.template-editor-open; current-config: SeeCut.template-editor-current; closed => { SeeCut.change-template-editor-open(false); } }
 }

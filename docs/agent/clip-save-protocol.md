@@ -1,6 +1,6 @@
 # Clip 原位置保存协议 v1
 
-状态：主代理已确定下一批接口设计，后端与配套运行时仅准备隔离候选。本文不是已实现或实际App验收声明。实施顺序见[保存计划](../plans/2026-10-21-agent-clip-save.md)。
+状态：后端、公开协议、原生适配和配套运行时已集成本地功能分支，默认配置编译与相关无GUI检查通过；开发模式条件分支补充编译检查通过。本文不代表实际App保存链已验收。实施顺序见[保存计划](../plans/2026-10-21-agent-clip-save.md)，实际证据见[保存QA](../testing/main-qa/2026-10-21-clip-save/README.md)。
 
 ## 工具与范围
 
@@ -29,6 +29,8 @@ sourceEditStateId, sourceDocumentStateId, saveProof
 
 这些字段来自原请求与原生实际快照，不用完成时的新工程填充。sourceDocumentStateId沿既有 `clip-v1-<64位小写SHA256>` 算法；各版本和计数必须是非负安全整数。
 
+可信审批在原版本与选择核对、业务预检之后，将原generation和实际Project摘要保存在原Permit内，模型不能提供或替换。旧raw到达前若用户已编辑，typed未提交回执仍保留审批时的原来源；不得混用新Project摘要与旧revision。缺少可信原来源时拒绝，准备host快照前还须核对当前generation与实际Project摘要均一致。Save审批及UI准备只做内存检查，原owner、固定manifest和实际文件核验由worker执行。
+
 saveProof是version=1的封闭联合：
 
 | state | envelope status | 必要字段 |
@@ -43,6 +45,8 @@ saveTicket是原SaveLane票据的规范十进制u64字符串，只有内部归�
 notCommitted.reason闭合为 `cancelled/expired/superseded/sourceChanged/ownershipChanged/targetChanged/resourceLimit/ioFailure`；只有原生能证明未尝试rename才能返回。CAS已发生但时钟后验明确到期时，commitClaimed:true仍可返回expired，不能伪称未获得提交权。
 
 outcomeUnknown.stage闭合为 `afterClaim/rename/directorySync/readback/engineParse`；renameSucceeded:true必须同时renameAttempted:true。读回不符、目录同步失败和确认丢失不得以普通ioFailure当作未写入。未包含合法保存证明的ioFailure不能终结原保存操作。
+
+原操作已发送后，查询或恢复收到resourceLimit、leaseExpired等通用拒绝，只说明本次查询失败。无论是否带原身份，都不能据此推断原保存未提交；没有合法notCommitted证明就保留原UNKNOWN。最初调用的明确受理前拒绝，以及运行时能证明未发送的not_sent，沿原拒绝合同处理，不能被后来的查询结果冒充。
 
 verified只能由真实rename、文件/目录同步、新开原manifest、有界字节与hash核对，以及实际engine解析与原冻结Project等价后构造。CAS、dirty=false、内存相同、模型文字都不能构造成功。保存不复制媒体、不生成成片。
 

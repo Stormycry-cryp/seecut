@@ -992,6 +992,7 @@ impl Controller {
                     .is_some_and(|turn| self.retired_task_turns.contains(turn)))
     }
     fn fence_task(&mut self) {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Stopped);
         for turn in [
             self.turn_id.as_ref(),
             self.approval.as_ref().map(|v| &v.turn_id),
@@ -1480,6 +1481,7 @@ impl Controller {
     }
     /// Enqueue isn't confirmation. Phase becomes Stopping only on the real {stopping:true} reply.
     pub fn stop(&mut self) -> Result<(), UiError> {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Stopped);
         self.fence_app_control();
         if !self.view().can_stop {
             return Err(UiError::Busy);
@@ -1934,6 +1936,9 @@ impl Controller {
     }
     /// Stop the old runtime and close its session. Reconnection requires another explicit connect.
     pub fn disconnect(&mut self) {
+        crate::clip_save_fence::invalidate(
+            concat_host::projects::SaveInvalidation::ConversationChanged,
+        );
         self.fence_app_control();
         self.task_observation_supported = false;
         self.mark_interrupted_model();
@@ -1958,6 +1963,7 @@ impl Controller {
     /// App exit may use this immediately, without waiting for a session.close response.
     /// The actual process-exit wait is agent_process::shutdown_all_at_exit, never this UI call.
     pub fn shutdown_now(&mut self) {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
         self.task_observation_supported = false;
         self.mark_interrupted_model();
         self.ignore_runtime_events = true;
@@ -2018,6 +2024,7 @@ impl Controller {
         }
     }
     fn fail(&mut self, error: UiError) {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Stopped);
         self.mark_interrupted_model();
         if self.write_in_flight {
             self.unknown();
@@ -3491,6 +3498,22 @@ fn remote_error(code: &str) -> UiError {
 
 #[cfg(all(test, unix, not(any(target_os = "ios", target_os = "android"))))]
 mod tests {
+
+    #[test]
+    fn clip_save_native_controller_stop_disconnect_and_shutdown_revoke_original() {
+        for action in 0..3 {
+            let (mut controller, _) = task_controller();
+            let pending = crate::clip_save_fence::test_support::PendingSave::new();
+            match action {
+                0 => {
+                    let _ = controller.stop();
+                }
+                1 => controller.disconnect(),
+                _ => controller.shutdown_now(),
+            }
+            pending.assert_not_committed();
+        }
+    }
     fn document_mut(scope: &mut AgentScope) -> &mut DocumentIdentity {
         match scope {
             AgentScope::Document(document) => document,
@@ -4070,7 +4093,9 @@ mod tests {
             )
             .unwrap();
         f.until(|c| c.view().approval.is_some());
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
         f.controller.task_command(TaskCommand::Pause).unwrap();
+        pending_save.assert_not_committed();
         f.until(|c| {
             c.current_task()
                 .is_some_and(|task| task.status == TaskStatus::Paused)
@@ -4083,7 +4108,9 @@ mod tests {
             f.controller.approve("task-approval-1", true),
             Err(UiError::AuthorizationRequired)
         );
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
         f.controller.task_command(TaskCommand::Stop).unwrap();
+        pending_save.assert_not_committed();
         f.until(|c| {
             c.current_task()
                 .is_some_and(|task| task.status == TaskStatus::Stopped)
@@ -4120,7 +4147,9 @@ mod tests {
             confirmed: false,
             observation_binding: Some(frozen_document_observation(&f)),
         };
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
         f.controller.retry_task_update(&original).unwrap();
+        pending_save.assert_not_committed();
         f.until(|c| c.rejected_task_update() == Some("original-update"));
         assert_eq!(
             f.controller.current_task().unwrap().task_revision,
@@ -4135,12 +4164,16 @@ mod tests {
         );
         original.expected_revision = original_revision;
         original.retries = 1;
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
         f.controller.retry_task_update(&original).unwrap();
+        pending_save.assert_not_committed();
         f.until(|c| c.acknowledged_task_update.as_deref() == Some("original-update"));
         let applied_revision = f.controller.current_task().unwrap().task_revision;
         f.controller.acknowledged_task_update = None;
         // A lost ACK is retrievable with the same original revision and ID.
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
         f.controller.retry_task_update(&original).unwrap();
+        pending_save.assert_not_committed();
         f.until(|c| c.acknowledged_task_update.as_deref() == Some("original-update"));
         assert_eq!(
             f.controller.current_task().unwrap().task_revision,

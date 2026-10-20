@@ -442,6 +442,7 @@ pub(super) struct Permit {
     pub client: String,
     pub intent: Intent,
     pub expires_at: Instant,
+    pub clip_save_origin: Option<super::clip_save::ApprovedSource>,
     used: bool,
 }
 #[derive(Default)]
@@ -451,9 +452,11 @@ pub(super) struct Permits {
 }
 impl Permits {
     pub fn clear(&mut self) {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.entries.clear();
     }
     pub fn revoke(&mut self, id: u64) {
+        crate::clip_save_fence::revoke_permit(id);
         self.entries.retain(|p| p.id != id);
     }
     pub fn grant(
@@ -463,6 +466,26 @@ impl Permits {
         intent: Intent,
         now: Instant,
     ) -> Option<u64> {
+        self.grant_with_clip_save_origin(scope, client, intent, now, None)
+    }
+    /// Attach only a source captured by the trusted approval path. Ordinary
+    /// permits have no source, so they cannot authorize a Save snapshot.
+    pub fn grant_with_clip_save_origin(
+        &mut self,
+        scope: Scope,
+        client: String,
+        intent: Intent,
+        now: Instant,
+        clip_save_origin: Option<super::clip_save::ApprovedSource>,
+    ) -> Option<u64> {
+        if clip_save_origin.is_some()
+            && !intent
+                .clip_action
+                .as_ref()
+                .is_some_and(|action| matches!(action.edit, concat_editor_mcp::ClipEdit::Save {}))
+        {
+            return None;
+        }
         self.entries.retain(|permit| permit.expires_at > now);
         if self.entries.len() >= 128 {
             return None;
@@ -475,6 +498,7 @@ impl Permits {
             client,
             intent,
             expires_at: now.checked_add(Duration::from_secs(300))?,
+            clip_save_origin,
             used: false,
         });
         Some(id)
@@ -505,6 +529,7 @@ impl Permits {
                 && p.scope == permit.scope
                 && p.client == permit.client
                 && p.intent == permit.intent
+                && p.clip_save_origin == permit.clip_save_origin
                 && p.expires_at > now
         })
     }

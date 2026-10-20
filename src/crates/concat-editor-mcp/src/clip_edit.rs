@@ -148,6 +148,9 @@ pub struct ClipSpeedPoint {
     deny_unknown_fields
 )]
 pub enum ClipEdit {
+    /// Save the whole current owned project at its original location. No path,
+    /// document JSON, revision increment or undo entry is accepted.
+    Save {},
     /// Probe and import one exact managed library version into the current media bin.
     /// Paths, unversioned assets and implicit import targets are not accepted.
     ImportLibrary {
@@ -436,6 +439,7 @@ impl ClipEdit {
     pub fn validate(&self) -> Result<(), &'static str> {
         use ClipEdit::*;
         match self {
+            Save {} => {}
             ImportLibrary { asset_id, version } => {
                 crate::validate_library_asset(asset_id, version)
                     .map_err(|_| "invalidLibraryVersion")?;

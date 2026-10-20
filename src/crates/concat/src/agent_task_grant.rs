@@ -94,6 +94,7 @@ fn ordinary_tool(tool: &str, args: &Value) -> bool {
                     | "clearKey"
                     | "clearKeys"
                     | "importLibrary"
+                    | "save"
             )
         ),
         "move_selected_image"
@@ -357,6 +358,30 @@ mod tests {
             true
         ));
     }
+
+    #[test]
+    fn clip_save_task_grant_requires_original_running_scope() {
+        let scope = scope();
+        let task = summary(1, "turn-1", None);
+        let grant = TaskGrant::from_human(scope.clone(), 1).unwrap();
+        let save = scoped(json!({"edit":{"kind":"save"}}));
+        assert!(grant.allows(&scope, &task, &task, "turn-1", "clip_edit", &save, false));
+        assert!(!grant.allows(&scope, &task, &task, "turn-1", "canvas_edit", &save, false));
+        let mut paused = task.clone();
+        paused.status = TaskStatus::Paused;
+        assert!(!grant.allows(&scope, &paused, &task, "turn-1", "clip_edit", &save, false));
+        assert!(!grant.allows(
+            &scope,
+            &task,
+            &task,
+            "other-turn",
+            "clip_edit",
+            &save,
+            false
+        ));
+        assert!(!grant.allows(&scope, &task, &task, "turn-1", "clip_edit", &save, true));
+    }
+
     #[test]
     fn task_asset_import_is_an_explicit_clip_action_and_other_new_kinds_stay_manual() {
         let scope = scope();

@@ -548,6 +548,7 @@ mod desktop {
     }
     impl Drop for Binding {
         fn drop(&mut self) {
+            crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
             Self::fence_app_control_native(true);
             self.timer.stop();
             self.state.get_mut().controller.shutdown_now();
@@ -564,6 +565,7 @@ mod desktop {
     impl Binding {
         /// Start bounded process shutdown before the app's exit-only reaping hook.
         pub(crate) fn shutdown(&self, app: &App) {
+            crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
             Self::fence_app_control_native(true);
             self.state.borrow_mut().record.draft =
                 app.global::<Assistant>().get_draft().to_string();
@@ -621,6 +623,9 @@ mod desktop {
             if !self.retiring.borrow().is_empty() {
                 return;
             }
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::ConversationChanged,
+            );
             self.state.borrow_mut().record.draft =
                 app.global::<Assistant>().get_draft().to_string();
             let _ = self.persist(true);
@@ -771,6 +776,9 @@ mod desktop {
             Ok(())
         }
         fn new_session(&self, app: &App) {
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::ConversationChanged,
+            );
             Self::fence_app_control_native(true);
             self.refresh(app);
             if !app.global::<Assistant>().get_open()
@@ -958,6 +966,9 @@ mod desktop {
             }
         }
         fn select_session(&self, app: &App, index: i32) {
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::ConversationChanged,
+            );
             Self::fence_app_control_native(true);
             self.refresh(app);
             let Ok(index) = usize::try_from(index) else {
@@ -2355,6 +2366,9 @@ mod desktop {
                 return;
             }
             if matches!(action, TaskCommand::Pause | TaskCommand::Stop) {
+                crate::clip_save_fence::invalidate(
+                    concat_host::projects::SaveInvalidation::Stopped,
+                );
                 let mut state = self.state.borrow_mut();
                 state.task_grant = None;
                 state.update_grant = None;
@@ -2425,6 +2439,9 @@ mod desktop {
                     state.notice = "补充要求需为文字；当前输入与附件已保留".into();
                     return;
                 }
+                crate::clip_save_fence::invalidate(
+                    concat_host::projects::SaveInvalidation::Stopped,
+                );
                 let grant = state.task_grant.take();
                 state.controller.withdraw_task_approvals();
                 revoke_task_permits(&mut state);
@@ -2582,6 +2599,9 @@ mod desktop {
             // The conversation, draft, active request and pending approval survive hiding.
         }
         fn disconnect(&self, app: &App) {
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::ConversationChanged,
+            );
             {
                 let mut state = self.state.borrow_mut();
                 if !app.global::<Assistant>().get_can_disconnect() {
@@ -2735,6 +2755,7 @@ mod desktop {
             {
                 return;
             }
+            let dialog = crate::clip_save_fence::NativeDialog::enter();
             let epoch = {
                 let mut state = self.state.borrow_mut();
                 state.selecting = true;
@@ -2744,6 +2765,7 @@ mod desktop {
             let sender = self.sender.clone();
             let session_id = self.state.borrow().record.id.clone();
             spawn_detached(move || {
+                let _dialog = dialog;
                 let title = match kind {
                     FileKind::Runtime => "选择 Node 运行环境文件",
                     FileKind::Entrypoint => "选择 Agent 入口文件",
@@ -3630,6 +3652,9 @@ mod desktop {
             let app = app.as_weak();
             move || {
                 if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    crate::clip_save_fence::invalidate(
+                        concat_host::projects::SaveInvalidation::Stopped,
+                    );
                     let (task_turn, frozen_turn) = {
                         let state = binding.state.borrow();
                         (

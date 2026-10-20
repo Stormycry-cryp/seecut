@@ -1141,6 +1141,7 @@ impl CanvasPane {
 
     fn defer_transform_boundary(&mut self, action: CanvasBoundaryAction, label: &'static str) {
         if self.pending_transform_boundary.is_none() {
+            crate::clip_save_fence::before_change();
             self.pending_transform_boundary = Some(PendingTransformBoundary { action, label });
         }
     }
@@ -5533,6 +5534,7 @@ impl CanvasPane {
         self.brush_release();
         if self.is_modified() {
             self.pending_open = Some(path.to_owned());
+            crate::clip_save_fence::before_change();
             self.open_confirm = true;
             return;
         }
@@ -6275,6 +6277,7 @@ impl CanvasPane {
         self.brush_release();
         if self.is_modified() {
             self.pending_open = Some(path.to_owned());
+            crate::clip_save_fence::before_change();
             self.open_confirm = true;
             return Err("open: current canvas has unsaved changes".into());
         }

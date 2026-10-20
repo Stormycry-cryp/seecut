@@ -53,6 +53,12 @@ pub fn validate_clip_parameters(
         return Err("invalidInput: clip edit state".into());
     }
     p.action.edit.validate().map_err(str::to_owned)?;
+    if matches!(p.action.edit, ClipEdit::Save {})
+        && (p.client_sequence > 9_007_199_254_740_991
+            || p.selection_revision > 9_007_199_254_740_991)
+    {
+        return Err("invalidInput: unsafe save count".into());
+    }
     if serde_json::to_vec(&p.action.edit)
         .map_err(|_| "invalidInput")?
         .len()

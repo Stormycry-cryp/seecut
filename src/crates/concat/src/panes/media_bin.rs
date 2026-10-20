@@ -93,7 +93,7 @@ pub struct MediaBin {
     /// was dragged from.
     rows: HashMap<String, i32>,
     next_row: i32,
-    pub selected: HashSet<String>,
+    pub(crate) selected: crate::clip_save_fence::Selection<HashSet<String>>,
     pub filter: MediaFilter,
     /// 0 = Added, 1 = Name, 2 = Kind
     pub sort: usize,
@@ -106,7 +106,7 @@ impl Default for MediaBin {
         Self {
             rows: HashMap::new(),
             next_row: 1,
-            selected: HashSet::new(),
+            selected: Default::default(),
             filter: MediaFilter::All,
             sort: 0,
             thumbs: HashMap::new(),
@@ -173,13 +173,13 @@ impl MediaBin {
                 to_row,
                 additive,
             } => {
-                self.selected = self.band(
+                self.selected.replace(self.band(
                     studio.project(),
                     columns,
                     (from_col, to_col),
                     (from_row, to_row),
                     additive,
-                );
+                ));
             }
             MediaMsg::Remove(row) => {
                 if let Some(id) = self
@@ -457,6 +457,15 @@ fn media_kind_of(kind: model::MediaKind) -> MediaKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_save_media_selection_entry_revokes_original_pending_write() {
+        let mut bin = MediaBin::default();
+        let pending = crate::clip_save_fence::test_support::PendingSave::new();
+        bin.selected.insert("actual-media-selection".into());
+        pending.assert_not_committed();
+    }
+
     use concat_project::model::{MediaKind as Kind, Project};
 
     fn project() -> Project {

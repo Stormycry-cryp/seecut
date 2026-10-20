@@ -297,7 +297,7 @@ export component GenerationForm inherits Rectangle {
                     placeholder: "请选择模型"; horizontal-stretch: 1;
                     changed(index) => { SeeCut.model-index = index; SeeCut.changed("model", index); }
                 }
-                WorkspaceIcon { glyph: Glyph.sliders; label: SeeCut.generation-parameters-open ? "收起参数" : "展开参数"; clicked => { SeeCut.generation-parameters-open = !SeeCut.generation-parameters-open; } }
+                WorkspaceIcon { glyph: Glyph.sliders; label: SeeCut.generation-parameters-open ? "收起参数" : "展开参数"; clicked => { SeeCut.change-generation-parameters-open(!SeeCut.generation-parameters-open); } }
             }
             if SeeCut.mode == 1 && SeeCut.generation-parameters-open && (SeeCut.durations.length > 0 || SeeCut.supports-generation-audio): HorizontalLayout {
                 height: Theme.workbench-h;
@@ -537,7 +537,7 @@ component GenerationResults inherits Rectangle {
                                         } else if item.failed {
                                             SeeCut.focus-return-kind = "generation-result"; SeeCut.focus-return-id = item.id; SeeCut.focus-return-claimed = false;
                                             SeeCut.action("task-select", item.id);
-                                            SeeCut.result-preview-open = true;
+                                            SeeCut.change-result-preview-open(true);
                                         } else {
                                             SeeCut.focus-return-kind = "generation-result"; SeeCut.focus-return-id = item.id; SeeCut.focus-return-claimed = false;
                                             SeeCut.action("task-preview-open", item.id);
@@ -627,7 +627,7 @@ component GenerationResults inherits Rectangle {
                                     clicked => {
                                         SeeCut.focus-return-kind = "generation-result"; SeeCut.focus-return-id = item.id; SeeCut.focus-return-claimed = false;
                                         SeeCut.action("task-select", item.id);
-                                        SeeCut.result-preview-open = true;
+                                        SeeCut.change-result-preview-open(true);
                                     }
                                 }
                             }
@@ -702,12 +702,12 @@ export component GenerationPage inherits Rectangle {
         open: SeeCut.result-preview-open && SeeCut.selected-task >= 0 && SeeCut.selected-task < SeeCut.tasks.length && SeeCut.tasks[SeeCut.selected-task].failed;
         title: SeeCut.selected-task >= 0 && SeeCut.selected-task < SeeCut.tasks.length ? SeeCut.tasks[SeeCut.selected-task].status : "生成未完成"; glyph: Glyph.info;
         surface-width: Math.min(560px, root.width - 32px); surface-height: Math.min(320px, root.height - 32px);
-        closed => { SeeCut.result-preview-open = false; }
+        closed => { SeeCut.change-result-preview-open(false); }
         if SeeCut.selected-task >= 0 && SeeCut.selected-task < SeeCut.tasks.length: FocusScope {
             enabled: SeeCut.result-preview-open && SeeCut.tasks[SeeCut.selected-task].failed;
             changed enabled => { if self.enabled { self.focus(); } }
             key-pressed(event) => {
-                if event.text == Key.Escape { SeeCut.result-preview-open = false; return EventResult.accept; }
+                if event.text == Key.Escape { SeeCut.change-result-preview-open(false); return EventResult.accept; }
                 return EventResult.reject;
             }
             VerticalLayout {
@@ -729,7 +729,7 @@ export component GenerationPage inherits Rectangle {
                 HorizontalLayout { spacing: 8px; height: 34px;
                     if SeeCut.tasks[SeeCut.selected-task].refillable: AppButton { label: "编辑输入"; enabled: !SeeCut.working; clicked => { SeeCut.action("task-refill", SeeCut.tasks[SeeCut.selected-task].id); } }
                     Rectangle { horizontal-stretch: 1; }
-                    AppButton { label: "关闭"; clicked => { SeeCut.result-preview-open = false; } }
+                    AppButton { label: "关闭"; clicked => { SeeCut.change-result-preview-open(false); } }
                 }
             }
         }
@@ -739,12 +739,12 @@ export component GenerationPage inherits Rectangle {
         title: "保存到团队资产库";
         glyph: Glyph.folder;
         surface-width: Math.min(420px, root.width - 32px);
-        closed => { SeeCut.save-team-task = ""; }
+        closed => { SeeCut.change-save-team-task(""); }
         save-team-focus := FocusScope {
             enabled: SeeCut.save-team-task != "";
             changed enabled => { if self.enabled { self.focus(); } }
             key-pressed(event) => {
-                if event.text == Key.Escape { SeeCut.save-team-task = ""; return EventResult.accept; }
+                if event.text == Key.Escape { SeeCut.change-save-team-task(""); return EventResult.accept; }
                 return EventResult.reject;
             }
             VerticalLayout {
@@ -759,14 +759,14 @@ export component GenerationPage inherits Rectangle {
                 if SeeCut.team-names.length == 0: AppButton { label: "创建或加入团队"; clicked => { SeeCut.action("navigate", "2"); } }
                 HorizontalLayout {
                     spacing: 8px;
-                    AppButton { label: "取消"; clicked => { SeeCut.save-team-task = ""; } }
+                    AppButton { label: "取消"; clicked => { SeeCut.change-save-team-task(""); } }
                     AppButton {
                         label: "确认上传";
                         primary: true;
                         enabled: !SeeCut.prompt-rewriting && !SeeCut.working && SeeCut.team-index >= 0 && SeeCut.team-index < SeeCut.team-names.length;
                         clicked => {
                             SeeCut.action("task-save-team", SeeCut.save-team-task);
-                            SeeCut.save-team-task = "";
+                            SeeCut.change-save-team-task("");
                         }
                     }
                 }

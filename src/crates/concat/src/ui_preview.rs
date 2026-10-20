@@ -292,7 +292,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             .into()
     });
     state.on_personal_can_drop(|id, index| id == "fixture-0" && index == 3);
-    state.set_auth_open(false);
+    state.invoke_change_auth_open(false);
     state.set_reduced_motion(true);
     state.set_signed_in(true);
     state.set_prompt("以参考素材为基础，制作一张暖色几何海报，保留主体轮廓与材质细节。".into());
@@ -311,7 +311,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             app.global::<Theme>().set_dark(dark);
             capture(&app, directory, &format!("failure-{theme}-1000"), 1000, 760)?;
             capture(&app, directory, &format!("failure-{theme}-900"), 900, 640)?;
-            state.set_result_preview_open(true);
+            state.invoke_change_result_preview_open(true);
             capture(
                 &app,
                 directory,
@@ -319,10 +319,10 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
                 900,
                 640,
             )?;
-            state.set_result_preview_open(false);
+            state.invoke_change_result_preview_open(false);
         }
         state.set_selected_task(2);
-        state.set_result_preview_open(true);
+        state.invoke_change_result_preview_open(true);
         capture(&app, directory, "failure-legacy-no-edit", 900, 640)?;
         return Ok(());
     }
@@ -457,7 +457,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             })
             .collect(),
     ));
-    state.set_canvas_gallery_open(false);
+    state.invoke_change_canvas_gallery_open(false);
     state.set_selected_task(0);
     let editor = app.global::<Editor>();
     editor.set_output_width(320);
@@ -520,13 +520,13 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             })
             .collect(),
     ));
-    state.set_page(0);
+    state.invoke_change_page(0);
     app.set_on_start(true);
     capture(&app, directory, "clip-project-gallery", 1280, 800)?;
     capture(&app, directory, "clip-project-gallery-1440x960", 1440, 960)?;
-    app.set_clip_create_open(true);
+    app.invoke_change_clip_create_open(true);
     capture(&app, directory, "clip-project-new", 1280, 800)?;
-    app.set_clip_create_open(false);
+    app.invoke_change_clip_create_open(false);
     app.set_on_start(false);
     // Product-layout comparison at the exact approved viewport sizes. The
     // media is sampled from the local Figma screenshot when the opt-in source
@@ -563,7 +563,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_prompt(
         "极简建筑立于开阔的沙地，低角度日光，细腻的混凝土与木材质感，安静的建筑摄影。".into(),
     );
-    state.set_page(1);
+    state.invoke_change_page(1);
     capture(&app, directory, "generation-pro-1440x960", 1440, 960)?;
     capture(&app, directory, "generation-pro-1024x960", 1024, 960)?;
     capture(&app, directory, "generation-pro-1440x800", 1440, 800)?;
@@ -748,7 +748,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         },
     ]));
     state.set_handoff_selected_id("".into());
-    state.set_handoff_open(true);
+    state.invoke_change_handoff_open(true);
     app.global::<Theme>().set_dark(true);
     capture(
         &app,
@@ -807,7 +807,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             button: slint::platform::PointerEventButton::Left,
         });
     app.global::<Theme>().set_dark(false);
-    state.set_handoff_open(false);
+    state.invoke_change_handoff_open(false);
     state.set_references(model(refs));
     state.set_reference_max(4);
     state.set_model_names(model(vec!["演示图像模型".into()]));
@@ -833,7 +833,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         (7, "templates"),
         (6, "canvas"),
     ] {
-        state.set_page(page);
+        state.invoke_change_page(page);
         for (width, height, suffix) in [(1400, 900, "wide"), (900, 640, "narrow")] {
             capture(&app, directory, &format!("{name}-{suffix}"), width, height)?;
         }
@@ -848,7 +848,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         date_label: "比例边界".into(),
         items: model(boundary_assets[..2].to_vec()),
     }]));
-    state.set_page(5);
+    state.invoke_change_page(5);
     capture(&app, directory, "personal-ratio-bounds-1440x960", 1440, 960)?;
     capture(&app, directory, "personal-ratio-bounds-900x640", 900, 640)?;
     let theme = app.global::<Theme>();
@@ -1056,12 +1056,12 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         (7, "templates"),
         (6, "canvas"),
     ] {
-        state.set_page(page);
+        state.invoke_change_page(page);
         capture(&app, directory, &format!("{name}-dark-narrow"), 900, 640)?;
     }
     app.global::<Theme>().set_dark(false);
-    state.set_page(6);
-    state.set_canvas_gallery_open(true);
+    state.invoke_change_page(6);
+    state.invoke_change_canvas_gallery_open(true);
     capture(&app, directory, "canvas-project-gallery", 1280, 800)?;
     capture(
         &app,
@@ -1079,27 +1079,27 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         960,
     )?;
     app.global::<Theme>().set_dark(false);
-    state.set_canvas_gallery_open(false);
-    state.set_page(1);
+    state.invoke_change_canvas_gallery_open(false);
+    state.invoke_change_page(1);
     for width in [1024, 1280, 1440] {
         capture(&app, directory, &format!("generation-{width}"), width, 800)?;
     }
-    state.set_page(5);
+    state.invoke_change_page(5);
     for width in [1024, 1280, 1440] {
         capture(&app, directory, &format!("personal-{width}"), width, 800)?;
     }
-    state.set_page(2);
+    state.invoke_change_page(2);
     click_fixture(&app, 1400, 900, 1185.0, 438.0)?;
     capture(&app, directory, "team-use-menu-wide", 1400, 900)?;
-    state.set_team_menu(0);
+    state.invoke_change_team_menu(0);
     click_fixture(&app, 900, 640, 840.0, 443.0)?;
     capture(&app, directory, "team-manage-menu-narrow", 900, 640)?;
-    state.set_team_menu(0);
-    state.set_page(6);
+    state.invoke_change_team_menu(0);
+    state.invoke_change_page(6);
     app.global::<Theme>().set_dark(true);
-    state.set_canvas_export_open(true);
+    state.invoke_change_canvas_export_open(true);
     capture(&app, directory, "canvas-export-dark-1440x960", 1440, 960)?;
-    state.set_canvas_export_open(false);
+    state.invoke_change_canvas_export_open(false);
     app.global::<Theme>().set_dark(false);
     editor.set_canvas_sidebar_open(false);
     capture(&app, directory, "canvas-collapsed-narrow", 900, 640)?;
@@ -1164,10 +1164,10 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     controls.set_rgb_expanded(false);
     controls.set_target("图层".into());
 
-    app.set_canvas_open_menu(true);
+    app.invoke_change_canvas_open_menu(true);
     capture(&app, directory, "canvas-open-menu-wide", 1400, 900)?;
-    app.set_canvas_open_menu(false);
-    state.set_page(5);
+    app.invoke_change_canvas_open_menu(false);
+    state.invoke_change_page(5);
     click_fixture(&app, 1400, 900, 1340.0, 252.0)?;
     if state.get_personal_menu() == 0 {
         return Err(slint::PlatformError::Other(
@@ -1175,7 +1175,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         ));
     }
     capture(&app, directory, "personal-use-menu-wide", 1400, 900)?;
-    state.set_personal_menu(0);
+    state.invoke_change_personal_menu(0);
     click_fixture(&app, 900, 640, 840.0, 316.0)?;
     if state.get_personal_menu() == 0 {
         return Err(slint::PlatformError::Other(
@@ -1183,7 +1183,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         ));
     }
     capture(&app, directory, "personal-manage-menu-narrow", 900, 640)?;
-    state.set_personal_menu(0);
+    state.invoke_change_personal_menu(0);
     state.set_personal_selection_mode(true);
     let mut selected_assets = assets.clone();
     selected_assets[0].selected = true;
@@ -1200,34 +1200,34 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     ]));
     capture(&app, directory, "personal-batch-narrow", 900, 640)?;
     state.set_personal_selection_mode(false);
-    state.set_page(7);
+    state.invoke_change_page(7);
     settle(&app)?;
-    state.set_template_editor_open(true);
+    state.invoke_change_template_editor_open(true);
     state.set_template_editor_current(true);
     state.set_template_name("暖色几何海报".into());
     state.set_template_prompt(state.get_prompt());
     capture(&app, directory, "template-save-wide", 1400, 900)?;
     capture(&app, directory, "template-save-narrow", 900, 640)?;
-    state.set_template_editor_open(false);
-    state.set_page(1);
+    state.invoke_change_template_editor_open(false);
+    state.invoke_change_page(1);
     settle(&app)?;
     state.set_generation_step(1);
     capture(&app, directory, "generation-results-narrow", 900, 640)?;
     state.set_generation_step(0);
-    state.set_generation_parameters_open(true);
+    state.invoke_change_generation_parameters_open(true);
     capture(&app, directory, "generation-parameters-wide", 1400, 900)?;
     capture(&app, directory, "generation-parameters-narrow", 900, 640)?;
-    state.set_generation_parameters_open(false);
+    state.invoke_change_generation_parameters_open(false);
     state.set_media_preview_source("task".into());
     state.set_media_preview_item(results[0].clone());
-    state.set_media_preview_open(true);
+    state.invoke_change_media_preview_open(true);
     capture(&app, directory, "generation-preview-wide", 1400, 900)?;
     capture(&app, directory, "generation-preview-narrow", 900, 640)?;
     state.set_media_preview_item(results[2].clone());
     capture(&app, directory, "generation-video-preview-narrow", 900, 640)?;
-    state.set_media_preview_open(false);
+    state.invoke_change_media_preview_open(false);
     state.set_selected_task(5);
-    state.set_result_preview_open(true);
+    state.invoke_change_result_preview_open(true);
     capture(
         &app,
         directory,
@@ -1235,7 +1235,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         900,
         640,
     )?;
-    state.set_result_preview_open(false);
+    state.invoke_change_result_preview_open(false);
     state.set_selected_task(0);
     state.set_mode(1);
     state.set_model_names(model(vec!["演示视频模型 · 多模态参考".into()]));
@@ -1298,7 +1298,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_model_index(0);
     state.set_recovery_warning("".into());
     state.set_references(model(nine_refs));
-    state.set_generation_parameters_open(true);
+    state.invoke_change_generation_parameters_open(true);
     capture(
         &app,
         directory,
@@ -1306,7 +1306,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         900,
         640,
     )?;
-    state.set_generation_parameters_open(false);
+    state.invoke_change_generation_parameters_open(false);
     state.set_mode(0);
     state.set_model_names(model(vec!["演示图像模型".into()]));
     state.set_resolutions(model(vec!["1024".into(), "2048".into()]));
@@ -1331,13 +1331,13 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             height,
         )?;
     }
-    state.set_auth_open(true);
+    state.invoke_change_auth_open(true);
     capture(&app, directory, "login-modal-narrow", 900, 640)?;
     capture(&app, directory, "login-modal-wide", 1400, 900)?;
     app.global::<Theme>().set_dark(false);
     capture(&app, directory, "login-modal-light-narrow", 900, 640)?;
     app.global::<Theme>().set_dark(false);
-    state.set_auth_open(false);
+    state.invoke_change_auth_open(false);
     state.set_signed_in(true);
     state.set_error("模型加载失败，请重试。".into());
     for (width, height, suffix) in [(1400, 900, "wide"), (900, 640, "narrow")] {
@@ -1352,7 +1352,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     // Window-level overlays are intentionally captured away from generation
     // and canvas. This catches dialogs accidentally scoped to their old page.
     state.set_error("".into());
-    state.set_page(5);
+    state.invoke_change_page(5);
     settle(&app)?;
     editor.set_canvas_modified(true);
     editor.set_canvas_exit_confirm(true);
@@ -1368,7 +1368,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     ] {
         state.set_media_preview_source(source.into());
         state.set_media_preview_item(item);
-        state.set_media_preview_open(true);
+        state.invoke_change_media_preview_open(true);
         capture(
             &app,
             directory,
@@ -1376,27 +1376,27 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             900,
             640,
         )?;
-        state.set_media_preview_open(false);
+        state.invoke_change_media_preview_open(false);
     }
     state.set_media_preview_source("asset".into());
     state.set_media_preview_item(assets[0].clone());
-    state.set_media_preview_open(true);
+    state.invoke_change_media_preview_open(true);
     state.set_media_preview_loading(true);
     capture(&app, directory, "asset-preview-loading-narrow", 900, 640)?;
     state.set_media_preview_loading(false);
     state.set_media_preview_error("素材读取失败，请重试。".into());
     capture(&app, directory, "asset-preview-error-narrow", 900, 640)?;
-    state.set_media_preview_open(false);
+    state.invoke_change_media_preview_open(false);
     state.set_media_preview_error("".into());
     // Long real-world names exercise card elision and the shared viewer title.
     let mut long_assets = assets.clone();
     long_assets[0].name = "2026秋冬新品发布_设计方案第十二版_客户确认后再次修改_保留全部细节与透明背景_超长文件名验证最终版.png".into();
     long_assets[0].detail = "/Users/creator/Movies/SeeCut/客户项目/2026秋冬新品发布/设计方案第十二版/客户确认后再次修改/保留全部细节与透明背景/最终交付/超长素材文件.png".into();
     state.set_assets(model(long_assets.clone()));
-    state.set_page(2);
+    state.invoke_change_page(2);
     capture(&app, directory, "team-long-name-narrow", 900, 640)?;
     state.set_assets(model(assets.clone()));
-    state.set_page(5);
+    state.invoke_change_page(5);
     state.set_personal_groups(model(vec![PersonalAssetGroup {
         date_label: "2026-09-21".into(),
         items: model(long_assets.clone()),
@@ -1404,7 +1404,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     capture(&app, directory, "personal-long-name-narrow", 900, 640)?;
     state.set_media_preview_source("personal".into());
     state.set_media_preview_item(long_assets[0].clone());
-    state.set_media_preview_open(true);
+    state.invoke_change_media_preview_open(true);
     capture(&app, directory, "asset-preview-long-name-narrow", 900, 640)?;
     state.set_media_preview_item(CloudItem {
         id: "synthetic-audio".into(),
@@ -1416,7 +1416,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         ..Default::default()
     });
     capture(&app, directory, "audio-preview-narrow", 900, 640)?;
-    state.set_media_preview_open(false);
+    state.invoke_change_media_preview_open(false);
     state.set_personal_groups(model(vec![
         PersonalAssetGroup {
             date_label: "2026-09-21".into(),
@@ -1434,7 +1434,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_asset_picker_source(0);
     state.set_asset_picker_purpose("reference".into());
     state.set_asset_picker_selected_count(2);
-    state.set_asset_picker_open(true);
+    state.invoke_change_asset_picker_open(true);
     capture(&app, directory, "asset-picker-multiple-narrow", 900, 640)?;
     let weak = app.as_weak();
     editor.on_canvas_exit_cancel(move || {
@@ -1442,7 +1442,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             app.global::<Editor>().set_canvas_exit_confirm(false);
         }
     });
-    app.set_canvas_open_menu(true);
+    app.invoke_change_canvas_open_menu(true);
     settle(&app)?;
     editor.set_canvas_exit_confirm(true);
     capture(&app, directory, "canvas-exit-over-picker-narrow", 900, 640)?;
@@ -1464,9 +1464,9 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             "Escape must cancel exit before the underlying picker".into(),
         ));
     }
-    state.set_asset_picker_open(false);
-    state.set_page(6);
-    state.set_canvas_gallery_open(false);
+    state.invoke_change_asset_picker_open(false);
+    state.invoke_change_page(6);
+    state.invoke_change_canvas_gallery_open(false);
     editor.set_canvas_has_selection(true);
     editor.set_canvas_can_undo(true);
     let blocked = Rc::new(RefCell::new(Vec::<&'static str>::new()));
@@ -1484,9 +1484,9 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     });
     for modal in ["canvas-export", "clip-export", "handoff"] {
         match modal {
-            "canvas-export" => state.set_canvas_export_open(true),
-            "clip-export" => state.set_clip_export_open(true),
-            _ => state.set_handoff_open(true),
+            "canvas-export" => state.invoke_change_canvas_export_open(true),
+            "clip-export" => state.invoke_change_clip_export_open(true),
+            _ => state.invoke_change_handoff_open(true),
         }
         settle(&app)?;
         app.window()
@@ -1538,9 +1538,9 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     }
     // When one sheet opens over another, each opening must claim keyboard
     // focus in its own right; an OR of their open flags never changes here.
-    state.set_clip_export_open(true);
+    state.invoke_change_clip_export_open(true);
     settle(&app)?;
-    state.set_handoff_open(true);
+    state.invoke_change_handoff_open(true);
     settle(&app)?;
     for (expected_handoff, expected_clip) in [(false, true), (false, false)] {
         app.window()
@@ -1592,7 +1592,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
             "Backspace and Delete did not target the active canvas layer".into(),
         ));
     }
-    state.set_canvas_gallery_open(true);
+    state.invoke_change_canvas_gallery_open(true);
     settle(&app)?;
     app.window()
         .dispatch_event(slint::platform::WindowEvent::KeyPressed {
@@ -1610,7 +1610,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     std::fs::write(directory.join("keyboard-validation.json"),
         r#"{"status":"passed","backend":"Slint software fixture","checks":["Exit confirmation dismisses canvas menu","Escape cancels exit and preserves underlying picker","Canvas export, clip export and handoff isolate Delete, undo and select-all","Escape closes each modal and preserves canvas selection","Nested workflow sheets close from the top and canvas keyboard actions resume afterward","Backspace and Delete target the active layer when no pixel selection exists","Project gallery blocks canvas layer shortcuts"]}"#
     ).map_err(|error| slint::PlatformError::Other(error.to_string()))?;
-    state.set_page(5);
+    state.invoke_change_page(5);
     state.set_personal_folder_filter(0);
     crate::cloud::validate_preview_state(&app, directory).map_err(slint::PlatformError::Other)?;
     app.hide()?;
@@ -1718,7 +1718,7 @@ fn run_f03(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
         app.global::<Theme>().set_dark(dark);
         for (width, height, size) in [(1400, 900, "wide"), (900, 640, "narrow")] {
             assistant.set_open(false);
-            state.set_page(3);
+            state.invoke_change_page(3);
             state.set_account_history_tab(0);
             state.set_history_view_revision(state.get_history_view_revision() + 1);
             capture(
@@ -1737,7 +1737,7 @@ fn run_f03(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
                 width,
                 height,
             )?;
-            state.set_page(1);
+            state.invoke_change_page(1);
             capture(
                 app,
                 directory,
@@ -1762,8 +1762,8 @@ fn run_f03(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
 fn run_a02(app: &App, directory: &Path) -> Result<(), slint::PlatformError> {
     use crate::ui::AssistantReference;
     let state = app.global::<SeeCut>();
-    state.set_page(6);
-    state.set_canvas_gallery_open(false);
+    state.invoke_change_page(6);
+    state.invoke_change_canvas_gallery_open(false);
     let assistant = app.global::<Assistant>();
     assistant.set_enabled(true);
     assistant.set_open(true);

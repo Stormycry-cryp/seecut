@@ -23,8 +23,12 @@ pub use library_assets::{LibraryAssetKind, LibraryAssetsQuery, validate_library_
 mod canvas;
 mod clip;
 pub mod clip_edit;
+pub mod clip_save;
 pub use clip::{ClipAction, ClipParameters, validate_clip_parameters};
 pub use clip_edit::ClipEdit;
+pub use clip_save::{
+    ClipManifestName, ClipPersistedState, ClipSaveData, ClipSaveProof, ProjectReadSource,
+};
 mod flow;
 mod flow_workspace;
 pub use canvas::{
@@ -106,6 +110,13 @@ pub struct Request {
     #[serde(default)]
     /// One atomic bounded clip object readback; mutually exclusive with pagination.
     pub object_ids: Option<Vec<String>>,
+    /// Fixed fresh-manifest read mode; mutually exclusive with object/paging reads.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "clip_save::deserialize_read_source"
+    )]
+    pub read_source: Option<ProjectReadSource>,
     #[serde(default)]
     /// Bounded global-library image query.
     pub library_query: Option<LibraryQuery>,
@@ -301,6 +312,9 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if request.read_source.is_some() {
+        return clip_save::validate_persisted_request(request);
+    }
     if request.app_scope.is_some()
         || request.app_page.is_some()
         || request.app_control_token.is_some()
@@ -345,6 +359,16 @@ pub fn validate_request_shape(request: &Request) -> Result<(), String> {
         }
         return match request.method {
             Method::ClipEdit if request.operation_query.is_none() && request.revision.is_some() => {
+                if request
+                    .clip_parameters
+                    .as_ref()
+                    .is_some_and(|p| matches!(p.action.edit, ClipEdit::Save {}))
+                    && request
+                        .revision
+                        .is_some_and(|revision| revision > 9_007_199_254_740_991)
+                {
+                    return Err("invalidInput: unsafe save revision".into());
+                }
                 validate_clip_parameters(
                     &request.client_id,
                     session,
@@ -765,6 +789,7 @@ mod tests {
             canvas_parameters: None,
             clip_parameters: None,
             object_ids: None,
+            read_source: None,
             library_query: None,
             library_assets_query: None,
             operation_query: None,
@@ -1095,6 +1120,7 @@ mod tests {
             canvas_parameters: None,
             clip_parameters: None,
             object_ids: None,
+            read_source: None,
             library_query: None,
             library_assets_query: None,
             operation_query: None,
@@ -1137,6 +1163,7 @@ mod tests {
             canvas_parameters: None,
             clip_parameters: None,
             object_ids: None,
+            read_source: None,
             library_query: None,
             library_assets_query: None,
             operation_query: None,

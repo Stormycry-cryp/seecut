@@ -69,6 +69,7 @@ mod agent_tasks;
 mod agent_ui;
 mod asset_version;
 mod chips;
+mod clip_save_fence;
 mod cloud;
 mod cloud_files;
 mod dock;
@@ -592,6 +593,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             move |$($arg : $ty),*| {
                 Shell::with(|shell, app| {
                     {
+                        crate::clip_save_fence::before_change();
                         let mut $state = shell.studio.borrow_mut();
                         $body
                     }
@@ -1074,7 +1076,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         if state.locked(&clip.track_id) {
             return;
         }
-        state.selection = vec![id.to_string()];
+        state.selection.replace(vec![id.to_string()]);
         state.split_at(seconds, true);
     }));
     editor.on_band_selected(on_lanes!(
@@ -1101,7 +1103,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                     }
                 }
             } else {
-                state.selection = caught;
+                state.selection.replace(caught);
             }
         }
     ));
@@ -1771,7 +1773,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             return;
         }
         if !state.selection.iter().any(|held| held == id.as_str()) {
-            state.selection = vec![id.to_string()];
+            state.selection.replace(vec![id.to_string()]);
         }
         state.menu_target = Some(id.to_string());
     }));
@@ -1877,7 +1879,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_export_clicked(|| {
         Shell::with(|shell, app| {
             if shell.studio.borrow().session.is_some() {
-                app.global::<SeeCut>().set_clip_export_open(true);
+                app.global::<SeeCut>().invoke_change_clip_export_open(true);
             }
         });
     });
@@ -2144,7 +2146,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                         }
                         "export" => {
                             if state.session.is_some() {
-                                app.global::<SeeCut>().set_clip_export_open(true);
+                                app.global::<SeeCut>().invoke_change_clip_export_open(true);
                             }
                         }
                         "template" => state.save_template(),

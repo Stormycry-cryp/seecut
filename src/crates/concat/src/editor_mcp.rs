@@ -43,6 +43,8 @@ mod clip_edit;
 mod clip_execute;
 #[path = "editor_mcp_clip_import.rs"]
 mod clip_import;
+#[path = "editor_mcp_clip_save.rs"]
+mod clip_save;
 #[path = "editor_mcp_library_assets.rs"]
 mod library_assets;
 pub(crate) use app_read::AssistantAppSnapshot;
@@ -285,6 +287,7 @@ fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
         return None;
     }
     let scope = scope?;
+    crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
     match action {
         AssistantPermission::GrantRead => {
             if !grants
@@ -897,6 +900,7 @@ impl BridgeUi {
             session: intent.session.clone(),
         };
         let now = Instant::now();
+        let mut clip_save_origin = None;
         if let Some(query) = &intent.operation {
             if intent.retry_registration {
                 studio
@@ -927,9 +931,13 @@ impl BridgeUi {
                 return Err(AssistantPermissionError::NotAllowed);
             }
             if let Some(action) = &intent.clip_action {
-                studio
-                    .mcp_clip_writer_ready()
-                    .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
+                let is_save = matches!(action.edit, concat_editor_mcp::ClipEdit::Save {});
+                if is_save {
+                    studio.mcp_clip_permission_ready()
+                } else {
+                    studio.mcp_clip_writer_ready()
+                }
+                .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
                 self.writes
                     .authorize(
                         &current,
@@ -951,6 +959,15 @@ impl BridgeUi {
                         AssistantPermissionError::NotAllowed
                     }
                 })?;
+                if is_save {
+                    clip_save_origin = Some(
+                        clip_save::ApprovedSource::capture(
+                            studio.project(),
+                            studio.mcp_clip_state().0,
+                        )
+                        .map_err(|_| AssistantPermissionError::NotAllowed)?,
+                    );
+                }
             }
             if intent.action.is_some() || intent.move_action.is_some() {
                 studio
@@ -1008,9 +1025,19 @@ impl BridgeUi {
                 }
             }
         }
-        self.canvas_permits
-            .grant(claimed, ASSISTANT_CLIENT_ID.into(), intent, now)
-            .ok_or(AssistantPermissionError::NotAllowed)
+        let permit = match clip_save_origin {
+            Some(origin) => self.canvas_permits.grant_with_clip_save_origin(
+                claimed,
+                ASSISTANT_CLIENT_ID.into(),
+                intent,
+                now,
+                Some(origin),
+            ),
+            None => self
+                .canvas_permits
+                .grant(claimed, ASSISTANT_CLIENT_ID.into(), intent, now),
+        };
+        permit.ok_or(AssistantPermissionError::NotAllowed)
     }
 
     pub(crate) fn revoke_tool_permit(&mut self, id: u64) {
@@ -1297,6 +1324,7 @@ impl BridgeUi {
     }
 
     pub(crate) fn revoke_assistant_for_account_change(&mut self) {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::AccountChanged);
         self.app_controls.revoke();
         self.assistant_session = None;
         self.canvas_permits.clear();
@@ -1449,6 +1477,7 @@ impl BridgeUi {
         let Some((_, ids)) = self.active_ids(studio, app) else {
             return;
         };
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.grants.insert(
             client,
             Grant {
@@ -1460,6 +1489,7 @@ impl BridgeUi {
     }
 
     pub fn revoke(&mut self) {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.grants.remove(self.client_draft.trim());
         self.canvas_permits.clear();
     }
@@ -1537,6 +1567,8 @@ impl BridgeUi {
                 "appInstanceId": self.instance_id,
                 "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit", "clip_edit", "clip_operation", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
                 "namedToolApprovalRequired":["library_images","library_assets","insert_library_image","transform_canvas_layer","canvas_edit","clip_edit","clip_operation","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
+                "clipSaveProtocolVersion": if kind == "clip" { Some(1) } else { None },
+                "clipPersistedReadProtocolVersion": if kind == "clip" { Some(1) } else { None },
                 "clipEditVersion":1,"clipEditMaxParametersBytes":16384,"clipEditMaxTargets":128,"clipEditMaxReceiptBytes":57344,"clipEditMaxStateBytes":16777216,"clipEditMaxPreviewWork":16777216,"clipEditMaxDetachedAudioClips":128,"clipEditVideoFreeze":false,
                 "canvasEditVersion":1,"canvasEditMaxStrokePoints":2048,"canvasEditMaxNewPixels":16777216,"canvasEditMaxReferencedPixels":67108864,"canvasEditMaxBrushWork":16777216,
                 "canvasEditMaxParametersBytes":16384,"canvasEditMaxDeleteNodes":512,"canvasEditMaxReceiptBytes":49152,
@@ -1713,6 +1745,9 @@ impl BridgeUi {
             return UiReply::Response(Response::error("wrongProject"));
         }
         if matches!(request.method, Method::Project) {
+            if request.read_source == Some(concat_editor_mcp::ProjectReadSource::PersistedClip) {
+                return clip_save::prepare_read(self, request, studio, app, &kind, &ids);
+            }
             if busy {
                 return UiReply::Response(Response::error("busy"));
             }
@@ -1875,6 +1910,7 @@ enum UiReply {
     Registration(Box<RegistrationReadJob>),
     Preview(Box<PreviewJob>),
     AppPreview(Box<app_read::AppPreviewJob>),
+    PersistedClip(Box<clip_save::ReadJob>),
 }
 
 fn preview_slot() -> &'static Mutex<()> {
@@ -1955,7 +1991,15 @@ fn canvas_ui_reason(error: &CanvasMoveError) -> String {
 fn modal_busy(studio: &Studio, app: &App, include_settings: bool) -> bool {
     let cloud = app.global::<SeeCut>();
     let editor = app.global::<Editor>();
-    studio.exit_pending
+    // Slint owns popup lifetime, including component teardown. A busy borrow is
+    // conservatively blocked during nested UI delivery.
+    let popup_open = slint::private_unstable_api::re_exports::WindowInner::from_pub(app.window())
+        .active_popups
+        .try_borrow()
+        .map_or(true, |popups| !popups.is_empty());
+    popup_open
+        || crate::clip_save_fence::native_dialog_open()
+        || studio.exit_pending
         || (include_settings && studio.settings.open)
         || studio.export.open
         || studio.project_sheet.open
@@ -2326,6 +2370,7 @@ fn dispatch(request: Request) -> Response {
     };
     match reply {
         UiReply::Response(response) => response,
+        UiReply::PersistedClip(job) => clip_save::dispatch_read(*job),
         UiReply::Library(job) => {
             if job.request.method == Method::LibraryAssets {
                 library_assets::dispatch_library_assets(*job)
@@ -2804,6 +2849,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clip_save_native_account_revoke_and_conversation_rebind_cancel_original() {
+        for rebind in [false, true] {
+            let mut bridge = BridgeUi::new();
+            bridge.bind_assistant_session(Some("original".into()));
+            let pending = crate::clip_save_fence::test_support::PendingSave::new();
+            if rebind {
+                bridge.bind_assistant_session(Some("next".into()));
+            } else {
+                bridge.revoke_assistant_for_account_change();
+            }
+            pending.assert_not_committed();
+        }
+    }
+
+    #[test]
     fn task_move_exact_permit_revocation_blocks_queued_and_prepared_commit() {
         let mut pane = crate::panes::canvas::CanvasPane::default();
         let mut doc = concat_canvas::ImageDocument::new(4, 4);
@@ -3007,6 +3067,7 @@ mod tests {
             },
         );
         let mut request = Request {
+            read_source: None,
             object_id: None,
             canvas_parameters: None,
             clip_parameters: None,
@@ -3428,6 +3489,7 @@ mod tests {
             },
         );
         let request = Request {
+            read_source: None,
             object_id: None,
             canvas_parameters: None,
             clip_parameters: None,

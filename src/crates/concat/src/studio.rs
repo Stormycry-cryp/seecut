@@ -860,7 +860,7 @@ pub struct Studio {
 
     // ── the view ──
     pub lane_view: HashMap<String, LaneView>,
-    pub selection: Vec<String>,
+    pub(crate) selection: crate::clip_save_fence::Selection<Vec<String>>,
     pub playhead: f32,
     pub scroll_left: f32,
     pub seconds_per_pixel: f32,
@@ -1629,7 +1629,7 @@ impl Studio {
             window_pending: HashSet::new(),
             waves: RefCell::new(HashMap::new()),
             lane_view: HashMap::new(),
-            selection: Vec::new(),
+            selection: Default::default(),
             playhead: 0.0,
             scroll_left: 0.0,
             // ~20px a second: a ten-second cut fits a pane at its default width.
@@ -1945,6 +1945,7 @@ impl Studio {
     /// pointer will mutate.
     pub fn begin_echo(&mut self) {
         if self.echo.is_none() {
+            crate::clip_save_fence::before_change();
             self.echo = Some(self.project().clone());
         }
     }
@@ -2709,7 +2710,7 @@ impl Studio {
             })
         };
         if let Some(id) = created {
-            self.selection = vec![id];
+            self.selection.replace(vec![id]);
         }
     }
 
@@ -2737,7 +2738,7 @@ impl Studio {
             })
         };
         if let Some(id) = created {
-            self.selection = vec![id];
+            self.selection.replace(vec![id]);
         }
     }
 
@@ -3173,7 +3174,7 @@ impl Studio {
             return;
         }
         let already = self.selection.iter().any(|held| held == id);
-        self.selection = if additive {
+        self.selection.replace(if additive {
             if already {
                 self.selection
                     .iter()
@@ -3189,11 +3190,12 @@ impl Studio {
             self.selection.clone()
         } else {
             vec![id.to_owned()]
-        };
+        });
 
         self.flush_commit();
         self.begin_echo();
         if edge >= 0 && self.selection.len() <= 1 {
+            crate::clip_save_fence::before_change();
             self.gesture = Gesture::Trim {
                 clip: id.to_owned(),
                 edge: if edge == 0 { Edge::Start } else { Edge::End },
@@ -3219,6 +3221,7 @@ impl Studio {
                 })
             })
             .collect();
+        crate::clip_save_fence::before_change();
         self.gesture = Gesture::Move {
             primary: id.to_owned(),
             origins,
@@ -3581,6 +3584,7 @@ impl Studio {
     /// command, the mix and the publish happen once the moves pause. The
     /// monitor follows the echo in the meantime.
     pub fn clip_commit(&mut self) {
+        crate::clip_save_fence::before_change();
         self.commit_pending = true;
         self.request_preview();
         self.commit_timer.start(
@@ -3944,6 +3948,7 @@ impl Studio {
     pub fn stage_pressed(&mut self, x: f32, y: f32, additive: bool) {
         if let Some(clip) = self.paint_target() {
             let point = self.stage_to_source(&clip, f64::from(x), f64::from(y));
+            crate::clip_save_fence::before_change();
             self.gesture = Gesture::Paint {
                 clip: clip.id.clone(),
                 tool: BRUSHES[self.brush.min(BRUSHES.len() - 1)],
@@ -3970,7 +3975,7 @@ impl Studio {
                 self.selection.push(id.clone());
             }
         } else if !already {
-            self.selection = vec![id.clone()];
+            self.selection.replace(vec![id.clone()]);
         }
         if !self.selection.iter().any(|held| held == &id) {
             self.gesture = Gesture::None;
@@ -3991,6 +3996,7 @@ impl Studio {
         self.flush_commit();
         self.begin_echo();
         self.stage_guides.clear();
+        crate::clip_save_fence::before_change();
         self.gesture = Gesture::StageMove {
             primary: id,
             origins,
@@ -4036,6 +4042,7 @@ impl Studio {
         let half = footprint.half_bounds((width, height));
         self.flush_commit();
         self.begin_echo();
+        crate::clip_save_fence::before_change();
         self.gesture = if grip == 4 {
             Gesture::StageRotate {
                 clip: id.to_owned(),
@@ -4743,11 +4750,11 @@ impl Studio {
         let ids = self.selection.clone();
         let kept = ids[0].clone();
         self.apply(Command::MergeClips { clip_ids: ids });
-        self.selection = if self.clip(&kept).is_some() {
+        self.selection.replace(if self.clip(&kept).is_some() {
             vec![kept]
         } else {
             Vec::new()
-        };
+        });
     }
 
     /// CapCut-style freeze at the playhead on a picture clip.
@@ -4830,7 +4837,7 @@ impl Studio {
             still,
         });
         if let Some(id) = created {
-            self.selection = vec![id];
+            self.selection.replace(vec![id]);
         }
     }
 
@@ -4866,7 +4873,7 @@ impl Studio {
             last = self.selection.first().cloned();
         }
         if let Some(id) = last {
-            self.selection = vec![id];
+            self.selection.replace(vec![id]);
         }
     }
 
@@ -4881,7 +4888,7 @@ impl Studio {
                 offset_y: Some(source.offset_y),
             });
             if let Some(id) = created {
-                self.selection = vec![id];
+                self.selection.replace(vec![id]);
             }
             return;
         }
@@ -4927,7 +4934,7 @@ impl Studio {
             },
         });
         self.apply(Command::Batch { commands });
-        self.selection = vec![created];
+        self.selection.replace(vec![created]);
     }
 
     /// What the tray's sound and word tools may do to the selection: one
@@ -5057,6 +5064,7 @@ impl Studio {
             });
         }
         let remaining = self.project().missing_media();
+        crate::clip_save_fence::before_change();
         self.relink.open = !remaining.is_empty();
         self.relink.items = remaining;
         self.relink.error = if plan.ambiguous > 0 {
@@ -5151,10 +5159,12 @@ impl Studio {
             .get_or_insert_with(|| Arc::new(projects::SaveLane::default()))
             .clone();
         lane.next(); // Invalidate before dispatch; the worker also waits for an active writer.
+        crate::clip_save_fence::before_change();
         self.repair_request = Some(RepairRequest {
             stamp: stamp.clone(),
             plan: None,
         });
+        crate::clip_save_fence::before_change();
         self.relink.busy = true;
         self.relink.error.clear();
         let worker_stamp = stamp.clone();
@@ -5215,6 +5225,7 @@ impl Studio {
         let settings = self.session.as_ref().unwrap().settings();
         let library_root = self.host.dirs.data.join("personal-library");
         let previews = self.host.dirs.data.join("relink-previews");
+        crate::clip_save_fence::before_change();
         self.relink.busy = true;
         let worker_plan = plan.clone();
         let worker_stamp = stamp.clone();
@@ -5265,6 +5276,7 @@ impl Studio {
                             selection: studio.selection.clone(),
                         };
                         studio.repair_request = None;
+                        crate::clip_save_fence::before_change();
                         studio.repair_preview = Some(preview);
                         studio.relink = Default::default();
                         studio.adopt_project_session(info, session, false);
@@ -5289,6 +5301,7 @@ impl Studio {
         let name = format!("{}-修复副本", projects::folder_name(&stamp.name));
         let id = stamp.id;
         self.autosave.stop();
+        crate::clip_save_fence::before_change();
         self.repair_save = Some(stamp);
         Some((id, name))
     }
@@ -5391,6 +5404,7 @@ impl Studio {
         self.pause();
         let lane = self.save_lane.as_ref().unwrap().clone();
         lane.next();
+        crate::clip_save_fence::before_change();
         self.repair_save = Some(stamp.clone());
         spawn(
             move || lane.invalidate_and_wait(),
@@ -5413,7 +5427,7 @@ impl Studio {
                 // adopted directly. Owned UUID previews remain for late cache workers.
                 studio.adopt_project_session(preview.source_info, preview.source, false);
                 studio.playhead = preview.playhead;
-                studio.selection = preview.selection;
+                studio.selection.replace(preview.selection);
                 studio.request_preview();
                 studio.notify("已取消修复，原工程未改变", false);
             },
@@ -5463,6 +5477,7 @@ impl Studio {
         });
         let worker_request = request.clone();
         crate::cloud::clip_open_started(id, &request.target, created);
+        crate::clip_save_fence::before_change();
         self.open_request = Some(request);
         let dispatched = crate::project_open::dispatch(false, move || {
             let result = prepare_project_open(target, old, &worker_request);
@@ -5571,12 +5586,13 @@ impl Studio {
                 self.schedule_autosave();
             }
         }
-        app.set_clip_create_open(false);
+        app.invoke_change_clip_create_open(false);
 
         crate::cloud::clip_open_completed(self, app, id);
     }
 
     fn adopt_project_session(&mut self, info: ProjectInfo, session: Session, remember: bool) {
+        crate::clip_save_fence::invalidate(projects::SaveInvalidation::DocumentChanged);
         // Callers have settled the outgoing save lane (normal open) or retained
         // the untouched source (repair). No disk I/O or close runs in adoption.
         self.host.cutouts.cancel();
@@ -5615,6 +5631,7 @@ impl Studio {
         self.recent_retry.stop();
         self.pending_recent = None;
         if remember {
+            crate::clip_save_fence::before_change();
             self.pending_recent = Some((self.session_generation, info));
             self.update_opened_recent();
         }
@@ -5688,6 +5705,7 @@ impl Studio {
         match result {
             Ok(()) => self.recent_retry.stop(),
             Err(crate::project_open::DispatchError::Busy) => {
+                crate::clip_save_fence::before_change();
                 self.pending_recent = Some((generation, retained));
                 self.recent_retry.start(
                     slint::TimerMode::SingleShot,
@@ -5736,6 +5754,7 @@ impl Studio {
     /// The canvas is deliberately independent: closing the clip project must
     /// not discard an open canvas document.
     pub fn close_project(&mut self) -> Result<(), String> {
+        crate::clip_save_fence::invalidate(projects::SaveInvalidation::DocumentChanged);
         if self.repair_unresolved() {
             let message = "请先另存修复工程或取消修复".to_owned();
             self.notify(&message, true);
@@ -5800,6 +5819,7 @@ impl Studio {
     /// request, and File > Close Window. A dirty canvas opens the global
     /// confirmation sheet; a clean canvas proceeds to the clip save.
     pub fn request_window_close(&mut self) -> bool {
+        crate::clip_save_fence::invalidate(projects::SaveInvalidation::Discarded);
         if self.repair_unresolved() {
             self.notify("请先另存修复工程或取消修复", true);
             return false;
@@ -5812,6 +5832,7 @@ impl Studio {
         }
         self.exit_error.clear();
         if self.canvas.is_modified() {
+            crate::clip_save_fence::before_change();
             self.exit_pending = true;
             return false;
         }
@@ -5902,6 +5923,7 @@ impl Studio {
                 true
             }
             Err(error) => {
+                crate::clip_save_fence::before_change();
                 self.exit_pending = true;
                 self.exit_error = error;
                 false
@@ -5976,6 +5998,17 @@ impl Studio {
     /// rest of the window without borrowing itself twice; a pane never
     /// reads its own slot on the studio.
     pub fn handle(&mut self, msg: crate::panes::Msg) {
+        if matches!(
+            &msg,
+            crate::panes::Msg::Export(crate::panes::export::ExportMsg::ChooseDestination(_))
+                | crate::panes::Msg::Settings(crate::panes::settings::SettingsMsg::Open)
+                | crate::panes::Msg::Captions(crate::panes::captions::CaptionsMsg::Open)
+                | crate::panes::Msg::Speech(crate::panes::speech::SpeechMsg::Open)
+                | crate::panes::Msg::Project(crate::panes::project::ProjectMsg::Open)
+                | crate::panes::Msg::Relink(crate::panes::relink::RelinkMsg::Show(_))
+        ) {
+            crate::clip_save_fence::before_change();
+        }
         match msg {
             crate::panes::Msg::Export(msg) => {
                 let mut pane = std::mem::take(&mut self.export);
@@ -6253,6 +6286,32 @@ impl Studio {
             self.dirty,
             self.echo.is_some() || !matches!(self.gesture, Gesture::None) || self.commit_pending,
         )
+    }
+
+    /// Reuse the lane belonging to the actual opened Session.
+    pub(crate) fn mcp_clip_save_lane(&self) -> Option<Arc<projects::SaveLane>> {
+        self.session.as_ref()?;
+        self.save_lane.clone()
+    }
+
+    /// Caller has already matched the original complete edit/source stamp.
+    pub(crate) fn mcp_clip_mark_saved(
+        &mut self,
+        generation: u64,
+        revision: u64,
+        lane: &Arc<projects::SaveLane>,
+        ticket: u64,
+    ) {
+        if self.session_generation == generation
+            && self.revision == revision
+            && self
+                .save_lane
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, lane))
+            && lane.is_latest(ticket)
+        {
+            self.dirty = false;
+        }
     }
 
     pub(crate) fn mcp_context_epoch(&self) -> u64 {
@@ -7805,6 +7864,9 @@ impl Studio {
             });
         }
         let view = self.lane_view.entry(track.id.clone()).or_default();
+        if view.locked != locked {
+            crate::clip_save_fence::before_change();
+        }
         view.locked = locked;
         if locked {
             let doomed: Vec<String> = self
@@ -7900,6 +7962,7 @@ impl Studio {
     }
 
     pub fn toggle_lock(&mut self, track_id: &str) {
+        crate::clip_save_fence::before_change();
         let view = self.lane_view.entry(track_id.to_owned()).or_default();
         view.locked = !view.locked;
         if view.locked {
@@ -8010,7 +8073,7 @@ impl Studio {
             }
             "split" => {
                 let at = self.playhead;
-                self.selection = vec![id.to_owned()];
+                self.selection.replace(vec![id.to_owned()]);
                 self.split_at(at, true);
             }
             "freeze" => self.freeze_at_playhead(),
@@ -8053,13 +8116,14 @@ impl Studio {
 
     /// Every clip on an unlocked lane.
     pub fn select_all(&mut self) {
-        self.selection = self
-            .timeline()
-            .clips
-            .iter()
-            .filter(|clip| !self.locked(&clip.track_id))
-            .map(|clip| clip.id.clone())
-            .collect();
+        self.selection.replace(
+            self.timeline()
+                .clips
+                .iter()
+                .filter(|clip| !self.locked(&clip.track_id))
+                .map(|clip| clip.id.clone())
+                .collect(),
+        );
     }
 
     /// Tab `from` dropped at `slot`, a position counted over the strip as

@@ -36,6 +36,12 @@ struct ProjectArgs {
     object_ids: Option<Vec<String>>,
     project_id: String,
     document_session_id: String,
+    #[serde(
+        default,
+        deserialize_with = "concat_editor_mcp::clip_save::deserialize_read_source"
+    )]
+    #[schemars(with = "concat_editor_mcp::ProjectReadSource")]
+    read_source: Option<concat_editor_mcp::ProjectReadSource>,
     #[serde(default)]
     offset: Option<usize>,
     #[serde(default)]
@@ -205,6 +211,7 @@ impl Bridge {
             canvas_parameters: None,
             clip_parameters: None,
             object_ids: None,
+            read_source: None,
             library_query: None,
             library_assets_query: None,
             operation_query: None,
@@ -565,7 +572,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Read one exact canvas layer by optional canonical objectId, or a bounded project page. Do not combine objectId with pagination. Match project and document session ID."
+        description = "Read one exact canvas layer by optional canonical objectId, or a bounded project page. Optional readSource:persistedClip reads the current real Clip Session original manifest with a fresh bounded file handle and engine parsing; it cannot combine with objectId/objectIds/offset/limit. Default reads remain in-memory. No paths, manifest names, expected hashes or JSON. Match project and document session ID."
     )]
     fn project(&self, Parameters(args): Parameters<ProjectArgs>) -> String {
         let mut request = self.request(Method::Project);
@@ -573,6 +580,7 @@ impl Bridge {
         request.document_session_id = Some(args.document_session_id);
         request.object_id = args.object_id;
         request.object_ids = args.object_ids;
+        request.read_source = args.read_source;
         request.offset = args.offset;
         request.limit = args.limit;
         self.dispatch(request)
@@ -669,7 +677,7 @@ impl Bridge {
         )
     }
     #[tool(
-        description = "Apply one explicit bounded ClipEdit to the current owned native Session and fixed timeline. Stable media/track/clip/timeline IDs only; no paths or scripts. importLibrary accepts only an existing local assetId and immutable version, probes one asset asynchronously with an 8GiB bound, then returns mediaId for placeMedia. Freeze project.clipState.editStateId before native approval; revision, selection and complete edit state must match. All direct and indirect locked-track changes are refused, including history. Actions cover existing-bin placement, tracks/timelines, move/trim/split/delete/merge, image freeze, rate/curve, transform/properties, audio detach/reattach, text and keyframes, undo/redo. Video still extraction is unavailable. Typed action at most16KiB; each native source/staged/history state at most16MiB (checked without a second allocation); audio detach at most128 generated clips and conservative16Mi lane-scan work, with copied clip/title bytes budgeted before preview; full untruncated receipt at most56KiB, otherwise refuse before mutation. UNKNOWN only queries the original clip_operation; never replay a new sequence."
+        description = "Apply one explicit bounded ClipEdit to the current owned native Session and fixed timeline. Stable media/track/clip/timeline IDs only; no paths or scripts. importLibrary accepts only an existing local assetId and immutable version, probes one asset asynchronously with an 8GiB bound, then returns mediaId for placeMedia. Freeze project.clipState.editStateId before native approval; revision, selection and complete edit state must match. All direct and indirect locked-track changes are refused, including history. Save requires native clipSaveProtocolVersion:1 and clipPersistedReadProtocolVersion:1; edit:{kind:save} saves the whole current original project asynchronously with no path, edit revision increment or undo entry. Only the typed original saveProof and independent project readSource:persistedClip verify current delivery; dirty=false does not. Actions cover existing-bin placement, tracks/timelines, move/trim/split/delete/merge, image freeze, rate/curve, transform/properties, audio detach/reattach, text and keyframes, undo/redo. Video still extraction is unavailable. Typed action at most16KiB; each native source/staged/history state at most16MiB (checked without a second allocation); audio detach at most128 generated clips and conservative16Mi lane-scan work, with copied clip/title bytes budgeted before preview; full untruncated receipt at most56KiB, otherwise refuse before mutation. UNKNOWN only queries the original clip_operation; never replay a new sequence."
     )]
     fn clip_edit(&self, Parameters(args): Parameters<ClipEditArgs>) -> String {
         let mut request = self.request(Method::ClipEdit);
@@ -1155,6 +1163,26 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         assert_eq!(response.status, "ok");
         assert_eq!(response.data.unwrap()["operationId"], operation);
+    }
+
+    #[test]
+    fn clip_save_extends_actions_and_project_read_without_adding_tools() {
+        let tools = Bridge::tool_router().list_all();
+        assert!(!tools.iter().any(|tool| tool.name == "clip_save"));
+        let project = tools.iter().find(|tool| tool.name == "project").unwrap();
+        let schema = serde_json::to_value(&project.input_schema).unwrap();
+        assert!(schema["properties"].get("readSource").is_some());
+        let base = serde_json::json!({"projectId":"p","documentSessionId":"s"});
+        assert!(serde_json::from_value::<ProjectArgs>(base.clone()).is_ok());
+        let mut read = base.clone();
+        read["readSource"] = serde_json::json!("persistedClip");
+        assert!(serde_json::from_value::<ProjectArgs>(read.clone()).is_ok());
+        read["readSource"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ProjectArgs>(read).is_err());
+        let mut edit = serde_json::json!({"projectId":"p","documentSessionId":"s","revision":1,"operationId":"o","clientSequence":1,"selectionRevision":0,"expectedEditStateId":"e","timelineId":"timeline:t","edit":{"kind":"save"}});
+        assert!(serde_json::from_value::<ClipEditArgs>(edit.clone()).is_ok());
+        edit["edit"]["path"] = serde_json::json!("/private");
+        assert!(serde_json::from_value::<ClipEditArgs>(edit).is_err());
     }
 
     #[test]

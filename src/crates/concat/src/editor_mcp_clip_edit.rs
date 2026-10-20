@@ -577,6 +577,7 @@ pub(crate) fn plan(
             clip_id: clip(tl, clip_id)?.id.clone(),
             property: property(*p),
         },
+        Save {} => return Err(ClipEditError::InvalidInput),
         Undo => return Ok(ClipPlan::Undo),
         Redo => return Ok(ClipPlan::Redo),
     };
@@ -895,6 +896,11 @@ fn preview_work(project: &Project, command: &Command) -> Result<(), ClipEditErro
 fn bounded_digest(prefix: &str, value: &impl Serialize) -> Result<String, ClipEditError> {
     bounded_digest_with_limit(prefix, value, MAX_STATE_BYTES)
 }
+/// Also used for actual disk-parsed Projects. Never assumes prior validation.
+pub(super) fn persisted_document_state_id(project: &Project) -> Result<String, ClipEditError> {
+    validate_identities(project)?;
+    bounded_digest("clip-v1-", project)
+}
 fn digest(prefix: &str, value: &impl Serialize) -> String {
     bounded_digest(prefix, value).expect("preflighted native model serializes within its bound")
 }
@@ -1089,7 +1095,7 @@ fn related(edit: &ClipEdit) -> Vec<String> {
         | SetKey { clip_id, .. }
         | ClearKey { clip_id, .. }
         | ClearKeys { clip_id, .. } => vec![clip_id.clone()],
-        ImportLibrary { .. } | AddTrack | AddTimeline | Undo | Redo => vec![],
+        Save {} | ImportLibrary { .. } | AddTrack | AddTimeline | Undo | Redo => vec![],
     }
 }
 #[derive(PartialEq)]
@@ -1259,6 +1265,10 @@ pub(crate) fn approval_preflight(
     if let ClipEdit::ImportLibrary { asset_id, version } = &action.edit {
         concat_editor_mcp::validate_library_asset(asset_id, version)
             .map_err(|_| ClipEditError::InvalidInput)?;
+        active(studio.project(), &action.timeline_id)?;
+        return Ok(());
+    }
+    if matches!(action.edit, ClipEdit::Save {}) {
         active(studio.project(), &action.timeline_id)?;
         return Ok(());
     }

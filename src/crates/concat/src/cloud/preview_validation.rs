@@ -64,7 +64,7 @@ pub(super) fn failure_recovery(app: &App, directory: &Path) -> Result<(), String
             .all(|row| !row.detail.contains("SECRET") && !row.detail.contains("https://")),
         "raw errors hidden",
     )?;
-    ui.set_result_preview_open(true);
+    ui.invoke_change_result_preview_open(true);
     ui.set_generation_step(1);
     refill_task(app, &state, "reference")?;
     check(ui.get_prompt() == "恢复的原始草稿", "draft restored")?;
@@ -93,7 +93,7 @@ pub(super) fn failure_recovery(app: &App, directory: &Path) -> Result<(), String
         refill_task(app, &state, "legacy").is_err(),
         "legacy task cannot invent configuration",
     )?;
-    ui.set_page(1);
+    ui.invoke_change_page(1);
     ui.set_generation_step(1);
     ui.set_generation_browse_tab(0);
     ui.set_selected_task(0);
@@ -110,10 +110,10 @@ pub(super) fn run(app: &App, directory: &Path) -> Result<(), String> {
     let ui = app.global::<SeeCut>();
     // Never attach the normal cloud callbacks, heartbeat, library, or HTTP client.
     ui.set_signed_in(false);
-    ui.set_page(1);
+    ui.invoke_change_page(1);
     ui.set_mode(0);
     ui.set_model_index(0);
-    ui.set_asset_picker_open(false);
+    ui.invoke_change_asset_picker_open(false);
     let state = Rc::new(RefCell::new(Cloud::default()));
     let image_parameters = json!({"size":"1536x1024", "quality":"high", "quantity":2});
     let video_parameters = json!({"resolution":"1080p", "duration":10, "aspect_ratio":"9:16", "generate_audio":false, "quantity":2});
@@ -443,7 +443,7 @@ pub(super) fn run(app: &App, directory: &Path) -> Result<(), String> {
     ui.set_project_open(false);
     ui.set_asset_picker_purpose("import".into());
     ui.set_asset_picker_source(0);
-    ui.set_asset_picker_open(true);
+    ui.invoke_change_asset_picker_open(true);
     sync_picker_selection(&ui, &state);
     let reference_count = state.borrow().references.len();
     picker_toggle(app, &state, "picker-1");
@@ -458,7 +458,7 @@ pub(super) fn run(app: &App, directory: &Path) -> Result<(), String> {
     // callback registration also installs timers, so it stays outside this check.
     clear_picker_selection(&ui, &state);
     state.borrow_mut().picker_context.clear();
-    ui.set_asset_picker_open(false);
+    ui.invoke_change_asset_picker_open(false);
     verify(
         state.borrow().picker_selected_ids.is_empty()
             && ui.get_asset_picker_selected_count() == 0
@@ -466,7 +466,7 @@ pub(super) fn run(app: &App, directory: &Path) -> Result<(), String> {
             && state.borrow().pending_imports.is_empty(),
         "cancel staged multi-selection without adding",
     )?;
-    ui.set_asset_picker_open(true);
+    ui.invoke_change_asset_picker_open(true);
     picker_toggle(app, &state, "picker-1");
     picker_toggle(app, &state, "picker-0");
     picker_confirm(app, &state);
@@ -528,7 +528,7 @@ pub(super) fn run(app: &App, directory: &Path) -> Result<(), String> {
         "current preview completion loads fixture",
     )?;
     let closed_token = set_media_preview(app, &state, "reference", preview_item(), true, "");
-    ui.set_media_preview_open(false);
+    ui.invoke_change_media_preview_open(false);
     finish_media_preview(app, &state, "same-id", &fixture_path, Some(closed_token));
     fail_media_preview(app, &state, "same-id", closed_token, "late closed failure");
     verify(

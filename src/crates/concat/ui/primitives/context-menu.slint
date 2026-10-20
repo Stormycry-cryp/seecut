@@ -1,3 +1,4 @@
+import { SeeCut } from "../seecut/state.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
@@ -88,7 +89,7 @@ export component ContextMenu inherits Rectangle {
             root.at-y = root.request-y + root.menu-height > root.height
                 ? Math.max(0px, root.request-y - root.menu-height)
                 : root.request-y;
-            surface.show();
+            SeeCut.clip-source-will-change(); surface.show();
         }
     }
 

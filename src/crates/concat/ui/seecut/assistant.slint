@@ -1,3 +1,4 @@
+import { SeeCut } from "state.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ScrollView } from "std-widgets.slint";
@@ -42,7 +43,7 @@ component AssistantReferenceTile inherits Rectangle {
     border-width: 1px; border-color: Theme.line; clip: true;
     accessible-role: button; accessible-label: root.reference.label;
     thumbnail-hover := TouchArea {
-        mouse-cursor: pointer; clicked => { preview.show(); }
+        mouse-cursor: pointer; clicked => { SeeCut.clip-source-will-change(); preview.show(); }
         if root.reference.has-image: AssetPreview { width: parent.width; height: parent.height; border-radius: 12px; source: root.reference.thumbnail; fill-frame: true; }
         if !root.reference.has-image: Icon { x: 22px; y: 22px; size: 20px; glyph: root.reference.node ? Glyph.workflow : Glyph.image; }
         remove-action := IconButton {
@@ -324,7 +325,7 @@ component AssistantSessionPicker inherits IconButton {
         root.active-row = clamp(root.current, 0, root.names.length - 1);
         root.scroll = 0px;
         root.reveal-row(root.active-row);
-        list.show();
+        SeeCut.clip-source-will-change(); list.show();
     }
     list := PopupWindow {
         x: root.width - root.list-width;
@@ -628,7 +629,7 @@ export component AssistantPanel inherits Rectangle {
         if !root.active || !root.history-ready { return; }
         root.rename-target = root.current-session-id;
         root.rename-title = root.session-index >= 0 && root.session-index < root.session-names.length ? root.session-names[root.session-index] : "Agent";
-        rename-popup.show();
+        SeeCut.clip-source-will-change(); rename-popup.show();
     }
     property <string> rename-title;
     property <string> rename-target;
@@ -942,7 +943,7 @@ export component AssistantPanel inherits Rectangle {
                     IconButton {
                         side: 30px; height: 36px; icon-size: 19px; glyph: Glyph.plus; label: "添加引用";
                         enabled: root.active && root.history-ready && !root.busy && !root.unknown;
-                        clicked => { attachments.show(); }
+                        clicked => { SeeCut.clip-source-will-change(); attachments.show(); }
                         attachments := PopupWindow {
                             close-policy: close-on-click-outside;
                             x: 0px; y: -92px; width: 200px; height: 84px;
@@ -959,7 +960,7 @@ export component AssistantPanel inherits Rectangle {
                         side: 28px; height: 36px; icon-size: 16px;
                         glyph: root.write-granted ? Glyph.unlock : Glyph.lock;
                         label: "当前页面权限"; checked: root.read-granted; enabled: root.active;
-                        clicked => { permissions.show(); }
+                        clicked => { SeeCut.clip-source-will-change(); permissions.show(); }
                         permissions := PopupWindow {
                             close-policy: close-on-click-outside;
                             x: 0px; y: -self.height - 8px; width: 258px; height: root.signed-in ? 170px : 52px;
@@ -988,7 +989,7 @@ export component AssistantPanel inherits Rectangle {
                         background: model-touch.has-hover ? Theme.field-hover : transparent;
                         accessible-role: button; accessible-label: root.signed-in ? "选择模型与强度" : "登录账户";
                         accessible-enabled: root.active;
-                        accessible-action-default => { if root.active { if root.signed-in { models.show(); } else { root.sign-in(); } } }
+                        accessible-action-default => { if root.active { if root.signed-in { SeeCut.clip-source-will-change(); models.show(); } else { root.sign-in(); } } }
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 4px; spacing: 4px;
                             Text { text: !root.signed-in ? "登录账户" : root.provider-label == "" ? "选择模型" : root.provider-label; font-family: Theme.font; font-size: Theme.fs; color: Theme.fg;
@@ -998,10 +999,10 @@ export component AssistantPanel inherits Rectangle {
                         }
                         model-focus := FocusScope {
                             enabled: root.active;
-                            key-pressed(event) => { if event.text == " " || event.text == "\n" { if !event.repeat { if root.signed-in { models.show(); } else { root.sign-in(); } } return EventResult.accept; } return EventResult.reject; }
+                            key-pressed(event) => { if event.text == " " || event.text == "\n" { if !event.repeat { if root.signed-in { SeeCut.clip-source-will-change(); models.show(); } else { root.sign-in(); } } return EventResult.accept; } return EventResult.reject; }
                         }
                         forward-focus: model-focus;
-                        model-touch := TouchArea { enabled: root.active; mouse-cursor: pointer; clicked => { if root.signed-in { models.show(); } else { root.sign-in(); } } }
+                        model-touch := TouchArea { enabled: root.active; mouse-cursor: pointer; clicked => { if root.signed-in { SeeCut.clip-source-will-change(); models.show(); } else { root.sign-in(); } } }
                         models := PopupWindow {
                             close-policy: close-on-click-outside;
                             x: min(0px, model-button.width - self.width); y: -self.height - 8px; width: min(300px, root.width - 28px); height: root.effort-visible ? 110px : 60px;

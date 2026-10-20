@@ -195,7 +195,7 @@ fn apply(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) -> Result<(), String> 
     ui.set_template_name("".into());
     clear_recovery_warning(&ui);
     ui.set_inspiration_can_restore(true);
-    ui.set_inspiration_preview_open(false);
+    ui.invoke_change_inspiration_preview_open(false);
     ui.set_notice("已填入草稿".into());
     Ok(())
 }

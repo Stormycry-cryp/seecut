@@ -297,6 +297,9 @@ impl TaskProjection {
         if generation <= self.generation {
             return false;
         }
+        crate::clip_save_fence::invalidate(
+            concat_host::projects::SaveInvalidation::ConversationChanged,
+        );
         self.generation = generation;
         self.state_revision = 0;
         self.current = None;
@@ -309,6 +312,9 @@ impl TaskProjection {
         if !valid_task_id(id) {
             return false;
         }
+        crate::clip_save_fence::invalidate(
+            concat_host::projects::SaveInvalidation::ConversationChanged,
+        );
         self.current_task_id = Some(id.into());
         self.task_revision = 0;
         self.control_epoch = 0;
@@ -330,6 +336,14 @@ impl TaskProjection {
             || summary.control_epoch < self.control_epoch
         {
             return false;
+        }
+        if self.current.as_ref().is_some_and(|old| {
+            old.control_epoch != summary.control_epoch
+                || old.active_turn_id != summary.active_turn_id
+                || old.active_input_id != summary.active_input_id
+                || old.status != summary.status
+        }) {
+            crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Stopped);
         }
         self.state_revision = summary.state_revision;
         self.task_revision = summary.task_revision;
@@ -433,6 +447,30 @@ fn valid_content(content: &[Value]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_save_task_source_transition_revokes_before_projection_changes() {
+        for field in ["controlEpoch", "activeTurnId", "status"] {
+            let mut projection = TaskProjection::restored(Some(task_id_for("task-1"))).unwrap();
+            assert!(projection.begin_connection(1));
+            assert!(projection.accept(1, "session-1", &summary("task-1", 1)));
+            let pending = crate::clip_save_fence::test_support::PendingSave::new();
+            let mut next = summary("task-1", 2);
+            match field {
+                "controlEpoch" => next[field] = json!(1),
+                "activeTurnId" => next[field] = json!("turn-2"),
+                _ => {
+                    next[field] = json!("paused");
+                    next["activeTurnId"] = Value::Null;
+                    next["activeInputId"] = Value::Null;
+                    next["roundOrdinal"] = Value::Null;
+                }
+            }
+            assert!(projection.accept(1, "session-1", &next));
+            pending.assert_not_committed();
+        }
+    }
+
     fn summary(task: &str, state: u64) -> Value {
         json!({"id":task_id_for(task),"sessionId":"session-1","taskRevision":3,
             "stateRevision":state,"controlEpoch":0,"status":"running",

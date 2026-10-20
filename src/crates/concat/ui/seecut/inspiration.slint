@@ -21,7 +21,7 @@ export component InspirationPanel inherits Rectangle {
             WorkspaceIcon {
                 glyph: Glyph.tag; label: "保存当前草稿为模板";
                 enabled: !SeeCut.working;
-                clicked => { SeeCut.action("template-new", ""); SeeCut.template-editor-current = true; SeeCut.template-editor-open = true; }
+                clicked => { SeeCut.action("template-new", ""); SeeCut.template-editor-current = true; SeeCut.change-template-editor-open(true); }
             }
         }
         if SeeCut.inspirations.length == 0: EmptyState { glyph: Glyph.tag; title: "还没有模板"; detail: "保存常用草稿，下次直接使用。"; }
@@ -42,7 +42,7 @@ export component InspirationPanel inherits Rectangle {
                     width: grid.card-width; height: grid.card-height;
                     accessible-role: button; accessible-label: item.name;
                     accessible-action-default => { card.open(); }
-                    public function open() { SeeCut.error = ""; SeeCut.inspiration-selected = item; SeeCut.inspiration-preview-open = true; }
+                    public function open() { SeeCut.error = ""; SeeCut.inspiration-selected = item; SeeCut.change-inspiration-preview-open(true); }
                     property <bool> ring;
                     focus := FocusScope {
                         focus-gained(reason) => { card.ring = reason == FocusReason.tab-navigation; }
@@ -91,7 +91,7 @@ export component InspirationPreview inherits Modal {
     prominent-close: true;
     surface-width: Math.min(660px, root.width - 24px);
     surface-height: Math.min(SeeCut.inspiration-selected.preview.width > 0 ? 780px : 420px, root.height - 24px);
-    closed => { SeeCut.inspiration-preview-open = false; }
+    closed => { SeeCut.change-inspiration-preview-open(false); }
     property <bool> provenance-open;
     property <bool> preview-open: root.open;
     changed preview-open => { root.provenance-open = false; }

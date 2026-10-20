@@ -17,17 +17,22 @@ use serde::Serialize;
 
 use crate::ownership::WriterGuard;
 use crate::projects;
-use crate::projects::{CreatedProject, OwnedProjectError};
+use crate::projects::{CreatedProject, OwnedProjectError, SaveInvalidation};
 
 /// One open project: its folder, its settings and its undo history.
 pub struct Session {
     /// The project folder, for saving.
     path: String,
+    // Exact filename chosen by the original load; Agent saves must not retarget
+    // a legacy manifest if another name appears while work is queued.
+    manifest: std::path::PathBuf,
     settings: DocumentSettings,
     editor: Editor,
     // Some on audited desktop platforms. None preserves native compatibility
     // elsewhere without claiming ownership protection or granting MCP writes.
     owner: Option<WriterGuard>,
+    // One original source fence, shared with the trusted native caller.
+    pending_save: Option<projects::SaveRevoker>,
 }
 
 /// What every mutating call returns: the authoritative state plus history
@@ -109,7 +114,7 @@ impl Session {
         // JSON parse of an existing document must not prepare an empty overwrite.
         let manifest = projects::manifest_path(std::path::Path::new(&path));
         let document = match std::fs::symlink_metadata(&manifest) {
-            Ok(_) => Some(projects::read_document(&path)?),
+            Ok(_) => Some(projects::read_document_at(&manifest)?),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
                 return Err(format!("could not inspect {}: {error}", manifest.display()).into());
@@ -141,9 +146,11 @@ impl Session {
         };
         Ok(Session {
             path,
+            manifest,
             settings,
             editor,
             owner,
+            pending_save: None,
         })
     }
 
@@ -238,9 +245,24 @@ impl Session {
     pub fn peek_redo(&self) -> Option<&Project> {
         self.editor.peek_redo()
     }
+    fn invalidate_pending_save(&mut self, reason: SaveInvalidation) {
+        if let Some(revoker) = self.pending_save.take() {
+            // Atomic only: never waits for the IO lane. A claim that already
+            // won is not cancelled or relabelled by a later source mutation.
+            revoker.invalidate(reason);
+        }
+    }
+
+    /// The single mutable editor access used by every Session mutation below.
+    /// Reads keep using self.editor and cannot withdraw their own pending save.
+    fn editor_mut(&mut self, reason: SaveInvalidation) -> &mut Editor {
+        self.invalidate_pending_save(reason);
+        &mut self.editor
+    }
+
     /// Apply to the original editor, preserving its precise applied result.
     pub fn apply_outcome(&mut self, command: Command) -> Result<concat_project::Outcome, String> {
-        self.editor
+        self.editor_mut(SaveInvalidation::RevisionChanged)
             .apply(command)
             .map_err(|error| error.to_string())
     }
@@ -249,9 +271,9 @@ impl Session {
         concat_project::Outcome {
             created_id: None,
             applied: if redo {
-                self.editor.redo()
+                self.editor_mut(SaveInvalidation::RevisionChanged).redo()
             } else {
-                self.editor.undo()
+                self.editor_mut(SaveInvalidation::RevisionChanged).undo()
             },
         }
     }
@@ -302,7 +324,7 @@ impl Session {
         command: Command,
     ) -> Result<EditorView, String> {
         let outcome = self
-            .editor
+            .editor_mut(SaveInvalidation::RevisionChanged)
             .apply_within(gesture, command)
             .map_err(|error| error.to_string())?;
         Ok(self.view_with(outcome.created_id))
@@ -311,18 +333,19 @@ impl Session {
     /// Ends the gesture in progress: the next command naming it starts a
     /// new undo step.
     pub fn end_gesture(&mut self) {
-        self.editor.end_gesture();
+        self.editor_mut(SaveInvalidation::BindingUnstable)
+            .end_gesture();
     }
 
     /// Steps the history back one edit.
     pub fn undo(&mut self) -> EditorView {
-        self.editor.undo();
+        self.editor_mut(SaveInvalidation::RevisionChanged).undo();
         self.view()
     }
 
     /// Steps the history forward one edit.
     pub fn redo(&mut self) -> EditorView {
-        self.editor.redo();
+        self.editor_mut(SaveInvalidation::RevisionChanged).redo();
         self.view()
     }
 
@@ -334,11 +357,64 @@ impl Session {
     pub fn prepare_save(&mut self, name: Option<&str>) -> (String, serde_json::Value) {
         if let Some(name) = name {
             let trimmed = name.trim();
-            if !trimmed.is_empty() {
+            if !trimmed.is_empty() && trimmed != self.settings.name {
+                self.invalidate_pending_save(SaveInvalidation::RevisionChanged);
                 self.settings.name = trimmed.to_owned();
             }
         }
         (self.path.clone(), self.editor.to_document(&self.settings))
+    }
+
+    /// Freeze this exact Session for a one-shot, original-location Agent save.
+    /// Trusted UI must first check the original operation, named permit, lease,
+    /// account/conversation, document generation/revision and stable binding.
+    /// Pass the earliest original permit/lease deadline, without extending it.
+    /// Retain the returned revoker and invalidate it BEFORE any source change.
+    /// This method performs no file IO; worker execution revalidates this owner.
+    pub fn prepare_agent_save(
+        &mut self,
+        lane: &projects::SaveLane,
+        deadline: std::time::Instant,
+    ) -> Result<(projects::AgentSaveSnapshot, projects::SaveRevoker), OwnedProjectError> {
+        let owner =
+            self.owner
+                .clone()
+                .ok_or_else(|| crate::ownership::OwnershipError::InvalidTarget {
+                    target: std::path::PathBuf::from(&self.path),
+                    reason: "Agent save requires the original Session writer owner",
+                })?;
+        self.invalidate_pending_save(SaveInvalidation::Superseded);
+        let (path, document) = self.prepare_save(None);
+        // Freeze the actual engine model separately from its JSON document.
+        // A later worker must compare the real reader's settled Project to it.
+        let project = self.editor.project().clone();
+        let (snapshot, revoker) = lane.freeze_agent_save(
+            path,
+            self.manifest.clone(),
+            document,
+            project,
+            owner,
+            deadline,
+        );
+        self.pending_save = Some(revoker.clone());
+        Ok((snapshot, revoker))
+    }
+
+    /// Freeze only the original location/owner/lane for a fresh worker read.
+    /// No file IO, ticket allocation, save revocation or current Project fallback.
+    /// Native must independently recheck its read/account/scope before exposure.
+    pub fn prepare_persisted_read(
+        &self,
+        lane: &projects::SaveLane,
+    ) -> Result<projects::PersistedClipSnapshot, OwnedProjectError> {
+        let owner =
+            self.owner
+                .clone()
+                .ok_or_else(|| crate::ownership::OwnershipError::InvalidTarget {
+                    target: std::path::PathBuf::from(&self.path),
+                    reason: "persisted Clip read requires the original Session writer owner",
+                })?;
+        Ok(lane.freeze_persisted_read(self.path.clone(), self.manifest.clone(), owner))
     }
 
     /// Writes the session's document to its project folder.
@@ -349,6 +425,7 @@ impl Session {
     /// Saves through the existing owner with typed errors, never reacquiring a
     /// second independent writer against this Session's own lock.
     pub fn save_owned(&mut self, name: Option<&str>) -> Result<(), OwnedProjectError> {
+        self.invalidate_pending_save(SaveInvalidation::Superseded);
         let (path, document) = self.prepare_save(name);
         projects::save_owned(&path, &document, self.owner.as_ref())
     }
@@ -367,6 +444,14 @@ impl Session {
             None,
             Some(std::path::Path::new(&self.path)),
         )
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Runs before the original owner field is released. Worker clones keep
+        // their original owner alive, but a pending write loses source authority.
+        self.invalidate_pending_save(SaveInvalidation::DocumentChanged);
     }
 }
 

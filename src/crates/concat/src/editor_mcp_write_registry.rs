@@ -129,6 +129,9 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
     /// grants or extends a lease. An unchanged binding keeps its exact deadline.
     pub fn bind_scope(&mut self, scope: Option<Scope>) {
         if self.scope != scope {
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::DocumentChanged,
+            );
             self.lease = None;
             self.histories.clear();
             self.scope = scope;
@@ -167,6 +170,7 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
         let expires_at = now
             .checked_add(LEASE_DURATION)
             .ok_or(RegistryError::InvalidInput)?;
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.lease = Some(Lease {
             scope: scope.clone(),
             client: client.to_owned(),
@@ -215,13 +219,28 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
         let expires_at = now
             .checked_add(LEASE_DURATION)
             .ok_or(RegistryError::InvalidInput)?;
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         lease.token = token;
         lease.expires_at = Some(expires_at);
         Ok(())
     }
 
     pub fn revoke(&mut self) {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.lease = None;
+    }
+
+    /// The actual original deadline, after checking the exact original token.
+    /// None means a live Agent-session lease, not a newly extended deadline.
+    pub fn original_deadline(
+        &self,
+        scope: &Scope,
+        client: &str,
+        token: &str,
+        now: Instant,
+    ) -> Result<Option<Instant>, RegistryError> {
+        self.authorize(scope, scope, client, token, now)?;
+        Ok(self.lease.as_ref().and_then(|lease| lease.expires_at))
     }
 
     /// Suitable for a UI refresh on user actions or expiration; minutes are
@@ -401,6 +420,31 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_save_original_pending_is_revoked_before_native_lease_renewal() {
+        let now = Instant::now();
+        let mut registry = granted(now);
+        let pending = crate::clip_save_fence::test_support::PendingSave::new();
+        registry
+            .trusted_renew(&scope(), "alice", "replacement-token".into(), now)
+            .unwrap();
+        pending.assert_not_committed();
+    }
+
+    #[test]
+    fn clip_save_original_pending_is_revoked_before_native_scope_or_lease_removal() {
+        for change_scope in [false, true] {
+            let mut registry = granted(Instant::now());
+            let pending = crate::clip_save_fence::test_support::PendingSave::new();
+            if change_scope {
+                registry.bind_scope(None);
+            } else {
+                registry.revoke();
+            }
+            pending.assert_not_committed();
+        }
+    }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct Params {

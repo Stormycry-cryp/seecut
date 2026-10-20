@@ -42,8 +42,8 @@ export component TemplateSaveControl inherits Rectangle {
     height: 34px;
     HorizontalLayout {
         spacing: 6px;
-        AppButton { label: "存为模板"; glyph: Glyph.tag; enabled: !SeeCut.working; clicked => { SeeCut.action("template-new", ""); SeeCut.template-editor-current = true; SeeCut.template-editor-open = true; } }
-        if SeeCut.template-id != "": AppButton { label: "覆盖模板"; enabled: !SeeCut.working; clicked => { SeeCut.template-prompt = SeeCut.prompt; SeeCut.changed("template-prompt", SeeCut.prompt); SeeCut.template-editor-current = true; SeeCut.template-editor-open = true; } }
+        AppButton { label: "存为模板"; glyph: Glyph.tag; enabled: !SeeCut.working; clicked => { SeeCut.action("template-new", ""); SeeCut.template-editor-current = true; SeeCut.change-template-editor-open(true); } }
+        if SeeCut.template-id != "": AppButton { label: "覆盖模板"; enabled: !SeeCut.working; clicked => { SeeCut.template-prompt = SeeCut.prompt; SeeCut.changed("template-prompt", SeeCut.prompt); SeeCut.template-editor-current = true; SeeCut.change-template-editor-open(true); } }
         Rectangle { horizontal-stretch: 1; }
     }
 }
@@ -98,31 +98,31 @@ export component TemplatesPage inherits Rectangle {
                         padding-right: LauncherSafeArea.trailing(parent.absolute-position.x + parent.width - 14px, parent.absolute-position.y + 308px);
                         AppButton { label: "应用模板"; enabled: !SeeCut.working; clicked => { SeeCut.action("template-apply", item.id); } }
                         Rectangle { horizontal-stretch: 1; }
-                        AppButton { label: "更多"; subtle: true; clicked => { SeeCut.template-menu-id = item.id; root.delete-name = item.name; root.menu-x = self.absolute-position.x - root.absolute-position.x; root.menu-y = self.absolute-position.y - root.absolute-position.y + self.height + 4px; } }
+                        AppButton { label: "更多"; subtle: true; clicked => { SeeCut.change-template-menu-id(item.id); root.delete-name = item.name; root.menu-x = self.absolute-position.x - root.absolute-position.x; root.menu-y = self.absolute-position.y - root.absolute-position.y + self.height + 4px; } }
                     }
                 }
 
             }
         }
     }
-    if SeeCut.template-menu-id != "": TouchArea { clicked => { SeeCut.template-menu-id = ""; } }
+    if SeeCut.template-menu-id != "": TouchArea { clicked => { SeeCut.change-template-menu-id(""); } }
     if SeeCut.template-menu-id != "": Rectangle {
         x: Math.clamp(root.menu-x, 12px, root.width - 240px); y: Math.clamp(root.menu-y, 12px, root.height - 98px);
         width: 228px; height: 92px; background: Theme.raised; border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
         VerticalLayout { padding: 8px; spacing: 0px;
-            MenuAction { auto-focus: true; label: "编辑名称和提示词"; glyph: Glyph.tag; clicked => { SeeCut.action("template-edit", SeeCut.template-menu-id); SeeCut.template-editor-current = false; SeeCut.template-editor-open = true; SeeCut.template-menu-id = ""; } }
-            MenuAction { label: "删除模板"; glyph: Glyph.trash; danger: true; clicked => { SeeCut.template-delete-id = SeeCut.template-menu-id; SeeCut.template-menu-id = ""; } }
+            MenuAction { auto-focus: true; label: "编辑名称和提示词"; glyph: Glyph.tag; clicked => { SeeCut.action("template-edit", SeeCut.template-menu-id); SeeCut.template-editor-current = false; SeeCut.change-template-editor-open(true); SeeCut.change-template-menu-id(""); } }
+            MenuAction { label: "删除模板"; glyph: Glyph.trash; danger: true; clicked => { SeeCut.change-template-delete-id(SeeCut.template-menu-id); SeeCut.change-template-menu-id(""); } }
         }
     }
     Modal {
         open: SeeCut.template-delete-id != ""; title: "删除模板"; glyph: Glyph.trash;
-        surface-width: Math.min(420px, root.width - 32px); closed => { SeeCut.template-delete-id = ""; }
+        surface-width: Math.min(420px, root.width - 32px); closed => { SeeCut.change-template-delete-id(""); }
         VerticalLayout {
             padding: 20px; spacing: 16px;
             Text { text: "删除“" + root.delete-name + "”？参考素材会保留。"; color: Theme.fg; wrap: word-wrap; }
             HorizontalLayout { alignment: end; spacing: 8px;
-                AppButton { label: "取消"; clicked => { SeeCut.template-delete-id = ""; } }
-                AppButton { label: "删除"; danger: true; clicked => { SeeCut.action("template-delete", SeeCut.template-delete-id); SeeCut.template-delete-id = ""; } }
+                AppButton { label: "取消"; clicked => { SeeCut.change-template-delete-id(""); } }
+                AppButton { label: "删除"; danger: true; clicked => { SeeCut.action("template-delete", SeeCut.template-delete-id); SeeCut.change-template-delete-id(""); } }
             }
         }
     }

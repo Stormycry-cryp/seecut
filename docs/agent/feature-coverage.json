@@ -1914,6 +1914,7 @@
       "action",
       "app-page-navigation-changed",
       "changed",
+      "clip-source-will-change",
       "personal-can-drop",
       "personal-relink-context-changed",
       "result-focus"
@@ -2321,12 +2322,22 @@
       "actions": [
         "App.app-menu-selected:save"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
-      "acceptance": "source",
-      "notes": "未做运行验证。",
+      "mcpTools": [
+        "clip_edit",
+        "clip_operation",
+        "project"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "logic",
+      "notes": "已接原clip_edit Save、原操作查询和project persistedClip独立实际manifest读取，相关无GUI/真实文件/正常CLI检查通过。原位置整工程保存不增加revision或撤销项；真实App待验；不包含另存、媒体复制或成片导出。",
       "statePrerequisites": [
-        "已打开剪辑工程"
+        "已打开有原owner的Clip Session",
+        "原文档/版本/选择与可信审批来源一致",
+        "同一App同时公告两个Clip保存v1能力，原精确许可与写授权有效"
+      ],
+      "evidence": [
+        "docs/agent/clip-save-protocol.md",
+        "docs/testing/main-qa/2026-10-21-clip-save/README.md"
       ]
     },
     {

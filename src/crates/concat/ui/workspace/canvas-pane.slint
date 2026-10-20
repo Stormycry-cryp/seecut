@@ -901,7 +901,7 @@ export component CanvasPane inherits Rectangle {
                             root.inspector-tab = 0;
                             root.tool-changed(index);
                         }
-                        clicked => { shape-picker.show(); }
+                        clicked => { SeeCut.clip-source-will-change(); shape-picker.show(); }
                         shape-picker := PopupWindow {
                             x: 44px; y: 0px; width: 172px; height: 164px;
                             close-policy: close-on-click-outside;

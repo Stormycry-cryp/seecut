@@ -272,6 +272,7 @@ pub fn toggle_maximize(window: &slint::Window) {
 pub fn pick_folder(title: &str, start: &str) -> Option<PathBuf> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
+        let _clip_dialog = crate::clip_save_fence::NativeDialog::enter();
         let mut dialog = rfd::FileDialog::new().set_title(title);
         if !start.is_empty() {
             dialog = dialog.set_directory(start);
@@ -336,6 +337,7 @@ pub fn pick_files_async(
 pub fn pick_files(title: &str, filter: Option<(&str, &[&str])>) -> Option<Vec<PathBuf>> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
+        let _clip_dialog = crate::clip_save_fence::NativeDialog::enter();
         let mut dialog = rfd::FileDialog::new().set_title(title);
         if let Some((name, extensions)) = filter {
             dialog = dialog.add_filter(name, extensions);
@@ -354,6 +356,7 @@ pub fn pick_files(title: &str, filter: Option<(&str, &[&str])>) -> Option<Vec<Pa
 pub fn pick_file(title: &str, filter: Option<(&str, &[&str])>) -> Result<Option<PathBuf>, String> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
+        let _clip_dialog = crate::clip_save_fence::NativeDialog::enter();
         let mut dialog = rfd::FileDialog::new().set_title(title);
         if let Some((name, extensions)) = filter {
             dialog = dialog.add_filter(name, extensions);
@@ -372,6 +375,7 @@ pub fn pick_file(title: &str, filter: Option<(&str, &[&str])>) -> Result<Option<
 pub fn save_file(title: &str, name: &str, filter: Option<(&str, &[&str])>) -> Option<PathBuf> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
+        let _clip_dialog = crate::clip_save_fence::NativeDialog::enter();
         let mut dialog = rfd::FileDialog::new().set_title(title).set_file_name(name);
         if let Some((family, extensions)) = filter {
             dialog = dialog.add_filter(family, extensions);

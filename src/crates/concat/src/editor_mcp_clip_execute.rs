@@ -40,6 +40,22 @@ pub(super) fn final_check(
     studio
         .mcp_clip_writer_ready()
         .map_err(|e| Response::error(canvas_status(&e)))?;
+    final_check_no_io(studio, app, request, scope, permit, generation)
+}
+
+/// Save worker validates the original writer on disk. UI preparation only reads
+/// native memory and the original authorization records.
+pub(super) fn final_check_no_io(
+    studio: &Studio,
+    app: &App,
+    request: &Request,
+    scope: &Scope,
+    permit: &Permit,
+    generation: u64,
+) -> Result<(), Response> {
+    studio
+        .mcp_clip_permission_ready()
+        .map_err(|e| Response::error(canvas_status(&e)))?;
     let bridge = studio.editor_mcp.borrow();
     if bridge.current_scope().as_ref() != Some(scope) || studio.mcp_clip_state().0 != generation {
         return Err(Response::error("wrongProject"));
@@ -57,7 +73,7 @@ pub(super) fn final_check(
     if !bridge.canvas_permits.valid(permit, Instant::now()) {
         return Err(Response::error("notAuthorized"));
     }
-    if modal_busy(studio, app, true) || studio.mcp_clip_state().3 {
+    if modal_busy(studio, app, true) || app.get_app_read_blocked() || studio.mcp_clip_state().3 {
         return Err(Response::error("busy"));
     }
     if request.revision != Some(studio.mcp_clip_state().1) {
@@ -153,6 +169,17 @@ pub(super) fn execute_clip(request: &Request, studio: &mut Studio, app: &App) ->
         permit
     };
     let generation = studio.mcp_clip_state().0;
+    if matches!(&p.action.edit, concat_editor_mcp::ClipEdit::Save {}) {
+        let response = clip_save::queue_save(request, &scope, &permit, studio, app);
+        let mut bridge = studio.editor_mcp.borrow_mut();
+        bridge
+            .canvas_receipts
+            .finish(&scope, &request.client_id, p, response.clone());
+        let _ = bridge
+            .writes
+            .finish(&scope, &key, response.clone(), Instant::now());
+        return (response, false);
+    }
     if matches!(
         &p.action.edit,
         concat_editor_mcp::ClipEdit::ImportLibrary { .. }
