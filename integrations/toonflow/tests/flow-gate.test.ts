@@ -36,5 +36,5 @@ test('abort after begin but before execution persists a definitive refusal',asyn
 test('original-task read saves refreshed node output and never allocates a write operation',async()=>{
  let reads=0,saves=0,receipts=0;
  const gate=createFlowGate({binding:()=>initial,account:async()=>{},workspace:async()=>initial,receipt:async()=>{receipts++},execute:async c=>{expect(c.args.name).toBe('node:getRecordedGeneration');reads++;return {record:{clientRequestId:'original',status:'completed',capturedCredits:2}}},flush:async()=>{saves++}});
- const result:any=await gate({...request(),name:'flow_get_task',args:{nodeId:'image'}},new AbortController().signal);expect(result.record.status).toBe('completed');expect({reads,saves,receipts}).toEqual({reads:1,saves:1,receipts:0});
+ const result:any=await gate({...request(),operationId:undefined,name:'flow_get_task',args:{nodeId:'image'}},new AbortController().signal);expect(result.record.status).toBe('completed');expect({reads,saves,receipts}).toEqual({reads:1,saves:1,receipts:0});
 });

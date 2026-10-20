@@ -23,8 +23,8 @@ for(const allowed of [true,false])test(`COTO approval chain with simulated edito
   if(name==='context')return reply(message.id,response({status:'ok',data:{appInstanceId:mock.state.instanceId,activeWorkspace:'flow',documents:[{kind:'flow',...scope(),documentSessionId:binding.documentSessionId,selectionRevision:0,selectedObjectIds:[],contextRevision:graph.revision,busy:null}]}}));
   assert.equal(a.revision,graph.revision);
   if(name==='flow_get_task'){
-   graph.queries++;
-   return reply(message.id,response({status:'ok',data:{record:{status:'completed',results:graph.simulatedAssets}}}));
+   graph.queries++;assert.equal(a.operationId,graph.generation.operationId);assert.equal(a.args.nodeId,graph.generation.nodeId);
+   return reply(message.id,response({status:'ok',data:{generation:graph.generation,record:{clientRequestId:graph.generation.clientRequestId,flowOperation:graph.generation,status:'completed',results:graph.simulatedAssets}}}));
   }
   assert.ok(a.operationId);assert.ok(!graph.writes.some(w=>w.operationId===a.operationId));graph.writes.push(a);
   let result={};
@@ -32,10 +32,10 @@ for(const allowed of [true,false])test(`COTO approval chain with simulated edito
   if(name==='flow_update_node'){const node=graph.nodes.find(n=>n.id===a.args.nodeId);assert.ok(node);Object.assign(node,a.args.args);result={node};}
   if(name==='flow_connect_nodes'){graph.edges.push(...a.args.connections);result={connected:graph.edges.length};}
   if(name==='flow_execute_node'){
-   graph.submissions++;graph.simulatedAssets.push({source:{assetId:'SIMULATED-ASSET',version:{sha256:'a'.repeat(64)}}});result={status:'generating'};
+   graph.submissions++;graph.simulatedAssets.push({source:{assetId:'SIMULATED-ASSET',version:{sha256:'a'.repeat(64)}}});graph.generation={version:1,...scope(),operationId:a.operationId,nodeId:a.args.nodeId,clientRequestId:crypto.randomUUID(),mediaType:'image',stage:'recorded'};delete graph.generation.revision;result={status:'recorded',generation:graph.generation};
   }
   graph.revision++;
-  return reply(message.id,response({status:'ok',data:{operationId:a.operationId,status:'completed',saved:true,binding:scope(),result}}));
+  return reply(message.id,response({status:'ok',data:{operationId:a.operationId,status:'completed',saved:true,binding:scope(),...(name==='flow_execute_node'?{generation:graph.generation}:{}),result}}));
  };
  const provider=scriptedProvider(async function*(_request,index){
   if(!allowed&&index>0){yield done('取消后不执行后续步骤');return;}
@@ -48,7 +48,7 @@ for(const allowed of [true,false])test(`COTO approval chain with simulated edito
   if(index===4)args={connections:[{source:graph.nodes[0].id,sourceHandle:'text',target:graph.nodes[1].id,targetHandle:'prompt'}]};
   if(index===5)args={nodeId:graph.nodes[1].id,name:'node:generateImage',args:{}};
   if(index===6)args={nodeId:graph.nodes[1].id};
-  yield done('',[{id:'step-'+index,name,arguments:{...scope(),args}}]);
+  yield done('',[{id:'step-'+index,name,arguments:{...scope(),args,...(index===6?{operationId:graph.generation.operationId}:{})}}]);
  });
  const env=await setup(provider,mock);
  try{

@@ -56,3 +56,17 @@ CARGO_TARGET_DIR="$PWD/../.toonflow/native-target" cargo test -p concat --lib --
 - 原生产品库严格Clippy通过。[上一批公共CI](https://github.com/Stormycry-cryp/seecut/actions/runs/39413521458)在测试代码的一处 `cloned_ref_to_slice_refs` 报错，退出码101，耗时2551秒；已修正借用写法。本次日志不能证明OOM，新的全仓库CI结果另行记录。
 
 本批仍是原生逻辑、协议与本地替身证据，完整真实模型→实际App→作品链、原生视觉交互与成片质量未完成验收。Android按当前范围暂缓；本功能候选的PR不再自动执行Android构建，其他分支及显式/夜间/发布调用保留原规则。
+
+配套私有 `dfbde73` 的[Node 22.19.0和24.x检查](https://github.com/Stormycry-cryp/seecut-agent/actions/runs/39421052890)均已成功；公共 `3397fa4` 的[服务检查](https://github.com/Stormycry-cryp/seecut/actions/runs/39421002493)成功，[引擎检查](https://github.com/Stormycry-cryp/seecut/actions/runs/39421002652)仍在运行。移动端任务已确认Android为skipped，不能把它当作Android编译通过。
+
+## 第四批：Flow原生成身份
+
+`flow_execute_node` 在开始时先持久保留一个生成UUID，经可信函数上下文传到图片、视频及局部重绘节点，不允许模型参数指定此UUID。节点保存真实本地record后才回执 `version:1 / stage:recorded`；该阶段不表示上游生成已完成。丢回包、重开和后续轮询继续查询同一个UUID，可从历史中读取，不认领用户后来手动发起的生成。
+
+补丁SHA为 `c50e213b81bc5a09e6b44d7929fadeeca68cde71a5550e208cfd2fd7df0fc7cf`。从固定上游本地archive重新应用补丁，62个源码文件逐一SHA匹配且 `prepare-toonflow.py --verify-only` 通过；没有把构建产物或依赖纳入补丁。
+
+- Flow gate、磁盘回执、真实nodeAi/工具registry合成链24项、独立context1项、完整COTO允许/拒绝2项通过。主代理另复跑生成绑定8项通过，已包含在24项内。
+- 在隔离目录真实构建全部8个节点、Web、server/index.js和SeeCut server/seecutHost.js入口成功。相关节点、scaffold和仅Web源码的Node vue-tsc检查通过；原Web/server完整类型检查仍因既有Hutch SDK类型文件缺失而未通过，没有伪造stub或安装桌面SDK。
+- 一次构建目录错误误清理了原ignored节点产物。停止错误进程后，仅从完整隔离构建补回5个缺失文件，保留3个已匹配文件；最终原节点目录精确8个普通文件，SHA全部与隔离构建一致。源码、依赖和已交付App没有因此误改。
+
+以上均未调用付费模型或启动前台App，不能代替真实生成作品、费用及实际原生交互验收。
