@@ -195,7 +195,7 @@ pub(super) fn state(pane: &CanvasPane, related: &[String]) -> Result<Value, &'st
 fn edit_state_id(pane: &CanvasPane, document: &str) -> String {
     let brush = pane.agent_brush();
     let data = json!({
-        "documentStateId":document,"active":pane.active.map(id),"cachedPixelId":pane.layer.map(|p|p.as_u64()),
+        "documentStateId":document,"revision":pane.mcp_state().1,"active":pane.active.map(id),"cachedPixelId":pane.layer.map(|p|p.as_u64()),
         "pixelSelectionStateId":selection_state(pane),"paintingLayerMask":pane.agent_paint_mask(),
         "brush":{"diameter":brush.diameter,"opacity":brush.opacity,"hardness":brush.hardness,"colorRgb":brush.color,"eraser":brush.erasing},
         "tool":pane.tool,"rows":pane.agent_layers().iter().map(|row|json!([row.0,row.6])).collect::<Vec<_>>(),
@@ -787,6 +787,52 @@ mod tests {
         id(p.active.unwrap())
     }
     #[test]
+    fn canvas_history_branch_keeps_unique_revision_and_rejects_old_approval_stamp() {
+        let mut p = fixture();
+        let object = active(&p);
+        for opacity in [0.2, 0.5] {
+            apply(
+                &mut p,
+                &CanvasEdit::LayerSetOpacity {
+                    object_id: object.clone(),
+                    opacity,
+                },
+            )
+            .unwrap();
+        }
+        let old_revision = p.mcp_state().1;
+        let old_document = document_state_id(&p).unwrap();
+        let old_stamp = state(&p, &[]).unwrap()["editStateId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        apply(&mut p, &CanvasEdit::Undo).unwrap();
+        apply(&mut p, &CanvasEdit::Undo).unwrap();
+        for opacity in [0.8, 0.5] {
+            apply(
+                &mut p,
+                &CanvasEdit::LayerSetOpacity {
+                    object_id: object.clone(),
+                    opacity,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(document_state_id(&p).unwrap(), old_document);
+        assert!(
+            p.mcp_state().1 > old_revision,
+            "native revision_clock never reissues the old request revision"
+        );
+        let before = state(&p, &[]).unwrap();
+        assert_ne!(before["editStateId"], old_stamp);
+        assert_eq!(
+            super::apply(&mut p, &CanvasEdit::Undo, &old_stamp),
+            Err("staleContext")
+        );
+        assert_eq!(state(&p, &[]).unwrap(), before);
+    }
+
+    #[test]
     fn canvas_edit_commit_rechecks_owner_and_authorization_after_preparation() {
         use crate::panes::canvas::CanvasMoveError;
         for owner_failure in [true, false] {
@@ -844,7 +890,7 @@ mod tests {
             .unwrap()
             .to_owned();
         assert_eq!(
-            state(&p, &[object.clone()]).unwrap()["editStateId"],
+            state(&p, std::slice::from_ref(&object)).unwrap()["editStateId"],
             expected,
             "stamp is independent of related layer subsets"
         );

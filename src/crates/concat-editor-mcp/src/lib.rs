@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 mod canvas;
+mod clip;
+pub mod clip_edit;
+pub use clip::{ClipAction, ClipParameters, validate_clip_parameters};
+pub use clip_edit::ClipEdit;
 mod flow;
 mod flow_workspace;
 pub use canvas::{
@@ -66,8 +70,14 @@ pub struct Request {
     /// Exact typed canvas write parameters.
     pub canvas_parameters: Option<CanvasParameters>,
     #[serde(default)]
+    /// Exact typed current-timeline edit.
+    pub clip_parameters: Option<ClipParameters>,
+    #[serde(default)]
     /// Optional exact canvas-layer lookup instead of project pagination.
     pub object_id: Option<String>,
+    #[serde(default)]
+    /// One atomic bounded clip object readback; mutually exclusive with pagination.
+    pub object_ids: Option<Vec<String>>,
     #[serde(default)]
     /// Bounded global-library image query.
     pub library_query: Option<LibraryQuery>,
@@ -123,6 +133,10 @@ pub enum Method {
     TransformCanvasLayer,
     /// Execute one explicitly approved, typed local canvas edit.
     CanvasEdit,
+    /// Execute one approved edit on the active native timeline.
+    ClipEdit,
+    /// Query the original timeline operation without replay.
+    ClipOperation,
     /// Save the existing canvas binding asynchronously.
     SaveCanvasProject,
     /// Formally export PNG and register it in the existing library.
@@ -148,6 +162,7 @@ impl Method {
                 | Self::InsertLibraryImage
                 | Self::TransformCanvasLayer
                 | Self::CanvasEdit
+                | Self::ClipEdit
                 | Self::SaveCanvasProject
                 | Self::ExportCanvasPng
                 | Self::RetryCanvasRegistration
@@ -166,6 +181,8 @@ impl Method {
             Self::InsertLibraryImage => "insert_library_image",
             Self::TransformCanvasLayer => "transform_canvas_layer",
             Self::CanvasEdit => "canvas_edit",
+            Self::ClipEdit => "clip_edit",
+            Self::ClipOperation => "clip_operation",
             Self::SaveCanvasProject => "save_canvas_project",
             Self::ExportCanvasPng => "export_canvas_png",
             Self::CanvasOperation => "canvas_operation",
@@ -234,6 +251,74 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if request.clip_parameters.is_some()
+        || matches!(request.method, Method::ClipEdit | Method::ClipOperation)
+    {
+        let session = request
+            .document_session_id
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .ok_or("invalidInput")?;
+        if request.project_id.as_deref().is_none_or(str::is_empty)
+            || request.canvas_parameters.is_some()
+            || request.move_parameters.is_some()
+            || request.library_query.is_some()
+            || request.flow.is_some()
+            || request.flow_workspace.is_some()
+            || request.object_id.is_some()
+            || request.object_ids.is_some()
+            || request.context_revision.is_some()
+            || request.offset.is_some()
+            || request.limit.is_some()
+            || request.max_edge.is_some()
+        {
+            return Err("invalidInput".into());
+        }
+        return match request.method {
+            Method::ClipEdit if request.operation_query.is_none() && request.revision.is_some() => {
+                validate_clip_parameters(
+                    &request.client_id,
+                    session,
+                    request.clip_parameters.as_ref().ok_or("invalidInput")?,
+                )
+            }
+            Method::ClipOperation
+                if request.clip_parameters.is_none() && request.revision.is_none() =>
+            {
+                let q = request.operation_query.as_ref().ok_or("invalidInput")?;
+                if q.operation_id == operation_id(&request.client_id, session, q.client_sequence)? {
+                    Ok(())
+                } else {
+                    Err("invalidInput".into())
+                }
+            }
+            _ => Err("invalidInput".into()),
+        };
+    }
+    if let Some(ids) = &request.object_ids {
+        if request.method != Method::Project
+            || request.object_id.is_some()
+            || request.offset.is_some()
+            || request.limit.is_some()
+            || ids.is_empty()
+            || ids.len() > 512
+        {
+            return Err("invalidInput".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            if !seen.insert(id)
+                || !["media", "track", "clip", "timeline"]
+                    .iter()
+                    .any(|kind| clip_edit::clip_native_id(id, kind).is_ok())
+            {
+                return Err("invalidInput".into());
+            }
+        }
+    }
+    if request.method != Method::Project && request.object_ids.is_some() {
+        return Err("invalidInput".into());
+    }
     if request.method == Method::FlowWorkspace || request.flow_workspace.is_some() {
         return if request.method == Method::FlowWorkspace
             && request
@@ -267,7 +352,13 @@ pub fn validate_request_shape(request: &Request) -> Result<(), String> {
         {
             return Err("invalidInput: targeted project fields".into());
         }
-        parse_layer_id(object_id)?;
+        if parse_layer_id(object_id).is_err()
+            && !["media", "track", "clip", "timeline"]
+                .iter()
+                .any(|kind| clip_edit::clip_native_id(object_id, kind).is_ok())
+        {
+            return Err("invalidInput".into());
+        }
     }
     let canvas = request.canvas_parameters.as_ref();
     let library = request.library_query.as_ref();
@@ -603,6 +694,8 @@ mod tests {
         Request {
             object_id: None,
             canvas_parameters: None,
+            clip_parameters: None,
+            object_ids: None,
             library_query: None,
             operation_query: None,
             flow: None,
@@ -891,6 +984,8 @@ mod tests {
         let mut request = Request {
             object_id: None,
             canvas_parameters: None,
+            clip_parameters: None,
+            object_ids: None,
             library_query: None,
             operation_query: None,
             flow: None,
@@ -925,6 +1020,8 @@ mod tests {
         let first = Request {
             object_id: None,
             canvas_parameters: None,
+            clip_parameters: None,
+            object_ids: None,
             library_query: None,
             operation_query: None,
             flow: None,

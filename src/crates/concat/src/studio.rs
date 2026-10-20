@@ -6153,6 +6153,99 @@ impl Studio {
         }
     }
 
+    /// Rendering-only readiness. This never opens a writer or inspects files.
+    pub(crate) fn mcp_clip_permission_ready(
+        &self,
+    ) -> Result<(), crate::panes::canvas::CanvasMoveError> {
+        use crate::panes::canvas::CanvasMoveError as Error;
+        if !concat_host::ownership::desktop_writer_ownership_supported() {
+            return Err(Error::UnsupportedPlatform);
+        }
+        let session = self.session.as_ref().ok_or(Error::NoDocument)?;
+        if self.open_request.is_some()
+            || self.pending_recent.is_some()
+            || self.repair_request.is_some()
+            || self.repair_preview.is_some()
+            || self.repair_save.is_some()
+        {
+            return Err(Error::UnstableBinding);
+        }
+        if self.mcp_clip_state().3 {
+            return Err(Error::Busy);
+        }
+        if session.writer_guard().is_none() {
+            return Err(Error::MissingOwner);
+        }
+        Ok(())
+    }
+    /// Validate only this real Session's existing writer; never acquire a writer.
+    pub(crate) fn mcp_clip_writer_ready(
+        &self,
+    ) -> Result<(), crate::panes::canvas::CanvasMoveError> {
+        use crate::panes::canvas::CanvasMoveError as Error;
+        self.mcp_clip_permission_ready()?;
+        let session = self.session.as_ref().ok_or(Error::NoDocument)?;
+        let owner = session.writer_guard().ok_or(Error::MissingOwner)?;
+        owner.validate().map_err(Error::Ownership)?;
+        if !owner
+            .matches_project(session.path())
+            .map_err(Error::Ownership)?
+        {
+            return Err(Error::OwnerMismatch);
+        }
+        Ok(())
+    }
+    /// Exact Session command path used by the agent adapter after final checks.
+    pub(crate) fn mcp_clip_apply(
+        &mut self,
+        command: Command,
+    ) -> Result<concat_project::Outcome, String> {
+        if self.mcp_clip_state().3 {
+            return Err("busy".into());
+        }
+        self.echo = None;
+        self.last_commit = None;
+        let outcome = self
+            .session
+            .as_mut()
+            .ok_or("noSession")?
+            .apply_outcome(command)?;
+        if outcome.applied {
+            self.after_change();
+        }
+        Ok(outcome)
+    }
+    /// Read the same native history stack the UI uses.
+    pub(crate) fn mcp_clip_peek_history(&self, redo: bool) -> Option<Project> {
+        let session = self.session.as_ref()?;
+        (if redo {
+            session.peek_redo()
+        } else {
+            session.peek_undo()
+        })
+        .cloned()
+    }
+    /// Commit one already-previewed native history step.
+    pub(crate) fn mcp_clip_history(
+        &mut self,
+        redo: bool,
+    ) -> Result<concat_project::Outcome, String> {
+        if self.mcp_clip_state().3 {
+            return Err("busy".into());
+        }
+        self.echo = None;
+        self.last_commit = None;
+        let outcome = self
+            .session
+            .as_mut()
+            .ok_or("noSession")?
+            .history_outcome(redo);
+        if outcome.applied {
+            self.after_change();
+        }
+        Ok(outcome)
+    }
+
     pub(crate) fn mcp_clip_state(&self) -> (u64, u64, bool, bool) {
         (
             self.session_generation,

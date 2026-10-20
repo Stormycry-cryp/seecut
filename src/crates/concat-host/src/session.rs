@@ -230,6 +230,32 @@ impl Session {
         self.editor.project()
     }
 
+    /// Preview the same Session's next undo state without mutation.
+    pub fn peek_undo(&self) -> Option<&Project> {
+        self.editor.peek_undo()
+    }
+    /// Preview the same Session's next redo state without mutation.
+    pub fn peek_redo(&self) -> Option<&Project> {
+        self.editor.peek_redo()
+    }
+    /// Apply to the original editor, preserving its precise applied result.
+    pub fn apply_outcome(&mut self, command: Command) -> Result<concat_project::Outcome, String> {
+        self.editor
+            .apply(command)
+            .map_err(|error| error.to_string())
+    }
+    /// Commit one history step and report whether that same editor changed.
+    pub fn history_outcome(&mut self, redo: bool) -> concat_project::Outcome {
+        concat_project::Outcome {
+            created_id: None,
+            applied: if redo {
+                self.editor.redo()
+            } else {
+                self.editor.undo()
+            },
+        }
+    }
+
     /// Whether there is something to undo.
     pub fn can_undo(&self) -> bool {
         self.editor.can_undo()

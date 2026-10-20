@@ -1830,6 +1830,8 @@ mod desktop {
                                 app,
                                 if operation.retry_registration {
                                     "retry_canvas_registration"
+                                } else if operation.is_clip {
+                                    "clip_operation"
                                 } else {
                                     "canvas_operation"
                                 },

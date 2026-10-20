@@ -67,7 +67,9 @@ pub fn validate(request: &super::Request) -> Result<(), String> {
             .len()
             > 32_768
         || request.move_parameters.is_some()
-        || request.canvas_parameters.is_some()
+        || (request.canvas_parameters.is_some()
+            || request.clip_parameters.is_some()
+            || request.object_ids.is_some())
         || request.library_query.is_some()
         || request.operation_query.is_some()
         || request.object_id.is_some()

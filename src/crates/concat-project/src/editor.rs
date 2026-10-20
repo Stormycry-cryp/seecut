@@ -172,6 +172,15 @@ impl Editor {
         }
     }
 
+    /// The exact next undo snapshot, without changing history or mint state.
+    pub fn peek_undo(&self) -> Option<&Project> {
+        self.undo.back().map(|entry| &entry.before)
+    }
+    /// The exact next redo snapshot, without changing history or mint state.
+    pub fn peek_redo(&self) -> Option<&Project> {
+        self.redo.last()
+    }
+
     /// Whether [`Editor::undo`] would do anything - what the UI's undo
     /// button greys out on.
     pub fn can_undo(&self) -> bool {

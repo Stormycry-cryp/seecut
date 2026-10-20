@@ -28,6 +28,8 @@ struct Bridge {
 struct ProjectArgs {
     #[serde(default)]
     object_id: Option<String>,
+    #[serde(default)]
+    object_ids: Option<Vec<String>>,
     project_id: String,
     document_session_id: String,
     #[serde(default)]
@@ -85,6 +87,19 @@ struct CanvasEditArgs {
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClipEditArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: u64,
+    operation_id: String,
+    client_sequence: u64,
+    selection_revision: u64,
+    expected_edit_state_id: String,
+    timeline_id: String,
+    edit: concat_editor_mcp::ClipEdit,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InsertArgs {
     project_id: String,
     document_session_id: String,
@@ -137,6 +152,8 @@ impl Bridge {
         Request {
             object_id: None,
             canvas_parameters: None,
+            clip_parameters: None,
+            object_ids: None,
             library_query: None,
             operation_query: None,
             flow: None,
@@ -394,6 +411,7 @@ impl Bridge {
         request.project_id = Some(args.project_id);
         request.document_session_id = Some(args.document_session_id);
         request.object_id = args.object_id;
+        request.object_ids = args.object_ids;
         request.offset = args.offset;
         request.limit = args.limit;
         self.dispatch(request)
@@ -472,6 +490,39 @@ impl Bridge {
                 expected_edit_state_id: args.expected_edit_state_id,
             },
         )
+    }
+    #[tool(
+        description = "Apply one explicit bounded ClipEdit to the current owned native Session and fixed timeline. Stable existing media/track/clip/timeline IDs only, no paths/import/scripts. Freeze project.clipState.editStateId before native approval; revision, selection and complete edit state must match. All direct and indirect locked-track changes are refused, including history. Actions cover existing-bin placement, tracks/timelines, move/trim/split/delete/merge, image freeze, rate/curve, transform/properties, audio detach/reattach, text and keyframes, undo/redo. Video still extraction is unavailable. Typed action at most16KiB; each native source/staged/history state at most16MiB (checked without a second allocation); audio detach at most128 generated clips and conservative16Mi lane-scan work, with copied clip/title bytes budgeted before preview; full untruncated receipt at most56KiB, otherwise refuse before mutation. UNKNOWN only queries the original clip_operation; never replay a new sequence."
+    )]
+    fn clip_edit(&self, Parameters(args): Parameters<ClipEditArgs>) -> String {
+        let mut request = self.request(Method::ClipEdit);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.revision = Some(args.revision);
+        request.clip_parameters = Some(concat_editor_mcp::ClipParameters {
+            operation_id: args.operation_id,
+            client_sequence: args.client_sequence,
+            selection_revision: args.selection_revision,
+            action: concat_editor_mcp::ClipAction {
+                timeline_id: args.timeline_id,
+                expected_edit_state_id: args.expected_edit_state_id,
+                edit: args.edit,
+            },
+        });
+        self.dispatch(request)
+    }
+    #[tool(
+        description = "Read the exact original clip_edit receipt using its unchanged operationId and clientSequence. Read credential and exact native approval required. No current timeline/version binding and no replay."
+    )]
+    fn clip_operation(&self, Parameters(args): Parameters<OperationArgs>) -> String {
+        let mut request = self.request(Method::ClipOperation);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.operation_query = Some(concat_editor_mcp::OperationQuery {
+            operation_id: args.operation_id,
+            client_sequence: args.client_sequence,
+        });
+        self.dispatch(request)
     }
     #[tool(
         description = "Save the current canvas to its App-recorded project asynchronously. No path parameter. Unnamed projects stop at awaitingSelection for the existing trusted App save flow. Query the original canvas_operation for actual persisted revision; acceptance alone is not saved success."
@@ -684,6 +735,83 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         assert_eq!(response.status, "ok");
         assert_eq!(response.data.unwrap()["operationId"], operation);
+    }
+
+    #[test]
+    fn clip_public_tools_use_closed_schema_and_independent_credentials() {
+        let tools = Bridge::tool_router().list_all();
+        let edit = tools.iter().find(|t| t.name == "clip_edit").unwrap();
+        let schema = serde_json::to_value(&edit.input_schema).unwrap();
+        for key in [
+            "projectId",
+            "documentSessionId",
+            "timelineId",
+            "revision",
+            "selectionRevision",
+            "expectedEditStateId",
+            "operationId",
+            "clientSequence",
+            "edit",
+        ] {
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!(key))
+            );
+        }
+        assert_eq!(schema["additionalProperties"], false);
+        let query = tools.iter().find(|t| t.name == "clip_operation").unwrap();
+        let schema = serde_json::to_value(&query.input_schema).unwrap();
+        assert!(schema["properties"].get("revision").is_none());
+        assert_eq!(
+            bridge(Some("w".into()))
+                .request(Method::ClipEdit)
+                .client_token,
+            "w"
+        );
+        assert_eq!(
+            bridge(Some("w".into()))
+                .request(Method::ClipOperation)
+                .client_token,
+            "read-credential"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn clip_public_call_reaches_exact_typed_ipc_and_returns_original_receipt() {
+        use std::os::unix::net::UnixListener;
+        let path = std::env::temp_dir().join(format!("sc-clip-test-{}.sock", uuid::Uuid::new_v4()));
+        let listener = UnixListener::bind(&path).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let r: Request = concat_editor_mcp::read_message(&mut stream).unwrap();
+            assert_eq!(r.method, Method::ClipEdit);
+            assert_eq!(r.client_token, "w");
+            assert!(concat_editor_mcp::validate_request_shape(&r).is_ok());
+            let p = r.clip_parameters.unwrap();
+            assert_eq!(p.action.timeline_id, "timeline:TL1");
+            assert_eq!(p.action.edit, concat_editor_mcp::ClipEdit::AddTrack);
+            concat_editor_mcp::write_message(&mut stream,&Response::ok(serde_json::json!({"tool":"clip_edit","operationId":p.operation_id,"changed":true}))).unwrap();
+        });
+        let mut adapter = bridge(Some("w".into()));
+        adapter.socket = path.clone();
+        let op = concat_editor_mcp::operation_id("client", "s", 1).unwrap();
+        let result: Response = serde_json::from_str(&adapter.clip_edit(Parameters(ClipEditArgs {
+            project_id: "p".into(),
+            document_session_id: "s".into(),
+            revision: 1,
+            selection_revision: 2,
+            timeline_id: "timeline:TL1".into(),
+            expected_edit_state_id: format!("clip-edit-v1-{}", "a".repeat(64)),
+            operation_id: op.clone(),
+            client_sequence: 1,
+            edit: concat_editor_mcp::ClipEdit::AddTrack,
+        })))
+        .unwrap();
+        worker.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(result.data.unwrap()["operationId"], op);
     }
 
     fn bridge(write_token: Option<String>) -> Bridge {

@@ -103,6 +103,7 @@ pub struct EditorRecovery {
     pub document_session_id: String,
     pub retry_registration: bool,
     pub is_flow: bool,
+    pub is_clip: bool,
 }
 impl EditorRecovery {
     pub fn query_arguments(&self) -> Value {
@@ -137,6 +138,7 @@ enum ToolAction {
     Insert,
     Transform,
     CanvasEdit,
+    ClipEdit,
     Save,
     Export,
     Operation,
@@ -156,9 +158,10 @@ impl ToolAction {
             "insert_library_image" => Some(Self::Insert),
             "transform_canvas_layer" => Some(Self::Transform),
             "canvas_edit" => Some(Self::CanvasEdit),
+            "clip_edit" => Some(Self::ClipEdit),
             "save_canvas_project" => Some(Self::Save),
             "export_canvas_png" => Some(Self::Export),
-            "canvas_operation" => Some(Self::Operation),
+            "canvas_operation" | "clip_operation" => Some(Self::Operation),
             "retry_canvas_registration" => Some(Self::RegistrationRetry),
             "flow_get_workspace"
             | "flow_read_canvas"
@@ -179,6 +182,7 @@ impl ToolAction {
                 | Self::Insert
                 | Self::Transform
                 | Self::CanvasEdit
+                | Self::ClipEdit
                 | Self::Save
                 | Self::Export
                 | Self::RegistrationRetry
@@ -196,6 +200,7 @@ impl ToolAction {
             Self::Insert => "放入画布",
             Self::Transform => "调整图层",
             Self::CanvasEdit => "编辑画布",
+            Self::ClipEdit => "编辑剪辑",
             Self::Save => "保存画布",
             Self::Export => "导出并入库",
             Self::Operation => "核对操作结果",
@@ -714,6 +719,7 @@ impl Controller {
                         "insert_library_image"
                             | "transform_canvas_layer"
                             | "canvas_edit"
+                            | "clip_edit"
                             | "save_canvas_project"
                             | "export_canvas_png"
                             | "flow_add_node"
@@ -772,6 +778,7 @@ impl Controller {
                 client_sequence: sequence,
                 project_id: project.into(),
                 document_session_id: session.into(),
+                is_clip: item["toolName"] == "clip_edit",
                 is_flow: item["toolName"]
                     .as_str()
                     .is_some_and(|n| n.starts_with("flow_")),
@@ -1547,7 +1554,7 @@ impl Controller {
                     }
                 } else if matches!(
                     data["message"]["toolName"].as_str(),
-                    Some("canvas_operation" | "retry_canvas_registration")
+                    Some("canvas_operation" | "clip_operation" | "retry_canvas_registration")
                 ) && data["metadata"]["postVerification"].as_str() == Some("verified")
                     && self
                         .write_identity
@@ -1611,9 +1618,11 @@ impl Controller {
                             | "insert_library_image"
                             | "transform_canvas_layer"
                             | "canvas_edit"
+                            | "clip_edit"
                             | "save_canvas_project"
                             | "export_canvas_png"
                             | "canvas_operation"
+                            | "clip_operation"
                             | "retry_canvas_registration"
                             | "flow_add_node"
                             | "flow_update_node"
@@ -3598,6 +3607,7 @@ for line in sys.stdin:
             document_session_id: f.identity.document_session_id.clone(),
             retry_registration: false,
             is_flow: false,
+            is_clip: false,
         });
         f.controller.write_in_flight = true;
         f.controller.write_identity = Some((

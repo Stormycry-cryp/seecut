@@ -15,7 +15,7 @@ TOOLS = frozenset({
     "capabilities", "context", "project", "preview", "move_selected_image",
     "library_images", "insert_library_image", "transform_canvas_layer", "canvas_edit",
     "save_canvas_project", "export_canvas_png", "canvas_operation",
-    "retry_canvas_registration",
+    "retry_canvas_registration", "clip_edit", "clip_operation",
     "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation",
     "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node",
 })

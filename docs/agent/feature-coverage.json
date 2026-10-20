@@ -978,6 +978,30 @@
       "acceptance": "pending",
       "evidence": []
     },
+    "tool:clip_edit": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "clip_edit",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "clip_edit"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:clip_operation": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "clip_operation",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "clip_operation"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
     "tool:context": {
       "source": "src/crates/concat-editor-mcp/src/main.rs",
       "symbol": "context",
@@ -3857,12 +3881,18 @@
         "Editor.media-activate",
         "App.app-menu-selected:add-selected"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。结构读取不代表素材管理或添加时间线写入已覆盖。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。仅placeMedia将本工程已有media放到显式轨道；本机导入、素材移除、筛选排序和选择仍待接入。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "已打开剪辑工程"
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -3877,12 +3907,18 @@
         "Editor.tab-close-requested",
         "Editor.tab-moved"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "registered",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。addTimeline/selectTimeline/renameTimeline/removeTimeline/moveTimeline显式稳定ID；拒绝删除最后时间线。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "已打开剪辑工程"
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -3896,12 +3932,18 @@
         "Editor.track-flag-changed",
         "Editor.track-sized"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。addTrack/removeTrack和visible/muted持久标记；轨道锁、UI高度仍待接入。所有直接和间接修改遵守现有轨道锁。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "已打开剪辑工程"
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -3914,13 +3956,19 @@
         "Editor.merge",
         "Editor.delete-selected"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "registered",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。split/merge/delete使用明确且非空clipIds；合并复用原生兼容和源区间校验。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "已打开剪辑工程",
-        "存在满足操作要求的片段选择"
+        "存在满足操作要求的片段选择",
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -3953,12 +4001,19 @@
         "Studio.clip_action:freeze",
         "Studio.clip_action:lock"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。freezeImage仅支持已有图片片段；视频帧提取及轨道锁操作仍待接入。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "存在选定片段"
+        "存在选定片段",
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -3973,13 +4028,19 @@
         "Editor.razored",
         "Editor.dropped"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。完整拖动或修剪手势为一个业务，不能分别计算按下移动松开。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。move/trim对明确片段和轨道执行原生命令；从外部新导入文件及UI拖放导航仍待接入。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "已打开剪辑工程",
-        "目标轨道未锁定"
+        "目标轨道未锁定",
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -4004,12 +4065,19 @@
         "Editor.clip-set:crop-bottom",
         "Editor.clip-commit"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。ClipField 定义见 ui/timeline/model.slint；画布图层工具不适用于时间线片段。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。transform支持位置、缩放、旋转和拉伸；update支持透明度和翻转；裁剪与混合模式仍待接入。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "存在选定视频或图片片段"
+        "存在选定视频或图片片段",
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -4024,12 +4092,19 @@
         "Editor.clip-set:reverse",
         "Editor.clip-commit"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "registered",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。setSpeed/setSpeedCurve及update的preservePitch/reverse；所有源跨度变化复用原生命令。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "存在选定可变速片段"
+        "存在选定可变速片段",
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -4055,12 +4130,18 @@
         "Editor.clip-set:text-width",
         "Editor.clip-commit"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。addText/setText支持文字、字体家族、字号字重、斜体、颜色和透明度；其余文字样式仍待接入。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "已打开剪辑工程"
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -4140,13 +4221,20 @@
         "Keyframes.step-param",
         "Keyframes.clear-param"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。setKey/clearKey/clearKeys支持scale/offsetX/offsetY/rotation/opacity/volume六类基础属性；动画预设和效果参数关键帧仍待接入。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
         "存在支持所选属性的片段",
-        "添加关键帧时播放头位于片段内"
+        "添加关键帧时播放头位于片段内",
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -4203,12 +4291,19 @@
         "App.app-menu-selected:undo",
         "App.app-menu-selected:redo"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "registered",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。undo/redo复用当前Session真实历史；先只读核对目标、所有间接锁轨修改及完整回执预算，再检查writer和原授权提交。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "存在可用编辑历史"
+        "存在可用编辑历史",
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -4225,12 +4320,19 @@
         "Editor.chain-set-param",
         "Editor.clip-commit"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。update支持音量及淡入淡出，setAudioStream选择既有声音流；音频效果链仍待接入。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "存在带音频的片段"
+        "存在带音频的片段",
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {
@@ -4244,12 +4346,19 @@
         "Studio.clip_action:mute",
         "Editor.track-flag-changed"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "context",
+        "project",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "registered",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "原生与私有运行时逻辑回归通过，真实App与模型整链待验。detachAudio/reattachAudio及update.muted；包括间接音频片段的稳定身份与轨道锁检查。 不允许任意路径或脚本，UNKNOWN仅查询原操作。",
       "statePrerequisites": [
-        "存在满足操作要求的音视频片段"
+        "存在满足操作要求的音视频片段",
+        "已打开且持有写入所有权的剪辑工程",
+        "已获得当前工具授权，版本、选择和完整编辑状态一致"
       ]
     },
     {

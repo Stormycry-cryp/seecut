@@ -20,9 +20,17 @@ pub(super) struct Intent {
     pub library: Option<LibraryQuery>,
     pub operation: Option<OperationQuery>,
     pub retry_registration: bool,
+    pub clip_action: Option<concat_editor_mcp::ClipAction>,
+    pub clip_query: bool,
 }
 impl Intent {
     pub fn method(&self) -> Method {
+        if self.clip_action.is_some() {
+            return Method::ClipEdit;
+        }
+        if self.clip_query {
+            return Method::ClipOperation;
+        }
         if let Some(action) = &self.action {
             action.method()
         } else if self.library.is_some() {
@@ -41,11 +49,19 @@ impl Intent {
             selection_revision: request
                 .canvas_parameters
                 .as_ref()
-                .map(|p| p.selection_revision),
+                .map(|p| p.selection_revision)
+                .or_else(|| {
+                    request
+                        .clip_parameters
+                        .as_ref()
+                        .map(|p| p.selection_revision)
+                }),
             action: request.canvas_parameters.as_ref().map(|p| p.action.clone()),
             library: request.library_query.clone(),
             operation: request.operation_query.clone(),
             retry_registration: request.method == Method::RetryCanvasRegistration,
+            clip_action: request.clip_parameters.as_ref().map(|p| p.action.clone()),
+            clip_query: request.method == Method::ClipOperation,
         };
         (intent.method() == request.method).then_some(intent)
     }
@@ -67,9 +83,11 @@ impl Intent {
                     }),
                     operation: None,
                     retry_registration: false,
+                    clip_action: None,
+                    clip_query: false,
                 }
             }
-            "canvas_operation" | "retry_canvas_registration" => {
+            "canvas_operation" | "retry_canvas_registration" | "clip_operation" => {
                 let a: OperationArgs = serde_json::from_value(args).ok()?;
                 Self {
                     project: a.project_id,
@@ -79,9 +97,30 @@ impl Intent {
                     action: None,
                     library: None,
                     retry_registration: tool == "retry_canvas_registration",
+                    clip_action: None,
+                    clip_query: tool == "clip_operation",
                     operation: Some(OperationQuery {
                         operation_id: a.operation_id,
                         client_sequence: a.client_sequence,
+                    }),
+                }
+            }
+            "clip_edit" => {
+                let a: ClipArgs = serde_json::from_value(args).ok()?;
+                Self {
+                    project: a.project_id,
+                    session: a.document_session_id,
+                    revision: Some(a.revision),
+                    selection_revision: Some(a.selection_revision),
+                    action: None,
+                    library: None,
+                    operation: None,
+                    retry_registration: false,
+                    clip_query: false,
+                    clip_action: Some(concat_editor_mcp::ClipAction {
+                        timeline_id: a.timeline_id,
+                        expected_edit_state_id: a.expected_edit_state_id,
+                        edit: a.edit,
                     }),
                 }
             }
@@ -162,6 +201,19 @@ impl Intent {
                 action: action.clone(),
             });
         }
+        if let Some(action) = &intent.clip_action {
+            request.clip_parameters = Some(concat_editor_mcp::ClipParameters {
+                operation_id: concat_editor_mcp::operation_id(
+                    "seecut-assistant",
+                    &intent.session,
+                    1,
+                )
+                .ok()?,
+                client_sequence: 1,
+                selection_revision: intent.selection_revision?,
+                action: action.clone(),
+            });
+        }
         concat_editor_mcp::validate_request_shape(&request).ok()?;
         Some(intent)
     }
@@ -181,6 +233,8 @@ impl Intent {
             library: None,
             operation: None,
             retry_registration: false,
+            clip_action: None,
+            clip_query: false,
         }
     }
 }
@@ -225,6 +279,18 @@ struct EditArgs {
     expected_edit_state_id: String,
     edit: concat_editor_mcp::CanvasEdit,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClipArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: u64,
+    selection_revision: u64,
+    timeline_id: String,
+    expected_edit_state_id: String,
+    edit: concat_editor_mcp::ClipEdit,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LibraryArgs {
@@ -330,6 +396,35 @@ struct Receipt {
     operation_id: String,
     at: Instant,
     response: Response,
+    clip: bool,
+}
+
+pub(super) trait OperationIdentity {
+    fn sequence(&self) -> u64;
+    fn operation_id(&self) -> &str;
+    fn is_clip(&self) -> bool;
+}
+impl OperationIdentity for CanvasParameters {
+    fn sequence(&self) -> u64 {
+        self.client_sequence
+    }
+    fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+    fn is_clip(&self) -> bool {
+        false
+    }
+}
+impl OperationIdentity for concat_editor_mcp::ClipParameters {
+    fn sequence(&self) -> u64 {
+        self.client_sequence
+    }
+    fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+    fn is_clip(&self) -> bool {
+        true
+    }
 }
 #[derive(Default)]
 pub(super) struct Receipts {
@@ -340,7 +435,7 @@ impl Receipts {
         &mut self,
         scope: Scope,
         client: String,
-        parameters: &CanvasParameters,
+        parameters: &impl OperationIdentity,
         now: Instant,
     ) -> bool {
         self.entries
@@ -348,18 +443,21 @@ impl Receipts {
         if self.entries.len() >= 1024 {
             return false;
         }
-        if self.entries.iter().any(|r| {
-            r.scope == scope && r.client == client && r.sequence == parameters.client_sequence
-        }) {
+        if self
+            .entries
+            .iter()
+            .any(|r| r.scope == scope && r.client == client && r.sequence == parameters.sequence())
+        {
             return false;
         }
         self.entries.push_back(Receipt {
             scope,
             client,
-            sequence: parameters.client_sequence,
-            operation_id: parameters.operation_id.clone(),
+            sequence: parameters.sequence(),
+            operation_id: parameters.operation_id().to_owned(),
             at: now,
             response: Response::error("outcomeUnknown"),
+            clip: parameters.is_clip(),
         });
         true
     }
@@ -367,14 +465,14 @@ impl Receipts {
         &mut self,
         scope: &Scope,
         client: &str,
-        parameters: &CanvasParameters,
+        parameters: &impl OperationIdentity,
         response: Response,
     ) -> bool {
         let Some(r) = self.entries.iter_mut().find(|r| {
             r.scope == *scope
                 && r.client == client
-                && r.sequence == parameters.client_sequence
-                && r.operation_id == parameters.operation_id
+                && r.sequence == parameters.sequence()
+                && r.operation_id == parameters.operation_id()
         }) else {
             return false;
         };
@@ -399,6 +497,7 @@ impl Receipts {
         r.response = response;
         true
     }
+    #[cfg(test)]
     pub fn contains(
         &self,
         scope: &Scope,
@@ -406,13 +505,7 @@ impl Receipts {
         query: &OperationQuery,
         now: Instant,
     ) -> bool {
-        self.entries.iter().any(|r| {
-            r.scope == *scope
-                && r.client == client
-                && r.sequence == query.client_sequence
-                && r.operation_id == query.operation_id
-                && now.saturating_duration_since(r.at) < Duration::from_secs(86400)
-        })
+        self.contains_family(scope, client, query, now, false)
     }
     pub fn query(
         &self,
@@ -421,6 +514,33 @@ impl Receipts {
         query: &OperationQuery,
         now: Instant,
     ) -> Response {
+        self.query_family(scope, client, query, now, false)
+    }
+    pub fn contains_family(
+        &self,
+        scope: &Scope,
+        client: &str,
+        query: &OperationQuery,
+        now: Instant,
+        clip: bool,
+    ) -> bool {
+        self.entries.iter().any(|r| {
+            r.scope == *scope
+                && r.client == client
+                && r.sequence == query.client_sequence
+                && r.operation_id == query.operation_id
+                && r.clip == clip
+                && now.saturating_duration_since(r.at) < Duration::from_secs(86400)
+        })
+    }
+    pub fn query_family(
+        &self,
+        scope: &Scope,
+        client: &str,
+        query: &OperationQuery,
+        now: Instant,
+        clip: bool,
+    ) -> Response {
         self.entries
             .iter()
             .find(|r| {
@@ -428,10 +548,67 @@ impl Receipts {
                     && r.client == client
                     && r.sequence == query.client_sequence
                     && r.operation_id == query.operation_id
+                    && r.clip == clip
                     && now.saturating_duration_since(r.at) < Duration::from_secs(86400)
             })
             .map(|r| r.response.clone())
             .unwrap_or_else(|| Response::error("outcomeUnknown"))
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn clip_approval_and_unknown_receipt_keep_exact_tool_and_original_identity() {
+        let stamp = format!("clip-edit-v1-{}", "a".repeat(64));
+        let args = json!({"projectId":"p","documentSessionId":"s","revision":1,"selectionRevision":2,"timelineId":"timeline:TL1","expectedEditStateId":stamp,"edit":{"kind":"addTrack"}});
+        let intent = Intent::parse("clip_edit", args.clone()).unwrap();
+        assert_eq!(intent.method(), Method::ClipEdit);
+        let mut wrong = args;
+        wrong["expectedEditStateId"] = json!(format!("clip-edit-v1-{}", "b".repeat(64)));
+        let wrong = Intent::parse("clip_edit", wrong).unwrap();
+        let scope = Scope {
+            instance: "i".into(),
+            project: "p".into(),
+            session: "s".into(),
+        };
+        let now = Instant::now();
+        let mut permits = Permits::default();
+        permits
+            .grant(scope.clone(), "a".into(), intent.clone(), now)
+            .unwrap();
+        assert!(permits.claim(&scope, "a", &wrong, now).is_none());
+        assert!(permits.claim(&scope, "a", &intent, now).is_some());
+        let p = concat_editor_mcp::ClipParameters {
+            operation_id: concat_editor_mcp::operation_id("a", "s", 1).unwrap(),
+            client_sequence: 1,
+            selection_revision: 2,
+            action: intent.clip_action.unwrap(),
+        };
+        let q = OperationQuery {
+            operation_id: p.operation_id.clone(),
+            client_sequence: 1,
+        };
+        let mut receipts = Receipts::default();
+        assert!(receipts.reserve(scope.clone(), "a".into(), &p, now));
+        assert_eq!(
+            receipts.query_family(&scope, "a", &q, now, true).status,
+            "outcomeUnknown"
+        );
+        assert!(!receipts.contains(&scope, "a", &q, now));
+        assert!(!receipts.contains_family(&scope, "b", &q, now, true));
+        let response = Response::ok(json!({"operationId":q.operation_id,"tool":"clip_edit"}));
+        assert!(receipts.finish(&scope, "a", &p, response.clone()));
+        assert_eq!(
+            receipts.query_family(&scope, "a", &q, now, true).data,
+            response.data
+        );
+        assert_eq!(
+            receipts.query(&scope, "a", &q, now).status,
+            "outcomeUnknown"
+        );
     }
 }
 
@@ -549,7 +726,7 @@ mod tests {
             action: CanvasAction::Save,
         };
         let query = OperationQuery {
-            operation_id: parameters.operation_id.clone(),
+            operation_id: parameters.operation_id().to_owned(),
             client_sequence: 1,
         };
         assert!(receipts.reserve(scope(), "c".into(), &parameters, now));

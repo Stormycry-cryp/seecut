@@ -358,7 +358,7 @@ mod tests {
         r.offset = Some(0);
         assert!(validate_request_shape(&r).is_err());
         r.offset = None;
-        for id in ["layer:0", "layer:03", "clip:3", "layer:-1"] {
+        for id in ["layer:0", "layer:03", "clip:../3", "layer:-1"] {
             r.object_id = Some(id.into());
             assert!(validate_request_shape(&r).is_err());
         }

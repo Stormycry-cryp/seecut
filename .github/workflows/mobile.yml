@@ -52,6 +52,9 @@ env:
 jobs:
   android:
     name: Android arm64
+    # This feature candidate currently targets macOS; retain phone builds for
+    # other PRs and all explicit, nightly and release invocations.
+    if: github.event_name != 'pull_request' || github.head_ref != 'codex/seecut-unified-mac-candidate'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
