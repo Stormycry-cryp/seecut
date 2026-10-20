@@ -28,6 +28,9 @@ mod write_registry;
 #[path = "editor_mcp_write_request.rs"]
 mod write_request;
 
+#[path = "editor_mcp_view_context.rs"]
+mod view_context;
+
 use write_registry::{Begin, LeaseStatus, OperationKey, RegistryError, Scope, WriteRegistry};
 use write_request::{WriteRequest, WriteRequestOutcome};
 
@@ -1399,6 +1402,18 @@ impl BridgeUi {
             studio.mcp_clip_state().2
         };
         if matches!(request.method, Method::Context) {
+            let view = view_context::snapshot(
+                studio,
+                &kind,
+                &view_context::Binding {
+                    instance: &self.instance_id,
+                    project: &ids.project,
+                    session: &ids.session,
+                    revision,
+                    context_revision,
+                    selection_revision: studio.mcp_selection_epoch(),
+                },
+            );
             let selected = if kind == "canvas" {
                 studio
                     .canvas
@@ -1419,6 +1434,7 @@ impl BridgeUi {
                     "documentSessionId": ids.session, "revision": revision,
                     "contextRevision": context_revision, "selectionRevision": studio.mcp_selection_epoch(),
                     "selectedObjectIds": selected,
+                    "view": view,
                     "dirty": dirty, "busy": if busy { Some("gesture") } else { None }}]
             })));
         }
@@ -1551,11 +1567,27 @@ impl BridgeUi {
         if u64::from(document.width) * u64::from(document.height) > 4_194_304 {
             return UiReply::Response(Response::error("unsupportedPreview"));
         }
+        let view_state_id = view_context::snapshot(
+            studio,
+            &kind,
+            &view_context::Binding {
+                instance: &self.instance_id,
+                project: &ids.project,
+                session: &ids.session,
+                revision,
+                context_revision,
+                selection_revision: studio.mcp_selection_epoch(),
+            },
+        )["viewStateId"]
+            .as_str()
+            .expect("view state identity")
+            .to_owned();
         UiReply::Preview(Box::new(PreviewJob {
             request: request.clone(),
             ids,
             revision,
             context_revision,
+            view_state_id,
             max_edge,
             document: document.clone(),
             store: studio.canvas.store.clone(),
@@ -1568,6 +1600,7 @@ struct PreviewJob {
     ids: DocumentIds,
     revision: u64,
     context_revision: u64,
+    view_state_id: String,
     max_edge: u32,
     document: concat_canvas::ImageDocument,
     store: concat_canvas::PixelStore,
@@ -2005,6 +2038,7 @@ fn dispatch(request: Request) -> Response {
             let stable = on_ui({
                 let request = job.request.clone();
                 let ids = job.ids.clone();
+                let view_state_id = job.view_state_id.clone();
                 move |shell, app| {
                     let Ok(studio) = shell.studio.try_borrow() else {
                         return Err(Response::error("busy"));
@@ -2026,6 +2060,20 @@ fn dispatch(request: Request) -> Response {
                                 studio.mcp_context_epoch(),
                             )
                             && !studio.canvas.mcp_state().2
+                            && view_context::snapshot(
+                                &studio,
+                                &kind,
+                                &view_context::Binding {
+                                    instance: &request.instance_id,
+                                    project: &now.project,
+                                    session: &now.session,
+                                    revision: studio.canvas.mcp_state().1,
+                                    context_revision: studio.mcp_context_epoch(),
+                                    selection_revision: studio.mcp_selection_epoch(),
+                                },
+                            )["viewStateId"]
+                                .as_str()
+                                == Some(view_state_id.as_str())
                     }))
                 }
             });
@@ -2040,6 +2088,7 @@ fn dispatch(request: Request) -> Response {
                 "requestId": uuid::Uuid::new_v4().to_string(), "stable": true,
                 "width": thumb.width(), "height": thumb.height(), "coordinateSystem": "documentPixels",
                 "mimeType": "image/png",
+                "metadata":{"viewStateId":job.view_state_id,"scope":"wholeDocument","viewportCapture":false},
                 "base64": base64::engine::general_purpose::STANDARD.encode(bytes.into_inner()),
             }))
         }
