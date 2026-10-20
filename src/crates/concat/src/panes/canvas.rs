@@ -8770,12 +8770,23 @@ mod tests {
         let document = pane.document.as_ref().unwrap();
         let tree = document.to_json().unwrap();
         let composed = concat_canvas::compose(document, &pane.store);
+        assert_eq!(pane.nav.viewport().view_size(), (300.0, 200.0));
+        assert!(pane.nav.viewport().follows_fit());
+        let fitted_zoom = pane.nav.viewport().zoom();
         pane.agent_save_comp(&path).expect("save mixed sizes");
         let manifest = std::fs::read(path.join("manifest.json")).unwrap();
         drop(pane);
 
         let mut reopened = CanvasPane::default();
+        // 自动适配会按当前视口重算缩放；保存往返使用相同视口。
+        reopened
+            .nav
+            .viewport_mut()
+            .resize((300.0, 200.0), 1.0, None);
         reopened.agent_open(&path).expect("reopen mixed sizes");
+        assert_eq!(reopened.nav.viewport().view_size(), (300.0, 200.0));
+        assert!(reopened.nav.viewport().follows_fit());
+        assert_eq!(reopened.nav.viewport().zoom(), fitted_zoom);
         let document = reopened.document.as_ref().unwrap();
         assert_eq!((document.width, document.height), (300, 200));
         assert_eq!(document.to_json().unwrap(), tree);

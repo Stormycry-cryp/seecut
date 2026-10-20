@@ -5381,7 +5381,7 @@
       "id": "flow.browse-projects",
       "module": "flow",
       "label": "浏览、搜索、刷新并返回Flow项目列表",
-      "source": "external/toonflow/apps/web/src/pages/seecutProjects/index.vue",
+      "source": "integrations/toonflow/integration.patch",
       "actions": [
         "loadProjects",
         "query",
@@ -5395,13 +5395,15 @@
       "statePrerequisites": [
         "Flow项目服务与WebView已就绪",
         "返回列表前完成原项目保存门槛"
-      ]
+      ],
+      "embeddedSource": "apps/web/src/pages/seecutProjects/index.vue",
+      "sourcePin": "integrations/toonflow/upstream.json"
     },
     {
       "id": "flow.create-project",
       "module": "flow",
       "label": "创建Flow项目并进入工作区",
-      "source": "external/toonflow/apps/web/src/lib/seecutWorkspaceBridge.ts",
+      "source": "integrations/toonflow/integration.patch",
       "actions": [
         "seecutProjectRequest(POST)",
         "openSeecutProject",
@@ -5415,13 +5417,15 @@
         "项目名称有效",
         "Flow项目服务与WebView已就绪",
         "创建后取得真实工程与文档上下文"
-      ]
+      ],
+      "embeddedSource": "apps/web/src/lib/seecutWorkspaceBridge.ts",
+      "sourcePin": "integrations/toonflow/upstream.json"
     },
     {
       "id": "flow.open-project",
       "module": "flow",
       "label": "选择并打开已有Flow项目",
-      "source": "external/toonflow/apps/web/src/lib/seecutWorkspaceBridge.ts",
+      "source": "integrations/toonflow/integration.patch",
       "actions": [
         "flushSeecutProject",
         "closeSeecutSession",
@@ -5436,7 +5440,9 @@
         "目标来自真实项目列表",
         "原项目保存完成",
         "实际adoption后建立独立文档身份与许可"
-      ]
+      ],
+      "embeddedSource": "apps/web/src/lib/seecutWorkspaceBridge.ts",
+      "sourcePin": "integrations/toonflow/upstream.json"
     }
   ]
 }

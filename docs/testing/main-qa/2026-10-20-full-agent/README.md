@@ -2,6 +2,15 @@
 
 当前范围：macOS 桌面端；Android 按用户最新要求暂缓，下面移动端信息仅记录此前已经完成的步骤，不作为本轮验收门槛。
 
+## CI 修复复核
+
+配套私有22fe513的[Node22/24 CI](https://github.com/Stormycry-cryp/seecut-agent/actions/runs/39464609736)均通过，公共15194f3的[服务CI](https://github.com/Stormycry-cryp/seecut/actions/runs/39463954360)通过；主CI仍未完整通过，不能据此宣布全应用可用。
+
+- 补齐12种语言共76条真实翻译，每种语言765键、无缺失或多余。画布混合尺寸往返测试给重开fixture设置同样视口，并保留文档树、像素、变换、合成及完整manifest断言，生产自动适配逻辑未改。
+- 单次原生/Slint测试编译成功，耗时5分43秒。同一新二进制精确四项测试全部通过：两项原失败、工程包往返与普通保存重开。未重复运行332项Agent组，也不与其累计计数。13文件源码摘要ff2da6370ca05c06d93226da0a25319b9978380687acace3d6fd6cda4b5d2265，二进制摘要459713e60b8bf0372dbd57aeb053b50348464ba5cc0056fe26c5d3e1dd0dccfd；主代理核对实际字节，证据在.toonflow/ci-ui-fixes-gate。
+- 公共15194f3清单任务还暴露3条Flow路由依赖本机ignored上游文件。改为引用已跟踪integration.patch，并保留embeddedSource与sourcePin；76个Git跟踪文件组成的干净隔离目录实际重现修前3项缺失、修后0错误，不下载上游、不削弱检查器。证据在.toonflow/ci-inventory-source-proof.json。
+- 前述swap脚本14项替身验证继续有效；真实Linux清理与修复后的完整远端测试仍待新提交CI回读。没有启动前台App或影响焦点。
+
 ## 第九批：Task 原人类观察来源
 
 任务创建与每次补充在原生入口捕获发送时的完整观察，分别嵌入TaskIntent和TaskUpdateIntent，保留原人类请求ID。Task历史不占用普通Doc顶层观察字段；旧无绑定记录继续可读和查询，不填入当前身份重发。独立能力缺失时明确禁用创建/补充，原状态查询与恢复保留。
