@@ -15,9 +15,9 @@
 
 use std::path::Path;
 
+use concat_effects::Catalogue;
 use concat_project::model::{ClipKind as ModelClipKind, KeyProperty, Project, Timeline};
 
-use crate::chains::{audio_filter_chain, video_effect_chain};
 use crate::{ClipKind, ExportClip, ExportKey, TransitionSpec};
 
 /// Flattens one timeline of `project` for the exporter - the active one
@@ -35,6 +35,18 @@ pub fn flatten_timeline_in(
     project: &Project,
     timeline_id: Option<&str>,
     project_dir: Option<&Path>,
+) -> Vec<ExportClip> {
+    flatten_timeline_in_with_catalogue(project, timeline_id, project_dir, Catalogue::builtin())
+}
+
+/// Flattens with the caller's captured catalogue for both audio and video
+/// chains. Pass the same catalogue to `crate::render_with_catalogue` to keep
+/// effect resolution consistent; media and package files remain path inputs.
+pub fn flatten_timeline_in_with_catalogue(
+    project: &Project,
+    timeline_id: Option<&str>,
+    project_dir: Option<&Path>,
+    catalogue: &Catalogue,
 ) -> Vec<ExportClip> {
     let Some(timeline) = pick_timeline(project, timeline_id) else {
         return Vec::new();
@@ -64,7 +76,7 @@ pub fn flatten_timeline_in(
                     fade_out: clip.fade_out,
                     effects: clip.video_effects.clone(),
                     opacity: clip.opacity,
-                    video_filter_chain: video_effect_chain(&clip.video_effects),
+                    video_filter_chain: catalogue.video_chain(&clip.video_effects),
                     has_audio: Some(false),
                     ..ExportClip::blank(ClipKind::Layer, clip.start, clip.duration, index)
                 });
@@ -89,7 +101,7 @@ pub fn flatten_timeline_in(
                 volume: export_base(clip, KeyProperty::Volume),
                 fade_in: clip.fade_in,
                 fade_out: clip.fade_out,
-                filter_chain: audio_filter_chain(&clip.filters),
+                filter_chain: catalogue.audio_chain(&clip.filters),
                 speed: clip.speed,
                 preserve_pitch: clip.preserve_pitch,
                 speed_curve: clip
@@ -116,7 +128,7 @@ pub fn flatten_timeline_in(
                 stretch_x: clip.stretch_x,
                 stretch_y: clip.stretch_y,
                 opacity: export_base(clip, KeyProperty::Opacity),
-                video_filter_chain: video_effect_chain(&clip.video_effects),
+                video_filter_chain: catalogue.video_chain(&clip.video_effects),
                 // Passed through unconditionally: `resolve_transitions` is
                 // the one adjacency judge (frame/2 tolerance). A fixed
                 // 1/60 s gate here would agree at 30fps and disagree at
@@ -341,6 +353,201 @@ mod tests {
                 || !flat[0].video_filter_chain.is_empty(),
             "sepia must produce a chain, got {:?}",
             flat[0].video_filter_chain
+        );
+    }
+
+    #[test]
+    fn explicit_catalogue_flattens_audio_video_and_layer_without_changing_source_facts() {
+        use concat_project::model::{Cutout, CutoutMode, Subject};
+
+        let mut catalogue = Catalogue::new();
+        for (id, alias, kind, chain) in [
+            (
+                "flatten-test.audio",
+                "flatten-test-audio",
+                "audio",
+                "volume=0.25",
+            ),
+            (
+                "flatten-test.video",
+                "flatten-test-video",
+                "effect",
+                "negate",
+            ),
+        ] {
+            let manifest = format!(
+                r#"[effect]
+id = "{id}"
+name = "Flatten test"
+kind = "{kind}"
+aliases = ["{alias}"]
+[ffmpeg]
+chain = "{chain}"
+"#
+            );
+            catalogue
+                .add(
+                    concat_effects::Package::from_sources(&manifest, None, None)
+                        .expect("compiles an uninstalled fixture package"),
+                )
+                .unwrap();
+        }
+
+        let (mut editor, _, clip_id) = project_with_clip();
+        let timeline_id = editor.project().timelines[0].id.clone();
+        let track_id = editor.project().timelines[0].tracks[0].id.clone();
+        let layer_track = editor.project().timelines[0].tracks[1].id.clone();
+        editor
+            .apply(Command::UpdateClip {
+                clip_id: clip_id.clone(),
+                patch: ClipPatch {
+                    filters: Some(vec![AppliedFilter::new("flatten-test-audio")]),
+                    video_effects: Some(vec![AppliedFilter::new("flatten-test-video")]),
+                    ..Default::default()
+                },
+            })
+            .expect("applies audio and video fixture aliases");
+        let cutout = Cutout {
+            mode: CutoutMode::Auto,
+            subject: Subject::Person,
+            feather: 0.025,
+            strokes: Vec::new(),
+        };
+        editor
+            .apply(Command::SetClipCutout {
+                clip_id,
+                cutout: Some(cutout.clone()),
+            })
+            .expect("sets source cutout");
+        for flag in [TrackFlag::Visible, TrackFlag::Muted] {
+            editor
+                .apply(Command::SetTrackFlag {
+                    track_id: track_id.clone(),
+                    flag,
+                    value: flag == TrackFlag::Muted,
+                })
+                .expect("sets source track state");
+        }
+        editor
+            .apply(Command::AddLayerClip {
+                track_id: Some(layer_track),
+                start: 2.0,
+                duration: Some(3.0),
+                effect_id: "flatten-test-video".to_owned(),
+                name: "Explicit layer".to_owned(),
+            })
+            .expect("adds layer using the video alias");
+        editor
+            .apply(Command::AddTextClip {
+                track_id: None,
+                start: 0.0,
+                style: None,
+                duration: None,
+                offset_y: None,
+            })
+            .expect("adds text for separate rasterisation");
+        editor
+            .apply(Command::AddTimeline)
+            .expect("makes an empty timeline active");
+        let before = editor.project().clone();
+        let project_dir = Path::new("/managed-export/source-project");
+        let flat = flatten_timeline_in_with_catalogue(
+            editor.project(),
+            Some(&timeline_id),
+            Some(project_dir),
+            &catalogue,
+        );
+        assert_eq!(
+            flat.len(),
+            2,
+            "text remains excluded and the selected timeline is used"
+        );
+        let picture = &flat[0];
+        assert!(picture.kind == ClipKind::Video);
+        assert_eq!(picture.filter_chain, "volume=0.25");
+        assert_eq!(picture.video_filter_chain, "negate");
+        assert_eq!(picture.path, "/footage/a.mp4");
+        assert_eq!(
+            (picture.start, picture.duration, picture.source_start),
+            (1.0, 10.0, 0.0)
+        );
+        assert_eq!(picture.track, 0);
+        assert!(picture.hidden && picture.muted);
+        assert_eq!(
+            (picture.media_width, picture.media_height),
+            (Some(1920), Some(1080))
+        );
+        assert_eq!(picture.has_audio, Some(true));
+        assert_eq!(picture.cutout.as_ref(), Some(&cutout));
+        assert_eq!(
+            picture.mask_dir,
+            concat_vision::mask_dir(project_dir, &picture.path, Subject::Person)
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert_eq!(
+            picture.effects,
+            vec![AppliedFilter::new("flatten-test-video")]
+        );
+        let layer = &flat[1];
+        assert!(layer.kind == ClipKind::Layer);
+        assert_eq!(layer.video_filter_chain, "negate");
+        assert!(
+            layer.filter_chain.is_empty() && layer.path.is_empty() && layer.mask_dir.is_empty()
+        );
+        assert_eq!((layer.track, layer.start, layer.duration), (1, 2.0, 3.0));
+        assert!(!layer.hidden && layer.muted);
+        assert_eq!(layer.has_audio, Some(false));
+        assert_eq!(
+            layer.effects,
+            vec![AppliedFilter::new("flatten-test-video")]
+        );
+
+        // An empty table drops only the chains; every copied source fact
+        // remains identical. Neither table is installed into the process.
+        let empty = flatten_timeline_in_with_catalogue(
+            editor.project(),
+            Some(&timeline_id),
+            Some(project_dir),
+            &Catalogue::new(),
+        );
+        let mut without_chains = flat.clone();
+        for clip in &mut without_chains {
+            clip.filter_chain.clear();
+            clip.video_filter_chain.clear();
+        }
+        assert!(empty == without_chains);
+        let without_directory = flatten_timeline_in_with_catalogue(
+            editor.project(),
+            Some(&timeline_id),
+            None,
+            &catalogue,
+        );
+        assert!(without_directory[0].mask_dir.is_empty());
+        assert_eq!(without_directory[0].cutout.as_ref(), Some(&cutout));
+        assert!(
+            flatten_timeline_in_with_catalogue(
+                editor.project(),
+                None,
+                Some(project_dir),
+                &catalogue
+            )
+            .is_empty(),
+            "None selects the empty active timeline"
+        );
+        let fallback = flatten_timeline_in_with_catalogue(
+            editor.project(),
+            Some("missing-timeline"),
+            Some(project_dir),
+            &catalogue,
+        );
+        assert!(
+            fallback == flat,
+            "an unknown timeline still falls back to the first"
+        );
+        assert!(
+            editor.project() == &before,
+            "flatten must leave the original project unchanged"
         );
     }
 

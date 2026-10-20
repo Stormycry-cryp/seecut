@@ -157,6 +157,7 @@ pub(crate) fn build_timeline(
     rate: FrameRate,
     visible: &[&ExportClip],
     gpu: bool,
+    catalogue: &Catalogue,
 ) -> BuiltTimeline {
     let mut timeline = Timeline::new(request.width, request.height, rate);
     let mut stills = std::collections::HashSet::new();
@@ -188,8 +189,12 @@ pub(crate) fn build_timeline(
         // A layer has no pixels to decode: it is a treatment over the
         // stack, kept beside the timeline rather than in it.
         if clip.kind == ClipKind::Layer {
-            let chain = full_chain(clip, gpu);
-            let layer_passes = if gpu { shader_passes(clip) } else { Vec::new() };
+            let chain = full_chain(clip, gpu, catalogue);
+            let layer_passes = if gpu {
+                shader_passes(clip, catalogue)
+            } else {
+                Vec::new()
+            };
             if !chain.is_empty() || !layer_passes.is_empty() {
                 treatments.push(Treatment {
                     start,
@@ -238,7 +243,7 @@ pub(crate) fn build_timeline(
             if let Some(size) = fitted_size(request, clip) {
                 decode_sizes.insert(id, size);
             }
-            let chain = full_chain(clip, gpu);
+            let chain = full_chain(clip, gpu, catalogue);
             if !chain.is_empty() {
                 filter_chains.insert(id, chain);
             }
@@ -247,7 +252,7 @@ pub(crate) fn build_timeline(
                 pre_chains.insert(id, pre);
             }
             if gpu {
-                let clip_passes = shader_passes(clip);
+                let clip_passes = shader_passes(clip, catalogue);
                 if !clip_passes.is_empty() {
                     passes.insert(id, clip_passes);
                 }
@@ -312,7 +317,7 @@ pub(crate) fn pre_chain(clip: &ExportClip) -> String {
 /// see the picture the viewer will - then the effects this backend runs as
 /// chains, then the transition fades. On the GPU every effect with a shader
 /// is left out here and carried by [`shader_passes`] instead.
-pub(crate) fn full_chain(clip: &ExportClip, gpu: bool) -> String {
+pub(crate) fn full_chain(clip: &ExportClip, gpu: bool, catalogue: &Catalogue) -> String {
     let mut parts: Vec<String> = Vec::new();
     if clip.flip_h {
         parts.push("hflip".to_owned());
@@ -323,9 +328,9 @@ pub(crate) fn full_chain(clip: &ExportClip, gpu: bool) -> String {
     let effects = if clip.effects.is_empty() {
         clip.video_filter_chain.clone()
     } else if gpu {
-        Catalogue::builtin().video_chain_gpu(&clip.effects)
+        catalogue.video_chain_gpu(&clip.effects)
     } else {
-        Catalogue::builtin().video_chain(&clip.effects)
+        catalogue.video_chain(&clip.effects)
     };
     if !effects.is_empty() {
         parts.push(effects);
@@ -337,8 +342,8 @@ pub(crate) fn full_chain(clip: &ExportClip, gpu: bool) -> String {
 }
 
 /// The clip's shader passes, for a renderer that runs them.
-pub(crate) fn shader_passes(clip: &ExportClip) -> Vec<ShaderPass> {
-    Catalogue::builtin().shader_passes(&clip.effects)
+pub(crate) fn shader_passes(clip: &ExportClip, catalogue: &Catalogue) -> Vec<ShaderPass> {
+    catalogue.shader_passes(&clip.effects)
 }
 
 /// The engine's keys for a flattened clip's animation, or None for none.

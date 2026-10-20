@@ -1,6 +1,6 @@
 # Agent 视频导出接入计划
 
-状态：已检查现有调用链，尚未接入 Agent。承接 Clip 原位置保存；原生界面和适配由 Astra high 实施，主代理负责协议、审查与集成。Android 暂缓。
+状态：已实现固定Catalogue的flatten/render兼容入口，concat-export完整28项及格式、严格Clippy通过，其中新增5项。媒体等外部输入尚未冻结，Agent视频导出未接入。证据见[基础接口QA](../testing/main-qa/2026-10-21-clip-export/README.md)。承接Clip原位置保存；原生界面和适配由Astra high实施，主代理负责协议、审查与集成。Android暂缓。
 
 目标：Agent 导出当前活动时间轴，持续查询原任务，取得可读成片和个人库固定版本，再向用户交付。复用现有 `Exporter`、`concat-export` 渲染器、原操作回执和资产登记恢复，不增加第二套渲染器或业务历史账本。
 

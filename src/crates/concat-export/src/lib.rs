@@ -655,7 +655,19 @@ fn append_filter(chain: &mut String, filter: &str) {
 }
 
 /// Renders `request` and returns the path written.
-pub fn render(request: &ExportRequest, mut reporter: Reporter<'_>) -> Result<String, String> {
+pub fn render(request: &ExportRequest, reporter: Reporter<'_>) -> Result<String, String> {
+    render_with_catalogue(request, Catalogue::builtin(), reporter)
+}
+
+/// Renders with the caller's captured catalogue for every video effect,
+/// including shader parameters evaluated per frame. Audio filter strings
+/// are already present in `request`; this does not freeze media or files
+/// referenced by effect packages.
+pub fn render_with_catalogue(
+    request: &ExportRequest,
+    catalogue: &Catalogue,
+    mut reporter: Reporter<'_>,
+) -> Result<String, String> {
     if request.clips.is_empty() {
         return Err("there is nothing on the timeline to export".to_owned());
     }
@@ -726,6 +738,7 @@ pub fn render(request: &ExportRequest, mut reporter: Reporter<'_>) -> Result<Str
     let result = (|| -> Result<(), String> {
         render_picture(
             request,
+            catalogue,
             rate,
             total_frames,
             &visible,
@@ -1058,6 +1071,7 @@ fn best_compositor() -> (Box<dyn Compositor>, bool) {
 /// Composites every frame of the timeline into a soundless video file.
 fn render_picture(
     request: &ExportRequest,
+    catalogue: &Catalogue,
     rate: FrameRate,
     total_frames: i64,
     visible: &[&ExportClip],
@@ -1077,7 +1091,7 @@ fn render_picture(
         riding,
         cutouts,
         highlight: _,
-    } = build_timeline(request, rate, visible, gpu);
+    } = build_timeline(request, rate, visible, gpu, catalogue);
 
     let mut encoder = Encoder::create(
         destination,
@@ -1140,7 +1154,7 @@ fn render_picture(
                         transform: layer.transform,
                         track: tracks.get(&layer.clip).copied().unwrap_or(0),
                         blend: layer.blend,
-                        passes: passes_at(&passes, &riding, layer.clip, frame_seconds),
+                        passes: passes_at(catalogue, &passes, &riding, layer.clip, frame_seconds),
                     });
                 }
                 continue;
@@ -1213,7 +1227,7 @@ fn render_picture(
                     transform: layer.transform,
                     track: tracks.get(&layer.clip).copied().unwrap_or(0),
                     blend: layer.blend,
-                    passes: passes_at(&passes, &riding, layer.clip, frame_seconds),
+                    passes: passes_at(catalogue, &passes, &riding, layer.clip, frame_seconds),
                 });
             }
         }
@@ -1266,6 +1280,7 @@ fn render_picture(
 /// The shader passes for one clip at one frame: built for the instant when
 /// the chain rides, and the ones built once otherwise.
 fn passes_at(
+    catalogue: &Catalogue,
     passes: &HashMap<ClipId, Vec<ShaderPass>>,
     riding: &HashMap<ClipId, RidingChain>,
     clip: ClipId,
@@ -1277,7 +1292,7 @@ fn passes_at(
         } else {
             0.0
         };
-        return Catalogue::builtin().shader_passes_at(&chain.effects, at);
+        return catalogue.shader_passes_at(&chain.effects, at);
     }
     passes.get(&clip).cloned().unwrap_or_default()
 }
@@ -1613,7 +1628,13 @@ pub fn preview_sources_of(
                     transform: layer.transform,
                     track: tracks.get(&layer.clip).copied().unwrap_or(0),
                     blend: layer.blend,
-                    passes: passes_at(passes, riding, layer.clip, frame_seconds),
+                    passes: passes_at(
+                        Catalogue::builtin(),
+                        passes,
+                        riding,
+                        layer.clip,
+                        frame_seconds,
+                    ),
                 })
             }
             Err(error) => failures.push(format!("{}: {error}", layer.media.display())),
@@ -1686,7 +1707,7 @@ pub fn preview_plan(
         clips: Vec::new(),
     };
     PreviewPlan {
-        built: build_timeline(&shim, rate, &visible, gpu),
+        built: build_timeline(&shim, rate, &visible, gpu, Catalogue::builtin()),
         rate,
         width,
         height,
@@ -1901,6 +1922,336 @@ mod tests {
             source_start,
             ..ExportClip::blank(kind_of, start, duration, track)
         }
+    }
+
+    // These packages are never installed globally. A fallback to builtin()
+    // drops their effects and makes both the plan and pixel assertions fail.
+    fn isolated_export_catalogue() -> Catalogue {
+        let mut catalogue = Catalogue::new();
+        catalogue
+            .add(
+                concat_effects::Package::from_sources(
+                    r#"
+[effect]
+id = "export-test.negate"
+name = "Export test negate"
+kind = "effect"
+aliases = ["export-test-negate"]
+[ffmpeg]
+chain = "negate"
+"#,
+                    None,
+                    None,
+                )
+                .expect("compiles negate fixture"),
+            )
+            .unwrap();
+        catalogue.add(concat_effects::Package::from_sources(
+            r#"
+[effect]
+id = "export-test.keyed"
+name = "Export test keyed"
+kind = "effect"
+[[param]]
+key = "amount"
+label = "Amount"
+min = 0
+max = 1
+default = 0.3
+animate = true
+[ffmpeg]
+chain = "eq=brightness={amount}"
+[wgsl]
+entry = "effect.wgsl"
+"#,
+            None,
+            Some("struct Params { amount: f32 }\nfn effect(uv: vec2<f32>) -> vec4<f32> { let c = sample(uv); return vec4<f32>(c.rgb + vec3<f32>(params.amount), c.a); }"),
+        ).expect("compiles keyed shader fixture")).unwrap();
+        catalogue
+    }
+
+    fn export_fixture_request(output: &Path, clips: Vec<ExportClip>) -> ExportRequest {
+        ExportRequest {
+            output: output.to_string_lossy().into_owned(),
+            width: 64,
+            height: 64,
+            rate_num: 30,
+            rate_den: 1,
+            crf: 18,
+            preset: "ultrafast".to_owned(),
+            codec: VideoCodec::H264,
+            ten_bit: false,
+            clips,
+        }
+    }
+
+    #[test]
+    fn explicit_catalogue_resolves_clip_and_layer_on_both_backends() {
+        let catalogue = isolated_export_catalogue();
+        let mut picture = clip("video", 0, 0.0, 1.0, 0.0);
+        picture
+            .effects
+            .push(AppliedFilter::new("export-test-negate"));
+        let mut layer = ExportClip::blank(ClipKind::Layer, 0.0, 1.0, 1);
+        layer.effects = vec![
+            AppliedFilter::new("export-test-negate"),
+            AppliedFilter::new("export-test.keyed"),
+        ];
+        let request = export_fixture_request(Path::new("unused.mp4"), vec![picture, layer]);
+        let visible: Vec<_> = request.clips.iter().collect();
+        for gpu in [false, true] {
+            let built = build_timeline(&request, FrameRate::THIRTY, &visible, gpu, &catalogue);
+            assert_eq!(built.filter_chains.len(), 1);
+            assert_eq!(built.filter_chains.values().next().unwrap(), "negate");
+            assert_eq!(built.treatments.len(), 1);
+            let treatment = &built.treatments[0];
+            if gpu {
+                assert_eq!(treatment.chain, "negate");
+                assert_eq!(treatment.passes.len(), 1);
+                assert_eq!(treatment.passes[0].key, "export-test.keyed@1");
+                assert_eq!(shader_amount(&treatment.passes[0]), 0.3_f32);
+            } else {
+                assert!(treatment.chain.starts_with("negate,eq=brightness="));
+                assert!(treatment.passes.is_empty());
+            }
+            let absent = build_timeline(
+                &request,
+                FrameRate::THIRTY,
+                &visible,
+                gpu,
+                &Catalogue::new(),
+            );
+            assert!(absent.filter_chains.is_empty());
+            assert!(absent.treatments.is_empty());
+        }
+    }
+
+    fn shader_amount(pass: &ShaderPass) -> f32 {
+        f32::from_le_bytes(pass.params[0..4].try_into().unwrap())
+    }
+
+    #[test]
+    fn explicit_catalogue_resolves_riding_shader_at_each_clip_instant() {
+        use concat_project::model::{KeyEase, ParamKey};
+        let catalogue = isolated_export_catalogue();
+        let mut picture = clip("video", 0, 2.0, 4.0, 0.0);
+        let mut effect = AppliedFilter::new("export-test.keyed");
+        effect.keys.insert(
+            "amount".to_owned(),
+            vec![
+                ParamKey {
+                    at: 0.0,
+                    value: 0.0,
+                    ease: KeyEase::LINEAR,
+                },
+                ParamKey {
+                    at: 1.0,
+                    value: 1.0,
+                    ease: KeyEase::LINEAR,
+                },
+            ],
+        );
+        picture.effects.push(effect);
+        let request = export_fixture_request(Path::new("unused.mp4"), vec![picture]);
+        let visible: Vec<_> = request.clips.iter().collect();
+        let built = build_timeline(&request, FrameRate::THIRTY, &visible, true, &catalogue);
+        assert_eq!(built.riding.len(), 1);
+        let id = *built.riding.keys().next().unwrap();
+        for (seconds, expected) in [(1.0, 0.0), (2.0, 0.0), (3.0, 0.25), (4.0, 0.5), (8.0, 1.0)] {
+            let resolved = passes_at(&catalogue, &built.passes, &built.riding, id, seconds);
+            assert_eq!(resolved.len(), 1);
+            assert_eq!(resolved[0].key, "export-test.keyed@1");
+            assert!((shader_amount(&resolved[0]) - expected).abs() < 0.0001);
+            assert!(
+                passes_at(&Catalogue::new(), &built.passes, &built.riding, id, seconds).is_empty()
+            );
+        }
+        // A non-riding shader keeps the explicit plan's captured pass too.
+        let held = passes_at(&catalogue, &built.passes, &HashMap::new(), id, 4.0);
+        assert_eq!(held.len(), 1);
+        assert_eq!(shader_amount(&held[0]), 0.3_f32);
+    }
+
+    fn encoded_export_fixture(directory: &Path) -> ExportClip {
+        let path = directory.join("source.mp4");
+        let mut encoder = Encoder::create(
+            &path,
+            64,
+            64,
+            FrameRate::THIRTY,
+            &EncodeOptions {
+                hardware: false,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("real fixture encoder is required");
+        let mut frame = Frame::black(64, 64);
+        frame.fill([200, 30, 30, 255]);
+        for _ in 0..12 {
+            encoder.write_frame(&frame).expect("encodes fixture frame");
+        }
+        encoder.finish().expect("finishes fixture");
+        let mut clip = ExportClip::blank(ClipKind::Video, 0.0, 0.4, 0);
+        clip.path = path.to_string_lossy().into_owned();
+        clip.media_width = Some(64);
+        clip.media_height = Some(64);
+        clip.has_audio = Some(false);
+        clip
+    }
+
+    #[test]
+    fn explicit_catalogue_changes_real_clip_and_layer_pixels_and_legacy_still_exports() {
+        let temporary = ExportTemporary::create(&std::env::temp_dir()).unwrap();
+        let catalogue = isolated_export_catalogue();
+        let mut first = encoded_export_fixture(&temporary.path);
+        first.duration = 0.2;
+        first.effects.push(AppliedFilter::new("export-test-negate"));
+        let mut second = first.clone();
+        second.start = 0.2;
+        second.source_start = 0.2;
+        second.effects.clear();
+        let mut layer = ExportClip::blank(ClipKind::Layer, 0.2, 0.2, 1);
+        layer.effects.push(AppliedFilter::new("export-test-negate"));
+        let cancel = AtomicBool::new(false);
+        for explicit in [false, true] {
+            let output = temporary.path.join(if explicit {
+                "explicit.mp4"
+            } else {
+                "legacy.mp4"
+            });
+            let request =
+                export_fixture_request(&output, vec![first.clone(), second.clone(), layer.clone()]);
+            let reporter = Reporter {
+                cancel: &cancel,
+                progress: &mut |_, _, _| {},
+            };
+            let result = if explicit {
+                render_with_catalogue(&request, &catalogue, reporter)
+            } else {
+                render(&request, reporter)
+            }
+            .expect("exports real short video");
+            assert_eq!(result, request.output);
+            let mut decoder =
+                Decoder::open(&output, &DecodeOptions::default().in_software()).unwrap();
+            let mut frames = 0;
+            while let Some(frame) = decoder.next_frame().expect("fully decodes exported video") {
+                assert_eq!((frame.width(), frame.height()), (64, 64));
+                let centre = (32 * 64 + 32) * 4;
+                let rgb = &frame.pixels()[centre..centre + 3];
+                if explicit {
+                    assert!(
+                        rgb[0] < 100 && rgb[1] > 160,
+                        "explicit frame {frames}: {rgb:?}"
+                    );
+                } else {
+                    assert!(
+                        rgb[0] > 140 && rgb[1] < 100,
+                        "legacy frame {frames}: {rgb:?}"
+                    );
+                }
+                frames += 1;
+            }
+            assert_eq!(
+                frames, 12,
+                "both the ordinary clip and the layer span must decode"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_catalogue_and_legacy_preserve_cancel_and_exclusive_publish() {
+        let temporary = ExportTemporary::create(&std::env::temp_dir()).unwrap();
+        let catalogue = isolated_export_catalogue();
+        let clip = encoded_export_fixture(&temporary.path);
+        let source_bytes = std::fs::read(&clip.path).unwrap();
+        for explicit in [false, true] {
+            let invoke = |request: &ExportRequest, reporter: Reporter<'_>| {
+                if explicit {
+                    render_with_catalogue(request, &catalogue, reporter)
+                } else {
+                    render(request, reporter)
+                }
+            };
+            let output = temporary.path.join(if explicit {
+                "explicit.mp4"
+            } else {
+                "legacy.mp4"
+            });
+            let request = export_fixture_request(&output, vec![clip.clone()]);
+            let cancel = AtomicBool::new(true);
+            let error = invoke(
+                &request,
+                Reporter {
+                    cancel: &cancel,
+                    progress: &mut |_, _, _| {},
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, "export cancelled");
+            assert!(!output.exists());
+
+            cancel.store(false, Ordering::Relaxed);
+            let mut observed_frame = false;
+            let error = invoke(
+                &request,
+                Reporter {
+                    cancel: &cancel,
+                    progress: &mut |_, _, stage| {
+                        if stage == "rendering" {
+                            observed_frame = true;
+                            cancel.store(true, Ordering::Relaxed);
+                        }
+                    },
+                },
+            )
+            .unwrap_err();
+            assert!(
+                observed_frame,
+                "cancellation must happen after a real frame"
+            );
+            assert_eq!(error, "export cancelled");
+            assert!(!output.exists());
+
+            cancel.store(false, Ordering::Relaxed);
+            let mut raced = false;
+            let error = invoke(
+                &request,
+                Reporter {
+                    cancel: &cancel,
+                    progress: &mut |_, _, stage| {
+                        if stage == "rendering" && !raced {
+                            std::fs::write(&output, b"concurrent output").unwrap();
+                            raced = true;
+                        }
+                    },
+                },
+            )
+            .unwrap_err();
+            assert!(raced);
+            assert!(error.contains("without replacing a file"), "{error}");
+            assert_eq!(std::fs::read(&output).unwrap(), b"concurrent output");
+            let error = invoke(
+                &request,
+                Reporter {
+                    cancel: &cancel,
+                    progress: &mut |_, _, _| {},
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains("already exists"));
+            assert_eq!(std::fs::read(&clip.path).unwrap(), source_bytes);
+        }
+        assert!(
+            std::fs::read_dir(&temporary.path).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".concat-export-")
+            }),
+            "render intermediates must be removed after cancellation and conflict"
+        );
     }
 
     fn spec(kind: &str, duration: f64) -> Option<TransitionSpec> {
@@ -2216,7 +2567,7 @@ mod tests {
         resolve_transitions(&mut clips, FrameRate::THIRTY, true);
         // The fade lives beside the effects and joins after them when the
         // decoder's chain is built.
-        let chain = resolve::full_chain(&clips[1], false);
+        let chain = resolve::full_chain(&clips[1], false, Catalogue::builtin());
         assert!(chain.starts_with("hue=s=0,fade=t=in"), "was: {chain}");
     }
 
