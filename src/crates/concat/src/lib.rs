@@ -44,6 +44,8 @@ mod agent_identity;
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
 mod agent_models;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_observation;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_process;
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
 mod agent_references;

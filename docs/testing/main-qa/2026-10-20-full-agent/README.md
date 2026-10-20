@@ -2,6 +2,18 @@
 
 当前范围：macOS 桌面端；Android 按用户最新要求暂缓，下面移动端信息仅记录此前已经完成的步骤，不作为本轮验收门槛。
 
+## 第八批：普通文档初始观察
+
+原生在现有follow_up入口中，于附件异步整理前保存原inputId及完整DocumentObservationBinding。真实Context包含工程/文档身份、revision/contextRevision/selectionRevision、完整有序选中对象及明确可空的viewStateId；Flow另保存实际canvas/account/session。类型、控制器和运行时分别校验，不从助手展示摘要或旧历史补造当前身份。缺少运行时能力时禁用普通发送，原连接与原操作查询保留。
+
+原RequestSnapshot和COTO原input.accepted保留相同绑定。受理时及附件后核对真实Context，首次上下文准备沿input.applied找回唯一原输入；ACK只返回原回执，不重读、推理或重发。UNKNOWN仍只查原业务操作。本批没有Task create/update来源、bound steer或新的原生interrupt入口。
+
+私有live在Node24.15.0、锁定COTO与公共bed917c服务源码下，完整451项通过，0失败/取消/跳过，113.4秒；包含新增34项观察回归。证据目录为本机ignored的.toonflow/doc-observation-runtime-draft，live-full-proof.json保存4个源码摘要与完整日志摘要。真实COTO配合本地模拟MCP、loopback服务和合成模型，不证明实际App、模型观看或作品质量。
+
+公共最终6文件源码聚合SHA256为`182d29092920501f8d5619f1beff365f3d904d7dad71bb4d43b9b4f1a51d8a52`。workspace fmt、宿主`--lib --tests -D warnings`严格Clippy及原生/Slint测试编译通过。同一最终二进制六组无交集测试共318项通过、1项辅助入口默认忽略：agent 180、Cloud snapshot 1、editor_mcp 122、app_page 12、app_preview 2、bounded_digest 1。二进制SHA256为`862cfd3070efdf617dcfc24df0dff182a0a9eafeac53de6c5cdfa13a0dfa7f50`，测试后源码摘要仍全部一致；本机证据在.toonflow/doc-observation-ui-gate。MCP源码及e8441c01开头的正常CLI未改，复用此前47项协议/stdio证据。未启动前台App，没有系统鼠标、键盘或焦点操作。
+
+源码覆盖补审新增Flow项目列表、创建与打开3条实际路线，清单现为168条，均未映射Agent工具；42命令/45画布辅助/32MCP/761UI回调的数量不表示全应用完成率。固定上游其他插件能力仍未穷尽。
+
 ## 第一批：真实视图与覆盖清单
 
 公共视图源码提交 `9a5fc86`，覆盖清单及实施计划提交 `d0f2026`，私有运行时提交 `a3536f0e0b57242f7fc0513bcb204d920929edd5`。在原功能分支推进，没有合并或发布。

@@ -90,7 +90,7 @@ fn bind_geometry(app: &App) {
 mod desktop {
     use super::*;
     use crate::agent_controller::{
-        ConnectionConfig, Controller, DocumentIdentity, Phase, TaskCommand, TaskOutcome,
+        ConnectionConfig, Controller, DocumentIdentity, Phase, TaskCommand, TaskOutcome, UiError,
     };
     use crate::agent_identity::AgentScope;
     use crate::agent_process::LaunchSpec;
@@ -1384,6 +1384,10 @@ mod desktop {
             state.sync_task_budget();
             let view = state.controller.view();
             let phase = view.phase;
+            let task_mode = snapshot.write_token.is_some() && state.controller.supports_tasks();
+            let document_observation_unavailable = !snapshot.is_app()
+                && !task_mode
+                && state.controller.document_observation_unavailable();
             let unknown = view.outcome == Some(TaskOutcome::OutcomeUnknown)
                 || phase == Phase::OutcomeUnknown
                 || state.record.pending == "unknown";
@@ -1432,6 +1436,9 @@ mod desktop {
                     Phase::AwaitingApproval => "等待你确认当前操作",
                     Phase::Stopping => "正在停止，等待结果",
                     Phase::Ready if busy => "已提交，等待 Agent 回应",
+                    Phase::Ready if document_observation_unavailable => {
+                        UiError::ObservationUnavailable.message()
+                    }
                     Phase::Ready => "可以发送问题",
                     _ => "",
                 }
@@ -1547,7 +1554,6 @@ mod desktop {
                 0
             });
             ui.set_unknown(unknown);
-            let task_mode = snapshot.write_token.is_some() && state.controller.supports_tasks();
             let task_budget_reason = if task_mode && !state.controller.task_active() {
                 state.task_budget().err().unwrap_or("")
             } else {
@@ -1625,6 +1631,7 @@ mod desktop {
             ui.set_can_send(
                 view.can_send
                     && (!task_mode || !state.controller.task_active())
+                    && !document_observation_unavailable
                     && task_budget_reason.is_empty()
                     && !state.preparing
                     && snapshot.read_token.is_some()
@@ -1756,6 +1763,8 @@ mod desktop {
                     "请先允许读取与预览并连接 Agent"
                 } else if !selection_reason.is_empty() {
                     selection_reason
+                } else if document_observation_unavailable {
+                    UiError::ObservationUnavailable.message()
                 } else if !view.can_send {
                     "请先连接 Agent"
                 } else {
@@ -1895,6 +1904,7 @@ mod desktop {
             let Some(context) = snapshot.reference() else {
                 return;
             };
+            let task_mode = snapshot.write_token.is_some() && state.controller.supports_tasks();
             let app_input = if snapshot.is_app() {
                 let mut binding = Err(AssistantPermissionError::NotAllowed);
                 Shell::with(|shell, _| {
@@ -1909,6 +1919,41 @@ mod desktop {
                     Ok(view) => Some((format!("input-{}", uuid::Uuid::new_v4()), view)),
                     Err(error) => {
                         state.notice = error.message().into();
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            let document_input = if !snapshot.is_app() && !task_mode {
+                if !state.controller.supports_document_observation() {
+                    state.notice = UiError::ObservationUnavailable.message().into();
+                    return;
+                }
+                let (Some(identity), Some(read_token)) =
+                    (snapshot.document(), snapshot.read_token.as_deref())
+                else {
+                    state.notice = UiError::DocumentChanged.message().into();
+                    return;
+                };
+                let mut binding = Err(AssistantPermissionError::StaleContext);
+                Shell::with(|shell, _| {
+                    let studio = shell.studio.borrow();
+                    binding = studio
+                        .editor_mcp
+                        .borrow_mut()
+                        .assistant_document_observation(&studio, app, identity, read_token);
+                });
+                match binding {
+                    Ok(binding) => Some((format!("input-{}", uuid::Uuid::new_v4()), binding)),
+                    Err(error) => {
+                        state.notice = match error {
+                            AssistantPermissionError::NotAllowed => {
+                                UiError::AuthorizationRequired.message()
+                            }
+                            _ => UiError::ObservationChanged.message(),
+                        }
+                        .into();
                         return;
                     }
                 }
@@ -1954,7 +1999,6 @@ mod desktop {
             } else {
                 None
             };
-            let task_mode = snapshot.write_token.is_some() && state.controller.supports_tasks();
             let task_intent = if task_mode {
                 let max_task_credits = match state.task_budget() {
                     Ok(value) => value,
@@ -1976,8 +2020,12 @@ mod desktop {
                 None
             };
             let request = RequestSnapshot {
-                input_id: app_input.as_ref().map(|(id, _)| id.clone()),
+                input_id: app_input
+                    .as_ref()
+                    .map(|(id, _)| id.clone())
+                    .or_else(|| document_input.as_ref().map(|(id, _)| id.clone())),
                 app_view_binding: app_input.as_ref().map(|(_, view)| view.clone()),
+                observation_binding: document_input.as_ref().map(|(_, binding)| binding.clone()),
                 task: task_intent.clone(),
                 references: state.record.draft_references.clone(),
                 session_id: state.record.id.clone(),
@@ -2051,16 +2099,12 @@ mod desktop {
                     state
                         .controller
                         .send_app_content(&id, content, selection, view)
-                } else if references.is_empty() {
-                    if selection.is_some() {
-                        state.controller.send_text_with_selection(text, selection)
-                    } else {
-                        state.controller.send_text(text)
-                    }
-                } else {
+                } else if let Some((id, binding)) = document_input {
                     state
                         .controller
-                        .send_content_with_selection(content, selection)
+                        .send_document_content(&id, content, selection, binding)
+                } else {
+                    Err(UiError::Configuration)
                 })
                 .map_err(|error| error.message()),
                 Err(error) => Err(error),
@@ -3715,6 +3759,7 @@ mod desktop {
                 let original = RequestSnapshot {
                     input_id: None,
                     app_view_binding: None,
+                    observation_binding: None,
                     task: None,
                     references: Vec::new(),
                     session_id: state.record.id.clone(),

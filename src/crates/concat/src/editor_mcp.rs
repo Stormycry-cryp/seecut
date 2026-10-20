@@ -672,6 +672,46 @@ pub(crate) struct BridgeUi {
 }
 
 impl BridgeUi {
+    /// Capture the real Context at the human send action. The expected identity
+    /// and token come from the active native lease, never a display summary.
+    pub(crate) fn assistant_document_observation(
+        &mut self,
+        studio: &Studio,
+        app: &App,
+        identity: &crate::agent_identity::DocumentIdentity,
+        read_token: &str,
+    ) -> Result<crate::agent_observation::DocumentObservationBinding, AssistantPermissionError>
+    {
+        if identity.instance_id != self.instance_id {
+            return Err(AssistantPermissionError::StaleContext);
+        }
+        let request: Request = serde_json::from_value(json!({
+            "instanceId": self.instance_id,
+            "clientId": ASSISTANT_CLIENT_ID,
+            "clientToken": read_token,
+            "method": "context"
+        }))
+        .map_err(|_| AssistantPermissionError::NotAllowed)?;
+        let UiReply::Response(response) = self.handle(&request, studio, app) else {
+            return Err(AssistantPermissionError::StaleContext);
+        };
+        if response.status == "notAuthorized" {
+            return Err(AssistantPermissionError::NotAllowed);
+        }
+        if response.status != "ok" {
+            return Err(AssistantPermissionError::StaleContext);
+        }
+        let data = response
+            .data
+            .ok_or(AssistantPermissionError::StaleContext)?;
+        crate::agent_observation::DocumentObservationBinding::from_native_context(
+            &data,
+            identity,
+            ASSISTANT_CLIENT_ID,
+        )
+        .map_err(|_| AssistantPermissionError::StaleContext)
+    }
+
     pub(crate) fn assistant_snapshot(&mut self, studio: &Studio, app: &App) -> AssistantSnapshot {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));

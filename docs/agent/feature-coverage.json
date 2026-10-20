@@ -5376,6 +5376,67 @@
       "agentStatus": "registered",
       "acceptance": "source",
       "notes": "仅已载入UI Image句柄、原opaque itemId与previewVersion；实际PNG字节，分别核对页面/账户/读取许可。没有视频播放帧、屏幕坐标或真实App验收证据。"
+    },
+    {
+      "id": "flow.browse-projects",
+      "module": "flow",
+      "label": "浏览、搜索、刷新并返回Flow项目列表",
+      "source": "external/toonflow/apps/web/src/pages/seecutProjects/index.vue",
+      "actions": [
+        "loadProjects",
+        "query",
+        "retryOperation",
+        "returnToSeecutProjects"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "固定嵌入上游有真实项目列表；现AppPageId不含Flow列表，App读取与已有Flow文档工具均不能代替项目发现。未做真实App或Agent验收。",
+      "statePrerequisites": [
+        "Flow项目服务与WebView已就绪",
+        "返回列表前完成原项目保存门槛"
+      ]
+    },
+    {
+      "id": "flow.create-project",
+      "module": "flow",
+      "label": "创建Flow项目并进入工作区",
+      "source": "external/toonflow/apps/web/src/lib/seecutWorkspaceBridge.ts",
+      "actions": [
+        "seecutProjectRequest(POST)",
+        "openSeecutProject",
+        "waitForSeecutWorkspace"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "已有项目创建和实际工作区就绪链；现MCP要求已激活文档，尚无创建、原请求恢复及首次绑定入口。未做真实App或Agent验收。",
+      "statePrerequisites": [
+        "项目名称有效",
+        "Flow项目服务与WebView已就绪",
+        "创建后取得真实工程与文档上下文"
+      ]
+    },
+    {
+      "id": "flow.open-project",
+      "module": "flow",
+      "label": "选择并打开已有Flow项目",
+      "source": "external/toonflow/apps/web/src/lib/seecutWorkspaceBridge.ts",
+      "actions": [
+        "flushSeecutProject",
+        "closeSeecutSession",
+        "openSeecutProject",
+        "workspace.openProject"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "已有保存、关闭旧会话、打开目标与发布Flow上下文链；flow_switch_canvas只切当前工程内画布，不能代替项目打开。未做真实App或Agent验收。",
+      "statePrerequisites": [
+        "目标来自真实项目列表",
+        "原项目保存完成",
+        "实际adoption后建立独立文档身份与许可"
+      ]
     }
   ]
 }

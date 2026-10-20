@@ -2,6 +2,7 @@
 //! Minimal UI-independent controller for the documented HOST-IPC-V1 protocol.
 //! Only the trusted host constructs configuration; no credential discovery or automatic retry.
 use super::agent_process::{self, BridgeError, Event, Handle, LaunchSpec};
+use crate::agent_observation::DocumentObservationBinding;
 use crate::agent_tasks::{self, TaskProjection, TaskStatus, TaskSummary};
 use serde_json::{Value, json};
 use sha2::Digest;
@@ -68,6 +69,10 @@ pub enum UiError {
     ModelSelectionUnavailable,
     InvalidInput,
     TaskRevisionChanged,
+    ObservationUnavailable,
+    ObservationChanged,
+    ObservationInvalid,
+    ObservationUnsupported,
 }
 impl UiError {
     pub fn message(self) -> &'static str {
@@ -87,6 +92,12 @@ impl UiError {
             Self::ModelSelectionUnavailable => "模型或档位已变更，请重新选择",
             Self::TaskRevisionChanged => "任务修订已变化，补充要求已保留，请核对后重试原请求",
             Self::InvalidInput => "当前模型无法处理这些内容，请调整文字或附件",
+            Self::ObservationUnavailable => {
+                "当前运行组件不支持保存发问时的文档状态，请更新运行组件"
+            }
+            Self::ObservationChanged => "发问时的工程、选择或视图已变化，请核对后重新发送",
+            Self::ObservationInvalid => "无法核对发问时的文档记录，请检查运行组件",
+            Self::ObservationUnsupported => "当前输入方式尚不支持文档观察绑定",
         }
     }
 }
@@ -405,6 +416,18 @@ struct Pending {
     since: Instant,
 }
 
+enum InputObservation {
+    Document(String, Box<DocumentObservationBinding>),
+    App(String, AppViewBinding),
+}
+impl InputObservation {
+    fn input_id(&self) -> &str {
+        match self {
+            Self::Document(id, _) | Self::App(id, _) => id,
+        }
+    }
+}
+
 pub struct Controller {
     process: Option<Handle>,
     scope: Option<AgentScope>,
@@ -412,6 +435,7 @@ pub struct Controller {
     restore: bool,
     recover_existing: bool,
     model_selection_supported: bool,
+    document_observation_supported: bool,
     tasks_supported: bool,
     ipc_generation: u64,
     tasks: TaskProjection,
@@ -472,6 +496,7 @@ impl Default for Controller {
             restore: false,
             recover_existing: false,
             model_selection_supported: false,
+            document_observation_supported: false,
             tasks_supported: false,
             ipc_generation: 0,
             tasks: TaskProjection::default(),
@@ -605,6 +630,7 @@ impl Controller {
         self.restore = config.restore;
         self.recover_existing = false;
         self.model_selection_supported = false;
+        self.document_observation_supported = false;
         self.tasks_supported = false;
         self.ipc_generation = self
             .ipc_generation
@@ -642,6 +668,7 @@ impl Controller {
         match &config.scope {
             AgentScope::Document(_) => {
                 params["taskProtocolVersion"] = json!(1);
+                params["documentObservationProtocolVersion"] = json!(1);
                 if let Some(token) = &config.write_token {
                     params["writeToken"] = json!(token);
                 }
@@ -714,6 +741,24 @@ impl Controller {
     /// Negotiated for this process only; a reconnect must advertise it again.
     pub fn supports_model_selection(&self) -> bool {
         self.process.is_some() && self.model_selection_supported
+    }
+    pub fn supports_document_observation(&self) -> bool {
+        self.process.is_some()
+            && self.document_observation_supported
+            && self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.document().is_some())
+    }
+    pub fn document_observation_unavailable(&self) -> bool {
+        self.phase == Phase::Ready
+            && self.session_opened
+            && self.process.is_some()
+            && self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.document().is_some())
+            && !self.supports_document_observation()
     }
     pub fn acknowledged_task_update(&self) -> Option<&str> {
         self.acknowledged_task_update.as_deref().or_else(|| {
@@ -1086,24 +1131,65 @@ impl Controller {
             "revision":revision,"mode":if operate {"operate"} else {"read"},"writeToken":write_token}),
             Request::Permissions { revision, operate })
     }
-    pub fn send_text(&mut self, text: &str) -> Result<(), UiError> {
+    #[cfg(test)]
+    pub(crate) fn send_text(&mut self, text: &str) -> Result<(), UiError> {
         self.send_text_with_selection(text, None)
     }
     /// Selection is consumed by this new input only. It is never installed as
     /// mutable controller state or attached to stop, reconciliation or recovery.
-    pub fn send_text_with_selection(
+    #[cfg(test)]
+    pub(crate) fn send_text_with_selection(
         &mut self,
         text: &str,
         selection: Option<Value>,
     ) -> Result<(), UiError> {
         self.send_content_with_selection(vec![json!({"type":"text","text":text})], selection)
     }
-    pub fn send_content_with_selection(
+    #[cfg(test)]
+    pub(crate) fn send_content_with_selection(
         &mut self,
         content: Vec<Value>,
         selection: Option<Value>,
     ) -> Result<(), UiError> {
-        self.send_frozen_content(content, selection, None)
+        // Existing controller fixtures provide a deliberate native observation.
+        // Production callers must supply the binding captured at the UI click.
+        let observation = self
+            .scope
+            .as_ref()
+            .and_then(AgentScope::document)
+            .map(|identity| {
+                let binding = serde_json::from_value(json!({
+                    "appInstanceId": identity.instance_id,
+                    "clientId": self.editor_client,
+                    "kind": "canvas",
+                    "projectId": identity.project_id,
+                    "documentSessionId": identity.document_session_id,
+                    "revision": 1, "contextRevision": 1, "selectionRevision": 1,
+                    "selectedObjectIds": [], "viewStateId": null
+                }))
+                .unwrap();
+                InputObservation::Document(
+                    format!("input-{}", uuid::Uuid::new_v4()),
+                    Box::new(binding),
+                )
+            });
+        self.send_frozen_content(content, selection, observation)
+    }
+    pub(crate) fn send_document_content(
+        &mut self,
+        input_id: &str,
+        content: Vec<Value>,
+        selection: Option<Value>,
+        observation: DocumentObservationBinding,
+    ) -> Result<(), UiError> {
+        self.send_frozen_content(
+            content,
+            selection,
+            Some(InputObservation::Document(
+                input_id.to_owned(),
+                Box::new(observation),
+            )),
+        )
     }
     /// App observations are frozen by the human send action before attachment work.
     pub fn send_app_content(
@@ -1113,27 +1199,38 @@ impl Controller {
         selection: Option<Value>,
         view: AppViewBinding,
     ) -> Result<(), UiError> {
-        self.send_frozen_content(content, selection, Some((input_id.to_owned(), view)))
+        self.send_frozen_content(
+            content,
+            selection,
+            Some(InputObservation::App(input_id.to_owned(), view)),
+        )
     }
     fn send_frozen_content(
         &mut self,
         content: Vec<Value>,
         selection: Option<Value>,
-        observation: Option<(String, AppViewBinding)>,
+        observation: Option<InputObservation>,
     ) -> Result<(), UiError> {
+        if let Some(error) = self.blocking_error() {
+            return Err(error);
+        }
         let is_app = self
             .scope
             .as_ref()
             .is_some_and(|scope| scope.app().is_some());
-        if is_app != observation.is_some()
-            || observation
-                .as_ref()
-                .is_some_and(|(id, view)| !max64(id) || !view.valid())
-        {
+        let valid_observation = match (&self.scope, &observation) {
+            (Some(AgentScope::App(_)), Some(InputObservation::App(id, view))) => {
+                max64(id) && view.valid()
+            }
+            (
+                Some(AgentScope::Document(identity)),
+                Some(InputObservation::Document(id, binding)),
+            ) => max64(id) && binding.matches_identity(identity, &self.editor_client),
+            (None, None) => true,
+            _ => false,
+        };
+        if !valid_observation {
             return Err(UiError::Configuration);
-        }
-        if let Some(error) = self.blocking_error() {
-            return Err(error);
         }
         if !self.view().can_send {
             return Err(UiError::Busy);
@@ -1173,15 +1270,22 @@ impl Controller {
                 return Err(UiError::Configuration);
             }
         }
+        if !is_app && self.scope.is_some() && !self.supports_document_observation() {
+            return Err(UiError::ObservationUnavailable);
+        }
         // IPC counters restart with the process; persisted sessions must never
         // mistake a new explicit question for an already accepted input.
         let input_id = observation
             .as_ref()
-            .map(|(id, _)| id.clone())
+            .map(|observation| observation.input_id().to_owned())
             .unwrap_or_else(|| format!("input-{}", uuid::Uuid::new_v4()));
         let mut params = json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":content});
-        if let Some((_, view)) = observation {
-            params["appViewBinding"] = json!(view);
+        match observation {
+            Some(InputObservation::App(_, view)) => params["appViewBinding"] = json!(view),
+            Some(InputObservation::Document(_, binding)) => {
+                params["observationBinding"] = json!(binding);
+            }
+            None => {}
         }
         if let Some(selection) = selection {
             params["modelSelection"] = selection;
@@ -1925,6 +2029,11 @@ impl Controller {
                     result["capabilities"]["session_permissions"].as_bool() == Some(true);
                 self.model_selection_supported =
                     result["capabilities"]["turn_model_selection"].as_bool() == Some(true);
+                self.document_observation_supported = scope.document().is_some()
+                    && result["capabilities"]["document_observation_binding"].as_bool()
+                        == Some(true)
+                    && result["capabilities"]["document_observation_protocol_version"].as_u64()
+                        == Some(1);
                 self.tasks_supported = scope.document().is_some()
                     && result["capabilities"]["durable_tasks"] == true
                     && result["capabilities"]["task_protocol_version"].as_u64() == Some(1);
@@ -2949,16 +3058,25 @@ fn remote_error(code: &str) -> UiError {
         | "input_limit"
         | "media_limit" => UiError::InvalidInput,
         "task_revision_conflict" => UiError::TaskRevisionChanged,
+        "stale_observation" => UiError::ObservationChanged,
+        "invalid_observation_binding" | "input_observation_missing" => UiError::ObservationInvalid,
+        "task_observation_not_implemented" | "observation_steer_unsupported" => {
+            UiError::ObservationUnsupported
+        }
         "task_stale" | "task_conflict" => UiError::Busy,
         "turn_settling" | "managed_busy" | "session_busy" => UiError::Busy,
         "managed_unknown" | "managed_transport" | "managed_timeout" => UiError::ModelVerifyRequired,
-        "managed_protocol" | "idempotency_conflict" => UiError::Protocol,
+        "managed_protocol" | "idempotency_conflict" | "version_mismatch" => UiError::Protocol,
         "managed_account_expired" => UiError::AccountExpired,
         "managed_unavailable" | "managed_http" => UiError::ServiceUnavailable,
         "managed_policy_unavailable" => UiError::ModelSelectionUnavailable,
         "tool_denied" | "notAuthorized" | "approval_expired" => UiError::AuthorizationRequired,
-        "project_conflict" | "session_scope" | "instance_conflict" | "managed_scope"
-        | "account_scope" => UiError::DocumentChanged,
+        "project_conflict"
+        | "session_scope"
+        | "instance_conflict"
+        | "managed_scope"
+        | "account_scope"
+        | "input_scope_expired" => UiError::DocumentChanged,
         "outcome_unknown" => UiError::VerifyRequired,
         "recovery_required" => UiError::SessionRecoveryRequired,
         "provider_configuration"
@@ -2988,6 +3106,168 @@ mod tests {
 
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::{fs, thread};
+    fn frozen_document_observation(fixture: &Fixture) -> DocumentObservationBinding {
+        serde_json::from_value(json!({
+            "appInstanceId": fixture.identity.instance_id,
+            "clientId": "client-1",
+            "kind": "clip",
+            "projectId": fixture.identity.project_id,
+            "documentSessionId": fixture.identity.document_session_id,
+            "revision": 7, "contextRevision": 9, "selectionRevision": 11,
+            "selectedObjectIds": (0..300).map(|index| format!("clip:{index}")).collect::<Vec<_>>(),
+            "viewStateId": format!("view-v1-{}", "a".repeat(64))
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn document_input_preserves_original_identity_full_selection_and_view() {
+        let mut fixture = Fixture::new("finish");
+        fixture.ready();
+        assert!(fixture.controller.supports_document_observation());
+        let binding = frozen_document_observation(&fixture);
+        fixture
+            .controller
+            .send_document_content(
+                "original-human-input",
+                vec![json!({"type":"text","text":"当前选择是什么"})],
+                None,
+                binding.clone(),
+            )
+            .unwrap();
+        fixture.until(|controller| controller.view().outcome == Some(TaskOutcome::Completed));
+        let requests = fixture.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["params"]["inputId"], "original-human-input");
+        assert_eq!(requests[0]["params"]["observationBinding"], json!(binding));
+        assert!(requests[0]["params"].get("appViewBinding").is_none());
+        assert_eq!(requests[0]["params"]["mode"], "follow_up");
+    }
+    #[test]
+    fn document_observation_requires_exact_capability_without_closing_connection() {
+        for scenario in [
+            "old-runtime",
+            "doc-no-cap",
+            "doc-false-cap",
+            "doc-string-cap",
+            "doc-wrong-version",
+        ] {
+            let mut fixture = Fixture::new(scenario);
+            fixture.ready();
+            let binding = frozen_document_observation(&fixture);
+            assert!(
+                !fixture.controller.supports_document_observation(),
+                "{scenario}"
+            );
+            assert!(fixture.controller.document_observation_unavailable());
+            assert_eq!(
+                fixture.controller.send_document_content(
+                    "original-human-input",
+                    vec![json!({"type":"text","text":"不要退回未绑定发送"})],
+                    None,
+                    binding,
+                ),
+                Err(UiError::ObservationUnavailable),
+                "{scenario}"
+            );
+            assert!(fixture.controller.process_present());
+            assert!(fixture.controller.session_opened());
+            assert!(fixture.requests().is_empty());
+            fixture.controller.disconnect();
+            assert!(!fixture.controller.document_observation_unavailable());
+            fixture.until(|controller| !controller.process_present());
+            assert!(!fixture.controller.document_observation_unavailable());
+        }
+    }
+    #[test]
+    fn document_observation_refuses_changed_scope_before_enqueue() {
+        let mut fixture = Fixture::new("finish");
+        fixture.ready();
+        for axis in 0..4 {
+            let mut binding = frozen_document_observation(&fixture);
+            match axis {
+                0 => binding.app_instance_id = "other-instance".into(),
+                1 => binding.client_id = "other-client".into(),
+                2 => binding.project_id = "other-project".into(),
+                _ => binding.document_session_id = "other-document".into(),
+            }
+            assert_eq!(
+                fixture.controller.send_document_content(
+                    "original-human-input",
+                    vec![json!({"type":"text","text":"只发送原文档"})],
+                    None,
+                    binding,
+                ),
+                Err(UiError::Configuration)
+            );
+        }
+        assert_eq!(
+            fixture.controller.send_frozen_content(
+                vec![json!({"type":"text","text":"不能退回未绑定输入"})],
+                None,
+                None,
+            ),
+            Err(UiError::Configuration)
+        );
+        assert!(fixture.requests().is_empty());
+    }
+    #[test]
+    fn document_observation_lost_ack_restores_original_session_without_resend() {
+        let mut fixture = Fixture::new("doc-lost-ack");
+        fixture.ready();
+        let binding = frozen_document_observation(&fixture);
+        fixture
+            .controller
+            .send_document_content(
+                "original-human-input",
+                vec![json!({"type":"text","text":"保留原问题"})],
+                None,
+                binding.clone(),
+            )
+            .unwrap();
+        thread::sleep(Duration::from_millis(100));
+        fixture.controller.pending.front_mut().unwrap().since = Instant::now() - RESPONSE_TIMEOUT;
+        fixture.until(|controller| !controller.process_present());
+        let restore = fixture.original_restore_config("doc-lost-ack");
+        fixture.controller.connect(restore).unwrap();
+        fixture.ready();
+        let requests = fixture.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["params"]["inputId"], "original-human-input");
+        assert_eq!(requests[0]["params"]["observationBinding"], json!(binding));
+        assert_eq!(
+            fs::read_to_string(fixture.directory.join("methods.txt")).unwrap(),
+            "initialize\nsession.create\nsend\ninitialize\nsession.restore\n"
+        );
+    }
+    #[test]
+    fn stale_document_observation_reports_changed_view_and_allows_new_human_input() {
+        let mut fixture = Fixture::new("doc-stale");
+        fixture.ready();
+        fixture.controller.send_text("读取原视图").unwrap();
+        fixture.until(|controller| controller.view().error == Some(UiError::ObservationChanged));
+        assert!(fixture.controller.view().can_send);
+        assert!(fixture.controller.process_present());
+        assert_eq!(fixture.requests().len(), 1);
+        fixture.controller.send_text("核对后的新问题").unwrap();
+        fixture.until(|controller| controller.view().error == Some(UiError::ObservationChanged));
+        let requests = fixture.requests();
+        assert_eq!(requests.len(), 2);
+        assert_ne!(
+            requests[0]["params"]["inputId"],
+            requests[1]["params"]["inputId"]
+        );
+        for code in [
+            "stale_observation",
+            "invalid_observation_binding",
+            "input_observation_missing",
+            "input_scope_expired",
+            "task_observation_not_implemented",
+            "observation_steer_unsupported",
+        ] {
+            assert_ne!(remote_error(code), UiError::Connection, "{code}");
+        }
+    }
+
     fn task_summary_value(id: &str, state: u64, epoch: u64, turn: Option<&str>) -> Value {
         json!({"id":id,"sessionId":"fixture-session","taskRevision":state,"controlEpoch":epoch,"status":"running","blockedReason":null,
             "rounds":if turn.is_some(){1}else{0},"activeInputId":turn.map(|_|"original-input"),"activeTurnId":turn,"roundOrdinal":turn.map(|_|1),
@@ -3433,6 +3713,16 @@ mod tests {
             fixture.controller.send_text("unbound app read"),
             Err(UiError::Configuration)
         );
+        let document_binding = frozen_document_observation(&fixture);
+        assert_eq!(
+            fixture.controller.send_document_content(
+                "forbidden-document-input",
+                vec![json!({"type":"text","text":"不能混用文档绑定"})],
+                None,
+                document_binding,
+            ),
+            Err(UiError::Configuration)
+        );
         let view: AppViewBinding = serde_json::from_value(json!({"pageId":"personalLibrary","pageEpoch":3,"pageStateId":format!("app-page-v1-{}","a".repeat(64))})).unwrap();
         fixture
             .controller
@@ -3606,9 +3896,15 @@ for line in sys.stdin:
         if scenario=='init-fail': reply(f,error={'code':'provider_configuration','message':'raw inference-secret'});continue
         if scenario.startswith('app-'):
             assert p['scopeKind']=='app' and p['appReadProtocolVersion']==1 and p['accountScope']=='a'*64 and p['appSessionId']=='app-session'
-            assert all(key not in p for key in ('projectId','documentSessionId','taskProtocolVersion','writeToken'))
+            assert all(key not in p for key in ('projectId','documentSessionId','taskProtocolVersion','documentObservationProtocolVersion','writeToken'))
+        else: assert p['documentObservationProtocolVersion']==1
         capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True,'turn_model_selection':True,'session_permissions':True}
         if scenario.startswith('app-') and scenario!='app-no-cap': capabilities.update(app_read_scope=True,app_read_protocol_version=1,durable_tasks=True,task_protocol_version=1)
+        if not scenario.startswith('app-') and scenario!='old-runtime': capabilities.update(document_observation_binding=True,document_observation_protocol_version=1)
+        if scenario=='doc-no-cap': capabilities.pop('document_observation_binding')
+        if scenario=='doc-false-cap': capabilities['document_observation_binding']=False
+        if scenario=='doc-string-cap': capabilities['document_observation_binding']='true'
+        if scenario=='doc-wrong-version': capabilities['document_observation_protocol_version']=2
         if scenario.startswith('task-'):
             assert p['taskProtocolVersion']==1
             capabilities.update(durable_tasks=True,task_protocol_version=1)
@@ -3700,6 +3996,12 @@ for line in sys.stdin:
         elif m=='task.stop': task_final(task['rounds'],'interrupted')
     elif m=='send':
         assert p['sessionId']==session and p['mode']=='follow_up' and p['content'][0]['type']=='text'
+        if not scenario.startswith('app-'):
+            binding=p['observationBinding']
+            assert binding['appInstanceId']=='12345678-1234-1234-1234-123456789abc' and binding['clientId']=='client-1' and binding['projectId']=='project-1' and binding['documentSessionId']=='doc-1'
+            assert 'viewStateId' in binding and 'appViewBinding' not in p
+        if scenario=='doc-lost-ack': continue
+        if scenario=='doc-stale': reply(f,error={'code':'stale_observation','message':'fixture'});continue
         if scenario.startswith('app-'):
             assert p['inputId']=='input-original' and p['appViewBinding']=={'pageId':'personalLibrary','pageEpoch':3,'pageStateId':'app-page-v1-'+'a'*64}
         if scenario=='selection-policy-rejected':
@@ -3991,7 +4293,17 @@ for line in sys.stdin:
             assert!(f.controller.pending.is_empty());
             assert!(f.requests().is_empty());
             assert!(f.controller.view().can_send);
-            f.controller.send_text("旧协议仍可明确发送").unwrap();
+            if scenario == "old-runtime" {
+                assert_eq!(
+                    f.controller.send_text("旧协议不得发送未绑定问题"),
+                    Err(UiError::ObservationUnavailable)
+                );
+                assert!(f.requests().is_empty());
+                continue;
+            }
+            f.controller
+                .send_text("模型选择旧协议仍可发送带观察的问题")
+                .unwrap();
             f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
             let requests = f.requests();
             assert_eq!(requests.len(), 1);
