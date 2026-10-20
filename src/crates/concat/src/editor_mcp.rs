@@ -37,6 +37,11 @@ mod canvas_edit;
 mod clip_edit;
 #[path = "editor_mcp_clip_execute.rs"]
 mod clip_execute;
+#[path = "editor_mcp_clip_import.rs"]
+mod clip_import;
+#[path = "editor_mcp_library_assets.rs"]
+mod library_assets;
+use library_assets::LibraryAuthority;
 
 use write_registry::{Begin, LeaseStatus, OperationKey, RegistryError, Scope, WriteRegistry};
 use write_request::{WriteRequest, WriteRequestOutcome};
@@ -467,7 +472,8 @@ impl ClipObject<'_> {
     fn into_value(self) -> Value {
         match self {
             Self::Media(item) => json!({
-                "kind":"media", "id":format!("media:{}", item.id),
+                "kind":"media", "mediaKind":item.kind, "id":format!("media:{}", item.id),
+                "libraryReference":clip_edit::library_reference(item),
                 "name":bounded_name(&item.name), "duration":item.duration,
             }),
             Self::Timeline(timeline) => json!({
@@ -577,6 +583,16 @@ pub(crate) fn canvas_approval_view(tool: &str, args: Value) -> Option<(String, S
         return approval_view::flow_summary(&call);
     }
     let intent = Intent::parse(tool, args)?;
+    if let Some(query) = &intent.library_assets {
+        return Some((
+            "查找资产".into(),
+            format!(
+                "{:?} · {}",
+                query.kind,
+                query.asset_id.as_deref().unwrap_or(&query.query)
+            ),
+        ));
+    }
     if let Some(action) = intent.clip_action {
         return Some((
             "编辑剪辑".into(),
@@ -817,7 +833,9 @@ impl BridgeUi {
         };
         let current = self.scope(&ids);
         let is_clip = intent.clip_action.is_some() || intent.clip_query;
-        if kind != if is_clip { "clip" } else { "canvas" }
+        let is_library_assets = intent.library_assets.is_some();
+        if (!is_library_assets && kind != if is_clip { "clip" } else { "canvas" })
+            || (is_library_assets && !matches!(kind.as_str(), "canvas" | "clip" | "flow"))
             || modal_busy(studio, app, true)
             || self
                 .grants
@@ -887,7 +905,7 @@ impl BridgeUi {
                     }
                 })?;
             }
-            if intent.action.is_some() {
+            if intent.action.is_some() || intent.move_action.is_some() {
                 studio
                     .canvas
                     .mcp_writer_ready()
@@ -903,6 +921,16 @@ impl BridgeUi {
                     .map_err(|_| AssistantPermissionError::NotAllowed)?;
                 if intent.revision != Some(studio.canvas.mcp_state().1)
                     || intent.selection_revision != Some(studio.mcp_selection_epoch())
+                {
+                    return Err(AssistantPermissionError::NotAllowed);
+                }
+                if let Some(action) = &intent.move_action
+                    && studio
+                        .canvas
+                        .active
+                        .map(|id| format!("layer:{}", id.as_u64()))
+                        .as_deref()
+                        != Some(action.object_id.as_str())
                 {
                     return Err(AssistantPermissionError::NotAllowed);
                 }
@@ -1457,8 +1485,8 @@ impl BridgeUi {
             };
             return UiReply::Response(Response::ok(json!({
                 "appInstanceId": self.instance_id,
-                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "insert_library_image", "transform_canvas_layer", "canvas_edit", "clip_edit", "clip_operation", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
-                "namedToolApprovalRequired":["library_images","insert_library_image","transform_canvas_layer","canvas_edit","clip_edit","clip_operation","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
+                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit", "clip_edit", "clip_operation", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
+                "namedToolApprovalRequired":["library_images","library_assets","insert_library_image","transform_canvas_layer","canvas_edit","clip_edit","clip_operation","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
                 "clipEditVersion":1,"clipEditMaxParametersBytes":16384,"clipEditMaxTargets":128,"clipEditMaxReceiptBytes":57344,"clipEditMaxStateBytes":16777216,"clipEditMaxPreviewWork":16777216,"clipEditMaxDetachedAudioClips":128,"clipEditVideoFreeze":false,
                 "canvasEditVersion":1,"canvasEditMaxStrokePoints":2048,"canvasEditMaxNewPixels":16777216,"canvasEditMaxReferencedPixels":67108864,"canvasEditMaxBrushWork":16777216,
                 "canvasEditMaxParametersBytes":16384,"canvasEditMaxDeleteNodes":512,"canvasEditMaxReceiptBytes":49152,
@@ -1540,8 +1568,35 @@ impl BridgeUi {
         }
         if matches!(
             request.method,
-            Method::LibraryImages | Method::CanvasOperation
+            Method::LibraryImages | Method::LibraryAssets
         ) {
+            if (request.method == Method::LibraryImages && kind != "canvas")
+                || !matches!(kind.as_str(), "canvas" | "clip" | "flow")
+                || !self.authorized(request, &ids.project, true)
+            {
+                return UiReply::Response(Response::error("notAuthorized"));
+            }
+            let Some(claimed) = request_scope(request) else {
+                return UiReply::Response(Response::error("invalidInput"));
+            };
+            if claimed != self.scope(&ids) {
+                return UiReply::Response(Response::error("wrongProject"));
+            }
+            let Some(intent) = Intent::from_request(request) else {
+                return UiReply::Response(Response::error("invalidInput"));
+            };
+            let Some(authority) =
+                library_assets::claim_library_authority(self, request, &claimed, &intent)
+            else {
+                return UiReply::Response(Response::error("notAuthorized"));
+            };
+            return UiReply::Library(Box::new(LibraryJob {
+                request: request.clone(),
+                authority,
+                origin: library_assets::output_origin(self),
+            }));
+        }
+        if request.method == Method::CanvasOperation {
             if kind != "canvas" || !self.authorized(request, &ids.project, true) {
                 return UiReply::Response(Response::error("notAuthorized"));
             }
@@ -1557,29 +1612,20 @@ impl BridgeUi {
             else {
                 return UiReply::Response(Response::error("notAuthorized"));
             };
-            if request.method == Method::CanvasOperation {
-                let response = self.canvas_receipts.query(
-                    &claimed,
-                    &request.client_id,
-                    request.operation_query.as_ref().expect("validated query"),
-                    Instant::now(),
-                );
-                if response.status == "partial" {
-                    return UiReply::Registration(Box::new(RegistrationReadJob {
-                        request: request.clone(),
-                        permit,
-                        response,
-                    }));
-                }
-                return UiReply::Response(response);
+            let response = self.canvas_receipts.query(
+                &claimed,
+                &request.client_id,
+                request.operation_query.as_ref().expect("validated query"),
+                Instant::now(),
+            );
+            if response.status == "partial" {
+                return UiReply::Registration(Box::new(RegistrationReadJob {
+                    request: request.clone(),
+                    permit,
+                    response,
+                }));
             }
-            if claimed != self.scope(&ids) {
-                return UiReply::Response(Response::error("wrongProject"));
-            }
-            return UiReply::Library(Box::new(LibraryJob {
-                request: request.clone(),
-                permit,
-            }));
+            return UiReply::Response(response);
         }
         if request.method == Method::ClipOperation {
             if kind != "clip" || !self.authorized(request, &ids.project, true) {
@@ -1769,7 +1815,8 @@ struct RegistrationReadJob {
 
 struct LibraryJob {
     request: Request,
-    permit: Permit,
+    authority: LibraryAuthority,
+    origin: canvas_policy::OutputOriginCapture,
 }
 
 enum UiReply {
@@ -1912,7 +1959,7 @@ fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response,
         document_session: claimed.session.clone(),
         client_sequence: parameters.client_sequence,
     };
-    let current = {
+    let (current, permit) = {
         let mut bridge = studio.editor_mcp.borrow_mut();
         if request.instance_id != bridge.instance_id {
             return (Response::error("appUnavailable"), false);
@@ -1943,6 +1990,35 @@ fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response,
         {
             return (Response::error("invalidInput"), false);
         }
+        // Only the fixed native Agent requires a frozen exact named permit;
+        // external clients retain their existing explicitly granted lease path.
+        let permit = if request.client_id == ASSISTANT_CLIENT_ID {
+            match bridge.writes.cached(
+                &current,
+                &claimed,
+                &key,
+                &request.client_token,
+                &fingerprint,
+                Instant::now(),
+            ) {
+                Ok(Some(response)) => return (response, false),
+                Err(error) => return (Response::error(registry_status(error)), false),
+                Ok(None) => {}
+            }
+            let Some(intent) = Intent::from_request(request) else {
+                return (Response::error("invalidInput"), false);
+            };
+            let Some(permit) =
+                bridge
+                    .canvas_permits
+                    .claim(&claimed, &request.client_id, &intent, Instant::now())
+            else {
+                return (Response::error("notAuthorized"), false);
+            };
+            Some(permit)
+        } else {
+            None
+        };
         match bridge.writes.begin(
             &current,
             &claimed,
@@ -1955,7 +2031,7 @@ fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response,
             Err(error) => return (Response::error(registry_status(error)), false),
             Ok(Begin::New) => {}
         }
-        current
+        (current, permit)
     };
     let generation = studio.canvas.mcp_state().0;
     let binding_epoch = studio.canvas.mcp_binding_epoch();
@@ -1985,6 +2061,12 @@ fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response,
                 parameters.delta_y,
                 |canvas| {
                     let bridge = bridge_cell.borrow();
+                    if permit
+                        .as_ref()
+                        .is_some_and(|permit| !bridge.canvas_permits.valid(permit, Instant::now()))
+                    {
+                        return Err(Response::error("notAuthorized"));
+                    }
                     bridge
                         .writes
                         .authorize(
@@ -2178,7 +2260,13 @@ fn dispatch(request: Request) -> Response {
     };
     match reply {
         UiReply::Response(response) => response,
-        UiReply::Library(job) => dispatch_library(*job),
+        UiReply::Library(job) => {
+            if job.request.method == Method::LibraryAssets {
+                library_assets::dispatch_library_assets(*job)
+            } else {
+                dispatch_library(*job)
+            }
+        }
         UiReply::Registration(job) => refresh_registration_receipt(*job),
         UiReply::Preview(job) => {
             let Ok(_slot) = preview_slot().try_lock() else {
@@ -2649,6 +2737,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn task_move_exact_permit_revocation_blocks_queued_and_prepared_commit() {
+        let mut pane = crate::panes::canvas::CanvasPane::default();
+        let mut doc = concat_canvas::ImageDocument::new(4, 4);
+        let pixels = pane.store.put(concat_core::frame::Frame::transparent(4, 4));
+        let id = doc.new_layer("test", pixels);
+        pane.active = Some(id);
+        pane.document = Some(doc);
+        pane.layer = Some(pixels);
+        let args = json!({"projectId":"p","documentSessionId":"s","revision":0,"selectionRevision":1,
+            "objectId":format!("layer:{}", id.as_u64()),"deltaX":2,"deltaY":3});
+        let intent = Intent::parse("move_selected_image", args.clone()).unwrap();
+        let mut request:Request=serde_json::from_value(json!({"instanceId":"i","clientId":ASSISTANT_CLIENT_ID,"clientToken":"t","method":"moveSelectedImage","projectId":"p","documentSessionId":"s"})).unwrap();
+        request.revision = Some(0);
+        request.move_parameters = Some(MoveParameters {
+            operation_id: concat_editor_mcp::operation_id(ASSISTANT_CLIENT_ID, "s", 9).unwrap(),
+            client_sequence: 9,
+            selection_revision: 1,
+            object_id: format!("layer:{}", id.as_u64()),
+            delta_x: 2.0,
+            delta_y: 3.0,
+        });
+        assert_eq!(Intent::from_request(&request), Some(intent.clone()));
+        let scope = Scope {
+            instance: "i".into(),
+            project: "p".into(),
+            session: "s".into(),
+        };
+        let now = Instant::now();
+        let mut permits = Permits::default();
+        let permit_id = permits
+            .grant(
+                scope.clone(),
+                ASSISTANT_CLIENT_ID.into(),
+                intent.clone(),
+                now,
+            )
+            .unwrap();
+        for (field, value) in [
+            ("deltaX", json!(4)),
+            ("objectId", json!("layer:999")),
+            ("selectionRevision", json!(2)),
+            ("revision", json!(1)),
+        ] {
+            let mut changed = args.clone();
+            changed[field] = value;
+            let changed = Intent::parse("move_selected_image", changed).unwrap();
+            assert!(
+                permits
+                    .claim(&scope, ASSISTANT_CLIENT_ID, &changed, now)
+                    .is_none()
+            );
+        }
+        // Pausing before the queued native request starts leaves no claimable proof.
+        permits.revoke(permit_id);
+        assert!(
+            permits
+                .claim(&scope, ASSISTANT_CLIENT_ID, &intent, now)
+                .is_none()
+        );
+        let permit_id = permits
+            .grant(
+                scope.clone(),
+                ASSISTANT_CLIENT_ID.into(),
+                intent.clone(),
+                now,
+            )
+            .unwrap();
+        let permit = permits
+            .claim(&scope, ASSISTANT_CLIENT_ID, &intent, now)
+            .unwrap();
+        let before = canvas_edit::state(&pane, &[]).unwrap();
+        let revision = pane.mcp_state();
+        let mut checked = false;
+        let result = pane.mcp_translate_selected_checked(id, 2.0, 3.0, |_| {
+            checked = true;
+            // Revocation after read-only transform preparation also wins.
+            permits.revoke(permit_id);
+            permits
+                .valid(&permit, now)
+                .then_some(())
+                .ok_or("notAuthorized")
+        });
+        assert!(checked);
+        assert!(matches!(
+            result,
+            Err(CanvasMoveCheckedError::Commit("notAuthorized"))
+        ));
+        assert_eq!(canvas_edit::state(&pane, &[]).unwrap(), before);
+        assert_eq!(pane.mcp_state(), revision);
+        assert!(pane.mcp_history_target(false).is_none());
+        assert!(pane.mcp_history_target(true).is_none());
+    }
+
+    #[test]
     fn assistant_conversation_lifecycle_revokes_without_inheritance() {
         let mut bridge = BridgeUi::new();
         let ids = bridge.ids("canvas", "test".into());
@@ -2763,6 +2945,7 @@ mod tests {
             clip_parameters: None,
             object_ids: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
@@ -3178,6 +3361,7 @@ mod tests {
             clip_parameters: None,
             object_ids: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,

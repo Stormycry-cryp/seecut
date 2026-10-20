@@ -34,6 +34,21 @@ export component AssistantDock inherits AssistantPanel {
     can-reconcile: Assistant.can-reconcile;
     reconcile-label: Assistant.reconcile-label;
     budget-label: Assistant.budget-label;
+    task-mode: Assistant.task-mode;
+    task-visible: Assistant.task-visible;
+    task-status: Assistant.task-status;
+    task-reason: Assistant.task-reason;
+    task-limit-label: Assistant.task-limit-label;
+    task-compatibility: Assistant.task-compatibility;
+    task-budget-text <=> Assistant.task-budget-text;
+    task-budget-reason: Assistant.task-budget-reason;
+    task-update-label: Assistant.task-update-label;
+    can-edit-task-budget: Assistant.can-edit-task-budget;
+    can-task-pause: Assistant.can-task-pause;
+    can-task-stop: Assistant.can-task-stop;
+    can-task-resume: Assistant.can-task-resume;
+    can-task-status: Assistant.can-task-status;
+    can-task-update: Assistant.can-task-update;
     can-connect: Assistant.can-connect;
     connected: Assistant.connected;
     can-disconnect: Assistant.can-disconnect;
@@ -74,6 +89,12 @@ export component AssistantDock inherits AssistantPanel {
     close-requested() => { Assistant.close-requested(); }
     send(text) => { Assistant.send(text); }
     stop() => { Assistant.stop(); }
+    task-pause() => { Assistant.task-pause(); }
+    task-stop() => { Assistant.task-stop(); }
+    task-resume() => { Assistant.task-resume(); }
+    task-status-requested() => { Assistant.task-status-requested(); }
+    task-update(text) => { Assistant.task-update(text); }
+    task-budget-edited(text) => { Assistant.task-budget-edited(text); }
     connect(service-url, model-name, api-key, images) => { Assistant.connect(service-url, model-name, api-key, images); }
     disconnect() => { Assistant.disconnect(); }
     connect-managed() => { Assistant.connect-managed(); }

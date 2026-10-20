@@ -3,7 +3,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Icon, IconButton, FocusRing, ThinScrollbar } from "../primitives/primitives.slint";
 import { Switch } from "../inspector/controls.slint";
-import { AppButton, WorkspaceSelect, AssetPreview } from "components.slint";
+import { AppButton, WorkspaceSelect, AssetPreview, CloudField } from "components.slint";
 import { EffortSlider } from "effort-slider.slint";
 
 // Text is content only. Operation state always comes from the host separately.
@@ -445,6 +445,21 @@ export component AssistantPanel inherits Rectangle {
     in property <bool> can-stop;
     in property <bool> can-reconcile;
     in property <string> budget-label;
+    in property <bool> task-mode;
+    in property <bool> task-visible;
+    in property <string> task-status;
+    in property <string> task-reason;
+    in property <string> task-limit-label;
+    in property <string> task-compatibility;
+    in-out property <string> task-budget-text;
+    in property <string> task-budget-reason;
+    in property <string> task-update-label;
+    in property <bool> can-edit-task-budget;
+    in property <bool> can-task-pause;
+    in property <bool> can-task-stop;
+    in property <bool> can-task-resume;
+    in property <bool> can-task-status;
+    in property <bool> can-task-update;
     in property <bool> can-connect;
     in property <string> reconcile-label: "核实原请求";
     in property <bool> connected;
@@ -490,6 +505,12 @@ export component AssistantPanel inherits Rectangle {
     callback close-requested();
     callback send(text: string);
     callback stop();
+    callback task-pause();
+    callback task-stop();
+    callback task-resume();
+    callback task-status-requested();
+    callback task-update(string);
+    callback task-budget-edited(string);
     callback connect(service-url: string, model-name: string, api-key: string, images: bool);
     callback disconnect();
     callback connect-managed();
@@ -833,6 +854,11 @@ export component AssistantPanel inherits Rectangle {
             height: self.preferred-height;
             padding: 12px;
             spacing: 8px;
+            if root.task-visible && root.can-task-update: AppButton {
+                label: root.task-update-label; height: 30px; subtle: true;
+                enabled: root.active && root.can-task-update && (root.draft != "" || root.task-update-label == "核实原补充");
+                clicked => { root.task-update(root.draft); }
+            }
             if !root.follow-tail: HorizontalLayout {
                 Rectangle { horizontal-stretch: 1; }
                 IconButton { side: 28px; glyph: Glyph.chevron-down; label: "回到最新消息"; clicked => { scroll-settled.stop(); root.follow-tail = true; body.viewport-y = min(0px, body.visible-height - body.viewport-height); } }
@@ -841,6 +867,30 @@ export component AssistantPanel inherits Rectangle {
             if !root.can-send && !root.busy && !root.unknown && root.send-disabled-reason != "": AssistantText {
                 text: !root.signed-in ? "登录后与 Agent 协作" : root.send-disabled-reason; font-size: Theme.fs; color: Theme.fg-muted;
             }
+            if root.task-visible: VerticalLayout {
+                spacing: 4px;
+                AssistantText { text: root.task-status; font-size: 12px; }
+                if root.task-reason != "": AssistantText { text: root.task-reason; color: Theme.fg-muted; font-size: 11px; }
+                if root.task-limit-label != "": AssistantText { text: root.task-limit-label; color: Theme.fg-muted; font-size: 11px; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    AppButton { label: "暂停"; subtle: true; height: 30px; enabled: root.active && root.can-task-pause; clicked => { root.task-pause(); } }
+                    AppButton { label: "继续"; subtle: true; height: 30px; enabled: root.active && root.can-task-resume; clicked => { root.task-resume(); } }
+                    AppButton { label: "停止"; subtle: true; height: 30px; enabled: root.active && root.can-task-stop; clicked => { root.task-stop(); } }
+                    AppButton { label: "查询"; subtle: true; height: 30px; enabled: root.active && root.can-task-status; clicked => { root.task-status-requested(); } }
+                }
+            }
+            if root.task-mode && root.can-edit-task-budget: VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    AssistantText { text: "任务推理积分上限"; vertical-alignment: center; horizontal-stretch: 1; font-size: 12px; }
+                    CloudField { width: 120px; value <=> root.task-budget-text; placeholder: "正整数"; enabled: root.active && root.can-edit-task-budget; edited(value) => { root.task-budget-edited(value); } }
+                }
+                AssistantText { text: "本任务可读取本地素材、修改当前工程并保存结果。撤销、重做及其他操作另行确认；生成费用另计"; color: Theme.fg-muted; font-size: 11px; }
+                if root.task-budget-reason != "": AssistantText { text: root.task-budget-reason; color: Theme.fg-muted; font-size: 11px; }
+            }
+            if root.task-compatibility != "": AssistantText { text: root.task-compatibility; font-size: 11px; color: Theme.fg-muted; }
             composer := AssistantInput {
                 value <=> root.draft;
                 label: "给 Agent 的问题"; placeholder: "与 Agent 协作…";

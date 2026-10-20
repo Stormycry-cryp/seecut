@@ -58,6 +58,8 @@ impl Reference {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RequestSnapshot {
+    #[serde(default)]
+    pub(crate) task: Option<crate::agent_tasks::TaskIntent>,
     pub(crate) session_id: String,
     pub(crate) model_id: String,
     pub(crate) effort_id: Option<String>,
@@ -93,6 +95,10 @@ pub(crate) struct Record {
     #[serde(default = "selection_initialized")]
     pub(crate) selection_initialized: bool,
     pub(crate) runtime_created: bool,
+    #[serde(default)]
+    pub(crate) current_task_id: Option<String>,
+    #[serde(default)]
+    pub(crate) task_updates: Vec<crate::agent_tasks::TaskUpdateIntent>,
     pub(crate) request_snapshots: Vec<RequestSnapshot>,
     pub(crate) pending: String,
     pub(crate) updated_at_ms: u64,
@@ -360,8 +366,28 @@ impl Store {
             if !matches!(session.pending.as_str(), "" | "running" | "unknown") {
                 return Err(INVALID);
             }
+            if session.task_updates.len() > 64
+                || session.task_updates.iter().any(|v| !v.valid())
+                || session
+                    .task_updates
+                    .iter()
+                    .map(|v| &v.client_request_id)
+                    .collect::<HashSet<_>>()
+                    .len()
+                    != session.task_updates.len()
+            {
+                return Err(INVALID);
+            }
+            if session
+                .current_task_id
+                .as_deref()
+                .is_some_and(|id| !crate::agent_tasks::valid_task_id(id))
+            {
+                return Err(INVALID);
+            }
             for request in &session.request_snapshots {
-                if request.session_id != session.id
+                if request.task.as_ref().is_some_and(|task| !task.valid())
+                    || request.session_id != session.id
                     || !valid_model(&request.model_id)
                     || request.effort_id.as_deref().is_some_and(|id| !valid_id(id))
                     || request.context.project_key != self.project_key
@@ -492,6 +518,59 @@ mod tests {
         assert_eq!(automatic.sessions[0].title, "素材讨论");
     }
 
+    #[test]
+    fn task_original_request_and_update_survive_archive_without_live_authority() {
+        let fixture = fixture();
+        let store = Store::open(fixture.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let mut saved = archive("project");
+        let task_id = crate::agent_tasks::task_id_for("original-create");
+        let record = &mut saved.sessions[0];
+        record.current_task_id = Some(task_id.clone());
+        record.request_snapshots[0].task = Some(crate::agent_tasks::TaskIntent {
+            client_request_id: "original-create".into(),
+            task_id: task_id.clone(),
+            goal: "完整目标".into(),
+            max_task_credits: 100,
+        });
+        record
+            .task_updates
+            .push(crate::agent_tasks::TaskUpdateIntent {
+                client_request_id: "original-update".into(),
+                task_id: task_id.clone(),
+                message: "原补充内容".into(),
+                expected_revision: 5,
+                retries: 0,
+                confirmed: false,
+            });
+        store.save(&saved).unwrap();
+        assert_eq!(store.load().unwrap(), Some(saved.clone()));
+        let mut old = serde_json::to_value(archive("project")).unwrap();
+        old["sessions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("current_task_id");
+        old["sessions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("task_updates");
+        old["sessions"][0]["request_snapshots"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("task");
+        let old: Archive = serde_json::from_value(old).unwrap();
+        assert!(old.sessions[0].current_task_id.is_none());
+        assert!(old.sessions[0].task_updates.is_empty());
+        let mut invalid = saved.clone();
+        invalid.sessions[0].request_snapshots[0]
+            .task
+            .as_mut()
+            .unwrap()
+            .client_request_id = "different-id".into();
+        assert!(store.save(&invalid).is_err());
+        assert_eq!(store.load().unwrap(), Some(saved));
+    }
+
     fn fixture() -> tempfile::TempDir {
         // macOS's ambient /var spelling includes a symlink outside our fixture.
         let temporary = fs::canonicalize(std::env::temp_dir()).unwrap();
@@ -524,7 +603,10 @@ mod tests {
                 generation_model_ids: HashMap::new(),
                 selection_initialized: true,
                 runtime_created: true,
+                current_task_id: None,
+                task_updates: Vec::new(),
                 request_snapshots: vec![RequestSnapshot {
+                    task: None,
                     references: Vec::new(),
                     session_id: "session-one".into(),
                     model_id: "managed-model".into(),
@@ -884,10 +966,10 @@ mod tests {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        assert_eq!(keys.len(), 6);
+        assert_eq!(keys.len(), 7);
         assert!(keys.iter().all(|key| matches!(
             key.as_str(),
-            "session_id" | "model_id" | "effort_id" | "policy" | "context" | "references"
+            "session_id" | "model_id" | "effort_id" | "policy" | "context" | "references" | "task"
         )));
         request["read_token"] = json!("owned-fixture-token");
         assert!(serde_json::from_value::<Archive>(value).is_err());

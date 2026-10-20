@@ -1,7 +1,12 @@
 //! Native timeline writes using the existing exact permit, lease and operation ledger.
 use super::*;
 
-fn response(request: &Request, scope: &Scope, status: &str, evidence: Value) -> Response {
+pub(super) fn response(
+    request: &Request,
+    scope: &Scope,
+    status: &str,
+    evidence: Value,
+) -> Response {
     let p = request
         .clip_parameters
         .as_ref()
@@ -24,7 +29,7 @@ fn response(request: &Request, scope: &Scope, status: &str, evidence: Value) -> 
     }
 }
 
-fn final_check(
+pub(super) fn final_check(
     studio: &Studio,
     app: &App,
     request: &Request,
@@ -148,6 +153,20 @@ pub(super) fn execute_clip(request: &Request, studio: &mut Studio, app: &App) ->
         permit
     };
     let generation = studio.mcp_clip_state().0;
+    if matches!(
+        &p.action.edit,
+        concat_editor_mcp::ClipEdit::ImportLibrary { .. }
+    ) {
+        let response = clip_import::queue_import(request, &scope, &permit, generation, studio, app);
+        let mut bridge = studio.editor_mcp.borrow_mut();
+        bridge
+            .canvas_receipts
+            .finish(&scope, &request.client_id, p, response.clone());
+        let _ = bridge
+            .writes
+            .finish(&scope, &key, response.clone(), Instant::now());
+        return (response, false);
+    }
     let result = final_check(studio, app, request, &scope, &permit, generation).and_then(|()| {
         let expected = clip_edit::ClipBinding {
             project_id: &scope.project,

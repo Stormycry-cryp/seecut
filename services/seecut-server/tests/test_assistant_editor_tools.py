@@ -9,7 +9,7 @@ from test_assistant_contract import AssistantFixture, done
 
 EDITOR_TOOLS = (
     "capabilities", "context", "project", "preview", "move_selected_image",
-    "library_images", "insert_library_image", "transform_canvas_layer", "canvas_edit",
+    "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit",
     "save_canvas_project", "export_canvas_png", "canvas_operation",
     "retry_canvas_registration", "clip_edit", "clip_operation",
     "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation",
@@ -97,6 +97,16 @@ class ManagedEditorToolsTest(AssistantFixture):
                     self.create(body)
                 self.assertEqual(error.exception.code, "ASSISTANT_INVALID_REQUEST")
         self.assertEqual(self.worker.process_once(), 0)
+
+    def test_provider_cannot_introduce_unrequested_library_tool(self):
+        event = done(tool=True)
+        event["message"]["toolCalls"][0]["name"] = "library_assets"
+        self.provider.events = [event]
+        operation = self.create()
+        self.worker.process_once()
+        self.assertEqual(self.service.get(self.user, operation["operation_id"])["state"], "outcome_unknown")
+        events = self.service.events(self.user, operation["operation_id"], 0)["events"]
+        self.assertFalse(any(e["type"] == "model" and e["payload"].get("message", {}).get("toolCalls") for e in events))
 
     def test_provider_cannot_introduce_unrequested_editor_tool(self):
         event = done(tool=True)

@@ -49,6 +49,10 @@ mod agent_process;
 mod agent_references;
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
 mod agent_sessions;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod agent_tasks;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod agent_task_grant;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_ui;
 mod asset_version;

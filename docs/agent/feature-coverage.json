@@ -577,10 +577,15 @@
       "symbol": "AddMedia",
       "kind": "nativeCommand",
       "module": "clip",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
-      "acceptance": "pending",
-      "evidence": []
+      "mcpTools": [
+        "clip_edit"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "evidence": [
+        "src/crates/concat/src/editor_mcp_clip_import.rs",
+        "src/crates/concat/src/editor_mcp_clip_edit.rs"
+      ]
     },
     "command:AddTextClip": {
       "source": "src/crates/concat-project/src/commands/mod.rs",
@@ -1194,6 +1199,18 @@
       "acceptance": "pending",
       "evidence": []
     },
+    "tool:library_assets": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "library_assets",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "library_assets"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
     "tool:library_images": {
       "source": "src/crates/concat-editor-mcp/src/main.rs",
       "symbol": "library_images",
@@ -1750,7 +1767,13 @@
       "send",
       "sign-in",
       "stop",
-      "submit"
+      "submit",
+      "task-budget-edited",
+      "task-pause",
+      "task-resume",
+      "task-status-requested",
+      "task-stop",
+      "task-update"
     ],
     "src/crates/concat/ui/seecut/assistant_state.slint": [
       "allow",
@@ -1780,7 +1803,13 @@
       "select-model",
       "select-session",
       "send",
-      "stop"
+      "stop",
+      "task-budget-edited",
+      "task-pause",
+      "task-resume",
+      "task-status-requested",
+      "task-stop",
+      "task-update"
     ],
     "src/crates/concat/ui/seecut/components.slint": [
       "activated",
@@ -2819,12 +2848,13 @@
         "SeeCut.action:personal-refresh"
       ],
       "mcpTools": [
-        "library_images"
+        "library_images",
+        "library_assets"
       ],
       "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。UI 先写筛选属性，changed 只触发重绘；视图变化清空原选择集合。",
-      "limitation": "library_images 只查询版本化全局图片库，不能覆盖视频音频、收藏、文件夹、来源和回收站视图。"
+      "notes": "MCP 可搜索个人库固定版本的图片、视频和音频元信息；未做真实 App 验收。UI 先写筛选属性，changed 只触发重绘；视图变化清空原选择集合。",
+      "limitation": "library_assets 不读取当前个人素材页面的收藏、文件夹、来源、回收站及排序视图；元信息中的 available 不代表媒体内容通过 SHA 校验。"
     },
     {
       "id": "assets.personal-preview",
@@ -3010,13 +3040,18 @@
         "SeeCut.action:personal-project",
         "SeeCut.action:personal-project-selected"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "library_assets",
+        "clip_edit",
+        "clip_operation"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "向当前已打开剪辑工程导入一个固定个人库版本，经真实媒体探测及内容校验后调用原生 AddMedia；未做真实 App 验收。",
       "statePrerequisites": [
         "所选资产本机文件存在"
-      ]
+      ],
+      "limitation": "尚未覆盖个人素材页面选择、批量送入、目标工程选择和跨工作区自动切换。"
     },
     {
       "id": "assets.personal-export",
@@ -5226,6 +5261,38 @@
       "acceptance": "source",
       "controlBoundary": true,
       "notes": "未做运行验证。该动作固定当前账户邮箱并打开 mode=2 的找回密码流程；后续经 mode=4 邮件验证码确认设置新密码。这是用户信任入口，不能要求 Agent 自行批准或扩大权限。"
+    },
+    {
+      "id": "assistant.task-controls",
+      "module": "account_settings",
+      "label": "查询、暂停、恢复和补充当前创作任务",
+      "source": "src/crates/concat/src/agent_ui.rs",
+      "actions": [
+        "Assistant.task-pause",
+        "Assistant.task-resume",
+        "Assistant.task-status-requested",
+        "Assistant.task-update",
+        "Assistant.task-stop"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "由可信宿主发送持久任务IPC；暂停/恢复/补充需用户操作，模型不能自行恢复授权。运行时内部task_status/task_checkpoint与原生MCP分别公告。当前尚无实窗验收。",
+      "controlBoundary": true
+    },
+    {
+      "id": "assistant.task-budget",
+      "module": "account_settings",
+      "label": "设置创作任务推理积分上限",
+      "source": "src/crates/concat/src/agent_ui.rs",
+      "actions": [
+        "Assistant.task-budget-edited"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "用户显式上限绑定冻结模型选择，最低覆盖完整单轮预留；不允许模型自行增加，生成费用仍依原业务账本。当前尚无实窗验收。",
+      "controlBoundary": true
     }
   ]
 }

@@ -2,8 +2,8 @@
 //! Stdio MCP adapter. The running App owns all document and permission state.
 
 use concat_editor_mcp::{
-    AssetVersion, CanvasAction, CanvasEdit, CanvasParameters, LibraryQuery, Method, MoveParameters,
-    OperationQuery, Request, Response, call, endpoint,
+    AssetVersion, CanvasAction, CanvasEdit, CanvasParameters, LibraryAssetKind, LibraryAssetsQuery,
+    LibraryQuery, Method, MoveParameters, OperationQuery, Request, Response, call, endpoint,
 };
 use rmcp::{
     ServiceExt,
@@ -140,6 +140,22 @@ struct LibraryArgs {
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LibraryAssetsArgs {
+    project_id: String,
+    document_session_id: String,
+    #[serde(default)]
+    kind: LibraryAssetKind,
+    #[serde(default)]
+    asset_id: Option<String>,
+    #[serde(default)]
+    query: String,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OperationArgs {
     project_id: String,
     document_session_id: String,
@@ -155,6 +171,7 @@ impl Bridge {
             clip_parameters: None,
             object_ids: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
@@ -433,6 +450,22 @@ impl Bridge {
         self.dispatch(request)
     }
     #[tool(
+        description = "Search bounded metadata for fixed-version local personal-library image, video and audio assets. kind defaults all; optional exact assetId, query at most160 Unicode characters, offset, limit1..50/default20. Requires exact App media approval for this query. Returns path-free assetId/name/kind/version/availability with contentVerified:false; availability is metadata only. Use clip_edit importLibrary with the exact returned assetId/version to probe and import one item; then placeMedia. No cloud/team assets, paths or content hashing in pagination."
+    )]
+    fn library_assets(&self, Parameters(args): Parameters<LibraryAssetsArgs>) -> String {
+        let mut request = self.request(Method::LibraryAssets);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.library_assets_query = Some(LibraryAssetsQuery {
+            kind: args.kind,
+            asset_id: args.asset_id,
+            query: args.query,
+            offset: args.offset,
+            limit: args.limit.unwrap_or(20),
+        });
+        self.dispatch(request)
+    }
+    #[tool(
         description = "Insert a specified immutable library image into the current canvas in one undo step. Requires specific trusted App authorization and current E lease. Returns createdLayerId and committed revision/selectionRevision. No paths. UNKNOWN must query canvas_operation using the original operation identity; never submit a new sequence."
     )]
     fn insert_library_image(&self, Parameters(args): Parameters<InsertArgs>) -> String {
@@ -492,7 +525,7 @@ impl Bridge {
         )
     }
     #[tool(
-        description = "Apply one explicit bounded ClipEdit to the current owned native Session and fixed timeline. Stable existing media/track/clip/timeline IDs only, no paths/import/scripts. Freeze project.clipState.editStateId before native approval; revision, selection and complete edit state must match. All direct and indirect locked-track changes are refused, including history. Actions cover existing-bin placement, tracks/timelines, move/trim/split/delete/merge, image freeze, rate/curve, transform/properties, audio detach/reattach, text and keyframes, undo/redo. Video still extraction is unavailable. Typed action at most16KiB; each native source/staged/history state at most16MiB (checked without a second allocation); audio detach at most128 generated clips and conservative16Mi lane-scan work, with copied clip/title bytes budgeted before preview; full untruncated receipt at most56KiB, otherwise refuse before mutation. UNKNOWN only queries the original clip_operation; never replay a new sequence."
+        description = "Apply one explicit bounded ClipEdit to the current owned native Session and fixed timeline. Stable media/track/clip/timeline IDs only; no paths or scripts. importLibrary accepts only an existing local assetId and immutable version, probes one asset asynchronously with an 8GiB bound, then returns mediaId for placeMedia. Freeze project.clipState.editStateId before native approval; revision, selection and complete edit state must match. All direct and indirect locked-track changes are refused, including history. Actions cover existing-bin placement, tracks/timelines, move/trim/split/delete/merge, image freeze, rate/curve, transform/properties, audio detach/reattach, text and keyframes, undo/redo. Video still extraction is unavailable. Typed action at most16KiB; each native source/staged/history state at most16MiB (checked without a second allocation); audio detach at most128 generated clips and conservative16Mi lane-scan work, with copied clip/title bytes budgeted before preview; full untruncated receipt at most56KiB, otherwise refuse before mutation. UNKNOWN only queries the original clip_operation; never replay a new sequence."
     )]
     fn clip_edit(&self, Parameters(args): Parameters<ClipEditArgs>) -> String {
         let mut request = self.request(Method::ClipEdit);
@@ -657,6 +690,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn library_assets_schema_is_closed_and_uses_read_credential() {
+        let tool = Bridge::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|tool| tool.name == "library_assets")
+            .unwrap();
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        assert_eq!(schema["additionalProperties"], false);
+        for key in [
+            "projectId",
+            "documentSessionId",
+            "kind",
+            "assetId",
+            "query",
+            "offset",
+            "limit",
+        ] {
+            assert!(schema["properties"].get(key).is_some(), "{key}");
+        }
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 7);
+        assert_eq!(
+            bridge(Some("write".into()))
+                .request(Method::LibraryAssets)
+                .client_token,
+            "read-credential"
+        );
+        assert!(
+            serde_json::from_value::<LibraryAssetsArgs>(
+                serde_json::json!({"projectId":"p","documentSessionId":"s","path":"/unapproved"})
+            )
+            .is_err()
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn library_assets_cli_defaults_reach_bounded_metadata_only_ipc() {
+        use std::os::unix::net::UnixListener;
+        let path = endpoint(&uuid::Uuid::new_v4().to_string()).unwrap();
+        let listener = UnixListener::bind(&path).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request: Request = concat_editor_mcp::read_message(&mut stream).unwrap();
+            assert_eq!(request.method, Method::LibraryAssets);
+            assert_eq!(request.client_token, "read-credential");
+            assert!(concat_editor_mcp::validate_request_shape(&request).is_ok());
+            let query = request.library_assets_query.unwrap();
+            assert_eq!(query.kind, LibraryAssetKind::All);
+            assert!(query.asset_id.is_none());
+            assert_eq!(query.limit, 20);
+            assert_eq!(query.offset, 0);
+            concat_editor_mcp::write_message(&mut stream,&Response::ok(serde_json::json!({"projectId":"p","documentSessionId":"s","offset":0,"total":0,"nextOffset":null,"assets":[]}))).unwrap();
+        });
+        let mut adapter = bridge(Some("write".into()));
+        adapter.socket = path.clone();
+        let args = serde_json::from_value(
+            serde_json::json!({"projectId":"p","documentSessionId":"s","assetId":null}),
+        )
+        .unwrap();
+        let response: Response =
+            serde_json::from_str(&adapter.library_assets(Parameters(args))).unwrap();
+        worker.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.data.unwrap()["assets"], serde_json::json!([]));
+    }
 
     #[test]
     fn canvas_edit_public_tool_has_closed_schema_and_independent_write_credential() {

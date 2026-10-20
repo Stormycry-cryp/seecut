@@ -50,14 +50,16 @@ CARGO_TARGET_DIR="$PWD/../.toonflow/native-target" cargo test -p concat --lib --
 
 当前实际验证：
 
-- 原生剪辑21项已包含在 `editor_mcp::` 的98项内，同一产品源码的 `agent_controller::` 63项、Session历史5项均通过，共166项；不启动前台App。
+- 原生剪辑21项已包含在 `editor_mcp::` 的98项内，同一产品源码的 `agent_controller::` 63项、Session历史5项、画布Agent绘制/导出辅助2项均通过，共168项；不启动前台App。CI借用修复后的单项重跑通过，不重复计数。
 - 公共模型服务工具合同4项、覆盖清单和diff检查通过。目前为42个原生命令、45个画布辅助接口、28个MCP注册、161条业务路由，尚无完整业务分母。
 - 私有运行时在隔离的冻结源码中通过231项剪辑及关联回归，其中剪辑45项。覆盖完整COTO审批、30类动作、原回执恢复、错误目标和删除集合、分离音频归属，以及旧工程的长调速曲线、关键帧超调、长名称等合法回读；新写入参数上限继续保留。
 - 原生产品库严格Clippy通过。[上一批公共CI](https://github.com/Stormycry-cryp/seecut/actions/runs/39413521458)在测试代码的一处 `cloned_ref_to_slice_refs` 报错，退出码101，耗时2551秒；已修正借用写法。本次日志不能证明OOM，新的全仓库CI结果另行记录。
 
+最终MCP协议/stdio34项、协议all-targets严格Clippy通过，正常stdio CLI已重新构建。二进制SHA256为 `b3ad7a7d5136a759d99eb48cbf6533216c50951a2943814c79b7ee026774bb60`；主代理用标准initialize/tools/list实测28项注册，仅列目录，没有连接真实App端点。
+
 本批仍是原生逻辑、协议与本地替身证据，完整真实模型→实际App→作品链、原生视觉交互与成片质量未完成验收。Android按当前范围暂缓；本功能候选的PR不再自动执行Android构建，其他分支及显式/夜间/发布调用保留原规则。
 
-配套私有 `dfbde73` 的[Node 22.19.0和24.x检查](https://github.com/Stormycry-cryp/seecut-agent/actions/runs/39421052890)均已成功；公共 `3397fa4` 的[服务检查](https://github.com/Stormycry-cryp/seecut/actions/runs/39421002493)成功，[引擎检查](https://github.com/Stormycry-cryp/seecut/actions/runs/39421002652)仍在运行。移动端任务已确认Android为skipped，不能把它当作Android编译通过。
+配套私有 `dfbde73` 的[Node 22.19.0和24.x检查](https://github.com/Stormycry-cryp/seecut-agent/actions/runs/39421052890)均已成功；公共 `3397fa4` 的[服务检查](https://github.com/Stormycry-cryp/seecut/actions/runs/39421002493)成功；该次引擎检查已被后续推送取消，以公共 `87d273a` 的[引擎检查](https://github.com/Stormycry-cryp/seecut/actions/runs/39422100835)最终结果为准。移动端任务已确认Android为skipped，不能把它当作Android编译通过。
 
 ## 第四批：Flow原生成身份
 
@@ -70,3 +72,40 @@ CARGO_TARGET_DIR="$PWD/../.toonflow/native-target" cargo test -p concat --lib --
 - 一次构建目录错误误清理了原ignored节点产物。停止错误进程后，仅从完整隔离构建补回5个缺失文件，保留3个已匹配文件；最终原节点目录精确8个普通文件，SHA全部与隔离构建一致。源码、依赖和已交付App没有因此误改。
 
 以上均未调用付费模型或启动前台App，不能代替真实生成作品、费用及实际原生交互验收。
+
+## 工具目录体积
+
+本轮正常构建CLI的SHA256为 `b8a6c70f0bbcfc296f47279475281cf449b0f619369ad58449cad5a1cb55316f`。通过真实stdio initialize/tools/list读取29项，紧凑JSON为64281字节；使用现有COTO客户端及私有sessionTools实际包装，模型工具定义为61328字节。测量仅启动MCP客户端，使用合成实例和凭据，没有连接实际App或发起计费请求。
+
+| 模型可见范围 | 工具数 | 工具定义JSON字节 |
+| --- | ---: | ---: |
+| 全部原生工具 | 29 | 61328 |
+| 画布 | 14 | 26962 |
+| 剪辑 | 6 | 22746 |
+| Flow | 17 | 17240 |
+
+这些数值仅统计工具定义，不含系统指令、工程上下文、历史、图片或任务内部工具；不能当作真实token用量或费用。首次可信workspace选择保留原工具对象、参数和执行函数，不凭模型参数切换范围。
+
+
+## 第五批：持久创作任务
+
+私有 `6685304` 将任务状态保存在原会话存储下，沿用COTO writer、输入历史、业务操作journal和managed预算，不建立第二套费用账本。支持明确积分上限、串行续轮、幂等用户补充、快速暂停/停止、原输入恢复、原结果查询及有界退避。检查点关联本步骤真实操作，完成前重新读取属性、保存/PNG凭据或Flow原UUID资产结果，聊天最终文字不直接完成任务。
+
+本地完整337项通过，0失败/取消/跳过，106.3秒；日志 `/tmp/seecut-runtime-tasks-release-test.log`。包含真实COTO配合本地managed服务、续轮账务和控制竞态。额外源码复核覆盖原生成身份与stage分离、发送前私有WeakSet标记、原子任务状态和旧epoch约束，未发现新增高影响问题。以上仍为逻辑和合成服务证据。
+
+本次6685304的[私有CI](https://github.com/Stormycry-cryp/seecut-agent/actions/runs/39426452780)已确认Node 22.19.0与24.x均成功；CI固定公共 `87d273a8e4c93f3cb8d020da54b567d316cd9bb5` 服务合同。新服务尚未部署；本轮已接原生Task控制、任务范围内逐次自动许可和UI，相关逻辑通过下述联合测试，真实App链仍未验收。任务绑定当前文档会话，尚未实现跨工作区自动交接；重开后暂停，不承诺App关闭后本地继续执行。
+
+
+## 第六批：个人库三类素材与剪辑导入
+
+新增 `library_assets` 查询固定版本的图片、视频和音频，仅返回元信息，`available` 不代表内容通过SHA校验。`clip_edit.importLibrary` 按原操作异步校验和probe，最终重验原范围、账户、助手会话、完整编辑状态、writer及精确许可后调用原生AddMedia。创建和去重都返回真实mediaId；原导入证明与当前工程独立回读共同核对固定引用，不宣称媒体质量。
+
+原PNG交付的内部核读仅接受同client、scope、原账户和助手会话的成功导出回执。来源在首次接受时冻结；pending、partial和UNKNOWN不授权；登记重试不填补或覆盖旧来源，旧无来源记录也不放行。泛查询继续要求精确许可。
+
+- 正常MCP协议/stdio完整42项、all-targets严格Clippy及正常CLI build通过。macOS临时socket长路径仅在测试fixture修复。
+- 实际原生媒体探测已核对16×16图片、64×64/4fps/1秒视频和22050Hz双声道/0.25秒音频；不是模拟decoder输出。
+- 私有完整运行363个条目中362通过，另1个billing模块因隔离服务目录缺catalog未加载；补齐原catalog后billing模块4项通过，合计覆盖366项用例。此为组合覆盖证据，不写成单次全绿。真实CLI schema的nullable limit兼容另以28项相关回归验证；14文件冻结摘要为 `68128a8dafbcec461c3a762ce5435c68d9599d842cb26340a9d92a8c39d22a5a`。
+- 本地managed合成链覆盖library_assets→importLibrary→final，沿用原COTO审批与三次原推理账务；重复请求只查询原操作。配套公共服务合同及关联63项通过，服务没有部署。
+- 原生候选字段样例与私有parser交叉核对3项通过，涵盖元信息查询、创建、去重；样例使用合成身份，不能作为真实App回执。
+
+最新同一原生测试二进制SHA256为 `688f0dcff84e558c4de66fbe1cd0661262c949c95f7399a91be26ad51271f50b`（2026-10-20 14:30:11 UTC）：agent_154通过、1个测试辅助入口默认忽略；editor_mcp119通过；bounded_digest1通过。三组过滤集合无交集，共274通过、1忽略；旧阶段249不叠加。包含原生媒体探测、原AddMedia及去重/撤销重做、OwnedOutput来源、任务控制和legacy move撤权逻辑。最新concat --lib --tests严格Clippy通过。没有启动前台App或抢占鼠标、键盘、焦点。单素材8GiB、单个在途probe；现有FFmpeg probe没有硬取消能力，挂起时占住该槽位，迟到完成仍须重验授权。当前未覆盖云/团队素材、本机任意路径、批量送入或自动切换目标工程。

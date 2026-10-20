@@ -90,7 +90,7 @@ fn bind_geometry(app: &App) {
 mod desktop {
     use super::*;
     use crate::agent_controller::{
-        ConnectionConfig, Controller, DocumentIdentity, Phase, TaskOutcome,
+        ConnectionConfig, Controller, DocumentIdentity, Phase, TaskCommand, TaskOutcome,
     };
     use crate::agent_process::LaunchSpec;
     use crate::agent_sessions::{
@@ -205,8 +205,49 @@ mod desktop {
         assistant_row: Option<usize>,
         approval: Option<FrozenApproval>,
         editor_recovery: Option<crate::agent_controller::EditorRecovery>,
+        task_budget_text: String,
+        task_budget_policy: Option<serde_json::Value>,
+        task_permits: Vec<(u64, Instant)>,
+        task_display_turn: Option<String>,
+        task_grant: Option<crate::agent_task_grant::TaskGrant>,
+        update_grant: Option<crate::agent_task_grant::UpdateGrant>,
+        grant_seen_turn: Option<String>,
+        auto_approving: bool,
+        auto_attempted: Option<FrozenApproval>,
+        task_permit_revision: u64,
     }
     impl State {
+        fn task_policy(&self) -> Option<serde_json::Value> {
+            let choice = self.catalog.current()?;
+            if self.record.selected_effort_id.is_some() {
+                self.selected_effort()?.policy_for(&choice.id)
+            } else {
+                Some(choice.policy.clone())
+            }
+        }
+        fn sync_task_budget(&mut self) {
+            let policy = self.task_policy();
+            if policy != self.task_budget_policy {
+                self.task_budget_text = policy
+                    .as_ref()
+                    .and_then(crate::agent_models::next_turn_cap)
+                    .and_then(crate::agent_tasks::default_task_budget)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                if self.task_budget_policy.is_some() {
+                    self.notice = "模型或强度已变化，请核对已更新的任务积分上限".into();
+                }
+                self.task_budget_policy = policy;
+            }
+        }
+        fn task_budget(&self) -> Result<u64, &'static str> {
+            let cap = self
+                .task_budget_policy
+                .as_ref()
+                .and_then(crate::agent_models::next_turn_cap)
+                .ok_or("当前模型的单轮额度暂不可用，请刷新模型")?;
+            crate::agent_tasks::parse_task_budget(&self.task_budget_text, cap)
+        }
         fn can_select_model(&self) -> bool {
             !cfg!(feature = "assistant-local-dev")
                 && !self.catalog.loading
@@ -888,6 +929,10 @@ mod desktop {
             {
                 let mut state = self.state.borrow_mut();
                 state.controller.tick(snapshot.document.as_ref());
+                if state.task_permit_revision != state.controller.task_permit_revision() {
+                    revoke_task_permits(&mut state);
+                    state.task_permit_revision = state.controller.task_permit_revision();
+                }
                 capture(&mut state);
             }
             for state in self.parked.borrow_mut().iter_mut() {
@@ -1026,8 +1071,143 @@ mod desktop {
             if billing_changed && self.account.signed_in() {
                 self.account.refresh_wallet(app);
             }
+            self.sync_task_grant(&snapshot);
             self.publish(app, &snapshot);
+            self.try_auto_approve(app);
             let _ = self.persist(false);
+        }
+        fn grant_scope(
+            &self,
+            state: &State,
+            snapshot: &AssistantSnapshot,
+        ) -> Option<crate::agent_task_grant::GrantScope> {
+            let account_epoch = self.account.epoch()?;
+            if state.runtime_account_epoch != Some(account_epoch) || !self.account.signed_in() {
+                return None;
+            }
+            let lease = state.lease.as_ref()?;
+            if lease.document != snapshot.document
+                || lease.read != snapshot.read_token
+                || lease.write != snapshot.write_token
+            {
+                return None;
+            }
+            Some(crate::agent_task_grant::GrantScope {
+                task_id: state.controller.current_task_id()?.into(),
+                document: snapshot.document.clone()?,
+                ipc_generation: state.controller.ipc_generation(),
+                account_epoch,
+                read_lease: snapshot.read_token.clone()?,
+                write_lease: snapshot.write_token.clone()?,
+            })
+        }
+        fn sync_task_grant(&self, snapshot: &AssistantSnapshot) {
+            let mut state = self.state.borrow_mut();
+            let scope = self.grant_scope(&state, snapshot);
+            let view = state.controller.view();
+            let blocked = view.unknown_or_blocked();
+            let disconnected = matches!(
+                view.phase,
+                Phase::Disconnected
+                    | Phase::Failed
+                    | Phase::Closing
+                    | Phase::Initializing
+                    | Phase::OpeningSession
+            );
+            if blocked || disconnected || scope.is_none() {
+                revoke_task_permits(&mut state);
+                state.task_grant = None;
+                state.update_grant = None;
+                return;
+            }
+            let scope = scope.unwrap();
+            if state
+                .task_grant
+                .as_ref()
+                .is_some_and(|g| !g.remains_bound(&scope, state.controller.current_task()))
+            {
+                revoke_task_permits(&mut state);
+                state.task_grant = None;
+            }
+            if state
+                .update_grant
+                .as_ref()
+                .is_some_and(|g| !g.remains_bound(&scope, state.controller.current_task()))
+            {
+                revoke_task_permits(&mut state);
+                state.update_grant = None;
+            }
+            if let Some(admitted) = state.controller.task_turn_binding().cloned()
+                && let Some(turn) = state.controller.current_turn_id().map(str::to_owned)
+                && state.controller.is_task_turn()
+                && state.grant_seen_turn.as_deref() != Some(turn.as_str())
+            {
+                state.grant_seen_turn = Some(turn.clone());
+                if state
+                    .update_grant
+                    .as_ref()
+                    .is_some_and(|g| admitted.control_epoch >= g.expected_epoch())
+                {
+                    let candidate = state.update_grant.take().unwrap();
+                    let previous_ended = candidate
+                        .previous_turn()
+                        .is_none_or(|old| state.controller.task_turn_ended(old));
+                    state.task_grant =
+                        candidate.next_turn(&scope, &admitted, &turn, previous_ended, blocked);
+                }
+            }
+        }
+        fn auto_allowed(&self, app: &App) -> bool {
+            let Some(snapshot) = Self::snapshot(app) else {
+                return false;
+            };
+            let state = self.state.borrow();
+            let Some(scope) = self.grant_scope(&state, &snapshot) else {
+                return false;
+            };
+            let view = state.controller.view();
+            let (Some(grant), Some(current), Some(admitted), Some(turn), Some(approval)) = (
+                state.task_grant.as_ref(),
+                state.controller.current_task(),
+                state.controller.task_turn_binding(),
+                state.controller.current_turn_id(),
+                state.approval.as_ref(),
+            ) else {
+                return false;
+            };
+            view.can_approve
+                && state.controller.is_task_turn()
+                && approval.turn_id == turn
+                && grant.allows(
+                    &scope,
+                    current,
+                    admitted,
+                    turn,
+                    &approval.tool,
+                    &approval.arguments,
+                    view.unknown_or_blocked(),
+                )
+        }
+        fn try_auto_approve(&self, app: &App) {
+            {
+                let state = self.state.borrow();
+                if state.auto_approving
+                    || state.approval.is_none()
+                    || state.auto_attempted == state.approval
+                {
+                    return;
+                }
+            }
+            if !self.auto_allowed(app) {
+                return;
+            }
+            {
+                let mut state = self.state.borrow_mut();
+                state.auto_attempted = state.approval.clone();
+                state.auto_approving = true;
+            }
+            self.approve_checked(app, true, false);
+            self.state.borrow_mut().auto_approving = false;
         }
         fn schedule(self: &Rc<Self>, app: &App) {
             let phase = self.state.borrow().controller.view().phase;
@@ -1063,6 +1243,11 @@ mod desktop {
         fn sync_lease(&self, snapshot: &AssistantSnapshot) -> bool {
             let next = Lease::from_snapshot(snapshot);
             let sync = |state: &mut State, current: bool| {
+                if !current || state.lease.as_ref().is_some_and(|old| old != &next) {
+                    revoke_task_permits(state);
+                    state.task_grant = None;
+                    state.update_grant = None;
+                }
                 if let Some(old) = state.lease.as_ref().filter(|old| *old != &next) {
                     let hot = current
                         && old.document == next.document
@@ -1096,6 +1281,7 @@ mod desktop {
         }
         fn publish(&self, app: &App, snapshot: &AssistantSnapshot) {
             let mut state = self.state.borrow_mut();
+            state.sync_task_budget();
             let view = state.controller.view();
             let phase = view.phase;
             let unknown = view.outcome == Some(TaskOutcome::OutcomeUnknown)
@@ -1111,7 +1297,10 @@ mod desktop {
                         | Phase::Stopping
                         | Phase::Closing
                 )
-                || (phase == Phase::Ready && !view.can_send && view.error.is_none());
+                || (phase == Phase::Ready
+                    && !view.can_send
+                    && view.error.is_none()
+                    && !state.controller.task_idle());
             let outcome = outcome_label(view.outcome);
             let history_error = *self.history_error.borrow();
             let status = if let Some(error) = history_error {
@@ -1250,8 +1439,85 @@ mod desktop {
                 0
             });
             ui.set_unknown(unknown);
+            let task_mode = snapshot.write_token.is_some() && state.controller.supports_tasks();
+            let task_budget_reason = if task_mode && !state.controller.task_active() {
+                state.task_budget().err().unwrap_or("")
+            } else {
+                ""
+            };
+            ui.set_task_mode(task_mode);
+            ui.set_task_budget_text(state.task_budget_text.as_str().into());
+            ui.set_task_budget_reason(task_budget_reason.into());
+            ui.set_can_edit_task_budget(task_mode && !state.controller.task_active() && !busy);
+            let task = state.controller.current_task();
+            let task_cap = state
+                .record
+                .request_snapshots
+                .iter()
+                .rev()
+                .filter_map(|v| v.task.as_ref())
+                .find(|v| Some(v.task_id.as_str()) == state.controller.current_task_id())
+                .map(|v| v.max_task_credits);
+            ui.set_task_visible(state.controller.current_task_id().is_some());
+            ui.set_task_status(
+                task.map(|v| {
+                    format!(
+                        "{} · 步骤 {}/{} · {}轮",
+                        v.status.label(),
+                        v.verified_steps,
+                        v.total_steps,
+                        v.rounds
+                    )
+                })
+                .unwrap_or_else(|| "等待查询原任务状态".into())
+                .into(),
+            );
+            ui.set_task_reason(
+                task.and_then(|v| v.blocked_reason.as_deref())
+                    .map(crate::agent_tasks::blocked_reason_label)
+                    .unwrap_or("")
+                    .into(),
+            );
+            ui.set_task_limit_label(
+                task_cap
+                    .map(|v| format!("本任务推理上限 {} 积分，生成费用另计", v))
+                    .unwrap_or_default()
+                    .into(),
+            );
+            ui.set_can_task_pause(state.controller.can_task_command(TaskCommand::Pause));
+            ui.set_can_task_stop(state.controller.can_task_command(TaskCommand::Stop));
+            ui.set_can_task_resume(
+                snapshot.write_token.is_some()
+                    && state.controller.can_task_command(TaskCommand::Resume),
+            );
+            ui.set_can_task_status(state.controller.can_task_command(TaskCommand::Status));
+            ui.set_can_task_update(state.controller.can_task_command(TaskCommand::Update));
+            let pending_update = state.record.task_updates.iter().any(|v| {
+                !v.confirmed && Some(v.task_id.as_str()) == state.controller.current_task_id()
+            });
+            ui.set_task_update_label(
+                if pending_update {
+                    "核实原补充"
+                } else {
+                    "补充要求"
+                }
+                .into(),
+            );
+            ui.set_task_compatibility(
+                if snapshot.write_token.is_some()
+                    && !state.controller.supports_tasks()
+                    && state.controller.session_opened()
+                {
+                    "当前 Agent 版本使用单轮执行，操作仍逐项确认"
+                } else {
+                    ""
+                }
+                .into(),
+            );
             ui.set_can_send(
                 view.can_send
+                    && (!task_mode || !state.controller.task_active())
+                    && task_budget_reason.is_empty()
                     && !state.preparing
                     && snapshot.read_token.is_some()
                     && history_error.is_none()
@@ -1536,7 +1802,29 @@ mod desktop {
             } else {
                 None
             };
+            let task_mode = snapshot.write_token.is_some() && state.controller.supports_tasks();
+            let task_intent = if task_mode {
+                let max_task_credits = match state.task_budget() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        state.notice = error.into();
+                        drop(state);
+                        self.refresh(app);
+                        return;
+                    }
+                };
+                let client_request_id = format!("task-request-{}", uuid::Uuid::new_v4());
+                Some(crate::agent_tasks::TaskIntent {
+                    task_id: crate::agent_tasks::task_id_for(&client_request_id),
+                    client_request_id,
+                    goal: visible.clone(),
+                    max_task_credits,
+                })
+            } else {
+                None
+            };
             let request = RequestSnapshot {
+                task: task_intent.clone(),
                 references: state.record.draft_references.clone(),
                 session_id: state.record.id.clone(),
                 model_id: choice
@@ -1560,6 +1848,10 @@ mod desktop {
                     project_name: snapshot.project_name,
                 },
             };
+            if let Some(task) = &task_intent {
+                state.record.current_task_id = Some(task.task_id.clone());
+                state.task_display_turn = None;
+            }
             state.record.request_snapshots.push(request);
             state.record.name_first_input(&visible);
             state.messages.push(AssistantMessage {
@@ -1594,7 +1886,17 @@ mod desktop {
             let saved = self.persist(true);
             let mut state = self.state.borrow_mut();
             let result = match saved {
-                Ok(()) => (if references.is_empty() {
+                Ok(()) => (if let Some(task) = &task_intent {
+                    state.controller.create_task(
+                        &task.client_request_id,
+                        &task.goal,
+                        content,
+                        selection
+                            .clone()
+                            .unwrap_or_else(|| json!({"modelId":"default"})),
+                        task.max_task_credits,
+                    )
+                } else if references.is_empty() {
                     if selection.is_some() {
                         state.controller.send_text_with_selection(text, selection)
                     } else {
@@ -1611,6 +1913,15 @@ mod desktop {
             state.submitting = false;
             match result {
                 Ok(()) => {
+                    if task_intent.is_some()
+                        && let Some(snapshot) = Self::snapshot(app)
+                        && let Some(scope) = self.grant_scope(&state, &snapshot)
+                    {
+                        state.task_grant = crate::agent_task_grant::TaskGrant::from_human(scope, 1);
+                        state.update_grant = None;
+                        state.auto_attempted = None;
+                        state.grant_seen_turn = None;
+                    }
                     state.notice.clear();
                     let ui = app.global::<Assistant>();
                     ui.set_draft("".into());
@@ -1646,6 +1957,198 @@ mod desktop {
                     state.assistant_row = None;
                     state.notice = error.into();
                 }
+            }
+            drop(state);
+            let _ = self.persist(true);
+            self.refresh(app);
+        }
+        fn task_action(&self, app: &App, action: TaskCommand) {
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            if matches!(action, TaskCommand::Pause | TaskCommand::Stop) {
+                let mut state = self.state.borrow_mut();
+                state.task_grant = None;
+                state.update_grant = None;
+                state.controller.withdraw_task_approvals();
+                revoke_task_permits(&mut state);
+            }
+            self.refresh(app);
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            if !state.controller.can_task_command(action) {
+                return;
+            }
+            let resume_epoch = state
+                .controller
+                .current_task()
+                .and_then(|v| v.control_epoch.checked_add(1));
+            if matches!(action, TaskCommand::Pause | TaskCommand::Stop) {
+                state.update_grant = None;
+                state.task_grant = None;
+                revoke_task_permits(&mut state);
+            }
+            match state.controller.task_command(action) {
+                Err(error) => state.notice = error.message().into(),
+                Ok(()) if action == TaskCommand::Resume => {
+                    if let Some(snapshot) = Self::snapshot(app)
+                        && let Some(scope) = self.grant_scope(&state, &snapshot)
+                        && let Some(epoch) = resume_epoch
+                    {
+                        state.task_grant =
+                            crate::agent_task_grant::TaskGrant::from_human(scope, epoch);
+                        state.auto_attempted = None;
+                    }
+                }
+                _ => {}
+            }
+            drop(state);
+            let _ = self.persist(true);
+            self.refresh(app);
+        }
+        fn task_update(&self, app: &App, text: &str) {
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            // Withdraw before refresh can drain a pending card or auto-approve
+            // it. Keep only the prior scope for the one-shot update candidate.
+            let human_grant = {
+                let mut state = self.state.borrow_mut();
+                if state.record.task_updates.iter().all(|v| {
+                    v.confirmed || Some(v.task_id.as_str()) != state.controller.current_task_id()
+                }) && (text.trim().is_empty()
+                    || text.len() > 32000
+                    || !state.record.draft_references.is_empty())
+                {
+                    state.notice = "补充要求需为文字；当前输入与附件已保留".into();
+                    return;
+                }
+                let grant = state.task_grant.take();
+                state.controller.withdraw_task_approvals();
+                revoke_task_permits(&mut state);
+                grant
+            };
+            self.refresh(app);
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            if !state.controller.can_task_command(TaskCommand::Update) {
+                return;
+            }
+            let Some(task) = state.controller.current_task().cloned() else {
+                return;
+            };
+            let pending = state
+                .record
+                .task_updates
+                .iter()
+                .position(|v| !v.confirmed && v.task_id == task.id);
+            let new_input = pending.is_none();
+            let intent = if let Some(index) = pending {
+                let mut intent = state.record.task_updates[index].clone();
+                // Only this explicit zero-mutation rejection permits a new CAS
+                // precondition. Network uncertainty retains the original one.
+                if state.controller.rejected_task_update()
+                    == Some(intent.client_request_id.as_str())
+                {
+                    if intent.retries >= 2 {
+                        state.notice = "任务修订持续变化，原补充已保留，请先查询任务状态".into();
+                        return;
+                    }
+                    intent.expected_revision = task.task_revision;
+                    intent.retries += 1;
+                }
+                state.record.task_updates[index] = intent.clone();
+                intent
+            } else {
+                if !state.record.draft_references.is_empty() {
+                    state.notice = "补充要求目前支持文字；附件已保留，可用于新任务".into();
+                    return;
+                }
+                if state.record.task_updates.len() >= 64
+                    || state
+                        .record
+                        .task_updates
+                        .iter()
+                        .filter(|v| v.task_id == task.id)
+                        .count()
+                        >= 16
+                {
+                    state.notice = "本会话补充要求已达保存上限，请创建新会话".into();
+                    return;
+                }
+                let mut message = text.to_owned();
+                if let Some(lease) = &state.lease {
+                    for token in [lease.read.as_ref(), lease.write.as_ref()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        message = message.replace(token, "[已隐藏]");
+                    }
+                }
+                if let Some(account) = self.account.snapshot() {
+                    message = message.replace(&account.token, "[已隐藏]");
+                }
+                let intent = crate::agent_tasks::TaskUpdateIntent {
+                    client_request_id: format!("update-{}", uuid::Uuid::new_v4()),
+                    task_id: task.id,
+                    message,
+                    expected_revision: task.task_revision,
+                    retries: 0,
+                    confirmed: false,
+                };
+                if !intent.valid() {
+                    state.notice = "补充要求需为不超过32000字节的文字".into();
+                    return;
+                }
+                state.record.task_updates.push(intent.clone());
+                intent
+            };
+            state.record.updated_at_ms = now_ms();
+            drop(state);
+            // Persist the exact original update before any command is queued.
+            if let Err(error) = self.persist(true) {
+                self.state.borrow_mut().notice = error.into();
+                self.refresh(app);
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            let candidate = if new_input {
+                let previous = state
+                    .controller
+                    .current_turn_id()
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        state
+                            .controller
+                            .current_task()
+                            .and_then(|v| v.active_turn_id.clone())
+                    });
+                human_grant.and_then(|g| g.for_update(intent.client_request_id.clone(), previous))
+            } else {
+                state.update_grant.take()
+            };
+            revoke_task_permits(&mut state);
+            state.update_grant = candidate;
+            match state.controller.retry_task_update(&intent) {
+                Ok(()) => {
+                    if new_input {
+                        state.messages.push(AssistantMessage {
+                            references: Default::default(),
+                            role: "你".into(),
+                            text: intent.message.as_str().into(),
+                            state: "补充要求".into(),
+                            progress: "".into(),
+                        });
+                        state.record.draft.clear();
+                        app.global::<Assistant>().set_draft("".into());
+                    }
+                    state.notice = "补充要求已发送，等待原请求确认".into();
+                }
+                Err(error) => state.notice = error.message().into(),
             }
             drop(state);
             let _ = self.persist(true);
@@ -1705,11 +2208,15 @@ mod desktop {
             self.refresh(app);
         }
         fn approve(&self, app: &App, allowed: bool) {
+            self.approve_checked(app, allowed, true);
+        }
+        fn approve_checked(&self, app: &App, allowed: bool, require_open: bool) {
             // Freeze the target the user actually saw before draining new IPC.
             let frozen = self.state.borrow().approval.clone();
             self.refresh(app);
             let ui = app.global::<Assistant>();
-            if !ui.get_open()
+            if (require_open && !ui.get_open())
+                || (!require_open && !self.auto_allowed(app))
                 || !(if allowed {
                     ui.get_can_allow()
                 } else {
@@ -1723,7 +2230,7 @@ mod desktop {
                 state.notice = "待确认操作已变化，请重新核对当前动作、对象和参数".into();
             } else if let Some(approval) = frozen {
                 let mut permit = None;
-                let authorization = if allowed && approval.tool != "move_selected_image" {
+                let authorization = if allowed {
                     let mut result = Err("当前工程无法授权此操作");
                     Shell::with(|shell, _| {
                         let studio = shell.studio.borrow();
@@ -1749,6 +2256,14 @@ mod desktop {
                 match authorization {
                     Err(error) => state.notice = error.into(),
                     Ok(()) => {
+                        if let Some(id) = permit
+                            && state.controller.is_task_turn()
+                        {
+                            state
+                                .task_permits
+                                .retain(|(_, at)| at.elapsed() < Duration::from_secs(300));
+                            state.task_permits.push((id, Instant::now()));
+                        }
                         if let Err(error) = state.controller.approve(&approval.id, allowed) {
                             if let Some(id) = permit {
                                 Shell::with(|shell, _| {
@@ -2214,6 +2729,8 @@ mod desktop {
             generation_model_ids: HashMap::new(),
             selection_initialized: false,
             runtime_created: false,
+            current_task_id: None,
+            task_updates: Vec::new(),
             request_snapshots: Vec::new(),
             pending: String::new(),
             updated_at_ms: now_ms(),
@@ -2241,12 +2758,14 @@ mod desktop {
                 })
                 .collect::<Vec<_>>(),
         ));
+        let mut controller = Controller::default();
+        controller.restore_task(record.current_task_id.clone());
         State {
             record,
             generation: next_epoch(),
             messages,
             submitting: false,
-            controller: Controller::default(),
+            controller,
             lease: None,
             runtime: None,
             entrypoint: None,
@@ -2263,6 +2782,16 @@ mod desktop {
             assistant_row: None,
             approval: None,
             editor_recovery: None,
+            task_budget_text: String::new(),
+            task_budget_policy: None,
+            task_permits: Vec::new(),
+            task_display_turn: None,
+            task_grant: None,
+            update_grant: None,
+            grant_seen_turn: None,
+            auto_approving: false,
+            auto_attempted: None,
+            task_permit_revision: 0,
         }
     }
     fn history_full(state: &State) -> bool {
@@ -2281,7 +2810,10 @@ mod desktop {
                     | Phase::AwaitingApproval
                     | Phase::Stopping
             )
-            || (view.phase == Phase::Ready && !view.can_send && view.error.is_none())
+            || (view.phase == Phase::Ready
+                && !view.can_send
+                && view.error.is_none()
+                && !state.controller.task_idle())
     }
     fn session_uncertain(state: &State) -> bool {
         let view = state.controller.view();
@@ -2289,7 +2821,39 @@ mod desktop {
             || view.phase == Phase::OutcomeUnknown
             || view.outcome == Some(TaskOutcome::OutcomeUnknown)
     }
+    fn revoke_task_permits(state: &mut State) {
+        let permits = std::mem::take(&mut state.task_permits);
+        state.approval = None;
+        Shell::with(|shell, _| {
+            let studio = shell.studio.borrow();
+            let mut bridge = studio.editor_mcp.borrow_mut();
+            for (id, _) in permits {
+                bridge.revoke_tool_permit(id);
+            }
+        });
+    }
     fn capture(state: &mut State) {
+        if state.controller.is_task_turn()
+            && let Some(turn) = state.controller.current_turn_id().map(str::to_owned)
+            && state.task_display_turn.as_deref() != Some(turn.as_str())
+        {
+            let reuse = state.task_display_turn.is_none()
+                && state
+                    .assistant_row
+                    .and_then(|i| state.messages.row_data(i))
+                    .is_some_and(|r| r.text.is_empty() && r.state.is_empty());
+            if !reuse {
+                state.messages.push(AssistantMessage {
+                    references: Default::default(),
+                    role: "Agent".into(),
+                    text: "".into(),
+                    state: "".into(),
+                    progress: "".into(),
+                });
+                state.assistant_row = Some(state.messages.row_count() - 1);
+            }
+            state.task_display_turn = Some(turn);
+        }
         let view = state.controller.view();
         if !state.submitting {
             state.assistant_row = update_streaming_reply(
@@ -2301,6 +2865,18 @@ mod desktop {
                 view.progress,
             );
         }
+        if !state.submitting {
+            state.record.current_task_id = state.controller.current_task_id().map(str::to_owned);
+            if let Some(id) = state.controller.acknowledged_task_update()
+                && let Some(update) = state
+                    .record
+                    .task_updates
+                    .iter_mut()
+                    .find(|v| v.client_request_id == id)
+            {
+                update.confirmed = true;
+            }
+        }
         let previous_pending = state.record.pending.clone();
         if view.phase == Phase::OutcomeUnknown || view.outcome == Some(TaskOutcome::OutcomeUnknown)
         {
@@ -2310,7 +2886,10 @@ mod desktop {
                 view.phase,
                 Phase::Running | Phase::AwaitingApproval | Phase::Stopping
             )
-            || (view.phase == Phase::Ready && !view.can_send && view.error.is_none())
+            || (view.phase == Phase::Ready
+                && !view.can_send
+                && view.error.is_none()
+                && !state.controller.task_idle())
         {
             state.record.pending = "running".into();
         } else if state.controller.session_opened()
@@ -2459,6 +3038,33 @@ mod desktop {
             }
         });
         callback!(on_disconnect, disconnect);
+        callback!(on_task_pause, task_action, TaskCommand::Pause);
+        callback!(on_task_stop, task_action, TaskCommand::Stop);
+        callback!(on_task_resume, task_action, TaskCommand::Resume);
+        callback!(on_task_status_requested, task_action, TaskCommand::Status);
+        ui.on_task_budget_edited({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |text| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    if app.global::<Assistant>().get_can_edit_task_budget() {
+                        binding.state.borrow_mut().task_budget_text = text.to_string();
+                    }
+                    binding.refresh(&app);
+                    binding.schedule(&app);
+                }
+            }
+        });
+        ui.on_task_update({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |text| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.task_update(&app, &text);
+                    binding.schedule(&app);
+                }
+            }
+        });
         callback!(on_connect_managed, connect_managed);
         callback!(on_refresh_models, refresh_models);
         ui.on_select_effort({
@@ -2524,14 +3130,31 @@ mod desktop {
             let app = app.as_weak();
             move || {
                 if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
-                    binding.refresh(&app);
-                    if app.global::<Assistant>().get_open() {
-                        let mut state = binding.state.borrow_mut();
-                        if let Err(error) = state.controller.stop() {
-                            state.notice = error.message().into();
-                        }
-                        drop(state);
+                    let (task_turn, frozen_turn) = {
+                        let state = binding.state.borrow();
+                        (
+                            state.controller.is_task_turn(),
+                            state.controller.current_turn_id().map(str::to_owned),
+                        )
+                    };
+                    if task_turn {
+                        // This human action withdraws task permits before IPC is drained.
+                        binding.task_action(&app, TaskCommand::Stop);
+                    } else {
                         binding.refresh(&app);
+                        if app.global::<Assistant>().get_open() {
+                            let mut state = binding.state.borrow_mut();
+                            // A late result or new task must not redirect the old chat stop.
+                            if frozen_turn.is_some()
+                                && state.controller.current_turn_id() == frozen_turn.as_deref()
+                                && !state.controller.is_task_turn()
+                                && let Err(error) = state.controller.stop()
+                            {
+                                state.notice = error.message().into();
+                            }
+                            drop(state);
+                            binding.refresh(&app);
+                        }
                     }
                     binding.schedule(&app);
                 }
@@ -2749,6 +3372,26 @@ mod desktop {
             state.restore_catalog_selection()
         }
         #[test]
+        fn task_budget_preserves_same_policy_input_and_reconfirms_changed_model_cap() {
+            let mut state = new_state(new_record(), Some(1));
+            assert!(apply_catalog(&mut state, effort_catalog(true)));
+            state.sync_task_budget();
+            assert_eq!(state.task_budget_text, "80");
+            state.task_budget_text = "60".into();
+            state.sync_task_budget();
+            assert_eq!(state.task_budget().unwrap(), 60);
+            state.record.selected_effort_id = None;
+            state.catalog.choices[0].policy = json!({"max_turn_credits":30});
+            state.sync_task_budget();
+            assert_eq!(state.task_budget_text, "120");
+            assert!(state.notice.contains("模型或强度已变化"));
+            state.task_budget_text = "29".into();
+            assert!(state.task_budget().is_err());
+            assert_eq!(state.task_budget_text, "29");
+            state.task_budget_text = "9007199254740992".into();
+            assert!(state.task_budget().is_err());
+        }
+        #[test]
         fn approval_refresh_compares_every_frozen_field_not_display_text() {
             let original = FrozenApproval {
                 tool: "flow_update_node".into(),
@@ -2854,6 +3497,7 @@ mod desktop {
                 state.record.pending = pending.into();
                 state.record.runtime_created = true;
                 let original = RequestSnapshot {
+                    task: None,
                     references: Vec::new(),
                     session_id: state.record.id.clone(),
                     model_id: "model-one".into(),

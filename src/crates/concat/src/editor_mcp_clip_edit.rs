@@ -242,6 +242,7 @@ pub(crate) fn plan(
     let tl = active(project, current_timeline)?;
     use ClipEdit::*;
     let command = match edit {
+        ImportLibrary { .. } => return Err(ClipEditError::InvalidInput),
         PlaceMedia {
             media_id,
             track_id,
@@ -758,6 +759,8 @@ pub(crate) struct ClipReceipt {
     pub created_ids: Vec<String>,
     pub removed_ids: Vec<String>,
     pub readback: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<ClipEvidence>,
 }
 
 fn clip_result(tl: &Timeline, c: &Clip) -> ClipResult {
@@ -978,7 +981,7 @@ pub(crate) fn object_value(
     for item in &project.media {
         if namespace == "media" && suffix == item.id {
             return Some(
-                json!({"id":id,"kind":item.kind,"name":item.name,"duration":item.duration,"width":item.width,"height":item.height,"hasAudio":item.has_audio,"audioTracks":item.audio_tracks,"placeholder":item.placeholder,"stateId":digest("clip-object-v1-",item)}),
+                json!({"id":id,"kind":item.kind,"libraryReference":library_reference(item),"name":item.name,"duration":item.duration,"width":item.width,"height":item.height,"hasAudio":item.has_audio,"audioTracks":item.audio_tracks,"placeholder":item.placeholder,"stateId":digest("clip-object-v1-",item)}),
             );
         }
     }
@@ -1086,7 +1089,7 @@ fn related(edit: &ClipEdit) -> Vec<String> {
         | SetKey { clip_id, .. }
         | ClearKey { clip_id, .. }
         | ClearKeys { clip_id, .. } => vec![clip_id.clone()],
-        AddTrack | AddTimeline | Undo | Redo => vec![],
+        ImportLibrary { .. } | AddTrack | AddTimeline | Undo | Redo => vec![],
     }
 }
 #[derive(PartialEq)]
@@ -1166,6 +1169,7 @@ fn projected_receipt(
         document_changed: before != project,
         created_ids,
         removed_ids,
+        evidence: None,
         readback: readback(
             project,
             &changed_ids(before, project),
@@ -1251,6 +1255,12 @@ pub(crate) fn approval_preflight(
     if edit_state_id(studio, &document_state_id(studio.project()))? != action.expected_edit_state_id
     {
         return Err(ClipEditError::StaleContext);
+    }
+    if let ClipEdit::ImportLibrary { asset_id, version } = &action.edit {
+        concat_editor_mcp::validate_library_asset(asset_id, version)
+            .map_err(|_| ClipEditError::InvalidInput)?;
+        active(studio.project(), &action.timeline_id)?;
+        return Ok(());
     }
     match plan(studio.project(), &action.timeline_id, &action.edit)? {
         ClipPlan::Command(command) => {
@@ -1434,9 +1444,251 @@ fn decorate(
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClipEvidence {
+    import_library: ClipImportEvidence,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipImportEvidence {
+    media_id: String,
+    created: bool,
+    deduplicated: bool,
+    kind: concat_project::model::MediaKind,
+    library_reference: serde_json::Value,
+    content_verified: bool,
+}
+
+/// Project only the validated stable reference; arbitrary native extras and
+/// filesystem paths never become model-readable fields, including old data.
+pub(crate) fn library_reference(item: &concat_project::model::MediaItem) -> Option<Value> {
+    controlled_reference(item.extra.get("seecutLibraryReference")?)
+}
+fn controlled_reference(value: &Value) -> Option<Value> {
+    let reference: crate::personal_library::AssetReference =
+        serde_json::from_value(value.clone()).ok()?;
+    let version: concat_editor_mcp::AssetVersion =
+        serde_json::from_value(serde_json::to_value(reference.version?).ok()?).ok()?;
+    concat_editor_mcp::validate_library_asset(&reference.asset_id, &version).ok()?;
+    Some(json!({"assetId":reference.asset_id,"version":version}))
+}
+
+fn imported_media_id(
+    project: &Project,
+    item: &concat_project::commands::NewMedia,
+) -> Result<Option<String>, ClipEditError> {
+    let reference = item
+        .extra
+        .get("seecutLibraryReference")
+        .ok_or(ClipEditError::InvalidInput)?;
+    let mut found = project.media.iter().filter(|m| {
+        m.path == item.path && m.extra.get("seecutLibraryReference") == Some(reference)
+    });
+    let result = found.next();
+    if found.next().is_some() {
+        return Err(ClipEditError::AmbiguousIdentity);
+    }
+    if result.is_some_and(|m| m.kind != item.kind || m.placeholder) {
+        return Err(ClipEditError::InvalidInput);
+    }
+    Ok(result.map(|m| format!("media:{}", m.id)))
+}
+fn import_evidence(
+    edit: &ClipEdit,
+    item: &concat_project::commands::NewMedia,
+    media_id: String,
+    created: bool,
+) -> Result<ClipEvidence, ClipEditError> {
+    let ClipEdit::ImportLibrary { asset_id, version } = edit else {
+        return Err(ClipEditError::InvalidInput);
+    };
+    concat_editor_mcp::validate_library_asset(asset_id, version)
+        .map_err(|_| ClipEditError::InvalidInput)?;
+    let reference = controlled_reference(
+        item.extra
+            .get("seecutLibraryReference")
+            .ok_or(ClipEditError::InvalidInput)?,
+    )
+    .ok_or(ClipEditError::InvalidInput)?;
+    if reference != json!({"assetId":asset_id,"version":version}) {
+        return Err(ClipEditError::InvalidInput);
+    }
+    Ok(ClipEvidence {
+        import_library: ClipImportEvidence {
+            media_id,
+            created,
+            deduplicated: !created,
+            kind: item.kind,
+            library_reference: reference,
+            content_verified: true,
+        },
+    })
+}
+
+/// Trusted prepared-media entry only. The DTO never accepts this native item;
+/// the worker obtained it through the frozen managed version and real probe.
+/// Even a no-op calls the real Session AddMedia once and checks its Outcome.
+pub(crate) fn execute_import(
+    studio: &mut crate::studio::Studio,
+    expected: &ClipBinding<'_>,
+    actual: &ClipIdentity<'_>,
+    edit: &ClipEdit,
+    item: &concat_project::commands::NewMedia,
+    commit: impl FnOnce(&crate::studio::Studio) -> Result<(), ClipEditError>,
+) -> Result<ClipReceipt, ClipEditError> {
+    let (generation, revision, _, busy) = studio.mcp_clip_state();
+    if expected.project_id.is_empty()
+        || expected.document_session_id.is_empty()
+        || expected.project_id.len() > 512
+        || expected.document_session_id.len() > 512
+        || expected.project_id != actual.project_id
+        || expected.document_session_id != actual.document_session_id
+        || expected.generation != generation
+        || studio.session.is_none()
+    {
+        return Err(ClipEditError::WrongProject);
+    }
+    if busy {
+        return Err(ClipEditError::Busy);
+    }
+    if revision != expected.revision {
+        return Err(ClipEditError::StaleRevision);
+    }
+    if studio.mcp_selection_epoch() != expected.selection_revision {
+        return Err(ClipEditError::StaleContext);
+    }
+    validate_identities(studio.project())?;
+    active(studio.project(), expected.timeline_id)?;
+    if edit_state_id(studio, &document_state_id(studio.project()))?
+        != expected.expected_edit_state_id
+    {
+        return Err(ClipEditError::StaleContext);
+    }
+    // Validate all emitted fixed reference fields before any project mutation.
+    import_evidence(edit, item, "media:prepared".into(), false)?;
+    let before = studio.project().clone();
+    let previous_id = imported_media_id(&before, item)?;
+    let command = Command::AddMedia { item: item.clone() };
+    let (mut staged, applied) = preflight(&before, &command, |id| studio.locked(id))?;
+    let staged_id = imported_media_id(&staged, item)?.ok_or(ClipEditError::CommitFailed)?;
+    if applied == previous_id.is_some() {
+        return Err(ClipEditError::CommitFailed);
+    }
+    let next_revision = revision
+        .checked_add(u64::from(applied))
+        .ok_or(ClipEditError::InvalidInput)?;
+    let clips = selected(studio);
+    let media = selected_media(studio);
+    let mut preview = projected_receipt(
+        &before,
+        &staged,
+        ReceiptContext {
+            identity: actual,
+            generation,
+            revision: next_revision,
+            applied,
+            can_undo: false,
+            can_redo: false,
+        },
+    );
+    preview.source_revision = revision;
+    preview.source_edit_state_id = expected.expected_edit_state_id.into();
+    preview.selection_revision = u64::MAX;
+    preview.selected_object_ids = clips.clone();
+    preview.edit = serde_json::to_value(edit).map_err(|_| ClipEditError::InvalidInput)?;
+    preview.readback = readback(
+        &staged,
+        std::slice::from_ref(&staged_id),
+        clips,
+        media,
+        false,
+        false,
+        |id| studio.locked(id),
+    );
+    preview.evidence = Some(import_evidence(edit, item, staged_id.clone(), applied)?);
+    receipt_budget(&preview)?;
+    let outcome = commit_prepared(studio, commit, |studio| {
+        studio
+            .mcp_clip_apply(command)
+            .map_err(|_| ClipEditError::NativeRejected)
+    })?;
+    if outcome.applied != applied
+        || studio.mcp_clip_state().0 != generation
+        || studio.mcp_clip_state().1 != next_revision
+    {
+        return Err(ClipEditError::CommitFailed);
+    }
+    let media_id = imported_media_id(studio.project(), item)?.ok_or(ClipEditError::CommitFailed)?;
+    if applied {
+        let minted = outcome.created_id.ok_or(ClipEditError::CommitFailed)?;
+        if media_id != format!("media:{minted}") {
+            return Err(ClipEditError::CommitFailed);
+        }
+        let prepared_id = native(&staged_id, "media")?;
+        let staged_media = staged
+            .media
+            .iter_mut()
+            .find(|m| m.id == prepared_id)
+            .ok_or(ClipEditError::CommitFailed)?;
+        staged_media.id = minted;
+    } else if outcome.created_id.is_some() || previous_id.as_ref() != Some(&media_id) {
+        return Err(ClipEditError::CommitFailed);
+    }
+    if &staged != studio.project() {
+        return Err(ClipEditError::CommitFailed);
+    }
+    if applied {
+        studio.sync_mcp_selection();
+    }
+    let mut result = receipt(&before, studio, actual, applied);
+    let state = state(studio, std::slice::from_ref(&media_id))?;
+    result.source_revision = revision;
+    result.source_edit_state_id = expected.expected_edit_state_id.into();
+    result.edit_state_id = state["editStateId"]
+        .as_str()
+        .ok_or(ClipEditError::CommitFailed)?
+        .into();
+    result.selection_revision = studio.mcp_selection_epoch();
+    result.selected_object_ids = selected(studio);
+    result.edit = serde_json::to_value(edit).map_err(|_| ClipEditError::InvalidInput)?;
+    result.readback = state["readback"].clone();
+    result.evidence = Some(import_evidence(edit, item, media_id, applied)?);
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn media_library_reference_projects_only_bounded_fixed_identity() {
+        let mut project = editor().project().clone();
+        let good = json!({"asset_id":"asset-1","version":{"sha256":"a".repeat(64),"registration_id":"registered-output"},"privatePath":"/must-not-be-exported"});
+        project.media[0]
+            .extra
+            .insert("seecutLibraryReference".into(), good);
+        let value = object_value(&project, "media:m1", |_| false).unwrap();
+        assert_eq!(
+            value["libraryReference"],
+            json!({"assetId":"asset-1","version":{"sha256":"a".repeat(64),"registration_id":"registered-output"}})
+        );
+        assert!(!value.to_string().contains("/must-not-be-exported"));
+        for invalid in [
+            json!({"asset_id":"../path","version":{"sha256":"a".repeat(64),"registration_id":"registered"}}),
+            json!({"asset_id":"asset-1","version":{"sha256":"a".repeat(64),"registration_id":"r".repeat(513)}}),
+            json!({"asset_id":"asset-1","version":null}),
+            json!({"asset_id":"asset-1","version":{"sha256":"invalid","registration_id":"registered"}}),
+        ] {
+            project.media[0]
+                .extra
+                .insert("seecutLibraryReference".into(), invalid);
+            assert!(
+                object_value(&project, "media:m1", |_| false).unwrap()["libraryReference"]
+                    .is_null()
+            );
+        }
+    }
+
     use concat_project::Editor;
     use concat_project::model::{MediaItem, MediaKind};
 

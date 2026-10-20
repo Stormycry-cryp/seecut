@@ -211,6 +211,25 @@ pub(super) fn execute_canvas(
         generation: studio.canvas.mcp_state().0,
         binding_epoch: studio.canvas.mcp_binding_epoch(),
     };
+    if matches!(&parameters.action, CanvasAction::Export) {
+        let capture = library_assets::output_origin(&studio.editor_mcp.borrow());
+        let accepted = studio
+            .editor_mcp
+            .borrow_mut()
+            .canvas_receipts
+            .capture_export_origin(&scope, &request.client_id, parameters, capture);
+        if !accepted {
+            let response = origin.response("resourceLimit", json!({}));
+            origin.finish(studio, response.clone());
+            let _ = studio.editor_mcp.borrow_mut().writes.finish(
+                &scope,
+                &key,
+                response.clone(),
+                Instant::now(),
+            );
+            return (response, false);
+        }
+    }
     let (response, changed) = match origin.current(studio, app) {
         Err(response) => (response, false),
         Ok(()) => match &parameters.action {
@@ -505,6 +524,11 @@ pub(super) fn dispatch_library(job: LibraryJob) -> Response {
                 && a.version.is_some()
                 && query.asset_id.as_ref().is_none_or(|id| id == &a.id)
                 && a.name.to_lowercase().contains(&search)
+                && match &job.authority {
+                    LibraryAuthority::Exact(_) => true,
+                    LibraryAuthority::OwnedOutput(proof) => library_assets::fixed_version(a)
+                        .is_some_and(|version| proof.matches_asset(&a.id, &version)),
+                }
         }) {
             let offset = total;
             total = bounded_object_count(total, 1).map_err(|_| "resourceLimit")?;
@@ -531,17 +555,7 @@ pub(super) fn dispatch_library(job: LibraryJob) -> Response {
         let Ok(studio) = shell.studio.try_borrow() else {
             return false;
         };
-        let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
-            return false;
-        };
-        let Some((kind, ids)) = bridge.active_ids(&studio, &app) else {
-            return false;
-        };
-        kind == "canvas"
-            && job.request.project_id.as_deref() == Some(ids.project.as_str())
-            && job.request.document_session_id.as_deref() == Some(ids.session.as_str())
-            && bridge.authorized(&job.request, &ids.project, true)
-            && bridge.canvas_permits.valid(&job.permit, Instant::now())
+        library_assets::library_job_current(&job, &studio, &app)
     });
     if !matches!(stable, Ok(true)) {
         return Response::error("notAuthorized");

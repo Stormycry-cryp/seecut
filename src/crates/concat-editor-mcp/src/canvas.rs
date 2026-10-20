@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "stdio", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// Immutable identity of the exact managed image bytes.
+/// Immutable identity of the exact managed media bytes.
 pub struct AssetVersion {
     /// Lowercase SHA256 of the managed content.
     pub sha256: String,

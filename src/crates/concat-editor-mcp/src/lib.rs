@@ -7,6 +7,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod library_assets;
+pub use library_assets::{LibraryAssetKind, LibraryAssetsQuery, validate_library_asset};
 mod canvas;
 mod clip;
 pub mod clip_edit;
@@ -82,6 +84,9 @@ pub struct Request {
     /// Bounded global-library image query.
     pub library_query: Option<LibraryQuery>,
     #[serde(default)]
+    /// Bounded metadata-only personal-library query across the three media kinds.
+    pub library_assets_query: Option<LibraryAssetsQuery>,
+    #[serde(default)]
     /// Owner-only original-operation query.
     pub operation_query: Option<OperationQuery>,
     #[serde(default)]
@@ -127,6 +132,8 @@ pub enum Method {
     MoveSelectedImage,
     /// Read versioned images in the existing global library.
     LibraryImages,
+    /// Read bounded local image, video and audio metadata without hashing content.
+    LibraryAssets,
     /// Insert one explicitly approved library image version.
     InsertLibraryImage,
     /// Set bounded position and scale of the selected canvas layer.
@@ -178,6 +185,7 @@ impl Method {
             Self::Preview => "preview",
             Self::MoveSelectedImage => "move_selected_image",
             Self::LibraryImages => "library_images",
+            Self::LibraryAssets => "library_assets",
             Self::InsertLibraryImage => "insert_library_image",
             Self::TransformCanvasLayer => "transform_canvas_layer",
             Self::CanvasEdit => "canvas_edit",
@@ -251,6 +259,9 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if request.library_assets_query.is_some() || request.method == Method::LibraryAssets {
+        return library_assets::validate_request(request);
+    }
     if request.clip_parameters.is_some()
         || matches!(request.method, Method::ClipEdit | Method::ClipOperation)
     {
@@ -697,6 +708,7 @@ mod tests {
             clip_parameters: None,
             object_ids: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
@@ -987,6 +999,7 @@ mod tests {
             clip_parameters: None,
             object_ids: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
@@ -1023,6 +1036,7 @@ mod tests {
             clip_parameters: None,
             object_ids: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
