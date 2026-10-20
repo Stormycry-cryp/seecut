@@ -80,7 +80,6 @@ pub enum AssistantPermission {
     GrantRead,
     RevokeRead,
     GrantWrite,
-    RenewWrite,
     RevokeWrite,
 }
 
@@ -112,7 +111,6 @@ pub struct AssistantSnapshot {
     pub can_grant_read: bool,
     pub can_revoke_read: bool,
     pub can_grant_write: bool,
-    pub can_renew_write: bool,
     pub can_revoke_write: bool,
 }
 
@@ -149,16 +147,14 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
     let mut active = false;
     let mut expired = false;
     let mut conflict = false;
-    let mut minutes = 0;
     match writes.lease_status(now) {
         LeaseStatus::Active {
             scope: lease_scope,
             client,
-            remaining_minutes,
+            ..
         } if Some(lease_scope) == scope => {
             active = client == ASSISTANT_CLIENT_ID;
             conflict = !active;
-            minutes = remaining_minutes;
         }
         LeaseStatus::Expired {
             scope: lease_scope,
@@ -169,7 +165,7 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
         }
         _ => {}
     }
-    let writable = scope.is_some() && canvas && read_ready && write_ready;
+    let writable = scope.is_some() && canvas && write_ready;
     AssistantSnapshot {
         document: scope.map(|scope| crate::agent_identity::DocumentIdentity {
             instance_id: scope.instance.clone(),
@@ -207,9 +203,9 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
         } else if !read_ready {
             "请先允许读取与预览".into()
         } else if active {
-            format!("已允许编辑 · 剩余{minutes}分钟")
+            "允许页面操作 · 当前会话有效".into()
         } else if expired {
-            "编辑权限已到期，请续期后重新连接".into()
+            "请重新选择页面操作权限".into()
         } else if !write_ready {
             "当前画布暂不可编辑".into()
         } else {
@@ -217,8 +213,7 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
         },
         can_grant_read: scope.is_some(),
         can_revoke_read: grant.is_some(),
-        can_grant_write: writable && !active && !expired && !conflict,
-        can_renew_write: writable && (active || expired),
+        can_grant_write: writable && !active && !conflict,
         can_revoke_write: canvas && (active || expired),
     }
 }
@@ -238,7 +233,7 @@ fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
     writes: &mut WriteRegistry<P, R>,
     write_token: &mut String,
     action: AssistantPermission,
-    fresh_token: impl FnOnce() -> String,
+    mut fresh_token: impl FnMut() -> String,
 ) -> Option<AssistantWriteChange> {
     let AssistantPermissionContext {
         scope,
@@ -262,7 +257,6 @@ fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
         AssistantPermission::GrantRead => snapshot.can_grant_read,
         AssistantPermission::RevokeRead => snapshot.can_revoke_read,
         AssistantPermission::GrantWrite => snapshot.can_grant_write,
-        AssistantPermission::RenewWrite => snapshot.can_renew_write,
         AssistantPermission::RevokeWrite => snapshot.can_revoke_write,
     };
     if !allowed {
@@ -271,15 +265,28 @@ fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
     let scope = scope?;
     match action {
         AssistantPermission::GrantRead => {
-            grants.insert(
-                ASSISTANT_CLIENT_ID.into(),
-                Grant {
-                    token: fresh_token(),
-                    project: scope.project.clone(),
-                    media: true,
-                },
-            );
-            Some(AssistantWriteChange::None)
+            if !grants
+                .get(ASSISTANT_CLIENT_ID)
+                .is_some_and(|g| g.project == scope.project && g.media)
+            {
+                grants.insert(
+                    ASSISTANT_CLIENT_ID.into(),
+                    Grant {
+                        token: fresh_token(),
+                        project: scope.project.clone(),
+                        media: true,
+                    },
+                );
+            }
+            // Switching to read retains its credential and live connection, but
+            // immediately withdraws write authority and invalidates old tokens.
+            if snapshot.can_revoke_write {
+                writes.revoke();
+                write_token.clear();
+                Some(AssistantWriteChange::Revoked)
+            } else {
+                Some(AssistantWriteChange::None)
+            }
         }
         AssistantPermission::RevokeRead => {
             grants.remove(ASSISTANT_CLIENT_ID);
@@ -291,15 +298,24 @@ fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
                 Some(AssistantWriteChange::None)
             }
         }
-        AssistantPermission::GrantWrite | AssistantPermission::RenewWrite => {
+        AssistantPermission::GrantWrite => {
             let token = fresh_token();
-            let result = match action {
-                AssistantPermission::GrantWrite => {
-                    writes.trusted_grant(scope, ASSISTANT_CLIENT_ID, token.clone(), now)
-                }
-                _ => writes.trusted_renew(scope, ASSISTANT_CLIENT_ID, token.clone(), now),
-            };
-            result.ok()?;
+            writes
+                .trusted_grant_session(scope, ASSISTANT_CLIENT_ID, token.clone(), now)
+                .ok()?;
+            if !grants
+                .get(ASSISTANT_CLIENT_ID)
+                .is_some_and(|g| g.project == scope.project && g.media)
+            {
+                grants.insert(
+                    ASSISTANT_CLIENT_ID.into(),
+                    Grant {
+                        token: fresh_token(),
+                        project: scope.project.clone(),
+                        media: true,
+                    },
+                );
+            }
             *write_token = token;
             Some(AssistantWriteChange::Issued)
         }
@@ -598,6 +614,7 @@ pub(crate) struct BridgeUi {
     write_token: String,
     write_message: String,
     write_revoked: bool,
+    assistant_session: Option<String>,
     write_timer: slint::Timer,
 }
 
@@ -675,14 +692,14 @@ impl BridgeUi {
             .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
         if matches!(
             action,
-            AssistantPermission::RevokeRead | AssistantPermission::RevokeWrite
+            AssistantPermission::GrantRead
+                | AssistantPermission::RevokeRead
+                | AssistantPermission::RevokeWrite
         ) {
             self.canvas_permits.clear();
+            crate::toonflow_agent::revoke_all();
         }
-        let ready = if matches!(
-            action,
-            AssistantPermission::GrantWrite | AssistantPermission::RenewWrite
-        ) {
+        let ready = if matches!(action, AssistantPermission::GrantWrite) {
             self.grant_ready(studio, app)
                 .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
             true
@@ -706,7 +723,7 @@ impl BridgeUi {
             Some(AssistantWriteChange::Issued) => {
                 self.write_revoked = false;
                 self.write_message.clear();
-                self.refresh_write_minutes();
+                self.write_timer.stop();
             }
             Some(AssistantWriteChange::Revoked) => {
                 self.write_revoked = true;
@@ -864,6 +881,7 @@ impl BridgeUi {
             write_token: String::new(),
             write_message: String::new(),
             write_revoked: false,
+            assistant_session: None,
             write_timer: slint::Timer::default(),
         }
     }
@@ -1058,7 +1076,7 @@ impl BridgeUi {
         let result = (|| {
             let scope = self.grant_ready(studio, app)?;
             let client = self.client_draft.trim();
-            if client.is_empty() || client.len() > 64 {
+            if client.is_empty() || client.len() > 64 || client == ASSISTANT_CLIENT_ID {
                 return Err(t("Enter a client ID (up to 64 bytes)"));
             }
             let token = uuid::Uuid::new_v4().to_string();
@@ -1084,6 +1102,9 @@ impl BridgeUi {
                 }
                 LeaseStatus::Unauthorized => return Err(t("No edit grant")),
             };
+            if client == ASSISTANT_CLIENT_ID {
+                return Err("请在 Agent 中选择权限".into());
+            }
             let token = uuid::Uuid::new_v4().to_string();
             self.writes
                 .trusted_renew(&scope, &client, token.clone(), Instant::now())
@@ -1096,7 +1117,17 @@ impl BridgeUi {
         self.write_message = result.err().unwrap_or_default();
     }
 
+    pub(crate) fn bind_assistant_session(&mut self, session: Option<String>) {
+        if self.assistant_session != session {
+            self.revoke_assistant_for_account_change();
+            self.assistant_session = session;
+        }
+    }
+
     pub(crate) fn revoke_assistant_for_account_change(&mut self) {
+        self.assistant_session = None;
+        self.canvas_permits.clear();
+        crate::toonflow_agent::revoke_all();
         self.grants.remove(ASSISTANT_CLIENT_ID);
         let owned = matches!(self.writes.lease_status(Instant::now()),
             LeaseStatus::Active { client, .. } | LeaseStatus::Expired { client, .. }
@@ -1107,6 +1138,7 @@ impl BridgeUi {
     }
 
     pub(crate) fn revoke_move(&mut self) {
+        crate::toonflow_agent::revoke_all();
         self.canvas_permits.clear();
         self.writes.revoke();
         self.write_token.clear();
@@ -1143,7 +1175,7 @@ impl BridgeUi {
             None
         };
         let draft = self.client_draft.trim();
-        let draft_valid = !draft.is_empty() && draft.len() <= 64;
+        let draft_valid = !draft.is_empty() && draft.len() <= 64 && draft != ASSISTANT_CLIENT_ID;
         let (client, status, can_grant, can_renew, can_revoke, token) =
             match self.current_lease_status(Instant::now()) {
                 LeaseStatus::Unauthorized => (
@@ -1164,7 +1196,9 @@ impl BridgeUi {
                     ..
                 } => (
                     client.to_owned(),
-                    tf("Granted · {0} min remaining", &[&remaining_minutes]),
+                    remaining_minutes
+                        .map(|minutes| tf("Granted · {0} min remaining", &[&minutes]))
+                        .unwrap_or_else(|| "允许页面操作 · 当前会话有效".into()),
                     false,
                     true,
                     true,
@@ -1216,12 +1250,12 @@ impl BridgeUi {
             } else {
                 String::new()
             },
-            client,
+            client: client.clone(),
             status,
             reason,
             token,
             can_grant: can_grant && ready_reason.is_none(),
-            can_renew: can_renew && ready_reason.is_none(),
+            can_renew: can_renew && client != ASSISTANT_CLIENT_ID && ready_reason.is_none(),
             can_revoke,
         }
     }
@@ -1230,7 +1264,7 @@ impl BridgeUi {
     /// active project. Regranting rotates its token; revoke deletes it.
     pub fn grant(&mut self, studio: &Studio, app: &App, media: bool) {
         let client = self.client_draft.trim();
-        if client.is_empty() || client.len() > 64 {
+        if client.is_empty() || client.len() > 64 || client == ASSISTANT_CLIENT_ID {
             return;
         }
         let client = client.to_owned();
@@ -1317,7 +1351,7 @@ impl BridgeUi {
                     && scope.project == ids.project =>
                 {
                     granted.push("E");
-                    Some(remaining_minutes)
+                    remaining_minutes
                 }
                 _ => None,
             };
@@ -1326,7 +1360,8 @@ impl BridgeUi {
                 "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "insert_library_image", "transform_canvas_layer", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
                 "namedToolApprovalRequired":["library_images","insert_library_image","transform_canvas_layer","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
                 "permissions": ["R", "M", "E"], "readOnly": false,
-                "writeAction": "moveSelectedImage", "writeLeaseSeconds": 300,
+                "writeAction": "moveSelectedImage", "writeLeaseSeconds": if request.client_id == ASSISTANT_CLIENT_ID {None} else {Some(300)},
+                "writeLifetime": if request.client_id == ASSISTANT_CLIENT_ID {"agentSession"} else {"deadline"},
                 "writeWorkspace": kind, "maxMoveDelta": 32768, "maxMovePosition": 1_000_000,
                 "writeAuthorization": "trustedUI", "writeTokenEnvironment": "SEECUT_MCP_WRITE_TOKEN",
                 "writeGrantRequired": true, "grantedPermissions": granted, "editLeaseRemainingMinutes": edit_minutes,
@@ -2151,11 +2186,10 @@ mod assistant_permission_tests {
             let mut token = "external-write".to_owned();
             let view = snapshot(&scope, &grants, &writes, &token, at);
             assert!(view.write_token.is_none());
-            assert!(!view.can_grant_write && !view.can_renew_write && !view.can_revoke_write);
+            assert!(!view.can_grant_write && !view.can_revoke_write);
             assert!(view.write_status == "编辑权限由其他客户端持有");
             for action in [
                 AssistantPermission::GrantWrite,
-                AssistantPermission::RenewWrite,
                 AssistantPermission::RevokeWrite,
             ] {
                 assert!(
@@ -2220,160 +2254,121 @@ mod assistant_permission_tests {
     }
 
     #[test]
-    fn assistant_expiry_withholds_token_and_explicit_renew_rotates_it() {
+    fn assistant_session_grant_survives_old_deadline_and_downgrade_preserves_read() {
         let scope = scope();
         let now = Instant::now();
         let mut writes = Registry::new();
         writes.bind_scope(Some(scope.clone()));
-        writes
-            .trusted_grant(&scope, ASSISTANT_CLIENT_ID, "old-write".into(), now)
-            .unwrap();
         let mut grants = reader(&scope, true);
-        let mut token = "old-write".to_owned();
-        let at = now + LEASE_DURATION;
-        let view = snapshot(&scope, &grants, &writes, &token, at);
-        assert!(view.write_token.is_none());
-        assert!(!view.can_grant_write && view.can_renew_write && view.can_revoke_write);
-        assert!(view.write_status == "编辑权限已到期，请续期后重新连接");
-        assert!(
-            assistant_registry_permission(
-                AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: true,
-                    now: at
-                },
-                &mut grants,
-                &mut writes,
-                &mut token,
-                AssistantPermission::RenewWrite,
-                || "new-write".into()
-            )
-            .is_some()
-        );
-        assert!(
-            writes.authorize(&scope, &scope, ASSISTANT_CLIENT_ID, "old-write", at)
-                == Err(RegistryError::Unauthorized)
-        );
-        assert!(
-            writes
-                .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, &token, at)
-                .is_ok()
-        );
-        assert!(
-            snapshot(&scope, &grants, &writes, &token, at)
-                .write_token
-                .as_deref()
-                == Some("new-write")
-        );
-        assert!(
-            assistant_registry_permission(
-                AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: false,
-                    now: at
-                },
-                &mut grants,
-                &mut writes,
-                &mut token,
-                AssistantPermission::RevokeRead,
-                || panic!("revoke must not issue credentials")
-            )
-            .is_some()
-        );
-        assert!(token.is_empty());
-        assert!(matches!(writes.lease_status(at), LeaseStatus::Unauthorized));
-    }
-
-    #[test]
-    fn read_only_is_not_preview_or_editing_and_grants_are_separate() {
-        let scope = scope();
-        let now = Instant::now();
-        let mut writes = Registry::new();
-        writes.bind_scope(Some(scope.clone()));
-        let mut grants = reader(&scope, false);
         let mut token = String::new();
-        let view = snapshot(&scope, &grants, &writes, &token, now);
-        assert!(view.read_token.is_none() && !view.can_grant_write && view.can_revoke_read);
+        let context = AssistantPermissionContext {
+            scope: Some(&scope),
+            canvas: true,
+            write_ready: true,
+            now,
+        };
         assert!(
             assistant_registry_permission(
-                AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: true,
-                    now
-                },
+                context,
                 &mut grants,
                 &mut writes,
                 &mut token,
                 AssistantPermission::GrantWrite,
-                || panic!("R alone must not obtain E")
+                || "session-write".into()
             )
-            .is_none()
+            .is_some()
+        );
+        let read = grants[ASSISTANT_CLIENT_ID].token.clone();
+        let later = now + Duration::from_secs(12 * 3600);
+        assert!(
+            writes
+                .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, &token, later)
+                .is_ok()
+        );
+        assert_eq!(
+            snapshot(&scope, &grants, &writes, &token, later)
+                .write_token
+                .as_deref(),
+            Some("session-write")
         );
         assert!(
             assistant_registry_permission(
                 AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: true,
-                    now
+                    now: later,
+                    ..context
                 },
                 &mut grants,
                 &mut writes,
                 &mut token,
                 AssistantPermission::GrantRead,
-                || "full-read".into()
+                || panic!("downgrade must preserve read token")
             )
             .is_some()
         );
-        assert!(matches!(
-            writes.lease_status(now),
-            LeaseStatus::Unauthorized
-        ));
+        assert_eq!(grants[ASSISTANT_CLIENT_ID].token, read);
         assert!(token.is_empty());
         assert!(
+            writes
+                .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, "session-write", later)
+                .is_err()
+        );
+        assert!(
+            snapshot(&scope, &grants, &writes, &token, later)
+                .write_token
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn operate_mode_includes_read_but_still_requires_writable_scope() {
+        let scope = scope();
+        let now = Instant::now();
+        let mut writes = Registry::new();
+        writes.bind_scope(Some(scope.clone()));
+        let mut grants = HashMap::new();
+        let mut token = String::new();
+        let context = AssistantPermissionContext {
+            scope: Some(&scope),
+            canvas: true,
+            write_ready: false,
+            now,
+        };
+        assert!(
             assistant_registry_permission(
-                AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: false,
-                    now
-                },
+                context,
                 &mut grants,
                 &mut writes,
                 &mut token,
                 AssistantPermission::GrantWrite,
-                || panic!("busy or owner failure must deny E")
+                || panic!("unready must not issue credentials")
             )
             .is_none()
         );
+        let mut issued = 0;
         assert!(
             assistant_registry_permission(
                 AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
                     write_ready: true,
-                    now
+                    ..context
                 },
                 &mut grants,
                 &mut writes,
                 &mut token,
                 AssistantPermission::GrantWrite,
-                || "first-write".into()
+                || {
+                    issued += 1;
+                    format!("token-{issued}")
+                }
             )
             .is_some()
         );
+        assert_eq!(issued, 2);
+        assert!(grants[ASSISTANT_CLIENT_ID].media);
+        assert_ne!(grants[ASSISTANT_CLIENT_ID].token, token);
         assert!(
             writes
                 .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, &token, now)
                 .is_ok()
-        );
-        assert!(
-            grants
-                .get(ASSISTANT_CLIENT_ID)
-                .is_some_and(|grant| grant.token == "full-read")
         );
     }
 
@@ -2405,7 +2400,6 @@ mod assistant_permission_tests {
             !view.can_grant_read
                 && !view.can_revoke_read
                 && !view.can_grant_write
-                && !view.can_renew_write
                 && !view.can_revoke_write
         );
         let next = Scope {
@@ -2436,7 +2430,7 @@ mod assistant_permission_tests {
             "write",
         );
         assert!(clip.read_token.is_some() && clip.write_token.is_none());
-        assert!(!clip.can_grant_write && !clip.can_renew_write && !clip.can_revoke_write);
+        assert!(!clip.can_grant_write && !clip.can_revoke_write);
         assert!(clip.project_name == "剪辑工程" && clip.write_status == "当前工程不支持编辑");
     }
 }
@@ -2445,6 +2439,58 @@ mod assistant_permission_tests {
 mod tests {
     use super::*;
 
+    #[test]
+    fn assistant_conversation_lifecycle_revokes_without_inheritance() {
+        let mut bridge = BridgeUi::new();
+        let ids = bridge.ids("canvas", "test".into());
+        let scope = bridge.scope(&ids);
+        let now = Instant::now();
+        bridge.writes.bind_scope(Some(scope.clone()));
+        bridge.bind_assistant_session(Some("account:1:conversation-a".into()));
+        bridge.grants.insert(
+            ASSISTANT_CLIENT_ID.into(),
+            Grant {
+                token: "read".into(),
+                project: scope.project.clone(),
+                media: true,
+            },
+        );
+        bridge
+            .writes
+            .trusted_grant_session(&scope, ASSISTANT_CLIENT_ID, "write".into(), now)
+            .unwrap();
+        bridge.write_token = "write".into();
+        // Reconnecting the same conversation does not rotate or revoke it.
+        bridge.bind_assistant_session(Some("account:1:conversation-a".into()));
+        assert!(
+            bridge
+                .writes
+                .authorize(
+                    &scope,
+                    &scope,
+                    ASSISTANT_CLIENT_ID,
+                    "write",
+                    now + Duration::from_secs(301)
+                )
+                .is_ok()
+        );
+        for owner in [
+            Some("account:1:conversation-b"),
+            Some("account:1:conversation-a"),
+            Some("account:2:conversation-a"),
+            None,
+        ] {
+            bridge.bind_assistant_session(owner.map(str::to_owned));
+            assert!(!bridge.grants.contains_key(ASSISTANT_CLIENT_ID));
+            assert!(bridge.write_token.is_empty());
+            assert!(
+                bridge
+                    .writes
+                    .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, "write", now)
+                    .is_err()
+            );
+        }
+    }
     #[test]
     fn retired_flow_requests_are_rejected_before_ui_dispatch() {
         for method in [Method::FlowRead, Method::FlowWrite] {

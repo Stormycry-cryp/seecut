@@ -462,7 +462,6 @@ export component AssistantPanel inherits Rectangle {
     in property <bool> can-grant-read;
     in property <bool> can-revoke-read;
     in property <bool> can-grant-write;
-    in property <bool> can-renew-write;
     in property <bool> can-revoke-write;
     in property <string> read-permission-status;
     in property <string> write-permission-status;
@@ -509,7 +508,6 @@ export component AssistantPanel inherits Rectangle {
     callback grant-read();
     callback revoke-read();
     callback grant-write();
-    callback renew-write();
     callback revoke-write();
     callback allow();
     callback reject();
@@ -528,9 +526,8 @@ export component AssistantPanel inherits Rectangle {
     function choose-permission(action: int) {
         permissions.close();
         if action == 0 { root.sign-in(); }
-        else if action == 1 { if root.read-granted { root.revoke-read(); } else { root.grant-read(); } }
-        else if action == 2 { if root.can-renew-write { root.renew-write(); } else { root.grant-write(); } }
-        else if action == 3 { root.revoke-write(); }
+        else if action == 1 { root.grant-read(); }
+        else if action == 2 { root.grant-write(); }
         else if action == 4 { if root.connected { root.disconnect(); } else { root.connect-managed(); } }
         else if action == 5 { root.refresh-models(); }
     }
@@ -753,31 +750,10 @@ export component AssistantPanel inherits Rectangle {
                         viewport-width: self.width; horizontal-scrollbar-policy: always-off;
                         detail-text := AssistantText { width: detail-scroll.visible-width; text: root.approval-details; font-size: 12px; color: Theme.fg-muted; }
                     }
-                    AssistantText { text: "确认等待计入本轮 120 秒时限；编辑授权另有 5 分钟期限。授权到期后请续期、重新连接并确认新操作。"; font-size: 11px; color: Theme.fg-dim; }
+                    AssistantText { text: "确认等待计入本轮 120 秒时限。页面操作授权在当前会话有效；切回允许读取会撤销旧确认。"; font-size: 11px; color: Theme.fg-dim; }
                 }
                 if root.settings-open: VerticalLayout {
                     spacing: 12px;
-                    VerticalLayout {
-                        spacing: 4px;
-                        if root.read-permission-status != "": AssistantText { text: root.read-permission-status; color: Theme.fg-muted; }
-                        AppButton {
-                            label: root.read-granted ? "撤销读取与预览" : "允许读取与预览";
-                            enabled: root.active && (root.read-granted ? root.can-revoke-read : root.can-grant-read);
-                            height: 36px;
-                            clicked => { if root.read-granted { root.revoke-read(); } else { root.grant-read(); } }
-                        }
-                        if root.write-permission-status != "": AssistantText { text: root.write-permission-status; color: Theme.fg-muted; }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            AppButton {
-                                label: root.can-renew-write ? "续期 · 5分钟" : "允许编辑 · 5分钟";
-                                enabled: root.active && (root.can-renew-write || root.can-grant-write);
-                                height: 36px;
-                                clicked => { if root.can-renew-write { root.renew-write(); } else { root.grant-write(); } }
-                            }
-                            if root.can-revoke-write: AppButton { label: "撤销"; accessible-name: "撤销编辑权限"; enabled: root.active && (root.can-revoke-write); height: 36px; clicked => { root.revoke-write(); } }
-                        }
-                    }
                     if !root.developer-tools: VerticalLayout {
                         spacing: 8px;
                         AssistantText { text: root.connection; color: Theme.fg-muted; }
@@ -911,20 +887,19 @@ export component AssistantPanel inherits Rectangle {
                         clicked => { permissions.show(); }
                         permissions := PopupWindow {
                             close-policy: close-on-click-outside;
-                            x: 0px; y: -self.height - 8px; width: 258px; height: root.signed-in ? 202px : 52px;
+                            x: 0px; y: -self.height - 8px; width: 258px; height: root.signed-in ? 170px : 52px;
                             Rectangle {
                                 background: Theme.panel; border-radius: 12px; border-width: 1px; border-color: Theme.line;
                                 VerticalLayout {
                                     padding: 8px; spacing: 4px; alignment: start;
                                     if !root.signed-in: AgentMenuAction { text: "登录账户"; glyph: Glyph.lock; clicked => { root.choose-permission(0); } }
-                                    if root.signed-in: AgentMenuAction { text: root.read-granted ? "撤销读取与预览" : "允许读取与预览"; glyph: Glyph.eye;
-                                        enabled: root.active && (root.read-granted ? root.can-revoke-read : root.can-grant-read);
+                                    if root.signed-in: AgentMenuAction { text: "允许读取"; glyph: root.read-granted && !root.write-granted ? Glyph.check : Glyph.eye;
+                                        enabled: root.active && root.can-grant-read;
                                         clicked => { root.choose-permission(1); } }
-                                    if root.signed-in: AgentMenuAction { text: root.can-renew-write ? "续期页面操作 · 5分钟" : "允许页面操作 · 5分钟"; glyph: Glyph.unlock;
-                                        enabled: root.active && (root.can-renew-write || root.can-grant-write);
+                                    if root.signed-in: AgentMenuAction { text: "允许页面操作"; glyph: root.write-granted ? Glyph.check : Glyph.unlock;
+                                        enabled: root.active && root.can-grant-write;
                                         clicked => { root.choose-permission(2); } }
-                                    if root.signed-in: AgentMenuAction { text: "撤销页面操作权限"; glyph: Glyph.lock; enabled: root.can-revoke-write;
-                                        clicked => { root.choose-permission(3); } }
+                                    if root.signed-in: Rectangle { height: 1px; background: Theme.line; }
                                     if root.signed-in: AgentMenuAction { text: root.connect-label; glyph: root.connected ? Glyph.close : Glyph.play;
                                         enabled: root.active && (root.connected ? root.can-disconnect : root.can-connect) && !root.connecting;
                                         clicked => { root.choose-permission(4); } }

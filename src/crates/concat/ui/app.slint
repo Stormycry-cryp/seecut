@@ -102,6 +102,7 @@ export component App inherits Window {
     out property <float> flow-overlay-y: assistant-panel.absolute-position.y / 1px;
     out property <float> flow-overlay-width: assistant-panel.width / 1px;
     out property <float> flow-overlay-height: assistant-panel.height / 1px;
+    out property <float> flow-overlay-radius: assistant-panel.surface-radius / 1px;
     out property <bool> flow-overlay-visible: Assistant.enabled && !root.assistant-ui-blocked;
     in property <string> flow-host-error;
     in property <string> flow-close-error;
@@ -1295,6 +1296,7 @@ export component App inherits Window {
     assistant-panel := AssistantFloating {
         room-width: root.width;
         room-height: root.height;
+        over-webview: root.macos && root.flow-host-active;
         animations-active: !root.minimized && Assistant.window-visible && Assistant.window-focused;
         visible: Assistant.enabled;
         enabled: !root.assistant-ui-blocked;

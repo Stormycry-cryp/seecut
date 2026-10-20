@@ -129,20 +129,18 @@ mod desktop {
             }
         }
     }
-    fn lease_change_notice(old: &Lease, next: &Lease, can_renew: bool) -> &'static str {
+    fn lease_change_notice(old: &Lease, next: &Lease) -> &'static str {
         if old.document != next.document {
             return "工程已变化，请重新连接；旧确认不再有效";
         }
-        if old.write != next.write {
-            if next.write.is_some() {
-                return "编辑授权已更新，连接已断开；请重新连接并确认新操作";
-            }
-            if can_renew {
-                return "编辑授权已到期，连接已断开；请续期 5 分钟，再重新连接并确认新操作";
-            }
-            return "编辑授权已撤销，连接已断开；重新授权后连接并确认新操作";
+        if old.read != next.read {
+            return "读取权限已变化，请检查授权并重新连接；旧确认不再有效";
         }
-        "读取权限已变化，请检查授权并重新连接；旧确认不再有效"
+        if next.write.is_some() {
+            "已允许页面操作，当前会话有效"
+        } else {
+            "已切换为允许读取；页面操作与旧确认已撤销"
+        }
     }
 
     #[cfg(feature = "assistant-local-dev")]
@@ -866,6 +864,21 @@ mod desktop {
             };
             self.drain_retiring();
             self.sync_scope(app, &snapshot);
+            let owner =
+                (self.account.signed_in() || cfg!(feature = "assistant-local-dev")).then(|| {
+                    format!(
+                        "{:?}:{}",
+                        self.account.epoch(),
+                        self.state.borrow().record.id
+                    )
+                });
+            Shell::with(|shell, _| {
+                let studio = shell.studio.borrow();
+                studio.editor_mcp.borrow_mut().bind_assistant_session(owner);
+            });
+            let Some(snapshot) = Self::snapshot(app) else {
+                return;
+            };
             self.state.borrow_mut().record.draft =
                 app.global::<Assistant>().get_draft().to_string();
             self.load_models(app);
@@ -1049,25 +1062,35 @@ mod desktop {
         }
         fn sync_lease(&self, snapshot: &AssistantSnapshot) -> bool {
             let next = Lease::from_snapshot(snapshot);
-            let sync = |state: &mut State| {
-                if state.lease.as_ref().is_some_and(|old| old != &next) {
-                    state.controller.disconnect();
-                    state.preparing = false;
-                    state.selecting = false;
-                    state.epoch = next_epoch();
+            let sync = |state: &mut State, current: bool| {
+                if let Some(old) = state.lease.as_ref().filter(|old| *old != &next) {
+                    let hot = current
+                        && old.document == next.document
+                        && old.read == next.read
+                        && next.read.is_some()
+                        && !state.preparing
+                        && state.controller.process_present();
+                    let notice = lease_change_notice(old, &next);
+                    if !hot
+                        || state
+                            .controller
+                            .update_permissions(next.write.clone())
+                            .is_err()
+                    {
+                        state.controller.disconnect();
+                        state.preparing = false;
+                        state.selecting = false;
+                        state.epoch = next_epoch();
+                    }
                     state.approval = None;
-                    state.notice = lease_change_notice(
-                        state.lease.as_ref().unwrap(),
-                        &next,
-                        snapshot.can_renew_write,
-                    )
-                    .into();
+                    state.notice = notice.into();
                 }
-                state.lease = Some(Lease::from_snapshot(snapshot));
+                // Parked conversations must never inherit another conversation's tokens.
+                state.lease = if current { Some(next.clone()) } else { None };
             };
-            sync(&mut self.state.borrow_mut());
+            sync(&mut self.state.borrow_mut(), true);
             for state in self.parked.borrow_mut().iter_mut() {
-                sync(state);
+                sync(state, false);
             }
             false
         }
@@ -1359,18 +1382,12 @@ mod desktop {
             ui.set_read_permission_status(snapshot.read_status.as_str().into());
             ui.set_write_permission_status(snapshot.write_status.as_str().into());
             ui.set_can_grant_read(
-                snapshot.can_grant_read
-                    && !busy
+                (snapshot.can_grant_read || snapshot.can_revoke_write)
                     && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
             );
             ui.set_can_revoke_read(snapshot.can_revoke_read);
             ui.set_can_grant_write(
                 snapshot.can_grant_write
-                    && !busy
-                    && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
-            );
-            ui.set_can_renew_write(
-                snapshot.can_renew_write
                     && !busy
                     && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
             );
@@ -1658,10 +1675,9 @@ mod desktop {
             self.refresh(app);
             let ui = app.global::<Assistant>();
             let allowed = match action {
-                AssistantPermission::GrantRead => ui.get_can_grant_read() && !ui.get_busy(),
+                AssistantPermission::GrantRead => ui.get_can_grant_read(),
                 AssistantPermission::RevokeRead => ui.get_can_revoke_read(),
                 AssistantPermission::GrantWrite => ui.get_can_grant_write() && !ui.get_busy(),
-                AssistantPermission::RenewWrite => ui.get_can_renew_write() && !ui.get_busy(),
                 AssistantPermission::RevokeWrite => ui.get_can_revoke_write(),
             };
             if !ui.get_open() {
@@ -2467,7 +2483,6 @@ mod desktop {
         callback!(on_grant_read, permission, AssistantPermission::GrantRead);
         callback!(on_revoke_read, permission, AssistantPermission::RevokeRead);
         callback!(on_grant_write, permission, AssistantPermission::GrantWrite);
-        callback!(on_renew_write, permission, AssistantPermission::RenewWrite);
         callback!(
             on_revoke_write,
             permission,
@@ -2526,7 +2541,7 @@ mod desktop {
     }
 
     fn stopped_hint() -> &'static str {
-        "本轮已停止；单轮上限 120 秒，编辑授权 5 分钟另计。重新发起需新输入，编辑动作需新确认"
+        "本轮已停止；单轮上限 120 秒。重新发起需新输入，编辑动作需新确认"
     }
 
     fn outcome_label(outcome: Option<TaskOutcome>) -> &'static str {
@@ -2757,7 +2772,7 @@ mod desktop {
             }
         }
         #[test]
-        fn lease_expiry_renewal_and_document_change_explain_new_confirmation() {
+        fn permission_change_preserves_read_connection_notice() {
             let old = Lease {
                 document: None,
                 read: Some("synthetic-read".into()),
@@ -2765,17 +2780,11 @@ mod desktop {
             };
             let mut next = old.clone();
             next.write = None;
-            assert!(lease_change_notice(&old, &next, true).contains("到期"));
-            assert!(lease_change_notice(&old, &next, true).contains("重新连接"));
-            assert!(lease_change_notice(&old, &next, false).contains("撤销"));
-            next.write = Some("synthetic-renewed".into());
-            assert!(lease_change_notice(&old, &next, true).contains("新操作"));
-            next = old.clone();
+            assert!(lease_change_notice(&old, &next).contains("撤销"));
+            assert!(!lease_change_notice(&old, &next).contains("重新连接"));
             next.read = None;
-            assert!(lease_change_notice(&old, &next, false).contains("读取权限"));
-            assert!(!lease_change_notice(&old, &next, false).contains("synthetic"));
+            assert!(lease_change_notice(&old, &next).contains("重新连接"));
             assert!(stopped_hint().contains("120 秒"));
-            assert_eq!(outcome_label(Some(TaskOutcome::Stopped)), "已停止");
         }
 
         #[test]

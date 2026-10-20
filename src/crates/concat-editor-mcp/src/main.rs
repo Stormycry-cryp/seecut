@@ -469,7 +469,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Retry only global-library registration of an original frozen PNG from export_canvas_png. Uses its exact original operationId/clientSequence and existing bytes/provenance. No compose, PNG rewrite, new export, new sequence or path argument. Requires exact trusted App approval and current five-minute E lease. Query canvas_operation with the original identity for its final PNG SHA/asset version."
+        description = "Retry only global-library registration of an original frozen PNG from export_canvas_png. Uses its exact original operationId/clientSequence and existing bytes/provenance. No compose, PNG rewrite, new export, new sequence or path argument. Requires exact trusted App approval and current App-issued E permission. Query canvas_operation with the original identity for its final PNG SHA/asset version."
     )]
     fn retry_canvas_registration(&self, Parameters(args): Parameters<OperationArgs>) -> String {
         let mut request = self.request(Method::RetryCanvasRegistration);
@@ -483,7 +483,7 @@ impl Bridge {
     }
 
     #[tool(
-        description = "Move the current single selected SeeCut image layer by deltaX and deltaY document pixels in one undo step. Requires independent E permission granted in trusted App UI for five minutes and SEECUT_MCP_WRITE_TOKEN; this tool cannot grant or renew it. Each delta must be finite with magnitude <=32768. Match the explicit project/session/revision/selectionRevision and layer:<nonzero u64> objectId. Supply operationId scm2:1:<client UTF-8 byte length>:<client>:<session UTF-8 byte length>:<session>:<nonzero clientSequence>. Retry outcomeUnknown with the same identity and exact parameters, never a new sequence. App capabilities govern current permission."
+        description = "Move the current single selected SeeCut image layer by deltaX and deltaY document pixels in one undo step. Requires E permission granted in trusted App UI for its declared lifetime and SEECUT_MCP_WRITE_TOKEN; this tool cannot grant or renew it. Each delta must be finite with magnitude <=32768. Match the explicit project/session/revision/selectionRevision and layer:<nonzero u64> objectId. Supply operationId scm2:1:<client UTF-8 byte length>:<client>:<session UTF-8 byte length>:<session>:<nonzero clientSequence>. Retry outcomeUnknown with the same identity and exact parameters, never a new sequence. App capabilities govern current permission."
     )]
     fn move_selected_image(&self, Parameters(args): Parameters<MoveArgs>) -> String {
         if self.write_token.is_none() {

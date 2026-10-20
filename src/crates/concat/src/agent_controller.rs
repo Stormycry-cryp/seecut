@@ -232,6 +232,7 @@ impl ToolProgress {
 }
 enum Request {
     Initialize,
+    Permissions { revision: u64, operate: bool },
     Create,
     Send { input_id: String },
     Stop,
@@ -254,6 +255,8 @@ pub struct Controller {
     restore: bool,
     recover_existing: bool,
     model_selection_supported: bool,
+    permissions_supported: bool,
+    permission_revision: u64,
     session_opened: bool,
     phase: Phase,
     pending: VecDeque<Pending>,
@@ -296,6 +299,8 @@ impl Default for Controller {
             restore: false,
             recover_existing: false,
             model_selection_supported: false,
+            permissions_supported: false,
+            permission_revision: 0,
             session_opened: false,
             phase: Phase::Disconnected,
             pending: VecDeque::new(),
@@ -394,6 +399,8 @@ impl Controller {
         self.restore = config.restore;
         self.recover_existing = false;
         self.model_selection_supported = false;
+        self.permissions_supported = false;
+        self.permission_revision = 0;
         self.secrets = vec![config.read_token.clone()];
         if let Some(token) = &config.write_token {
             self.secrets.push(token.clone());
@@ -519,11 +526,29 @@ impl Controller {
             can_approve: self.phase == Phase::AwaitingApproval
                 && self.approval.is_some()
                 && !self.blocked()
-                && !self
-                    .pending
-                    .iter()
-                    .any(|p| matches!(p.request, Request::Stop | Request::Approve { .. })),
+                && !self.pending.iter().any(|p| {
+                    matches!(
+                        p.request,
+                        Request::Stop | Request::Approve { .. } | Request::Permissions { .. }
+                    )
+                }),
         }
+    }
+    /// Replace only the editor transport credentials within the opened session.
+    pub fn update_permissions(&mut self, write_token: Option<String>) -> Result<(), UiError> {
+        if !self.session_opened || self.process.is_none() || !self.permissions_supported {
+            return Err(UiError::Protocol);
+        }
+        self.permission_revision += 1;
+        let revision = self.permission_revision;
+        let operate = write_token.is_some();
+        if let Some(token) = &write_token {
+            self.secrets.push(token.clone());
+        }
+        self.approval = None;
+        self.enqueue("session.permissions", json!({"version":1,"sessionId":self.session_id,
+            "revision":revision,"mode":if operate {"operate"} else {"read"},"writeToken":write_token}),
+            Request::Permissions { revision, operate })
     }
     pub fn send_text(&mut self, text: &str) -> Result<(), UiError> {
         self.send_text_with_selection(text, None)
@@ -1149,6 +1174,8 @@ impl Controller {
                     return;
                 }
                 let document = self.document.as_ref().unwrap();
+                self.permissions_supported =
+                    result["capabilities"]["session_permissions"].as_bool() == Some(true);
                 self.model_selection_supported =
                     result["capabilities"]["turn_model_selection"].as_bool() == Some(true);
                 let mut params = json!({"sessionId":self.session_id,"projectId":document.project_id,"documentSessionId":document.document_session_id});
@@ -1245,6 +1272,15 @@ impl Controller {
                         Phase::Ready
                     };
                     self.error = self.blocking_error();
+                }
+            }
+            Request::Permissions { revision, operate } => {
+                if result["updated"].as_bool() != Some(true)
+                    || result["sessionId"].as_str() != Some(self.session_id.as_str())
+                    || result["revision"].as_u64() != Some(revision)
+                    || result["mode"].as_str() != Some(if operate { "operate" } else { "read" })
+                {
+                    self.fail(UiError::Protocol);
                 }
             }
             Request::Send { input_id } => {
@@ -2035,7 +2071,7 @@ for line in sys.stdin:
         assert p['mcpEnvironment']['TMPDIR']==p['sessionDirectory']
         scenario=p['provider']['model'];time.sleep(.08)
         if scenario=='init-fail': reply(f,error={'code':'provider_configuration','message':'raw inference-secret'});continue
-        capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True,'turn_model_selection':True}
+        capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True,'turn_model_selection':True,'session_permissions':True}
         if scenario=='selection-absent': capabilities.pop('turn_model_selection')
         if scenario=='selection-false': capabilities['turn_model_selection']=False
         if scenario=='selection-string': capabilities['turn_model_selection']='true'
@@ -2057,6 +2093,10 @@ for line in sys.stdin:
         status='interrupted' if scenario in ('restore-interrupted','restore-pending','create-existing-clean','create-existing-pending','create-existing-unknown') else 'idle'
         pending=scenario in ('restore-pending','create-existing-pending')
         reply(f,{'sessionId':session if scenario!='bad-session' else 'other','status':status,'recoveryRequired':pending,'pendingInputCount':1 if pending else 0,'toolState':{'outcomeUnknown':scenario in ('restore-unknown','create-existing-unknown'),'unresolved':[],'recoveryOperations':[],'observed':[]},'modelState':modelstate(True) if managed else None})
+    elif m=='session.permissions':
+        assert p['sessionId']==session and p['version']==1
+        assert p['writeToken'] is None if p['mode']=='read' else isinstance(p['writeToken'],str)
+        reply(f,{'updated':True,'sessionId':session,'revision':p['revision']+1 if scenario=='bad-permission-ack' else p['revision'],'mode':p['mode']})
     elif m=='reconcile':
         assert managed and p=={'sessionId':session}
         reply(f,{'modelState':modelstate(False)})
@@ -3194,6 +3234,44 @@ for line in sys.stdin:
         assert!(fixture.controller.tool_progress.is_empty());
         assert!(fixture.controller.view().progress.is_empty());
         fixture.until(|c| c.view().outcome.is_some());
+    }
+    #[test]
+    fn permission_hot_switch_keeps_process_session_and_never_resends_input() {
+        let mut f = Fixture::new("finish");
+        f.ready();
+        let session = f.controller.session_id.clone();
+        f.controller
+            .update_permissions(Some("transient-write-secret".into()))
+            .unwrap();
+        f.controller.update_permissions(None).unwrap();
+        assert!(!f.controller.view().can_send);
+        f.until(|c| c.pending.is_empty());
+        assert!(f.controller.process_present() && f.controller.view().can_send);
+        assert_eq!(f.controller.session_id, session);
+        f.controller
+            .update_permissions(Some("new-write-secret".into()))
+            .unwrap();
+        f.until(|c| c.pending.is_empty());
+        f.controller.send_text("读取权限切换后的工程").unwrap();
+        f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
+        let trace = std::fs::read_to_string(f.directory.join("methods.txt")).unwrap();
+        assert_eq!(trace.lines().filter(|m| *m == "initialize").count(), 1);
+        assert_eq!(trace.lines().filter(|m| *m == "session.create").count(), 1);
+        assert_eq!(trace.lines().filter(|m| *m == "send").count(), 1);
+    }
+    #[test]
+    fn permission_bad_ack_fails_closed_and_old_runtime_cannot_hot_switch() {
+        let mut f = Fixture::new("bad-permission-ack");
+        f.ready();
+        f.controller.update_permissions(None).unwrap();
+        f.until(|c| c.view().error == Some(UiError::Protocol));
+        assert!(!f.controller.view().can_send);
+        let mut old = Fixture::new("old-runtime");
+        old.ready();
+        assert_eq!(
+            old.controller.update_permissions(None),
+            Err(UiError::Protocol)
+        );
     }
     #[test]
     fn connection_waits_for_both_real_responses_and_never_replays() {

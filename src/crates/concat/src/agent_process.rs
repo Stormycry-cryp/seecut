@@ -104,6 +104,7 @@ impl Handle {
                     | "status"
                     | "session.create"
                     | "session.restore"
+                    | "session.permissions"
                     | "session.close"
                     | "send"
                     | "stop"

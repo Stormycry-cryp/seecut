@@ -262,10 +262,11 @@ mod native {
                         let ratio = scale / window.scale_factor();
                         overlay.update(app.get_flow_overlay_visible().then(|| {
                             [
-                                f64::from(app.get_flow_overlay_x() - 8.0) * ratio,
-                                f64::from(app.get_flow_overlay_y() - 8.0) * ratio,
-                                f64::from(app.get_flow_overlay_width() + 16.0) * ratio,
-                                f64::from(app.get_flow_overlay_height() + 16.0) * ratio,
+                                f64::from(app.get_flow_overlay_x()) * ratio,
+                                f64::from(app.get_flow_overlay_y()) * ratio,
+                                f64::from(app.get_flow_overlay_width()) * ratio,
+                                f64::from(app.get_flow_overlay_height()) * ratio,
+                                f64::from(app.get_flow_overlay_radius()) * ratio,
                             ]
                         }));
                     }

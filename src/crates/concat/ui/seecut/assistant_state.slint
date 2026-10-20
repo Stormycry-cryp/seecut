@@ -58,7 +58,6 @@ export global Assistant {
     in-out property <bool> can-grant-read;
     in-out property <bool> can-revoke-read;
     in-out property <bool> can-grant-write;
-    in-out property <bool> can-renew-write;
     in-out property <bool> can-revoke-write;
     in-out property <string> read-permission-status;
     in-out property <string> write-permission-status;
@@ -102,7 +101,6 @@ export global Assistant {
     callback grant-read();
     callback revoke-read();
     callback grant-write();
-    callback renew-write();
     callback revoke-write();
     callback allow();
     callback reject();

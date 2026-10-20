@@ -49,7 +49,6 @@ export component AssistantDock inherits AssistantPanel {
     can-grant-read: Assistant.can-grant-read;
     can-revoke-read: Assistant.can-revoke-read;
     can-grant-write: Assistant.can-grant-write;
-    can-renew-write: Assistant.can-renew-write;
     can-revoke-write: Assistant.can-revoke-write;
     read-permission-status: Assistant.read-permission-status;
     write-permission-status: Assistant.write-permission-status;
@@ -93,7 +92,6 @@ export component AssistantDock inherits AssistantPanel {
     grant-read() => { Assistant.grant-read(); }
     revoke-read() => { Assistant.revoke-read(); }
     grant-write() => { Assistant.grant-write(); }
-    renew-write() => { Assistant.renew-write(); }
     revoke-write() => { Assistant.revoke-write(); }
     allow() => { Assistant.allow(); }
     reject() => { Assistant.reject(); }

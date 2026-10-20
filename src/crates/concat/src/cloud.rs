@@ -9050,6 +9050,7 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
 
 #[cfg(test)]
 mod reference_tests {
+    use super::failure_feedback;
     use super::{
         Cloud, DEFAULT_API_URL, ExportCopyItem, ExportCopyJob, NavigationDecision, PickerSelection,
         TaskInputSnapshot, auth_request, auth_return_target, can_start_request,

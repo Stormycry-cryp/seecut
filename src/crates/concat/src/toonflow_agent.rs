@@ -140,6 +140,9 @@ pub(crate) fn grant(call: FlowWorkspace) -> u64 {
     });
     id
 }
+pub(crate) fn revoke_all() {
+    PERMITS.with(|p| p.borrow_mut().clear());
+}
 pub(crate) fn revoke(id: u64) {
     PERMITS.with(|p| p.borrow_mut().retain(|p| p.id != id));
 }
