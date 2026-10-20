@@ -1,115 +1,94 @@
 <div align="center">
-<table width="100%">
-  <tr>
-    <td align="left" width="120">
-      <img src="https://cdn.jsdelivr.net/gh/jub0t/Concat@main/assets/logo-dark.png" alt="Concat" width="100" />
-    </td>
-    <td align="right">
-      <h1>Concat</h1>
-      <h3 style="margin-top: -10px;">The truly free, and open-source cross-platform CapCut replacement.</h3>
-    </td>
-  </tr>
-</table>
 
-<p align="center">
-  <a href="https://github.com/jub0t/Concat/releases"><img src="https://img.shields.io/github/downloads/jub0t/concat/total?style=flat&logo=github&logoColor=F8F8F8&label=Downloads&labelColor=000000&color=c6f432" alt="Total Downloads" /></a>
-  <a href="https://github.com/jub0t/Concat/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/jub0t/Concat/ci.yml?style=flat&logo=githubactions&logoColor=F8F8F8&label=Build&labelColor=000000" alt="Build Status" /></a>
-  <a href="https://github.com/jub0t/Concat/releases"><img src="https://img.shields.io/badge/Version-0.2.2-c6f432?style=flat&logo=semver&logoColor=F8F8F8&labelColor=000000" alt="Concat Version 0.2.2" /></a>
-  <a href="https://discord.gg/DVuPfpXfqP"><img src="https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=flat&logo=discord&logoColor=F8F8F8&labelColor=000000" alt="Join Concat Discord" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-c6f432?style=flat&logo=gnu&logoColor=F8F8F8&labelColor=000000" alt="License: AGPL-3.0-or-later" /></a>
-</p>
+<img src="docs/screenshots/seecut-logo.png" alt="SeeCut Logo" width="112">
 
-<img src="https://cdn.jsdelivr.net/gh/jub0t/Concat@main/assets/editor.png" alt="Concat editor" width="100%" />
+# SeeCut
+
+#### 一站式音视频创作应用
+
+从 AI 生成、图片设计到音频处理、视频剪辑，在一个应用里完成创作。
+
+[![Rust](https://img.shields.io/badge/Rust-Native_Engine-111827?style=for-the-badge&logo=rust&logoColor=white)](https://github.com/Stormycry-cryp/seecut/tree/codex/seecut-unified-mac-candidate/src)
+[![Slint](https://img.shields.io/badge/Slint-Desktop_UI-2563EB?style=for-the-badge)](https://slint.dev)
+[![License](https://img.shields.io/badge/License-AGPL--3.0--or--later-3B82F6?style=for-the-badge)](LICENSE)
+
+![All in One](https://img.shields.io/badge/All_in_One-Audio_·_Video_·_Image-8B5CF6?style=flat-square)
+![AI](https://img.shields.io/badge/AI-Generation_·_Flow_·_Agent-D97706?style=flat-square)
+![Status](https://img.shields.io/badge/Status-In_Development-10B981?style=flat-square)
+
+[简体中文](README.md) · [English](README.en.md) · [开发分支](https://github.com/Stormycry-cryp/seecut/tree/codex/seecut-unified-mac-candidate) · [反馈问题](https://github.com/Stormycry-cryp/seecut/issues)
 
 </div>
 
+SeeCut 把图像、音频和视频创作放进同一个桌面应用。你可以从一句提示词、一张参考图或一组本地素材开始，生成需要的内容，编辑图片与图层，再加入配音、音乐和字幕，剪成完整的视频。
+
+它希望让素材从生成、整理、修改到成片导出，沿着同一条创作流程继续使用。临时做一张封面、改一张商品图，或者完整制作一条短视频，都可以从各自最方便的入口开始。
+
 ---
 
-Concat is everything you use CapCut for. No watermarks. No paywalls. No subscriptions.
+## 你可以用它做什么
 
-It runs entirely on your machine, powered by a native Rust engine. Install it and start cutting. No account, no setup.
+| 创作环节 | 可以做的事 |
+| --- | --- |
+| **AI 生成** | 从提示词和参考素材生成图片、视频，使用快速模式或专业参数继续调整。 |
+| **图片设计** | 导入图片和支持的分层 PSD，在原生画布中编辑图层、文字、调整层和蒙版，制作封面与视觉素材。 |
+| **音视频剪辑** | 在多轨时间线上组织视频、配音和音乐，完成分割、裁切、转场、调速与音量调整。 |
+| **字幕与配音** | 使用语音转字幕、本地文字转语音等工具，为视频补充文字与声音。 |
+| **资产管理** | 整理本地素材和生成结果，按文件夹查找，并送到画布、Flow 或剪辑工程继续使用。 |
+| **Flow 与 Agent** | 用节点组织创作步骤；让 Agent 在应用授权范围内读取工作区、调用已接入的编辑和任务工具。相关能力仍在持续完善。 |
 
-## Highlights
+本地素材管理、图片画布和音视频剪辑可离线使用。在线 AI 生成需要登录并连接服务，可用模型和费用以应用内显示为准；本地字幕和配音工具需要相应模型文件。
 
-- 🚫 **No watermarks.** No account. No paywall.
-- 🔒 **100% local.** Nothing leaves your machine.
-- 🎬 **Multi-track editing.** Several timelines per project.
-- ✂️ **Cut fast.** Split, trim, merge, transitions, speed control.
-- 💬 **Auto-captions.** Runs on your machine, offline.
-- 🗣️ **Text-to-Speech.** Free, local voices.
-- 🎙️ **Voice filters.** Clean up or play with your sound.
-- 📝 **Titles and styled text.**
-- 📦 **Templates.** Build an edit once, reuse it.
-- 🖥️ **macOS, Windows and Linux.** Same app everywhere.
-- 🌍 **Twelve languages.** Add one with a single JSON file, see [TRANSLATING.md](TRANSLATING.md).
+## 看看界面
 
-## Get started
+以下展示 macOS 候选版本的生成、资产库、画布和剪辑界面，支持浅色与深色主题。截图使用公开演示素材；生成页为未登录状态。
 
-Concat is currently in **Beta version (pre-release)**. **Download** the latest build from [Releases](https://github.com/jub0t/Concat/releases).
+| 浅色 | 深色 |
+| --- | --- |
+| ![AI 生成浅色界面](docs/screenshots/seecut-generation-light.png) | ![AI 生成深色界面](docs/screenshots/seecut-generation-dark.png) |
+| ![资产库浅色界面](docs/screenshots/seecut-assets-light.png) | ![资产库深色界面](docs/screenshots/seecut-assets-dark.png) |
+| ![图片画布浅色界面](docs/screenshots/seecut-canvas-light.png) | ![图片画布深色界面](docs/screenshots/seecut-canvas-dark.png) |
+| ![音视频剪辑浅色界面](docs/screenshots/seecut-editing-light.png) | ![音视频剪辑深色界面](docs/screenshots/seecut-editing-dark.png) |
 
-**Portable:** the Windows and Linux builds are plain archives. To keep everything on the stick or in the folder you unpacked into, make a folder named `portable` beside the `concat` executable: settings, recents and downloaded models then live there and nothing is written to the user profile.
+## 一条创作流程
 
-**Reporting something:** every run writes a log, and Settings › About has the button that opens it along with the one that copies your system information. Attach both to an [issue](https://github.com/jub0t/Concat/issues) and the report arrives with everything it needs. The last ten runs are kept, so yesterday's is still there; nothing is ever sent anywhere on its own.
+比如，你要制作一条产品短视频：
 
-**Platform support:**
+1. **准备素材**：导入商品图、拍摄片段、配音或音乐，也可以先生成需要的图片和视频。
+2. **修改画面**：在图片画布里处理图层、文字、颜色与蒙版，准备封面和需要用到的视觉素材。
+3. **整理和复用**：把素材保存在资产库，送到对应工作区继续制作；需要多步生成时，可以在 Flow 中组织节点。
+4. **剪成视频**：安排时间线，加入声音和字幕，调整节奏、转场和音量，最后导出。
 
-- ✅ **Windows**
-  - ✅ x86_64
-- ✅ **macOS** — unsigned binaries; run:
-  `xattr -dr com.apple.quarantine /Applications/Concat.app`
-  - ✅ Intel
-  - ✅ Silicon
-- ✅ **Linux**
-  - ✅ ARM
-  - ✅ x86_64
-- ✅ **Android**
-  - ✅ Phones
-  - ✅ Tablets
-- 🧪 **iOS / iPadOS**
-  - 🧪 iPhone
-  - 🧪 iPad
+也可以直接打开图片画布做一张图，或导入已有片段开始剪辑。
 
-**Status:** ✅ Supported · 🚧 Work in progress · 🧪 To be tested
+---
 
-**System requirements:**
+## 当前进展
 
-Concat runs everything on your machine, so the hardware sets the ceiling. The minimum column is what a build will run on at all; the recommended column is what makes 1080p editing feel smooth and keeps 4K exports and captions from being a wait.
+SeeCut 正在开发中，目前主要在 **macOS Apple Silicon** 上构建和验证。其他平台的 SeeCut 版本仍需实机验收，当前仓库尚未提供公开下载包。
 
-| | Minimum | Recommended |
-|---|---|---|
-| **CPU** | Any 64-bit processor from 2013 or later | 6 cores or more |
-| **GPU** | None. Without a usable GPU the window and monitor fall back to the CPU | Any GPU with Metal (macOS), DirectX 12 (Windows) or Vulkan (Linux) |
-| **RAM** | **4 GB** | **16 GB** for 4K timelines and the larger caption models |
-| **Storage** | **500 MB** for the app and the smallest caption model | **2 GB** for every optional model, plus room for projects and exports |
+最新 SeeCut 源码位于 [`codex/seecut-unified-mac-candidate`](https://github.com/Stormycry-cryp/seecut/tree/codex/seecut-unified-mac-candidate)。仓库默认分支目前保留 Concat 初始基线，体验和构建 SeeCut 请使用开发分支。
 
-Optional models download from the settings panel on first use and then never need the network again: auto-captions 78 MB to 488 MB depending on the whisper size you pick, text-to-speech 132 MB or 349 MB, person cutout 15 MB, object cutout 179 MB, and the cutout brush 40 MB.
+功能验证与已知限制见开发分支的[实现核对记录](https://github.com/Stormycry-cryp/seecut/blob/codex/seecut-unified-mac-candidate/docs/SEECUT-FIGMA-IMPLEMENTATION-QA.md)。
 
-## Contribution
+## 从源码开始
 
-> [!IMPORTANT]
-> The best way to contribute is to grab a build from the [Release](https://github.com/jub0t/Concat/releases) page and test the application to see where it breaks or how it can be improved.
+macOS 原生应用需要 Rust 1.93、Xcode Command Line Tools、CMake、C++ 工具链和 FFmpeg 7+ 开发库。
 
-Ready to write code? [CONTRIBUTING.md](./CONTRIBUTING.md) covers setup, layout, the checks to run, and how contributions are licensed. There is also [this Discussion announcement](https://github.com/jub0t/Concat/discussions/3). Read [ROADMAP.MD](./ROADMAP.MD) for future goals.
+```sh
+git clone --branch codex/seecut-unified-mac-candidate --single-branch https://github.com/Stormycry-cryp/seecut.git
+cd seecut/src
+cargo run --profile quick -p concat
+```
 
-## Concat vs CapCut vs OpenCut
+Flow 的 Web 工作区和本地服务需要另外准备 Bun 与 Toonflow 资源；完整 Agent 功能也需要配套运行时。原生应用构建与完整功能打包的准备方式分别见[源码说明](https://github.com/Stormycry-cryp/seecut/blob/codex/seecut-unified-mac-candidate/src/README.md)、[Flow 集成说明](https://github.com/Stormycry-cryp/seecut/blob/codex/seecut-unified-mac-candidate/integrations/toonflow/SOURCE.md)和 [Agent 组件打包说明](https://github.com/Stormycry-cryp/seecut/blob/codex/seecut-unified-mac-candidate/docs/SEECUT-AGENT-FLOW.md#local-macos-bundle)。
 
-🟢 strong · 🟡 partial or with strings attached · 🔴 weak or missing
+## 反馈与参与
 
-| | Concat | CapCut | OpenCut | Notes |
-|---|:---:|:---:|:---:|---|
-| Performance | 🟢 | 🟢 | 🟡 | Concat and CapCut are native. OpenCut runs on WebAssembly FFmpeg in a browser |
-| Price | 🟢 | 🟡 | 🟢 | CapCut is free until Pro effects, 4K or AI tools, then $9.99 to $19.99 a month |
-| Watermark | 🟢 | 🟡 | 🟢 | CapCut stamps exports that use Pro assets |
-| Privacy | 🟢 | 🔴 | 🟢 | Concat sends nothing anywhere. CapCut's terms grant ByteDance a perpetual licence to uploads |
-| Offline | 🟢 | 🟡 | 🟡 | Concat's captions, speech, cutout and export all run on device. CapCut's best features are cloud |
-| Open source | 🟢 | 🔴 | 🟢 | Concat AGPL, OpenCut MIT, CapCut closed |
-| 4K export | 🟢 | 🟡 | 🟡 | CapCut caps free at 1080p. OpenCut depends on the browser |
-| Effects and templates | 🟡 | 🟢 | 🔴 | CapCut has thousands. Concat has a few dozen. OpenCut has a basic set |
-| AI tools | 🟡 | 🟢 | 🟡 | CapCut has tracking, reframe, avatars. Concat has local captions, speech and person cutout |
-| Keyframes | 🟡 | 🟢 | 🟡 | Concat keys position, scale, rotation and opacity with bezier easing. No curve editor and no keyed effect parameters yet |
-| Export formats | 🟡 | 🟢 | 🟡 | Concat writes H.264 MP4 only. OpenCut MP4 and WebM |
-| Stability | 🟡 | 🟢 | 🔴 | Concat is a 0.2.x beta. OpenCut is mid rewrite |
-| Mobile | 🟢 | 🟢 | 🔴 | Concat's Android and iOS builds compile but are untested. OpenCut's are in progress |
-| Extensibility | 🟢 | 🔴 | 🟢 | OpenCut ships an Editor API, MCP server and plugins. Concat's plugin API is planned |
-| Community | 🟡 | 🟢 | 🟢 | OpenCut has tens of thousands of stars. Concat has a Discord and a handful of contributors |
-| Multiple timelines per project | 🟢 | 🟢 | 🔴 | Concat only |
+欢迎提交 [Issue](https://github.com/Stormycry-cryp/seecut/issues) 或 PR，分享创作需求、使用体验和具体问题。报告问题时，请附上复现步骤、系统版本，以及可脱敏的截图或日志。
+
+## 致谢与许可
+
+SeeCut 基于 [Concat](https://github.com/jub0t/Concat) 的 Rust 与 Slint 桌面应用开发，保留上游作者及贡献者声明。部分图片画布实现移植自 Robbie Tilton 的 [Compositor](https://github.com/robbietilton/Compositor)；Flow 工作区集成自 [Toonflow](https://github.com/HBAI-Ltd/Toonflow-app)。感谢这些项目提供的基础。
+
+本仓库代码沿用 [AGPL-3.0-or-later](LICENSE)。附加授权见 [LICENSE-EXCEPTIONS.md](LICENSE-EXCEPTIONS.md)，第三方声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；Compositor 和 Toonflow 的相关部分保留各自 MIT 许可。
