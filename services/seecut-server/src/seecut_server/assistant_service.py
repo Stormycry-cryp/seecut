@@ -225,6 +225,7 @@ class AssistantService:
             value['default_model_id'] = self.model_id
             value['models'] = [value.copy()] + [child.capabilities(include_models=False) for child in self.models.values()]
             value.update(public_efforts(self.account))
+            value['runtime_tools'] = {'version': 1, 'names': sorted(contract.RUNTIME_TOOLS)}
         return value
 
     def input_contract_ready(self):

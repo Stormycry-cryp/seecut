@@ -19,8 +19,10 @@ TOOLS = frozenset({
     "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation",
     "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node",
 })
+RUNTIME_TOOLS = frozenset({"task_status", "task_checkpoint"})
+LIVE_TOOLS = TOOLS | RUNTIME_TOOLS
 # Retired names remain readable only inside stored conversation history.
-HISTORICAL_TOOLS = TOOLS | {"flow_read", "flow_write"}
+HISTORICAL_TOOLS = LIVE_TOOLS | {"flow_read", "flow_write"}
 IDENTITY = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 
 
@@ -78,7 +80,7 @@ def digest(value):
 
 
 def message(value, images=False, *, historical=False):
-    tools = HISTORICAL_TOOLS if historical else TOOLS
+    tools = HISTORICAL_TOOLS if historical else LIVE_TOOLS
     fields(value, {"id", "role", "content"}, {"toolCalls", "toolCallId", "toolName", "isError"})
     identity(value["id"])
     if not isinstance(value["role"], str) or value["role"] not in {"user", "assistant", "tool"} or not isinstance(value["content"], list) or len(value["content"]) > 64:
@@ -135,12 +137,12 @@ def model_request(value, config):
         invalid()
     for item in value["messages"]:
         message(item, config.assistant_images, historical=True)
-    if not isinstance(value["tools"], list) or len(value["tools"]) > len(TOOLS):
+    if not isinstance(value["tools"], list) or len(value["tools"]) > len(LIVE_TOOLS):
         invalid()
     names = set()
     for tool in value["tools"]:
         fields(tool, {"name", "description", "parameters"})
-        if not isinstance(tool["name"], str) or tool["name"] not in TOOLS or tool["name"] in names or not isinstance(tool["parameters"], dict):
+        if not isinstance(tool["name"], str) or tool["name"] not in LIVE_TOOLS or tool["name"] in names or not isinstance(tool["parameters"], dict):
             invalid()
         text(tool["description"], 8192)
         canonical(tool["parameters"])

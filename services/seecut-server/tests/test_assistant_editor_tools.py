@@ -3,7 +3,7 @@ import copy
 import unittest
 from types import SimpleNamespace
 
-from seecut_server.assistant_contract import model_request, model_event
+from seecut_server.assistant_contract import TOOLS, RUNTIME_TOOLS, model_request, model_event
 from seecut_server.errors import ApiError
 from test_assistant_contract import AssistantFixture, done
 
@@ -55,6 +55,39 @@ class EditorVocabularyTest(unittest.TestCase):
 
 
 class ManagedEditorToolsTest(AssistantFixture):
+    def test_runtime_tools_are_announced_once_outside_model_policy(self):
+        catalog = self.service.capabilities()
+        self.assertEqual(catalog['runtime_tools'], {'version': 1, 'names': ['task_checkpoint', 'task_status']})
+        self.assertTrue(RUNTIME_TOOLS.isdisjoint(TOOLS))
+        self.assertTrue(all('runtime_tools' not in model for model in catalog['models']))
+        self.assertNotIn('runtime_tools', self.service.capabilities(include_models=False))
+
+    def test_runtime_tool_request_response_and_history_round_trip(self):
+        config = SimpleNamespace(assistant_max_output_tokens=100, assistant_images=False)
+        for name in sorted(RUNTIME_TOOLS):
+            with self.subTest(tool=name):
+                reply = {'id': 'reply', 'role': 'assistant', 'content': [],
+                         'toolCalls': [{'id': 'call-1', 'name': name, 'arguments': {}}]}
+                model_event({'type': 'done', 'message': reply, 'stopReason': 'tools'})
+                request = {'system': 'test', 'messages': [reply, {'id': 'result', 'role': 'tool',
+                    'toolCallId': 'call-1', 'toolName': name, 'content': [{'type': 'text', 'text': '{}'}]}],
+                    'tools': [{'name': name, 'description': 'runtime', 'parameters': {'type': 'object'}}],
+                    'maxOutputTokens': 100}
+                self.assertEqual(model_request(request, config), request)
+
+    def test_unrequested_runtime_tool_is_not_delivered(self):
+        for name in sorted(RUNTIME_TOOLS):
+            with self.subTest(tool=name):
+                self.user, _ = self.new_user(name + '@example.test')
+                event = done(tool=True)
+                event['message']['toolCalls'][0]['name'] = name
+                self.provider.events = [event]
+                operation = self.create(self.body(step='step-' + name, turn='turn-' + name))
+                self.worker.process_once()
+                self.assertEqual(self.service.get(self.user, operation['operation_id'])['state'], 'outcome_unknown')
+                events = self.service.events(self.user, operation['operation_id'], 0)['events']
+                self.assertFalse(any(e['type'] == 'model' and e['payload'].get('message', {}).get('toolCalls') for e in events))
+
     def test_retired_flow_tools_are_rejected_before_provider_submission(self):
         for name in ("flow_read", "flow_write"):
             with self.subTest(tool=name):
