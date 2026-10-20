@@ -2,7 +2,7 @@
 //! Stdio MCP adapter. The running App owns all document and permission state.
 
 use concat_editor_mcp::{
-    AssetVersion, CanvasAction, CanvasParameters, LibraryQuery, Method, MoveParameters,
+    AssetVersion, CanvasAction, CanvasEdit, CanvasParameters, LibraryQuery, Method, MoveParameters,
     OperationQuery, Request, Response, call, endpoint,
 };
 use rmcp::{
@@ -70,6 +70,18 @@ struct CanvasIdentityArgs {
     operation_id: String,
     client_sequence: u64,
     selection_revision: u64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CanvasEditArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: u64,
+    operation_id: String,
+    client_sequence: u64,
+    selection_revision: u64,
+    expected_edit_state_id: String,
+    edit: CanvasEdit,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -443,6 +455,25 @@ impl Bridge {
         )
     }
     #[tool(
+        description = "Apply one explicit local canvas edit through the native editor and undo history. Closed edit.kind enum covers layers/groups, raster selections/masks, brush, undo/redo, adjustments and curves. Stable layer:n IDs only; folded descendants require a separately approved groupSetExpanded first. Coordinates are document pixels, finite within +/-32768; strokes 1..2048 points, curve channels red/green/blue. Pixel/adjustment/curve writes require the named active object and exact layerPixels/layerMask target. Requires exact native approval, E lease, current revision and selectionRevision. Freeze expectedEditStateId from project.canvasState before approval; any brush, pixel-selection or paint-mode drift returns staleContext with no edit. Receipt includes original edit, actual before/after document content hashes, changed/documentChanged, created/deleted IDs and readback; independently read project.canvasState. No paths/scripts, text, PSD or lookup-file input. Single new bitmap/selection at most16Mi pixels, referenced total64Mi pixels, 10000 nodes. Stroke geometry and scratch copies are preflighted through the native bitmap/mask mapping with a conservative16Mi work limit; simplify or shorten costly paths. Frozen edit JSON at most16KiB; one deletion at most512 nodes; receipt budget48KiB with complete IDs, otherwise resourceLimit before mutation. UNKNOWN only queries original canvas_operation, never a new sequence."
+    )]
+    fn canvas_edit(&self, Parameters(args): Parameters<CanvasEditArgs>) -> String {
+        self.canvas_write(
+            CanvasIdentityArgs {
+                project_id: args.project_id,
+                document_session_id: args.document_session_id,
+                revision: args.revision,
+                operation_id: args.operation_id,
+                client_sequence: args.client_sequence,
+                selection_revision: args.selection_revision,
+            },
+            CanvasAction::Edit {
+                edit: args.edit,
+                expected_edit_state_id: args.expected_edit_state_id,
+            },
+        )
+    }
+    #[tool(
         description = "Save the current canvas to its App-recorded project asynchronously. No path parameter. Unnamed projects stop at awaitingSelection for the existing trusted App save flow. Query the original canvas_operation for actual persisted revision; acceptance alone is not saved success."
     )]
     fn save_canvas_project(&self, Parameters(args): Parameters<CanvasIdentityArgs>) -> String {
@@ -575,6 +606,85 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canvas_edit_public_tool_has_closed_schema_and_independent_write_credential() {
+        let tool = Bridge::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "canvas_edit")
+            .unwrap();
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        for field in [
+            "projectId",
+            "documentSessionId",
+            "revision",
+            "selectionRevision",
+            "operationId",
+            "clientSequence",
+            "edit",
+            "expectedEditStateId",
+        ] {
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!(field))
+            );
+        }
+        assert_eq!(schema["additionalProperties"], false);
+        let args:CanvasEditArgs=serde_json::from_value(serde_json::json!({"projectId":"p","documentSessionId":"s","revision":2,"selectionRevision":3,"expectedEditStateId":format!("edit-v1-{}","a".repeat(64)),"operationId":concat_editor_mcp::operation_id("client","s",1).unwrap(),"clientSequence":1,"edit":{"kind":"layerAdd"}})).unwrap();
+        let response: Response =
+            serde_json::from_str(&bridge(None).canvas_edit(Parameters(args))).unwrap();
+        assert_eq!(response.status, "notAuthorized");
+        assert_eq!(
+            bridge(Some("write".into()))
+                .request(Method::CanvasEdit)
+                .client_token,
+            "write"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canvas_edit_public_call_reaches_typed_ipc_and_returns_original_receipt() {
+        let path = endpoint(&uuid::Uuid::new_v4().to_string()).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request: Request = concat_editor_mcp::read_message(&mut stream).unwrap();
+            assert_eq!(request.method, Method::CanvasEdit);
+            assert_eq!(request.client_token, "write");
+            assert!(concat_editor_mcp::validate_request_shape(&request).is_ok());
+            assert!(matches!(
+                request.canvas_parameters.as_ref().unwrap().action,
+                CanvasAction::Edit {
+                    edit: CanvasEdit::LayerAdd,
+                    ..
+                }
+            ));
+            concat_editor_mcp::write_message(&mut stream,&Response::ok(serde_json::json!({"tool":"canvas_edit","operationId":request.canvas_parameters.unwrap().operation_id,"changed":true}))).unwrap();
+        });
+        let mut adapter = bridge(Some("write".into()));
+        adapter.socket = path.clone();
+        let operation = concat_editor_mcp::operation_id("client", "s", 1).unwrap();
+        let response: Response =
+            serde_json::from_str(&adapter.canvas_edit(Parameters(CanvasEditArgs {
+                project_id: "p".into(),
+                document_session_id: "s".into(),
+                revision: 2,
+                operation_id: operation.clone(),
+                client_sequence: 1,
+                selection_revision: 3,
+                expected_edit_state_id: format!("edit-v1-{}", "a".repeat(64)),
+                edit: CanvasEdit::LayerAdd,
+            })))
+            .unwrap();
+        worker.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.data.unwrap()["operationId"], operation);
+    }
 
     fn bridge(write_token: Option<String>) -> Bridge {
         Bridge {

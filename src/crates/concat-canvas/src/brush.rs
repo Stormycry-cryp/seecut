@@ -278,6 +278,70 @@ pub(crate) fn segment_density(
 }
 
 impl BrushStroke {
+    /// Preflight a bounded CPU stroke without allocating tiles or pixel frames.
+    ///
+    /// Samples must already be mapped to target bitmap pixels. This follows
+    /// the same spline, current/previous tail and tile geometry as `append`
+    /// and `flush`. Work counts per-pixel segment evaluations (eight for soft
+    /// tips), tile copying/compositing overhead, and the host CPU fallback's
+    /// full scratch-frame clone for every changed update. Exceeding `limit`
+    /// returns `TooLarge` before any painting occurs.
+    pub fn estimate_work(
+        width: u32,
+        height: u32,
+        settings: BrushSettings,
+        points: &[(f64, f64)],
+        limit: u64,
+    ) -> Result<u64, BrushError> {
+        let mut stroke = Self::new(width, height, settings)?;
+        let frame_pixels = u64::from(width) * u64::from(height);
+        // The host clones the source once to start the working scratch frame.
+        let mut work = frame_pixels;
+        let cost_per_segment = if settings.hardness >= 1.0 { 1_u64 } else { 8 };
+        if work > limit {
+            return Err(BrushError::TooLarge);
+        }
+        for step in 0..=points.len() {
+            if step < points.len() {
+                let point = points[step];
+                if !point.0.is_finite() || !point.1.is_finite() {
+                    return Err(BrushError::BadSettings);
+                }
+                if !stroke.path.append(point) {
+                    continue;
+                }
+            } else {
+                stroke.path.flush();
+            }
+            let mut keys = stroke.touched_keys(stroke.path.settled());
+            let tail_keys = stroke.touched_keys(stroke.path.tail());
+            keys.extend(tail_keys.iter().copied());
+            keys.extend(stroke.tail_keys.iter().copied());
+            keys.sort_unstable();
+            keys.dedup();
+            stroke.tail_keys = tail_keys;
+            let evaluations = (stroke.path.settled().len() + stroke.path.tail().len()) as u64;
+            let factor = evaluations
+                .saturating_mul(cost_per_segment)
+                .saturating_add(8);
+            if !keys.is_empty() {
+                work = work.saturating_add(frame_pixels);
+            }
+            for key in keys {
+                let tx = key % stroke.columns();
+                let ty = key / stroke.columns();
+                let tw = (TILE_SIZE as u32).min(width - tx as u32 * TILE_SIZE as u32);
+                let th = (TILE_SIZE as u32).min(height - ty as u32 * TILE_SIZE as u32);
+                work = work.saturating_add(u64::from(tw) * u64::from(th) * factor);
+                if work > limit {
+                    return Err(BrushError::TooLarge);
+                }
+            }
+            let _ = stroke.path.take_settled();
+        }
+        Ok(work)
+    }
+
     /// A stroke over a `width` x `height` layer-pixel canvas.
     pub fn new(width: u32, height: u32, settings: BrushSettings) -> Result<Self, BrushError> {
         settings.validate()?;
@@ -684,6 +748,51 @@ pub(crate) fn continuous_curve(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn estimate_work_allows_short_paths_and_bounds_large_and_repeated_paths() {
+        let mut settings = super::BrushSettings {
+            diameter: 20.0,
+            opacity: 1.0,
+            hardness: 1.0,
+            color: [255, 0, 0],
+            erasing: false,
+        };
+        let limit = 16_777_216;
+        assert!(
+            super::BrushStroke::estimate_work(
+                1024,
+                1024,
+                settings,
+                &[(16.0, 16.0), (24.0, 24.0)],
+                limit
+            )
+            .is_ok()
+        );
+        settings.diameter = 2000.0;
+        assert!(
+            super::BrushStroke::estimate_work(1024, 1024, settings, &[(512.0, 512.0)], limit)
+                .is_ok(),
+            "large hard dab stays allowed when actual estimated work fits"
+        );
+        settings.hardness = 0.0;
+        assert!(
+            super::BrushStroke::estimate_work(1024, 1024, settings, &[(512.0, 512.0)], limit)
+                .is_err()
+        );
+        settings.diameter = 20.0;
+        settings.hardness = 1.0;
+        let repeated = (0..64)
+            .map(|i| {
+                if i % 2 == 0 {
+                    (16.0, 16.0)
+                } else {
+                    (1000.0, 1000.0)
+                }
+            })
+            .collect::<Vec<_>>();
+        assert!(super::BrushStroke::estimate_work(1024, 1024, settings, &repeated, limit).is_err());
+    }
+
     use super::*;
 
     fn soft() -> BrushSettings {

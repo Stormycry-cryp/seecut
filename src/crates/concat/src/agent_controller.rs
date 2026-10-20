@@ -136,6 +136,7 @@ enum ToolAction {
     Library,
     Insert,
     Transform,
+    CanvasEdit,
     Save,
     Export,
     Operation,
@@ -154,6 +155,7 @@ impl ToolAction {
             "library_images" => Some(Self::Library),
             "insert_library_image" => Some(Self::Insert),
             "transform_canvas_layer" => Some(Self::Transform),
+            "canvas_edit" => Some(Self::CanvasEdit),
             "save_canvas_project" => Some(Self::Save),
             "export_canvas_png" => Some(Self::Export),
             "canvas_operation" => Some(Self::Operation),
@@ -176,6 +178,7 @@ impl ToolAction {
             Self::Move
                 | Self::Insert
                 | Self::Transform
+                | Self::CanvasEdit
                 | Self::Save
                 | Self::Export
                 | Self::RegistrationRetry
@@ -192,6 +195,7 @@ impl ToolAction {
             Self::Library => "查找库内图片",
             Self::Insert => "放入画布",
             Self::Transform => "调整图层",
+            Self::CanvasEdit => "编辑画布",
             Self::Save => "保存画布",
             Self::Export => "导出并入库",
             Self::Operation => "核对操作结果",
@@ -709,6 +713,7 @@ impl Controller {
                     Some(
                         "insert_library_image"
                             | "transform_canvas_layer"
+                            | "canvas_edit"
                             | "save_canvas_project"
                             | "export_canvas_png"
                             | "flow_add_node"
@@ -1605,6 +1610,7 @@ impl Controller {
                             | "library_images"
                             | "insert_library_image"
                             | "transform_canvas_layer"
+                            | "canvas_edit"
                             | "save_canvas_project"
                             | "export_canvas_png"
                             | "canvas_operation"

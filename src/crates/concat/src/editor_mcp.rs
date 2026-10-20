@@ -31,6 +31,9 @@ mod write_request;
 #[path = "editor_mcp_view_context.rs"]
 mod view_context;
 
+#[path = "editor_mcp_canvas_edit.rs"]
+mod canvas_edit;
+
 use write_registry::{Begin, LeaseStatus, OperationKey, RegistryError, Scope, WriteRegistry};
 use write_request::{WriteRequest, WriteRequestOutcome};
 
@@ -89,6 +92,7 @@ pub enum AssistantPermission {
 pub(crate) enum AssistantPermissionError {
     NotAllowed,
     WriterUnavailable,
+    StaleContext,
 }
 
 impl AssistantPermissionError {
@@ -96,6 +100,7 @@ impl AssistantPermissionError {
         match self {
             Self::NotAllowed => "权限状态已变化，请重新检查",
             Self::WriterUnavailable => "当前画布无法授权移动，请检查工程状态",
+            Self::StaleContext => "编辑状态已变化，请重新核对操作",
         }
     }
 }
@@ -579,6 +584,7 @@ pub(crate) fn canvas_approval_view(tool: &str, args: Value) -> Option<(String, S
         ),
         Some(CanvasAction::Save) => ("保存画布".into(), "保存当前工程".into()),
         Some(CanvasAction::Export) => ("导出 PNG".into(), "导出并加入资产库".into()),
+        Some(CanvasAction::Edit { edit, .. }) => approval_view::canvas_edit_summary(&edit),
         None if intent.library.is_some() => ("查找图片".into(), intent.library?.query),
         None if intent.retry_registration => ("重试入库".into(), "登记原 PNG".into()),
         None => ("核对操作".into(), "读取原操作结果".into()),
@@ -852,6 +858,21 @@ impl BridgeUi {
                         != Some(object_id.as_str())
                 {
                     return Err(AssistantPermissionError::NotAllowed);
+                }
+                if let Some(CanvasAction::Edit {
+                    edit,
+                    expected_edit_state_id,
+                }) = &intent.action
+                {
+                    canvas_edit::preflight(&studio.canvas, edit, expected_edit_state_id).map_err(
+                        |status| {
+                            if status == "staleContext" {
+                                AssistantPermissionError::StaleContext
+                            } else {
+                                AssistantPermissionError::NotAllowed
+                            }
+                        },
+                    )?;
                 }
             }
         }
@@ -1360,8 +1381,10 @@ impl BridgeUi {
             };
             return UiReply::Response(Response::ok(json!({
                 "appInstanceId": self.instance_id,
-                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "insert_library_image", "transform_canvas_layer", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
-                "namedToolApprovalRequired":["library_images","insert_library_image","transform_canvas_layer","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
+                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "insert_library_image", "transform_canvas_layer", "canvas_edit", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
+                "namedToolApprovalRequired":["library_images","insert_library_image","transform_canvas_layer","canvas_edit","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
+                "canvasEditVersion":1,"canvasEditMaxStrokePoints":2048,"canvasEditMaxNewPixels":16777216,"canvasEditMaxReferencedPixels":67108864,"canvasEditMaxBrushWork":16777216,
+                "canvasEditMaxParametersBytes":16384,"canvasEditMaxDeleteNodes":512,"canvasEditMaxReceiptBytes":49152,
                 "permissions": ["R", "M", "E"], "readOnly": false,
                 "writeAction": "moveSelectedImage", "writeLeaseSeconds": if request.client_id == ASSISTANT_CLIENT_ID {None} else {Some(300)},
                 "writeLifetime": if request.client_id == ASSISTANT_CLIENT_ID {"agentSession"} else {"deadline"},
@@ -1503,12 +1526,15 @@ impl BridgeUi {
                         .and_then(|id| {
                             serde_json::from_value::<concat_canvas::LayerId>(json!(id)).ok()
                         });
-                    let Some(concat_canvas::LayerNode::Layer(layer)) =
-                        id.and_then(|id| document.find(id))
-                    else {
+                    let Some(node) = id.and_then(|id| document.find(id)) else {
                         return UiReply::Response(Response::error("objectGone"));
                     };
-                    (1, vec![canvas_image_value(layer, None)])
+                    let value = match node {
+                        concat_canvas::LayerNode::Layer(layer) => canvas_image_value(layer, None),
+                        _ => canvas_edit::layer_value(&studio.canvas, node.id())
+                            .expect("document node has parent slot"),
+                    };
+                    (1, vec![value])
                 } else {
                     match canvas_objects(document, offset, limit) {
                         Ok(page) => page,
@@ -1536,6 +1562,7 @@ impl BridgeUi {
                 "revision": revision, "contextRevision": context_revision, "selectionRevision":studio.mcp_selection_epoch(),
                 "generation": generation, "total": total, "offset": offset,
                 "objects": objects, "dimensions": dimensions,
+                "canvasState": if kind == "canvas" {Some(canvas_edit::state(&studio.canvas,&request.object_id.iter().cloned().collect::<Vec<_>>()).unwrap_or_else(|status|json!({"unavailable":status})))} else {None},
             })));
         }
         if request.method != Method::Preview {

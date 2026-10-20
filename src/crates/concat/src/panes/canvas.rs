@@ -568,6 +568,26 @@ pub type LayerRow = (
     bool,
 );
 
+/// Immutable next history target for preflight only; reading it never undoes.
+pub(crate) struct CanvasHistoryTarget<'a> {
+    /// The exact document tree that the next history action would restore.
+    pub document: &'a ImageDocument,
+    /// Its immutable pixel versions.
+    pub store: &'a PixelStore,
+    /// Its restored active object.
+    pub active: Option<concat_canvas::LayerId>,
+}
+
+/// Target bitmap coordinates and dimensions for read-only paint preflight.
+pub(crate) struct MappedPaintPath {
+    /// Samples after the native image or mask mapping.
+    pub points: Vec<(f64, f64)>,
+    /// Target bitmap width in pixels.
+    pub width: u32,
+    /// Target bitmap height in pixels.
+    pub height: u32,
+}
+
 /// Handoff imports carry a display name separately from their path. Managed
 /// personal-library files intentionally use opaque paths, while the canvas
 /// project and layer should retain the name the user sees in the library.
@@ -2721,6 +2741,20 @@ impl CanvasPane {
             && !self.redo_stack.is_empty()
     }
 
+    /// Read the available next history snapshot without restoring any state.
+    pub(crate) fn mcp_history_target(&self, redo: bool) -> Option<CanvasHistoryTarget<'_>> {
+        let snapshot = if redo {
+            &self.redo_stack.last()?.after
+        } else {
+            &self.undo_stack.last()?.before
+        };
+        Some(CanvasHistoryTarget {
+            document: &snapshot.document,
+            store: &snapshot.store,
+            active: snapshot.active,
+        })
+    }
+
     pub fn transform_session_active(&self) -> bool {
         self.transform_session.is_some()
             || self.shape_session.is_some()
@@ -2735,6 +2769,26 @@ impl CanvasPane {
         self.gpu
             .as_ref()
             .map(|gpu| gpu.device().limits().max_texture_dimension_2d)
+    }
+
+    /// Map document samples through the exact image/linked/coverage mask
+    /// geometry used by the native painting path, without starting a stroke.
+    pub(crate) fn mcp_paint_path(&self, points: &[(f64, f64)]) -> Option<MappedPaintPath> {
+        let target = self.paint_target()?;
+        let frame = self.store.get(target)?;
+        let mapping = self.mapping_for_target(target)?;
+        let mapped = points
+            .iter()
+            .map(|&(x, y)| {
+                let (x, y) = mapping.to_target((x as f32, y as f32))?;
+                (x.is_finite() && y.is_finite()).then_some((f64::from(x), f64::from(y)))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(MappedPaintPath {
+            points: mapped,
+            width: frame.width(),
+            height: frame.height(),
+        })
     }
 
     pub(crate) fn mcp_state(&self) -> (u64, u64, bool) {
@@ -5781,7 +5835,13 @@ impl CanvasPane {
             if x < -radius || y < -radius || x > w + radius || y > h + radius {
                 continue;
             }
-            let changed = self.paint_at(x, y);
+            let Some(mapping) = self.stroke_mapping else {
+                continue;
+            };
+            let Some((tx, ty)) = mapping.to_target((x as f32, y as f32)) else {
+                continue;
+            };
+            let changed = self.paint_at(tx as f64, ty as f64);
             self.commit_tiles(&changed);
         }
         self.brush_release();
@@ -6106,6 +6166,10 @@ impl CanvasPane {
     /// mode the mask chip toggles.
     pub fn agent_paint_mask(&self) -> bool {
         self.paint_mask
+    }
+    /// Selects the existing raster mask through the same mask-chip path as UI.
+    pub fn agent_layer_mask_select(&mut self, row: i32) {
+        self.mask_chip_click(row);
     }
 
     /// Sets the active gradient map's low (`0`) or high (`1`) colour

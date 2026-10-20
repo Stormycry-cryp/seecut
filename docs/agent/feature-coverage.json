@@ -7,8 +7,10 @@
       "symbol": "agent_adjustment_add",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -27,8 +29,10 @@
       "symbol": "agent_adjustment_param",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -37,8 +41,10 @@
       "symbol": "agent_adjustment_state",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -47,8 +53,10 @@
       "symbol": "agent_brush",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -57,8 +65,10 @@
       "symbol": "agent_curve_add",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -67,8 +77,10 @@
       "symbol": "agent_curve_channels",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -77,8 +89,10 @@
       "symbol": "agent_curve_remove",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -87,8 +101,10 @@
       "symbol": "agent_curve_set",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -97,8 +113,10 @@
       "symbol": "agent_delete_selection",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -107,8 +125,10 @@
       "symbol": "agent_deselect",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -137,8 +157,10 @@
       "symbol": "agent_fill_selection",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -157,8 +179,10 @@
       "symbol": "agent_layer_add",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -167,8 +191,10 @@
       "symbol": "agent_layer_delete",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -187,8 +213,10 @@
       "symbol": "agent_layer_fold",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -197,8 +225,10 @@
       "symbol": "agent_layer_group",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -207,8 +237,10 @@
       "symbol": "agent_layer_mask_add",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -217,8 +249,22 @@
       "symbol": "agent_layer_mask_remove",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_mask_select": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_mask_select",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -227,8 +273,10 @@
       "symbol": "agent_layer_mask_toggle",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -237,8 +285,10 @@
       "symbol": "agent_layer_move",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -247,8 +297,10 @@
       "symbol": "agent_layer_move_into",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -257,8 +309,10 @@
       "symbol": "agent_layer_opacity",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -267,8 +321,10 @@
       "symbol": "agent_layer_pick",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -277,8 +333,10 @@
       "symbol": "agent_layer_toggle_visibility",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -287,8 +345,10 @@
       "symbol": "agent_layers",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -307,8 +367,10 @@
       "symbol": "agent_paint_mask",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -317,8 +379,10 @@
       "symbol": "agent_paint_stroke",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -337,8 +401,10 @@
       "symbol": "agent_redo",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -357,8 +423,10 @@
       "symbol": "agent_select_all",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -367,8 +435,10 @@
       "symbol": "agent_select_rect",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -377,8 +447,10 @@
       "symbol": "agent_select_tool",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -387,8 +459,10 @@
       "symbol": "agent_selection_bounds",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -397,8 +471,10 @@
       "symbol": "agent_set_brush",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -417,8 +493,10 @@
       "symbol": "agent_set_brush_rgb",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -427,8 +505,10 @@
       "symbol": "agent_undo",
       "kind": "nativeHelper",
       "module": "canvas",
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -859,6 +939,18 @@
       "module": "clip",
       "mcpTools": [],
       "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:canvas_edit": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "canvas_edit",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
     },
@@ -3475,13 +3567,16 @@
         "Editor.canvas-brush-move",
         "Editor.canvas-brush-release"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。press/move/release 合为完整笔画业务，不分别计数。",
+      "notes": "新增显式 canvas_edit 已接协议、原生宿主及审批；最终定向验证进行中，未做真实 Agent 与原生整链验收。",
       "statePrerequisites": [
         "存在可编辑画布图层"
-      ]
+      ],
+      "limitation": "笔触必须是文档像素坐标并满足真实工作量和回执预算；不覆盖矢量绘制。"
     },
     {
       "id": "canvas.selection-fill",
@@ -3497,13 +3592,16 @@
         "Editor.canvas-fill-selection",
         "Editor.canvas-delete-selection"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "新增显式 canvas_edit 已接协议、原生宿主及审批；最终定向验证进行中，未做真实 Agent 与原生整链验收。",
       "statePrerequisites": [
         "已打开画布"
-      ]
+      ],
+      "limitation": "矩形、全选、清除、填充与删除已接；魔棒、套索及完整选择模式未全部接入。"
     },
     {
       "id": "canvas.layers",
@@ -3524,13 +3622,16 @@
         "Editor.canvas-layer-dropped",
         "Editor.canvas-layer-folded"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。project 可读取部分图层结构，不能据此视为这些管理写入已覆盖。",
+      "notes": "新增显式 canvas_edit 已接协议、原生宿主及审批；最终定向验证进行中，未做真实 Agent 与原生整链验收。",
       "statePrerequisites": [
         "已打开画布"
-      ]
+      ],
+      "limitation": "选层、增删、排序、分组、显隐及透明度已接；重命名、复制、混合模式未接；折叠组内目标需先展开。"
     },
     {
       "id": "canvas.masks",
@@ -3546,13 +3647,16 @@
         "CanvasControls.vector-mask-link",
         "CanvasControls.vector-mask-exit"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "新增显式 canvas_edit 已接协议、原生宿主及审批；最终定向验证进行中，未做真实 Agent 与原生整链验收。",
       "statePrerequisites": [
         "已打开画布并选中适用图层"
-      ]
+      ],
+      "limitation": "栅格蒙版增删、启停及绘制目标已接；矢量蒙版未接。"
     },
     {
       "id": "canvas.text-shape",
@@ -3589,13 +3693,16 @@
         "Editor.canvas-gradient-color-changed",
         "Editor.canvas-lookup-import"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "partial",
       "acceptance": "source",
-      "notes": "未做运行验证。",
+      "notes": "新增显式 canvas_edit 已接协议、原生宿主及审批；最终定向验证进行中，未做真实 Agent 与原生整链验收。",
       "statePrerequisites": [
         "已打开画布"
-      ]
+      ],
+      "limitation": "无文件输入的九种调整及RGB曲线已接；文件LUT和渐变端点颜色未全部接入。"
     },
     {
       "id": "canvas.undo-redo",
@@ -3606,13 +3713,16 @@
         "Editor.canvas-undo",
         "Editor.canvas-redo"
       ],
-      "mcpTools": [],
-      "agentStatus": "unmapped",
+      "mcpTools": [
+        "canvas_edit"
+      ],
+      "agentStatus": "registered",
       "acceptance": "source",
-      "notes": "未做运行验证。工具写入产生撤销步骤，不代表已暴露撤销或重做工具。",
+      "notes": "新增显式 canvas_edit 已接协议、原生宿主及审批；最终定向验证进行中，未做真实 Agent 与原生整链验收。",
       "statePrerequisites": [
         "画布有可用历史"
-      ]
+      ],
+      "limitation": "仅限通过有界回执和历史预检的当前画布；最终执行与恢复证据待补。"
     },
     {
       "id": "canvas.save",

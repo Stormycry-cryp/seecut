@@ -214,6 +214,53 @@ pub(super) fn execute_canvas(
     let (response, changed) = match origin.current(studio, app) {
         Err(response) => (response, false),
         Ok(()) => match &parameters.action {
+            CanvasAction::Edit {
+                edit,
+                expected_edit_state_id,
+            } => {
+                let previous_revision = studio.canvas.mcp_state().1;
+                let check = studio
+                    .canvas
+                    .mcp_writer_ready()
+                    .map_err(|error| Response::error(canvas_status(&error)))
+                    .and_then(|()| origin.final_check(&studio.editor_mcp.borrow(), &studio.canvas));
+                match check {
+                    Err(error) => (error, false),
+                    Ok(()) => {
+                        let cell = &studio.editor_mcp;
+                        match canvas_edit::apply_checked(
+                            &mut studio.canvas,
+                            edit,
+                            expected_edit_state_id,
+                            |canvas| {
+                                canvas
+                                    .mcp_writer_ready()
+                                    .map_err(CanvasMoveCheckedError::Canvas)?;
+                                origin
+                                    .final_check(&cell.borrow(), canvas)
+                                    .map_err(CanvasMoveCheckedError::Commit)
+                            },
+                        ) {
+                            Err(error) => (
+                                checked_error(error),
+                                studio.canvas.mcp_state().1 != previous_revision,
+                            ),
+                            Ok(mut evidence) => {
+                                studio.sync_mcp_selection();
+                                evidence["selectionRevision"] = json!(studio.mcp_selection_epoch());
+                                let changed = evidence["changed"] == true;
+                                (
+                                    origin.response(
+                                        if changed { "ok" } else { "unchanged" },
+                                        evidence,
+                                    ),
+                                    changed || studio.canvas.mcp_state().1 != previous_revision,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             CanvasAction::Transform {
                 object_id,
                 x,

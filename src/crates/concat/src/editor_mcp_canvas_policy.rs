@@ -113,6 +113,19 @@ impl Intent {
                     },
                 )
             }
+            "canvas_edit" => {
+                let a: EditArgs = serde_json::from_value(args).ok()?;
+                Self::write(
+                    a.project_id,
+                    a.document_session_id,
+                    a.revision,
+                    a.selection_revision,
+                    CanvasAction::Edit {
+                        edit: a.edit,
+                        expected_edit_state_id: a.expected_edit_state_id,
+                    },
+                )
+            }
             "save_canvas_project" | "export_canvas_png" => {
                 let a: IdentityArgs = serde_json::from_value(args).ok()?;
                 Self::write(
@@ -201,6 +214,16 @@ struct TransformArgs {
     x: f64,
     y: f64,
     scale: f64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EditArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: u64,
+    selection_revision: u64,
+    expected_edit_state_id: String,
+    edit: concat_editor_mcp::CanvasEdit,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -416,6 +439,54 @@ impl Receipts {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn canvas_edit_frozen_permit_binds_action_target_parameters_and_expiry() {
+        let now = Instant::now();
+        let args = json!({"projectId":"p","documentSessionId":"s","revision":2,"selectionRevision":3,"expectedEditStateId":format!("edit-v1-{}","a".repeat(64)),"edit":{"kind":"layerSetOpacity","objectId":"layer:2","opacity":0.4}});
+        let intent = Intent::parse("canvas_edit", args.clone()).unwrap();
+        assert_eq!(intent.method(), Method::CanvasEdit);
+        let mut permits = Permits::default();
+        permits
+            .grant(scope(), "c".into(), intent.clone(), now)
+            .unwrap();
+        for (field, value) in [("objectId", json!("layer:3")), ("opacity", json!(0.8))] {
+            let mut changed = args.clone();
+            changed["edit"][field] = value;
+            assert!(
+                permits
+                    .claim(
+                        &scope(),
+                        "c",
+                        &Intent::parse("canvas_edit", changed).unwrap(),
+                        now
+                    )
+                    .is_none()
+            );
+        }
+        assert!(
+            permits
+                .claim(&scope(), "c", &intent, now + Duration::from_secs(300))
+                .is_none()
+        );
+        let mut changed_state = args.clone();
+        changed_state["expectedEditStateId"] = json!(format!("edit-v1-{}", "b".repeat(64)));
+        assert!(
+            permits
+                .claim(
+                    &scope(),
+                    "c",
+                    &Intent::parse("canvas_edit", changed_state).unwrap(),
+                    now
+                )
+                .is_none()
+        );
+        let permit = permits.claim(&scope(), "c", &intent, now).unwrap();
+        assert!(permits.valid(&permit, now));
+        assert!(permits.claim(&scope(), "c", &intent, now).is_none());
+        let mut bad = args;
+        bad["edit"]["path"] = json!("/tmp/a");
+        assert!(Intent::parse("canvas_edit", bad).is_none());
+    }
     fn scope() -> Scope {
         Scope {
             instance: "i".into(),

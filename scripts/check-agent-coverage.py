@@ -5,6 +5,7 @@ This is source coverage only. A registered tool is never counted as runtime,
 model, UI, or finished-artifact acceptance.
 """
 import argparse
+import ast
 import json
 import re
 from pathlib import Path
@@ -79,6 +80,10 @@ def check():
     advertised = re.search(r'"tools"\s*:\s*(\[[^\]]*\])', host)
     if not advertised or set(json.loads(advertised.group(1))) != tools:
         errors.append('Native capability advertisement differs from MCP registrations.')
+    server = read('services/seecut-server/src/seecut_server/assistant_contract.py')
+    allowed = re.search(r'^TOOLS\s*=\s*frozenset\((\{[^}]+\})\)', server, re.M)
+    if not allowed or ast.literal_eval(allowed.group(1)) != tools:
+        errors.append('Managed Agent service tool vocabulary differs from MCP registrations.')
     for key, row in entries.items():
         for field in ['source', 'symbol', 'kind']:
             if key in observed and row.get(field) != observed[key][field]:
@@ -94,7 +99,24 @@ def check():
                 errors.append(f'Missing evidence file: {key}: {evidence}')
     if catalog['uiDeclarations'] != ui:
         errors.append('Slint callback declarations changed; update the inventory and audit the affected business route.')
+    route_ids = set()
     for route in catalog.get('businessRoutes', []):
+        required = ['id', 'module', 'label', 'source', 'actions', 'mcpTools', 'agentStatus', 'acceptance', 'notes']
+        if any(key not in route for key in required):
+            errors.append('Business route is missing required coverage fields.')
+            continue
+        if route['id'] in route_ids:
+            errors.append(f'Duplicate business route: {route["id"]}')
+        route_ids.add(route['id'])
+        if route['agentStatus'] not in ['unmapped', 'partial', 'registered']:
+            errors.append(f'Invalid business route status: {route["id"]}')
+        if route['acceptance'] not in ['pending', 'source', 'logic', 'app', 'task']:
+            errors.append(f'Invalid business route acceptance: {route["id"]}')
+        if route['acceptance'] in ['logic', 'app', 'task'] and not route.get('evidence'):
+            errors.append(f'Missing business route evidence: {route["id"]}')
+        for evidence in route.get('evidence', []):
+            if not (ROOT / evidence).is_file():
+                errors.append(f'Missing business route evidence file: {route["id"]}: {evidence}')
         if not (ROOT / route['source']).is_file():
             errors.append(f'Missing business route source: {route["source"]}')
         for name in route.get('mcpTools', []):

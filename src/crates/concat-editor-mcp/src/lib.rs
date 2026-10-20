@@ -14,6 +14,10 @@ pub use canvas::{
     AssetVersion, CanvasAction, CanvasParameters, LibraryQuery, OperationQuery,
     validate_canvas_parameters,
 };
+mod canvas_edit;
+pub use canvas_edit::{
+    CanvasAdjustment, CanvasEdit, CanvasPaintTarget, CanvasPoint, CurveChannel, LayerDirection,
+};
 pub use flow::FlowParameters;
 pub use flow_workspace::FlowWorkspace;
 
@@ -117,6 +121,8 @@ pub enum Method {
     InsertLibraryImage,
     /// Set bounded position and scale of the selected canvas layer.
     TransformCanvasLayer,
+    /// Execute one explicitly approved, typed local canvas edit.
+    CanvasEdit,
     /// Save the existing canvas binding asynchronously.
     SaveCanvasProject,
     /// Formally export PNG and register it in the existing library.
@@ -141,6 +147,7 @@ impl Method {
             Self::MoveSelectedImage
                 | Self::InsertLibraryImage
                 | Self::TransformCanvasLayer
+                | Self::CanvasEdit
                 | Self::SaveCanvasProject
                 | Self::ExportCanvasPng
                 | Self::RetryCanvasRegistration
@@ -158,6 +165,7 @@ impl Method {
             Self::LibraryImages => "library_images",
             Self::InsertLibraryImage => "insert_library_image",
             Self::TransformCanvasLayer => "transform_canvas_layer",
+            Self::CanvasEdit => "canvas_edit",
             Self::SaveCanvasProject => "save_canvas_project",
             Self::ExportCanvasPng => "export_canvas_png",
             Self::CanvasOperation => "canvas_operation",
@@ -272,6 +280,7 @@ pub fn validate_request_shape(request: &Request) -> Result<(), String> {
             Method::LibraryImages
                 | Method::InsertLibraryImage
                 | Method::TransformCanvasLayer
+                | Method::CanvasEdit
                 | Method::SaveCanvasProject
                 | Method::ExportCanvasPng
                 | Method::CanvasOperation
