@@ -73,8 +73,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Check recorded native commands, UI declarations and MCP registrations
         run: python3 scripts/check-agent-coverage.py
-      - name: Check Android memory helper without changing host swap
-        run: python3 scripts/test_ci_android_memory.py -v
+      - name: Check Linux engine memory helper without changing host swap
+        run: python3 scripts/test_ci_linux_memory.py -v
 
   engine:
     if: github.event_name != 'workflow_dispatch' || inputs.desktop_package_candidate != true
@@ -249,6 +249,10 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
         timeout-minutes: 2
         run: python3 -m unittest discover -s scripts -p test_ci_engine_step.py -v
+      - name: Prepare temporary Linux engine swap
+        if: github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true
+        timeout-minutes: 5
+        run: bash scripts/ci-linux-memory.sh prepare
       # -D warnings covers rustc lints too (missing_docs among them), so a
       # public item without documentation fails here, not in review. Lints
       # before tests: they finish in a fraction of the time and catch the
@@ -314,6 +318,10 @@ jobs:
       # always() retains diagnostics for command failures and phase deadlines. A
       # destroyed runner cannot execute this step; live output is also streamed
       # to the GitHub job log instead of claiming artifact delivery in that case.
+      - name: Clean temporary Linux engine swap
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true)
+        timeout-minutes: 5
+        run: bash scripts/ci-linux-memory.sh cleanup
       - name: Upload engine diagnostics
         if: always() && (github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true)
         timeout-minutes: 5

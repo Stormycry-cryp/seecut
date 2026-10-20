@@ -63,9 +63,14 @@ export global SeeCut {
     in-out property <bool> canvas-prompt-open;
     changed canvas-prompt-open => { self.prompt-context-revision += 1; }
     in-out property <int> prompt-context-revision;
-    changed canvas-gallery-open => { if self.canvas-gallery-open { self.canvas-prompt-open = false; self.prompt-context-revision += 1; } }
+    callback app-page-navigation-changed();
+    changed canvas-gallery-open => {
+        self.app-page-navigation-changed();
+        if self.canvas-gallery-open { self.canvas-prompt-open = false; self.prompt-context-revision += 1; }
+    }
     in-out property <int> page: 1;
     changed page => {
+        self.app-page-navigation-changed();
         self.prompt-context-revision += 1;
         self.personal-relink-view += 1;
         self.personal-relink-context-changed();
@@ -254,6 +259,7 @@ export global SeeCut {
     in-out property <bool> history-previous;
     in-out property <bool> history-next;
     in-out property <int> history-page: 1;
+    in-out property <string> account-expanded-entry;
     in-out property <int> history-view-revision;
     in-out property <string> history-error;
     in-out property <string> history-notice;

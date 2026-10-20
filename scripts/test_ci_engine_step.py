@@ -1,5 +1,6 @@
 """Exercise the CI supervisor with small subprocesses, without compiling the app."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,9 @@ import unittest
 
 
 SCRIPT = Path(__file__).with_name("ci-engine-step.py")
+SPEC = importlib.util.spec_from_file_location("ci_engine_step", SCRIPT)
+SUPERVISOR = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SUPERVISOR)
 
 
 class EngineStepTests(unittest.TestCase):
@@ -37,7 +41,9 @@ class EngineStepTests(unittest.TestCase):
         log = (self.output / "fixture/output.log").read_text()
         self.assertIn("stdout", log)
         self.assertIn("stderr", log)
-        self.assertTrue((self.output / "fixture/resources.jsonl").read_text().strip())
+        samples = [json.loads(line) for line in (self.output / "fixture/resources.jsonl").read_text().splitlines()]
+        self.assertTrue(samples[-1]["final"])
+        self.assertIn("cgroupMemory", samples[-1])
 
     def test_command_failure_is_not_hidden_by_log_capture(self):
         result = subprocess.run(self.command("print('failure detail'); raise SystemExit(7)"),
@@ -84,6 +90,48 @@ class EngineStepTests(unittest.TestCase):
             if process.poll() is None:
                 process.kill()
                 process.communicate()
+
+
+class CgroupMemoryTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.cgroup = self.root / "self-cgroup"
+        self.cgroup.write_text("0::/job/step\n")
+
+    def metric(self, group, name, value):
+        directory = self.root / "groups" / group
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_text(value)
+
+    def sample(self):
+        return SUPERVISOR.sample_cgroup_memory(self.cgroup, self.root / "groups")
+
+    def test_ancestor_oom_events_and_unlimited_limits_are_preserved(self):
+        self.metric("job/step", "memory.current", "42\n")
+        self.metric("job", "memory.max", "max\n")
+        self.metric("job", "memory.events", "low 0\nhigh 2\nmax 4\noom 1\noom_kill 1\n")
+        result = self.sample()
+        self.assertTrue(result["available"])
+        self.assertEqual([row["path"] for row in result["groups"]], ["/job/step", "/job", "/"])
+        self.assertEqual(result["groups"][1]["metrics"]["memory.events"]["oom_kill"], 1)
+        self.assertEqual(result["groups"][1]["metrics"]["memory.max"], "max")
+
+    def test_missing_and_invalid_metrics_do_not_become_zero(self):
+        self.metric("job/step", "memory.current", "invalid")
+        result = self.sample()
+        self.assertFalse(result["available"])
+        self.assertNotIn("memory.current", result["groups"][0]["metrics"])
+        self.assertEqual(result["groups"][0]["errors"]["memory.current"], "ValueError")
+
+    def test_v1_and_parent_traversal_are_explicitly_unavailable(self):
+        for entry in ("4:memory:/job\n", "0::/job/../foreign\n"):
+            with self.subTest(entry=entry):
+                self.cgroup.write_text(entry)
+                result = self.sample()
+                self.assertFalse(result["available"])
+                self.assertNotIn("groups", result)
 
 
 if __name__ == "__main__":

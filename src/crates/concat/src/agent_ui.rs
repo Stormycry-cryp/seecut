@@ -92,12 +92,15 @@ mod desktop {
     use crate::agent_controller::{
         ConnectionConfig, Controller, DocumentIdentity, Phase, TaskCommand, TaskOutcome,
     };
+    use crate::agent_identity::AgentScope;
     use crate::agent_process::LaunchSpec;
     use crate::agent_sessions::{
-        self, Archive, ContextReference, Message, Record, Reference, RequestSnapshot, Store,
+        self, AppReference, AppReferenceScope, Archive, ContextReference, DocumentReference,
+        HistoryScope, Message, Record, Reference, RequestSnapshot, Store,
     };
     use crate::editor_mcp::{
-        ASSISTANT_CLIENT_ID, AssistantPermission, AssistantPermissionError, AssistantSnapshot,
+        ASSISTANT_CLIENT_ID, AssistantAppSnapshot, AssistantPermission, AssistantPermissionError,
+        AssistantSnapshot,
     };
     use crate::host::{Shell, spawn_detached};
     use crate::ui::AssistantMessage;
@@ -113,24 +116,116 @@ mod desktop {
     // Leave room for one complete 32 KiB input and bounded streaming reply.
     const NEW_TURN_HISTORY_LIMIT: usize = 128 * 1024;
 
+    // The native bridge chooses one real current scope. Credentials stay outside Slint/history.
+    struct ScopeSnapshot {
+        scope: Option<AgentScope>,
+        project_name: String,
+        project_key: String,
+        read_token: Option<String>,
+        write_token: Option<String>,
+        read_status: String,
+        write_status: String,
+        can_grant_read: bool,
+        can_revoke_read: bool,
+        can_grant_write: bool,
+        can_revoke_write: bool,
+    }
+    impl ScopeSnapshot {
+        fn choose(document: AssistantSnapshot, app: AssistantAppSnapshot) -> Self {
+            if let Some(identity) = app.identity {
+                Self {
+                    scope: Some(AgentScope::App(identity)),
+                    project_name: app.page_label,
+                    project_key: String::new(),
+                    read_token: app.read_token,
+                    write_token: None,
+                    read_status: app.read_status,
+                    write_status: "当前页面尚未接入操作，可读取文字和现有媒体预览".into(),
+                    can_grant_read: app.can_grant_read,
+                    can_revoke_read: app.can_revoke_read,
+                    can_grant_write: false,
+                    can_revoke_write: false,
+                }
+            } else {
+                Self {
+                    scope: document.document.map(AgentScope::Document),
+                    project_name: document.project_name,
+                    project_key: document.project_key,
+                    read_token: document.read_token,
+                    write_token: document.write_token,
+                    read_status: document.read_status,
+                    write_status: document.write_status,
+                    can_grant_read: document.can_grant_read,
+                    can_revoke_read: document.can_revoke_read,
+                    can_grant_write: document.can_grant_write,
+                    can_revoke_write: document.can_revoke_write,
+                }
+            }
+        }
+        fn document(&self) -> Option<&DocumentIdentity> {
+            self.scope.as_ref().and_then(AgentScope::document)
+        }
+        fn is_app(&self) -> bool {
+            self.scope
+                .as_ref()
+                .is_some_and(|scope| scope.app().is_some())
+        }
+        fn history_scope(&self) -> Option<HistoryScope> {
+            match self.scope.as_ref()? {
+                AgentScope::Document(_) if !self.project_key.is_empty() => {
+                    Some(HistoryScope::Document(self.project_key.clone()))
+                }
+                AgentScope::App(app) => Some(HistoryScope::App(app.account_scope.clone())),
+                _ => None,
+            }
+        }
+        fn reference(&self) -> Option<ContextReference> {
+            match self.scope.as_ref()? {
+                AgentScope::Document(_) => Some(ContextReference::Document(DocumentReference {
+                    project_key: self.project_key.clone(),
+                    project_name: self.project_name.clone(),
+                })),
+                AgentScope::App(app) => Some(ContextReference::App(AppReference {
+                    app_scope: AppReferenceScope {
+                        instance_id: app.instance_id.clone(),
+                        account_scope: app.account_scope.clone(),
+                        app_session_id: app.app_session_id.clone(),
+                    },
+                    page_name: self.project_name.clone(),
+                })),
+            }
+        }
+    }
+
     // Never Debug/serialize this: comparison includes real lease tokens.
     #[derive(Clone, PartialEq, Eq)]
     struct Lease {
-        document: Option<DocumentIdentity>,
+        scope: Option<AgentScope>,
         read: Option<String>,
         write: Option<String>,
     }
     impl Lease {
-        fn from_snapshot(snapshot: &AssistantSnapshot) -> Self {
+        fn from_snapshot(snapshot: &ScopeSnapshot) -> Self {
             Self {
-                document: snapshot.document.clone(),
+                scope: snapshot.scope.clone(),
                 read: snapshot.read_token.clone(),
                 write: snapshot.write_token.clone(),
             }
         }
     }
     fn lease_change_notice(old: &Lease, next: &Lease) -> &'static str {
-        if old.document != next.document {
+        if old.scope != next.scope {
+            if old
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.app().is_some())
+                || next
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.app().is_some())
+            {
+                return "账户或页面会话已变化，请重新授权并恢复会话";
+            }
             return "工程已变化，请重新连接；旧确认不再有效";
         }
         if old.read != next.read {
@@ -436,7 +531,7 @@ mod desktop {
         state: RefCell<State>,
         parked: RefCell<Vec<State>>,
         retiring: RefCell<Vec<Retiring>>,
-        scope: RefCell<Option<(String, String)>>,
+        scope: RefCell<Option<(String, HistoryScope)>>,
         data: Option<PathBuf>,
         store: RefCell<Option<Store>>,
         history_error: RefCell<Option<&'static str>>,
@@ -504,13 +599,12 @@ mod desktop {
                 false
             });
         }
-        fn sync_scope(&self, app: &App, snapshot: &AssistantSnapshot) {
+        fn sync_scope(&self, app: &App, snapshot: &ScopeSnapshot) {
             let account = self.account.history_scope().or_else(|| {
                 cfg!(feature = "assistant-local-dev").then(|| "local-development".into())
             });
-            let next = account
-                .filter(|_| !snapshot.project_key.is_empty())
-                .map(|account| (account, snapshot.project_key.clone()));
+            let next =
+                account.and_then(|account| snapshot.history_scope().map(|scope| (account, scope)));
             if *self.scope.borrow() == next
                 && self.state.borrow().account_epoch == self.account.epoch()
             {
@@ -530,6 +624,9 @@ mod desktop {
             let mut states = vec![old];
             states.append(&mut self.parked.borrow_mut());
             for state in &mut states {
+                revoke_task_permits(state);
+                state.task_grant = None;
+                state.update_grant = None;
                 state.catalog.clear();
             }
             let old_store = self.store.borrow_mut().take();
@@ -557,7 +654,8 @@ mod desktop {
             if let Some((account, project)) = &next {
                 let loaded = (|| {
                     let data = self.data.as_deref().ok_or("Agent 数据目录不可用")?;
-                    let store = Store::open(&session_directory(data)?, account, project)?;
+                    let store =
+                        Store::open_scope(&session_directory(data)?, account, project.clone())?;
                     let archive = store.load()?;
                     *self.store.borrow_mut() = Some(store);
                     Ok::<_, &'static str>(archive)
@@ -882,7 +980,7 @@ mod desktop {
         fn other_session_reason(&self) -> &'static str {
             parked_connection_reason(&self.parked.borrow(), !self.retiring.borrow().is_empty())
         }
-        fn snapshot(app: &App) -> Option<AssistantSnapshot> {
+        fn snapshot(app: &App) -> Option<ScopeSnapshot> {
             let mut result = None;
             Shell::with(|shell, _| {
                 // Native file dialogs may run a nested event loop while their
@@ -894,7 +992,9 @@ mod desktop {
                     return;
                 };
                 // Bridge and studio borrows end before any setter or callback runs.
-                result = Some(bridge.assistant_snapshot(&studio, app));
+                let document = bridge.assistant_snapshot(&studio, app);
+                let app_snapshot = bridge.assistant_app_snapshot(&studio, app);
+                result = Some(ScopeSnapshot::choose(document, app_snapshot));
             });
             result
         }
@@ -928,7 +1028,7 @@ mod desktop {
             }
             {
                 let mut state = self.state.borrow_mut();
-                state.controller.tick(snapshot.document.as_ref());
+                state.controller.tick(snapshot.scope.as_ref());
                 if state.task_permit_revision != state.controller.task_permit_revision() {
                     revoke_task_permits(&mut state);
                     state.task_permit_revision = state.controller.task_permit_revision();
@@ -936,7 +1036,7 @@ mod desktop {
                 capture(&mut state);
             }
             for state in self.parked.borrow_mut().iter_mut() {
-                state.controller.tick(snapshot.document.as_ref());
+                state.controller.tick(snapshot.scope.as_ref());
                 capture(state);
                 // Idle background sessions release the one execution connection.
                 // Running and uncertain work keeps its original owner and callbacks.
@@ -1027,7 +1127,7 @@ mod desktop {
                         state.preparing = false;
                         match config {
                             Ok(config)
-                                if snapshot.document.as_ref() == Some(&config.document)
+                                if snapshot.scope.as_ref() == Some(&config.scope)
                                     && snapshot.read_token.as_deref()
                                         == Some(config.read_token.as_str())
                                     && snapshot.write_token == config.write_token =>
@@ -1079,14 +1179,14 @@ mod desktop {
         fn grant_scope(
             &self,
             state: &State,
-            snapshot: &AssistantSnapshot,
+            snapshot: &ScopeSnapshot,
         ) -> Option<crate::agent_task_grant::GrantScope> {
             let account_epoch = self.account.epoch()?;
             if state.runtime_account_epoch != Some(account_epoch) || !self.account.signed_in() {
                 return None;
             }
             let lease = state.lease.as_ref()?;
-            if lease.document != snapshot.document
+            if lease.scope != snapshot.scope
                 || lease.read != snapshot.read_token
                 || lease.write != snapshot.write_token
             {
@@ -1094,14 +1194,14 @@ mod desktop {
             }
             Some(crate::agent_task_grant::GrantScope {
                 task_id: state.controller.current_task_id()?.into(),
-                document: snapshot.document.clone()?,
+                document: snapshot.document().cloned()?,
                 ipc_generation: state.controller.ipc_generation(),
                 account_epoch,
                 read_lease: snapshot.read_token.clone()?,
                 write_lease: snapshot.write_token.clone()?,
             })
         }
-        fn sync_task_grant(&self, snapshot: &AssistantSnapshot) {
+        fn sync_task_grant(&self, snapshot: &ScopeSnapshot) {
             let mut state = self.state.borrow_mut();
             let scope = self.grant_scope(&state, snapshot);
             let view = state.controller.view();
@@ -1240,7 +1340,7 @@ mod desktop {
                     }
                 });
         }
-        fn sync_lease(&self, snapshot: &AssistantSnapshot) -> bool {
+        fn sync_lease(&self, snapshot: &ScopeSnapshot) -> bool {
             let next = Lease::from_snapshot(snapshot);
             let sync = |state: &mut State, current: bool| {
                 if !current || state.lease.as_ref().is_some_and(|old| old != &next) {
@@ -1250,7 +1350,7 @@ mod desktop {
                 }
                 if let Some(old) = state.lease.as_ref().filter(|old| *old != &next) {
                     let hot = current
-                        && old.document == next.document
+                        && old.scope == next.scope
                         && old.read == next.read
                         && next.read.is_some()
                         && !state.preparing
@@ -1279,7 +1379,7 @@ mod desktop {
             }
             false
         }
-        fn publish(&self, app: &App, snapshot: &AssistantSnapshot) {
+        fn publish(&self, app: &App, snapshot: &ScopeSnapshot) {
             let mut state = self.state.borrow_mut();
             state.sync_task_budget();
             let view = state.controller.view();
@@ -1307,14 +1407,21 @@ mod desktop {
                 error
             } else if !state.notice.is_empty() {
                 &state.notice
+            } else if state.controller.requires_app_restore() {
+                "原会话已保留。允许读取后，点击恢复原会话；旧问题不会自动重发。"
             } else if unknown && view.can_connect {
                 "恢复连接后核实原请求"
+            } else if snapshot.is_app()
+                && let Some(recovery) = state.controller.app_read_recovery()
+                && !recovery.message().is_empty()
+            {
+                recovery.message()
             } else if unknown {
                 view.error
-                    .map(|error| error.message())
+                    .map(|error| scope_error_message(error, snapshot.is_app()))
                     .unwrap_or("操作结果待核实")
             } else if let Some(error) = view.error {
-                error.message()
+                scope_error_message(error, snapshot.is_app())
             } else if view.outcome == Some(TaskOutcome::Stopped) {
                 stopped_hint()
             } else if !outcome.is_empty() {
@@ -1351,6 +1458,7 @@ mod desktop {
                     && history_error.is_none()
                     && self.parked.borrow().len() + 1 < agent_sessions::MAX_SESSIONS,
             );
+            ui.set_app_scope(snapshot.is_app());
             ui.set_current_project(snapshot.project_name.as_str().into());
             ui.set_provider_label(state.provider_label.as_str().into());
             let model_indices = state.model_indices();
@@ -1458,7 +1566,7 @@ mod desktop {
                 .filter_map(|v| v.task.as_ref())
                 .find(|v| Some(v.task_id.as_str()) == state.controller.current_task_id())
                 .map(|v| v.max_task_credits);
-            ui.set_task_visible(state.controller.current_task_id().is_some());
+            ui.set_task_visible(!snapshot.is_app() && state.controller.current_task_id().is_some());
             ui.set_task_status(
                 task.map(|v| {
                     format!(
@@ -1545,6 +1653,18 @@ mod desktop {
             }
             ui.set_can_stop(view.can_stop);
             ui.set_can_reconcile(view.can_reconcile);
+            let app_recovery_visible = snapshot.is_app()
+                && state
+                    .controller
+                    .app_read_recovery()
+                    .is_some_and(|r| r.reason != "nothing_pending");
+            ui.set_app_recovery_visible(app_recovery_visible);
+            ui.set_can_abandon_app_reads(
+                app_recovery_visible && state.controller.can_abandon_app_reads(),
+            );
+            ui.set_can_query_app_reads(
+                app_recovery_visible && state.controller.can_query_app_reads(),
+            );
             ui.set_reconcile_label(
                 if state
                     .controller
@@ -1573,7 +1693,7 @@ mod desktop {
             );
             ui.set_can_select_model(history_error.is_none() && state.can_select_model());
             ui.set_can_disconnect(connected && !busy);
-            ui.set_connect_label(if state.preparing || matches!(phase, Phase::Initializing | Phase::OpeningSession) { "正在连接…" } else if phase == Phase::Closing { "正在断开…" } else if connected { "断开" } else { "连接" }.into());
+            ui.set_connect_label(if state.preparing || matches!(phase, Phase::Initializing | Phase::OpeningSession) { "正在连接…" } else if phase == Phase::Closing { "正在断开…" } else if connected { "断开" } else if snapshot.is_app() && (state.record.runtime_created || state.controller.requires_app_restore()) { "恢复原会话" } else { "连接" }.into());
             let other = self.other_session_reason();
             let missing_model = state.record.selected_model_id.as_ref().is_some_and(|id| {
                 !state.catalog.loading
@@ -1583,10 +1703,10 @@ mod desktop {
             let reason = if let Some(error) = history_error {
                 error
             } else if self.store.borrow().is_none() {
-                if snapshot.document.is_some() && snapshot.project_key.is_empty() {
+                if snapshot.document().is_some() && snapshot.project_key.is_empty() {
                     "工程保存后即可开始会话"
                 } else {
-                    "请登录并打开工程"
+                    "请登录并打开支持的页面或工程"
                 }
             } else if !other.is_empty() {
                 other
@@ -1600,8 +1720,8 @@ mod desktop {
                 && !self.components.as_ref().is_some_and(|path| path.is_file())
             {
                 "此应用尚未包含 Agent 运行组件"
-            } else if snapshot.document.is_none() {
-                "请先打开工程"
+            } else if snapshot.scope.is_none() {
+                "当前页面暂不支持读取"
             } else if snapshot.read_token.is_none() {
                 "请先允许读取与预览"
             } else if state.selecting {
@@ -1760,6 +1880,41 @@ mod desktop {
             if state.preparing || state.selecting {
                 return;
             }
+            let Some(snapshot) = Self::snapshot(app) else {
+                return;
+            };
+            if snapshot.scope.is_none()
+                || snapshot.read_token.is_none()
+                || state.lease.as_ref().is_none_or(|lease| {
+                    lease.scope != snapshot.scope || lease.read != snapshot.read_token
+                })
+            {
+                state.notice = "页面或读取权限已变化，请重新核对后发送".into();
+                return;
+            }
+            let Some(context) = snapshot.reference() else {
+                return;
+            };
+            let app_input = if snapshot.is_app() {
+                let mut binding = Err(AssistantPermissionError::NotAllowed);
+                Shell::with(|shell, _| {
+                    let studio = shell.studio.borrow();
+                    binding = studio.editor_mcp.borrow_mut().assistant_app_view(
+                        &studio,
+                        app,
+                        &shell.models,
+                    );
+                });
+                match binding {
+                    Ok(view) => Some((format!("input-{}", uuid::Uuid::new_v4()), view)),
+                    Err(error) => {
+                        state.notice = error.message().into();
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
             let previous = state.record.clone();
             let references = state.record.draft_references.clone();
             let include_images = state.catalog.current().is_some_and(|choice| choice.images);
@@ -1785,9 +1940,6 @@ mod desktop {
             if let Some(account) = self.account.snapshot() {
                 visible = visible.replace(&account.token, "[已隐藏]");
             }
-            let Some(snapshot) = Self::snapshot(app) else {
-                return;
-            };
             let choice = state.catalog.current();
             let effort = state.selected_effort();
             let selection = if !cfg!(feature = "assistant-local-dev")
@@ -1824,6 +1976,8 @@ mod desktop {
                 None
             };
             let request = RequestSnapshot {
+                input_id: app_input.as_ref().map(|(id, _)| id.clone()),
+                app_view_binding: app_input.as_ref().map(|(_, view)| view.clone()),
                 task: task_intent.clone(),
                 references: state.record.draft_references.clone(),
                 session_id: state.record.id.clone(),
@@ -1843,10 +1997,7 @@ mod desktop {
                     })
                     .or_else(|| choice.map(|choice| choice.policy.clone()))
                     .unwrap_or_else(|| json!({})),
-                context: ContextReference {
-                    project_key: snapshot.project_key,
-                    project_name: snapshot.project_name,
-                },
+                context,
             };
             if let Some(task) = &task_intent {
                 state.record.current_task_id = Some(task.task_id.clone());
@@ -1896,6 +2047,10 @@ mod desktop {
                             .unwrap_or_else(|| json!({"modelId":"default"})),
                         task.max_task_credits,
                     )
+                } else if let Some((id, view)) = app_input {
+                    state
+                        .controller
+                        .send_app_content(&id, content, selection, view)
                 } else if references.is_empty() {
                     if selection.is_some() {
                         state.controller.send_text_with_selection(text, selection)
@@ -2195,10 +2350,22 @@ mod desktop {
             let mut result = Err(AssistantPermissionError::NotAllowed);
             Shell::with(|shell, _| {
                 let studio = shell.studio.borrow();
-                result = studio
-                    .editor_mcp
-                    .borrow_mut()
-                    .assistant_permission(&studio, app, action);
+                let mut bridge = studio.editor_mcp.borrow_mut();
+                let app_scope = bridge.assistant_app_snapshot(&studio, app).identity;
+                result = if let Some(identity) = app_scope {
+                    match action {
+                        AssistantPermission::GrantRead => {
+                            bridge.grant_app_read(&studio, app, &identity, true)
+                        }
+                        AssistantPermission::RevokeRead => {
+                            bridge.revoke_app_read();
+                            Ok(())
+                        }
+                        _ => Err(AssistantPermissionError::NotAllowed),
+                    }
+                } else {
+                    bridge.assistant_permission(&studio, app, action)
+                };
             });
             self.state.borrow_mut().notice = result
                 .err()
@@ -2387,6 +2554,38 @@ mod desktop {
             drop(state);
             self.refresh(app);
         }
+        fn app_read_recovery_action(&self, app: &App, abandon: bool) {
+            let (session_id, recovery) = {
+                let state = self.state.borrow();
+                (
+                    state.record.id.clone(),
+                    state.controller.app_read_recovery().cloned(),
+                )
+            };
+            self.refresh(app);
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            if state.record.id != session_id
+                || state.controller.app_read_recovery() != recovery.as_ref()
+            {
+                state.notice = "旧问题状态已变化，请检查当前会话".into();
+            } else {
+                let result = if abandon {
+                    state.controller.abandon_app_reads()
+                } else {
+                    state.controller.query_app_reads()
+                };
+                state.notice = result
+                    .err()
+                    .map(|e| scope_error_message(e, true))
+                    .unwrap_or("")
+                    .into();
+            }
+            drop(state);
+            self.refresh(app);
+        }
         fn load_models(&self, app: &App) {
             if cfg!(feature = "assistant-local-dev") || !app.global::<Assistant>().get_open() {
                 return;
@@ -2493,11 +2692,9 @@ mod desktop {
             let Some(snapshot) = Self::snapshot(app) else {
                 return;
             };
-            let (Some(document), Some(read_token), Some(manifest)) = (
-                snapshot.document,
-                snapshot.read_token,
-                self.components.clone(),
-            ) else {
+            let (Some(scope), Some(read_token), Some(manifest)) =
+                (snapshot.scope, snapshot.read_token, self.components.clone())
+            else {
                 return;
             };
             let mut data = None;
@@ -2537,7 +2734,8 @@ mod desktop {
             let sender = self.sender.clone();
             let environment = app_environment();
             let session_id = self.state.borrow().record.id.clone();
-            let restore = self.state.borrow().record.runtime_created;
+            let restore = self.state.borrow().record.runtime_created
+                || self.state.borrow().controller.requires_app_restore();
             spawn_detached(move || {
                 let config = (|| {
                     let files = crate::agent_components::load(&manifest)?;
@@ -2559,7 +2757,7 @@ mod desktop {
                             entrypoint: files.entrypoint,
                             environment,
                         },
-                        document,
+                        scope,
                         client_id: ASSISTANT_CLIENT_ID.into(),
                         mcp_client_path: files.mcp_client,
                         mcp_environment,
@@ -2611,7 +2809,7 @@ mod desktop {
                     return;
                 }
             };
-            let Some(document) = snapshot.document else {
+            let Some(scope) = snapshot.scope else {
                 return;
             };
             let Some(read_token) = snapshot.read_token else {
@@ -2640,7 +2838,8 @@ mod desktop {
             let sender = self.sender.clone();
             let account_epoch = self.account.epoch();
             let session_id = self.state.borrow().record.id.clone();
-            let restore = self.state.borrow().record.runtime_created;
+            let restore = self.state.borrow().record.runtime_created
+                || self.state.borrow().controller.requires_app_restore();
             spawn_detached(move || {
                 let config = (|| {
                     ordinary_file(&runtime)?;
@@ -2661,7 +2860,7 @@ mod desktop {
                             entrypoint,
                             environment,
                         },
-                        document,
+                        scope,
                         client_id: ASSISTANT_CLIENT_ID.into(),
                         mcp_client_path: mcp_client,
                         mcp_environment,
@@ -2911,7 +3110,9 @@ mod desktop {
             && (row.state.is_empty()
                 || (previous_pending == "unknown" && row.state == "操作结果待核实"))
         {
-            row.state = if previous_pending == "unknown" {
+            row.state = if state.controller.app_scope() {
+                "旧问题已结束"
+            } else if previous_pending == "unknown" {
                 "已核实"
             } else {
                 "旧请求已结束"
@@ -3088,6 +3289,8 @@ mod desktop {
             }
         });
         callback!(on_reconcile, reconcile);
+        callback!(on_abandon_app_reads, app_read_recovery_action, true);
+        callback!(on_query_app_reads, app_read_recovery_action, false);
         callback!(on_grant_read, permission, AssistantPermission::GrantRead);
         callback!(on_revoke_read, permission, AssistantPermission::RevokeRead);
         callback!(on_grant_write, permission, AssistantPermission::GrantWrite);
@@ -3165,6 +3368,19 @@ mod desktop {
         binding
     }
 
+    fn scope_error_message(
+        error: crate::agent_controller::UiError,
+        app_scope: bool,
+    ) -> &'static str {
+        use crate::agent_controller::UiError;
+        match (app_scope, error) {
+            (true, UiError::AuthorizationRequired) => "请允许读取当前页面文字和媒体预览",
+            (true, UiError::DocumentChanged) => "账户或 App 会话已变化，请重新授权并恢复原会话",
+            (true, UiError::SessionRecoveryRequired) => "旧问题需要结束或核实，请查看会话状态",
+            (true, UiError::VerifyRequired) => "旧问题的读取状态待核实，已暂停后续问题",
+            _ => error.message(),
+        }
+    }
     fn stopped_hint() -> &'static str {
         "本轮已停止；单轮上限 120 秒。重新发起需新输入，编辑动作需新确认"
     }
@@ -3419,7 +3635,7 @@ mod desktop {
         #[test]
         fn permission_change_preserves_read_connection_notice() {
             let old = Lease {
-                document: None,
+                scope: None,
                 read: Some("synthetic-read".into()),
                 write: Some("synthetic-write".into()),
             };
@@ -3497,16 +3713,18 @@ mod desktop {
                 state.record.pending = pending.into();
                 state.record.runtime_created = true;
                 let original = RequestSnapshot {
+                    input_id: None,
+                    app_view_binding: None,
                     task: None,
                     references: Vec::new(),
                     session_id: state.record.id.clone(),
                     model_id: "model-one".into(),
                     effort_id: Some("balanced".into()),
                     policy: state.selected_effort().unwrap().policy(),
-                    context: ContextReference {
+                    context: ContextReference::Document(DocumentReference {
                         project_key: "project".into(),
                         project_name: "测试工程".into(),
-                    },
+                    }),
                 };
                 state.record.request_snapshots.push(original.clone());
                 let mut second = state.catalog.efforts[0].clone();

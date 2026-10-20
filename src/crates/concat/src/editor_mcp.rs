@@ -31,6 +31,8 @@ mod write_request;
 #[path = "editor_mcp_view_context.rs"]
 mod view_context;
 
+#[path = "editor_mcp_app_read.rs"]
+mod app_read;
 #[path = "editor_mcp_canvas_edit.rs"]
 mod canvas_edit;
 #[path = "editor_mcp_clip_edit.rs"]
@@ -41,6 +43,7 @@ mod clip_execute;
 mod clip_import;
 #[path = "editor_mcp_library_assets.rs"]
 mod library_assets;
+pub(crate) use app_read::AssistantAppSnapshot;
 use library_assets::LibraryAuthority;
 
 use write_registry::{Begin, LeaseStatus, OperationKey, RegistryError, Scope, WriteRegistry};
@@ -649,6 +652,7 @@ pub(crate) struct BridgeUi {
     pub socket_status: String,
     pub client_draft: String,
     grants: HashMap<String, Grant>,
+    app_reads: app_read::AppReadState,
     canvas_ids: Option<(String, DocumentIds)>,
     clip_ids: Option<(String, DocumentIds)>,
     active_canvas: bool,
@@ -977,6 +981,7 @@ impl BridgeUi {
             socket_status: "Starting".into(),
             client_draft: String::new(),
             grants: HashMap::new(),
+            app_reads: app_read::AppReadState::default(),
             canvas_ids: None,
             clip_ids: None,
             active_canvas: false,
@@ -1824,6 +1829,7 @@ enum UiReply {
     Library(Box<LibraryJob>),
     Registration(Box<RegistrationReadJob>),
     Preview(Box<PreviewJob>),
+    AppPreview(Box<app_read::AppPreviewJob>),
 }
 
 fn preview_slot() -> &'static Mutex<()> {
@@ -2252,7 +2258,16 @@ fn dispatch(request: Request) -> Response {
             let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
                 return UiReply::Response(Response::error("busy"));
             };
-            bridge.handle(&request, &studio, &app)
+            if request.app_scope.is_some()
+                || matches!(
+                    request.method,
+                    Method::AppContext | Method::PageItems | Method::PagePreview
+                )
+            {
+                app_read::handle(&mut bridge, &request, &studio, &app, &shell.models)
+            } else {
+                bridge.handle(&request, &studio, &app)
+            }
         }
     });
     let Ok(reply) = reply else {
@@ -2268,6 +2283,7 @@ fn dispatch(request: Request) -> Response {
             }
         }
         UiReply::Registration(job) => refresh_registration_receipt(*job),
+        UiReply::AppPreview(job) => app_read::dispatch_preview(*job),
         UiReply::Preview(job) => {
             let Ok(_slot) = preview_slot().try_lock() else {
                 return Response::error("busy");
@@ -2949,6 +2965,8 @@ mod tests {
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
             instance_id: scope.instance.clone(),
             client_id: "writer".into(),
             client_token: "write-token".into(),
@@ -3365,6 +3383,8 @@ mod tests {
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
             instance_id: bridge.instance_id.clone(),
             client_id: "reader".into(),
             client_token: "token".into(),

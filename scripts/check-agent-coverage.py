@@ -16,6 +16,7 @@ COMMANDS = 'src/crates/concat-project/src/commands/mod.rs'
 CANVAS = 'src/crates/concat/src/panes/canvas.rs'
 MCP = 'src/crates/concat-editor-mcp/src/main.rs'
 UI = 'src/crates/concat/ui'
+APP_READ_TOOLS = {'capabilities', 'app_context', 'page_items', 'page_preview'}
 
 
 def read(path):
@@ -76,10 +77,18 @@ def check():
     for key in sorted(set(entries) - set(observed)):
         errors.append(f'Stale native surface: {key}')
     tools = {entry['symbol'] for entry in observed.values() if entry['kind'] == 'registeredTool'}
-    host = read('src/crates/concat/src/editor_mcp.rs')
-    advertised = re.search(r'"tools"\s*:\s*(\[[^\]]*\])', host)
-    if not advertised or set(json.loads(advertised.group(1))) != tools:
-        errors.append('Native capability advertisement differs from MCP registrations.')
+    def advertised_tools(path):
+        advertised = re.search(r'"tools"\s*:\s*(\[[^\]]*\])', read(path))
+        return set(json.loads(advertised.group(1))) if advertised else set()
+
+    document_tools = advertised_tools('src/crates/concat/src/editor_mcp.rs')
+    app_tools = advertised_tools('src/crates/concat/src/editor_mcp_app_read.rs')
+    if app_tools != APP_READ_TOOLS:
+        errors.append('Native App capability advertisement differs from the closed read tool set.')
+    if document_tools != tools - (APP_READ_TOOLS - {'capabilities'}):
+        errors.append('Native document capabilities differ from document-only MCP registrations.')
+    if document_tools | app_tools != tools or document_tools & app_tools != {'capabilities'}:
+        errors.append('Native scope capability union differs from MCP registrations.')
     server = read('services/seecut-server/src/seecut_server/assistant_contract.py')
     allowed = re.search(r'^TOOLS\s*=\s*frozenset\((\{[^}]+\})\)', server, re.M)
     if not allowed or ast.literal_eval(allowed.group(1)) != tools:

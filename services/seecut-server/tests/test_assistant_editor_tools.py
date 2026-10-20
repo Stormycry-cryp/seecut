@@ -8,6 +8,7 @@ from seecut_server.errors import ApiError
 from test_assistant_contract import AssistantFixture, done
 
 EDITOR_TOOLS = (
+    "app_context", "page_items", "page_preview",
     "capabilities", "context", "project", "preview", "move_selected_image",
     "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit",
     "save_canvas_project", "export_canvas_png", "canvas_operation",
@@ -19,6 +20,7 @@ EDITOR_TOOLS = (
 
 class EditorVocabularyTest(unittest.TestCase):
     def test_complete_catalog_and_tool_history_round_trip(self):
+        self.assertEqual(set(EDITOR_TOOLS), TOOLS)
         request = {"system": "test", "messages": [], "maxOutputTokens": 100,
                    "tools": [{"name": name, "description": "editor", "parameters": {"type": "object"}}
                              for name in EDITOR_TOOLS]}
@@ -107,6 +109,19 @@ class ManagedEditorToolsTest(AssistantFixture):
         self.assertEqual(self.service.get(self.user, operation["operation_id"])["state"], "outcome_unknown")
         events = self.service.events(self.user, operation["operation_id"], 0)["events"]
         self.assertFalse(any(e["type"] == "model" and e["payload"].get("message", {}).get("toolCalls") for e in events))
+
+    def test_provider_cannot_introduce_unrequested_app_read_tools(self):
+        for name in ("app_context", "page_items", "page_preview"):
+            with self.subTest(tool=name):
+                self.user, _ = self.new_user(name + "@example.test")
+                event = done(tool=True)
+                event["message"]["toolCalls"][0]["name"] = name
+                self.provider.events = [event]
+                operation = self.create(self.body(step="step-" + name, turn="turn-" + name))
+                self.worker.process_once()
+                self.assertEqual(self.service.get(self.user, operation["operation_id"])["state"], "outcome_unknown")
+                events = self.service.events(self.user, operation["operation_id"], 0)["events"]
+                self.assertFalse(any(e["type"] == "model" and e["payload"].get("message", {}).get("toolCalls") for e in events))
 
     def test_provider_cannot_introduce_unrequested_editor_tool(self):
         event = done(tool=True)

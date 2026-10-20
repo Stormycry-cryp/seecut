@@ -947,6 +947,21 @@
       "acceptance": "pending",
       "evidence": []
     },
+    "tool:app_context": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "app_context",
+      "kind": "registeredTool",
+      "module": "app",
+      "mcpTools": [
+        "app_context"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "evidence": [
+        "src/crates/concat-editor-mcp/src/main.rs",
+        "src/crates/concat-editor-mcp/src/app_read.rs"
+      ]
+    },
     "tool:canvas_edit": {
       "source": "src/crates/concat-editor-mcp/src/main.rs",
       "symbol": "canvas_edit",
@@ -1234,6 +1249,36 @@
       "agentStatus": "registered",
       "acceptance": "pending",
       "evidence": []
+    },
+    "tool:page_items": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "page_items",
+      "kind": "registeredTool",
+      "module": "app",
+      "mcpTools": [
+        "page_items"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "evidence": [
+        "src/crates/concat-editor-mcp/src/main.rs",
+        "src/crates/concat-editor-mcp/src/app_read.rs"
+      ]
+    },
+    "tool:page_preview": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "page_preview",
+      "kind": "registeredTool",
+      "module": "app",
+      "mcpTools": [
+        "page_preview"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "evidence": [
+        "src/crates/concat-editor-mcp/src/main.rs",
+        "src/crates/concat-editor-mcp/src/app_read.rs"
+      ]
     },
     "tool:preview": {
       "source": "src/crates/concat-editor-mcp/src/main.rs",
@@ -1732,6 +1777,7 @@
       "activated"
     ],
     "src/crates/concat/ui/seecut/assistant.slint": [
+      "abandon-app-reads",
       "allow",
       "attach",
       "choose",
@@ -1750,6 +1796,7 @@
       "new-session",
       "open",
       "open-reference",
+      "query-app-reads",
       "reconcile",
       "refresh-models",
       "reject",
@@ -1776,6 +1823,7 @@
       "task-update"
     ],
     "src/crates/concat/ui/seecut/assistant_state.slint": [
+      "abandon-app-reads",
       "allow",
       "attach",
       "choose-entrypoint",
@@ -1791,6 +1839,7 @@
       "grant-write",
       "new-session",
       "open-reference",
+      "query-app-reads",
       "reconcile",
       "refresh-models",
       "reject",
@@ -1835,6 +1884,7 @@
     ],
     "src/crates/concat/ui/seecut/state.slint": [
       "action",
+      "app-page-navigation-changed",
       "changed",
       "personal-can-drop",
       "personal-relink-context-changed",
@@ -5293,6 +5343,39 @@
       "acceptance": "source",
       "notes": "用户显式上限绑定冻结模型选择，最低覆盖完整单轮预留；不允许模型自行增加，生成费用仍依原业务账本。当前尚无实窗验收。",
       "controlBoundary": true
+    },
+    {
+      "id": "app.current-page-read",
+      "module": "app",
+      "label": "当前页面和筛选列表读取",
+      "source": "src/crates/concat/src/cloud/app_page_snapshot.rs",
+      "actions": [
+        "capture_current"
+      ],
+      "mcpTools": [
+        "app_context",
+        "page_items"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "独立App只读范围；从现有UI缓存投影8类普通页面，列表不代表视口。单独鉴权，不继承Doc许可；真实App和模型读取尚待验收。"
+    },
+    {
+      "id": "app.current-preview-read",
+      "module": "app",
+      "label": "当前媒体或列表缩略图读取",
+      "source": "src/crates/concat/src/editor_mcp_app_preview.rs",
+      "actions": [
+        "capture_pixels",
+        "encode",
+        "finish"
+      ],
+      "mcpTools": [
+        "page_preview"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "仅已载入UI Image句柄、原opaque itemId与previewVersion；实际PNG字节，分别核对页面/账户/读取许可。没有视频播放帧、屏幕坐标或真实App验收证据。"
     }
   ]
 }

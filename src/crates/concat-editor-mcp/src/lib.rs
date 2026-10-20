@@ -7,6 +7,11 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod app_read;
+pub use app_read::{
+    AppContextQuery, AppItemsQuery, AppPageId, AppPageQuery, AppPreviewQuery, AppReadScope,
+    AppViewBinding,
+};
 mod library_assets;
 pub use library_assets::{LibraryAssetKind, LibraryAssetsQuery, validate_library_asset};
 mod canvas;
@@ -44,6 +49,12 @@ pub struct Request {
     pub client_token: String,
     /// One named method.
     pub method: Method,
+    /// Independent signed-in App read scope; forbidden on Doc methods.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_scope: Option<AppReadScope>,
+    /// Closed current App page query, matched exactly to its method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_page: Option<AppPageQuery>,
     #[serde(default)]
     /// Opaque project identity.
     pub project_id: Option<String>,
@@ -122,6 +133,12 @@ pub struct MoveParameters {
 pub enum Method {
     /// Read supported tools and limits.
     Capabilities,
+    /// Read the current ordinary App page under its independent grant.
+    AppContext,
+    /// Read one bounded filtered App item page.
+    PageItems,
+    /// Read original cached image pixels with two UI checks.
+    PagePreview,
     /// Read the active workspace and document context.
     Context,
     /// Read a bounded project structure page.
@@ -180,6 +197,9 @@ impl Method {
     pub fn tool_name(self) -> &'static str {
         match self {
             Self::Capabilities => "capabilities",
+            Self::AppContext => "app_context",
+            Self::PageItems => "page_items",
+            Self::PagePreview => "page_preview",
             Self::Context => "context",
             Self::Project => "project",
             Self::Preview => "preview",
@@ -259,6 +279,15 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if request.app_scope.is_some()
+        || request.app_page.is_some()
+        || matches!(
+            request.method,
+            Method::AppContext | Method::PageItems | Method::PagePreview
+        )
+    {
+        return app_read::validate_app_request(request);
+    }
     if request.library_assets_query.is_some() || request.method == Method::LibraryAssets {
         return library_assets::validate_request(request);
     }
@@ -712,6 +741,8 @@ mod tests {
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
             instance_id: "app".into(),
             client_id: "client".into(),
             client_token: "write-credential".into(),
@@ -1003,6 +1034,8 @@ mod tests {
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
             instance_id: "app".into(),
             client_id: "c".into(),
             client_token: "t".into(),
@@ -1040,6 +1073,8 @@ mod tests {
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
             instance_id: "first".into(),
             client_id: "c".into(),
             client_token: "t".into(),

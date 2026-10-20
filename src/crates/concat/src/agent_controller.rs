@@ -13,11 +13,12 @@ const TEXT_LIMIT: usize = 64 * 1024;
 const MAX_TOOL_PROGRESS: usize = 12;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub use super::agent_identity::DocumentIdentity;
+pub use super::agent_identity::{AgentScope, DocumentIdentity};
+use concat_editor_mcp::app_read::AppViewBinding;
 /// Credentials deliberately have no Debug implementation and are never written to disk/logs.
 pub struct ConnectionConfig {
     pub launch: LaunchSpec,
-    pub document: DocumentIdentity,
+    pub scope: AgentScope,
     pub client_id: String,
     pub mcp_client_path: PathBuf,
     pub mcp_environment: BTreeMap<String, String>,
@@ -108,6 +109,92 @@ pub struct EditorRecovery {
     pub is_flow: bool,
     pub is_clip: bool,
 }
+
+/// A bounded host projection. Only the current pending queues decide recovery;
+/// historical samples are display evidence and are never replayed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppReadRecovery {
+    pub can_abandon: bool,
+    pub reason: String,
+    evidence: Value,
+}
+impl AppReadRecovery {
+    fn parse(value: &Value) -> Option<Self> {
+        let can_abandon = value["canAbandon"].as_bool()?;
+        let reason = value["reason"].as_str()?;
+        if !matches!(
+            reason,
+            "ready"
+                | "nothing_pending"
+                | "active_turn"
+                | "billing_unavailable"
+                | "account_scope"
+                | "billing_pending"
+                | "unrecognized_history"
+        ) || can_abandon != (reason == "ready")
+        {
+            return None;
+        }
+        let ids = |key: &str, max: usize| -> Option<usize> {
+            let values = value[key].as_array()?;
+            if values.len() > max {
+                return None;
+            }
+            let mut unique = std::collections::BTreeSet::new();
+            for id in values {
+                let id = id.as_str()?;
+                if id.is_empty() || id.len() > 256 || !unique.insert(id) {
+                    return None;
+                }
+            }
+            Some(values.len())
+        };
+        let pending = ids("pendingInputIds", 8)?;
+        let reads = ids("readInvocationIds", 128)?;
+        if can_abandon && pending == 0 && reads == 0 {
+            return None;
+        }
+        if reason == "nothing_pending" && (pending != 0 || reads != 0) {
+            return None;
+        }
+        for (sample, total, truncated) in [
+            (
+                "recentWithdrawnInputIds",
+                "withdrawnInputTotal",
+                "withdrawnInputTruncated",
+            ),
+            (
+                "recentAbandonedReadInvocationIds",
+                "abandonedReadInvocationTotal",
+                "abandonedReadInvocationTruncated",
+            ),
+        ] {
+            let count = ids(sample, 64)? as u64;
+            let total = value[total]
+                .as_u64()
+                .filter(|n| *n <= 9_007_199_254_740_991)?;
+            if count != total.min(64) || value[truncated].as_bool()? != (total > 64) {
+                return None;
+            }
+        }
+        Some(Self {
+            can_abandon,
+            reason: reason.into(),
+            evidence: value.clone(),
+        })
+    }
+    pub fn message(&self) -> &'static str {
+        match self.reason.as_str() {
+            "ready" => "旧问题无法继续读取原页面。结束后可发送新问题，历史记录会保留。",
+            "active_turn" => "旧问题仍在处理，请先停止并等待结束",
+            "billing_pending" => "请先核实原问题的推理和积分，再结束旧问题",
+            "billing_unavailable" => "暂时无法核实原问题的积分，请稍后查询",
+            "account_scope" => "请使用原账户恢复此会话",
+            "unrecognized_history" => "旧问题的记录暂时无法核实，请保留会话并检查运行时版本",
+            _ => "",
+        }
+    }
+}
 impl EditorRecovery {
     pub fn query_arguments(&self) -> Value {
         json!({"projectId":self.project_id,"documentSessionId":self.document_session_id,"operationId":self.operation_id,"clientSequence":self.client_sequence})
@@ -140,7 +227,7 @@ impl View<'_> {
                 .is_some_and(|error| !matches!(error, UiError::Busy | UiError::TaskRevisionChanged))
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ToolAction {
     Context,
     Project,
@@ -160,10 +247,12 @@ enum ToolAction {
     FlowRead,
     FlowWrite,
     TaskProgress,
+    AppRead,
 }
 impl ToolAction {
     fn from_name(name: &str) -> Option<Self> {
         match name {
+            "app_context" | "page_items" | "page_preview" => Some(Self::AppRead),
             "task_status" | "task_checkpoint" => Some(Self::TaskProgress),
             "context" => Some(Self::Context),
             "project" => Some(Self::Project),
@@ -208,6 +297,7 @@ impl ToolAction {
     }
     fn label(self) -> &'static str {
         match self {
+            Self::AppRead => "读取当前应用页面",
             Self::TaskProgress => "核对任务进度",
             Self::Context => "读取当前页面",
             Self::Project => "读取工程信息",
@@ -304,6 +394,7 @@ enum Request {
     Close,
     Reconcile,
     RecoveryStatus,
+    AbandonAppReads,
     EditorReconcile {
         operation_id: String,
     },
@@ -316,7 +407,7 @@ struct Pending {
 
 pub struct Controller {
     process: Option<Handle>,
-    document: Option<DocumentIdentity>,
+    scope: Option<AgentScope>,
     session_id: String,
     restore: bool,
     recover_existing: bool,
@@ -354,6 +445,8 @@ pub struct Controller {
     managed_mode: bool,
     model_unknown: bool,
     recovery_pending: bool,
+    app_read_recovery: Option<AppReadRecovery>,
+    app_restore_required: bool,
     last_model_state: Option<Value>,
     account_expired: bool,
     budget_label: String,
@@ -374,7 +467,7 @@ impl Default for Controller {
     fn default() -> Self {
         Self {
             process: None,
-            document: None,
+            scope: None,
             session_id: String::new(),
             restore: false,
             recover_existing: false,
@@ -411,6 +504,8 @@ impl Default for Controller {
             managed_mode: false,
             model_unknown: false,
             recovery_pending: false,
+            app_read_recovery: None,
+            app_restore_required: false,
             last_model_state: None,
             account_expired: false,
             budget_label: "0".into(),
@@ -438,7 +533,10 @@ impl Controller {
                 && config.restore
                 && config.local_session_id == self.session_id
                 && config.client_id == self.editor_client
-                && self.document.as_ref() == Some(&config.document)
+                && self
+                    .scope
+                    .as_ref()
+                    .is_some_and(|old| old.same_restore_scope(&config.scope))
                 && self.managed_mode == (config.provider["protocol"] == "seecut-managed"))
         {
             return Err(UiError::VerifyRequired);
@@ -447,9 +545,20 @@ impl Controller {
             return Err(UiError::Busy);
         }
         let valid_id = |id: &str| max64(id);
-        if config.document.instance_id.is_empty()
-            || config.document.project_id.is_empty()
-            || !valid_id(&config.document.document_session_id)
+        if config.scope.instance_id().is_empty()
+            || match &config.scope {
+                AgentScope::Document(document) => {
+                    document.project_id.is_empty() || !valid_id(&document.document_session_id)
+                }
+                AgentScope::App(app) => {
+                    !concat_editor_mcp::AppReadScope {
+                        account_scope: app.account_scope.clone(),
+                        app_session_id: app.app_session_id.clone(),
+                    }
+                    .valid()
+                        || config.write_token.is_some()
+                }
+            }
             || !valid_id(&config.client_id)
             || !valid_session_id(&config.local_session_id)
             || (!self.session_id.is_empty() && self.session_id != config.local_session_id)
@@ -477,7 +586,10 @@ impl Controller {
         }
         let preserve_cost = config.restore
             && self.session_id == config.local_session_id
-            && self.document.as_ref() == Some(&config.document)
+            && self
+                .scope
+                .as_ref()
+                .is_some_and(|old| old.same_restore_scope(&config.scope))
             && self.managed_mode
             && config.provider["protocol"] == "seecut-managed"
             && account_fingerprint.is_some()
@@ -522,18 +634,32 @@ impl Controller {
         self.model_unknown = self.managed_mode && self.model_unknown;
         self.account_expired = false;
         self.recovery_pending = false;
+        self.app_read_recovery = None;
         self.last_model_state = None;
         self.billing_fingerprint = Value::Null;
         self.secrets.retain(|value| !value.is_empty());
-        let params = json!({"protocolVersion":1,"appProtocolVersion":1,"taskProtocolVersion":1,"instanceId":config.document.instance_id,"clientId":config.client_id,"clientPath":config.mcp_client_path,"mcpEnvironment":config.mcp_environment,"sessionDirectory":config.session_directory,"provider":config.provider,"readToken":config.read_token,"writeToken":config.write_token});
+        let mut params = json!({"protocolVersion":1,"appProtocolVersion":1,"instanceId":config.scope.instance_id(),"clientId":config.client_id,"clientPath":config.mcp_client_path,"mcpEnvironment":config.mcp_environment,"sessionDirectory":config.session_directory,"provider":config.provider,"readToken":config.read_token});
+        match &config.scope {
+            AgentScope::Document(_) => {
+                params["taskProtocolVersion"] = json!(1);
+                if let Some(token) = &config.write_token {
+                    params["writeToken"] = json!(token);
+                }
+            }
+            AgentScope::App(app) => {
+                params["scopeKind"] = json!("app");
+                params["appReadProtocolVersion"] = json!(1);
+                params["accountScope"] = json!(app.account_scope);
+                params["appSessionId"] = json!(app.app_session_id);
+            }
+        }
         // The runtime distinguishes absent writeToken from null.
-        let mut params = params;
         if params["writeToken"].is_null() {
             params.as_object_mut().unwrap().remove("writeToken");
         }
         let handle = agent_process::start(config.launch).map_err(bridge_error)?;
         self.process = Some(handle);
-        self.document = Some(config.document);
+        self.scope = Some(config.scope);
         self.pending.clear();
         self.send_turn = None;
         self.turn_id = None;
@@ -887,7 +1013,7 @@ impl Controller {
         self.session_opened
             && !self.session_id.is_empty()
             && !self.editor_client.is_empty()
-            && self.document.is_some()
+            && self.scope.is_some()
     }
     pub fn view(&self) -> View<'_> {
         View {
@@ -939,7 +1065,14 @@ impl Controller {
     }
     /// Replace only the editor transport credentials within the opened session.
     pub fn update_permissions(&mut self, write_token: Option<String>) -> Result<(), UiError> {
-        if !self.session_opened || self.process.is_none() || !self.permissions_supported {
+        if self
+            .scope
+            .as_ref()
+            .is_some_and(|scope| scope.app().is_some())
+            || !self.session_opened
+            || self.process.is_none()
+            || !self.permissions_supported
+        {
             return Err(UiError::Protocol);
         }
         self.permission_revision += 1;
@@ -970,6 +1103,35 @@ impl Controller {
         content: Vec<Value>,
         selection: Option<Value>,
     ) -> Result<(), UiError> {
+        self.send_frozen_content(content, selection, None)
+    }
+    /// App observations are frozen by the human send action before attachment work.
+    pub fn send_app_content(
+        &mut self,
+        input_id: &str,
+        content: Vec<Value>,
+        selection: Option<Value>,
+        view: AppViewBinding,
+    ) -> Result<(), UiError> {
+        self.send_frozen_content(content, selection, Some((input_id.to_owned(), view)))
+    }
+    fn send_frozen_content(
+        &mut self,
+        content: Vec<Value>,
+        selection: Option<Value>,
+        observation: Option<(String, AppViewBinding)>,
+    ) -> Result<(), UiError> {
+        let is_app = self
+            .scope
+            .as_ref()
+            .is_some_and(|scope| scope.app().is_some());
+        if is_app != observation.is_some()
+            || observation
+                .as_ref()
+                .is_some_and(|(id, view)| !max64(id) || !view.valid())
+        {
+            return Err(UiError::Configuration);
+        }
         if let Some(error) = self.blocking_error() {
             return Err(error);
         }
@@ -1013,8 +1175,14 @@ impl Controller {
         }
         // IPC counters restart with the process; persisted sessions must never
         // mistake a new explicit question for an already accepted input.
-        let input_id = format!("input-{}", uuid::Uuid::new_v4());
+        let input_id = observation
+            .as_ref()
+            .map(|(id, _)| id.clone())
+            .unwrap_or_else(|| format!("input-{}", uuid::Uuid::new_v4()));
         let mut params = json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":content});
+        if let Some((_, view)) = observation {
+            params["appViewBinding"] = json!(view);
+        }
         if let Some(selection) = selection {
             params["modelSelection"] = selection;
         }
@@ -1080,6 +1248,95 @@ impl Controller {
             Request::Reconcile,
         )
     }
+    pub fn app_scope(&self) -> bool {
+        self.scope
+            .as_ref()
+            .is_some_and(|scope| scope.app().is_some())
+    }
+    pub fn requires_app_restore(&self) -> bool {
+        self.app_scope() && self.app_restore_required
+    }
+    pub fn app_read_recovery(&self) -> Option<&AppReadRecovery> {
+        self.app_read_recovery.as_ref()
+    }
+    pub fn can_query_app_reads(&self) -> bool {
+        self.app_scope()
+            && self.session_opened
+            && self.process.is_some()
+            && self.turn_id.is_none()
+            && self.pending.is_empty()
+            && !self.ignore_runtime_events
+            && !self.account_expired
+    }
+    pub fn can_abandon_app_reads(&self) -> bool {
+        self.can_query_app_reads()
+            && !self.model_unknown
+            && self
+                .app_read_recovery
+                .as_ref()
+                .is_some_and(|r| r.can_abandon)
+    }
+    pub fn query_app_reads(&mut self) -> Result<(), UiError> {
+        if !self.can_query_app_reads() {
+            return Err(UiError::Busy);
+        }
+        self.enqueue(
+            "status",
+            json!({"sessionId":self.session_id}),
+            Request::RecoveryStatus,
+        )
+    }
+    /// Human-only recovery. Never sends the old input or invokes a model/tool.
+    pub fn abandon_app_reads(&mut self) -> Result<(), UiError> {
+        if !self.can_abandon_app_reads() {
+            return Err(UiError::Busy);
+        }
+        self.enqueue(
+            "app.abandonReads",
+            json!({"sessionId":self.session_id}),
+            Request::AbandonAppReads,
+        )
+    }
+    fn apply_app_summary(&mut self, summary: &Value) -> bool {
+        if !self.app_scope() {
+            return false;
+        }
+        let Some(recovery) = AppReadRecovery::parse(&summary["readRecovery"]) else {
+            return false;
+        };
+        let Some(pending) = summary["pendingInputCount"].as_u64().filter(|n| *n <= 8) else {
+            return false;
+        };
+        if summary["sessionId"].as_str() != Some(self.session_id.as_str())
+            || recovery.evidence["pendingInputIds"]
+                .as_array()
+                .map(Vec::len)
+                != Some(pending as usize)
+            || !summary["recoveryRequired"].is_boolean()
+            || !summary["toolState"]["outcomeUnknown"].is_boolean()
+            || !self.update_editor_recovery(&summary["toolState"])
+            || (self.managed_mode && !self.apply_model_state(&summary["modelState"]))
+        {
+            return false;
+        }
+        self.app_read_recovery = Some(recovery);
+        self.recovery_pending = pending > 0
+            || summary["recoveryRequired"] == true
+            || summary["activeTurnId"].as_str().is_some();
+        self.unknown_latched = summary["toolState"]["outcomeUnknown"] == true;
+        if !self.blocked() && self.outcome == Some(TaskOutcome::OutcomeUnknown) {
+            self.outcome = None;
+        }
+        self.error = self.blocking_error();
+        if self.turn_id.is_none() {
+            self.phase = if self.blocked() {
+                Phase::OutcomeUnknown
+            } else {
+                Phase::Ready
+            };
+        }
+        true
+    }
     pub fn editor_recovery(&self) -> Option<&EditorRecovery> {
         if self.view().can_reconcile && !self.model_unknown {
             self.editor_recovery.first()
@@ -1108,7 +1365,13 @@ impl Controller {
             self.editor_recovery.clear();
             return true;
         };
-        if items.len() > 128 {
+        if items.len() > 128
+            || (self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.app().is_some())
+                && !items.is_empty())
+        {
             return false;
         }
         let mut next = Vec::new();
@@ -1136,8 +1399,7 @@ impl Controller {
             }
             let binding = &item["binding"];
             let parameters = &item["parameters"];
-            if binding["instanceId"].as_str()
-                != self.document.as_ref().map(|d| d.instance_id.as_str())
+            if binding["instanceId"].as_str() != self.scope.as_ref().map(AgentScope::instance_id)
                 || binding["clientId"].as_str() != Some(self.editor_client.as_str())
             {
                 continue;
@@ -1337,11 +1599,8 @@ impl Controller {
         }
     }
     /// Called by a host timer with the actual currently active document identity; no model polling.
-    pub fn tick(&mut self, current: Option<&DocumentIdentity>) {
-        if self.process.is_some()
-            && self.document.as_ref() != current
-            && !self.ignore_runtime_events
-        {
+    pub fn tick(&mut self, current: Option<&AgentScope>) {
+        if self.process.is_some() && self.scope.as_ref() != current && !self.ignore_runtime_events {
             self.disconnect();
             self.error = Some(UiError::DocumentChanged);
             self.text.clear();
@@ -1353,6 +1612,25 @@ impl Controller {
                 break;
             };
             self.handle_event(event);
+        }
+        // Lost cleanup receipts are resolved through the original status, never
+        // by replaying the old input or silently repeating the human action.
+        if let Some(index) = self.pending.iter().position(|pending| {
+            matches!(pending.request, Request::AbandonAppReads)
+                && pending.since.elapsed() >= RESPONSE_TIMEOUT
+        }) {
+            self.pending.remove(index);
+            if let Err(error) = self.query_app_reads() {
+                self.fail(error);
+            }
+        }
+        if self.app_scope()
+            && (self.blocked() || self.last_result_turn.is_some())
+            && self.app_read_recovery.is_none()
+            && self.can_query_app_reads()
+            && let Err(error) = self.query_app_reads()
+        {
+            self.fail(error);
         }
         if self
             .pending
@@ -1399,6 +1677,9 @@ impl Controller {
         }
     }
     fn unknown(&mut self) {
+        if self.app_scope() {
+            self.app_read_recovery = None;
+        }
         self.unknown_latched = true;
         self.phase = Phase::OutcomeUnknown;
         self.outcome = Some(TaskOutcome::OutcomeUnknown);
@@ -1520,6 +1801,21 @@ impl Controller {
         let pending = self.pending.remove(index).unwrap();
         if value.get("error").is_some() {
             let code = value["error"]["code"].as_str().unwrap_or("");
+            if self.app_scope()
+                && matches!(pending.request, Request::Create)
+                && code == "rebind_required"
+            {
+                self.app_restore_required = true;
+                self.fail(UiError::SessionRecoveryRequired);
+                return;
+            }
+            if self.app_scope() && matches!(pending.request, Request::AbandonAppReads) {
+                self.app_read_recovery = None;
+                if let Err(error) = self.query_app_reads() {
+                    self.fail(error);
+                }
+                return;
+            }
             // recovery_required also covers interrupted inputs and managed budgets.
             // Query the original session before classifying an edit as UNKNOWN.
             if code == "recovery_required" {
@@ -1610,21 +1906,36 @@ impl Controller {
                 }
                 if result["protocolVersion"].as_u64() != Some(1)
                     || result["instanceId"].as_str()
-                        != self.document.as_ref().map(|d| d.instance_id.as_str())
+                        != self.scope.as_ref().map(AgentScope::instance_id)
                     || (self.restore
                         && result["capabilities"]["session_restore_rebind"].as_bool() != Some(true))
                 {
                     self.fail(UiError::Protocol);
                     return;
                 }
-                let document = self.document.as_ref().unwrap();
+                let scope = self.scope.as_ref().unwrap();
+                if scope.app().is_some()
+                    && (result["capabilities"]["app_read_scope"] != true
+                        || result["capabilities"]["app_read_protocol_version"].as_u64() != Some(1))
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
                 self.permissions_supported =
                     result["capabilities"]["session_permissions"].as_bool() == Some(true);
                 self.model_selection_supported =
                     result["capabilities"]["turn_model_selection"].as_bool() == Some(true);
-                self.tasks_supported = result["capabilities"]["durable_tasks"] == true
+                self.tasks_supported = scope.document().is_some()
+                    && result["capabilities"]["durable_tasks"] == true
                     && result["capabilities"]["task_protocol_version"].as_u64() == Some(1);
-                let mut params = json!({"sessionId":self.session_id,"projectId":document.project_id,"documentSessionId":document.document_session_id});
+                let mut params = match scope {
+                    AgentScope::Document(document) => {
+                        json!({"sessionId":self.session_id,"projectId":document.project_id,"documentSessionId":document.document_session_id})
+                    }
+                    AgentScope::App(app) => {
+                        json!({"sessionId":self.session_id,"scopeKind":"app","accountScope":app.account_scope,"appSessionId":app.app_session_id})
+                    }
+                };
                 self.recover_existing = !self.restore
                     && result["capabilities"]["session_create_or_restore"].as_bool() == Some(true);
                 let method = if self.restore {
@@ -1655,7 +1966,10 @@ impl Controller {
                         // was lost. Only an advertised, explicit recovery may
                         // open that same record; the host never retries a send.
                         params["recoverExisting"] = json!(true);
-                        params["rebind"] = json!(true);
+                        // App probing does not imply authority to rebind old reads.
+                        if scope.document().is_some() {
+                            params["rebind"] = json!(true);
+                        }
                     }
                     "session.create"
                 };
@@ -1705,6 +2019,13 @@ impl Controller {
                     return;
                 }
                 self.session_opened = true;
+                self.app_restore_required = false;
+                if self.app_scope() {
+                    if !self.apply_app_summary(result) {
+                        self.fail(UiError::Protocol);
+                    }
+                    return;
+                }
                 if restoring {
                     self.recovery_pending = result["recoveryRequired"] == true
                         || result["pendingInputCount"].as_u64().is_some_and(|n| n > 0);
@@ -1864,6 +2185,12 @@ impl Controller {
                 }
             }
             Request::RecoveryStatus => {
+                if self.app_scope() {
+                    if !self.apply_app_summary(result) {
+                        self.fail(UiError::Protocol);
+                    }
+                    return;
+                }
                 if !self.update_editor_recovery(&result["toolState"]) {
                     self.fail(UiError::Protocol);
                     return;
@@ -1901,6 +2228,23 @@ impl Controller {
             }
             Request::Reconcile => {
                 if !self.apply_model_state(&result["modelState"]) {
+                    self.fail(UiError::Protocol);
+                } else if self.app_scope()
+                    && let Err(error) = self.query_app_reads()
+                {
+                    self.fail(error);
+                }
+            }
+            Request::AbandonAppReads => {
+                if result["sessionId"].as_str() != Some(self.session_id.as_str())
+                    || !matches!(
+                        result["status"].as_str(),
+                        Some("stale_reads_abandoned" | "unchanged")
+                    )
+                    || result["resultAvailable"].as_bool() != Some(false)
+                    || result["readRecovery"] != result["session"]["readRecovery"]
+                    || !self.apply_app_summary(&result["session"])
+                {
                     self.fail(UiError::Protocol);
                 }
             }
@@ -1955,7 +2299,12 @@ impl Controller {
             });
             if !explicit_send
                 && !task_turn
-                && (self.tasks_supported || self.phase != Phase::Running)
+                && (self.tasks_supported
+                    || self
+                        .scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.app().is_some())
+                    || self.phase != Phase::Running)
             {
                 self.fail(UiError::Protocol);
                 return;
@@ -2018,7 +2367,13 @@ impl Controller {
             self.track_tool_progress(kind, data);
         }
         match kind {
-            "input.applied" if self.tasks_supported => {
+            "input.applied"
+                if self.tasks_supported
+                    || self
+                        .scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.app().is_some()) =>
+            {
                 if self.tasks.current().is_some_and(|task| {
                     task.active_turn_id.as_deref() == turn
                         && data["inputId"].as_str() != task.active_input_id.as_deref()
@@ -2029,6 +2384,20 @@ impl Controller {
                 }
             }
             "tool.started" => {
+                if self
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.app().is_some())
+                    && !matches!(
+                        data["call"]["name"]
+                            .as_str()
+                            .and_then(ToolAction::from_name),
+                        Some(ToolAction::AppRead | ToolAction::Capabilities)
+                    )
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
                 // A registration retry acts on the outstanding original export.
                 // Its fresh COTO invocation must not erase that business identity.
                 if data["call"]["name"] == "retry_canvas_registration"
@@ -2136,6 +2505,14 @@ impl Controller {
                 }
             }
             "approval.required" => {
+                if self
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.app().is_some())
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
                 if self.task_approval_fenced() {
                     return;
                 }
@@ -2282,6 +2659,9 @@ impl Controller {
             }
         }
         self.last_result_turn = Some(turn.to_owned());
+        if self.app_scope() {
+            self.app_read_recovery = None;
+        }
         self.send_turn = None;
         self.turn_id = None;
         self.approval = None;
@@ -2591,6 +2971,12 @@ fn remote_error(code: &str) -> UiError {
 
 #[cfg(all(test, unix, not(any(target_os = "ios", target_os = "android"))))]
 mod tests {
+    fn document_mut(scope: &mut AgentScope) -> &mut DocumentIdentity {
+        match scope {
+            AgentScope::Document(document) => document,
+            AgentScope::App(_) => panic!("document fixture"),
+        }
+    }
     use super::*;
     #[test]
     fn rejected_content_is_not_reported_as_a_disconnected_agent() {
@@ -2974,9 +3360,197 @@ mod tests {
             assert!(c.send_turn.is_none());
         }
     }
+    #[test]
+    fn app_scope_accepts_only_the_exact_four_read_tool_names() {
+        for name in ["capabilities", "app_context", "page_items", "page_preview"] {
+            let mut controller = Controller {
+                scope: Some(AgentScope::App(crate::agent_identity::AppIdentity {
+                    instance_id: "instance".into(),
+                    account_scope: "a".repeat(64),
+                    app_session_id: "app-session".into(),
+                })),
+                session_id: "fixture-session".into(),
+                turn_id: Some("human-turn".into()),
+                phase: Phase::Running,
+                ..Controller::default()
+            };
+            task_event(
+                &mut controller,
+                1,
+                "tool.started",
+                "human-turn",
+                json!({"invocationId":"read-1","call":{"name":name}}),
+            );
+            assert_ne!(controller.view().phase, Phase::Failed, "{name}");
+            assert!(!controller.write_in_flight);
+        }
+        for name in [
+            "context",
+            "project",
+            "preview",
+            "canvas_edit",
+            "clip_edit",
+            "flow_get_workspace",
+            "app_page_items",
+            "app_page_preview",
+            "task_checkpoint",
+        ] {
+            let mut controller = Controller {
+                scope: Some(AgentScope::App(crate::agent_identity::AppIdentity {
+                    instance_id: "instance".into(),
+                    account_scope: "a".repeat(64),
+                    app_session_id: "app-session".into(),
+                })),
+                session_id: "fixture-session".into(),
+                turn_id: Some("human-turn".into()),
+                phase: Phase::Running,
+                ..Controller::default()
+            };
+            task_event(
+                &mut controller,
+                1,
+                "tool.started",
+                "human-turn",
+                json!({"invocationId":"read-1","call":{"name":name}}),
+            );
+            assert_eq!(controller.view().phase, Phase::Failed, "{name}");
+            assert!(!controller.write_in_flight);
+        }
+    }
+
+    #[test]
+    fn app_scope_negotiates_without_document_write_or_task_and_sends_original_view() {
+        let mut fixture = Fixture::new("app-finish");
+        fixture.ready();
+        assert!(!fixture.controller.supports_tasks());
+        assert_eq!(
+            fixture
+                .controller
+                .update_permissions(Some("forbidden".into())),
+            Err(UiError::Protocol)
+        );
+        assert_eq!(
+            fixture.controller.send_text("unbound app read"),
+            Err(UiError::Configuration)
+        );
+        let view: AppViewBinding = serde_json::from_value(json!({"pageId":"personalLibrary","pageEpoch":3,"pageStateId":format!("app-page-v1-{}","a".repeat(64))})).unwrap();
+        fixture
+            .controller
+            .send_app_content(
+                "input-original",
+                vec![json!({"type":"text","text":"这张图片是什么"})],
+                None,
+                view,
+            )
+            .unwrap();
+        fixture.until(|controller| controller.view().outcome == Some(TaskOutcome::Completed));
+        assert!(!fixture.controller.write_in_flight);
+        let requests = fs::read_to_string(fixture.directory.join("requests.jsonl")).unwrap();
+        let request: Value = serde_json::from_str(requests.lines().next().unwrap()).unwrap();
+        assert_eq!(request["params"]["inputId"], "input-original");
+        assert_eq!(
+            request["params"]["appViewBinding"]
+                .as_object()
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+    #[test]
+    fn app_scope_refuses_missing_negotiation_and_document_business_recovery() {
+        let mut fixture = Fixture::new("app-no-cap");
+        fixture.until(|controller| controller.view().phase == Phase::Failed);
+        assert_eq!(fixture.controller.view().error, Some(UiError::Protocol));
+        let trace = fs::read_to_string(fixture.directory.join("methods.txt")).unwrap();
+        assert!(!trace.contains("session.create"));
+        assert!(!fixture.controller.update_editor_recovery(
+            &json!({"recoveryOperations":[{"sessionId":"fixture-session"}]})
+        ));
+    }
+    #[test]
+    fn app_recovery_ends_only_old_reads_and_never_resends_input() {
+        let mut fixture = Fixture::new("app-recovery");
+        fixture.until(Controller::can_abandon_app_reads);
+        assert!(!fixture.controller.view().can_send);
+        fixture.controller.abandon_app_reads().unwrap();
+        fixture.until(|c| c.view().can_send);
+        assert_ne!(
+            fixture.controller.view().outcome,
+            Some(TaskOutcome::OperationVerified)
+        );
+        assert!(!fixture.controller.can_abandon_app_reads());
+        let methods = fs::read_to_string(fixture.directory.join("methods.txt")).unwrap();
+        assert_eq!(methods, "initialize\nsession.create\napp.abandonReads\n");
+        assert!(Controller::default().abandon_app_reads().is_err());
+    }
+    #[test]
+    fn app_abandon_lost_ack_queries_original_status_without_repeating_action() {
+        let mut fixture = Fixture::new("app-abandon-lost");
+        fixture.until(Controller::can_abandon_app_reads);
+        fixture.controller.abandon_app_reads().unwrap();
+        // Let the child commit cleanup, then expire just the receipt deadline.
+        thread::sleep(Duration::from_millis(100));
+        fixture.controller.pending.front_mut().unwrap().since = Instant::now() - RESPONSE_TIMEOUT;
+        fixture.until(|c| c.view().can_send);
+        let methods = fs::read_to_string(fixture.directory.join("methods.txt")).unwrap();
+        assert_eq!(
+            methods,
+            "initialize\nsession.create\napp.abandonReads\nstatus\n"
+        );
+        assert_ne!(
+            fixture.controller.view().outcome,
+            Some(TaskOutcome::OperationVerified)
+        );
+    }
+    #[test]
+    fn app_create_probe_requires_a_second_explicit_restore_after_rebind_error() {
+        let mut fixture = Fixture::new("app-rebind-required");
+        fixture.until(|c| c.requires_app_restore() && !c.process_present());
+        assert!(!fixture.controller.session_opened());
+        assert_eq!(
+            fs::read_to_string(fixture.directory.join("methods.txt")).unwrap(),
+            "initialize\nsession.create\n"
+        );
+        let mut config = fixture.original_restore_config("app-rebind-required");
+        config.scope = fixture.scope.clone();
+        config.write_token = None;
+        fixture.controller.connect(config).unwrap();
+        fixture.ready();
+        assert!(!fixture.controller.requires_app_restore());
+        assert_eq!(
+            fs::read_to_string(fixture.directory.join("methods.txt")).unwrap(),
+            "initialize\nsession.create\ninitialize\nsession.restore\n"
+        );
+    }
+    #[test]
+    fn app_recovery_current_queues_do_not_require_complete_old_history() {
+        let mut fixture = Fixture::new("app-recovery");
+        fixture.until(Controller::can_abandon_app_reads);
+        let mut value = fixture
+            .controller
+            .app_read_recovery()
+            .unwrap()
+            .evidence
+            .clone();
+        value["recentWithdrawnInputIds"] =
+            json!((0..64).map(|n| format!("old-{n}")).collect::<Vec<_>>());
+        value["withdrawnInputTotal"] = json!(200);
+        value["withdrawnInputTruncated"] = json!(true);
+        assert!(AppReadRecovery::parse(&value).unwrap().can_abandon);
+        value["withdrawnInputTruncated"] = json!(false);
+        assert!(AppReadRecovery::parse(&value).is_none());
+        value["withdrawnInputTruncated"] = json!(true);
+        value["canAbandon"] = json!(false);
+        assert!(AppReadRecovery::parse(&value).is_none());
+    }
+
     const FIXTURE: &str = r#"import sys,json,time,pathlib,os,hashlib
 scenario='finish';session='';seq=0;managed=False
-revision=0
+revision=0;app_abandoned=False
+def app_summary():
+    pending=scenario in ('app-recovery','app-abandon-lost') and not app_abandoned
+    recovery={'canAbandon':pending,'reason':'ready' if pending else 'nothing_pending','pendingInputIds':['old-input'] if pending else [],'readInvocationIds':['old-read'] if pending else [],'recentWithdrawnInputIds':['old-input'] if app_abandoned else [],'withdrawnInputTotal':1 if app_abandoned else 0,'withdrawnInputTruncated':False,'recentAbandonedReadInvocationIds':['old-read'] if app_abandoned else [],'abandonedReadInvocationTotal':1 if app_abandoned else 0,'abandonedReadInvocationTruncated':False}
+    return {'sessionId':session,'status':'interrupted' if pending else 'idle','activeTurnId':None,'recoveryRequired':pending,'pendingInputCount':1 if pending else 0,'toolState':{'outcomeUnknown':pending,'unresolved':[],'recoveryOperations':[],'observed':[]},'readRecovery':recovery}
 original_path=pathlib.Path(__file__).with_name('original-operation.json')
 def original_store(record):
     temporary=original_path.with_suffix('.tmp')
@@ -3030,7 +3604,11 @@ for line in sys.stdin:
         assert p['mcpEnvironment']['TMPDIR']==p['sessionDirectory']
         scenario=p['provider']['model'];time.sleep(.08)
         if scenario=='init-fail': reply(f,error={'code':'provider_configuration','message':'raw inference-secret'});continue
+        if scenario.startswith('app-'):
+            assert p['scopeKind']=='app' and p['appReadProtocolVersion']==1 and p['accountScope']=='a'*64 and p['appSessionId']=='app-session'
+            assert all(key not in p for key in ('projectId','documentSessionId','taskProtocolVersion','writeToken'))
         capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True,'turn_model_selection':True,'session_permissions':True}
+        if scenario.startswith('app-') and scenario!='app-no-cap': capabilities.update(app_read_scope=True,app_read_protocol_version=1,durable_tasks=True,task_protocol_version=1)
         if scenario.startswith('task-'):
             assert p['taskProtocolVersion']==1
             capabilities.update(durable_tasks=True,task_protocol_version=1)
@@ -3039,11 +3617,17 @@ for line in sys.stdin:
         if scenario=='selection-string': capabilities['turn_model_selection']='true'
         reply(f,{'protocolVersion':1,'instanceId':p['instanceId'],'capabilities':capabilities})
     elif m in ('session.create','session.restore'):
-        assert p['projectId']=='project-1' and p['documentSessionId']=='doc-1'
+        if scenario.startswith('app-'):
+            assert p['scopeKind']=='app' and p['accountScope']=='a'*64 and p['appSessionId']=='app-session'
+            assert all(key not in p for key in ('projectId','documentSessionId','writeToken'))
+        else: assert p['projectId']=='project-1' and p['documentSessionId']=='doc-1'
         if m=='session.restore': assert p['rebind'] is True and 'recoverExisting' not in p
+        elif scenario.startswith('app-'): assert p['recoverExisting'] is True and 'rebind' not in p
         elif scenario=='old-runtime': assert 'rebind' not in p and 'recoverExisting' not in p
         else: assert p['rebind'] is True and p['recoverExisting'] is True
         session=p['sessionId'];time.sleep(.08)
+        if scenario=='app-rebind-required' and m=='session.create': reply(f,error={'code':'rebind_required','message':'explicit restore required'});continue
+        if scenario.startswith('app-'): reply(f,app_summary());continue
         if m=='session.restore' and scenario in ('exit-insert','exit-export','first-terminal-lost','lost-reconcile-reply'):
             record=json.loads(original_path.read_text())
             if scenario=='first-terminal-lost': assert p['recoveryInvocations']==[{'turnId':'turn-1','invocationId':'turn-1_canvas','toolName':record['toolName']}]
@@ -3055,6 +3639,13 @@ for line in sys.stdin:
         status='interrupted' if scenario in ('restore-interrupted','restore-pending','create-existing-clean','create-existing-pending','create-existing-unknown') else 'idle'
         pending=scenario in ('restore-pending','create-existing-pending')
         reply(f,{'sessionId':session if scenario!='bad-session' else 'other','status':status,'recoveryRequired':pending,'pendingInputCount':1 if pending else 0,'toolState':{'outcomeUnknown':scenario in ('restore-unknown','create-existing-unknown'),'unresolved':[],'recoveryOperations':[],'observed':[]},'modelState':modelstate(True) if managed else None})
+    elif m=='status' and scenario.startswith('app-'):
+        assert p=={'sessionId':session};reply(f,app_summary())
+    elif m=='app.abandonReads':
+        assert scenario.startswith('app-') and p=={'sessionId':session}
+        was_abandoned=app_abandoned;app_abandoned=True
+        if scenario=='app-abandon-lost' and not was_abandoned: continue
+        summary=app_summary();reply(f,{'sessionId':session,'status':'unchanged' if was_abandoned else 'stale_reads_abandoned','resultAvailable':False,'readRecovery':summary['readRecovery'],'session':summary})
     elif m=='session.permissions':
         assert p['sessionId']==session and p['version']==1
         assert p['writeToken'] is None if p['mode']=='read' else isinstance(p['writeToken'],str)
@@ -3109,6 +3700,8 @@ for line in sys.stdin:
         elif m=='task.stop': task_final(task['rounds'],'interrupted')
     elif m=='send':
         assert p['sessionId']==session and p['mode']=='follow_up' and p['content'][0]['type']=='text'
+        if scenario.startswith('app-'):
+            assert p['inputId']=='input-original' and p['appViewBinding']=={'pageId':'personalLibrary','pageEpoch':3,'pageStateId':'app-page-v1-'+'a'*64}
         if scenario=='selection-policy-rejected':
             reply(f,error={'code':'managed_policy_unavailable','message':'raw service details'});continue
         if scenario=='settling-once':
@@ -3147,6 +3740,7 @@ for line in sys.stdin:
     struct Fixture {
         controller: Controller,
         identity: DocumentIdentity,
+        scope: AgentScope,
         directory: PathBuf,
     }
     impl Fixture {
@@ -3168,10 +3762,19 @@ for line in sys.stdin:
                 project_id: "project-1".into(),
                 document_session_id: "doc-1".into(),
             };
+            let scope = if scenario.starts_with("app-") {
+                AgentScope::App(crate::agent_identity::AppIdentity {
+                    instance_id: identity.instance_id.clone(),
+                    account_scope: "a".repeat(64),
+                    app_session_id: "app-session".into(),
+                })
+            } else {
+                identity.clone().into()
+            };
             let mut controller = Controller::default();
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let result = controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},document:identity.clone(),client_id:"client-1".into(),mcp_client_path:entry.clone(),mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),local_session_id:session_id.into(),restore,provider:if scenario == "managed" {json!({"protocol":"seecut-managed","model":scenario,"sessionToken":"inference-secret"})} else {json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"})},read_token:"read-secret".into(),write_token:Some("write-secret".into())});
+                let result = controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},scope:scope.clone(),client_id:"client-1".into(),mcp_client_path:entry.clone(),mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),local_session_id:session_id.into(),restore,provider:if scenario == "managed" {json!({"protocol":"seecut-managed","model":scenario,"sessionToken":"inference-secret"})} else {json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"})},read_token:"read-secret".into(),write_token:(!scenario.starts_with("app-")).then(||"write-secret".into())});
                 match result {
                     Ok(()) => break,
                     // Parallel fixtures can contend on the nonblocking registration/input
@@ -3179,7 +3782,7 @@ for line in sys.stdin:
                     Err(UiError::Busy) => {
                         controller.shutdown_now();
                         while controller.process.is_some() {
-                            controller.tick(Some(&identity));
+                            controller.tick(Some(&scope));
                             assert!(Instant::now() < deadline, "busy fixture cleanup timed out");
                             thread::yield_now();
                         }
@@ -3196,13 +3799,14 @@ for line in sys.stdin:
             Self {
                 controller,
                 identity,
+                scope,
                 directory,
             }
         }
         fn until(&mut self, condition: impl Fn(&Controller) -> bool) {
             let deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < deadline {
-                self.controller.tick(Some(&self.identity));
+                self.controller.tick(Some(&self.scope));
                 if condition(&self.controller) {
                     return;
                 }
@@ -3224,7 +3828,7 @@ for line in sys.stdin:
                     entrypoint: entry.clone(),
                     environment: BTreeMap::new(),
                 },
-                document: self.identity.clone(),
+                scope: self.identity.clone().into(),
                 client_id: "client-1".into(),
                 mcp_client_path: entry,
                 mcp_environment: BTreeMap::from([(
@@ -3255,7 +3859,7 @@ for line in sys.stdin:
             self.controller.disconnect();
             let deadline = Instant::now() + Duration::from_secs(5);
             while self.controller.process.is_some() && Instant::now() < deadline {
-                self.controller.tick(Some(&self.identity));
+                self.controller.tick(Some(&self.scope));
                 thread::sleep(Duration::from_millis(10));
             }
             assert!(self.controller.process.is_none());
@@ -3910,7 +4514,7 @@ for line in sys.stdin:
             let entry = f.directory.join("fixture.py");
             f.controller.connect(ConnectionConfig {
                 launch: LaunchSpec { executable: fs::canonicalize("/usr/bin/python3").unwrap(), entrypoint: entry.clone(), environment: BTreeMap::new() },
-                document, client_id: "client-1".into(), mcp_client_path: entry,
+                scope: document.into(), client_id: "client-1".into(), mcp_client_path: entry,
                 mcp_environment: BTreeMap::from([("TMPDIR".into(), f.directory.to_string_lossy().into_owned())]),
                 session_directory: f.directory.clone(), local_session_id: "managed-test".into(), restore: true,
                 provider: json!({"protocol":"seecut-managed","model":"managed","sessionToken":token}),
@@ -4549,7 +5153,9 @@ for line in sys.stdin:
         let mut fixture = Fixture::new("finish");
         fixture.ready();
         fixture.identity.project_id = "project-2".into();
-        fixture.controller.tick(Some(&fixture.identity));
+        fixture
+            .controller
+            .tick(Some(&fixture.identity.clone().into()));
         assert_eq!(fixture.controller.view().phase, Phase::Closing);
         assert_eq!(
             fixture.controller.view().error,
@@ -4615,7 +5221,7 @@ for line in sys.stdin:
                     entrypoint: entry.clone(),
                     environment: BTreeMap::new(),
                 },
-                document: f.identity.clone(),
+                scope: f.identity.clone().into(),
                 client_id: "client-1".into(),
                 mcp_client_path: entry,
                 mcp_environment: BTreeMap::from([(
@@ -4635,7 +5241,7 @@ for line in sys.stdin:
             match changed {
                 0 => c.restore = false,
                 1 => c.client_id = "other-client".into(),
-                2 => c.document.document_session_id = "other-document".into(),
+                2 => document_mut(&mut c.scope).document_session_id = "other-document".into(),
                 _ => c.provider["protocol"] = json!("seecut-managed"),
             }
             assert_eq!(f.controller.connect(c), Err(UiError::VerifyRequired));
@@ -4681,10 +5287,13 @@ for line in sys.stdin:
                 match changed {
                     0 => config.restore = false,
                     1 => config.client_id = "other-client".into(),
-                    2 => config.document.document_session_id = "other-document".into(),
+                    2 => {
+                        document_mut(&mut config.scope).document_session_id =
+                            "other-document".into()
+                    }
                     3 => config.local_session_id = "other-session".into(),
-                    4 => config.document.instance_id = "other-instance".into(),
-                    _ => config.document.project_id = "other-project".into(),
+                    4 => document_mut(&mut config.scope).instance_id = "other-instance".into(),
+                    _ => document_mut(&mut config.scope).project_id = "other-project".into(),
                 }
                 assert_eq!(f.controller.connect(config), Err(UiError::VerifyRequired));
             }

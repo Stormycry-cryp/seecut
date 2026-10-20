@@ -4,7 +4,7 @@ import argparse
 import datetime
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import resource
 import selectors
@@ -24,6 +24,46 @@ def signal_group(pid, sig):
         os.killpg(pid, sig)
     except ProcessLookupError:
         pass
+
+
+def sample_cgroup_memory(cgroup_file=Path("/proc/self/cgroup"), root=Path("/sys/fs/cgroup")):
+    """Read v2 memory limits and event counters for this job and its ancestors."""
+    try:
+        paths = [line.split(":", 2)[2] for line in cgroup_file.read_text().splitlines()
+                 if line.startswith("0::")]
+        if len(paths) != 1 or not paths[0].startswith("/") or ".." in PurePosixPath(paths[0]).parts:
+            return {"available": False, "reason": "no_safe_cgroup_v2_path"}
+        path = PurePosixPath(paths[0])
+        groups = []
+        for _ in range(128):
+            group = {"path": str(path), "metrics": {}}
+            for metric in ("memory.current", "memory.peak", "memory.max", "memory.high",
+                           "memory.events", "memory.events.local", "memory.swap.current", "memory.swap.max"):
+                try:
+                    raw = (root / str(path).lstrip("/") / metric).read_text().strip()
+                    if metric.startswith("memory.events"):
+                        fields = [line.split() for line in raw.splitlines()]
+                        if not fields or any(len(row) != 2 or not row[1].isdigit() for row in fields):
+                            raise ValueError("invalid memory event counters")
+                        value = {key: int(number) for key, number in fields}
+                    elif raw == "max":
+                        value = "max"
+                    elif raw.isdigit():
+                        value = int(raw)
+                    else:
+                        raise ValueError("invalid memory metric")
+                    group["metrics"][metric] = value
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError) as error:
+                    group.setdefault("errors", {})[metric] = type(error).__name__
+            groups.append(group)
+            if path == PurePosixPath("/"):
+                return {"available": any(row["metrics"] for row in groups), "groups": groups}
+            path = path.parent
+        return {"available": False, "reason": "cgroup_depth_limit"}
+    except (OSError, ValueError) as error:
+        return {"available": False, "reason": type(error).__name__}
 
 
 def sample_resources(pid, elapsed):
@@ -49,7 +89,7 @@ def sample_resources(pid, elapsed):
             if key in ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree"):
                 memory[key + "KiB"] = int(value.split()[0])
     return dict(atUTC=utc_now(), elapsedSeconds=round(elapsed, 3), processes=rows,
-                systemMemory=memory, loadAverage=os.getloadavg(),
+                systemMemory=memory, cgroupMemory=sample_cgroup_memory(), loadAverage=os.getloadavg(),
                 diskFreeBytes=shutil.disk_usage(Path.cwd()).free)
 
 
@@ -131,6 +171,11 @@ def main():
                 if process.poll() is not None and exited_at is None:
                     exited_at = time.monotonic()
             result = process.wait()
+            sample = sample_resources(process.pid, time.monotonic() - started)
+            sample["final"] = True
+            samples.write(json.dumps(sample) + "\n")
+            samples.flush()
+            print(f"[ci:{args.phase}] {json.dumps(sample)}", flush=True)
             exit_code = override if override is not None else (result if result >= 0 else 128 - result)
     finally:
         if process is not None:

@@ -128,7 +128,25 @@ export component App inherits Window {
             root.focus-restore-pending = true;
         }
     }
-    property <bool> assistant-modal-active: root.workflow-modal-open || root.sheet-open
+    // App reads may coexist with an existing media preview or Settings sheet.
+    // All editing, account and handoff dialogs keep the original assistant fence.
+    // The native reader uses this same gate before capture and before returning
+    // media. It must not expose the page beneath an unsupported dialog.
+    out property <bool> app-read-blocked: root.flow-close-error != "" || root.clip-create-open
+        || SeeCut.generation-parameters-open || SeeCut.auth-open || SeeCut.asset-picker-open
+        || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open
+        || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open
+        || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm
+        || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0
+        || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != ""
+        || root.export.open || root.project-sheet.open || root.captions.open || root.speech.open
+        || SeeCut.save-team-task != "" || SeeCut.canvas-create-open
+        || SeeCut.team-dialog > 0 || SeeCut.team-menu > 0;
+    property <bool> assistant-blocking-workflow-modal: root.app-read-blocked
+        || (!Assistant.app-scope && (SeeCut.inspiration-preview-open || SeeCut.result-preview-open || SeeCut.media-preview-open));
+    property <bool> assistant-modal-active: root.assistant-blocking-workflow-modal
+        || root.export.open || (!Assistant.app-scope && root.settings.open)
+        || root.project-sheet.open || root.captions.open || root.speech.open
         || SeeCut.save-team-task != ""
         || SeeCut.canvas-create-open || SeeCut.team-dialog > 0 || SeeCut.team-menu > 0;
     property <bool> assistant-modal-exiting;
@@ -136,13 +154,17 @@ export component App inherits Window {
         root.assistant-modal-exiting = !root.assistant-modal-active && !SeeCut.reduced-motion;
         if root.assistant-modal-exiting { assistant-modal-settled.start(); assistant-modal-settled.restart(); }
         else { assistant-modal-settled.stop(); }
-        if !root.assistant-modal-active && !root.assistant-modal-exiting {
+        if !root.assistant-modal-active && !root.assistant-modal-exiting
+            && !root.workflow-modal-open && !root.sheet-open {
             root.focus-restore-pending = true;
         }
     }
     assistant-modal-settled := Timer {
         running: false; interval: 200ms;
-        triggered => { self.stop(); root.assistant-modal-exiting = false; root.restore-focus(); }
+        triggered => {
+            self.stop(); root.assistant-modal-exiting = false;
+            if !root.workflow-modal-open && !root.sheet-open { root.restore-focus(); }
+        }
     }
     property <bool> assistant-ui-blocked: root.assistant-modal-active || root.assistant-modal-exiting;
     property <bool> assistant-show: Assistant.enabled && Assistant.open && !root.assistant-ui-blocked;

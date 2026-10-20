@@ -171,11 +171,19 @@ impl SettingsPane {
                 self.refresh(studio);
             }
             SettingsMsg::Open => {
+                if !self.open {
+                    crate::cloud::app_page_navigation_changed();
+                }
                 self.refresh(studio);
                 self.tab = 0;
                 self.open = true;
             }
-            SettingsMsg::Close => self.open = false,
+            SettingsMsg::Close => {
+                if self.open {
+                    crate::cloud::app_page_navigation_changed();
+                }
+                self.open = false;
+            }
             SettingsMsg::PageChanged(index) => self.tab = index,
             SettingsMsg::ShowLog => {
                 // The file this run is writing, when there is one, so the

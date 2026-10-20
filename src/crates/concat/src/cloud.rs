@@ -20,12 +20,91 @@ use std::{
 };
 use url::Url;
 
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod app_page_snapshot;
 mod failure_feedback;
 mod flow_generation;
 mod flow_parameters;
 mod generation_state;
 mod inspiration;
 mod preview_validation;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+thread_local! {static APP_READ_NAVIGATION:Rc<crate::editor_mcp_app_page::Navigation>=Rc::new(crate::editor_mcp_app_page::Navigation::default());}
+
+/// Actual UI navigation event; no list hashing, Cloud borrow or Bridge borrow.
+pub(crate) fn app_page_navigation_changed() {
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    APP_READ_NAVIGATION.with(|navigation| {
+        let _ = navigation.navigation();
+    });
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_read_navigation() -> Rc<crate::editor_mcp_app_page::Navigation> {
+    APP_READ_NAVIGATION.with(Rc::clone)
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_read_gate(
+    studio: &crate::studio::Studio,
+    app: &App,
+) -> Result<(), crate::editor_mcp_app_page::Error> {
+    let state = EXPORT_ACCOUNT.with(|slot| {
+        slot.try_borrow()
+            .map_err(|_| crate::editor_mcp_app_page::Error::Busy)?
+            .upgrade()
+            .ok_or(crate::editor_mcp_app_page::Error::SignedOut)
+    })?;
+    let cloud = state
+        .try_borrow()
+        .map_err(|_| crate::editor_mcp_app_page::Error::Busy)?;
+    let auth_busy =
+        is_auth_job(&cloud.active_name) || cloud.pending.iter().any(|(name, _)| is_auth_job(name));
+    crate::editor_mcp_app_page::read_gate(
+        app.get_app_read_blocked(),
+        studio.exit_pending,
+        studio.open_menu >= 0,
+        purchase_busy(&cloud),
+        auth_busy,
+    )
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_read_identity(
+    instance: &str,
+) -> Result<(u64, crate::agent_identity::AppIdentity), crate::editor_mcp_app_page::Error> {
+    let access = EXPORT_ACCOUNT.with(|slot| {
+        slot.try_borrow()
+            .map(|state| AccountAccess {
+                state: state.clone(),
+            })
+            .map_err(|_| crate::editor_mcp_app_page::Error::Busy)
+    })?;
+    let navigation = app_read_navigation();
+    match app_page_snapshot::identity(&access) {
+        Ok(trusted) => navigation.account(Some(trusted))?,
+        Err(crate::editor_mcp_app_page::Error::SignedOut) => {
+            let _ = navigation.account(None);
+            return Err(crate::editor_mcp_app_page::Error::SignedOut);
+        }
+        Err(error) => return Err(error),
+    }
+    navigation.identity(instance.to_owned())
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_read_snapshot(
+    app: &App,
+    studio: &crate::studio::Studio,
+    models: &crate::studio::Models,
+    registry: &mut crate::editor_mcp_app_page::AppPages<slint::Image>,
+) -> Result<crate::editor_mcp_app_page::Context, crate::editor_mcp_app_page::Error> {
+    let access = EXPORT_ACCOUNT.with(|slot| {
+        slot.try_borrow()
+            .map(|state| AccountAccess {
+                state: state.clone(),
+            })
+            .map_err(|_| crate::editor_mcp_app_page::Error::Busy)
+    })?;
+    app_page_snapshot::capture(&access, app, studio, models, registry)
+}
+
 pub(crate) mod prompt_assistance;
 pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, media_kind};
 
@@ -8133,6 +8212,10 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.inspiration_backup = None;
     cloud.epoch += 1;
     drop(cloud);
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    {
+        let _ = app_read_navigation().account(None);
+    }
     // Revoke the old account's App permissions synchronously, before another
     // queued MCP write can be dispatched. The Agent timer also closes its runtime.
     #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
@@ -8140,7 +8223,9 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
         if let Some(bridge) = slot.borrow().upgrade() {
             // Native dialogs may hold Studio while pumping this account callback.
             // Bridge ownership is independent so revocation remains synchronous.
-            bridge.borrow_mut().revoke_assistant_for_account_change();
+            let mut bridge = bridge.borrow_mut();
+            bridge.revoke_assistant_for_account_change();
+            bridge.revoke_all_app_reads();
         }
     });
     let ui = app.global::<SeeCut>();
@@ -8422,6 +8507,8 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         .filter(|choice| choice.valid()),
         ..Cloud::default()
     }));
+    app.global::<SeeCut>()
+        .on_app_page_navigation_changed(app_page_navigation_changed);
     inspiration::render(app);
     let account = AccountAccess {
         state: Rc::downgrade(&state),

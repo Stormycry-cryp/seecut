@@ -9,6 +9,7 @@ export component AssistantDock inherits AssistantPanel {
     signed-in: SeeCut.signed-in;
     sign-in => { SeeCut.action("auth-open", ""); }
     current-project: Assistant.current-project;
+    app-scope: Assistant.app-scope;
     provider-label: Assistant.provider-label;
     session-names: Assistant.session-names;
     current-session-id: Assistant.current-session-id;
@@ -32,6 +33,9 @@ export component AssistantDock inherits AssistantPanel {
     can-send: Assistant.can-send;
     can-stop: Assistant.can-stop;
     can-reconcile: Assistant.can-reconcile;
+    app-recovery-visible: Assistant.app-recovery-visible;
+    can-abandon-app-reads: Assistant.can-abandon-app-reads;
+    can-query-app-reads: Assistant.can-query-app-reads;
     reconcile-label: Assistant.reconcile-label;
     budget-label: Assistant.budget-label;
     task-mode: Assistant.task-mode;
@@ -110,6 +114,8 @@ export component AssistantDock inherits AssistantPanel {
     select-effort(index) => { Assistant.select-effort(index); }
     refresh-models() => { Assistant.refresh-models(); }
     reconcile() => { Assistant.reconcile(); }
+    abandon-app-reads() => { Assistant.abandon-app-reads(); }
+    query-app-reads() => { Assistant.query-app-reads(); }
     grant-read() => { Assistant.grant-read(); }
     revoke-read() => { Assistant.revoke-read(); }
     grant-write() => { Assistant.grant-write(); }

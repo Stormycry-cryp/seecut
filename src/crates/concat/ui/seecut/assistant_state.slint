@@ -6,6 +6,7 @@ export { AssistantMessage }
 export global Assistant {
     in-out property <bool> open;
     in-out property <bool> enabled;
+    in-out property <bool> app-scope;
     in-out property <bool> developer-tools;
     in-out property <bool> window-visible: true;
     in-out property <bool> window-focused: true;
@@ -41,6 +42,9 @@ export global Assistant {
     in-out property <bool> can-send;
     in-out property <bool> can-stop;
     in-out property <bool> can-reconcile;
+    in-out property <bool> app-recovery-visible;
+    in-out property <bool> can-abandon-app-reads;
+    in-out property <bool> can-query-app-reads;
     in-out property <string> reconcile-label: "核实原请求";
     in-out property <string> budget-label;
     in-out property <bool> task-mode;
@@ -119,6 +123,8 @@ export global Assistant {
     callback select-effort(int);
     callback refresh-models();
     callback reconcile();
+    callback abandon-app-reads();
+    callback query-app-reads();
     callback grant-read();
     callback revoke-read();
     callback grant-write();

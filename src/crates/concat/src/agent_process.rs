@@ -112,6 +112,7 @@ impl Handle {
                     | "approve"
                     | "reconcile"
                     | "editor.reconcile"
+                    | "app.abandonReads"
                     | "task.create"
                     | "task.update"
                     | "task.pause"

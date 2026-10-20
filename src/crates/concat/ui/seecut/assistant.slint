@@ -421,6 +421,10 @@ export component AssistantPanel inherits Rectangle {
     in property <bool> active: true;
     // These are facts supplied by the host, never inferred from model output.
     in property <string> current-project;
+    in property <bool> app-scope;
+    in property <bool> app-recovery-visible;
+    in property <bool> can-abandon-app-reads;
+    in property <bool> can-query-app-reads;
     in property <string> provider-label;
     in property <[string]> session-names;
     in property <string> current-session-id;
@@ -526,6 +530,8 @@ export component AssistantPanel inherits Rectangle {
     callback select-effort(int);
     callback refresh-models();
     callback reconcile();
+    callback abandon-app-reads();
+    callback query-app-reads();
     callback grant-read();
     callback revoke-read();
     callback grant-write();
@@ -551,6 +557,7 @@ export component AssistantPanel inherits Rectangle {
         else if action == 2 { root.grant-write(); }
         else if action == 4 { if root.connected { root.disconnect(); } else { root.connect-managed(); } }
         else if action == 5 { root.refresh-models(); }
+        else if action == 6 { root.revoke-read(); }
     }
     property <string> model-name;
     property <string> session-api-key;
@@ -748,6 +755,20 @@ export component AssistantPanel inherits Rectangle {
                     IconButton { glyph: Glyph.search; label: root.reconcile-label; side: 32px; enabled: root.active && root.can-reconcile; clicked => { root.reconcile(); } }
                     Rectangle { horizontal-stretch: 1; }
                 }
+                if root.app-scope && root.app-recovery-visible: HorizontalLayout {
+                    spacing: 8px;
+                    if root.can-abandon-app-reads: AppButton {
+                        label: "结束旧问题"; height: 32px; subtle: true;
+                        enabled: root.active && root.can-abandon-app-reads;
+                        clicked => { root.abandon-app-reads(); }
+                    }
+                    AppButton {
+                        label: "查询旧问题状态"; height: 32px; subtle: true;
+                        enabled: root.active && root.can-query-app-reads;
+                        clicked => { root.query-app-reads(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
                 if root.approval-visible: VerticalLayout {
                     spacing: 8px;
                     AssistantText { text: root.approval-title; font-size: Theme.fs; }
@@ -891,13 +912,17 @@ export component AssistantPanel inherits Rectangle {
                 if root.task-budget-reason != "": AssistantText { text: root.task-budget-reason; color: Theme.fg-muted; font-size: 11px; }
             }
             if root.task-compatibility != "": AssistantText { text: root.task-compatibility; font-size: 11px; color: Theme.fg-muted; }
+            if root.app-scope: AssistantText {
+                text: root.read-granted ? "可读取当前页面文字和现有媒体预览。该页暂不支持页面操作。" : "允许读取后，可询问当前页面文字和现有媒体预览。该页暂不支持页面操作。";
+                font-size: 11px; color: Theme.fg-muted;
+            }
             composer := AssistantInput {
                 value <=> root.draft;
                 label: "给 Agent 的问题"; placeholder: "与 Agent 协作…";
                 multiline: true; external-toolbar: true;
                 attachment-height: root.draft-references.length > 0 ? 76px : 0px;
                 // Connection and turn state gate sending, while drafts remain editable.
-                enabled: root.active && root.history-ready && !root.settings-open && !root.unknown;
+                enabled: root.active && root.history-ready && !root.settings-open && (!root.unknown || root.app-scope);
                 send-enabled: root.active && (root.send-ready);
                 busy: root.busy; can-stop: root.active && !root.settings-open && root.can-stop;
                 submit => { root.submit(); }
@@ -943,10 +968,10 @@ export component AssistantPanel inherits Rectangle {
                                 VerticalLayout {
                                     padding: 8px; spacing: 4px; alignment: start;
                                     if !root.signed-in: AgentMenuAction { text: "登录账户"; glyph: Glyph.lock; clicked => { root.choose-permission(0); } }
-                                    if root.signed-in: AgentMenuAction { text: "允许读取"; glyph: root.read-granted && !root.write-granted ? Glyph.check : Glyph.eye;
-                                        enabled: root.active && root.can-grant-read;
-                                        clicked => { root.choose-permission(1); } }
-                                    if root.signed-in: AgentMenuAction { text: "允许页面操作"; glyph: root.write-granted ? Glyph.check : Glyph.unlock;
+                                    if root.signed-in: AgentMenuAction { text: root.app-scope ? (root.read-granted ? "撤销页面读取" : "允许读取文字和媒体预览") : "允许读取"; glyph: root.read-granted && !root.write-granted ? Glyph.check : Glyph.eye;
+                                        enabled: root.active && (root.can-grant-read || (root.app-scope && root.can-revoke-read));
+                                        clicked => { root.choose-permission(root.app-scope && root.read-granted ? 6 : 1); } }
+                                    if root.signed-in: AgentMenuAction { text: root.app-scope ? "当前页面暂不支持操作" : "允许页面操作"; glyph: root.write-granted ? Glyph.check : Glyph.unlock;
                                         enabled: root.active && root.can-grant-write;
                                         clicked => { root.choose-permission(2); } }
                                     if root.signed-in: Rectangle { height: 1px; background: Theme.line; }

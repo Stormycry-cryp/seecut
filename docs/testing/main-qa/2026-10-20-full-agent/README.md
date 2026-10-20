@@ -73,7 +73,7 @@ CARGO_TARGET_DIR="$PWD/../.toonflow/native-target" cargo test -p concat --lib --
 
 以上均未调用付费模型或启动前台App，不能代替真实生成作品、费用及实际原生交互验收。
 
-## 工具目录体积
+## 第六批工具目录体积
 
 本轮正常构建CLI的SHA256为 `b8a6c70f0bbcfc296f47279475281cf449b0f619369ad58449cad5a1cb55316f`。通过真实stdio initialize/tools/list读取29项，紧凑JSON为64281字节；使用现有COTO客户端及私有sessionTools实际包装，模型工具定义为61328字节。测量仅启动MCP客户端，使用合成实例和凭据，没有连接实际App或发起计费请求。
 
@@ -109,3 +109,20 @@ CARGO_TARGET_DIR="$PWD/../.toonflow/native-target" cargo test -p concat --lib --
 - 原生候选字段样例与私有parser交叉核对3项通过，涵盖元信息查询、创建、去重；样例使用合成身份，不能作为真实App回执。
 
 最新同一原生测试二进制SHA256为 `688f0dcff84e558c4de66fbe1cd0661262c949c95f7399a91be26ad51271f50b`（2026-10-20 14:30:11 UTC）：agent_154通过、1个测试辅助入口默认忽略；editor_mcp119通过；bounded_digest1通过。三组过滤集合无交集，共274通过、1忽略；旧阶段249不叠加。包含原生媒体探测、原AddMedia及去重/撤销重做、OwnedOutput来源、任务控制和legacy move撤权逻辑。最新concat --lib --tests严格Clippy通过。没有启动前台App或抢占鼠标、键盘、焦点。单素材8GiB、单个在途probe；现有FFmpeg probe没有硬取消能力，挂起时占住该槽位，迟到完成仍须重验授权。当前未覆盖云/团队素材、本机任意路径、批量送入或自动切换目标工程。
+
+第六批私有77829dc的[Node22.19.0与24.x CI](https://github.com/Stormycry-cryp/seecut-agent/actions/runs/39441374469)均通过；公共d01f9a8的[服务CI](https://github.com/Stormycry-cryp/seecut/actions/runs/39441490848)通过。[引擎CI](https://github.com/Stormycry-cryp/seecut/actions/runs/39441492909)在cargo fmt发现lib.rs模块排序，后续编译和测试未执行，本批修正。更早87d273a的引擎在编译测试时runner失联，官方注解仅确认通信丢失，没有失败编译步骤或可取回日志，不能据此认定OOM。
+
+## 第七批：App页面与原问题恢复
+
+源码新增独立App只读范围及app_context/page_items/page_preview，原capabilities按当前App/文档范围分别回应。八类普通页面从实际UI缓存投影，不读取整个库或磁盘；发问前固定页面三字段并按原inputId保存，后续工具及模型完成结果核对原输入。媒体使用实际缓存Image、当前预览或列表缩略图；敏感和未接入弹窗共用原生模态校验。详情见[App读取合同](../../../agent/app-read-protocol.md)。
+
+恢复保留原COTO session、历史和managed账本，只接受同账户/client的明确重新授权；旧inputId不改绑或自动重发。宿主结束旧问题仅撤回原pending输入，并为原只读调用记载明确无结果终态；原费用未核实则继续阻塞。近期历史摘要有64项上限，当前未决列表完整。该动作不证明业务完成。
+
+- 私有live用Node24.15.0、当前公共服务源码单次完整417/417通过，0失败/取消/跳过，108.375秒。涵盖真实COTO、合成MCP、stdio/IPC与loopback managed；10个实现和测试文件组合SHA为 `81499500267d79f926224bcce1622b63d655159edea68f96b21e30f9be6510d8`。移植仅修两处测试服务路径，没有以旧隔离服务冒充当前公共合同。
+- 前端由实际gpt-6-astra/high子代理接手实现和检查；本批轻量harness122通过、1个辅助入口忽略。原生独立轻量64项通过，其中包括真实RGBA→PNG、摘要和换图后拒绝。上述集合存在重叠，不能相加为联合原生总数。
+- 公共服务关联64项通过；Linux引擎新增临时swap与cgroup祖先OOM计数及最终资源采样，10项swap命令替身测试和7项supervisor测试通过。本机未创建swap，新配置尚未在runner实测，不能声称修复了失联原因。Android源未改，本轮继续暂缓。
+- 最终原生/Slint联合编译通过；同一最终原生binary的6个无交集过滤组共301通过、1个辅助入口默认忽略：agent_163、editor_mcp122、AppPage12、实际PNG2、Cloud账户1、bounded_digest1。binary SHA为 `ce45ca7a1c06ba81321da2ab3c8bd842d7213a64addff4007ea8379869fb50db`，23个Rust/Slint源码的冻结组合SHA为 `11576ad6b81fde84c4f5fb296bd322093785b915bb80b2710a8f145153fa868d`。严格Clippy要求的三处最小修正为tests-only Store::open、移除冗余局部变量、将form_text移至tests模块前；已全部包含在最终二进制与复测中。初始binary的301项不重复计数，也未运行未经审阅的全部628项。
+- MCP协议/stdio47项通过，正常CLI SHA为 `e8441c01a70d05d6b7cf69ee0198a02cdb41759311883f01917a242c555f303f`。真实stdio目录32工具、紧凑JSON67973字节。真实COTO客户端和私有包装器保留Doc29工具/61328字节，画布14/26962、剪辑6/22746、Flow17/17240；App4/3225，绑定字段对模型隐藏。此为定义JSON体积，不含上下文/图片，不是token或实际费用。
+- fresh CLI、真实COTO与合成Unix端点完成四个App方法共17次IPC交叉验证，确认标准成功envelope、PNG image字节摘要、普通nameTruncated字段及过期/未授权拒绝。合法schema使用oneOf/const，首次校验脚本误以为enum，修正严格解析后32目录核对通过，没有为夹具改生产协议。该合成端点不是运行中的App。测量日志保留222行既有AJV未知uint/uint64/double格式警告；实际数值范围继续由原生及私有层检查，没有修改COTO。
+- 四个App模型工具说明修正后，App/工作区定向61项通过；参数、执行和权限逻辑未改变。417项为该说明修正前的完整运行，61项为其后的受影响回归，不相加为478项。
+- 宿主 `cargo clippy -p concat --lib --tests --offline -j 1 -- -D warnings` 通过；MCP all-targets/stdio严格Clippy和完整工作区格式检查通过。本批没有前台App、实际授权按钮、真实模型观看或作品质量证据，不算全功能完成。

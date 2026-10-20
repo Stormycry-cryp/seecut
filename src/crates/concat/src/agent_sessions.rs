@@ -30,12 +30,56 @@ pub(crate) struct Message {
     pub(crate) progress: String,
 }
 
-/// A reference to a project, never an editor permission or account token.
+/// Frozen display context. The document variant retains the original JSON.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ContextReference {
+    Document(DocumentReference),
+    App(AppReference),
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ContextReference {
+pub(crate) struct DocumentReference {
     pub(crate) project_key: String,
     pub(crate) project_name: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AppReference {
+    pub(crate) app_scope: AppReferenceScope,
+    pub(crate) page_name: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AppReferenceScope {
+    pub(crate) instance_id: String,
+    pub(crate) account_scope: String,
+    pub(crate) app_session_id: String,
+}
+/// A history domain, independent of short-lived runtime and App session IDs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryScope {
+    Document(String),
+    App(String),
+}
+impl HistoryScope {
+    fn valid(&self) -> bool {
+        valid_key(match self {
+            Self::Document(key) | Self::App(key) => key,
+        })
+    }
+    fn accepts(&self, context: &ContextReference) -> bool {
+        match (self, context) {
+            (Self::Document(key), ContextReference::Document(doc)) => &doc.project_key == key,
+            (Self::App(key), ContextReference::App(app)) => {
+                &app.app_scope.account_scope == key
+                    && valid_key(&app.app_scope.instance_id)
+                    && valid_id(&app.app_scope.app_session_id)
+                    && app.page_name.len() <= 512
+            }
+            _ => false,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +102,10 @@ impl Reference {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RequestSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) input_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app_view_binding: Option<concat_editor_mcp::app_read::AppViewBinding>,
     #[serde(default)]
     pub(crate) task: Option<crate::agent_tasks::TaskIntent>,
     pub(crate) session_id: String,
@@ -144,7 +192,7 @@ pub(crate) struct Store {
     root: PathBuf,
     directory: PathBuf,
     path: PathBuf,
-    project_key: String,
+    scope: HistoryScope,
     root_identity: (u64, u64),
     directory_identity: (u64, u64),
     loaded: Cell<bool>,
@@ -153,12 +201,24 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    #[cfg(test)]
     pub(crate) fn open(
         root: &Path,
         account_key: &str,
         project_key: &str,
     ) -> Result<Self, &'static str> {
-        if !valid_key(account_key) || !valid_key(project_key) {
+        Self::open_scope(
+            root,
+            account_key,
+            HistoryScope::Document(project_key.into()),
+        )
+    }
+    pub(crate) fn open_scope(
+        root: &Path,
+        account_key: &str,
+        scope: HistoryScope,
+    ) -> Result<Self, &'static str> {
+        if !valid_key(account_key) || !scope.valid() {
             return Err(INVALID);
         }
         validate_path(root)?;
@@ -179,7 +239,14 @@ impl Store {
         let directory_identity = private_directory(&directory)?;
         // Length framing keeps ("ab", "c") separate from ("a", "bc").
         let mut hash = Sha256::new();
-        for key in [account_key, project_key] {
+        let keys: Vec<&str> = match &scope {
+            // Preserve the existing document hash and on-disk location exactly.
+            HistoryScope::Document(project) => vec![account_key, project],
+            HistoryScope::App(account) => {
+                vec!["seecut-native-app-history-v1", account_key, account]
+            }
+        };
+        for key in keys {
             hash.update((key.len() as u64).to_be_bytes());
             hash.update(key.as_bytes());
         }
@@ -188,7 +255,7 @@ impl Store {
             root: root.into(),
             directory,
             path,
-            project_key: project_key.into(),
+            scope,
             root_identity,
             directory_identity,
             loaded: Cell::new(false),
@@ -385,12 +452,33 @@ impl Store {
             {
                 return Err(INVALID);
             }
+            if matches!(self.scope, HistoryScope::App(_))
+                && (session.current_task_id.is_some()
+                    || !session.task_updates.is_empty()
+                    || session
+                        .request_snapshots
+                        .iter()
+                        .any(|request| request.task.is_some()))
+            {
+                return Err(INVALID);
+            }
             for request in &session.request_snapshots {
                 if request.task.as_ref().is_some_and(|task| !task.valid())
                     || request.session_id != session.id
                     || !valid_model(&request.model_id)
                     || request.effort_id.as_deref().is_some_and(|id| !valid_id(id))
-                    || request.context.project_key != self.project_key
+                    || !self.scope.accepts(&request.context)
+                    || request.input_id.as_deref().is_some_and(|id| !valid_id(id))
+                    || match &request.context {
+                        ContextReference::Document(_) => request.app_view_binding.is_some(),
+                        ContextReference::App(_) => {
+                            request.input_id.is_none()
+                                || request
+                                    .app_view_binding
+                                    .as_ref()
+                                    .is_none_or(|view| !view.valid())
+                        }
+                    }
                 {
                     return Err(INVALID);
                 }
@@ -496,9 +584,74 @@ fn validate_file(metadata: &Metadata) -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
+    fn document_reference_mut(context: &mut ContextReference) -> &mut DocumentReference {
+        match context {
+            ContextReference::Document(document) => document,
+            ContextReference::App(_) => panic!("document fixture"),
+        }
+    }
     use super::*;
     use serde_json::json;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn app_history_is_separate_and_document_wire_and_path_are_unchanged() {
+        let fixture = fixture();
+        let doc = Store::open(fixture.path(), "account", "project").unwrap();
+        let explicit = Store::open_scope(
+            fixture.path(),
+            "account",
+            HistoryScope::Document("project".into()),
+        )
+        .unwrap();
+        let app = Store::open_scope(
+            fixture.path(),
+            "account",
+            HistoryScope::App("project".into()),
+        )
+        .unwrap();
+        assert_eq!(doc.path, explicit.path);
+        assert_ne!(doc.path, app.path);
+        let context: ContextReference =
+            serde_json::from_value(json!({"project_key":"project","project_name":"测试工程"}))
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(context).unwrap(),
+            json!({"project_key":"project","project_name":"测试工程"})
+        );
+        assert!(serde_json::from_value::<ContextReference>(json!({"project_key":"project","project_name":"test","app_scope":{"instance_id":"instance","account_scope":"account","app_session_id":"app-session"},"page_name":"素材"})).is_err());
+    }
+
+    #[test]
+    fn app_history_requires_original_input_view_and_rejects_document_tasks() {
+        let fixture = fixture();
+        let store = Store::open_scope(
+            fixture.path(),
+            "account",
+            HistoryScope::App("account-scope".into()),
+        )
+        .unwrap();
+        store.load().unwrap();
+        let mut saved = archive("project");
+        let request = &mut saved.sessions[0].request_snapshots[0];
+        request.context = ContextReference::App(AppReference {
+            app_scope: AppReferenceScope {
+                instance_id: "instance".into(),
+                account_scope: "account-scope".into(),
+                app_session_id: "app-session".into(),
+            },
+            page_name: "个人素材".into(),
+        });
+        assert!(store.save(&saved).is_err());
+        let request = &mut saved.sessions[0].request_snapshots[0];
+        request.input_id = Some("input-original".into());
+        request.app_view_binding = Some(serde_json::from_value(json!({"pageId":"personalLibrary","pageEpoch":3,"pageStateId":format!("app-page-v1-{}", "a".repeat(64))})).unwrap());
+        store.save(&saved).unwrap();
+        assert_eq!(store.load().unwrap(), Some(saved.clone()));
+        saved.sessions[0].current_task_id =
+            Some(crate::agent_tasks::task_id_for("not-an-app-task"));
+        assert!(store.save(&saved).is_err());
+    }
 
     #[test]
     fn manual_title_survives_first_input_after_archive_round_trip() {
@@ -606,16 +759,18 @@ mod tests {
                 current_task_id: None,
                 task_updates: Vec::new(),
                 request_snapshots: vec![RequestSnapshot {
+                    input_id: None,
+                    app_view_binding: None,
                     task: None,
                     references: Vec::new(),
                     session_id: "session-one".into(),
                     model_id: "managed-model".into(),
                     effort_id: None,
                     policy: json!({"protocol_version": 1, "policy_revision": "fixture-1"}),
-                    context: ContextReference {
+                    context: ContextReference::Document(DocumentReference {
                         project_key: project.into(),
                         project_name: "测试工程".into(),
-                    },
+                    }),
                 }],
                 pending: "unknown".into(),
                 updated_at_ms: 1234,
@@ -756,7 +911,7 @@ mod tests {
         next.model_id = "second-model".into();
         next.effort_id = Some("high".into());
         next.policy = json!({"protocol_version": 1, "policy_revision": "fixture-2"});
-        next.context.project_name = "重新命名的工程".into();
+        document_reference_mut(&mut next.context).project_name = "重新命名的工程".into();
         original.sessions[0].request_snapshots.push(next);
         store.save(&original).unwrap();
         assert_eq!(original.sessions[0].request_snapshots[0], frozen);
@@ -851,7 +1006,7 @@ mod tests {
         candidates.push(candidate);
         let mut candidate = original.clone();
         let mut wrong_context = candidate.sessions[0].request_snapshots[0].clone();
-        wrong_context.context.project_key = "other".into();
+        document_reference_mut(&mut wrong_context.context).project_key = "other".into();
         candidate.sessions[0].request_snapshots.push(wrong_context);
         candidates.push(candidate);
         let mut candidate = original.clone();
@@ -862,7 +1017,7 @@ mod tests {
         candidates.push(candidate);
         let mut candidate = original.clone();
         let mut large_request = candidate.sessions[0].request_snapshots[0].clone();
-        large_request.context.project_name = "x".repeat(32 * 1024);
+        document_reference_mut(&mut large_request.context).project_name = "x".repeat(32 * 1024);
         candidate.sessions[0].request_snapshots = vec![large_request; 8];
         candidates.push(candidate);
         let mut candidate = original.clone();

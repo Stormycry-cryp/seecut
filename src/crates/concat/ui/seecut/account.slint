@@ -142,7 +142,7 @@ export component AccountPage inherits Rectangle {
 }
 
 export component CreditsPage inherits Rectangle {
-    property <string> expanded-entry;
+    in-out property <string> expanded-entry <=> SeeCut.account-expanded-entry;
     property <int> view-revision: SeeCut.history-view-revision;
     changed view-revision => { credits-scroll.viewport-y = 0px; root.expanded-entry = ""; }
     credits-scroll := ScrollView {
