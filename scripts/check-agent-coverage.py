@@ -17,6 +17,33 @@ CANVAS = 'src/crates/concat/src/panes/canvas.rs'
 MCP = 'src/crates/concat-editor-mcp/src/main.rs'
 UI = 'src/crates/concat/ui'
 APP_READ_TOOLS = {'capabilities', 'app_context', 'page_items', 'page_preview'}
+APP_CONTROL_TOOLS = {'app_navigate', 'app_operation'}
+
+
+def advertised_tool_sets(path):
+    # Native App capabilities start with the legacy read-only list and replace
+    # it only after independent AppControl negotiation. Scan both literal forms;
+    # taking the first array silently ignores the negotiated advertisement.
+    arrays = re.findall(
+        r'(?:"tools"\s*:\s*|capabilities\["tools"\]\s*=\s*json!\(\s*)(\[[^\]]*\])',
+        read(path),
+    )
+    return [json.loads(array) for array in arrays]
+
+
+def scope_capability_errors(tools, document_lists, app_lists):
+    errors = []
+    if any(len(names) != len(set(names)) for names in document_lists + app_lists):
+        errors.append('Duplicate native capability tool advertisement.')
+    app_tools = APP_READ_TOOLS | APP_CONTROL_TOOLS
+    document_tools = tools - (app_tools - {'capabilities'})
+    if len(document_lists) != 1 or set(document_lists[0]) != document_tools:
+        errors.append('Native document capabilities differ from document-only MCP registrations.')
+    if len(app_lists) != 2 or [set(names) for names in app_lists] != [APP_READ_TOOLS, app_tools]:
+        errors.append('Native App capability advertisements differ from the legacy read and negotiated control tool sets.')
+    if not app_tools <= tools or document_tools & app_tools != {'capabilities'}:
+        errors.append('Native scope capability union differs from MCP registrations.')
+    return errors
 
 
 def read(path):
@@ -77,18 +104,9 @@ def check():
     for key in sorted(set(entries) - set(observed)):
         errors.append(f'Stale native surface: {key}')
     tools = {entry['symbol'] for entry in observed.values() if entry['kind'] == 'registeredTool'}
-    def advertised_tools(path):
-        advertised = re.search(r'"tools"\s*:\s*(\[[^\]]*\])', read(path))
-        return set(json.loads(advertised.group(1))) if advertised else set()
-
-    document_tools = advertised_tools('src/crates/concat/src/editor_mcp.rs')
-    app_tools = advertised_tools('src/crates/concat/src/editor_mcp_app_read.rs')
-    if app_tools != APP_READ_TOOLS:
-        errors.append('Native App capability advertisement differs from the closed read tool set.')
-    if document_tools != tools - (APP_READ_TOOLS - {'capabilities'}):
-        errors.append('Native document capabilities differ from document-only MCP registrations.')
-    if document_tools | app_tools != tools or document_tools & app_tools != {'capabilities'}:
-        errors.append('Native scope capability union differs from MCP registrations.')
+    document_lists = advertised_tool_sets('src/crates/concat/src/editor_mcp.rs')
+    app_lists = advertised_tool_sets('src/crates/concat/src/editor_mcp_app_read.rs')
+    errors.extend(scope_capability_errors(tools, document_lists, app_lists))
     server = read('services/seecut-server/src/seecut_server/assistant_contract.py')
     allowed = re.search(r'^TOOLS\s*=\s*frozenset\((\{[^}]+\})\)', server, re.M)
     if not allowed or ast.literal_eval(allowed.group(1)) != tools:
@@ -134,7 +152,17 @@ def check():
     for error in errors:
         print(error)
     counts = {kind: sum(row['kind'] == kind for row in entries.values()) for kind in ['nativeCommand', 'nativeHelper', 'registeredTool']}
-    print(json.dumps({'inventory': counts, 'uiFiles': len(ui), 'uiDeclarations': sum(map(len, ui.values())), 'businessRoutes': len(catalog.get('businessRoutes', [])), 'completeBusinessDenominator': False, 'errors': len(errors)}, ensure_ascii=False))
+    app_control_tools = APP_READ_TOOLS | APP_CONTROL_TOOLS
+    scope_counts = {
+        'rawRegistrations': len(tools),
+        'legacyRawRegistrations': len(tools - APP_CONTROL_TOOLS),
+        'document': len(tools - (app_control_tools - {'capabilities'})),
+        'legacyAppRead': len(APP_READ_TOOLS),
+        'legacyAppReadWithoutImages': len(APP_READ_TOOLS - {'page_preview'}),
+        'appControl': len(app_control_tools),
+        'appControlWithoutImages': len(app_control_tools - {'page_preview'}),
+    }
+    print(json.dumps({'inventory': counts, 'scopeToolCounts': scope_counts, 'uiFiles': len(ui), 'uiDeclarations': sum(map(len, ui.values())), 'businessRoutes': len(catalog.get('businessRoutes', [])), 'completeBusinessDenominator': False, 'errors': len(errors)}, ensure_ascii=False))
     return bool(errors)
 
 

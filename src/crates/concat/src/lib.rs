@@ -34,6 +34,16 @@ mod ui {
 }
 
 mod account_ledger;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_core;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_host;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_input;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_journal;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_worker;
 mod agent_billing;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_components;

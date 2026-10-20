@@ -2,6 +2,21 @@
 
 当前范围：macOS 桌面端；Android 按用户最新要求暂缓，下面移动端信息仅记录此前已经完成的步骤，不作为本轮验收门槛。
 
+## 第十批：普通页面导航与原操作恢复
+
+新增App独立控制协议，导航仅允许八类普通页目标，原操作查询保留原会话、序号和来源。Doc不获得页面导航权限，旧AppRead仍为四项只读工具；新Control为六项，模型不支持图片时为五项。原始CLI注册在Control协商后为34项，原32项工具对象保持不变。合同见[App页面操作协议](../../../agent/app-control-protocol.md)。原生接线和本地联合验证已完成，实际App链另验。
+
+- 私有冻结源码完整569项通过，0失败/取消/跳过，146.7秒，使用Node24.15.0。独立复核包含4场景、14项运行时及2项本地真实受管账务回归。主代理逐字节核对111文件采纳，并在live复跑4场景通过；没有将这些重复验证相加为总测试数。
+- 公共实际服务合同36项通过。原生纯核心、恢复、后台队列及准备中取消在同一独立harness共62项通过，另有10项编译拒绝验证；不代表正常原生/Slint联合构建或真实窗口已通过。
+- MCP正常all-targets stdio测试68项与严格Clippy通过，正常CLI重新构建。主代理使用该二进制及live私有运行时完成15组联合检查，覆盖真实COTO、宿主ACK、工具裁剪、撤权、丢失ACK与原操作恢复；二进制SHA256为ab3c9a2248b4826caae040b18ca4b1bfd9b7f35b6bd33cf607cc683d4b224a32，测试前后不变。证据在.toonflow/app-control-cli-gate/ROOT-NORMAL-CLI-PROOF.json。
+- 原生允许ACK前先持久保存queued意图，raw只消费同一原记录；停止或撤权后，未被Registry接受的Prepared由原journal取消，已接受记录走原取消路径。queued不授予执行权，running和导航必须在允许ACK之后。后台RAII完成通知避免UI繁忙时漏收尾、阻塞后续同会话worker。
+- 最终原生/Slint测试编译、宿主含tests严格Clippy、工作区格式通过。同一最终二进制六组415项通过、辅助1项默认忽略，实际742项中选择416项且无重叠：agent270+1忽略、editor_mcp129、Cloud snapshot1、app_page12、app_preview2、bounded_digest1。比前批增加83项，其中7项适配生命周期、62项核心/恢复/后台取消、6项输入来源、5项许可链与3项Controller回执/恢复；均已包含于415项，不另相加。
+- 最终32文件源码指纹清单SHA256为30a8983754a5ee1b9f9b3d9c743f94341d71a81b643a394a468d43e93944660f；原生测试二进制SHA256为90166a67dc5f6fb70931770635765be57c01b6cb26a46bce1d2d80a8e72747b9。主代理核对实际文件、二进制、测试列表和日志，证据在.toonflow/app-control-native-host-draft/ROOT-FINAL-PROOF.json。当前最终核心/后台线程production rlib与10项外部私有字段/所有权编译拒绝也由主代理复核，证据在.toonflow/app-control-live-privacy-gate。
+
+源码清单及8项检查器回归通过：42命令/45辅助/34全局注册/761 UI声明/170业务路由；Doc29、AppRead4/无图3、Control6/无图5。Flow项目列表/创建/打开仍未映射，分母尚未穷尽，不报告全应用覆盖率。
+
+CLI联合检查使用合成模型和native导航端点，不证明实际App采用、原生持久屏障、模型看图、作品质量或正式分发。没有启动前台App，没有鼠标、键盘或焦点操作。
+
 ## CI 修复复核
 
 配套私有22fe513的[Node22/24 CI](https://github.com/Stormycry-cryp/seecut-agent/actions/runs/39464609736)均通过，公共15194f3的[服务CI](https://github.com/Stormycry-cryp/seecut/actions/runs/39463954360)通过；主CI仍未完整通过，不能据此宣布全应用可用。
@@ -21,7 +36,7 @@
 - 原生/Slint联合测试编译、工作区格式、宿主含tests严格Clippy通过。同一最终二进制六组332项通过、辅助1项默认忽略，其中Agent194、Cloud snapshot1、editor_mcp122、app_page12、app_preview2、bounded_digest1；14项新增类型/真实Store/控制器IPC回归已包含在332项内，不与前批318项累加。
 - 最终4文件源码聚合SHA256为`a057aa3afc5122f2b8f2abf2100d18b1ccf1ffcc37fa189660e6d101b7fdbdfe`；测试二进制SHA256为`3fac358b5e70fd5bf4989885d150e9f68c39c887137bd9e134f6f7e581577f76`。主代理复核实际字节，测试后摘要一致；证据在.toonflow/task-observation-ui-gate。MCP源码未改，继续复用e8441c01正常CLI与47项协议/stdio证据。
 
-这批没有启动前台App或操作系统鼠标、键盘、焦点，没有付费模型、实际改稿作品、跨工作区或正式分发验收。普通页导航和AppControl仍为隔离候选，不属于当前32项注册。
+这批没有启动前台App或操作系统鼠标、键盘、焦点，没有付费模型、实际改稿作品、跨工作区或正式分发验收。当时普通页导航和AppControl仍为隔离候选，不属于第九批32项注册；后续进度见第十批。
 
 此前公共bed917c的[主CI](https://github.com/Stormycry-cryp/seecut/actions/runs/39452403466)于17:02UTC完成并失败：workspace Clippy与测试编译成功，workspace测试615通过/2失败/5忽略，失败为翻译缺项和画布往返测试的视口设置；临时swap清理另有rm EPERM。对应cgroup的oom/oom_kill计数均为0，不把这次源码/测试失败当作OOM。相关修复与下一次完整CI结果另行记录。
 

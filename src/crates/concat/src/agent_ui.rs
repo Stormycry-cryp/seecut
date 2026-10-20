@@ -123,6 +123,7 @@ mod desktop {
         project_key: String,
         read_token: Option<String>,
         write_token: Option<String>,
+        app_control_token: Option<String>,
         read_status: String,
         write_status: String,
         can_grant_read: bool,
@@ -139,12 +140,13 @@ mod desktop {
                     project_key: String::new(),
                     read_token: app.read_token,
                     write_token: None,
+                    app_control_token: app.control_token,
                     read_status: app.read_status,
-                    write_status: "当前页面尚未接入操作，可读取文字和现有媒体预览".into(),
+                    write_status: app.control_status,
                     can_grant_read: app.can_grant_read,
                     can_revoke_read: app.can_revoke_read,
-                    can_grant_write: false,
-                    can_revoke_write: false,
+                    can_grant_write: app.can_grant_control,
+                    can_revoke_write: app.can_revoke_control,
                 }
             } else {
                 Self {
@@ -153,6 +155,7 @@ mod desktop {
                     project_key: document.project_key,
                     read_token: document.read_token,
                     write_token: document.write_token,
+                    app_control_token: None,
                     read_status: document.read_status,
                     write_status: document.write_status,
                     can_grant_read: document.can_grant_read,
@@ -203,6 +206,7 @@ mod desktop {
         scope: Option<AgentScope>,
         read: Option<String>,
         write: Option<String>,
+        app_control: Option<String>,
     }
     impl Lease {
         fn from_snapshot(snapshot: &ScopeSnapshot) -> Self {
@@ -210,6 +214,7 @@ mod desktop {
                 scope: snapshot.scope.clone(),
                 read: snapshot.read_token.clone(),
                 write: snapshot.write_token.clone(),
+                app_control: snapshot.app_control_token.clone(),
             }
         }
     }
@@ -300,6 +305,7 @@ mod desktop {
         assistant_row: Option<usize>,
         approval: Option<FrozenApproval>,
         editor_recovery: Option<crate::agent_controller::EditorRecovery>,
+        app_recovery: Option<crate::agent_controller::AppRecovery>,
         task_budget_text: String,
         task_budget_policy: Option<serde_json::Value>,
         task_permits: Vec<(u64, Instant)>,
@@ -542,6 +548,7 @@ mod desktop {
     }
     impl Drop for Binding {
         fn drop(&mut self) {
+            Self::fence_app_control_native(true);
             self.timer.stop();
             self.state.get_mut().controller.shutdown_now();
             for state in self.parked.get_mut() {
@@ -557,6 +564,7 @@ mod desktop {
     impl Binding {
         /// Start bounded process shutdown before the app's exit-only reaping hook.
         pub(crate) fn shutdown(&self, app: &App) {
+            Self::fence_app_control_native(true);
             self.state.borrow_mut().record.draft =
                 app.global::<Assistant>().get_draft().to_string();
             let _ = self.persist(true);
@@ -763,6 +771,7 @@ mod desktop {
             Ok(())
         }
         fn new_session(&self, app: &App) {
+            Self::fence_app_control_native(true);
             self.refresh(app);
             if !app.global::<Assistant>().get_open()
                 || !app.global::<Assistant>().get_can_create_session()
@@ -949,6 +958,7 @@ mod desktop {
             }
         }
         fn select_session(&self, app: &App, index: i32) {
+            Self::fence_app_control_native(true);
             self.refresh(app);
             let Ok(index) = usize::try_from(index) else {
                 return;
@@ -1015,7 +1025,13 @@ mod desktop {
                 });
             Shell::with(|shell, _| {
                 let studio = shell.studio.borrow();
-                studio.editor_mcp.borrow_mut().bind_assistant_session(owner);
+                let mut bridge = studio.editor_mcp.borrow_mut();
+                bridge.bind_assistant_session(owner);
+                bridge.bind_app_control_session(if snapshot.is_app() && self.account.signed_in() {
+                    Some(self.state.borrow().record.id.clone())
+                } else {
+                    None
+                });
             });
             let Some(snapshot) = Self::snapshot(app) else {
                 return;
@@ -1130,7 +1146,8 @@ mod desktop {
                                 if snapshot.scope.as_ref() == Some(&config.scope)
                                     && snapshot.read_token.as_deref()
                                         == Some(config.read_token.as_str())
-                                    && snapshot.write_token == config.write_token =>
+                                    && snapshot.write_token == config.write_token
+                                    && snapshot.app_control_token == config.app_control_token =>
                             {
                                 state.notice.clear();
                                 match state.controller.connect(*config) {
@@ -1171,10 +1188,103 @@ mod desktop {
             if billing_changed && self.account.signed_in() {
                 self.account.refresh_wallet(app);
             }
+            self.drain_app_control(app);
             self.sync_task_grant(&snapshot);
             self.publish(app, &snapshot);
             self.try_auto_approve(app);
             let _ = self.persist(false);
+        }
+        fn fence_app_control_native(revoke: bool) {
+            Shell::with(|shell, _| {
+                if let Ok(studio) = shell.studio.try_borrow()
+                    && let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut()
+                {
+                    if revoke {
+                        bridge.revoke_app_control();
+                    } else {
+                        bridge.fence_app_control();
+                    }
+                }
+            });
+        }
+        fn drain_app_control(&self, app: &App) {
+            let (fence, proposals) = {
+                let mut state = self.state.borrow_mut();
+                (
+                    state.controller.app_control_should_fence(),
+                    state.controller.take_app_control_proposals(),
+                )
+            };
+            if fence {
+                Self::fence_app_control_native(false);
+            }
+            for proposal in proposals {
+                let current = self
+                    .state
+                    .borrow()
+                    .controller
+                    .app_control_proposal_current(&proposal);
+                let mut registered = false;
+                if current {
+                    Shell::with(|shell, _| {
+                        if let Ok(studio) = shell.studio.try_borrow()
+                            && let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut()
+                        {
+                            registered = bridge
+                                .register_app_control(&studio, app, &shell.models, proposal.clone())
+                                .is_ok();
+                        }
+                    });
+                }
+                if !registered {
+                    let _ = self
+                        .state
+                        .borrow_mut()
+                        .controller
+                        .authorize_app_control(&proposal, false);
+                }
+            }
+            let mut decisions = Vec::new();
+            Shell::with(|shell, _| {
+                if let Ok(studio) = shell.studio.try_borrow()
+                    && let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut()
+                {
+                    // Keep ownership of each Prepared inside this same UI/Bridge borrow.
+                    for registration in bridge.take_ready_app_control() {
+                        let proposal = registration.proposal.clone();
+                        let current = self
+                            .state
+                            .borrow()
+                            .controller
+                            .app_control_proposal_current(&proposal);
+                        let allowed = bridge.finish_app_control_registration(
+                            registration,
+                            current,
+                            &studio,
+                            app,
+                            &shell.models,
+                        );
+                        decisions.push((proposal, allowed));
+                    }
+                }
+            });
+            for (proposal, allowed) in decisions {
+                let sent = self
+                    .state
+                    .borrow_mut()
+                    .controller
+                    .authorize_app_control(&proposal, allowed)
+                    .is_ok();
+                if !sent || !allowed {
+                    Shell::with(|shell, _| {
+                        if let Ok(studio) = shell.studio.try_borrow()
+                            && let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut()
+                        {
+                            bridge.cancel_app_control_proposal(&proposal.intent.operation_id);
+                        }
+                    });
+                }
+            }
         }
         fn grant_scope(
             &self,
@@ -1356,12 +1466,19 @@ mod desktop {
                         && !state.preparing
                         && state.controller.process_present();
                     let notice = lease_change_notice(old, &next);
-                    if !hot
-                        || state
-                            .controller
-                            .update_permissions(next.write.clone())
-                            .is_err()
-                    {
+                    let updated = hot
+                        && if snapshot.is_app() {
+                            state
+                                .controller
+                                .update_app_control_permissions(next.app_control.clone())
+                                .is_ok()
+                        } else {
+                            state
+                                .controller
+                                .update_permissions(next.write.clone())
+                                .is_ok()
+                        };
+                    if !updated {
                         state.controller.disconnect();
                         state.preparing = false;
                         state.selecting = false;
@@ -1695,7 +1812,9 @@ mod desktop {
                 app_recovery_visible && state.controller.can_query_app_reads(),
             );
             ui.set_reconcile_label(
-                if state
+                if state.controller.app_recovery().is_some() {
+                    "核实原页面操作"
+                } else if state
                     .controller
                     .editor_recovery()
                     .is_some_and(|operation| operation.retry_registration)
@@ -1797,9 +1916,20 @@ mod desktop {
                 .into(),
             );
             ui.set_read_granted(snapshot.read_token.is_some());
-            ui.set_write_granted(snapshot.write_token.is_some());
+            ui.set_write_granted(
+                snapshot.write_token.is_some() || snapshot.app_control_token.is_some(),
+            );
             ui.set_read_permission_status(snapshot.read_status.as_str().into());
-            ui.set_write_permission_status(snapshot.write_status.as_str().into());
+            ui.set_write_permission_status(
+                if snapshot.is_app()
+                    && state.controller.session_opened()
+                    && !state.controller.supports_app_control()
+                {
+                    "当前 Agent 版本仅支持读取 App 页面".into()
+                } else {
+                    snapshot.write_status.as_str().into()
+                },
+            );
             ui.set_can_grant_read(
                 (snapshot.can_grant_read || snapshot.can_revoke_write)
                     && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
@@ -1807,6 +1937,7 @@ mod desktop {
             ui.set_can_revoke_read(snapshot.can_revoke_read);
             ui.set_can_grant_write(
                 snapshot.can_grant_write
+                    && (!snapshot.is_app() || state.controller.supports_app_control())
                     && !busy
                     && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
             );
@@ -1850,6 +1981,7 @@ mod desktop {
                     && a.delta_y.is_some_and(f64::is_finite)
             });
             let editor_recovery = state.controller.editor_recovery().cloned();
+            let app_recovery = state.controller.app_recovery().cloned();
             let frozen_approval = approval.map(|a| FrozenApproval {
                 tool: a.tool.clone(),
                 arguments: a.arguments.clone(),
@@ -1898,6 +2030,7 @@ mod desktop {
             state.assistant_row = next_row;
             state.approval = frozen_approval;
             state.editor_recovery = editor_recovery;
+            state.app_recovery = app_recovery;
         }
         fn capture_document_observation(
             app: &App,
@@ -1922,6 +2055,10 @@ mod desktop {
             })
         }
         fn send(&self, app: &App, text: &str) {
+            if app.global::<Assistant>().get_can_send() {
+                Self::fence_app_control_native(false);
+                self.state.borrow_mut().controller.fence_app_control();
+            }
             self.refresh(app);
             if !app.global::<Assistant>().get_open()
                 || !app.global::<Assistant>().get_can_send()
@@ -1962,7 +2099,14 @@ mod desktop {
                     );
                 });
                 match binding {
-                    Ok(view) => Some((format!("input-{}", uuid::Uuid::new_v4()), view)),
+                    Ok(view) => Some((
+                        format!("input-{}", uuid::Uuid::new_v4()),
+                        crate::agent_app_control_input::InputBinding::new(
+                            snapshot.scope.as_ref().unwrap().app().unwrap(),
+                            crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                            &view,
+                        ),
+                    )),
                     Err(error) => {
                         state.notice = error.message().into();
                         return;
@@ -2067,7 +2211,8 @@ mod desktop {
                         .filter(|_| !task_mode)
                         .map(|(id, _)| id.clone())
                 }),
-                app_view_binding: app_input.as_ref().map(|(_, view)| view.clone()),
+                app_view_binding: app_input.as_ref().map(|(_, view)| view.page()),
+                app_input_binding: app_input.as_ref().map(|(_, view)| view.clone()),
                 observation_binding: document_input
                     .as_ref()
                     .filter(|_| !task_mode)
@@ -2472,17 +2617,28 @@ mod desktop {
             Shell::with(|shell, _| {
                 let studio = shell.studio.borrow();
                 let mut bridge = studio.editor_mcp.borrow_mut();
-                let app_scope = bridge.assistant_app_snapshot(&studio, app).identity;
-                result = if let Some(identity) = app_scope {
+                let app_snapshot = bridge.assistant_app_snapshot(&studio, app);
+                result = if let Some(identity) = app_snapshot.identity {
                     match action {
                         AssistantPermission::GrantRead => {
-                            bridge.grant_app_read(&studio, app, &identity, true)
+                            if app_snapshot.read_token.is_some() {
+                                bridge.revoke_app_control();
+                                Ok(())
+                            } else {
+                                bridge.grant_app_read(&studio, app, &identity, true)
+                            }
                         }
                         AssistantPermission::RevokeRead => {
                             bridge.revoke_app_read();
                             Ok(())
                         }
-                        _ => Err(AssistantPermissionError::NotAllowed),
+                        AssistantPermission::GrantWrite => {
+                            bridge.grant_app_control(&studio, app, &shell.models, &identity)
+                        }
+                        AssistantPermission::RevokeWrite => {
+                            bridge.revoke_app_control();
+                            Ok(())
+                        }
                     }
                 } else {
                     bridge.assistant_permission(&studio, app, action)
@@ -2612,11 +2768,28 @@ mod desktop {
         }
         fn reconcile(&self, app: &App) {
             let frozen = self.state.borrow().editor_recovery.clone();
+            let app_frozen = self.state.borrow().app_recovery.clone();
             self.refresh(app);
             if !app.global::<Assistant>().get_open() {
                 return;
             }
             let mut state = self.state.borrow_mut();
+            if let Some(recovery) = app_frozen {
+                state.notice = if state.app_recovery.as_ref() != Some(&recovery) {
+                    "待核实的原页面操作已变化".into()
+                } else {
+                    state
+                        .controller
+                        .reconcile_app(&recovery)
+                        .err()
+                        .map(|error| error.message())
+                        .unwrap_or_default()
+                        .into()
+                };
+                drop(state);
+                self.refresh(app);
+                return;
+            }
             if frozen != state.editor_recovery {
                 state.notice = "待核对原操作已变化，请检查当前任务".into();
             } else if let Some(operation) = frozen {
@@ -2886,6 +3059,7 @@ mod desktop {
                         provider,
                         read_token,
                         write_token: snapshot.write_token,
+                        app_control_token: snapshot.app_control_token,
                     })
                 })();
                 let _ = sender.send(WorkerResult::Prepared {
@@ -2989,6 +3163,7 @@ mod desktop {
                         provider,
                         read_token,
                         write_token: snapshot.write_token,
+                        app_control_token: snapshot.app_control_token,
                     })
                 })();
                 let _ = sender.send(WorkerResult::Prepared {
@@ -3102,6 +3277,7 @@ mod desktop {
             assistant_row: None,
             approval: None,
             editor_recovery: None,
+            app_recovery: None,
             task_budget_text: String::new(),
             task_budget_policy: None,
             task_permits: Vec::new(),
@@ -3465,6 +3641,8 @@ mod desktop {
                         // This human action withdraws task permits before IPC is drained.
                         binding.task_action(&app, TaskCommand::Stop);
                     } else {
+                        Binding::fence_app_control_native(false);
+                        binding.state.borrow_mut().controller.fence_app_control();
                         binding.refresh(&app);
                         if app.global::<Assistant>().get_open() {
                             let mut state = binding.state.borrow_mut();
@@ -3759,6 +3937,7 @@ mod desktop {
                 scope: None,
                 read: Some("synthetic-read".into()),
                 write: Some("synthetic-write".into()),
+                app_control: None,
             };
             let mut next = old.clone();
             next.write = None;
@@ -3836,6 +4015,7 @@ mod desktop {
                 let original = RequestSnapshot {
                     input_id: None,
                     app_view_binding: None,
+                    app_input_binding: None,
                     observation_binding: None,
                     task: None,
                     references: Vec::new(),

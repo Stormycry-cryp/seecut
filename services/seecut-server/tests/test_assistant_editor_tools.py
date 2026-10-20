@@ -8,7 +8,7 @@ from seecut_server.errors import ApiError
 from test_assistant_contract import AssistantFixture, done
 
 EDITOR_TOOLS = (
-    "app_context", "page_items", "page_preview",
+    "app_context", "page_items", "page_preview", "app_navigate", "app_operation",
     "capabilities", "context", "project", "preview", "move_selected_image",
     "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit",
     "save_canvas_project", "export_canvas_png", "canvas_operation",
@@ -132,3 +132,55 @@ class ManagedEditorToolsTest(AssistantFixture):
         self.assertEqual(self.service.get(self.user, operation["operation_id"])["state"], "outcome_unknown")
         events = self.service.events(self.user, operation["operation_id"], 0)["events"]
         self.assertFalse(any(e["type"] == "model" and e["payload"].get("message", {}).get("toolCalls") for e in events))
+
+
+class AppControlVocabularyTest(AssistantFixture):
+    def test_requested_navigation_and_query_keep_original_model_calls_and_history(self):
+        for name in ("app_navigate", "app_operation"):
+            with self.subTest(tool=name):
+                self.user, _ = self.new_user(name + "@requested-control.example.test")
+                body = self.body(step="control-" + name, turn="turn-" + name)
+                body["request"]["tools"] = [{"name": name, "description": "App transport only",
+                    "parameters": {"type": "object", "properties": {"target": {"type": "string"}}}}]
+                event = done(tool=True)
+                call = event["message"]["toolCalls"][0]
+                call["name"] = name
+                call["arguments"] = {"target": "personalLibrary"} if name == "app_navigate" else {"operationId": "sca1:1:6:client:4:chat:1"}
+                self.provider.events = [event]
+                operation = self.create(body)
+                self.worker.process_once()
+                self.assertEqual(self.service.get(self.user, operation["operation_id"])["state"], "succeeded")
+                events = self.service.events(self.user, operation["operation_id"], 0)["events"]
+                delivered = [e["payload"] for e in events if e["type"] == "model" and e["payload"].get("type") == "done"]
+                self.assertEqual(delivered[0]["message"]["toolCalls"][0], call)
+                # Only vocabulary changes: model transport neither grants native
+                # control nor accepts a new business action protocol.
+                request = copy.deepcopy(body["request"])
+                request["messages"] += [event["message"], {"id": "result", "role": "tool", "toolCallId": call["id"], "toolName": name, "content": [{"type": "text", "text": "{}"}]}]
+                self.assertEqual(model_request(request, self.config), request)
+
+    def test_unrequested_control_words_are_not_delivered_by_provider(self):
+        for name in ("app_navigate", "app_operation"):
+            with self.subTest(tool=name):
+                self.user, _ = self.new_user(name + "@control.example.test")
+                event = done(tool=True)
+                event["message"]["toolCalls"][0]["name"] = name
+                self.provider.events = [event]
+                operation = self.create(self.body(step="unrequested-" + name, turn="turn-" + name))
+                self.worker.process_once()
+                self.assertEqual(self.service.get(self.user, operation["operation_id"])["state"], "outcome_unknown")
+                events = self.service.events(self.user, operation["operation_id"], 0)["events"]
+                self.assertFalse(any(e["type"] == "model" and e["payload"].get("message", {}).get("toolCalls") for e in events))
+
+    def test_only_two_new_words_not_open_project_actions_or_filesystem(self):
+        for name in ("app_open_project", "navigate-resume", "app_action", "filesystem", "shell"):
+            with self.subTest(tool=name):
+                self.user, _ = self.new_user(name.replace("_", "-") + "@bad-control.example.test")
+                body = self.body(step="bad-" + name, turn="turn-" + name)
+                body["request"]["tools"][0]["name"] = name
+                with self.assertRaises(ApiError):
+                    model_request(body["request"], self.config)
+                event = done(tool=True)
+                event["message"]["toolCalls"][0]["name"] = name
+                with self.assertRaises(ApiError):
+                    model_event(event)

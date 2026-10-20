@@ -105,6 +105,125 @@ pub(crate) fn app_read_snapshot(
     app_page_snapshot::capture(&access, app, studio, models, registry)
 }
 
+/// 原导航包装器完成同步采纳后才可构造；ID 不来自模型或 operationId。
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) struct AppNavigationAdoption {
+    navigation_id: uuid::Uuid,
+    operation_id: String,
+    page: concat_editor_mcp::AppViewBinding,
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+impl AppNavigationAdoption {
+    /// 仅模拟原生包装器返回，用于无窗口状态机测试；不证明真实页面导航。
+    #[cfg(test)]
+    pub(crate) fn for_state_machine_test(
+        dispatch: crate::agent_app_control_core::HostDispatch,
+        page: concat_editor_mcp::AppViewBinding,
+    ) -> Self {
+        Self {
+            navigation_id: uuid::Uuid::new_v4(),
+            operation_id: dispatch.intent.operation_id,
+            page,
+        }
+    }
+    pub(crate) fn page(&self) -> &concat_editor_mcp::AppViewBinding {
+        &self.page
+    }
+    pub(crate) fn matches(&self, operation: &str, target: concat_editor_mcp::AppPageId) -> bool {
+        !self.navigation_id.is_nil()
+            && self.operation_id == operation
+            && self.page.page_id == target
+    }
+}
+
+/// 只接受 core commit 后的闭合导航；仍走现有页面入口和设置 Open/Close。
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_control_navigate(
+    shell: &crate::host::Shell,
+    app: &App,
+    dispatch: crate::agent_app_control_core::HostDispatch,
+) -> Result<AppNavigationAdoption, crate::agent_app_control_core::Error> {
+    use crate::agent_app_control_core::{Action, Error};
+    use concat_editor_mcp::AppPageId;
+    if dispatch.correlation_id != dispatch.intent.operation_id {
+        return Err(Error::Conflict);
+    }
+    let Action::Navigate { target } = dispatch.intent.target;
+    let expected = &dispatch.intent.authority;
+    let check_identity = || {
+        let (epoch, actual) =
+            app_read_identity(&expected.instance_id).map_err(|_| Error::NotAuthorized)?;
+        if epoch != expected.account_epoch
+            || actual.account_scope != expected.account_scope
+            || actual.app_session_id != expected.app_session_id
+        {
+            return Err(Error::NotAuthorized);
+        }
+        Ok(())
+    };
+    check_identity()?;
+    {
+        let studio = shell.studio.try_borrow().map_err(|_| Error::Busy)?;
+        app_read_gate(&studio, app).map_err(|_| Error::NotAuthorized)?;
+        let ui = app.global::<SeeCut>();
+        if (ui.get_page() == 0 && !studio.on_start)
+            || (ui.get_page() == 6 && !ui.get_canvas_gallery_open())
+            || ui.get_page() == 8
+        {
+            return Err(Error::NotAuthorized);
+        }
+    }
+    let state = EXPORT_ACCOUNT.with(|slot| {
+        slot.try_borrow()
+            .map_err(|_| Error::Busy)?
+            .upgrade()
+            .ok_or(Error::NotAuthorized)
+    })?;
+    let navigation_id = uuid::Uuid::new_v4();
+    {
+        let mut studio = shell.studio.try_borrow_mut().map_err(|_| Error::Busy)?;
+        let message = if target == AppPageId::Settings {
+            crate::panes::settings::SettingsMsg::Open
+        } else {
+            crate::panes::settings::SettingsMsg::Close
+        };
+        studio.handle(crate::panes::Msg::Settings(message));
+        studio.publish(app, &shell.models);
+    }
+    if target != AppPageId::Settings {
+        let page = match target {
+            AppPageId::Generation => 1,
+            AppPageId::PersonalLibrary => 5,
+            AppPageId::TeamLibrary => 2,
+            AppPageId::Templates => 7,
+            AppPageId::Account => 4,
+            AppPageId::Credits => 3,
+            AppPageId::Projects => 6,
+            AppPageId::Settings => unreachable!(),
+        };
+        navigate(app, &state, page);
+    }
+    check_identity()?;
+    let page = {
+        let studio = shell.studio.try_borrow().map_err(|_| Error::Busy)?;
+        let mut bridge = studio
+            .editor_mcp
+            .try_borrow_mut()
+            .map_err(|_| Error::Busy)?;
+        bridge
+            .assistant_app_view(&studio, app, &shell.models)
+            .map_err(|_| Error::Unknown)?
+    };
+    if page.page_id != target {
+        return Err(Error::Unknown);
+    }
+    Ok(AppNavigationAdoption {
+        navigation_id,
+        operation_id: dispatch.intent.operation_id,
+        page,
+    })
+}
+
 pub(crate) mod prompt_assistance;
 pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, media_kind};
 

@@ -962,6 +962,36 @@
         "src/crates/concat-editor-mcp/src/app_read.rs"
       ]
     },
+    "tool:app_navigate": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "app_navigate",
+      "kind": "registeredTool",
+      "module": "app",
+      "mcpTools": [
+        "app_navigate"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "evidence": [
+        ".toonflow/app-control-inventory-gate/source-inventory.json",
+        "docs/agent/app-control-protocol.md"
+      ]
+    },
+    "tool:app_operation": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "app_operation",
+      "kind": "registeredTool",
+      "module": "app",
+      "mcpTools": [
+        "app_operation"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "evidence": [
+        ".toonflow/app-control-inventory-gate/source-inventory.json",
+        "docs/agent/app-control-protocol.md"
+      ]
+    },
     "tool:canvas_edit": {
       "source": "src/crates/concat-editor-mcp/src/main.rs",
       "symbol": "canvas_edit",
@@ -5443,6 +5473,55 @@
       ],
       "embeddedSource": "apps/web/src/lib/seecutWorkspaceBridge.ts",
       "sourcePin": "integrations/toonflow/upstream.json"
+    },
+    {
+      "id": "app.navigate-ordinary-page",
+      "module": "app",
+      "label": "受限导航到普通 App 页面",
+      "source": "src/crates/concat/src/cloud.rs",
+      "actions": [
+        "app_control_navigate"
+      ],
+      "mcpTools": [
+        "app_navigate"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "evidence": [
+        ".toonflow/app-control-inventory-gate/source-inventory.json",
+        "docs/agent/app-control-protocol.md"
+      ],
+      "notes": "仅普通页面 generation、personalLibrary、teamLibrary、templates、account、credits、settings、projects。Projects 指实际画布项目列表；不含 Flow 项目发现、创建或打开。独立协商 AppControl v1 并核对来源、原操作身份、宿主 ACK 和当前读/控制许可；已有原生离开确认仍由用户处理。只有同一次原导航的实际采用事实及终态持久确认可表示完成。源码清单已核对，实际 App 导航及模型联合调用尚待验收。",
+      "statePrerequisites": [
+        "独立 AppControl v1 协商和当前 App 读取许可",
+        "当前原生页面操作授权、受信任输入与精确宿主执行许可",
+        "完整冻结 before 与当前原生页面一致",
+        "位于受支持的普通页面；不跨已打开 Clip、Canvas 或 Flow 文档"
+      ]
+    },
+    {
+      "id": "app.query-original-navigation",
+      "module": "app",
+      "label": "查询原 App 导航的状态与结果",
+      "source": "src/crates/concat/src/editor_mcp_app_control.rs",
+      "actions": [
+        "dispatch_query"
+      ],
+      "mcpTools": [
+        "app_operation"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "evidence": [
+        ".toonflow/app-control-inventory-gate/source-inventory.json",
+        "docs/agent/app-control-protocol.md"
+      ],
+      "notes": "仅凭原 operationId、原 COTO sessionId 与 clientSequence，使用当前真实同账户/client App 读取许可查询。查询不要求旧控制 token、旧 App 会话或当前页；不重放原导航，不产生新导航许可。currentObservation 与原 completion 独立，outcomeUnknown 不能视为完成。源码清单已核对，实际 App 恢复查询及模型联合调用尚待验收。",
+      "statePrerequisites": [
+        "独立 AppControl v1 协商",
+        "当前真实同账户/client App 读取许可",
+        "保持原 operationId、原 COTO 会话与序号"
+      ]
     }
   ]
 }

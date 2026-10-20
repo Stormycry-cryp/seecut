@@ -2,6 +2,9 @@
 //! Minimal UI-independent controller for the documented HOST-IPC-V1 protocol.
 //! Only the trusted host constructs configuration; no credential discovery or automatic retry.
 use super::agent_process::{self, BridgeError, Event, Handle, LaunchSpec};
+use crate::agent_app_control_input::{
+    InputBinding, Proposal as AppControlProposal, Tracker as AppControlTracker,
+};
 use crate::agent_observation::DocumentObservationBinding;
 use crate::agent_tasks::{self, TaskProjection, TaskStatus, TaskSummary};
 use serde_json::{Value, json};
@@ -15,6 +18,7 @@ const MAX_TOOL_PROGRESS: usize = 12;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub use super::agent_identity::{AgentScope, DocumentIdentity};
+#[cfg(test)]
 use concat_editor_mcp::app_read::AppViewBinding;
 /// Credentials deliberately have no Debug implementation and are never written to disk/logs.
 pub struct ConnectionConfig {
@@ -29,6 +33,7 @@ pub struct ConnectionConfig {
     pub provider: Value,
     pub read_token: String,
     pub write_token: Option<String>,
+    pub app_control_token: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -275,10 +280,14 @@ enum ToolAction {
     FlowWrite,
     TaskProgress,
     AppRead,
+    AppNavigate,
+    AppOperation,
 }
 impl ToolAction {
     fn from_name(name: &str) -> Option<Self> {
         match name {
+            "app_navigate" => Some(Self::AppNavigate),
+            "app_operation" => Some(Self::AppOperation),
             "app_context" | "page_items" | "page_preview" => Some(Self::AppRead),
             "task_status" | "task_checkpoint" => Some(Self::TaskProgress),
             "context" => Some(Self::Context),
@@ -311,7 +320,8 @@ impl ToolAction {
     fn is_write(self) -> bool {
         matches!(
             self,
-            Self::Move
+            Self::AppNavigate
+                | Self::Move
                 | Self::Insert
                 | Self::Transform
                 | Self::CanvasEdit
@@ -325,6 +335,8 @@ impl ToolAction {
     fn label(self) -> &'static str {
         match self {
             Self::AppRead => "读取当前应用页面",
+            Self::AppNavigate => "切换应用页面",
+            Self::AppOperation => "核对页面切换结果",
             Self::TaskProgress => "核对任务进度",
             Self::Context => "读取当前页面",
             Self::Project => "读取工程信息",
@@ -394,6 +406,10 @@ impl TaskCommand {
         }
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AppRecovery {
+    pub invocation_id: String,
+}
 enum Request {
     Initialize,
     Permissions {
@@ -422,6 +438,12 @@ enum Request {
     Reconcile,
     RecoveryStatus,
     AbandonAppReads,
+    AppReconcile {
+        invocation_id: String,
+    },
+    AppControlAuthorize {
+        allowed: bool,
+    },
     EditorReconcile {
         operation_id: String,
     },
@@ -434,7 +456,7 @@ struct Pending {
 
 enum InputObservation {
     Document(String, Box<DocumentObservationBinding>),
-    App(String, AppViewBinding),
+    App(String, InputBinding),
 }
 impl InputObservation {
     fn input_id(&self) -> &str {
@@ -487,6 +509,9 @@ pub struct Controller {
     model_unknown: bool,
     recovery_pending: bool,
     app_read_recovery: Option<AppReadRecovery>,
+    app_control_supported: bool,
+    app_recovery: Vec<AppRecovery>,
+    app_control_inputs: AppControlTracker,
     app_restore_required: bool,
     last_model_state: Option<Value>,
     account_expired: bool,
@@ -548,6 +573,9 @@ impl Default for Controller {
             model_unknown: false,
             recovery_pending: false,
             app_read_recovery: None,
+            app_control_supported: false,
+            app_recovery: Vec::new(),
+            app_control_inputs: AppControlTracker::default(),
             app_restore_required: false,
             last_model_state: None,
             account_expired: false,
@@ -591,12 +619,15 @@ impl Controller {
         if config.scope.instance_id().is_empty()
             || match &config.scope {
                 AgentScope::Document(document) => {
-                    document.project_id.is_empty() || !valid_id(&document.document_session_id)
+                    document.project_id.is_empty()
+                        || !valid_id(&document.document_session_id)
+                        || config.app_control_token.is_some()
                 }
                 AgentScope::App(app) => {
                     !concat_editor_mcp::AppReadScope {
                         account_scope: app.account_scope.clone(),
                         app_session_id: app.app_session_id.clone(),
+                        app_control_protocol_version: None,
                     }
                     .valid()
                         || config.write_token.is_some()
@@ -647,6 +678,8 @@ impl Controller {
         self.session_id = config.local_session_id;
         self.restore = config.restore;
         self.recover_existing = false;
+        self.app_control_supported = false;
+        self.app_control_inputs = AppControlTracker::default();
         self.model_selection_supported = false;
         self.document_observation_supported = false;
         self.task_observation_supported = false;
@@ -660,6 +693,9 @@ impl Controller {
         self.permissions_supported = false;
         self.permission_revision = 0;
         self.secrets = vec![config.read_token.clone()];
+        if let Some(token) = &config.app_control_token {
+            self.secrets.push(token.clone());
+        }
         if let Some(token) = &config.write_token {
             self.secrets.push(token.clone());
         }
@@ -696,6 +732,10 @@ impl Controller {
             AgentScope::App(app) => {
                 params["scopeKind"] = json!("app");
                 params["appReadProtocolVersion"] = json!(1);
+                params["appControlProtocolVersion"] = json!(1);
+                if let Some(token) = &config.app_control_token {
+                    params["appControlToken"] = json!(token);
+                }
                 params["accountScope"] = json!(app.account_scope);
                 params["appSessionId"] = json!(app.app_session_id);
             }
@@ -759,6 +799,43 @@ impl Controller {
         self.process.is_some()
     }
     /// Negotiated for this process only; a reconnect must advertise it again.
+    pub fn supports_app_control(&self) -> bool {
+        self.process.is_some() && self.app_scope() && self.app_control_supported
+    }
+    pub(crate) fn take_app_control_proposals(&mut self) -> Vec<AppControlProposal> {
+        self.app_control_inputs.take_pending()
+    }
+    pub(crate) fn app_control_proposal_current(&self, proposal: &AppControlProposal) -> bool {
+        self.supports_app_control()
+            && !self.blocked()
+            && self.turn_id.as_deref() == Some(&proposal.turn_id)
+            && self.app_control_inputs.current(proposal)
+    }
+    pub(crate) fn app_control_should_fence(&self) -> bool {
+        self.app_scope()
+            && (self.turn_id.is_none()
+                || self.blocked()
+                || self.ignore_runtime_events
+                || matches!(
+                    self.phase,
+                    Phase::Disconnected | Phase::Failed | Phase::Closing | Phase::Stopping
+                ))
+    }
+    pub(crate) fn fence_app_control(&mut self) {
+        self.app_control_inputs.fence();
+    }
+    /// Host-only ACK follows installation of the exact native permit.
+    pub(crate) fn authorize_app_control(
+        &mut self,
+        proposal: &AppControlProposal,
+        allowed: bool,
+    ) -> Result<(), UiError> {
+        if !self.supports_app_control() || (allowed && !self.app_control_proposal_current(proposal))
+        {
+            return Err(UiError::Protocol);
+        }
+        self.enqueue("app.control.authorize", json!({"sessionId": proposal.session_id,"inputId":proposal.intent.input_id,"turnId":proposal.turn_id,"invocationId":proposal.invocation_id,"operationId":proposal.intent.operation_id,"allowed":allowed}), Request::AppControlAuthorize { allowed })
+    }
     pub fn supports_model_selection(&self) -> bool {
         self.process.is_some() && self.model_selection_supported
     }
@@ -1124,7 +1201,10 @@ impl Controller {
             can_connect: self.process.is_none()
                 && (!self.unknown_latched || self.can_restore_original()),
             can_reconcile: ((self.managed_mode && self.model_unknown)
-                || (!self.editor_recovery.is_empty() && self.unknown_latched))
+                || (!self.editor_recovery.is_empty() && self.unknown_latched)
+                || (!self.app_recovery.is_empty()
+                    && self.app_control_supported
+                    && self.unknown_latched))
                 && !self.account_expired
                 && self.process.is_some()
                 && self.turn_id.is_none()
@@ -1189,6 +1269,22 @@ impl Controller {
         self.enqueue("session.permissions", json!({"version":1,"sessionId":self.session_id,
             "revision":revision,"mode":if operate {"operate"} else {"read"},"writeToken":write_token}),
             Request::Permissions { revision, operate })
+    }
+    pub fn update_app_control_permissions(&mut self, token: Option<String>) -> Result<(), UiError> {
+        if !self.supports_app_control() || !self.permissions_supported || !self.session_opened {
+            return Err(UiError::Protocol);
+        }
+        self.fence_app_control();
+        self.permission_revision = self
+            .permission_revision
+            .checked_add(1)
+            .ok_or(UiError::Protocol)?;
+        let revision = self.permission_revision;
+        let operate = token.is_some();
+        if let Some(value) = &token {
+            self.secrets.push(value.clone());
+        }
+        self.enqueue("session.permissions", json!({"version":1,"sessionId":self.session_id,"revision":revision,"mode":if operate {"operate"}else{"read"},"appControlToken":token}), Request::Permissions{revision,operate})
     }
     #[cfg(test)]
     pub(crate) fn send_text(&mut self, text: &str) -> Result<(), UiError> {
@@ -1256,7 +1352,7 @@ impl Controller {
         input_id: &str,
         content: Vec<Value>,
         selection: Option<Value>,
-        view: AppViewBinding,
+        view: InputBinding,
     ) -> Result<(), UiError> {
         self.send_frozen_content(
             content,
@@ -1278,8 +1374,8 @@ impl Controller {
             .as_ref()
             .is_some_and(|scope| scope.app().is_some());
         let valid_observation = match (&self.scope, &observation) {
-            (Some(AgentScope::App(_)), Some(InputObservation::App(id, view))) => {
-                max64(id) && view.valid()
+            (Some(AgentScope::App(identity)), Some(InputObservation::App(id, view))) => {
+                max64(id) && view.matches_scope(identity, &self.editor_client)
             }
             (
                 Some(AgentScope::Document(identity)),
@@ -1339,8 +1435,19 @@ impl Controller {
             .map(|observation| observation.input_id().to_owned())
             .unwrap_or_else(|| format!("input-{}", uuid::Uuid::new_v4()));
         let mut params = json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":content});
+        let app_input = match &observation {
+            Some(InputObservation::App(_, view)) => Some(view.clone()),
+            _ => None,
+        };
+        if self.app_control_supported
+            && app_input
+                .as_ref()
+                .is_some_and(|binding| !self.app_control_inputs.can_remember(&input_id, binding))
+        {
+            return Err(UiError::InvalidInput);
+        }
         match observation {
-            Some(InputObservation::App(_, view)) => params["appViewBinding"] = json!(view),
+            Some(InputObservation::App(_, view)) => params["appViewBinding"] = json!(view.page()),
             Some(InputObservation::Document(_, binding)) => {
                 params["observationBinding"] = json!(binding);
             }
@@ -1356,6 +1463,9 @@ impl Controller {
                 input_id: input_id.clone(),
             },
         )?;
+        if let Some(binding) = app_input.filter(|_| self.app_control_supported) {
+            self.app_control_inputs.remember(&input_id, binding);
+        }
         self.send_turn = Some((input_id, None));
         self.text.clear();
         self.tool_progress.clear();
@@ -1370,6 +1480,7 @@ impl Controller {
     }
     /// Enqueue isn't confirmation. Phase becomes Stopping only on the real {stopping:true} reply.
     pub fn stop(&mut self) -> Result<(), UiError> {
+        self.fence_app_control();
         if !self.view().can_stop {
             return Err(UiError::Busy);
         }
@@ -1500,6 +1611,103 @@ impl Controller {
         }
         true
     }
+    fn update_app_recovery(&mut self, tools: &Value) -> bool {
+        let Some(items) = tools.get("unresolved") else {
+            self.app_recovery.clear();
+            return true;
+        };
+        let Some(items) = items.as_array().filter(|items| items.len() <= 128) else {
+            return false;
+        };
+        let mut recovery = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for item in items {
+            let Some(object) = item.as_object().filter(|object| {
+                object.len() == 2
+                    && object.contains_key("invocationId")
+                    && object.contains_key("tool")
+            }) else {
+                return false;
+            };
+            let Some(id) = object["invocationId"].as_str().filter(|id| {
+                !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+            }) else {
+                return false;
+            };
+            if !seen.insert(id) {
+                return false;
+            }
+            match object["tool"].as_str() {
+                Some("app_navigate") if self.app_control_supported => recovery.push(AppRecovery {
+                    invocation_id: id.into(),
+                }),
+                Some("capabilities" | "app_context" | "page_items" | "page_preview") => {}
+                Some("app_operation") if self.app_control_supported => {}
+                _ => return false,
+            }
+        }
+        self.app_recovery = recovery;
+        true
+    }
+    pub(crate) fn app_recovery(&self) -> Option<&AppRecovery> {
+        if self.view().can_reconcile {
+            self.app_recovery.first()
+        } else {
+            None
+        }
+    }
+    pub(crate) fn reconcile_app(&mut self, recovery: &AppRecovery) -> Result<(), UiError> {
+        if self.app_recovery() != Some(recovery) {
+            return Err(UiError::Busy);
+        }
+        self.enqueue(
+            "app.reconcileOperation",
+            json!({"sessionId":self.session_id,"invocationId":recovery.invocation_id}),
+            Request::AppReconcile {
+                invocation_id: recovery.invocation_id.clone(),
+            },
+        )
+    }
+    fn settled_app_write(&self, invocation: &str, data: &Value) -> bool {
+        let Some(proposal) = self.app_control_inputs.proposal(invocation) else {
+            return false;
+        };
+        let metadata = &data["metadata"];
+        if metadata["version"].as_u64() == Some(1)
+            && metadata["status"] == "not_dispatched"
+            && metadata["navigationSent"].as_bool() == Some(false)
+            && metadata["resultAvailable"].as_bool() == Some(false)
+            && metadata["operationId"].as_str() == Some(&proposal.intent.operation_id)
+            && metadata["clientSequence"].as_u64() == Some(proposal.intent.client_sequence)
+            && metadata["reasonCode"].as_str().is_some_and(|code| {
+                !code.is_empty() && code.len() <= 128 && !code.chars().any(char::is_control)
+            })
+            && metadata.as_object().is_some_and(|object| object.len() == 7)
+            && data["message"]["isError"].as_bool() == Some(true)
+        {
+            return true;
+        }
+        let Ok(receipt) = serde_json::from_value::<concat_editor_mcp::AppNavigationReceipt>(
+            metadata["appControlReceipt"].clone(),
+        ) else {
+            return false;
+        };
+        receipt.valid()
+            && receipt.session_id == proposal.session_id
+            && receipt.operation_id == proposal.intent.operation_id
+            && receipt.client_sequence == proposal.intent.client_sequence
+            && receipt.before == proposal.intent.before
+            && receipt.target == proposal.intent.target
+            && receipt.origin.app_instance_id == proposal.source.app_instance_id
+            && receipt.origin.app_session_id == proposal.source.app_session_id
+            && receipt.origin.client_id == proposal.source.client_id
+            && receipt.durability == concat_editor_mcp::AppOperationDurability::Confirmed
+            && matches!(
+                receipt.status,
+                concat_editor_mcp::AppOperationStatus::Completed
+                    | concat_editor_mcp::AppOperationStatus::Cancelled
+            )
+    }
     pub fn editor_recovery(&self) -> Option<&EditorRecovery> {
         if self.view().can_reconcile && !self.model_unknown {
             self.editor_recovery.first()
@@ -1524,6 +1732,9 @@ impl Controller {
         )
     }
     fn update_editor_recovery(&mut self, tools: &Value) -> bool {
+        if self.app_scope() && !self.update_app_recovery(tools) {
+            return false;
+        }
         let Some(items) = tools.get("recoveryOperations").and_then(Value::as_array) else {
             self.editor_recovery.clear();
             return true;
@@ -1723,6 +1934,7 @@ impl Controller {
     }
     /// Stop the old runtime and close its session. Reconnection requires another explicit connect.
     pub fn disconnect(&mut self) {
+        self.fence_app_control();
         self.task_observation_supported = false;
         self.mark_interrupted_model();
         self.ignore_runtime_events = true;
@@ -1943,6 +2155,23 @@ impl Controller {
             return;
         };
         let data = &event["data"];
+        if tool == "app_navigate"
+            && !self.unknown_latched
+            && self.write_in_flight
+            && event["turnId"].as_str() == Some(turn.as_str())
+            && matches!(
+                event["type"].as_str(),
+                Some("tool.failed" | "tool.completed")
+            )
+            && data["invocationId"].as_str() == Some(invocation.as_str())
+            && data["message"]["toolName"] == "app_navigate"
+            && self.settled_app_write(invocation, data)
+        {
+            self.write_in_flight = false;
+            self.write_identity = None;
+            self.write_operation = None;
+            return;
+        }
         if !self.write_in_flight
             || event["turnId"].as_str() != Some(turn.as_str())
             || event["type"].as_str() != Some("tool.failed")
@@ -2057,7 +2286,8 @@ impl Controller {
                 Request::Approve { .. }
                 | Request::Stop
                 | Request::Reconcile
-                | Request::EditorReconcile { .. } => {
+                | Request::EditorReconcile { .. }
+                | Request::AppReconcile { .. } => {
                     self.error = Some(error);
                 }
                 Request::Close => {
@@ -2095,6 +2325,9 @@ impl Controller {
                     self.fail(UiError::Protocol);
                     return;
                 }
+                self.app_control_supported = scope.app().is_some()
+                    && result["capabilities"]["app_control_scope"] == true
+                    && result["capabilities"]["app_control_protocol_version"].as_u64() == Some(1);
                 self.permissions_supported =
                     result["capabilities"]["session_permissions"].as_bool() == Some(true);
                 self.model_selection_supported =
@@ -2431,6 +2664,63 @@ impl Controller {
                     self.fail(UiError::Protocol);
                 }
             }
+            Request::AppReconcile { invocation_id } => {
+                let Ok(receipt) = serde_json::from_value::<concat_editor_mcp::AppNavigationReceipt>(
+                    result["receipt"].clone(),
+                ) else {
+                    self.fail(UiError::Protocol);
+                    return;
+                };
+                let terminal = receipt.durability
+                    == concat_editor_mcp::AppOperationDurability::Confirmed
+                    && matches!(
+                        receipt.status,
+                        concat_editor_mcp::AppOperationStatus::Completed
+                            | concat_editor_mcp::AppOperationStatus::Cancelled
+                    );
+                if !receipt.valid()
+                    || receipt.session_id != self.session_id
+                    || receipt.origin.client_id != self.editor_client
+                    || result["verified"].as_bool() != Some(terminal)
+                    || (terminal
+                        && result["completed"].as_bool()
+                            != Some(
+                                receipt.status == concat_editor_mcp::AppOperationStatus::Completed,
+                            ))
+                    || (!terminal && result["status"] != "outcomeUnknown")
+                    || !self.apply_app_summary(&result["session"])
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                if terminal {
+                    if self
+                        .app_recovery
+                        .iter()
+                        .any(|entry| entry.invocation_id == invocation_id)
+                    {
+                        self.fail(UiError::Protocol);
+                        return;
+                    }
+                    if self
+                        .write_identity
+                        .as_ref()
+                        .is_some_and(|(_, id, tool)| id == &invocation_id && tool == "app_navigate")
+                    {
+                        self.write_in_flight = false;
+                        self.write_identity = None;
+                        self.write_operation = None;
+                    }
+                    self.outcome = Some(TaskOutcome::OperationVerified);
+                }
+            }
+            Request::AppControlAuthorize { allowed } => {
+                if result["accepted"].as_bool() != Some(true)
+                    || result["allowed"].as_bool() != Some(allowed)
+                {
+                    self.fail(UiError::Protocol);
+                }
+            }
             Request::Close => {
                 if result["closed"].as_bool() != Some(true) {
                     self.fail(UiError::Protocol);
@@ -2557,6 +2847,17 @@ impl Controller {
                         .as_ref()
                         .is_some_and(|scope| scope.app().is_some()) =>
             {
+                if self.app_control_supported && self.app_scope() {
+                    if !turn
+                        .zip(data["inputId"].as_str())
+                        .is_some_and(|(turn, input)| {
+                            self.app_control_inputs.applied(turn, input, seq)
+                        })
+                    {
+                        self.fail(UiError::Protocol);
+                    }
+                    return;
+                }
                 if self.tasks.current().is_some_and(|task| {
                     task.active_turn_id.as_deref() == turn
                         && data["inputId"].as_str() != task.active_input_id.as_deref()
@@ -2577,6 +2878,21 @@ impl Controller {
                             .and_then(ToolAction::from_name),
                         Some(ToolAction::AppRead | ToolAction::Capabilities)
                     )
+                    && !(self.app_control_supported
+                        && matches!(
+                            data["call"]["name"].as_str(),
+                            Some("app_navigate" | "app_operation")
+                        ))
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                if data["call"]["name"] == "app_navigate"
+                    && !turn.is_some_and(|turn| {
+                        self.app_control_inputs
+                            .started(&self.session_id, turn, seq, data)
+                            .is_some()
+                    })
                 {
                     self.fail(UiError::Protocol);
                     return;
@@ -2623,7 +2939,16 @@ impl Controller {
                             && data["message"]["toolName"].as_str() == Some(tool.as_str())
                     },
                 );
-                if owns_write {
+                if owns_write && self.app_scope() && data["message"]["toolName"] == "app_navigate" {
+                    if data["invocationId"]
+                        .as_str()
+                        .is_some_and(|id| self.settled_app_write(id, data))
+                    {
+                        self.write_in_flight = false;
+                        self.write_identity = None;
+                        self.write_operation = None;
+                    }
+                } else if owns_write {
                     if data["metadata"]["postVerification"].as_str() == Some("pending") {
                         self.write_operation = data["metadata"]["operationId"]
                             .as_str()
@@ -3987,6 +4312,96 @@ mod tests {
             assert!(c.send_turn.is_none());
         }
     }
+    fn app_control_settlement_fixture() -> (Controller, Value) {
+        let identity = crate::agent_identity::AppIdentity {
+            instance_id: "instance".into(),
+            account_scope: "a".repeat(64),
+            app_session_id: "app-session".into(),
+        };
+        let page = concat_editor_mcp::AppViewBinding {
+            page_id: concat_editor_mcp::AppPageId::Generation,
+            page_epoch: 1,
+            page_state_id: format!("app-page-v1-{}", "b".repeat(64)),
+        };
+        let source = crate::agent_app_control_input::InputBinding::new(&identity, "client", &page);
+        let mut c = Controller {
+            scope: Some(AgentScope::App(identity)),
+            session_id: "session".into(),
+            editor_client: "client".into(),
+            app_control_supported: true,
+            ..Controller::default()
+        };
+        c.app_control_inputs.remember("input", source.clone());
+        c.app_control_inputs.applied("turn", "input", 1);
+        let operation = concat_editor_mcp::app_operation_id("client", "session", 1).unwrap();
+        c.app_control_inputs.started("session", "turn", 2, &json!({
+            "invocationId":"invoke", "call":{"name":"app_navigate","arguments":{"target":"settings"}},
+            "appViewBinding":source,"appControlIntent":{"version":1,"inputId":"input",
+                "operationId":operation,"clientSequence":1,"before":page,"target":"settings"}
+        })).unwrap();
+        let receipt = json!({"appControlProtocolVersion":1,"operationId":operation,
+            "sessionId":"session","clientSequence":1,
+            "origin":{"appInstanceId":"instance","clientId":"client","appSessionId":"app-session"},
+            "before":page,"target":"settings","recordedStatus":"cancelled","status":"cancelled",
+            "durability":"confirmed","completion":null,"humanGate":null,"currentObservation":null});
+        (c, receipt)
+    }
+    #[test]
+    fn app_navigation_settlement_requires_exact_durable_original_receipt() {
+        let (c, receipt) = app_control_settlement_fixture();
+        let data = json!({"metadata":{"appControlReceipt":receipt}});
+        assert!(c.settled_app_write("invoke", &data));
+        assert!(!c.settled_app_write("another-invoke", &data));
+        for (key, value) in [
+            ("durability", json!("unconfirmed")),
+            ("target", json!("account")),
+            ("sessionId", json!("another-session")),
+            ("status", json!("outcomeUnknown")),
+        ] {
+            let mut changed = data.clone();
+            changed["metadata"]["appControlReceipt"][key] = value;
+            assert!(!c.settled_app_write("invoke", &changed), "{key}");
+        }
+        assert!(!c.settled_app_write(
+            "invoke",
+            &json!({"metadata":{"postVerification":{"verified":true}}})
+        ));
+    }
+    #[test]
+    fn app_navigation_not_dispatched_settles_only_exact_closed_refusal() {
+        let (c, receipt) = app_control_settlement_fixture();
+        let data = json!({"message":{"isError":true},"metadata":{"version":1,
+            "status":"not_dispatched","navigationSent":false,"resultAvailable":false,
+            "operationId":receipt["operationId"],"clientSequence":1,"reasonCode":"revoked"}});
+        assert!(c.settled_app_write("invoke", &data));
+        let mut changed = data.clone();
+        changed["metadata"]["navigationSent"] = json!(true);
+        assert!(!c.settled_app_write("invoke", &changed));
+        changed = data.clone();
+        changed["metadata"]["extra"] = json!(true);
+        assert!(!c.settled_app_write("invoke", &changed));
+        changed = data.clone();
+        changed["metadata"]["clientSequence"] = json!(2);
+        assert!(!c.settled_app_write("invoke", &changed));
+    }
+    #[test]
+    fn app_recovery_is_closed_bounded_and_independent_of_model_unknown() {
+        let (mut c, _) = app_control_settlement_fixture();
+        c.model_unknown = true;
+        assert!(c.update_app_recovery(&json!({"unresolved":[
+            {"invocationId":"invoke","tool":"app_navigate"},
+            {"invocationId":"query","tool":"app_operation"}]})));
+        assert_eq!(c.app_recovery.len(), 1);
+        assert!(c.model_unknown);
+        assert!(!c.update_app_recovery(&json!({"unresolved":[
+            {"invocationId":"invoke","tool":"app_navigate","operationId":"untrusted"}]})));
+        assert!(!c.update_app_recovery(&json!({"unresolved":[
+            {"invocationId":"invoke","tool":"app_navigate"},
+            {"invocationId":"invoke","tool":"app_navigate"}]})));
+        c.app_control_supported = false;
+        assert!(!c.update_app_recovery(&json!({"unresolved":[
+            {"invocationId":"invoke","tool":"app_navigate"}]})));
+    }
     #[test]
     fn app_scope_accepts_only_the_exact_four_read_tool_names() {
         for name in ["capabilities", "app_context", "page_items", "page_preview"] {
@@ -4071,6 +4486,11 @@ mod tests {
             Err(UiError::Configuration)
         );
         let view: AppViewBinding = serde_json::from_value(json!({"pageId":"personalLibrary","pageEpoch":3,"pageStateId":format!("app-page-v1-{}","a".repeat(64))})).unwrap();
+        let view = InputBinding::new(
+            fixture.controller.scope.as_ref().unwrap().app().unwrap(),
+            &fixture.controller.editor_client,
+            &view,
+        );
         fixture
             .controller
             .send_app_content(
@@ -4444,7 +4864,7 @@ for line in sys.stdin:
             let mut controller = Controller::default();
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let result = controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},scope:scope.clone(),client_id:"client-1".into(),mcp_client_path:entry.clone(),mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),local_session_id:session_id.into(),restore,provider:if scenario == "managed" {json!({"protocol":"seecut-managed","model":scenario,"sessionToken":"inference-secret"})} else {json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"})},read_token:"read-secret".into(),write_token:(!scenario.starts_with("app-")).then(||"write-secret".into())});
+                let result = controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},scope:scope.clone(),client_id:"client-1".into(),mcp_client_path:entry.clone(),mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),local_session_id:session_id.into(),restore,provider:if scenario == "managed" {json!({"protocol":"seecut-managed","model":scenario,"sessionToken":"inference-secret"})} else {json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"})},read_token:"read-secret".into(),write_token:(!scenario.starts_with("app-")).then(||"write-secret".into()),app_control_token:None});
                 match result {
                     Ok(()) => break,
                     // Parallel fixtures can contend on the nonblocking registration/input
@@ -4511,6 +4931,7 @@ for line in sys.stdin:
                 provider: json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"}),
                 read_token: "read-secret".into(),
                 write_token: None,
+                app_control_token: None,
             }
         }
         fn requests(&self) -> Vec<Value> {
@@ -5198,7 +5619,7 @@ for line in sys.stdin:
                 mcp_environment: BTreeMap::from([("TMPDIR".into(), f.directory.to_string_lossy().into_owned())]),
                 session_directory: f.directory.clone(), local_session_id: "managed-test".into(), restore: true,
                 provider: json!({"protocol":"seecut-managed","model":"managed","sessionToken":token}),
-                read_token: "read-secret".into(), write_token: Some("write-secret".into()),
+                read_token: "read-secret".into(), write_token: Some("write-secret".into()), app_control_token: None,
             }).unwrap();
         }
         let identity = f.identity.clone();
@@ -5914,6 +6335,7 @@ for line in sys.stdin:
                 provider: json!({"protocol":"fixture","model":"finish","apiKey":"inference-secret"}),
                 read_token: "read-secret".into(),
                 write_token: None,
+                app_control_token: None,
             }
         };
         for changed in 0..4 {

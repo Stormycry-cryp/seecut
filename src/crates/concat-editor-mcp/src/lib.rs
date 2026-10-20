@@ -7,6 +7,12 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod app_control;
+pub use app_control::{
+    AppCurrentObservation, AppNavigateParameters, AppNavigationCompletion, AppNavigationHumanGate,
+    AppNavigationReceipt, AppOperationDurability, AppOperationOrigin, AppOperationQuery,
+    AppOperationStatus, app_control_environment, app_operation_id,
+};
 pub mod app_read;
 pub use app_read::{
     AppContextQuery, AppItemsQuery, AppPageId, AppPageQuery, AppPreviewQuery, AppReadScope,
@@ -55,6 +61,15 @@ pub struct Request {
     /// Closed current App page query, matched exactly to its method.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_page: Option<AppPageQuery>,
+    /// Internal independent App control credential; never a Doc write credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_control_token: Option<String>,
+    /// Closed navigation parameters, only for AppNavigate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_navigate: Option<AppNavigateParameters>,
+    /// Original navigation query, only for AppOperation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_operation_query: Option<AppOperationQuery>,
     #[serde(default)]
     /// Opaque project identity.
     pub project_id: Option<String>,
@@ -135,6 +150,10 @@ pub enum Method {
     Capabilities,
     /// Read the current ordinary App page under its independent grant.
     AppContext,
+    /// Navigate one ordinary page under independently granted App control.
+    AppNavigate,
+    /// Read the original App navigation without replay or a current page binding.
+    AppOperation,
     /// Read one bounded filtered App item page.
     PageItems,
     /// Read original cached image pixels with two UI checks.
@@ -182,7 +201,8 @@ impl Method {
     pub fn is_write(self) -> bool {
         matches!(
             self,
-            Self::MoveSelectedImage
+            Self::AppNavigate
+                | Self::MoveSelectedImage
                 | Self::InsertLibraryImage
                 | Self::TransformCanvasLayer
                 | Self::CanvasEdit
@@ -198,6 +218,8 @@ impl Method {
         match self {
             Self::Capabilities => "capabilities",
             Self::AppContext => "app_context",
+            Self::AppNavigate => "app_navigate",
+            Self::AppOperation => "app_operation",
             Self::PageItems => "page_items",
             Self::PagePreview => "page_preview",
             Self::Context => "context",
@@ -281,9 +303,16 @@ pub fn validate_move_parameters(
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
     if request.app_scope.is_some()
         || request.app_page.is_some()
+        || request.app_control_token.is_some()
+        || request.app_navigate.is_some()
+        || request.app_operation_query.is_some()
         || matches!(
             request.method,
-            Method::AppContext | Method::PageItems | Method::PagePreview
+            Method::AppContext
+                | Method::PageItems
+                | Method::PagePreview
+                | Method::AppNavigate
+                | Method::AppOperation
         )
     {
         return app_read::validate_app_request(request);
@@ -743,6 +772,9 @@ mod tests {
             flow_workspace: None,
             app_scope: None,
             app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: "app".into(),
             client_id: "client".into(),
             client_token: "write-credential".into(),
@@ -946,6 +978,40 @@ mod tests {
     }
 
     #[test]
+    fn app_navigation_transport_preserves_ambiguity_and_query_read_semantics() {
+        let navigate = Method::AppNavigate;
+        let mut partial = transport();
+        partial.write_limit = Some(1);
+        assert_eq!(
+            exchange(&mut partial, &[1, 2], navigate.is_write()).status,
+            "outcomeUnknown"
+        );
+        let mut timeout = transport();
+        timeout.read_error = Some(std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            exchange(&mut timeout, &[1, 2], navigate.is_write()).status,
+            "outcomeUnknown"
+        );
+        let mut closed = transport();
+        assert_eq!(
+            exchange(&mut closed, &[1, 2], navigate.is_write()).status,
+            "outcomeUnknown"
+        );
+        let mut unsent = transport();
+        unsent.write_limit = Some(0);
+        assert_eq!(
+            exchange(&mut unsent, &[1, 2], navigate.is_write()).status,
+            "appUnavailable"
+        );
+        let mut query = transport();
+        query.read_error = Some(std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            exchange(&mut query, &[1, 2], Method::AppOperation.is_write()).status,
+            "busy"
+        );
+    }
+
+    #[test]
     fn sent_move_timeout_disconnect_and_invalid_reply_are_unknown() {
         let mut frame = Vec::new();
         write_message(&mut frame, &move_request()).unwrap();
@@ -1036,6 +1102,9 @@ mod tests {
             flow_workspace: None,
             app_scope: None,
             app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: "app".into(),
             client_id: "c".into(),
             client_token: "t".into(),
@@ -1075,6 +1144,9 @@ mod tests {
             flow_workspace: None,
             app_scope: None,
             app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: "first".into(),
             client_id: "c".into(),
             client_token: "t".into(),

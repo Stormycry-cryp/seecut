@@ -12,7 +12,7 @@ from .errors import ApiError
 # Public transport vocabulary only. The local MCP host still authorizes every
 # read/write against the current document, selection and native approval.
 TOOLS = frozenset({
-    "app_context", "page_items", "page_preview",
+    "app_context", "page_items", "page_preview", "app_navigate", "app_operation",
     "capabilities", "context", "project", "preview", "move_selected_image",
     "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit",
     "save_canvas_project", "export_canvas_png", "canvas_operation",

@@ -113,6 +113,8 @@ impl Handle {
                     | "reconcile"
                     | "editor.reconcile"
                     | "app.abandonReads"
+                    | "app.control.authorize"
+                    | "app.reconcileOperation"
                     | "task.create"
                     | "task.update"
                     | "task.pause"

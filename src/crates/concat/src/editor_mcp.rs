@@ -31,6 +31,8 @@ mod write_request;
 #[path = "editor_mcp_view_context.rs"]
 mod view_context;
 
+#[path = "editor_mcp_app_control.rs"]
+mod app_control;
 #[path = "editor_mcp_app_read.rs"]
 mod app_read;
 #[path = "editor_mcp_canvas_edit.rs"]
@@ -653,6 +655,7 @@ pub(crate) struct BridgeUi {
     pub client_draft: String,
     grants: HashMap<String, Grant>,
     app_reads: app_read::AppReadState,
+    app_controls: app_control::AppControlState,
     canvas_ids: Option<(String, DocumentIds)>,
     clip_ids: Option<(String, DocumentIds)>,
     active_canvas: bool,
@@ -1022,6 +1025,7 @@ impl BridgeUi {
             client_draft: String::new(),
             grants: HashMap::new(),
             app_reads: app_read::AppReadState::default(),
+            app_controls: app_control::AppControlState::default(),
             canvas_ids: None,
             clip_ids: None,
             active_canvas: false,
@@ -1293,6 +1297,7 @@ impl BridgeUi {
     }
 
     pub(crate) fn revoke_assistant_for_account_change(&mut self) {
+        self.app_controls.revoke();
         self.assistant_session = None;
         self.canvas_permits.clear();
         crate::toonflow_agent::revoke_all();
@@ -2286,6 +2291,12 @@ fn dispatch(request: Request) -> Response {
             result
         });
     }
+    if request.method == Method::AppNavigate {
+        return app_control::dispatch_navigation(request);
+    }
+    if request.method == Method::AppOperation {
+        return app_control::dispatch_query(request);
+    }
     if request.method.is_write() {
         return dispatch_write(request);
     }
@@ -3007,6 +3018,9 @@ mod tests {
             flow_workspace: None,
             app_scope: None,
             app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: scope.instance.clone(),
             client_id: "writer".into(),
             client_token: "write-token".into(),
@@ -3425,6 +3439,9 @@ mod tests {
             flow_workspace: None,
             app_scope: None,
             app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: bridge.instance_id.clone(),
             client_id: "reader".into(),
             client_token: "token".into(),

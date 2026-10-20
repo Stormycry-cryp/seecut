@@ -913,7 +913,7 @@ export component AssistantPanel inherits Rectangle {
             }
             if root.task-compatibility != "": AssistantText { text: root.task-compatibility; font-size: 11px; color: Theme.fg-muted; }
             if root.app-scope: AssistantText {
-                text: root.read-granted ? "可读取当前页面文字和现有媒体预览。该页暂不支持页面操作。" : "允许读取后，可询问当前页面文字和现有媒体预览。该页暂不支持页面操作。";
+                text: root.write-granted ? "可读取页面内容，并按要求切换生成、素材、模板、账户、积分、设置和项目列表。" : "允许读取后，可询问页面文字和现有媒体预览；允许页面操作后，可让 Agent 切换页面。";
                 font-size: 11px; color: Theme.fg-muted;
             }
             composer := AssistantInput {
@@ -968,10 +968,10 @@ export component AssistantPanel inherits Rectangle {
                                 VerticalLayout {
                                     padding: 8px; spacing: 4px; alignment: start;
                                     if !root.signed-in: AgentMenuAction { text: "登录账户"; glyph: Glyph.lock; clicked => { root.choose-permission(0); } }
-                                    if root.signed-in: AgentMenuAction { text: root.app-scope ? (root.read-granted ? "撤销页面读取" : "允许读取文字和媒体预览") : "允许读取"; glyph: root.read-granted && !root.write-granted ? Glyph.check : Glyph.eye;
+                                    if root.signed-in: AgentMenuAction { text: root.app-scope && !root.read-granted ? "允许读取文字和媒体预览" : "允许读取"; glyph: root.read-granted && !root.write-granted ? Glyph.check : Glyph.eye;
                                         enabled: root.active && (root.can-grant-read || (root.app-scope && root.can-revoke-read));
-                                        clicked => { root.choose-permission(root.app-scope && root.read-granted ? 6 : 1); } }
-                                    if root.signed-in: AgentMenuAction { text: root.app-scope ? "当前页面暂不支持操作" : "允许页面操作"; glyph: root.write-granted ? Glyph.check : Glyph.unlock;
+                                        clicked => { root.choose-permission(1); } }
+                                    if root.signed-in: AgentMenuAction { text: "允许页面操作"; glyph: root.write-granted ? Glyph.check : Glyph.unlock;
                                         enabled: root.active && root.can-grant-write;
                                         clicked => { root.choose-permission(2); } }
                                     if root.signed-in: Rectangle { height: 1px; background: Theme.line; }

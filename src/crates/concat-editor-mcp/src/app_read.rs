@@ -15,6 +15,13 @@ pub struct AppReadScope {
     pub account_scope: String,
     /// Host account lifetime; ordinary page navigation preserves this identity.
     pub app_session_id: String,
+    /// Independent navigation negotiation; omitted for legacy AppRead v1.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::app_control::deserialize_protocol_version"
+    )]
+    pub app_control_protocol_version: Option<u8>,
 }
 
 /// Closed ordinary App pages; open documents/Flow keep the existing Doc API.
@@ -42,11 +49,16 @@ pub enum AppPageId {
 
 /// User-view identity captured before asynchronous attachment preparation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "stdio", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppViewBinding {
     /// Closed current page.
     pub page_id: AppPageId,
     /// Navigation generation, JS-safe and nonzero.
+    #[cfg_attr(
+        feature = "stdio",
+        schemars(range(min = 1, max = 9_007_199_254_740_991u64))
+    )]
     pub page_epoch: u64,
     /// User-view hash, excluding ordinary progress/charges.
     pub page_state_id: String,
@@ -126,7 +138,9 @@ pub enum AppPageQuery {
 impl AppReadScope {
     /// Validate pathless scope identity only, never grant authorization.
     pub fn valid(&self) -> bool {
-        hex64(&self.account_scope) && identity(&self.app_session_id, 128)
+        hex64(&self.account_scope)
+            && identity(&self.app_session_id, 128)
+            && self.app_control_protocol_version.is_none_or(|v| v == 1)
     }
 }
 fn identity(value: &str, max: usize) -> bool {
@@ -168,6 +182,19 @@ pub fn validate_app_request(request: &Request) -> Result<(), String> {
         || request.operation_query.is_some()
         || request.flow.is_some()
         || request.flow_workspace.is_some()
+    {
+        return Err("invalidInput".into());
+    }
+    if matches!(request.method, Method::AppNavigate | Method::AppOperation) {
+        return if crate::app_control::validate_app_control_request(request, scope) {
+            Ok(())
+        } else {
+            Err("invalidInput".into())
+        };
+    }
+    if request.app_navigate.is_some()
+        || request.app_operation_query.is_some()
+        || request.app_control_token.is_some()
     {
         return Err("invalidInput".into());
     }

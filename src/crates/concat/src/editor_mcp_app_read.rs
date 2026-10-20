@@ -19,6 +19,10 @@ pub(crate) struct AssistantAppSnapshot {
     pub can_grant_read: bool,
     pub can_revoke_read: bool,
     pub page_label: String,
+    pub control_token: Option<String>,
+    pub control_status: String,
+    pub can_grant_control: bool,
+    pub can_revoke_control: bool,
 }
 
 pub(super) struct AppReadState {
@@ -173,7 +177,13 @@ impl BridgeUi {
             .as_ref()
             .filter(|_| readable)
             .and_then(|authority| self.app_reads.grants.token(ASSISTANT_CLIENT_ID, authority));
+        let (control_token, can_grant_control, can_revoke_control, control_status) =
+            self.app_control_projection(studio, app, token.is_some());
         AssistantAppSnapshot {
+            control_token,
+            can_grant_control,
+            can_revoke_control,
+            control_status,
             identity: current.map(|a| AppIdentity {
                 instance_id: a.instance_id,
                 account_scope: a.account_scope,
@@ -222,11 +232,18 @@ impl BridgeUi {
             .map_err(|_| AssistantPermissionError::NotAllowed)
     }
     pub(crate) fn revoke_app_read(&mut self) {
+        self.app_controls.revoke();
         self.app_reads.grants.revoke(ASSISTANT_CLIENT_ID);
         self.app_reads.pages.remove(ASSISTANT_CLIENT_ID);
     }
     pub(crate) fn revoke_all_app_reads(&mut self) {
+        self.app_controls.revoke();
         self.app_reads.clear();
+    }
+    pub(super) fn app_read_request_authorized(&self, request: &Request) -> bool {
+        self.app_reads
+            .authority(&self.instance_id)
+            .is_ok_and(|authority| self.app_reads.authorized(request, &authority, false))
     }
     pub(crate) fn assistant_app_view(
         &mut self,
@@ -250,6 +267,7 @@ impl BridgeUi {
         request.app_scope = Some(AppReadScope {
             account_scope: authority.account_scope,
             app_session_id: authority.app_session_id,
+            app_control_protocol_version: None,
         });
         let context = self
             .app_reads
@@ -287,13 +305,32 @@ pub(super) fn handle(
         if state.grants.media(&request.client_id, &authority) {
             granted.push("M");
         }
-        return UiReply::Response(Response::ok(
-            json!({"scopeKind":"app","appReadProtocolVersion":1,"appInstanceId":authority.instance_id,"clientId":request.client_id,
+        let mut capabilities = json!({"scopeKind":"app","appReadProtocolVersion":1,"appInstanceId":authority.instance_id,"clientId":request.client_id,
             "accountScope":authority.account_scope,"appSessionId":authority.app_session_id,"tools":["capabilities","app_context","page_items","page_preview"],
             "permissions":["R","M"],"grantedPermissions":granted,"readOnly":true,"readLifetime":"userSession","maxPageSize":50,"maxPageItems":2048,
-            "maxPageSnapshotBytes":524288,"maxReadbackBytes":49152,"maxPreviewEdge":256,"maxPreviewSourcePixels":4194304}),
-        ));
+            "maxPageSnapshotBytes":524288,"maxReadbackBytes":49152,"maxPreviewEdge":256,"maxPreviewSourcePixels":4194304});
+        if request
+            .app_scope
+            .as_ref()
+            .is_some_and(|scope| scope.app_control_protocol_version == Some(1))
+        {
+            let control = bridge.app_control_capability(request);
+            capabilities["tools"] = json!([
+                "capabilities",
+                "app_context",
+                "page_items",
+                "page_preview",
+                "app_navigate",
+                "app_operation"
+            ]);
+            capabilities["appControlProtocolVersion"] = json!(1);
+            capabilities["appControlSupported"] = json!(true);
+            capabilities["controlGranted"] = json!(control);
+            capabilities["readOnly"] = json!(!control);
+        }
+        return UiReply::Response(Response::ok(capabilities));
     }
+
     let context = match state.capture(request, studio, app, models) {
         Ok(value) => value,
         Err(error) => return UiReply::Response(response(error)),

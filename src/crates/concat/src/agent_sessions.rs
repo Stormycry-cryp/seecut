@@ -106,6 +106,8 @@ pub(crate) struct RequestSnapshot {
     pub(crate) input_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) app_view_binding: Option<concat_editor_mcp::app_read::AppViewBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app_input_binding: Option<crate::agent_app_control_input::InputBinding>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -484,14 +486,21 @@ impl Store {
                     || match &request.context {
                         ContextReference::Document(_) => {
                             request.app_view_binding.is_some()
+                                || request.app_input_binding.is_some()
                                 || request.observation_binding.as_ref().is_some_and(|binding| {
                                     request.input_id.is_none()
                                         || request.task.is_some()
                                         || !binding.valid()
                                 })
                         }
-                        ContextReference::App(_) => {
-                            request.observation_binding.is_some()
+                        ContextReference::App(app) => {
+                            request.app_input_binding.as_ref().is_some_and(|binding| {
+                                !binding.valid()
+                                    || binding.app_instance_id != app.app_scope.instance_id
+                                    || binding.account_scope != app.app_scope.account_scope
+                                    || binding.app_session_id != app.app_scope.app_session_id
+                                    || request.app_view_binding.as_ref() != Some(&binding.page())
+                            }) || request.observation_binding.is_some()
                                 || request.input_id.is_none()
                                 || request
                                     .app_view_binding
@@ -862,6 +871,7 @@ mod tests {
                 request_snapshots: vec![RequestSnapshot {
                     input_id: None,
                     app_view_binding: None,
+                    app_input_binding: None,
                     observation_binding: None,
                     task: None,
                     references: Vec::new(),
