@@ -675,6 +675,161 @@ impl RenderMode {
     }
 }
 
+/// Facts from the same resolved plan that the renderer executes. This is
+/// neither output proof nor permission to publish. Values describe the input
+/// request and current source-presence decisions, not a probed output file.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderFacts {
+    /// Requested encoded width in pixels.
+    pub width: u32,
+    /// Requested encoded height in pixels.
+    pub height: u32,
+    /// Exact requested frame-rate numerator.
+    pub rate_num: i64,
+    /// Exact requested frame-rate denominator.
+    pub rate_den: i64,
+    /// Planned video frames, using the renderer's round-to-nearest rule.
+    pub video_frames: u64,
+    /// Resolved timeline end in seconds, also used by the audio mixer.
+    pub duration_seconds: f64,
+    /// Whether confirmed, unmuted clips contribute an audio stream.
+    pub audio_expected: bool,
+    /// Requested video codec.
+    pub codec: VideoCodec,
+    /// Requested channel depth; this is not a decoded output-depth proof.
+    pub ten_bit: bool,
+}
+
+/// Derives trusted internal render expectations without accessing or changing
+/// `request.output`, creating intermediates, or granting any authority. Missing
+/// source audio-presence flags use the same policy-bound input probes as render.
+/// This call neither freezes inputs nor verifies any delivered output.
+pub fn render_facts(request: &ExportRequest, mode: RenderMode) -> Result<RenderFacts, String> {
+    let plan = PreparedRenderPlan::prepare(request, mode)?;
+    Ok(RenderFacts {
+        width: request.width,
+        height: request.height,
+        rate_num: request.rate_num,
+        rate_den: request.rate_den,
+        video_frames: plan.total_frames as u64,
+        duration_seconds: plan.timeline_end,
+        audio_expected: !plan.sound_indices.is_empty(),
+        codec: request.codec,
+        ten_bit: request.ten_bit,
+    })
+}
+
+// Own the resolved clips and refer to sound by index, avoiding self-references.
+// Both render and facts use this plan, including transition and probe policy.
+struct PreparedRenderPlan {
+    resolved: Vec<ExportClip>,
+    sound_indices: Vec<usize>,
+    rate: FrameRate,
+    timeline_end: f64,
+    total_frames: i64,
+}
+
+impl PreparedRenderPlan {
+    fn prepare(request: &ExportRequest, mode: RenderMode) -> Result<Self, String> {
+        if request.clips.is_empty() {
+            return Err("there is nothing on the timeline to export".to_owned());
+        }
+        if request.rate_num <= 0 || request.rate_den <= 0 {
+            return Err("export frame rate numerator and denominator must be positive".to_owned());
+        }
+        let fps = Rational::checked_new(i128::from(request.rate_num), i128::from(request.rate_den))
+            .ok_or_else(|| "export frame rate cannot be represented".to_owned())?;
+        // The encoder stores the reduced fraction in FFmpeg's i32 rational.
+        // Refuse truncation rather than describe a rate it cannot encode.
+        i32::try_from(fps.numerator())
+            .and_then(|_| i32::try_from(fps.denominator()))
+            .map_err(|_| "export frame rate cannot be represented by the encoder".to_owned())?;
+        let rate = FrameRate::new(fps);
+        // Reject invalid/overflowing spans before frame-based transition math.
+        checked_render_timing(&request.clips, rate)?;
+        if request
+            .clips
+            .iter()
+            .any(|clip| clip.track.checked_mul(2).is_none())
+        {
+            return Err(
+                "export track index cannot be represented after transition resolution".to_owned(),
+            );
+        }
+
+        // Transitions become overlaps, ramps and fade filters before sound
+        // membership or the final duration is decided.
+        let mut resolved = request.clips.clone();
+        resolve_transitions(&mut resolved, rate, true);
+        let sound = resolved
+            .iter()
+            .enumerate()
+            .filter(|(_, clip)| clip.kind == ClipKind::Audio && !clip.muted)
+            .chain(
+                resolved
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, clip)| clip.kind == ClipKind::Video && !clip.muted),
+            );
+
+        // Keep the original explicit has_audio semantics and one probe per
+        // missing unique source path. Strict mode propagates a failed probe;
+        // Compatible preserves its tolerant no-audio fallback.
+        let mut probed: HashMap<&str, bool> = HashMap::new();
+        let mut sound_indices = Vec::new();
+        for (index, clip) in sound {
+            let has_audio = if let Some(has_audio) = clip.has_audio {
+                has_audio
+            } else if let Some(has_audio) = probed.get(clip.path.as_str()) {
+                *has_audio
+            } else {
+                let has_audio =
+                    match concat_media::probe_with_policy(&clip.path, mode.input_policy()) {
+                        Ok(info) => info.audio.is_some(),
+                        Err(error) if mode == RenderMode::StrictLocal => {
+                            return Err(format!("audio presence probe failed: {error}"));
+                        }
+                        Err(_) => false,
+                    };
+                probed.insert(clip.path.as_str(), has_audio);
+                has_audio
+            };
+            if has_audio {
+                sound_indices.push(index);
+            }
+        }
+        let (timeline_end, total_frames) = checked_render_timing(&resolved, rate)?;
+        Ok(Self {
+            resolved,
+            sound_indices,
+            rate,
+            timeline_end,
+            total_frames,
+        })
+    }
+}
+
+fn checked_render_timing(clips: &[ExportClip], rate: FrameRate) -> Result<(f64, i64), String> {
+    let mut timeline_end = 0.0f64;
+    for clip in clips {
+        let end = clip.start + clip.duration;
+        if !clip.start.is_finite() || !clip.duration.is_finite() || !end.is_finite() {
+            return Err("export timeline contains a non-finite span".to_owned());
+        }
+        timeline_end = timeline_end.max(end);
+    }
+    if timeline_end <= 0.0 {
+        return Err("the timeline is empty".to_owned());
+    }
+    let frames = (timeline_end * rate.fps().as_f64()).round();
+    // i64::MAX rounds to 2^63 as f64, so >= also rejects the first value
+    // outside i64 instead of letting a float-to-int cast silently saturate.
+    if !frames.is_finite() || frames <= 0.0 || frames >= i64::MAX as f64 {
+        return Err("export frame count must be positive and representable as i64".to_owned());
+    }
+    Ok((timeline_end, frames as i64))
+}
+
 #[derive(Clone, Copy)]
 struct RenderContext<'a> {
     catalogue: &'a Catalogue,
@@ -741,75 +896,25 @@ pub fn render_with_catalogue_mode_before_publish(
         return Err("there is nothing on the timeline to export".to_owned());
     }
 
-    let rate = FrameRate::new(Rational::new(request.rate_num, request.rate_den));
     let output = PathBuf::from(&request.output);
     reject_existing_output(&output, &request.clips)?;
     reporter.cancelled()?;
 
-    // Transitions become overlaps, ramps and fade filters before anything
-    // else reads the clip list, so the picture and sound paths below never
-    // know transitions exist.
-    let mut resolved = request.clips.clone();
-    resolve_transitions(&mut resolved, rate, true);
-
-    // Stills composite exactly like footage; they only differ in how they are
-    // decoded, which is handled where the decoder is opened.
-    let visible: Vec<&ExportClip> = resolved
+    let plan = PreparedRenderPlan::prepare(request, mode)?;
+    let rate = plan.rate;
+    let timeline_end = plan.timeline_end;
+    let total_frames = plan.total_frames;
+    // Stills composite like footage; only decoder opening distinguishes them.
+    let visible: Vec<&ExportClip> = plan
+        .resolved
         .iter()
         .filter(|clip| (clip.kind.is_visual() || clip.kind == ClipKind::Layer) && !clip.hidden)
         .collect();
-    let audible: Vec<&ExportClip> = resolved
+    let sound: Vec<&ExportClip> = plan
+        .sound_indices
         .iter()
-        .filter(|clip| clip.kind == ClipKind::Audio && !clip.muted)
+        .map(|&index| &plan.resolved[index])
         .collect();
-
-    // A video clip carries its own sound, so an unmuted video track
-    // contributes to the mix as well as to the picture.
-    let mut sound: Vec<&ExportClip> = audible;
-    sound.extend(
-        resolved
-            .iter()
-            .filter(|clip| clip.kind == ClipKind::Video && !clip.muted),
-    );
-
-    // An unmuted clip can still have no audio stream - a screen recording, a
-    // silent render. FFmpeg refuses a filtergraph that names `[N:a]` on such
-    // an input rather than treating it as silence, so membership in the mix
-    // needs the file's truth. The document learnt it at import and the UI
-    // sends it along; a request that omits it falls back to probing, once
-    // per unique path.
-    let mut probed: HashMap<&str, bool> = HashMap::new();
-    let mut confirmed_sound = Vec::with_capacity(sound.len());
-    for clip in sound {
-        let has_audio = if let Some(has_audio) = clip.has_audio {
-            has_audio
-        } else if let Some(has_audio) = probed.get(clip.path.as_str()) {
-            *has_audio
-        } else {
-            let has_audio = match concat_media::probe_with_policy(&clip.path, mode.input_policy()) {
-                Ok(info) => info.audio.is_some(),
-                Err(error) if mode == RenderMode::StrictLocal => {
-                    return Err(format!("audio presence probe failed: {error}"));
-                }
-                Err(_) => false,
-            };
-            probed.insert(clip.path.as_str(), has_audio);
-            has_audio
-        };
-        if has_audio {
-            confirmed_sound.push(clip);
-        }
-    }
-    let sound = confirmed_sound;
-
-    let timeline_end = resolved
-        .iter()
-        .map(|clip| clip.start + clip.duration)
-        .fold(0.0f64, f64::max);
-    let total_frames = (timeline_end * rate.fps().as_f64()).round() as i64;
-    if total_frames <= 0 {
-        return Err("the timeline is empty".to_owned());
-    }
 
     // An exclusive sibling directory keeps concurrent exports' intermediates
     // apart and puts the finished file on the destination filesystem.
@@ -2234,6 +2339,250 @@ entry = "effect.wgsl"
         clip.media_height = Some(64);
         clip.has_audio = Some(false);
         clip
+    }
+
+    #[test]
+    fn render_facts_preserve_existing_and_absent_output_paths() {
+        let temporary = ExportTemporary::create(&std::env::temp_dir()).unwrap();
+        let existing = temporary.path.join("existing.mp4");
+        let absent_parent = temporary.path.join("absent-directory");
+        let absent = absent_parent.join("absent.mp4");
+        std::fs::write(&existing, b"original output bytes").unwrap();
+        let mut before: Vec<_> = std::fs::read_dir(&temporary.path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        before.sort();
+        let mut picture = ExportClip::blank(ClipKind::Video, 0.0, 0.4, 0);
+        picture.path = existing.to_string_lossy().into_owned();
+        picture.has_audio = Some(false);
+        for output in [&existing, &absent] {
+            let request = export_fixture_request(output, vec![picture.clone()]);
+            let facts = render_facts(&request, RenderMode::StrictLocal).unwrap();
+            assert_eq!(facts.video_frames, 12);
+            assert!(!facts.audio_expected);
+            assert_eq!(std::fs::read(&existing).unwrap(), b"original output bytes");
+            assert!(!absent_parent.exists());
+            let mut after: Vec<_> = std::fs::read_dir(&temporary.path)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            after.sort();
+            assert_eq!(before, after, "facts create no render intermediates");
+        }
+    }
+
+    #[test]
+    fn render_facts_match_full_silent_and_muxed_exports_with_transitions_and_tail() {
+        use concat_media::{AudioDecoder, AudioOptions, SampleFormat};
+
+        for with_audio in [false, true] {
+            let temporary = ExportTemporary::create(&std::env::temp_dir()).unwrap();
+            let mut clips = publish_hook_fixture(&temporary.path, with_audio);
+            clips[0].duration = 0.2;
+            let mut incoming = clips[0].clone();
+            incoming.start = 0.2;
+            incoming.source_start = 0.2;
+            incoming.transition = Some(TransitionSpec {
+                kind: "cross-fade".to_owned(),
+                duration: 0.1,
+            });
+            clips.push(incoming);
+            // Both invisible and muted ends still extend the actual timeline.
+            // Their missing paths must never enter picture decode or sound.
+            let mut hidden = ExportClip::blank(ClipKind::Video, 0.4, 0.1, 2);
+            hidden.path = temporary
+                .path
+                .join("hidden-missing.mp4")
+                .to_string_lossy()
+                .into_owned();
+            hidden.hidden = true;
+            hidden.muted = true;
+            clips.push(hidden);
+            let mut muted = ExportClip::blank(ClipKind::Audio, 0.5, 0.1, 3);
+            muted.path = temporary
+                .path
+                .join("muted-missing.wav")
+                .to_string_lossy()
+                .into_owned();
+            muted.muted = true;
+            muted.has_audio = Some(true);
+            clips.push(muted);
+            let output = temporary.path.join("facts-result.mp4");
+            let request = export_fixture_request(&output, clips);
+            let facts = render_facts(&request, RenderMode::StrictLocal).unwrap();
+            assert_eq!(facts.video_frames, 18);
+            assert!((facts.duration_seconds - 0.6).abs() < 1e-12);
+            assert_eq!(facts.audio_expected, with_audio);
+            let cancel = AtomicBool::new(false);
+            render_with_catalogue_mode_before_publish(
+                &request,
+                &Catalogue::new(),
+                RenderMode::StrictLocal,
+                Reporter {
+                    cancel: &cancel,
+                    progress: &mut |_, _, _| {},
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+            let mut decoder =
+                Decoder::open(&output, &DecodeOptions::default().in_software()).unwrap();
+            let mut frames = 0u64;
+            while let Some(frame) = decoder.next_frame().expect("entire planned video decodes") {
+                assert_eq!((frame.width(), frame.height()), (facts.width, facts.height));
+                if frames >= 12 {
+                    let pixel = frame.pixel(32, 32).unwrap();
+                    assert!(
+                        pixel[..3].iter().all(|value| *value < 20),
+                        "hidden tail: {pixel:?}"
+                    );
+                }
+                frames += 1;
+            }
+            assert_eq!(frames, facts.video_frames);
+            let options = AudioOptions {
+                format: SampleFormat::F32,
+                ..AudioOptions::default()
+            };
+            if facts.audio_expected {
+                let samples = AudioDecoder::open(&output, &options)
+                    .unwrap()
+                    .collect_f32()
+                    .unwrap();
+                assert!(!samples.is_empty());
+                assert!(samples.iter().all(|value| value.is_finite()));
+                let seconds = samples.len() as f64 / 2.0 / 48_000.0;
+                assert!(
+                    (seconds - facts.duration_seconds).abs() < 0.05,
+                    "audio length: {seconds}"
+                );
+                assert!(samples.iter().any(|value| value.abs() > 0.1));
+            } else {
+                assert!(matches!(
+                    AudioDecoder::open(&output, &options),
+                    Err(concat_media::Error::NoAudioStream { .. })
+                ));
+            }
+            assert_no_hook_intermediates(&temporary.path);
+        }
+    }
+
+    #[test]
+    fn render_facts_preserve_explicit_no_audio_and_mode_specific_probe_failure() {
+        let temporary = ExportTemporary::create(&std::env::temp_dir()).unwrap();
+        let fake = temporary.path.join("disguised-manifest.mp4");
+        std::fs::write(&fake, b"ffconcat version 1.0\nfile missing.wav\n").unwrap();
+        let mut picture = ExportClip::blank(ClipKind::Video, 0.0, 0.4, 0);
+        picture.path = fake.to_string_lossy().into_owned();
+        picture.has_audio = Some(false);
+        let output = temporary.path.join("never-created.mp4");
+        let mut request = export_fixture_request(&output, vec![picture]);
+        assert!(
+            !render_facts(&request, RenderMode::StrictLocal)
+                .unwrap()
+                .audio_expected
+        );
+        request.clips[0].has_audio = None;
+        let error = render_facts(&request, RenderMode::StrictLocal).unwrap_err();
+        assert!(error.contains("audio presence probe failed"), "{error}");
+        assert!(error.contains(fake.to_str().unwrap()), "{error}");
+        assert!(
+            !render_facts(&request, RenderMode::Compatible)
+                .unwrap()
+                .audio_expected
+        );
+        assert!(!output.exists());
+        assert_no_hook_intermediates(&temporary.path);
+    }
+
+    #[test]
+    fn render_facts_keep_rounding_and_manual_render_plan_limits() {
+        let mut request = export_fixture_request(
+            Path::new("unused-output.mp4"),
+            vec![ExportClip::blank(ClipKind::Layer, 0.0, 0.048, 0)],
+        );
+        assert_eq!(
+            render_facts(&request, RenderMode::StrictLocal)
+                .unwrap()
+                .video_frames,
+            1
+        );
+        request.width = 16_384;
+        request.height = 16_384;
+        request.rate_num = 240;
+        request.clips[0].duration = 1_000_000.0;
+        request.codec = VideoCodec::Hevc;
+        request.ten_bit = true;
+        let facts = render_facts(&request, RenderMode::Compatible).unwrap();
+        assert_eq!((facts.width, facts.height), (16_384, 16_384));
+        assert_eq!((facts.rate_num, facts.rate_den), (240, 1));
+        assert_eq!(facts.video_frames, 240_000_000);
+        assert_eq!(facts.duration_seconds, 1_000_000.0);
+        assert_eq!(facts.codec, VideoCodec::Hevc);
+        assert!(facts.ten_bit);
+        // Encoder representability concerns the reduced fraction, not the
+        // unreduced input's integer size.
+        request.rate_num = i64::MAX;
+        request.rate_den = i64::MAX;
+        assert_eq!(
+            render_facts(&request, RenderMode::Compatible)
+                .unwrap()
+                .video_frames,
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn invalid_render_facts_and_render_timing_return_errors_without_panicking() {
+        let temporary = ExportTemporary::create(&std::env::temp_dir()).unwrap();
+        let output = temporary.path.join("invalid.mp4");
+        for case in 0..16 {
+            let mut request = export_fixture_request(
+                &output,
+                vec![ExportClip::blank(ClipKind::Layer, 0.0, 0.4, 0)],
+            );
+            match case {
+                0 => request.rate_num = 0,
+                1 => request.rate_num = -30,
+                2 => request.rate_den = 0,
+                3 => request.rate_den = -1,
+                4 => request.rate_num = i64::MAX,
+                5 => request.rate_den = i64::MAX,
+                6 => request.clips[0].duration = f64::NAN,
+                7 => request.clips[0].duration = f64::INFINITY,
+                8 => request.clips[0].duration = f64::MAX,
+                9 => request.clips[0].duration = i64::MAX as f64 / 30.0,
+                10 => request.clips[0].duration = 0.0,
+                11 => request.clips[0].duration = -1.0,
+                12 => request.clips[0].duration = 0.001,
+                13 => request.clips.clear(),
+                14 => request.clips[0].start = f64::NEG_INFINITY,
+                15 => request.clips[0].track = usize::MAX,
+                _ => unreachable!(),
+            }
+            let checked = std::panic::catch_unwind(|| {
+                assert!(
+                    render_facts(&request, RenderMode::StrictLocal).is_err(),
+                    "facts case {case}"
+                );
+                let cancel = AtomicBool::new(false);
+                let result = render_with_catalogue_mode_before_publish(
+                    &request,
+                    &Catalogue::new(),
+                    RenderMode::StrictLocal,
+                    Reporter {
+                        cancel: &cancel,
+                        progress: &mut |_, _, _| {},
+                    },
+                    |_| panic!("invalid timing must never reach the hook"),
+                );
+                assert!(result.is_err(), "render case {case}");
+            });
+            assert!(checked.is_ok(), "invalid case {case} must return an error");
+            assert!(!output.exists());
+            assert_no_hook_intermediates(&temporary.path);
+        }
     }
 
     #[test]

@@ -36,6 +36,8 @@ pub struct OutputExpectation {
     pub frames: u64,
     /// Requested standard, irrespective of hardware encoder or fallback.
     pub codec: VideoCodec,
+    /// Native request for 10-bit source components; false requires actual 8-bit.
+    pub ten_bit: bool,
     /// Whether the actual muxed export must contain audio.
     pub audio_expected: bool,
 }
@@ -82,6 +84,9 @@ pub struct OutputSummary {
     pub sha256: String,
     /// Actual probed video standard.
     pub video_codec: String,
+    /// Actual uniform raw source component depth across every decoded frame.
+    /// This is sample precision, not a quality, HDR, colour or profile claim.
+    pub video_bit_depth: u8,
     /// Actual displayed width.
     pub width: u32,
     /// Actual displayed height.
@@ -246,6 +251,8 @@ fn verify_with_checkpoint(
     )
     .map_err(media_error)?;
     let mut frames = 0_u64;
+    let mut actual_bit_depth = None;
+    let expected_bit_depth = if expected.ten_bit { 10 } else { 8 };
     let mut first = None;
     let mut previous = None;
     loop {
@@ -253,6 +260,17 @@ fn verify_with_checkpoint(
         let Some(frame) = decoder.next_frame().map_err(media_error)? else {
             break;
         };
+        let bit_depth = decoder
+            .source_bit_depth()
+            .ok_or("decoded video source bit depth is unavailable or mixed")?;
+        if bit_depth != expected_bit_depth
+            || actual_bit_depth.is_some_and(|previous| previous != bit_depth)
+        {
+            return Err(format!(
+                "decoded video source bit depth {bit_depth} differs from expected {expected_bit_depth} or prior frames"
+            ));
+        }
+        actual_bit_depth = Some(bit_depth);
         frames = frames.checked_add(1).ok_or("video frame count overflow")?;
         if frames > limits.max_frames || frames > expected.frames {
             return Err("decoded video frame limit or exact expectation exceeded".into());
@@ -376,6 +394,7 @@ fn verify_with_checkpoint(
             bytes,
             sha256,
             video_codec: video.codec.clone(),
+            video_bit_depth: actual_bit_depth.ok_or("decoded video has no actual bit depth")?,
             width: video.width,
             height: video.height,
             rate_num: video.frame_rate.fps().numerator(),
@@ -749,6 +768,7 @@ mod tests {
             },
             frames: 30,
             codec: VideoCodec::H264,
+            ten_bit: false,
             audio_expected: false,
         }
     }
@@ -757,12 +777,15 @@ mod tests {
             .unwrap_or_else(|error| panic!("required real {codec:?} fixture failed: {error}"));
     }
     fn try_movie(path: &Path, codec: VideoCodec) -> concat_media::Result<()> {
+        try_movie_depth(path, codec, false)
+    }
+    fn try_movie_depth(path: &Path, codec: VideoCodec, ten_bit: bool) -> concat_media::Result<()> {
         let options = EncodeOptions {
             codec,
+            ten_bit,
             hardware: false,
             preset: "ultrafast".into(),
             crf: 20,
-            ..Default::default()
         };
         let mut encoder = Encoder::create(path, 64, 64, FrameRate::THIRTY, &options)?;
         for n in 0..30 {
@@ -919,6 +942,7 @@ mod tests {
             },
             frames: 8,
             codec: VideoCodec::H264,
+            ten_bit: false,
             audio_expected: false,
         };
         let error = verify(&path, expected).unwrap_err();
@@ -941,6 +965,7 @@ mod tests {
         let output = verify(&path, expectation()).unwrap();
         let summary = output.summary();
         assert_eq!(summary.video_codec, "h264");
+        assert_eq!(summary.video_bit_depth, 8);
         assert_eq!((summary.width, summary.height), (64, 64));
         assert_eq!((summary.rate_num, summary.rate_den), (30, 1));
         assert_eq!(summary.video_frames, 30);
@@ -1427,6 +1452,49 @@ mod tests {
         assert!(changed);
         assert!(result.is_err());
         assert!(path.exists());
+    }
+
+    #[test]
+    fn actual_eight_and_ten_bit_outputs_are_checked_for_each_available_codec() {
+        let d = Scratch::new();
+        for codec in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1] {
+            for ten_bit in [false, true] {
+                let depth = if ten_bit { 10 } else { 8 };
+                let path = d.path(&format!("{}-{depth}bit.mp4", codec.name()));
+                match try_movie_depth(&path, codec, ten_bit) {
+                    Err(concat_media::Error::Missing {
+                        what: "encoder",
+                        name,
+                    }) if codec != VideoCodec::H264 => {
+                        eprintln!(
+                            "OUTPUT_BIT_DEPTH {codec:?} {depth}: software encoder {name} unavailable; no actual bit-depth evidence"
+                        );
+                        continue;
+                    }
+                    Err(error) => {
+                        panic!("required real {codec:?} {depth}-bit encoding failed: {error}")
+                    }
+                    Ok(()) => {}
+                }
+                let mut expected = expectation();
+                expected.codec = codec;
+                expected.ten_bit = ten_bit;
+                let output = verify(&path, expected).unwrap();
+                assert_eq!(output.summary().video_bit_depth, depth);
+                assert_eq!(output.summary().video_frames, 30);
+                assert_eq!(output.summary().video_codec, codec.name());
+                expected.ten_bit = !ten_bit;
+                let error = verify(&path, expected).unwrap_err();
+                assert!(
+                    error.contains(&format!("source bit depth {depth} differs from expected")),
+                    "{error}"
+                );
+                assert!(path.exists());
+                eprintln!(
+                    "OUTPUT_BIT_DEPTH {codec:?} {depth}: real full software decode and opposite-depth rejection passed"
+                );
+            }
+        }
     }
 
     #[test]

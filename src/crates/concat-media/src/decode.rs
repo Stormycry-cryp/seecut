@@ -358,6 +358,36 @@ fn video_filter(
 struct Source {
     frame: Video,
     pts: Option<Rational>,
+    // Depth of the actual software pixels, before any presentation transform.
+    bit_depth: Option<u8>,
+}
+
+// Pixel::descriptor owns a non-null pointer into FFmpeg's immutable static
+// descriptor table. It is unrelated to the frame's plane/data pointers.
+fn source_component_depth(format: Pixel) -> Option<u8> {
+    let descriptor = format.descriptor()?;
+    let pointer = descriptor.as_ptr();
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: Pixel::descriptor obtained this static table entry from
+    // av_pix_fmt_desc_get; the pointer is checked, not taken from media bytes,
+    // and remains live for the process. Only bounded scalar component metadata
+    // is read; no frame data or arbitrary component pointer is dereferenced.
+    let descriptor = unsafe { &*pointer };
+    if descriptor.flags & ffmpeg::sys::AV_PIX_FMT_FLAG_HWACCEL as u64 != 0 {
+        return None;
+    }
+    let components = descriptor
+        .comp
+        .get(..usize::from(descriptor.nb_components))?;
+    let depth = u8::try_from(components.first()?.depth)
+        .ok()
+        .filter(|depth| *depth > 0)?;
+    components
+        .iter()
+        .all(|component| component.depth == i32::from(depth))
+        .then_some(depth)
 }
 
 /// Decodes a file through libavcodec and libavfilter.
@@ -396,6 +426,8 @@ pub struct Decoder {
     source_done: bool,
     produced: u64,
     position: Option<Rational>,
+    // Metadata of the most recent successfully returned frame, never pending.
+    last_source_bit_depth: Option<u8>,
     /// What the stream says its colour is.
     color: ColorSignal,
 }
@@ -524,6 +556,7 @@ impl Decoder {
             source_done: false,
             produced: 0,
             position: None,
+            last_source_bit_depth: None,
             color,
         };
         if let Some(start) = options.start
@@ -585,6 +618,17 @@ impl Decoder {
         self.produced
     }
 
+    /// Component bit depth of the original source used for the most recent
+    /// successful `Some(Frame)`, before rotation, scaling, filters or RGBA.
+    /// Hardware frames are inspected after download to software pixels.
+    /// Missing descriptors, hardware-only or mixed component depths are `None`.
+    /// Opening, seeking or reopening clears the fact until a frame is returned;
+    /// EOF keeps the last returned fact. This does not establish colour/HDR,
+    /// encoded profile, image quality, or the output RGBA buffer's depth.
+    pub fn source_bit_depth(&self) -> Option<u8> {
+        self.last_source_bit_depth
+    }
+
     /// The device the codec is decoding on, or `None` in software: also
     /// the answer once a device has failed and the reader has moved on
     /// without it, or once the codec has shown, with its first frame, that
@@ -599,6 +643,7 @@ impl Decoder {
     /// have come out of the device. `None` starts over from the origin,
     /// which is the best a stream with no timestamps allows.
     fn resume_in_software(&mut self, from: Option<Rational>, after: bool) -> Result<()> {
+        self.last_source_bit_depth = None;
         let decoder = {
             let stream = self
                 .input
@@ -625,6 +670,7 @@ impl Decoder {
 
     /// The container seek, and the state reset that goes with it.
     fn jump(&mut self, to: Rational) -> Result<()> {
+        self.last_source_bit_depth = None;
         let target = ffi::av_ticks(to);
         self.input.seek_checked(target, ..=target)?;
         self.decoder.flush();
@@ -696,7 +742,12 @@ impl Decoder {
                     self.discard_before = None;
                     self.discard_through = None;
                     self.last_pts = pts;
-                    return Ok(Some(Source { frame, pts }));
+                    let bit_depth = source_component_depth(frame.format());
+                    return Ok(Some(Source {
+                        frame,
+                        pts,
+                        bit_depth,
+                    }));
                 }
                 Err(ffmpeg::Error::Eof) => return Ok(None),
                 Err(error) if ffi::is_again(&error) => {}
@@ -944,6 +995,7 @@ impl FrameSource for Decoder {
         };
         if frame.is_some() {
             self.produced += 1;
+            self.last_source_bit_depth = self.current.as_ref().and_then(|source| source.bit_depth);
         }
         Ok(frame)
     }
@@ -1375,3 +1427,7 @@ mod tests {
 #[cfg(test)]
 #[path = "source_frame_limits_tests.rs"]
 mod source_frame_limits_tests;
+
+#[cfg(test)]
+#[path = "source_bit_depth_tests.rs"]
+mod source_bit_depth_tests;
