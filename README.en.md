@@ -6,7 +6,7 @@
 
 #### An all-in-one app for audio and video creation
 
-AI generation, image design, audio tools, and video editing in one app.
+Describe your goal. Let the Agent operate SeeCut, from source media to a finished video.
 
 [![Rust](https://img.shields.io/badge/Rust-Native_Engine-111827?style=for-the-badge&logo=rust&logoColor=white)](https://github.com/Stormycry-cryp/seecut/tree/codex/seecut-unified-mac-candidate/src)
 [![Slint](https://img.shields.io/badge/Slint-Desktop_UI-2563EB?style=for-the-badge)](https://slint.dev)
@@ -20,11 +20,21 @@ AI generation, image design, audio tools, and video editing in one app.
 
 </div>
 
-SeeCut brings image, audio, and video creation into one desktop app. Start with a prompt, a reference image, or your own media. Generate what you need, edit images and layers, then combine footage, voiceover, music, and captions into a finished video.
+SeeCut brings image, audio, and video creation into one desktop app, with an Agent intended to work across every feature. Describe what you want to make; the Agent understands the current page and available media, plans the work, operates SeeCut, and delivers the finished work and results.
 
-The goal is to keep media useful throughout the process, from generation and organization to editing and export. Make a cover, revise a product image, or create a complete short video, starting from whichever workspace suits the task.
+This goal spans media generation, image editing, voiceover, captions, timeline editing, and export, with the Agent pursuing one task across workspaces. You can inspect progress, add instructions, or continue editing directly in the app.
 
 ---
+
+## The intended Agent experience
+
+**You describe the goal. The Agent operates SeeCut, does the work, and returns the results.**
+
+- **Understand the current page.** Use actual visuals and structured state to understand the active workspace, project, selection, available media, and task status.
+- **Work across every feature.** Use generation, assets, the image canvas, audio tools, video editing, Flow, and export. Proceed through routine steps independently, asking when essential input or additional authorization is needed.
+- **Complete long tasks.** Follow asynchronous generation and processing jobs, retain progress, handle follow-up instructions and recoverable failures, inspect actual outputs, and report the work, saved locations, and completion status.
+
+The architectural goal is to make every in-app business operation available as a tool through one MCP interface for the Agent. Agent actions and manual editing share the same business capabilities, permissions, and project state, so the work remains editable in the app.
 
 ## What you can do
 
@@ -35,7 +45,8 @@ The goal is to keep media useful throughout the process, from generation and org
 | **Audio and video editing** | Arrange footage, voiceover, and music on a multitrack timeline, with splitting, trimming, transitions, speed, and volume controls. |
 | **Captions and voiceover** | Add words and sound with speech-to-text captions and local text-to-speech tools. |
 | **Asset management** | Organize local media and generation results in folders, then use them in the canvas, Flow, or an editing project. |
-| **Flow and Agent** | Organize creative steps as nodes. Let the Agent read workspace state and use connected editing and task tools within permissions granted in the app. These capabilities are still being developed. |
+| **Flow workflows** | Organize prompts, media, and generation steps as nodes, and reuse workflows across tasks. |
+| **Agent creation** | Progressively connect every feature to autonomous execution, so the Agent can understand the current page and carry out tasks across workspaces. |
 
 Local media management, the image canvas, and audio and video editing work offline. Online AI generation requires an account and a service connection; available models and costs are shown in the app. Local caption and voice tools require their model files.
 
@@ -50,22 +61,29 @@ The macOS candidate has light and dark themes across Generation, Assets, Canvas,
 | ![Image canvas in light mode](docs/screenshots/seecut-canvas-light.png) | ![Image canvas in dark mode](docs/screenshots/seecut-canvas-dark.png) |
 | ![Audio and video editing in light mode](docs/screenshots/seecut-editing-light.png) | ![Audio and video editing in dark mode](docs/screenshots/seecut-editing-dark.png) |
 
-## One creative workflow
+## From one request to finished work
 
-For example, to make a short product video:
+For example, provide a few product images and say:
 
-1. **Prepare media.** Import product images, footage, voiceover, or music, or generate the images and videos you need.
-2. **Edit the visuals.** Work with layers, text, color, and masks on the image canvas to prepare covers and other visual assets.
-3. **Organize and reuse.** Keep media in the asset library and send it to the workspace you need. Use Flow nodes to organize generation steps.
-4. **Make the video.** Arrange the timeline, add audio and captions, adjust pacing, transitions, and volume, then export.
+> Make a 15-second vertical video from these product images, with a Chinese voiceover, captions, music, and a cover image.
 
-You can also open the image canvas for a single design or import existing footage and start editing.
+The intended experience is for the Agent to carry out the whole task inside SeeCut:
+
+1. Read the current project and product images, plan the steps, and decide how to use the media.
+2. Generate additional shots as needed, edit visuals on the image canvas, and create a cover.
+3. Produce voiceover and captions, choose music, and arrange shots and audio on the timeline.
+4. Inspect the actual visuals, audio, and captions; adjust pacing, transitions, and volume; save an editable project and export.
+5. Explain what is complete and deliver the video, cover, and saved locations, clearly identifying any unfinished work.
+
+The same workspaces also support manual creation. Make a single image, work on an audio clip, or start editing existing footage.
 
 ---
 
 ## Project status
 
 SeeCut is in development, with current builds and validation focused on **macOS Apple Silicon**. SeeCut builds for other platforms still need on-device validation. This repository does not yet offer a public download package.
+
+The Agent currently connects to a subset of workspace reading, editing, and task tools. Full tool coverage and validation of long tasks across every feature are still in progress. The autonomous workflow above describes the product goal.
 
 Current SeeCut source lives on [`codex/seecut-unified-mac-candidate`](https://github.com/Stormycry-cryp/seecut/tree/codex/seecut-unified-mac-candidate). The repository's default branch currently retains the initial Concat baseline; use the development branch to build or try SeeCut.
 
