@@ -738,6 +738,7 @@ mod tests {
             client_request_id: "original-task".into(),
             goal: "当前任务".into(),
             max_task_credits: 100,
+            initial_observation_binding: None,
         });
         assert!(store.save(&saved).is_err());
         saved = original;
@@ -783,6 +784,7 @@ mod tests {
             task_id: task_id.clone(),
             goal: "完整目标".into(),
             max_task_credits: 100,
+            initial_observation_binding: None,
         });
         record
             .task_updates
@@ -793,6 +795,7 @@ mod tests {
                 expected_revision: 5,
                 retries: 0,
                 confirmed: false,
+                observation_binding: None,
             });
         store.save(&saved).unwrap();
         assert_eq!(store.load().unwrap(), Some(saved.clone()));
@@ -1227,5 +1230,146 @@ mod tests {
         )));
         request["read_token"] = json!("owned-fixture-token");
         assert!(serde_json::from_value::<Archive>(value).is_err());
+    }
+}
+
+#[cfg(test)]
+mod task_observation_history_tests {
+    use super::*;
+    use crate::agent_tasks::*;
+    use serde_json::{Value, json};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn observation() -> Value {
+        json!({"appInstanceId":"original-instance", "clientId":"original-client",
+            "kind":"flow", "projectId":"project", "documentSessionId":"original-doc",
+            "revision":11, "contextRevision":12, "selectionRevision":3,
+            "selectedObjectIds":["node-1", "node-2"], "viewStateId":null,
+            "flow":{"canvasId":"original-canvas", "accountScope":"original-account", "sessionId":"original-doc"}})
+    }
+    fn archive() -> Archive {
+        let task = task_id_for("original-human-create");
+        serde_json::from_value(json!({"version":1, "active_id":"session-one", "sessions":[{
+            "id":"session-one", "title":"测试任务", "draft":"", "messages":[],
+            "selected_model_id":"managed-model", "runtime_created":true,
+            "current_task_id":task, "pending":"", "updated_at_ms":1234,
+            "task_updates":[{"client_request_id":"original-human-update", "task_id":task,
+                "message":"原补充", "expected_revision":4, "retries":0, "confirmed":false}],
+            "request_snapshots":[{"task":{"client_request_id":"original-human-create", "task_id":task,
+                "goal":"原目标", "max_task_credits":100}, "session_id":"session-one", "model_id":"managed-model",
+                "effort_id":null, "policy":{}, "context":{"project_key":"project", "project_name":"测试工程"}}]
+        }]})).unwrap()
+    }
+    fn fixture() -> tempfile::TempDir {
+        let temporary = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let directory = tempfile::tempdir_in(temporary).unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        directory
+    }
+
+    #[test]
+    fn original_create_and_update_bindings_survive_real_store_save_and_load() {
+        let directory = fixture();
+        let store = Store::open(directory.path(), "account", "project").unwrap();
+        assert_eq!(store.load().unwrap(), None);
+        let mut saved = archive();
+        let binding = observation();
+        let task = saved.sessions[0].request_snapshots[0]
+            .task
+            .as_mut()
+            .unwrap();
+        task.initial_observation_binding = Some(serde_json::from_value(binding.clone()).unwrap());
+        saved.sessions[0].task_updates[0].observation_binding =
+            Some(serde_json::from_value(binding.clone()).unwrap());
+        store.save(&saved).unwrap();
+        let restored = store.load().unwrap().unwrap();
+        assert_eq!(restored, saved);
+        let request = &restored.sessions[0].request_snapshots[0];
+        assert!(request.observation_binding.is_none());
+        assert!(request.input_id.is_none());
+        let task = request.task.as_ref().unwrap();
+        assert_eq!(task.client_request_id, "original-human-create");
+        assert_eq!(
+            serde_json::to_value(task.initial_observation_binding.as_ref().unwrap()).unwrap(),
+            binding
+        );
+        let update = &restored.sessions[0].task_updates[0];
+        assert_eq!(update.client_request_id, "original-human-update");
+        assert_eq!(
+            serde_json::to_value(update.observation_binding.as_ref().unwrap()).unwrap(),
+            binding
+        );
+    }
+
+    #[test]
+    fn old_task_history_stays_unbound_and_explicit_nulls_are_rejected() {
+        let directory = fixture();
+        let store = Store::open(directory.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let old = archive();
+        store.save(&old).unwrap();
+        let restored = store.load().unwrap().unwrap();
+        let raw = serde_json::to_value(&restored).unwrap();
+        assert_eq!(restored, old);
+        assert!(
+            raw["sessions"][0]["request_snapshots"][0]["task"]
+                .get("initial_observation_binding")
+                .is_none()
+        );
+        assert!(
+            raw["sessions"][0]["task_updates"][0]
+                .get("observation_binding")
+                .is_none()
+        );
+        let mut invalid_create = raw.clone();
+        invalid_create["sessions"][0]["request_snapshots"][0]["task"]["initial_observation_binding"] =
+            Value::Null;
+        assert!(serde_json::from_value::<Archive>(invalid_create).is_err());
+        let mut invalid_update = raw;
+        invalid_update["sessions"][0]["task_updates"][0]["observation_binding"] = Value::Null;
+        assert!(serde_json::from_value::<Archive>(invalid_update).is_err());
+    }
+
+    #[test]
+    fn save_rejects_invalid_in_memory_task_binding_and_preserves_last_archive() {
+        let directory = fixture();
+        let store = Store::open(directory.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let saved = archive();
+        store.save(&saved).unwrap();
+        let binding = serde_json::from_value(observation()).unwrap();
+        let mut invalid = saved.clone();
+        invalid.sessions[0].request_snapshots[0]
+            .task
+            .as_mut()
+            .unwrap()
+            .initial_observation_binding = Some(binding);
+        invalid.sessions[0].request_snapshots[0]
+            .task
+            .as_mut()
+            .unwrap()
+            .initial_observation_binding
+            .as_mut()
+            .unwrap()
+            .flow
+            .as_mut()
+            .unwrap()
+            .session_id = "mixed-doc".into();
+        assert!(store.save(&invalid).is_err());
+        assert_eq!(store.load().unwrap(), Some(saved.clone()));
+        invalid = saved.clone();
+        invalid.sessions[0].task_updates[0].observation_binding =
+            Some(serde_json::from_value(observation()).unwrap());
+        invalid.sessions[0].task_updates[0]
+            .observation_binding
+            .as_mut()
+            .unwrap()
+            .flow
+            .as_mut()
+            .unwrap()
+            .session_id = "mixed-doc".into();
+        assert!(store.save(&invalid).is_err());
+        assert_eq!(store.load().unwrap(), Some(saved));
     }
 }

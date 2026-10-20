@@ -2,6 +2,22 @@
 
 当前范围：macOS 桌面端；Android 按用户最新要求暂缓，下面移动端信息仅记录此前已经完成的步骤，不作为本轮验收门槛。
 
+## 第九批：Task 原人类观察来源
+
+任务创建与每次补充在原生入口捕获发送时的完整观察，分别嵌入TaskIntent和TaskUpdateIntent，保留原人类请求ID。Task历史不占用普通Doc顶层观察字段；旧无绑定记录继续可读和查询，不填入当前身份重发。独立能力缺失时明确禁用创建/补充，原状态查询与恢复保留。
+
+运行时将来源纳入原定义、幂等摘要和followup；每轮沿原COTO input.applied、唯一input.accepted与原Task记录核对。首次真实观察匹配并在原TaskStore持久核对后才准备模型，后续轮次继续收到完整原选区，不把初始版本当成永久版本锁。尚未核对的不同来源以human_observation_conflict阻塞，保留全部要求，不自行选最新一条。原TaskGrant、预算、epoch、暂停撤权和UNKNOWN规则保持。
+
+- 私有live完整485项通过，0失败/取消/跳过，118.6秒，包含前批451项及本次34项。候选90个源码/测试/CI文件集成前后逐字节一致；使用Node24.15.0、锁定COTO和真实公共服务源码，模型及MCP是本地替身。证据为.toonflow/task-observation-draft/live-full-proof.json。
+- 原生/Slint联合测试编译、工作区格式、宿主含tests严格Clippy通过。同一最终二进制六组332项通过、辅助1项默认忽略，其中Agent194、Cloud snapshot1、editor_mcp122、app_page12、app_preview2、bounded_digest1；14项新增类型/真实Store/控制器IPC回归已包含在332项内，不与前批318项累加。
+- 最终4文件源码聚合SHA256为`a057aa3afc5122f2b8f2abf2100d18b1ccf1ffcc37fa189660e6d101b7fdbdfe`；测试二进制SHA256为`3fac358b5e70fd5bf4989885d150e9f68c39c887137bd9e134f6f7e581577f76`。主代理复核实际字节，测试后摘要一致；证据在.toonflow/task-observation-ui-gate。MCP源码未改，继续复用e8441c01正常CLI与47项协议/stdio证据。
+
+这批没有启动前台App或操作系统鼠标、键盘、焦点，没有付费模型、实际改稿作品、跨工作区或正式分发验收。普通页导航和AppControl仍为隔离候选，不属于当前32项注册。
+
+此前公共bed917c的[主CI](https://github.com/Stormycry-cryp/seecut/actions/runs/39452403466)于17:02UTC完成并失败：workspace Clippy与测试编译成功，workspace测试615通过/2失败/5忽略，失败为翻译缺项和画布往返测试的视口设置；临时swap清理另有rm EPERM。对应cgroup的oom/oom_kill计数均为0，不把这次源码/测试失败当作OOM。相关修复与下一次完整CI结果另行记录。
+
+清理脚本已补同文件路径识别、停用后的活跃复核及分步删除：文件移除失败时保留swap.path。14项命令替身测试与bash语法通过，主代理已复跑；本机未执行实际swap。原runner清理没有记录NAME或swapoff调用，EPERM原始原因仍未知，新增日志及真实清理效果需后续CI核验。
+
 ## 第八批：普通文档初始观察
 
 原生在现有follow_up入口中，于附件异步整理前保存原inputId及完整DocumentObservationBinding。真实Context包含工程/文档身份、revision/contextRevision/selectionRevision、完整有序选中对象及明确可空的viewStateId；Flow另保存实际canvas/account/session。类型、控制器和运行时分别校验，不从助手展示摘要或旧历史补造当前身份。缺少运行时能力时禁用普通发送，原连接与原操作查询保留。
@@ -12,7 +28,7 @@
 
 公共最终6文件源码聚合SHA256为`182d29092920501f8d5619f1beff365f3d904d7dad71bb4d43b9b4f1a51d8a52`。workspace fmt、宿主`--lib --tests -D warnings`严格Clippy及原生/Slint测试编译通过。同一最终二进制六组无交集测试共318项通过、1项辅助入口默认忽略：agent 180、Cloud snapshot 1、editor_mcp 122、app_page 12、app_preview 2、bounded_digest 1。二进制SHA256为`862cfd3070efdf617dcfc24df0dff182a0a9eafeac53de6c5cdfa13a0dfa7f50`，测试后源码摘要仍全部一致；本机证据在.toonflow/doc-observation-ui-gate。MCP源码及e8441c01开头的正常CLI未改，复用此前47项协议/stdio证据。未启动前台App，没有系统鼠标、键盘或焦点操作。
 
-源码覆盖补审新增Flow项目列表、创建与打开3条实际路线，清单现为168条，均未映射Agent工具；42命令/45画布辅助/32MCP/761UI回调的数量不表示全应用完成率。固定上游其他插件能力仍未穷尽。
+源码覆盖补审新增Flow项目列表、创建与打开3条实际路线，清单现为168条，这3条尚未映射Agent工具；42命令/45画布辅助/32MCP/761UI回调的数量不表示全应用完成率。固定上游其他插件能力仍未穷尽。
 
 ## 第一批：真实视图与覆盖清单
 

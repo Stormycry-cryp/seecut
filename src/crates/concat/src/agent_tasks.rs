@@ -1,5 +1,6 @@
 //! Bounded durable-task IPC projections and explicit host-created requests.
-use serde::{Deserialize, Serialize};
+use crate::agent_observation::DocumentObservationBinding;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -69,6 +70,13 @@ pub(crate) struct TaskIntent {
     pub(crate) task_id: String,
     pub(crate) goal: String,
     pub(crate) max_task_credits: u64,
+    /// Original human create observation; absence denotes legacy history only.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_observation"
+    )]
+    pub(crate) initial_observation_binding: Option<DocumentObservationBinding>,
 }
 impl TaskIntent {
     pub(crate) fn valid(&self) -> bool {
@@ -78,6 +86,10 @@ impl TaskIntent {
             && self.goal.len() <= 32000
             && !self.goal.contains('\0')
             && (1..=MAX_SAFE_INTEGER).contains(&self.max_task_credits)
+            && self
+                .initial_observation_binding
+                .as_ref()
+                .is_none_or(DocumentObservationBinding::valid)
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -89,6 +101,13 @@ pub(crate) struct TaskUpdateIntent {
     pub(crate) expected_revision: u64,
     pub(crate) retries: u8,
     pub(crate) confirmed: bool,
+    /// Original human update observation; retries retain the same reference.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_observation"
+    )]
+    pub(crate) observation_binding: Option<DocumentObservationBinding>,
 }
 impl TaskUpdateIntent {
     pub(crate) fn valid(&self) -> bool {
@@ -99,8 +118,20 @@ impl TaskUpdateIntent {
             && !self.message.contains('\0')
             && (1..=MAX_SAFE_INTEGER).contains(&self.expected_revision)
             && self.retries <= 2
+            && self
+                .observation_binding
+                .as_ref()
+                .is_none_or(DocumentObservationBinding::valid)
     }
 }
+// Preserve legacy absence while rejecting an explicitly null observation.
+// Current document identity must be checked by the dispatching controller.
+fn present_observation<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<DocumentObservationBinding>, D::Error> {
+    DocumentObservationBinding::deserialize(deserializer).map(Some)
+}
+
 pub(crate) fn parse_task_budget(text: &str, turn_cap: u64) -> Result<u64, &'static str> {
     let value = text.trim();
     if value.is_empty() || value.len() > 16 || !value.bytes().all(|v| v.is_ascii_digit()) {
@@ -126,6 +157,13 @@ pub fn task_id_for(client_request_id: &str) -> String {
 
 pub(crate) fn blocked_reason_label(reason: &str) -> &'static str {
     match reason {
+        "human_observation_conflict" => {
+            "任务要求引用了不同页面或选区，已停止推进。请停止旧任务后重新创建"
+        }
+        "stale_observation" => {
+            "原问题引用的页面、选择或内容已变化，已停止推进。请停止旧任务并重新提出要求"
+        }
+        "task_observation_source" => "无法核对任务的原始发问记录，已停止推进。请查询原任务状态",
         "runtime_tools_unavailable" => "当前服务暂未开放持续任务，请更新服务后重新连接",
         "budget_insufficient" => "任务推理额度不足以预留下一完整轮次，请核对预算",
         "outcome_unknown"
@@ -539,5 +577,244 @@ mod tests {
         let mut missing = original.clone();
         missing.as_object_mut().unwrap().remove("lastUpdateId");
         assert!(TaskSummary::parse(&missing, "session-1").is_none());
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    fn observation(kind: &str) -> Value {
+        let mut binding = json!({
+            "appInstanceId":"original-instance", "clientId":"original-client",
+            "kind":kind, "projectId":"original-project", "documentSessionId":"original-doc",
+            "revision":12, "contextRevision":15, "selectionRevision":4,
+            "selectedObjectIds": (0..300).map(|i| format!("object-{i}")).collect::<Vec<_>>(),
+            "viewStateId":format!("view-v1-{}", "a".repeat(64))
+        });
+        if kind == "flow" {
+            binding["viewStateId"] = Value::Null;
+            binding["flow"] = json!({"canvasId":"original-canvas", "accountScope":"original-account", "sessionId":"original-doc"});
+        }
+        binding
+    }
+    fn create() -> Value {
+        json!({"client_request_id":"original-human-create",
+            "task_id":task_id_for("original-human-create"),
+            "goal":"完成原目标", "max_task_credits":100})
+    }
+    fn update() -> Value {
+        json!({"client_request_id":"original-human-update",
+            "task_id":task_id_for("original-human-create"),
+            "message":"原补充内容", "expected_revision":5, "retries":0, "confirmed":false})
+    }
+
+    #[test]
+    fn legacy_missing_observation_is_preserved_without_a_new_identity() {
+        let initial: TaskIntent = serde_json::from_value(create()).unwrap();
+        let followup: TaskUpdateIntent = serde_json::from_value(update()).unwrap();
+        assert!(initial.valid() && followup.valid());
+        assert!(initial.initial_observation_binding.is_none());
+        assert!(followup.observation_binding.is_none());
+        assert_eq!(serde_json::to_value(initial).unwrap(), create());
+        assert_eq!(serde_json::to_value(followup).unwrap(), update());
+    }
+
+    #[test]
+    fn explicit_null_wrong_case_and_unknown_authority_fields_are_rejected() {
+        for invalid in [Value::Null, json!({}), json!(false), json!("binding")] {
+            let mut initial = create();
+            initial["initial_observation_binding"] = invalid.clone();
+            assert!(serde_json::from_value::<TaskIntent>(initial).is_err());
+            let mut followup = update();
+            followup["observation_binding"] = invalid;
+            assert!(serde_json::from_value::<TaskUpdateIntent>(followup).is_err());
+        }
+        for key in [
+            "initialObservationBinding",
+            "observation_binding",
+            "permission",
+            "appScope",
+        ] {
+            let mut initial = create();
+            initial[key] = observation("canvas");
+            assert!(
+                serde_json::from_value::<TaskIntent>(initial).is_err(),
+                "{key}"
+            );
+        }
+        for key in [
+            "observationBinding",
+            "initial_observation_binding",
+            "permission",
+            "appScope",
+        ] {
+            let mut followup = update();
+            followup[key] = observation("canvas");
+            assert!(
+                serde_json::from_value::<TaskUpdateIntent>(followup).is_err(),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn original_human_request_ids_and_complete_binding_survive_serde() {
+        for kind in ["canvas", "clip", "flow"] {
+            let binding = observation(kind);
+            let mut initial = create();
+            initial["initial_observation_binding"] = binding.clone();
+            let task: TaskIntent = serde_json::from_value(initial.clone()).unwrap();
+            assert!(task.valid());
+            assert_eq!(task.client_request_id, "original-human-create");
+            assert_eq!(
+                task.task_id,
+                "task-af759b1fc900878f420486c31247cda8ef3544a40045fcd6cca87754b3a3cde8"
+            );
+            assert_eq!(serde_json::to_value(&task).unwrap(), initial);
+            let mut followup = update();
+            followup["observation_binding"] = binding;
+            let intent: TaskUpdateIntent = serde_json::from_value(followup.clone()).unwrap();
+            assert!(intent.valid());
+            assert_eq!(intent.client_request_id, "original-human-update");
+            assert_ne!(intent.client_request_id, "task-automatic-round-input");
+            assert_eq!(serde_json::to_value(intent).unwrap(), followup);
+        }
+    }
+
+    #[test]
+    fn invalid_observation_shape_and_internal_flow_scope_are_rejected() {
+        let mut invalid = Vec::new();
+        for (key, value) in [
+            ("kind", json!("app")),
+            ("revision", json!(MAX_SAFE_INTEGER + 1)),
+            ("contextRevision", json!(-1)),
+            ("selectionRevision", json!(0.5)),
+            ("selectedObjectIds", json!(["same", "same"])),
+            ("selectedObjectIds", json!(["\u{0000}"])),
+            ("viewStateId", json!("unverified-view")),
+            ("flow", Value::Null),
+            ("permission", json!("read")),
+            (
+                "flow",
+                json!({"canvasId":"c", "accountScope":"a", "sessionId":"original-doc"}),
+            ),
+        ] {
+            let mut binding = observation("canvas");
+            binding[key] = value;
+            invalid.push(binding);
+        }
+        let mut missing_view = observation("canvas");
+        missing_view.as_object_mut().unwrap().remove("viewStateId");
+        invalid.push(missing_view);
+        for key in ["canvasId", "accountScope", "sessionId"] {
+            let mut missing_axis = observation("flow");
+            missing_axis["flow"].as_object_mut().unwrap().remove(key);
+            invalid.push(missing_axis);
+        }
+        let mut mixed_doc = observation("flow");
+        mixed_doc["flow"]["sessionId"] = json!("different-doc");
+        invalid.push(mixed_doc);
+        let mut mixed_view = observation("flow");
+        mixed_view["viewStateId"] = observation("canvas")["viewStateId"].clone();
+        invalid.push(mixed_view);
+        for binding in invalid {
+            let mut initial = create();
+            initial["initial_observation_binding"] = binding.clone();
+            assert!(
+                serde_json::from_value::<TaskIntent>(initial).is_err(),
+                "{binding}"
+            );
+            let mut followup = update();
+            followup["observation_binding"] = binding.clone();
+            assert!(
+                serde_json::from_value::<TaskUpdateIntent>(followup).is_err(),
+                "{binding}"
+            );
+        }
+    }
+
+    #[test]
+    fn in_memory_invalid_bindings_cannot_pass_task_validation() {
+        let binding: DocumentObservationBinding =
+            serde_json::from_value(observation("flow")).unwrap();
+        let initial: TaskIntent = serde_json::from_value(create()).unwrap();
+        let followup: TaskUpdateIntent = serde_json::from_value(update()).unwrap();
+        let mut invalid = vec![];
+        let mut wrong_session = binding.clone();
+        wrong_session.flow.as_mut().unwrap().session_id = "different-doc".into();
+        invalid.push(wrong_session);
+        let mut wrong_kind = binding.clone();
+        wrong_kind.kind = "canvas".into();
+        invalid.push(wrong_kind);
+        let mut stale_number = binding;
+        stale_number.selection_revision = MAX_SAFE_INTEGER + 1;
+        invalid.push(stale_number);
+        for binding in invalid {
+            let mut task = initial.clone();
+            task.initial_observation_binding = Some(binding.clone());
+            assert!(!task.valid());
+            let mut intent = followup.clone();
+            intent.observation_binding = Some(binding);
+            assert!(!intent.valid());
+        }
+    }
+
+    #[test]
+    fn historical_shape_validation_does_not_claim_current_document_identity() {
+        let binding: DocumentObservationBinding =
+            serde_json::from_value(observation("canvas")).unwrap();
+        let current = crate::agent_identity::DocumentIdentity {
+            instance_id: "today-instance".into(),
+            project_id: "today-project".into(),
+            document_session_id: "today-doc".into(),
+        };
+        assert!(binding.valid());
+        assert!(!binding.matches_identity(&current, "today-client"));
+        let mut task: TaskIntent = serde_json::from_value(create()).unwrap();
+        task.initial_observation_binding = Some(binding.clone());
+        let mut intent: TaskUpdateIntent = serde_json::from_value(update()).unwrap();
+        intent.observation_binding = Some(binding);
+        assert!(task.valid() && intent.valid());
+    }
+
+    #[test]
+    fn task_identity_budget_and_update_revision_limits_remain_enforced() {
+        let mut initial = create();
+        initial["initial_observation_binding"] = observation("canvas");
+        for (key, value) in [
+            ("client_request_id", json!("different-human")),
+            ("max_task_credits", json!(0)),
+            ("max_task_credits", json!(MAX_SAFE_INTEGER + 1)),
+            ("goal", json!("\u{0000}")),
+        ] {
+            let mut changed = initial.clone();
+            changed[key] = value;
+            assert!(
+                !serde_json::from_value::<TaskIntent>(changed)
+                    .unwrap()
+                    .valid()
+            );
+        }
+        let mut followup = update();
+        followup["observation_binding"] = observation("flow");
+        for (key, value) in [
+            ("client_request_id", json!("bad id")),
+            ("task_id", json!("task-invalid")),
+            ("expected_revision", json!(0)),
+            ("expected_revision", json!(MAX_SAFE_INTEGER + 1)),
+            ("retries", json!(3)),
+            ("message", json!(" ")),
+        ] {
+            let mut changed = followup.clone();
+            changed[key] = value;
+            assert!(
+                !serde_json::from_value::<TaskUpdateIntent>(changed)
+                    .unwrap()
+                    .valid()
+            );
+        }
+        assert_eq!(parse_task_budget("100", 20), Ok(100));
+        assert!(parse_task_budget("19", 20).is_err());
     }
 }

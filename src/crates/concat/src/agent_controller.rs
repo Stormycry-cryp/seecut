@@ -73,6 +73,10 @@ pub enum UiError {
     ObservationChanged,
     ObservationInvalid,
     ObservationUnsupported,
+    TaskObservationUnavailable,
+    TaskObservationMissing,
+    TaskObservationChanged,
+    TaskObservationConflict,
 }
 impl UiError {
     pub fn message(self) -> &'static str {
@@ -98,6 +102,18 @@ impl UiError {
             Self::ObservationChanged => "发问时的工程、选择或视图已变化，请核对后重新发送",
             Self::ObservationInvalid => "无法核对发问时的文档记录，请检查运行组件",
             Self::ObservationUnsupported => "当前输入方式尚不支持文档观察绑定",
+            Self::TaskObservationUnavailable => {
+                "当前运行组件不支持保存任务发起和补充时的文档状态，请更新运行组件"
+            }
+            Self::TaskObservationMissing => {
+                "原任务请求缺少发问时的文档记录，已保留且不会重发，请先查询原任务状态"
+            }
+            Self::TaskObservationChanged => {
+                "原问题引用的页面、选择或内容已变化，请重新提出要求；已有任务请先停止后重建"
+            }
+            Self::TaskObservationConflict => {
+                agent_tasks::blocked_reason_label("human_observation_conflict")
+            }
         }
     }
 }
@@ -436,6 +452,7 @@ pub struct Controller {
     recover_existing: bool,
     model_selection_supported: bool,
     document_observation_supported: bool,
+    task_observation_supported: bool,
     tasks_supported: bool,
     ipc_generation: u64,
     tasks: TaskProjection,
@@ -497,6 +514,7 @@ impl Default for Controller {
             recover_existing: false,
             model_selection_supported: false,
             document_observation_supported: false,
+            task_observation_supported: false,
             tasks_supported: false,
             ipc_generation: 0,
             tasks: TaskProjection::default(),
@@ -631,6 +649,7 @@ impl Controller {
         self.recover_existing = false;
         self.model_selection_supported = false;
         self.document_observation_supported = false;
+        self.task_observation_supported = false;
         self.tasks_supported = false;
         self.ipc_generation = self
             .ipc_generation
@@ -669,6 +688,7 @@ impl Controller {
             AgentScope::Document(_) => {
                 params["taskProtocolVersion"] = json!(1);
                 params["documentObservationProtocolVersion"] = json!(1);
+                params["taskObservationProtocolVersion"] = json!(1);
                 if let Some(token) = &config.write_token {
                     params["writeToken"] = json!(token);
                 }
@@ -776,6 +796,7 @@ impl Controller {
         if !intent.valid() || self.current_task_id() != Some(intent.task_id.as_str()) {
             return Err(UiError::InvalidInput);
         }
+        let binding = self.checked_task_observation(intent.observation_binding.as_ref())?;
         if !self.can_task_command(TaskCommand::Update) {
             return Err(UiError::Busy);
         }
@@ -783,10 +804,45 @@ impl Controller {
             .current_task()
             .and_then(|v| v.control_epoch.checked_add(1));
         self.fence_task();
-        self.enqueue("task.update",json!({"sessionId":self.session_id,"taskId":intent.task_id,"clientRequestId":intent.client_request_id,"expectedRevision":intent.expected_revision,"message":intent.message}),Request::TaskControl {task_id:intent.task_id.clone(),action:TaskCommand::Update,update_id:Some(intent.client_request_id.clone()),fence_revision:self.task_permit_revision})
+        self.enqueue("task.update",json!({"sessionId":self.session_id,"taskId":intent.task_id,"clientRequestId":intent.client_request_id,"expectedRevision":intent.expected_revision,"message":intent.message,"observationBinding":binding}),Request::TaskControl {task_id:intent.task_id.clone(),action:TaskCommand::Update,update_id:Some(intent.client_request_id.clone()),fence_revision:self.task_permit_revision})
     }
     pub fn supports_tasks(&self) -> bool {
         self.process.is_some() && self.tasks_supported
+    }
+    pub fn supports_task_observation(&self) -> bool {
+        self.supports_tasks()
+            && self.task_observation_supported
+            && self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.document().is_some())
+    }
+    pub fn task_observation_unavailable(&self) -> bool {
+        self.session_opened
+            && self.supports_tasks()
+            && matches!(
+                self.phase,
+                Phase::Ready | Phase::Running | Phase::AwaitingApproval | Phase::Stopping
+            )
+            && !self.supports_task_observation()
+    }
+    fn checked_task_observation(
+        &self,
+        binding: Option<&DocumentObservationBinding>,
+    ) -> Result<Value, UiError> {
+        if !self.supports_task_observation() {
+            return Err(UiError::TaskObservationUnavailable);
+        }
+        let binding = binding.ok_or(UiError::TaskObservationMissing)?;
+        let identity = self
+            .scope
+            .as_ref()
+            .and_then(AgentScope::document)
+            .ok_or(UiError::DocumentChanged)?;
+        if !binding.matches_identity(identity, &self.editor_client) {
+            return Err(UiError::ObservationChanged);
+        }
+        serde_json::to_value(binding).map_err(|_| UiError::ObservationInvalid)
     }
     pub fn restore_task(&mut self, task_id: Option<String>) -> bool {
         if self.process.is_some() {
@@ -1008,33 +1064,36 @@ impl Controller {
             },
         )
     }
-    pub fn create_task(
+    pub(crate) fn create_task(
         &mut self,
-        request_id: &str,
-        goal: &str,
+        intent: &agent_tasks::TaskIntent,
         content: Vec<Value>,
         selection: Value,
-        max_credits: u64,
     ) -> Result<(), UiError> {
         if !self.supports_tasks() {
             return Err(UiError::Protocol);
         }
+        if !intent.valid() {
+            return Err(UiError::InvalidInput);
+        }
+        let binding = self.checked_task_observation(intent.initial_observation_binding.as_ref())?;
         if !self.view().can_send || self.task_active() {
             return Err(UiError::Busy);
         }
         if !valid_model_selection(&selection) {
             return Err(UiError::Configuration);
         }
-        let params = agent_tasks::create_request(
+        let mut params = agent_tasks::create_request(
             &self.session_id,
-            request_id,
-            goal,
+            &intent.client_request_id,
+            &intent.goal,
             &content,
             &selection,
-            max_credits,
+            intent.max_task_credits,
         )
         .ok_or(UiError::InvalidInput)?;
-        let task_id = agent_tasks::task_id_for(request_id);
+        params["initialObservationBinding"] = binding;
+        let task_id = intent.task_id.clone();
         let previous_task_id = self.current_task_id().map(str::to_owned);
         self.enqueue(
             "task.create",
@@ -1664,6 +1723,7 @@ impl Controller {
     }
     /// Stop the old runtime and close its session. Reconnection requires another explicit connect.
     pub fn disconnect(&mut self) {
+        self.task_observation_supported = false;
         self.mark_interrupted_model();
         self.ignore_runtime_events = true;
         self.approval = None;
@@ -1686,6 +1746,7 @@ impl Controller {
     /// App exit may use this immediately, without waiting for a session.close response.
     /// The actual process-exit wait is agent_process::shutdown_all_at_exit, never this UI call.
     pub fn shutdown_now(&mut self) {
+        self.task_observation_supported = false;
         self.mark_interrupted_model();
         self.ignore_runtime_events = true;
         self.approval = None;
@@ -1839,6 +1900,7 @@ impl Controller {
                 }
                 let was_closing = self.phase == Phase::Closing;
                 self.process.take();
+                self.task_observation_supported = false;
                 self.pending.clear();
                 self.send_turn = None;
                 self.approval = None;
@@ -1939,7 +2001,15 @@ impl Controller {
                 }
                 return;
             }
-            let error = remote_error(code);
+            let error = if code == "stale_observation"
+                && matches!(
+                    pending.request,
+                    Request::TaskCreate { .. } | Request::TaskControl { .. }
+                ) {
+                UiError::TaskObservationChanged
+            } else {
+                remote_error(code)
+            };
             if error == UiError::Protocol {
                 self.fail(error);
                 return;
@@ -2033,6 +2103,10 @@ impl Controller {
                     && result["capabilities"]["document_observation_binding"].as_bool()
                         == Some(true)
                     && result["capabilities"]["document_observation_protocol_version"].as_u64()
+                        == Some(1);
+                self.task_observation_supported = scope.document().is_some()
+                    && result["capabilities"]["task_observation_binding"].as_bool() == Some(true)
+                    && result["capabilities"]["task_observation_protocol_version"].as_u64()
                         == Some(1);
                 self.tasks_supported = scope.document().is_some()
                     && result["capabilities"]["durable_tasks"] == true
@@ -3058,8 +3132,11 @@ fn remote_error(code: &str) -> UiError {
         | "input_limit"
         | "media_limit" => UiError::InvalidInput,
         "task_revision_conflict" => UiError::TaskRevisionChanged,
+        "human_observation_conflict" => UiError::TaskObservationConflict,
         "stale_observation" => UiError::ObservationChanged,
-        "invalid_observation_binding" | "input_observation_missing" => UiError::ObservationInvalid,
+        "invalid_observation_binding" | "input_observation_missing" | "task_observation_source" => {
+            UiError::ObservationInvalid
+        }
         "task_observation_not_implemented" | "observation_steer_unsupported" => {
             UiError::ObservationUnsupported
         }
@@ -3107,12 +3184,24 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::{fs, thread};
     fn frozen_document_observation(fixture: &Fixture) -> DocumentObservationBinding {
+        frozen_observation(&fixture.identity)
+    }
+    fn frozen_task_intent(identity: &DocumentIdentity) -> agent_tasks::TaskIntent {
+        agent_tasks::TaskIntent {
+            client_request_id: "original-create".into(),
+            task_id: agent_tasks::task_id_for("original-create"),
+            goal: "保留完整原目标".into(),
+            max_task_credits: 40,
+            initial_observation_binding: Some(frozen_observation(identity)),
+        }
+    }
+    fn frozen_observation(identity: &DocumentIdentity) -> DocumentObservationBinding {
         serde_json::from_value(json!({
-            "appInstanceId": fixture.identity.instance_id,
+            "appInstanceId": identity.instance_id,
             "clientId": "client-1",
             "kind": "clip",
-            "projectId": fixture.identity.project_id,
-            "documentSessionId": fixture.identity.document_session_id,
+            "projectId": identity.project_id,
+            "documentSessionId": identity.document_session_id,
             "revision": 7, "contextRevision": 9, "selectionRevision": 11,
             "selectedObjectIds": (0..300).map(|index| format!("clip:{index}")).collect::<Vec<_>>(),
             "viewStateId": format!("view-v1-{}", "a".repeat(64))
@@ -3362,11 +3451,9 @@ mod tests {
         assert!(f.controller.supports_tasks());
         f.controller
             .create_task(
-                "original-create",
-                "保留完整原目标",
+                &frozen_task_intent(&f.identity),
                 vec![json!({"type":"text","text":"原附件引用"})],
                 json!({"modelId":"agent.fast"}),
-                40,
             )
             .unwrap();
         f.until(|c| {
@@ -3378,7 +3465,273 @@ mod tests {
         assert!(f.controller.task_turn_ended("turn-2"));
         assert_eq!(f.requests().len(), 1);
         assert_eq!(f.requests()[0]["method"], "task.create");
+        assert_eq!(
+            f.requests()[0]["params"]["initialObservationBinding"],
+            json!(frozen_document_observation(&f))
+        );
+        assert!(
+            f.requests()[0]["params"]
+                .get("observationBinding")
+                .is_none()
+        );
         assert_eq!(f.controller.view().outcome, Some(TaskOutcome::Completed));
+    }
+    #[test]
+    fn task_observation_capability_is_independent_and_reset_on_reconnect() {
+        for scenario in [
+            "task-no-observation",
+            "task-false-observation",
+            "task-string-observation",
+            "task-no-observation-version",
+            "task-wrong-observation-version",
+        ] {
+            let mut f = Fixture::new(scenario);
+            f.ready();
+            assert!(f.controller.supports_tasks());
+            assert!(f.controller.supports_document_observation());
+            assert!(!f.controller.supports_task_observation());
+            assert!(f.controller.task_observation_unavailable());
+            let before = f.controller.task_permit_revision();
+            assert_eq!(
+                f.controller.create_task(
+                    &frozen_task_intent(&f.identity),
+                    vec![json!({"type":"text","text":"原附件引用"})],
+                    json!({"modelId":"agent.fast"}),
+                ),
+                Err(UiError::TaskObservationUnavailable)
+            );
+            assert!(f.controller.current_task_id().is_none());
+            assert_eq!(f.controller.task_permit_revision(), before);
+            assert!(f.requests().is_empty());
+            f.controller.disconnect();
+            assert!(!f.controller.task_observation_unavailable());
+            assert!(!f.controller.task_observation_supported);
+            f.until(|c| !c.process_present());
+            let config = f.original_restore_config("task-rounds");
+            f.controller.connect(config).unwrap();
+            assert!(!f.controller.task_observation_supported);
+            f.ready();
+            assert!(f.controller.supports_task_observation());
+            assert!(!f.controller.task_observation_unavailable());
+        }
+        let mut f = Fixture::new("task-no-doc-observation");
+        f.ready();
+        assert!(!f.controller.supports_document_observation());
+        assert!(f.controller.supports_task_observation());
+        f.controller
+            .create_task(
+                &frozen_task_intent(&f.identity),
+                vec![json!({"type":"text","text":"原附件引用"})],
+                json!({"modelId":"agent.fast"}),
+            )
+            .unwrap();
+        f.until(|c| c.view().approval.is_some());
+    }
+    #[test]
+    fn task_create_and_update_reject_unbound_or_cross_scope_before_mutating_task() {
+        let mut f = Fixture::new("task-controls");
+        f.ready();
+        let original = frozen_task_intent(&f.identity);
+        for axis in 0..5 {
+            let mut intent = original.clone();
+            if axis == 4 {
+                intent.initial_observation_binding = None;
+            } else {
+                let binding = intent.initial_observation_binding.as_mut().unwrap();
+                match axis {
+                    0 => binding.app_instance_id = "different-instance".into(),
+                    1 => binding.client_id = "different-client".into(),
+                    2 => binding.project_id = "different-project".into(),
+                    _ => binding.document_session_id = "different-doc".into(),
+                }
+            }
+            let before = f.controller.task_permit_revision();
+            assert_eq!(
+                f.controller.create_task(
+                    &intent,
+                    vec![json!({"type":"text","text":"原附件引用"})],
+                    json!({"modelId":"agent.fast"}),
+                ),
+                Err(if axis == 4 {
+                    UiError::TaskObservationMissing
+                } else {
+                    UiError::ObservationChanged
+                })
+            );
+            assert!(f.controller.current_task_id().is_none());
+            assert_eq!(f.controller.task_permit_revision(), before);
+            assert!(f.requests().is_empty());
+        }
+        f.controller
+            .create_task(
+                &original,
+                vec![json!({"type":"text","text":"原附件引用"})],
+                json!({"modelId":"agent.fast"}),
+            )
+            .unwrap();
+        f.until(|c| c.view().approval.is_some());
+        f.controller.task_command(TaskCommand::Pause).unwrap();
+        f.until(|c| {
+            c.current_task()
+                .is_some_and(|task| task.status == TaskStatus::Paused)
+                && c.pending.is_empty()
+                && c.turn_id.is_none()
+        });
+        let expected = f.controller.current_task().unwrap().clone();
+        let requests = f.requests();
+        for axis in 0..6 {
+            let mut intent = agent_tasks::TaskUpdateIntent {
+                client_request_id: "original-update".into(),
+                task_id: original.task_id.clone(),
+                message: "保留原补充".into(),
+                expected_revision: expected.task_revision,
+                retries: 0,
+                confirmed: false,
+                observation_binding: original.initial_observation_binding.clone(),
+            };
+            if axis == 4 {
+                intent.observation_binding = None;
+            } else if axis == 5 {
+                f.controller.task_observation_supported = false;
+            } else {
+                let binding = intent.observation_binding.as_mut().unwrap();
+                match axis {
+                    0 => binding.app_instance_id = "different-instance".into(),
+                    1 => binding.client_id = "different-client".into(),
+                    2 => binding.project_id = "different-project".into(),
+                    _ => binding.document_session_id = "different-doc".into(),
+                }
+            }
+            let before = f.controller.task_permit_revision();
+            let epoch = f.controller.task_requested_epoch;
+            assert_eq!(
+                f.controller.retry_task_update(&intent),
+                Err(match axis {
+                    4 => UiError::TaskObservationMissing,
+                    5 => UiError::TaskObservationUnavailable,
+                    _ => UiError::ObservationChanged,
+                })
+            );
+            assert_eq!(f.controller.current_task(), Some(&expected));
+            assert_eq!(f.controller.task_permit_revision(), before);
+            assert_eq!(f.controller.task_requested_epoch, epoch);
+            assert_eq!(f.requests(), requests);
+        }
+    }
+    #[test]
+    fn task_lost_create_and_update_receipts_restore_original_status_without_replay() {
+        for scenario in ["task-create-lost-restore", "task-update-lost-restore"] {
+            let mut f = Fixture::new(scenario);
+            f.ready();
+            let original = frozen_task_intent(&f.identity);
+            f.controller
+                .create_task(
+                    &original,
+                    vec![json!({"type":"text","text":"原附件引用"})],
+                    json!({"modelId":"agent.fast"}),
+                )
+                .unwrap();
+            if scenario == "task-update-lost-restore" {
+                f.until(|c| c.view().approval.is_some());
+                f.controller.task_command(TaskCommand::Pause).unwrap();
+                f.until(|c| {
+                    c.current_task()
+                        .is_some_and(|task| task.status == TaskStatus::Paused)
+                        && c.pending.is_empty()
+                        && c.turn_id.is_none()
+                });
+                let update = agent_tasks::TaskUpdateIntent {
+                    client_request_id: "original-update".into(),
+                    task_id: original.task_id.clone(),
+                    message: "保留原补充".into(),
+                    expected_revision: f.controller.current_task().unwrap().task_revision,
+                    retries: 0,
+                    confirmed: false,
+                    observation_binding: original.initial_observation_binding.clone(),
+                };
+                f.controller.retry_task_update(&update).unwrap();
+            }
+            thread::sleep(Duration::from_millis(100));
+            f.controller.pending.front_mut().unwrap().since = Instant::now() - RESPONSE_TIMEOUT;
+            f.until(|c| !c.process_present());
+            assert!(!f.controller.task_observation_supported);
+            let config = f.original_restore_config(scenario);
+            f.controller.connect(config).unwrap();
+            f.until(|c| c.current_task().is_some() && c.pending.is_empty());
+            assert_eq!(
+                f.controller.current_task_id(),
+                Some(original.task_id.as_str())
+            );
+            let requests = f.requests();
+            let creates = requests
+                .iter()
+                .filter(|r| r["method"] == "task.create")
+                .collect::<Vec<_>>();
+            assert_eq!(creates.len(), 1);
+            assert_eq!(
+                creates[0]["params"]["clientRequestId"],
+                original.client_request_id
+            );
+            assert_eq!(
+                creates[0]["params"]["initialObservationBinding"],
+                json!(original.initial_observation_binding)
+            );
+            let updates = requests
+                .iter()
+                .filter(|r| r["method"] == "task.update")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                updates.len(),
+                usize::from(scenario == "task-update-lost-restore")
+            );
+            if let Some(update) = updates.first() {
+                assert_eq!(update["params"]["clientRequestId"], "original-update");
+                assert_eq!(
+                    update["params"]["observationBinding"],
+                    json!(original.initial_observation_binding)
+                );
+                assert_eq!(
+                    f.controller.acknowledged_task_update(),
+                    Some("original-update")
+                );
+            }
+            assert_eq!(requests.last().unwrap()["method"], "task.status");
+            let methods = fs::read_to_string(f.directory.join("methods.txt")).unwrap();
+            assert!(methods.ends_with("initialize\nsession.restore\ntask.status\n"));
+        }
+    }
+    #[test]
+    fn task_observation_rejections_keep_sources_and_show_actionable_reasons() {
+        for (scenario, expected) in [
+            ("task-stale-observation", UiError::TaskObservationChanged),
+            (
+                "task-human-observation-conflict",
+                UiError::TaskObservationConflict,
+            ),
+            (
+                "task-invalid-observation-source",
+                UiError::ObservationInvalid,
+            ),
+        ] {
+            let mut f = Fixture::new(scenario);
+            f.ready();
+            let intent = frozen_task_intent(&f.identity);
+            f.controller
+                .create_task(
+                    &intent,
+                    vec![json!({"type":"text","text":"原附件引用"})],
+                    json!({"modelId":"agent.fast"}),
+                )
+                .unwrap();
+            f.until(|c| c.view().error == Some(expected));
+            assert!(f.controller.process_present());
+            assert_eq!(f.requests().len(), 1);
+            assert_eq!(
+                f.requests()[0]["params"]["initialObservationBinding"],
+                json!(intent.initial_observation_binding)
+            );
+            assert!(!expected.message().contains("连接"));
+        }
     }
     #[test]
     fn task_jsonl_pause_resume_stop_use_original_id_and_revoke_old_card() {
@@ -3386,11 +3739,9 @@ mod tests {
         f.ready();
         f.controller
             .create_task(
-                "original-create",
-                "保留完整原目标",
+                &frozen_task_intent(&f.identity),
                 vec![json!({"type":"text","text":"原附件引用"})],
                 json!({"modelId":"agent.fast"}),
-                40,
             )
             .unwrap();
         f.until(|c| c.view().approval.is_some());
@@ -3422,11 +3773,9 @@ mod tests {
         f.ready();
         f.controller
             .create_task(
-                "original-create",
-                "保留完整原目标",
+                &frozen_task_intent(&f.identity),
                 vec![json!({"type":"text","text":"原附件引用"})],
                 json!({"modelId":"agent.fast"}),
-                40,
             )
             .unwrap();
         f.until(|c| c.view().approval.is_some());
@@ -3444,6 +3793,7 @@ mod tests {
             expected_revision: original_revision + 1,
             retries: 0,
             confirmed: false,
+            observation_binding: Some(frozen_document_observation(&f)),
         };
         f.controller.retry_task_update(&original).unwrap();
         f.until(|c| c.rejected_task_update() == Some("original-update"));
@@ -3489,7 +3839,8 @@ mod tests {
             updates
                 .iter()
                 .all(|r| r["params"]["clientRequestId"] == "original-update"
-                    && r["params"]["message"] == "保留原补充")
+                    && r["params"]["message"] == "保留原补充"
+                    && r["params"]["observationBinding"] == json!(original.observation_binding))
         );
         assert_eq!(updates[1], updates[2]);
     }
@@ -3527,11 +3878,9 @@ mod tests {
             f.ready();
             f.controller
                 .create_task(
-                    "original-create",
-                    "保留完整原目标",
+                    &frozen_task_intent(&f.identity),
                     vec![json!({"type":"text","text":"原附件引用"})],
                     json!({"modelId":"agent.fast"}),
-                    40,
                 )
                 .unwrap();
             f.until(|c| c.view().approval.is_some());
@@ -3584,11 +3933,9 @@ mod tests {
         f.ready();
         f.controller
             .create_task(
-                "original-create",
-                "保留完整原目标",
+                &frozen_task_intent(&f.identity),
                 vec![json!({"type":"text","text":"原附件引用"})],
                 json!({"modelId":"agent.fast"}),
-                40,
             )
             .unwrap();
         f.until(|c| {
@@ -3872,6 +4219,11 @@ def final(status='completed',unknown=False,pending=False,failed=False):
     print(json.dumps({'version':1,'type':'result','sessionId':session,'result':{'turnId':'turn-1','status':status,'text':'模型结果 inference-secret read-secret write-secret'},'toolState':{'outcomeUnknown':unknown,'unresolved':[],'recoveryOperations':[],'observed':observed}}),flush=True)
 task=None;task_state_revision=0
 updates={}
+def task_observation(binding):
+    assert binding['appInstanceId']=='12345678-1234-1234-1234-123456789abc' and binding['clientId']=='client-1' and binding['projectId']=='project-1' and binding['documentSessionId']=='doc-1'
+    assert binding['kind']=='clip' and binding['revision']==7 and binding['contextRevision']==9 and binding['selectionRevision']==11
+    assert binding['selectedObjectIds']==['clip:'+str(n) for n in range(300)] and binding['viewStateId']=='view-v1-'+'a'*64
+
 def task_state():
     global task_state_revision
     task_state_revision+=1;task['stateRevision']=task_state_revision
@@ -3896,10 +4248,10 @@ for line in sys.stdin:
         if scenario=='init-fail': reply(f,error={'code':'provider_configuration','message':'raw inference-secret'});continue
         if scenario.startswith('app-'):
             assert p['scopeKind']=='app' and p['appReadProtocolVersion']==1 and p['accountScope']=='a'*64 and p['appSessionId']=='app-session'
-            assert all(key not in p for key in ('projectId','documentSessionId','taskProtocolVersion','documentObservationProtocolVersion','writeToken'))
-        else: assert p['documentObservationProtocolVersion']==1
+            assert all(key not in p for key in ('projectId','documentSessionId','taskProtocolVersion','documentObservationProtocolVersion','taskObservationProtocolVersion','writeToken'))
+        else: assert p['documentObservationProtocolVersion']==1 and p['taskObservationProtocolVersion']==1
         capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True,'turn_model_selection':True,'session_permissions':True}
-        if scenario.startswith('app-') and scenario!='app-no-cap': capabilities.update(app_read_scope=True,app_read_protocol_version=1,durable_tasks=True,task_protocol_version=1)
+        if scenario.startswith('app-') and scenario!='app-no-cap': capabilities.update(app_read_scope=True,app_read_protocol_version=1,durable_tasks=True,task_protocol_version=1,task_observation_binding=True,task_observation_protocol_version=1)
         if not scenario.startswith('app-') and scenario!='old-runtime': capabilities.update(document_observation_binding=True,document_observation_protocol_version=1)
         if scenario=='doc-no-cap': capabilities.pop('document_observation_binding')
         if scenario=='doc-false-cap': capabilities['document_observation_binding']=False
@@ -3907,7 +4259,13 @@ for line in sys.stdin:
         if scenario=='doc-wrong-version': capabilities['document_observation_protocol_version']=2
         if scenario.startswith('task-'):
             assert p['taskProtocolVersion']==1
-            capabilities.update(durable_tasks=True,task_protocol_version=1)
+            capabilities.update(durable_tasks=True,task_protocol_version=1,task_observation_binding=True,task_observation_protocol_version=1)
+        if scenario=='task-no-observation': capabilities.pop('task_observation_binding')
+        if scenario=='task-false-observation': capabilities['task_observation_binding']=False
+        if scenario=='task-string-observation': capabilities['task_observation_binding']='true'
+        if scenario=='task-no-observation-version': capabilities.pop('task_observation_protocol_version')
+        if scenario=='task-wrong-observation-version': capabilities['task_observation_protocol_version']=2
+        if scenario=='task-no-doc-observation': capabilities.pop('document_observation_binding')
         if scenario=='selection-absent': capabilities.pop('turn_model_selection')
         if scenario=='selection-false': capabilities['turn_model_selection']=False
         if scenario=='selection-string': capabilities['turn_model_selection']='true'
@@ -3924,6 +4282,7 @@ for line in sys.stdin:
         session=p['sessionId'];time.sleep(.08)
         if scenario=='app-rebind-required' and m=='session.create': reply(f,error={'code':'rebind_required','message':'explicit restore required'});continue
         if scenario.startswith('app-'): reply(f,app_summary());continue
+        if m=='session.restore' and scenario in ('task-create-lost-restore','task-update-lost-restore'): task=json.loads(pathlib.Path(__file__).with_name('task-status.json').read_text())
         if m=='session.restore' and scenario in ('exit-insert','exit-export','first-terminal-lost','lost-reconcile-reply'):
             record=json.loads(original_path.read_text())
             if scenario=='first-terminal-lost': assert p['recoveryInvocations']==[{'turnId':'turn-1','invocationId':'turn-1_canvas','toolName':record['toolName']}]
@@ -3956,10 +4315,16 @@ for line in sys.stdin:
         if scenario=='lost-reconcile-reply' and record['queries']==1: sys.exit(0)
         reply(f,{'verified':True,'success':True,'receipt':record['result'],'session':{'sessionId':session,'pendingInputCount':0,'toolState':{'outcomeUnknown':False,'unresolved':[],'recoveryOperations':[],'observed':[]}}})
     elif m=='task.create':
+        task_observation(p['initialObservationBinding']);assert 'observationBinding' not in p
+        if scenario in ('task-stale-observation','task-human-observation-conflict','task-invalid-observation-source'):
+            code={'task-stale-observation':'stale_observation','task-human-observation-conflict':'human_observation_conflict','task-invalid-observation-source':'task_observation_source'}[scenario]
+            reply(f,error={'code':code,'message':'fixture'});continue
         assert p['goal']=='保留完整原目标' and p['maxTaskCredits']==40
         assert p['content']==[{'type':'text','text':'原附件引用'}]
         assert p['deliverables']==[{'id':'result','description':'按用户目标完成并核对结果'}]
         task={'id':'task-'+hashlib.sha256(p['clientRequestId'].encode()).hexdigest(),'sessionId':session,'taskRevision':1,'controlEpoch':1,'status':'running','blockedReason':None,'rounds':0,'activeInputId':None,'activeTurnId':None,'roundOrdinal':None,'verifiedSteps':0,'totalSteps':1,'evidenceCount':0,'stateRevision':1,'lastUpdateId':None}
+        if scenario=='task-create-lost-restore':
+            pathlib.Path(__file__).with_name('task-status.json').write_text(json.dumps(task));continue
         late_create=json.loads(json.dumps(task)) if scenario=='task-create-ack-lost' else None
         if late_create is None: reply(f,task)
         else: late_create_frame=f
@@ -3977,12 +4342,15 @@ for line in sys.stdin:
             if scenario!='task-status-ack-lost': reply(f,task)
             continue
         if m=='task.update':
+            task_observation(p['observationBinding']);assert 'initialObservationBinding' not in p
             key=p['clientRequestId']
             if key not in updates:
                 if p['expectedRevision']!=task['taskRevision']:
                     reply(f,error={'code':'task_revision_conflict','message':'zero mutation'});continue
-                updates[key]=p['message'];task.update(lastUpdateId=key,status='running');task['controlEpoch']+=1;task['taskRevision']+=1
-            else: assert updates[key]==p['message']
+                updates[key]={'message':p['message'],'observationBinding':p['observationBinding']};task.update(lastUpdateId=key,status='running');task['controlEpoch']+=1;task['taskRevision']+=1
+            else: assert updates[key]=={'message':p['message'],'observationBinding':p['observationBinding']}
+            if scenario=='task-update-lost-restore':
+                pathlib.Path(__file__).with_name('task-status.json').write_text(json.dumps(task));continue
             task_state();reply(f,task);continue
         task['controlEpoch']+=1;task['taskRevision']+=1
         task['status']={'task.pause':'paused','task.stop':'stopped','task.resume':'running'}[m]

@@ -28,6 +28,6 @@ kind 为 canvas/clip/flow，修订号为非负安全整数。选择保留真实�
 
 ## 当前边界
 
-本批约束普通输入的初始阶段，后续仍沿原操作和独立回读推进。页面操作档通常走 task.create；Task create/update 的人类观察来源、自动续轮和冲突处理须单独接入，不能用普通 follow_up 的验证代替。bound steer、多来源、模型完成时的视图推进也未在本批声明完成。
+本协议约束普通输入的初始阶段，后续仍沿原操作和独立回读推进。页面操作档通常走 task.create；Task create/update 的人类观察来源、自动续轮和冲突处理使用[独立Task协议](task-input-observation-protocol.md)，不能用普通 follow_up 的验证代替。bound steer、普通输入多来源及模型完成时的视图推进仍未声明完成。
 
 逻辑、协议与真实 COTO 测试不代替实际 App、授权按钮、模型观看或作品质量验收。证据见[本轮验收](../testing/main-qa/2026-10-20-full-agent/README.md)。

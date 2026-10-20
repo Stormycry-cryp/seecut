@@ -1388,6 +1388,21 @@ mod desktop {
             let document_observation_unavailable = !snapshot.is_app()
                 && !task_mode
                 && state.controller.document_observation_unavailable();
+            let task_observation_unavailable =
+                !snapshot.is_app() && state.controller.task_observation_unavailable();
+            let pending_update = state.record.task_updates.iter().find(|intent| {
+                !intent.confirmed
+                    && Some(intent.task_id.as_str()) == state.controller.current_task_id()
+            });
+            let task_update_observation_missing =
+                pending_update.is_some_and(|intent| intent.observation_binding.is_none());
+            let task_observation_reason = if task_observation_unavailable {
+                UiError::TaskObservationUnavailable.message()
+            } else if task_update_observation_missing {
+                UiError::TaskObservationMissing.message()
+            } else {
+                ""
+            };
             let unknown = view.outcome == Some(TaskOutcome::OutcomeUnknown)
                 || phase == Phase::OutcomeUnknown
                 || state.record.pending == "unknown";
@@ -1436,6 +1451,9 @@ mod desktop {
                     Phase::AwaitingApproval => "等待你确认当前操作",
                     Phase::Stopping => "正在停止，等待结果",
                     Phase::Ready if busy => "已提交，等待 Agent 回应",
+                    Phase::Ready if task_mode && task_observation_unavailable => {
+                        UiError::TaskObservationUnavailable.message()
+                    }
                     Phase::Ready if document_observation_unavailable => {
                         UiError::ObservationUnavailable.message()
                     }
@@ -1605,12 +1623,13 @@ mod desktop {
                     && state.controller.can_task_command(TaskCommand::Resume),
             );
             ui.set_can_task_status(state.controller.can_task_command(TaskCommand::Status));
-            ui.set_can_task_update(state.controller.can_task_command(TaskCommand::Update));
-            let pending_update = state.record.task_updates.iter().any(|v| {
-                !v.confirmed && Some(v.task_id.as_str()) == state.controller.current_task_id()
-            });
+            ui.set_can_task_update(
+                state.controller.can_task_command(TaskCommand::Update)
+                    && state.controller.supports_task_observation()
+                    && !task_update_observation_missing,
+            );
             ui.set_task_update_label(
-                if pending_update {
+                if pending_update.is_some() {
                     "核实原补充"
                 } else {
                     "补充要求"
@@ -1618,7 +1637,9 @@ mod desktop {
                 .into(),
             );
             ui.set_task_compatibility(
-                if snapshot.write_token.is_some()
+                if !task_observation_reason.is_empty() {
+                    task_observation_reason
+                } else if snapshot.write_token.is_some()
                     && !state.controller.supports_tasks()
                     && state.controller.session_opened()
                 {
@@ -1631,6 +1652,7 @@ mod desktop {
             ui.set_can_send(
                 view.can_send
                     && (!task_mode || !state.controller.task_active())
+                    && (!task_mode || !task_observation_unavailable)
                     && !document_observation_unavailable
                     && task_budget_reason.is_empty()
                     && !state.preparing
@@ -1763,6 +1785,8 @@ mod desktop {
                     "请先允许读取与预览并连接 Agent"
                 } else if !selection_reason.is_empty() {
                     selection_reason
+                } else if task_mode && task_observation_unavailable {
+                    UiError::TaskObservationUnavailable.message()
                 } else if document_observation_unavailable {
                     UiError::ObservationUnavailable.message()
                 } else if !view.can_send {
@@ -1875,6 +1899,28 @@ mod desktop {
             state.approval = frozen_approval;
             state.editor_recovery = editor_recovery;
         }
+        fn capture_document_observation(
+            app: &App,
+            snapshot: &ScopeSnapshot,
+        ) -> Result<crate::agent_observation::DocumentObservationBinding, UiError> {
+            let (Some(identity), Some(read_token)) =
+                (snapshot.document(), snapshot.read_token.as_deref())
+            else {
+                return Err(UiError::DocumentChanged);
+            };
+            let mut binding = Err(AssistantPermissionError::StaleContext);
+            Shell::with(|shell, _| {
+                let studio = shell.studio.borrow();
+                binding = studio
+                    .editor_mcp
+                    .borrow_mut()
+                    .assistant_document_observation(&studio, app, identity, read_token);
+            });
+            binding.map_err(|error| match error {
+                AssistantPermissionError::NotAllowed => UiError::AuthorizationRequired,
+                _ => UiError::ObservationChanged,
+            })
+        }
         fn send(&self, app: &App, text: &str) {
             self.refresh(app);
             if !app.global::<Assistant>().get_open()
@@ -1925,35 +1971,26 @@ mod desktop {
             } else {
                 None
             };
-            let document_input = if !snapshot.is_app() && !task_mode {
-                if !state.controller.supports_document_observation() {
+            let document_input = if !snapshot.is_app() {
+                if task_mode && !state.controller.supports_task_observation() {
+                    state.notice = UiError::TaskObservationUnavailable.message().into();
+                    return;
+                }
+                if !task_mode && !state.controller.supports_document_observation() {
                     state.notice = UiError::ObservationUnavailable.message().into();
                     return;
                 }
-                let (Some(identity), Some(read_token)) =
-                    (snapshot.document(), snapshot.read_token.as_deref())
-                else {
-                    state.notice = UiError::DocumentChanged.message().into();
-                    return;
-                };
-                let mut binding = Err(AssistantPermissionError::StaleContext);
-                Shell::with(|shell, _| {
-                    let studio = shell.studio.borrow();
-                    binding = studio
-                        .editor_mcp
-                        .borrow_mut()
-                        .assistant_document_observation(&studio, app, identity, read_token);
-                });
-                match binding {
-                    Ok(binding) => Some((format!("input-{}", uuid::Uuid::new_v4()), binding)),
+                match Self::capture_document_observation(app, &snapshot) {
+                    Ok(binding) => Some((
+                        format!(
+                            "{}-{}",
+                            if task_mode { "task-request" } else { "input" },
+                            uuid::Uuid::new_v4()
+                        ),
+                        binding,
+                    )),
                     Err(error) => {
-                        state.notice = match error {
-                            AssistantPermissionError::NotAllowed => {
-                                UiError::AuthorizationRequired.message()
-                            }
-                            _ => UiError::ObservationChanged.message(),
-                        }
-                        .into();
+                        state.notice = error.message().into();
                         return;
                     }
                 }
@@ -2009,23 +2046,32 @@ mod desktop {
                         return;
                     }
                 };
-                let client_request_id = format!("task-request-{}", uuid::Uuid::new_v4());
+                let Some((client_request_id, binding)) = document_input.as_ref() else {
+                    state.notice = UiError::ObservationInvalid.message().into();
+                    return;
+                };
                 Some(crate::agent_tasks::TaskIntent {
-                    task_id: crate::agent_tasks::task_id_for(&client_request_id),
-                    client_request_id,
+                    task_id: crate::agent_tasks::task_id_for(client_request_id),
+                    client_request_id: client_request_id.clone(),
                     goal: visible.clone(),
                     max_task_credits,
+                    initial_observation_binding: Some(binding.clone()),
                 })
             } else {
                 None
             };
             let request = RequestSnapshot {
-                input_id: app_input
-                    .as_ref()
-                    .map(|(id, _)| id.clone())
-                    .or_else(|| document_input.as_ref().map(|(id, _)| id.clone())),
+                input_id: app_input.as_ref().map(|(id, _)| id.clone()).or_else(|| {
+                    document_input
+                        .as_ref()
+                        .filter(|_| !task_mode)
+                        .map(|(id, _)| id.clone())
+                }),
                 app_view_binding: app_input.as_ref().map(|(_, view)| view.clone()),
-                observation_binding: document_input.as_ref().map(|(_, binding)| binding.clone()),
+                observation_binding: document_input
+                    .as_ref()
+                    .filter(|_| !task_mode)
+                    .map(|(_, binding)| binding.clone()),
                 task: task_intent.clone(),
                 references: state.record.draft_references.clone(),
                 session_id: state.record.id.clone(),
@@ -2087,13 +2133,11 @@ mod desktop {
             let result = match saved {
                 Ok(()) => (if let Some(task) = &task_intent {
                     state.controller.create_task(
-                        &task.client_request_id,
-                        &task.goal,
+                        task,
                         content,
                         selection
                             .clone()
                             .unwrap_or_else(|| json!({"modelId":"default"})),
-                        task.max_task_credits,
                     )
                 } else if let Some((id, view)) = app_input {
                     state
@@ -2215,6 +2259,18 @@ mod desktop {
             // it. Keep only the prior scope for the one-shot update candidate.
             let human_grant = {
                 let mut state = self.state.borrow_mut();
+                if !state.controller.supports_task_observation() {
+                    state.notice = UiError::TaskObservationUnavailable.message().into();
+                    return;
+                }
+                if state.record.task_updates.iter().any(|intent| {
+                    !intent.confirmed
+                        && Some(intent.task_id.as_str()) == state.controller.current_task_id()
+                        && intent.observation_binding.is_none()
+                }) {
+                    state.notice = UiError::TaskObservationMissing.message().into();
+                    return;
+                }
                 if state.record.task_updates.iter().all(|v| {
                     v.confirmed || Some(v.task_id.as_str()) != state.controller.current_task_id()
                 }) && (text.trim().is_empty()
@@ -2279,6 +2335,26 @@ mod desktop {
                     state.notice = "本会话补充要求已达保存上限，请创建新会话".into();
                     return;
                 }
+                let Some(snapshot) = Self::snapshot(app) else {
+                    state.notice = UiError::DocumentChanged.message().into();
+                    return;
+                };
+                if snapshot.is_app()
+                    || snapshot.read_token.is_none()
+                    || state.lease.as_ref().is_none_or(|lease| {
+                        lease.scope != snapshot.scope || lease.read != snapshot.read_token
+                    })
+                {
+                    state.notice = UiError::DocumentChanged.message().into();
+                    return;
+                }
+                let binding = match Self::capture_document_observation(app, &snapshot) {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        state.notice = error.message().into();
+                        return;
+                    }
+                };
                 let mut message = text.to_owned();
                 if let Some(lease) = &state.lease {
                     for token in [lease.read.as_ref(), lease.write.as_ref()]
@@ -2298,6 +2374,7 @@ mod desktop {
                     expected_revision: task.task_revision,
                     retries: 0,
                     confirmed: false,
+                    observation_binding: Some(binding),
                 };
                 if !intent.valid() {
                     state.notice = "补充要求需为不超过32000字节的文字".into();
