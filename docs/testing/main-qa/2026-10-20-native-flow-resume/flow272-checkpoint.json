@@ -1,0 +1,22 @@
+{
+  "timeUTC": "2026-10-20T00:18:12.963434+00:00",
+  "project": "R2-UI-20261020",
+  "nativeVersion": "272bcf1",
+  "runtimeCommit": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "actualUIPassed": [
+    "startup after Documents permission",
+    "new project",
+    "image node and prompt input",
+    "supplied-template recommendation",
+    "rewrite",
+    "rewrite undo restores original",
+    "zoom 100 to 83 percent",
+    "node drag",
+    "text editor",
+    "manual text-image connection",
+    "list reopen retained prompt and text"
+  ],
+  "fullAppReopen": "passed; PID 72230 exited; PID 75294 restored two nodes, manual text, connection and 83 percent viewport",
+  "provider": "synthetic",
+  "sevenDayRemainingPercent": 46
+}

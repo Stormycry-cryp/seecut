@@ -1,0 +1,16 @@
+✔ read/operate hot switch preserves COTO session and provider, updates only editor credentials (153.739625ms)
+✔ downgrade invalidates pending approval immediately; regrant cannot replay it (108.507167ms)
+✔ wrong session, stale revision, malformed mode cannot change permission (51.022542ms)
+✔ permission MCP failure leaves write disabled and never recreates inference session (38.586875ms)
+✔ EOF while permission transport connects cannot revive runtime or write permission (45.571417ms)
+✔ closing and opening another runtime session does not inherit write authority (95.471375ms)
+✔ permission changes never clear UNKNOWN or replay the original operation (137.917083ms)
+✔ trusted IPC negotiates and acknowledges permission mode without reopening session (56.200667ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 886.059917

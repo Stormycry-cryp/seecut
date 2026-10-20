@@ -1,0 +1,27 @@
+{
+  "atUTC": "2026-10-20T02:30:55.296557+00:00",
+  "publicSource": "73d8782ded7c1ce87088782ceeeaa763c83d5ae9",
+  "privateRuntimeSource": "6f07373198043ff69c9ee8d9d3ecd0d0b850f3bc",
+  "app": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Frontend-QA-272bcf1-Run.app",
+  "bundle": "cloud.stormycry.seecut.devqa.272bcf1",
+  "rawBinarySha256": "b791206b1f1cb0f2cd6f066276f46a8ddb174f06892c9b215e5c05c3d37c8953",
+  "binarySha256": "f968b47831256f55d6b171d218cb0b0572f089e593a6e4a0381c813dc628bf2c",
+  "previousBinarySha256": "f5b3b004a04020dfb31f7ca33f0df00ec683a2f1db0e35cc849921e39daea54d",
+  "mcpSha256": "20e5479de9f63740c4137c8a1682a3784f43d0b3ae1598cbf989f5748758d003",
+  "componentsManifestSha256": "ea12c473df2a7323991d016d55ddab4f6ee2cea57d114047b41710f18374d8a8",
+  "sealedApplicationsUnchanged": {
+    ".toonflow/SeeCut-Frontend-QA-272bcf1.app/Contents/MacOS/seecut": "d8592c81c6742d0a56e9fa8dce74b421d962bbbb4b9421109b96edf1b65e992e",
+    ".toonflow/SeeCut-Frontend-QA-35a7600.app/Contents/MacOS/seecut": "db855a6b85bb0ee4aaebd67d01d92d58972e46807974292ce93144666eef855d"
+  },
+  "portablePreserved": true,
+  "infoPlistUnchanged": true,
+  "flowResourcesUnchanged": true,
+  "nativeAppLaunched": false,
+  "immutablePayloadCodesignVerified": true,
+  "restoredMutableRunStrictCodesignVerified": false,
+  "unsealedPortableEntries": 120,
+  "signatureScope": "Immutable app payload verified with portable temporarily outside; restored development run contains unsealed mutable portable data and is not a distributable package",
+  "stagedAndInstalledCodeMatch": true,
+  "unsignedBinarySha256": "d236bd29757ac4d0cfeaea25b72aecdd87094a11126d538135462cb9c4bed5eb",
+  "packageCorrection": "MCP has only system dependencies, so no extra rpath was needed. Post-restore resource diagnostics were checked on both stdout and stderr."
+}

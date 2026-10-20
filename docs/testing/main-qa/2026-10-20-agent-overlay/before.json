@@ -1,0 +1,24 @@
+{
+  "timeUTC": "2026-10-20T00:30:03.276422+00:00",
+  "runningApp": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Frontend-QA-272bcf1-Run.app",
+  "runningPID": 75294,
+  "binarySha256": "d8592c81c6742d0a56e9fa8dce74b421d962bbbb4b9421109b96edf1b65e992e",
+  "runningNativeSource": "272bcf1",
+  "workingHead": "e0136fb072ab1f9fe9980687d5d178d63fd6d434",
+  "flowRuntimeCommit": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "reproduced": [
+    "dark expanded rectangular backing",
+    "dark collapsed square backing",
+    "light expanded rectangular backing"
+  ],
+  "cause": "8px-expanded rectangular WebView mask uncovers native page outside rounded assistant; hitTest uses same oversized rectangle",
+  "secondary": "always-visible resize grip crosses rounded surface",
+  "syntheticAgentQA": "paused before second turn; first denied write resolved and audited; no active generation",
+  "quota": {
+    "checkedUTC": "2026-10-20T00:26:37Z",
+    "windowMinutes": 10080,
+    "remainingPercent": 45,
+    "resetsUTC": "2026-10-25T01:02:41Z",
+    "stopRemainingPercent": 30
+  }
+}

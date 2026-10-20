@@ -1,0 +1,15 @@
+{
+  "atUTC": "2026-10-20T00:35:19.983565+00:00",
+  "sourceParent": "e0136fb072ab1f9fe9980687d5d178d63fd6d434",
+  "patchSha256": "ec2e72e481851aab7a9a62d0f2ab48ebe45f064df80f7ccf3c3d4cbfd7428ab4",
+  "bundle": "cloud.stormycry.seecut.devqa.272bcf1",
+  "app": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Frontend-QA-272bcf1-Run.app",
+  "previousBinarySha256": "d8592c81c6742d0a56e9fa8dce74b421d962bbbb4b9421109b96edf1b65e992e",
+  "rawBinarySha256": "a91e26f3f78b251727047c5ebf2b4172e99db7c3b9a38a09545c2e1d6aa1fe6c",
+  "binarySha256": "f5b3b004a04020dfb31f7ca33f0df00ec683a2f1db0e35cc849921e39daea54d",
+  "sealedNativeUnchanged": true,
+  "portablePreserved": true,
+  "infoPlistUnchanged": true,
+  "onlyRunCopyUpdated": true,
+  "flowResourcesUnchanged": true
+}

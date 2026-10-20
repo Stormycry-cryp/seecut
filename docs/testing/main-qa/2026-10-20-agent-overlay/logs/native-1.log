@@ -1,0 +1,8 @@
+
+running 4 tests
+test editor_mcp::approval_view::tests::details_redact_credentials_without_changing_the_frozen_request ... ok
+test editor_mcp::approval_view::tests::long_content_stays_in_details_and_never_mutates_the_request ... ok
+test editor_mcp::approval_view::tests::maps_only_real_whitelisted_actions_and_targets ... ok
+test editor_mcp::approval_view::tests::unknown_or_incomplete_parameters_cannot_enable_approval ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 510 filtered out; finished in 0.00s

@@ -1,0 +1,19 @@
+
+running 15 tests
+test agent_process::tests::bidirectional_response_and_runtime_events ... ok
+test agent_process::tests::blocked_stdin_and_drop_do_not_block_ui_and_child_is_reaped ... ok
+test agent_process::tests::continuous_stderr_is_drained_without_content_events ... ok
+test agent_process::tests::early_parent_exit_cleans_up_owned_descendant ... ok
+test agent_process::tests::exit_helper_process ... ignored, auxiliary process launched only by process_exit_reaps_child_and_grandchild
+test agent_process::tests::input_backpressure_rejects_before_dispatch ... ok
+test agent_process::tests::invalid_utf8_json_version_and_partial_lines_fail_once ... ok
+test agent_process::tests::managed_frames_require_a_bounded_session_and_object ... ok
+test agent_process::tests::null_response_id_does_not_accidentally_shutdown ... ok
+test agent_process::tests::output_backpressure_has_reserved_failure_and_exit ... ok
+test agent_process::tests::oversize_line_is_bounded_and_terminated ... ok
+test agent_process::tests::process_exit_reaps_child_and_grandchild ... ok
+test agent_process::tests::rejects_symlink_launch_and_ambient_secret_environment ... ok
+test agent_process::tests::shutdown_reply_closes_stdin_and_fences_new_requests ... ok
+test agent_process::tests::spawn_failure_has_single_failure_and_exit ... ok
+
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 499 filtered out; finished in 22.71s

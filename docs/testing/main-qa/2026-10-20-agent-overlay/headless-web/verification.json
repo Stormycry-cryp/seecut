@@ -1,0 +1,32 @@
+{
+  "checks": [
+    "page-local keyboard filtering",
+    "page-local click/dialog/input/cancel",
+    "dark 1200px no horizontal overflow",
+    "dark 420px no horizontal overflow",
+    "light 1200px no horizontal overflow",
+    "light 420px no horizontal overflow"
+  ],
+  "errors": [],
+  "calls": [
+    {
+      "method": "GET",
+      "path": "/__seecut/flow/account"
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings/get"
+    },
+    {
+      "method": "GET",
+      "path": "/__seecut/projects"
+    },
+    {
+      "method": "GET",
+      "path": "/__seecut/flow/account"
+    }
+  ],
+  "headless": true,
+  "systemInput": false,
+  "scope": "Actual bundled Flow project-list web assets; synthetic read-only API. Does not validate native Slint/Wry overlay or generation chain."
+}
