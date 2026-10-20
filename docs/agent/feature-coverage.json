@@ -973,7 +973,6 @@
       "agentStatus": "registered",
       "acceptance": "source",
       "evidence": [
-        ".toonflow/app-control-inventory-gate/source-inventory.json",
         "docs/agent/app-control-protocol.md"
       ]
     },
@@ -988,7 +987,6 @@
       "agentStatus": "registered",
       "acceptance": "source",
       "evidence": [
-        ".toonflow/app-control-inventory-gate/source-inventory.json",
         "docs/agent/app-control-protocol.md"
       ]
     },
@@ -5488,7 +5486,6 @@
       "agentStatus": "registered",
       "acceptance": "source",
       "evidence": [
-        ".toonflow/app-control-inventory-gate/source-inventory.json",
         "docs/agent/app-control-protocol.md"
       ],
       "notes": "仅普通页面 generation、personalLibrary、teamLibrary、templates、account、credits、settings、projects。Projects 指实际画布项目列表；不含 Flow 项目发现、创建或打开。独立协商 AppControl v1 并核对来源、原操作身份、宿主 ACK 和当前读/控制许可；已有原生离开确认仍由用户处理。只有同一次原导航的实际采用事实及终态持久确认可表示完成。源码清单已核对，实际 App 导航及模型联合调用尚待验收。",
@@ -5513,7 +5510,6 @@
       "agentStatus": "registered",
       "acceptance": "source",
       "evidence": [
-        ".toonflow/app-control-inventory-gate/source-inventory.json",
         "docs/agent/app-control-protocol.md"
       ],
       "notes": "仅凭原 operationId、原 COTO sessionId 与 clientSequence，使用当前真实同账户/client App 读取许可查询。查询不要求旧控制 token、旧 App 会话或当前页；不重放原导航，不产生新导航许可。currentObservation 与原 completion 独立，outcomeUnknown 不能视为完成。源码清单已核对，实际 App 恢复查询及模型联合调用尚待验收。",
