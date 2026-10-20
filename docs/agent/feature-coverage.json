@@ -1080,6 +1080,22 @@
       "acceptance": "pending",
       "evidence": []
     },
+    "tool:clip_preview": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "clip_preview",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "clip_preview"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "logic",
+      "evidence": [
+        "src/crates/concat-editor-mcp/src/clip_preview.rs",
+        "src/crates/concat-editor-mcp/src/clip_preview_stdio_tests.rs",
+        "docs/testing/main-qa/2026-10-21-clip-preview/README.md"
+      ]
+    },
     "tool:context": {
       "source": "src/crates/concat-editor-mcp/src/main.rs",
       "symbol": "context",

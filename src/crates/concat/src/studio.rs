@@ -2098,6 +2098,47 @@ impl Studio {
         ));
     }
 
+    /// Stable-preview gating only; other editing permissions keep their rules.
+    pub(crate) fn monitor_inputs_busy(&self) -> bool {
+        // These workers write masks outside document commands. Their completion
+        // advances mask_epoch and requests a new frame; until then do not claim
+        // an adopted image represents the latest stable mask input.
+        !self.cutout_jobs.is_empty() || self.region_job.is_some()
+    }
+
+    /// Pure identity of the native inputs; no flattening, title rendering or IO.
+    /// Selection participates only when it actually changes painting's target.
+    pub(crate) fn monitor_source(
+        &self,
+        width: u32,
+        height: u32,
+        owner: &str,
+    ) -> Option<crate::panes::monitor::SourceStamp> {
+        use sha2::{Digest, Sha256};
+        let session = self.session.as_ref()?;
+        let settings = session.settings();
+        // The persisted project uses the same generation/revision invalidation
+        // as preview_clips' flattened-input cache. Only an uncommitted echo
+        // lacks that revision and needs its full value hashed here.
+        let input = serde_json::json!({
+            "echo": self.echo, "settings": [settings.width as i64, settings.height as i64, settings.rate_num, settings.rate_den],
+            "audition": self.audition, "painting": self.painting,
+            "paintTarget": if self.painting { self.paint_target() } else { None },
+            "maskEpoch": self.mask_epoch,
+        });
+        Some(crate::panes::monitor::SourceStamp {
+            owner: owner.to_owned(),
+            session_path: session.path().to_owned(),
+            generation: self.session_generation,
+            revision: self.revision,
+            timeline_id: format!("timeline:{}", self.project().active_timeline_id),
+            requested_time_bits: f64::from(self.playhead).to_bits(),
+            width,
+            height,
+            inputs: format!("{:x}", Sha256::digest(serde_json::to_vec(&input).ok()?)),
+        })
+    }
+
     /// What the monitor draws at the playhead: the document flattened with
     /// its titles, plus the frame's own additions - a look being shown, a
     /// cutout being painted - and the session's settings. None without a

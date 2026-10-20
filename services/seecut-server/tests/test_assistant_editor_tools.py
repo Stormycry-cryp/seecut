@@ -9,7 +9,7 @@ from test_assistant_contract import AssistantFixture, done
 
 EDITOR_TOOLS = (
     "app_context", "page_items", "page_preview", "app_navigate", "app_operation",
-    "capabilities", "context", "project", "preview", "move_selected_image",
+    "capabilities", "context", "project", "preview", "clip_preview", "move_selected_image",
     "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit",
     "save_canvas_project", "export_canvas_png", "canvas_operation",
     "retry_canvas_registration", "clip_edit", "clip_operation", "clip_export_control", "clip_export_output",
@@ -100,8 +100,8 @@ class ManagedEditorToolsTest(AssistantFixture):
                 self.assertEqual(error.exception.code, "ASSISTANT_INVALID_REQUEST")
         self.assertEqual(self.worker.process_once(), 0)
 
-    def test_provider_cannot_introduce_unrequested_asset_or_export_tool(self):
-        for name in ("library_assets", "clip_export_control", "clip_export_output"):
+    def test_provider_cannot_introduce_unrequested_asset_or_clip_tool(self):
+        for name in ("library_assets", "clip_preview", "clip_export_control", "clip_export_output"):
             with self.subTest(tool=name):
                 self.user, _ = self.new_user(name + "@unrequested-editor.example.test")
                 event = done(tool=True)

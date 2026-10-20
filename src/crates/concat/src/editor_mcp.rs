@@ -28,6 +28,8 @@ mod write_registry;
 #[path = "editor_mcp_write_request.rs"]
 mod write_request;
 
+#[path = "editor_mcp_clip_preview.rs"]
+mod clip_preview;
 #[path = "editor_mcp_view_context.rs"]
 mod view_context;
 
@@ -1656,9 +1658,43 @@ impl BridgeUi {
                 }
                 _ => None,
             };
-            return UiReply::Response(Response::ok(json!({
+            let tools: &[&str] = &[
+                "capabilities",
+                "context",
+                "project",
+                "preview",
+                "clip_preview",
+                "move_selected_image",
+                "library_images",
+                "library_assets",
+                "insert_library_image",
+                "transform_canvas_layer",
+                "canvas_edit",
+                "clip_edit",
+                "clip_operation",
+                "clip_export_control",
+                "clip_export_output",
+                "save_canvas_project",
+                "export_canvas_png",
+                "canvas_operation",
+                "retry_canvas_registration",
+                "flow_get_workspace",
+                "flow_read_canvas",
+                "flow_list_node_types",
+                "flow_get_node_tools",
+                "flow_get_node_config",
+                "flow_get_task",
+                "flow_get_operation",
+                "flow_add_node",
+                "flow_update_node",
+                "flow_connect_nodes",
+                "flow_delete_nodes",
+                "flow_switch_canvas",
+                "flow_execute_node",
+            ];
+            let mut capabilities = json!({
                 "appInstanceId": self.instance_id,
-                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "library_assets", "insert_library_image", "transform_canvas_layer", "canvas_edit", "clip_edit", "clip_operation", "clip_export_control", "clip_export_output", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
+                "tools": tools,
                 "namedToolApprovalRequired":["library_images","library_assets","insert_library_image","transform_canvas_layer","canvas_edit","clip_edit","clip_operation","clip_export_control","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
                 "clipSaveProtocolVersion": if kind == "clip" { Some(1) } else { None },
                 "clipExportProtocolVersion": if kind == "clip" { Some(1) } else { None },
@@ -1676,7 +1712,10 @@ impl BridgeUi {
                 "maxPageSize": 100, "maxProjectObjects": MAX_PROJECT_OBJECTS,
                 "previewWorkspace": "canvas", "maxPreviewEdge": 256,
                 "maxPreviewSourcePixels": 4194304,
-            })));
+            });
+            capabilities["clipPreviewProtocolVersion"] =
+                json!(if kind == "clip" { Some(1) } else { None });
+            return UiReply::Response(Response::ok(capabilities));
         }
         if kind == "flow" {
             let Some(flow) = crate::toonflow_agent::context() else {
@@ -1956,6 +1995,12 @@ impl BridgeUi {
                 "canvasState": if kind == "canvas" {Some(canvas_edit::state(&studio.canvas,&request.object_id.iter().cloned().collect::<Vec<_>>()).unwrap_or_else(|status|json!({"unavailable":status})))} else {None},
             })));
         }
+        if request.method == Method::ClipPreview {
+            if kind != "clip" {
+                return UiReply::Response(Response::error("unsupportedPreview"));
+            }
+            return clip_preview::prepare(self, request, studio, ids);
+        }
         if request.method != Method::Preview {
             return UiReply::Response(Response::error("notAuthorized"));
         }
@@ -2041,6 +2086,7 @@ enum UiReply {
     Library(Box<LibraryJob>),
     Registration(Box<RegistrationReadJob>),
     Preview(Box<PreviewJob>),
+    ClipPreview(Box<clip_preview::Job>),
     AppPreview(Box<app_read::AppPreviewJob>),
     PersistedClip(Box<clip_save::ReadJob>),
     ClipExport(Box<clip_export::ReadJob>),
@@ -2505,6 +2551,7 @@ fn dispatch(request: Request) -> Response {
     };
     match reply {
         UiReply::Response(response) => response,
+        UiReply::ClipPreview(job) => clip_preview::dispatch(*job),
         UiReply::PersistedClip(job) => clip_save::dispatch_read(*job),
         UiReply::ClipExport(job) => clip_export::dispatch_read(*job),
         UiReply::Library(job) => {
@@ -3230,6 +3277,7 @@ mod tests {
             offset: None,
             limit: None,
             max_edge: None,
+            clip_preview_query: None,
             move_parameters: None,
         };
         assert!(
@@ -3653,6 +3701,7 @@ mod tests {
             offset: None,
             limit: None,
             max_edge: None,
+            clip_preview_query: None,
             move_parameters: None,
         };
         assert!(bridge.authorized(&request, &first.project, false));

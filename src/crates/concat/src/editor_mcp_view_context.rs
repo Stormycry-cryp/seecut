@@ -108,6 +108,25 @@ fn finish(kind: &str, binding: &Binding<'_>, data: Value, unavailable: &[&str]) 
 }
 
 pub(super) fn snapshot(studio: &Studio, kind: &str, binding: &Binding<'_>) -> Value {
+    snapshot_with_frame(studio, kind, binding, None)
+}
+
+/// Capture already validated in the same UI callback; reuse it so identity
+/// construction does not hash the native render inputs a second time.
+pub(super) fn clip_snapshot(
+    studio: &Studio,
+    binding: &Binding<'_>,
+    frame: &concat_editor_mcp::ClipAdoptedFrame,
+) -> Value {
+    snapshot_with_frame(studio, "clip", binding, Some(frame))
+}
+
+fn snapshot_with_frame(
+    studio: &Studio,
+    kind: &str,
+    binding: &Binding<'_>,
+    frame: Option<&concat_editor_mcp::ClipAdoptedFrame>,
+) -> Value {
     if kind == "canvas" {
         let Some(document) = studio.canvas.agent_document_size() else {
             return finish(kind, binding, Value::Null, &["canvas.document"]);
@@ -159,6 +178,7 @@ pub(super) fn snapshot(studio: &Studio, kind: &str, binding: &Binding<'_>) -> Va
             "visibleEndSeconds":null,"viewport":null,
         },
         "preview":{
+            "adoptedFrame": frame.cloned().unwrap_or_else(|| studio.monitor.adopted_frame(studio)),
             "outputSize":size(width as f64,height as f64),
             // This image can lag the playhead while a frame is rendering.
             "renderedImageSize":if rendered.width>0 && rendered.height>0 {Some(size(rendered.width as f64,rendered.height as f64))}else{None},
@@ -176,7 +196,6 @@ pub(super) fn snapshot(studio: &Studio, kind: &str, binding: &Binding<'_>) -> Va
         "clip.preview.visibleDocumentRect",
         "clip.preview.zoom",
         "clip.preview.pan",
-        "clip.preview.renderedFrameTime",
     ];
     if data["preview"]["renderedImageSize"].is_null() {
         unavailable.push("clip.preview.renderedImageSize");
@@ -317,5 +336,23 @@ mod tests {
                 finish("clip", &binding(), changed, &[])["viewStateId"]
             );
         }
+    }
+    #[test]
+    fn adopted_frame_identity_and_unavailable_transition_change_native_view_id() {
+        let data = json!({"preview":{"renderedImageSize":{"width":2,"height":2},"adoptedFrame":{"state":"ready","frameId":"first","renderedFrameTimeSeconds":1.0}}});
+        let first = finish("clip", &binding(), data.clone(), &[]);
+        let mut changed = data.clone();
+        changed["preview"]["adoptedFrame"]["frameId"] = json!("second");
+        assert_ne!(
+            first["viewStateId"],
+            finish("clip", &binding(), changed, &[])["viewStateId"]
+        );
+        let mut changed = data;
+        changed["preview"]["adoptedFrame"] =
+            json!({"state":"unavailable","version":1,"reason":"pending"});
+        assert_ne!(
+            first["viewStateId"],
+            finish("clip", &binding(), changed, &[])["viewStateId"]
+        );
     }
 }

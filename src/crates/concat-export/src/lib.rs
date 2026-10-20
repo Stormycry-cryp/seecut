@@ -1767,6 +1767,12 @@ impl PreviewSources {
         )
     }
 
+    /// Exact quantised source time used by this already decoded frame.
+    /// Keep f64 metadata separate from the shader's intentionally f32 time.
+    pub fn rendered_time_seconds(&self) -> f64 {
+        self.time.as_f64()
+    }
+
     /// The instant, in seconds, for passes that move.
     pub fn seconds(&self) -> f32 {
         self.time.as_f64() as f32

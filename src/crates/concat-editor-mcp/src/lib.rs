@@ -24,6 +24,7 @@ mod canvas;
 mod clip;
 pub mod clip_edit;
 pub mod clip_export;
+pub mod clip_preview;
 pub mod clip_save;
 pub use clip::{ClipAction, ClipParameters, validate_clip_parameters};
 pub use clip_edit::ClipEdit;
@@ -34,6 +35,11 @@ pub use clip_export::{
     ClipExportDurability, ClipExportExpected, ClipExportOutputData, ClipExportOutputSource,
     ClipExportPhase, ClipExportProof, ClipExportPublication, ClipExportQuality, ClipExportReason,
     ClipExportStage, ClipExportSummary,
+};
+pub use clip_preview::{
+    CLIP_PREVIEW_PROTOCOL_VERSION, ClipAdoptedFrame, ClipPreviewData, ClipPreviewFrame,
+    ClipPreviewQuery, ClipPreviewUnavailable, ClipPreviewUnavailableReason,
+    clip_preview_dimensions,
 };
 pub use clip_save::{
     ClipManifestName, ClipPersistedState, ClipSaveData, ClipSaveProof, ProjectReadSource,
@@ -138,6 +144,9 @@ pub struct Request {
     /// Closed owner-bound export control action, only on ClipExportControl.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip_export_control_action: Option<ClipExportControlAction>,
+    /// Exact observed frame read query, only for ClipPreview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_preview_query: Option<ClipPreviewQuery>,
     #[serde(default)]
     /// Typed current-Flow identity and bounded action.
     pub flow: Option<FlowParameters>,
@@ -187,6 +196,8 @@ pub enum Method {
     Project,
     /// Read a stable image frame.
     Preview,
+    /// Read the latest adopted paused Clip Monitor frame without editing.
+    ClipPreview,
     /// Move the current single selected image layer under a trusted UI write lease.
     MoveSelectedImage,
     /// Read versioned images in the existing global library.
@@ -253,6 +264,7 @@ impl Method {
             Self::Context => "context",
             Self::Project => "project",
             Self::Preview => "preview",
+            Self::ClipPreview => "clip_preview",
             Self::MoveSelectedImage => "move_selected_image",
             Self::LibraryImages => "library_images",
             Self::LibraryAssets => "library_assets",
@@ -331,6 +343,9 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if request.clip_preview_query.is_some() || request.method == Method::ClipPreview {
+        return clip_preview::validate_request(request);
+    }
     if request.clip_export_control_action.is_some()
         || matches!(
             request.method,
@@ -816,6 +831,7 @@ mod tests {
             object_id: None,
             canvas_parameters: None,
             clip_export_control_action: None,
+            clip_preview_query: None,
             clip_parameters: None,
             object_ids: None,
             read_source: None,
@@ -1148,6 +1164,7 @@ mod tests {
             object_id: None,
             canvas_parameters: None,
             clip_export_control_action: None,
+            clip_preview_query: None,
             clip_parameters: None,
             object_ids: None,
             read_source: None,
@@ -1192,6 +1209,7 @@ mod tests {
             object_id: None,
             canvas_parameters: None,
             clip_export_control_action: None,
+            clip_preview_query: None,
             clip_parameters: None,
             object_ids: None,
             read_source: None,

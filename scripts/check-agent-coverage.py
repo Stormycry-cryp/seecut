@@ -24,11 +24,25 @@ def advertised_tool_sets(path):
     # Native App capabilities start with the legacy read-only list and replace
     # it only after independent AppControl negotiation. Scan both literal forms;
     # taking the first array silently ignores the negotiated advertisement.
+    source = read(path)
     arrays = re.findall(
         r'(?:"tools"\s*:\s*|capabilities\["tools"\]\s*=\s*json!\(\s*)(\[[^\]]*\])',
-        read(path),
+        source,
     )
-    return [json.loads(array) for array in arrays]
+    result = [json.loads(array) for array in arrays]
+    # The large native capability object uses a literal slice to stay within
+    # json!'s expansion limit. Resolve only that explicit binding; arbitrary
+    # computed values must still fail the scope comparison below.
+    for name in re.findall(r'"tools"\s*:\s*([A-Za-z_]\w*)\s*[,}]', source):
+        binding = re.search(
+            rf'\blet\s+{re.escape(name)}\s*:\s*&\[&str\]\s*=\s*&(\[[^\]]*\])\s*;',
+            source,
+        )
+        if binding:
+            values = ast.literal_eval(binding.group(1))
+            if isinstance(values, list) and all(isinstance(value, str) for value in values):
+                result.append(values)
+    return result
 
 
 def scope_capability_errors(tools, document_lists, app_lists):

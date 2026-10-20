@@ -50,6 +50,18 @@ struct ProjectArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClipPreviewArgs {
+    project_id: String,
+    document_session_id: String,
+    revision: u64,
+    context_revision: u64,
+    frame_id: String,
+    #[serde(default)]
+    max_edge: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PreviewArgs {
     project_id: String,
     document_session_id: String,
@@ -220,6 +232,7 @@ impl Bridge {
             object_id: None,
             canvas_parameters: None,
             clip_export_control_action: None,
+            clip_preview_query: None,
             clip_parameters: None,
             object_ids: None,
             read_source: None,
@@ -815,6 +828,56 @@ impl Bridge {
     }
 
     #[tool(
+        annotations(read_only_hint = true, open_world_hint = false),
+        description = "Read only the current paused idle Clip Monitor's latest adopted frame. Requires clipPreviewProtocolVersion:1 and the opaque ready frameId from current context. No seek, pause, decode, recomposition, paths or OS screenshot. Whole-frame PNG up to256px, excludes Slint overlays. Native rechecks read/media grants and original frame/view; stale, playing, busy or unavailable frames are refused."
+    )]
+    fn clip_preview(&self, Parameters(args): Parameters<ClipPreviewArgs>) -> CallToolResult {
+        let mut request = self.request(Method::ClipPreview);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        request.revision = Some(args.revision);
+        request.context_revision = Some(args.context_revision);
+        request.max_edge = args.max_edge;
+        request.clip_preview_query = Some(concat_editor_mcp::ClipPreviewQuery {
+            frame_id: args.frame_id,
+        });
+        if concat_editor_mcp::validate_request_shape(&request).is_err() {
+            return CallToolResult::error(vec![ContentBlock::text(
+                "{\"status\":\"invalidInput\"}",
+            )]);
+        }
+        let response = call(&self.socket, &request);
+        if response.status != "ok" {
+            return CallToolResult::error(vec![ContentBlock::text(
+                serde_json::to_string(&Response::error(&response.status)).unwrap_or_default(),
+            )]);
+        }
+        let Some(data) = response
+            .data
+            .and_then(|data| {
+                serde_json::from_value::<concat_editor_mcp::ClipPreviewData>(data).ok()
+            })
+            .filter(|data| data.validate_for_request(&request).is_ok())
+        else {
+            return CallToolResult::error(vec![ContentBlock::text(
+                "{\"status\":\"invalidClipPreview\"}",
+            )]);
+        };
+        let encoded = data.base64.clone();
+        let mut metadata = serde_json::to_value(data).unwrap_or_default();
+        if let Some(object) = metadata.as_object_mut() {
+            object.remove("base64");
+        }
+        let envelope = serde_json::to_value(Response::ok(metadata)).unwrap_or_default();
+        let mut result = CallToolResult::success(vec![
+            ContentBlock::text(envelope.to_string()),
+            ContentBlock::image(encoded, "image/png"),
+        ]);
+        result.structured_content = Some(envelope);
+        result
+    }
+
+    #[tool(
         description = "Read a stable version-matching canvas PNG preview (max 256 px edge, 4194304 source pixels); busy or stalePreview on a changed frame, unsupportedPreview outside these limits"
     )]
     fn preview(&self, Parameters(args): Parameters<PreviewArgs>) -> CallToolResult {
@@ -1271,7 +1334,11 @@ mod tests {
     #[test]
     fn export_tools_are_two_closed_original_identity_routes_with_separate_credentials() {
         let tools = Bridge::tool_router().list_all();
-        assert_eq!(tools.len(), 36, "34 existing tools plus two export routes");
+        assert_eq!(
+            tools.len(),
+            37,
+            "34 existing tools plus two export routes and Clip preview"
+        );
         for (name, keys) in [
             (
                 "clip_export_control",
@@ -1581,3 +1648,6 @@ mod tests {
         assert!(serde_json::from_value::<MoveArgs>(nested).is_err());
     }
 }
+
+#[cfg(test)]
+mod clip_preview_stdio_tests;

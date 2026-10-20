@@ -56,6 +56,11 @@ struct PlanEntry {
     plan: Arc<concat_export::PreviewPlan>,
 }
 
+/// Thin bridge to the renderer; the native Host owns the single UI reader.
+#[cfg(feature = "gpu")]
+pub use concat_render::gpu::preview::{
+    PreviewError, PreviewPoll, PreviewReader, PreviewRgba, PreviewTicket,
+};
 /// The wgpu the monitor's textures belong to.
 #[cfg(feature = "gpu")]
 pub use concat_render::wgpu;
@@ -234,11 +239,26 @@ impl Monitor {
         settings: &DocumentSettings,
         spec: FrameSpec,
     ) -> Result<Vec<u8>, String> {
+        self.frame_with_time(clips, settings, spec)
+            .map(|(pixels, _)| pixels)
+    }
+
+    /// Pixels and the exact quantised time from the same decoded Sources.
+    pub fn frame_with_time(
+        &self,
+        clips: Arc<Vec<ExportClip>>,
+        settings: &DocumentSettings,
+        spec: FrameSpec,
+    ) -> Result<(Vec<u8>, f64), String> {
         let plan = self.plan_for(clips, settings, spec, false);
         let sources = concat_export::preview_sources_of(&self.pool, &plan, spec.time)?;
-        Ok(sources
-            .composite(&mut concat_render::CpuCompositor)
-            .into_pixels())
+        let time = sources.rendered_time_seconds();
+        Ok((
+            sources
+                .composite(&mut concat_render::CpuCompositor)
+                .into_pixels(),
+            time,
+        ))
     }
 
     /// Decode-ahead for the playback stream: warms the pool for the next
@@ -264,5 +284,36 @@ impl Monitor {
             .plan
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+}
+
+#[cfg(test)]
+mod adopted_time_tests {
+    use super::*;
+
+    #[test]
+    fn cpu_frame_metadata_reuses_actual_quantised_sources_time() {
+        let monitor = Monitor::new();
+        let settings = DocumentSettings {
+            name: "time-check".into(),
+            width: 2,
+            height: 2,
+            rate_num: 24,
+            rate_den: 1,
+        };
+        let spec = FrameSpec {
+            time: 0.03,
+            width: 2,
+            height: 2,
+        };
+        let clips = Arc::new(Vec::new());
+        let plan = monitor.plan_for(clips.clone(), &settings, spec, false);
+        let sources = concat_export::preview_sources_of(&monitor.pool, &plan, spec.time).unwrap();
+        let expected = sources.rendered_time_seconds();
+        let (pixels, actual) = monitor.frame_with_time(clips, &settings, spec).unwrap();
+        assert_eq!(pixels.len(), 16);
+        assert_eq!(actual, expected);
+        assert_ne!(actual, spec.time);
+        assert_eq!(actual, 1.0 / 24.0);
     }
 }
