@@ -1,0 +1,5012 @@
+{
+  "version": 1,
+  "scope": "Observed native commands, canvas helpers, MCP registrations, and Slint callback declarations. Generic action/changed routes and business grouping are audited separately. This is not a complete business denominator.",
+  "entries": {
+    "canvas:agent_adjustment_add": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_adjustment_add",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_adjustment_kinds": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_adjustment_kinds",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_adjustment_param": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_adjustment_param",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_adjustment_state": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_adjustment_state",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_brush": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_brush",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_curve_add": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_curve_add",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_curve_channels": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_curve_channels",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_curve_remove": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_curve_remove",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_curve_set": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_curve_set",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_delete_selection": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_delete_selection",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_deselect": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_deselect",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_document_size": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_document_size",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_export_png": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_export_png",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_fill_selection": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_fill_selection",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_gradient_color": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_gradient_color",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_add": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_add",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_delete": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_delete",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_drop": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_drop",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_fold": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_fold",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_group": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_group",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_mask_add": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_mask_add",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_mask_remove": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_mask_remove",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_mask_toggle": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_mask_toggle",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_move": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_move",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_move_into": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_move_into",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_opacity": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_opacity",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_pick": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_pick",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layer_toggle_visibility": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layer_toggle_visibility",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_layers": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_layers",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_open": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_open",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_paint_mask": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_paint_mask",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_paint_stroke": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_paint_stroke",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_pick_color": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_pick_color",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_redo": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_redo",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_save_comp": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_save_comp",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_select_all": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_select_all",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_select_rect": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_select_rect",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_select_tool": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_select_tool",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_selection_bounds": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_selection_bounds",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_set_brush": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_set_brush",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_set_brush_hex": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_set_brush_hex",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_set_brush_rgb": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_set_brush_rgb",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_undo": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_undo",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "canvas:agent_wand": {
+      "source": "src/crates/concat/src/panes/canvas.rs",
+      "symbol": "agent_wand",
+      "kind": "nativeHelper",
+      "module": "canvas",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:AddClip": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "AddClip",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:AddClipAtFirstFree": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "AddClipAtFirstFree",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:AddCutoutStroke": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "AddCutoutStroke",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:AddFont": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "AddFont",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:AddLayerClip": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "AddLayerClip",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:AddMedia": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "AddMedia",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:AddTextClip": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "AddTextClip",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:AddTimeline": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "AddTimeline",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:AddTrack": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "AddTrack",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:Batch": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "Batch",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:ClearClipKey": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "ClearClipKey",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:ClearClipKeys": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "ClearClipKeys",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:ClearEffectKey": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "ClearEffectKey",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:ClearEffectKeys": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "ClearEffectKeys",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:DetachAudio": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "DetachAudio",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:FillSlot": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "FillSlot",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:FreezeFrame": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "FreezeFrame",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:MergeClips": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "MergeClips",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:MoveClips": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "MoveClips",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:MoveTimeline": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "MoveTimeline",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:ReattachAudio": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "ReattachAudio",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:RemoveClips": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "RemoveClips",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:RemoveFont": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "RemoveFont",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:RemoveMedia": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "RemoveMedia",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:RemoveTimeline": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "RemoveTimeline",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:RemoveTrack": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "RemoveTrack",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:RenameTimeline": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "RenameTimeline",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SelectTimeline": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SelectTimeline",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetClipAnimation": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetClipAnimation",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetClipCutout": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetClipCutout",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetClipKey": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetClipKey",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetClipSpeed": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetClipSpeed",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetClipSpeedCurve": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetClipSpeedCurve",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetClipTransform": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetClipTransform",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetEffectKey": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetEffectKey",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetMediaPlaceholder": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetMediaPlaceholder",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetTimelineVideo": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetTimelineVideo",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SetTrackFlag": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SetTrackFlag",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:SplitClips": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "SplitClips",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:TrimClip": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "TrimClip",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:UpdateClip": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "UpdateClip",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "command:UpdateMediaPath": {
+      "source": "src/crates/concat-project/src/commands/mod.rs",
+      "symbol": "UpdateMediaPath",
+      "kind": "nativeCommand",
+      "module": "clip",
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:canvas_operation": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "canvas_operation",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "canvas_operation"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:capabilities": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "capabilities",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "capabilities"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:context": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "context",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "context"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:export_canvas_png": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "export_canvas_png",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "export_canvas_png"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_add_node": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_add_node",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_add_node"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_connect_nodes": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_connect_nodes",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_connect_nodes"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_delete_nodes": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_delete_nodes",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_delete_nodes"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_execute_node": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_execute_node",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_execute_node"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_get_node_config": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_get_node_config",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_get_node_config"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_get_node_tools": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_get_node_tools",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_get_node_tools"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_get_operation": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_get_operation",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_get_operation"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_get_task": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_get_task",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_get_task"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_get_workspace": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_get_workspace",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_get_workspace"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_list_node_types": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_list_node_types",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_list_node_types"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_read_canvas": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_read_canvas",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_read_canvas"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_switch_canvas": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_switch_canvas",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_switch_canvas"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:flow_update_node": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "flow_update_node",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "flow_update_node"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:insert_library_image": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "insert_library_image",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "insert_library_image"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:library_images": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "library_images",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "library_images"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:move_selected_image": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "move_selected_image",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "move_selected_image"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:preview": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "preview",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "preview"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:project": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "project",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "project"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:retry_canvas_registration": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "retry_canvas_registration",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "retry_canvas_registration"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:save_canvas_project": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "save_canvas_project",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "save_canvas_project"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    },
+    "tool:transform_canvas_layer": {
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "symbol": "transform_canvas_layer",
+      "kind": "registeredTool",
+      "module": "mcp",
+      "mcpTools": [
+        "transform_canvas_layer"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "pending",
+      "evidence": []
+    }
+  },
+  "uiDeclarations": {
+    "src/crates/concat/ui/app.slint": [
+      "add-canvas-paths",
+      "app-menu-selected",
+      "canvas-export-library",
+      "canvas-handoff-current",
+      "canvas-leave-page",
+      "canvas-new",
+      "canvas-new-with-paths",
+      "canvas-open-with-paths",
+      "captions-begin",
+      "captions-cancel",
+      "captions-closed",
+      "captions-model-changed",
+      "captions-placement-changed",
+      "captions-size-changed",
+      "captions-text-edited",
+      "clip-open-completed",
+      "clip-open-failed",
+      "clip-open-started",
+      "close-clip-project",
+      "export-again",
+      "export-browse",
+      "export-cancel",
+      "export-clicked",
+      "export-closed",
+      "export-codec-changed",
+      "export-destination-selected",
+      "export-name-edited",
+      "export-quality-changed",
+      "export-rate-changed",
+      "export-resolution-changed",
+      "export-reveal",
+      "export-start",
+      "export-ten-bit-changed",
+      "flow-close-cancel",
+      "flow-close-retry",
+      "menu-opened",
+      "meter-watched-changed",
+      "model-activated",
+      "model-cancel",
+      "model-download",
+      "model-remove",
+      "open-canvas-path",
+      "open-settings",
+      "project-apply",
+      "project-closed",
+      "project-name-edited",
+      "project-open-cancel",
+      "project-rate-changed",
+      "project-size-changed",
+      "relink-all",
+      "relink-cancel-preview",
+      "relink-dismiss",
+      "relink-locate-folder",
+      "relink-save-copy",
+      "settings-closed",
+      "settings-custom-context-actions-changed",
+      "settings-download-base-edited",
+      "settings-download-source-changed",
+      "settings-hardware-decode-changed",
+      "settings-language-changed",
+      "settings-mcp-client-edited",
+      "settings-mcp-grant-m",
+      "settings-mcp-grant-move",
+      "settings-mcp-grant-r",
+      "settings-mcp-renew-move",
+      "settings-mcp-revoke",
+      "settings-mcp-revoke-move",
+      "settings-page-changed",
+      "settings-playhead-stops-changed",
+      "settings-server-enabled-changed",
+      "settings-server-listen-edited",
+      "settings-server-token-edited",
+      "settings-server-token-generated",
+      "settings-show-log",
+      "settings-theme-changed",
+      "speech-begin",
+      "speech-cancel",
+      "speech-closed",
+      "speech-model-changed",
+      "speech-pace-changed",
+      "speech-text-edited",
+      "speech-voice-changed",
+      "start-browse",
+      "start-create",
+      "start-dismiss-error",
+      "start-forget-recent",
+      "start-location-edited",
+      "start-name-edited",
+      "start-open-recent",
+      "start-rate-changed",
+      "start-resolution-changed",
+      "titlebar-begin-drag",
+      "titlebar-close",
+      "titlebar-minimize",
+      "titlebar-toggle-maximize",
+      "window-resized"
+    ],
+    "src/crates/concat/ui/demo/effects-panel.slint": [
+      "add-effect",
+      "meter-hovered-changed",
+      "remove-effect",
+      "removed",
+      "toggle-mute"
+    ],
+    "src/crates/concat/ui/demo/interpolation-panel.slint": [
+      "committed"
+    ],
+    "src/crates/concat/ui/dialogs/captions.slint": [
+      "begin",
+      "cancel",
+      "model-changed",
+      "placement-changed",
+      "size-changed",
+      "text-edited"
+    ],
+    "src/crates/concat/ui/dialogs/export.slint": [
+      "again",
+      "begin",
+      "browse",
+      "cancel",
+      "clicked",
+      "codec-changed",
+      "name-edited",
+      "quality-changed",
+      "rate-changed",
+      "resolution-changed",
+      "reveal",
+      "ten-bit-changed"
+    ],
+    "src/crates/concat/ui/dialogs/project.slint": [
+      "apply",
+      "name-edited",
+      "rate-changed",
+      "size-changed"
+    ],
+    "src/crates/concat/ui/dialogs/relink.slint": [
+      "dismiss",
+      "locate-folder",
+      "relink-all"
+    ],
+    "src/crates/concat/ui/dialogs/settings.slint": [
+      "activated",
+      "cancel",
+      "changed",
+      "clicked",
+      "closed",
+      "custom-context-actions-changed",
+      "download",
+      "download-base-edited",
+      "download-source-changed",
+      "hardware-decode-changed",
+      "language-changed",
+      "mcp-client-edited",
+      "mcp-grant-m",
+      "mcp-grant-move",
+      "mcp-grant-r",
+      "mcp-renew-move",
+      "mcp-revoke",
+      "mcp-revoke-move",
+      "model-activated",
+      "model-cancel",
+      "model-download",
+      "model-remove",
+      "page-changed",
+      "playhead-stops-changed",
+      "remove",
+      "server-enabled-changed",
+      "server-listen-edited",
+      "server-token-edited",
+      "server-token-generated",
+      "show-log",
+      "theme-changed"
+    ],
+    "src/crates/concat/ui/dialogs/speech.slint": [
+      "begin",
+      "cancel",
+      "model-changed",
+      "pace-changed",
+      "text-edited",
+      "voice-changed"
+    ],
+    "src/crates/concat/ui/editor.slint": [
+      "add-effect",
+      "add-track",
+      "adjust-set",
+      "band-selected",
+      "blur",
+      "canvas-adjustment-added",
+      "canvas-adjustment-param-begin",
+      "canvas-adjustment-param-changed",
+      "canvas-brush-color-changed",
+      "canvas-brush-hardness-changed",
+      "canvas-brush-move",
+      "canvas-brush-opacity-changed",
+      "canvas-brush-press",
+      "canvas-brush-release",
+      "canvas-brush-size-changed",
+      "canvas-curve-add",
+      "canvas-curve-remove",
+      "canvas-curve-set",
+      "canvas-delete-selection",
+      "canvas-deselect",
+      "canvas-exit-cancel",
+      "canvas-exit-discard",
+      "canvas-exit-save",
+      "canvas-export-png",
+      "canvas-fill-selection",
+      "canvas-fit",
+      "canvas-flip",
+      "canvas-gradient-color-changed",
+      "canvas-layer-added",
+      "canvas-layer-blend-changed",
+      "canvas-layer-deleted",
+      "canvas-layer-dropped",
+      "canvas-layer-duplicated",
+      "canvas-layer-folded",
+      "canvas-layer-group-added",
+      "canvas-layer-mask-added",
+      "canvas-layer-mask-enable-toggled",
+      "canvas-layer-mask-paint-toggled",
+      "canvas-layer-mask-removed",
+      "canvas-layer-moved",
+      "canvas-layer-opacity-begin",
+      "canvas-layer-opacity-changed",
+      "canvas-layer-picked",
+      "canvas-layer-renamed",
+      "canvas-layer-visibility-toggled",
+      "canvas-lookup-import",
+      "canvas-marquee-cancel",
+      "canvas-marquee-move",
+      "canvas-marquee-press",
+      "canvas-marquee-release",
+      "canvas-nudge",
+      "canvas-object-move",
+      "canvas-object-press",
+      "canvas-object-release",
+      "canvas-open",
+      "canvas-open-cancel",
+      "canvas-open-discard",
+      "canvas-open-save",
+      "canvas-pan-move",
+      "canvas-pan-press",
+      "canvas-parameter-end",
+      "canvas-project-open",
+      "canvas-redo",
+      "canvas-release",
+      "canvas-resized",
+      "canvas-save-comp",
+      "canvas-save-comp-as",
+      "canvas-scroll",
+      "canvas-select-all",
+      "canvas-selection-mode-changed",
+      "canvas-tool-changed",
+      "canvas-transform-finish",
+      "canvas-transform-resolve",
+      "canvas-transform-set",
+      "canvas-transform-start",
+      "canvas-undo",
+      "canvas-wand-click",
+      "canvas-wand-contiguous-changed",
+      "canvas-wand-tolerance-changed",
+      "canvas-zoom-move",
+      "canvas-zoom-press",
+      "captions",
+      "chain-add",
+      "chain-move-by",
+      "chain-remove",
+      "chain-set-param",
+      "chain-toggle",
+      "clip-commit",
+      "clip-context",
+      "clip-dragged",
+      "clip-pressed",
+      "clip-released",
+      "clip-set",
+      "clip-set-colour",
+      "clip-set-text",
+      "cutout-clear",
+      "cutout-mode",
+      "cutout-painting",
+      "cutout-size",
+      "cutout-subject",
+      "cutout-tool",
+      "delete-selected",
+      "divider-dragged",
+      "divider-pressed",
+      "dock-add",
+      "dock-dropped",
+      "dock-remove",
+      "dock-set",
+      "drag-hovered",
+      "dropped",
+      "import-media",
+      "library-add-text",
+      "library-apply-audio",
+      "library-apply-effect",
+      "library-apply-filter",
+      "library-apply-transition",
+      "library-audition-filter",
+      "library-import-lut",
+      "library-save-template",
+      "media-activate",
+      "media-band-selected",
+      "media-filter-changed",
+      "media-remove",
+      "media-remove-selected",
+      "media-select",
+      "media-sort-changed",
+      "menu-selected",
+      "merge",
+      "modify-project",
+      "pan-changed",
+      "play-toggled",
+      "quality-changed",
+      "ratio-changed",
+      "razored",
+      "remove-effect",
+      "scrolled",
+      "scrubbed",
+      "seek",
+      "shortcut",
+      "snap-changed",
+      "speak",
+      "split",
+      "stage-dragged",
+      "stage-grip-pressed",
+      "stage-pressed",
+      "stage-released",
+      "step-frames",
+      "tab-added",
+      "tab-close-requested",
+      "tab-moved",
+      "tab-renamed",
+      "tab-selected",
+      "tool-changed",
+      "track-flag-changed",
+      "track-removed",
+      "track-sized",
+      "workspace-resized",
+      "zoom",
+      "zoom-to-fit"
+    ],
+    "src/crates/concat/ui/i18n.slint": [
+      "lookup",
+      "lookup1",
+      "lookup2"
+    ],
+    "src/crates/concat/ui/inspector/clip-inspector.slint": [
+      "add",
+      "chain-add",
+      "chain-remove",
+      "chain-set-param",
+      "clicked",
+      "commit",
+      "cutout-clear",
+      "cutout-mode",
+      "cutout-painting",
+      "cutout-size",
+      "cutout-subject",
+      "cutout-tool",
+      "favourite",
+      "favourites-changed",
+      "group-changed",
+      "move-by",
+      "query-changed",
+      "remove",
+      "set",
+      "set-param",
+      "toggle",
+      "toggled"
+    ],
+    "src/crates/concat/ui/inspector/controls.slint": [
+      "changed",
+      "clicked",
+      "edited",
+      "gesture-ended",
+      "gesture-started",
+      "reset",
+      "toggled"
+    ],
+    "src/crates/concat/ui/inspector/text-panel.slint": [
+      "commit",
+      "set",
+      "set-colour",
+      "set-text"
+    ],
+    "src/crates/concat/ui/primitives/bezier-editor.slint": [
+      "changed"
+    ],
+    "src/crates/concat/ui/primitives/context-menu.slint": [
+      "selected"
+    ],
+    "src/crates/concat/ui/primitives/knob.slint": [
+      "changed"
+    ],
+    "src/crates/concat/ui/primitives/modal.slint": [
+      "clicked",
+      "closed",
+      "edited",
+      "focus-fallback"
+    ],
+    "src/crates/concat/ui/primitives/number-field.slint": [
+      "changed",
+      "edit-finished",
+      "edit-started",
+      "format",
+      "keyframe-toggled",
+      "parse"
+    ],
+    "src/crates/concat/ui/primitives/panel.slint": [
+      "clicked"
+    ],
+    "src/crates/concat/ui/primitives/scrollbar.slint": [
+      "scrolled"
+    ],
+    "src/crates/concat/ui/primitives/segmented-control.slint": [
+      "changed"
+    ],
+    "src/crates/concat/ui/primitives/select.slint": [
+      "changed"
+    ],
+    "src/crates/concat/ui/primitives/stepper.slint": [
+      "pressed",
+      "released",
+      "stepped"
+    ],
+    "src/crates/concat/ui/seecut/assistant-floating.slint": [
+      "settled",
+      "toggle-requested"
+    ],
+    "src/crates/concat/ui/seecut/assistant-launcher.slint": [
+      "activated"
+    ],
+    "src/crates/concat/ui/seecut/assistant.slint": [
+      "allow",
+      "attach",
+      "choose",
+      "choose-entrypoint",
+      "choose-mcp-client",
+      "choose-runtime",
+      "clicked",
+      "close-requested",
+      "connect",
+      "connect-managed",
+      "disconnect",
+      "edit",
+      "edit-message",
+      "grant-read",
+      "grant-write",
+      "new-session",
+      "open",
+      "open-reference",
+      "reconcile",
+      "refresh-models",
+      "reject",
+      "remove",
+      "remove-reference",
+      "rename-session",
+      "reuse",
+      "reuse-reference",
+      "revoke-read",
+      "revoke-write",
+      "select-effort",
+      "select-model",
+      "select-session",
+      "selected",
+      "send",
+      "sign-in",
+      "stop",
+      "submit"
+    ],
+    "src/crates/concat/ui/seecut/assistant_state.slint": [
+      "allow",
+      "attach",
+      "choose-entrypoint",
+      "choose-mcp-client",
+      "choose-runtime",
+      "close-requested",
+      "connect",
+      "connect-managed",
+      "disconnect",
+      "edit-message",
+      "geometry-changed",
+      "grant-read",
+      "grant-write",
+      "new-session",
+      "open-reference",
+      "reconcile",
+      "refresh-models",
+      "reject",
+      "remove-reference",
+      "rename-session",
+      "reuse-reference",
+      "revoke-read",
+      "revoke-write",
+      "select-effort",
+      "select-model",
+      "select-session",
+      "send",
+      "stop"
+    ],
+    "src/crates/concat/ui/seecut/components.slint": [
+      "activated",
+      "begin-drag",
+      "cancelled",
+      "clicked",
+      "cursor-moved",
+      "edited",
+      "key-event",
+      "open-settings",
+      "toggle-assistant",
+      "toggle-maximize"
+    ],
+    "src/crates/concat/ui/seecut/effort-slider.slint": [
+      "refresh",
+      "selected"
+    ],
+    "src/crates/concat/ui/seecut/shell.slint": [
+      "assets-clicked",
+      "cancel-repair-clicked",
+      "export-clicked",
+      "save-clicked"
+    ],
+    "src/crates/concat/ui/seecut/state.slint": [
+      "action",
+      "changed",
+      "personal-can-drop",
+      "personal-relink-context-changed",
+      "result-focus"
+    ],
+    "src/crates/concat/ui/start.slint": [
+      "browse",
+      "create",
+      "create-cancelled",
+      "dismiss-error",
+      "dismissed",
+      "forget-recent",
+      "location-edited",
+      "name-edited",
+      "open-recent",
+      "rate-changed",
+      "resolution-changed"
+    ],
+    "src/crates/concat/ui/timeline/lanes.slint": [
+      "band-selected",
+      "clip-context",
+      "clip-dragged",
+      "clip-pressed",
+      "clip-released",
+      "context-requested",
+      "drag-hovered",
+      "dragged",
+      "dropped",
+      "floor-pressed",
+      "menu-selected",
+      "pressed",
+      "razored",
+      "released",
+      "scrolled",
+      "scrubbed",
+      "track-scrolled",
+      "zoomed"
+    ],
+    "src/crates/concat/ui/timeline/model.slint": [
+      "clear",
+      "clear-param",
+      "step",
+      "step-param",
+      "toggle",
+      "toggle-param"
+    ],
+    "src/crates/concat/ui/timeline/tabs.slint": [
+      "added",
+      "close-requested",
+      "moved",
+      "renamed",
+      "selected"
+    ],
+    "src/crates/concat/ui/timeline/track-header.slint": [
+      "flag-changed",
+      "picked",
+      "removed",
+      "scrolled",
+      "sized"
+    ],
+    "src/crates/concat/ui/timeline/tray.slint": [
+      "add-track",
+      "captions",
+      "delete-selected",
+      "fit",
+      "merge",
+      "pan-changed",
+      "snap-changed",
+      "speak",
+      "split",
+      "tool-changed",
+      "zoom"
+    ],
+    "src/crates/concat/ui/title-bar.slint": [
+      "add-pane",
+      "begin-drag",
+      "clicked",
+      "close",
+      "export-clicked",
+      "menu-opened",
+      "minimize",
+      "open-settings",
+      "toggle-maximize"
+    ],
+    "src/crates/concat/ui/util.slint": [
+      "ease",
+      "of",
+      "pane-seat",
+      "parse",
+      "parse-frames",
+      "parse-timecode",
+      "personal-id",
+      "preview",
+      "release",
+      "tab-index",
+      "text",
+      "tick-interval"
+    ],
+    "src/crates/concat/ui/workspace/canvas-pane.slint": [
+      "adjustment-added",
+      "adjustment-param-begin",
+      "adjustment-param-changed",
+      "brush-color-changed",
+      "brush-hardness-changed",
+      "brush-move",
+      "brush-opacity-changed",
+      "brush-press",
+      "brush-release",
+      "brush-size-changed",
+      "canvas-open",
+      "canvas-redo",
+      "canvas-resized",
+      "canvas-undo",
+      "changed",
+      "clicked",
+      "curve-add",
+      "curve-remove",
+      "curve-set",
+      "delete-selection",
+      "deselect",
+      "export-png",
+      "fill-selection",
+      "flip",
+      "gesture-ended",
+      "gesture-started",
+      "gradient-color-changed",
+      "hex-edited",
+      "layer-added",
+      "layer-blend-changed",
+      "layer-deleted",
+      "layer-dropped",
+      "layer-duplicated",
+      "layer-folded",
+      "layer-group-added",
+      "layer-mask-added",
+      "layer-mask-enable-toggled",
+      "layer-mask-paint-toggled",
+      "layer-mask-removed",
+      "layer-moved",
+      "layer-opacity-begin",
+      "layer-opacity-changed",
+      "layer-picked",
+      "layer-renamed",
+      "layer-visibility-toggled",
+      "lookup-import",
+      "marquee-cancel",
+      "marquee-move",
+      "marquee-press",
+      "marquee-release",
+      "menu-key",
+      "nav-fit",
+      "nav-pan-move",
+      "nav-pan-press",
+      "nav-release",
+      "nav-scroll",
+      "nav-zoom-move",
+      "nav-zoom-press",
+      "nudge",
+      "object-move",
+      "object-press",
+      "object-release",
+      "pane-picked",
+      "pane-removed",
+      "parameter-end",
+      "pick-color",
+      "point-add",
+      "point-remove",
+      "point-set",
+      "psd-cancel",
+      "psd-dismiss",
+      "rgb-changed",
+      "save-comp",
+      "select-all",
+      "selection-mode-changed",
+      "shape-finish",
+      "shape-pointer",
+      "shape-style",
+      "text-change",
+      "text-finish",
+      "text-start",
+      "tool-changed",
+      "transform-finish",
+      "transform-set",
+      "transform-start",
+      "vector-mask-add",
+      "vector-mask-exit",
+      "vector-mask-link",
+      "wand-click",
+      "wand-contiguous-changed",
+      "wand-tolerance-changed"
+    ],
+    "src/crates/concat/ui/workspace/config-pane.slint": [
+      "add-effect",
+      "adjust-set",
+      "chain-add",
+      "chain-move-by",
+      "chain-remove",
+      "chain-set-param",
+      "chain-toggle",
+      "clip-commit",
+      "clip-set",
+      "clip-set-colour",
+      "clip-set-text",
+      "cutout-clear",
+      "cutout-mode",
+      "cutout-painting",
+      "cutout-size",
+      "cutout-subject",
+      "cutout-tool",
+      "modify-project",
+      "pane-picked",
+      "pane-removed",
+      "remove-effect"
+    ],
+    "src/crates/concat/ui/workspace/media-pane.slint": [
+      "activate",
+      "activated",
+      "add-text",
+      "applied",
+      "apply-audio",
+      "apply-effect",
+      "apply-filter",
+      "apply-transition",
+      "art",
+      "audition-filter",
+      "auditioned",
+      "band-selected",
+      "clicked",
+      "filter-changed",
+      "floor-pressed",
+      "import-lut",
+      "import-media",
+      "pane-picked",
+      "pane-removed",
+      "pressed",
+      "remove",
+      "remove-selected",
+      "removed",
+      "save-template",
+      "select",
+      "sort-changed",
+      "toggled"
+    ],
+    "src/crates/concat/ui/workspace/pane-switcher.slint": [
+      "added",
+      "chosen",
+      "picked",
+      "removed"
+    ],
+    "src/crates/concat/ui/workspace/preview-pane.slint": [
+      "changed",
+      "dragged",
+      "grip-pressed",
+      "pan-dragged",
+      "pan-pressed",
+      "pan-released",
+      "pane-picked",
+      "pane-removed",
+      "play-toggled",
+      "pressed",
+      "quality-changed",
+      "ratio-changed",
+      "released",
+      "seek",
+      "stage-dragged",
+      "stage-grip-pressed",
+      "stage-pressed",
+      "stage-released",
+      "step"
+    ],
+    "src/crates/concat/ui/workspace/seat.slint": [
+      "dropped-on",
+      "picked",
+      "removed"
+    ],
+    "src/crates/concat/ui/workspace/splitter.slint": [
+      "moved",
+      "pressed"
+    ],
+    "src/crates/concat/ui/workspace/timeline-pane.slint": [
+      "add-track",
+      "band-selected",
+      "captions",
+      "clip-context",
+      "clip-dragged",
+      "clip-pressed",
+      "clip-released",
+      "delete-selected",
+      "drag-hovered",
+      "dropped",
+      "floor-pressed",
+      "menu-selected",
+      "merge",
+      "pan-changed",
+      "pane-picked",
+      "pane-removed",
+      "razored",
+      "scrolled",
+      "scrubbed",
+      "snap-changed",
+      "speak",
+      "split",
+      "tab-added",
+      "tab-close-requested",
+      "tab-moved",
+      "tab-renamed",
+      "tab-selected",
+      "tool-changed",
+      "track-flag-changed",
+      "track-removed",
+      "track-sized",
+      "zoom",
+      "zoom-to-fit"
+    ]
+  },
+  "businessRoutes": [
+    {
+      "id": "project.create-clip",
+      "module": "project",
+      "label": "新建剪辑工程",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.start-name-edited",
+        "App.start-location-edited",
+        "App.start-browse",
+        "App.start-resolution-changed",
+        "App.start-rate-changed",
+        "App.start-create"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "工程名称、保存位置、分辨率和帧率有效"
+      ]
+    },
+    {
+      "id": "project.open-clip",
+      "module": "project",
+      "label": "打开最近或本机剪辑工程",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.start-open-recent",
+        "App.app-menu-selected:open",
+        "App.project-open-cancel"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。"
+    },
+    {
+      "id": "project.forget-recent",
+      "module": "project",
+      "label": "从最近工程列表移除记录",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.start-forget-recent"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。仅移除最近记录，不代表删除工程文件。"
+    },
+    {
+      "id": "project.browse-clip",
+      "module": "project",
+      "label": "搜索排序和切换剪辑工程视图",
+      "source": "src/crates/concat/ui/start.slint",
+      "actions": [
+        "SeeCut.action:clip-project-search",
+        "SeeCut.action:clip-project-sort",
+        "SeeCut.action:clip-project-view"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。实际剪辑图库入口在 start.slint；排序和视图属性先由 UI 写入，再回调刷新模型。"
+    },
+    {
+      "id": "project.modify-clip",
+      "module": "project",
+      "label": "修改工程名称分辨率和帧率",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "Editor.modify-project",
+        "App.project-name-edited",
+        "App.project-size-changed",
+        "App.project-rate-changed",
+        "App.project-apply"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "project.save-clip",
+      "module": "project",
+      "label": "保存剪辑工程",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.app-menu-selected:save"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "project.close-clip",
+      "module": "project",
+      "label": "关闭剪辑工程",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.app-menu-selected:close-project"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "project.repair-from-library",
+      "module": "project",
+      "label": "从资产库预览缺失素材修复并另存工程",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.relink-all",
+        "App.relink-cancel-preview",
+        "App.relink-save-copy",
+        "App.relink-dismiss"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。修复预览、另存成功和原工程保留需要分别验证。",
+      "statePrerequisites": [
+        "工程包含缺失素材"
+      ]
+    },
+    {
+      "id": "project.relink-folder",
+      "module": "project",
+      "label": "定位文件夹重新关联工程素材",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.relink-locate-folder"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "工程包含缺失素材",
+        "未处于修复预览或忙碌状态"
+      ]
+    },
+    {
+      "id": "project.export-video",
+      "module": "project",
+      "label": "导出剪辑视频到本机或资产库",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.export-clicked",
+        "App.export-destination-selected",
+        "App.export-name-edited",
+        "App.export-resolution-changed",
+        "App.export-rate-changed",
+        "App.export-quality-changed",
+        "App.export-codec-changed",
+        "App.export-ten-bit-changed",
+        "App.export-browse",
+        "App.export-start",
+        "App.export-cancel",
+        "App.export-again",
+        "App.export-reveal"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。导出任务完成、实际文件可解码和资产注册分别验收。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "project.choose-import-target",
+      "module": "project",
+      "label": "选择素材导入目标工程或取消",
+      "source": "src/crates/concat/src/cloud.rs",
+      "actions": [
+        "SeeCut.action:handoff-select",
+        "SeeCut.action:handoff-cancel",
+        "SeeCut.action:handoff-create-cancel",
+        "SeeCut.action:cancel-project-import"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在待导入素材和目标选择流程"
+      ]
+    },
+    {
+      "id": "generation.configure",
+      "module": "generation",
+      "label": "配置图片或视频模型和生成参数",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.changed:mode",
+        "SeeCut.changed:model",
+        "SeeCut.changed:prompt",
+        "SeeCut.changed:ratio",
+        "SeeCut.changed:resolution",
+        "SeeCut.changed:quality",
+        "SeeCut.changed:duration",
+        "SeeCut.changed:generate-audio",
+        "SeeCut.changed:quantity",
+        "SeeCut.changed:generation-effort"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。changed 处理函数忽略 value；必须先按 UI 更新对应属性。登录后相关参数变化刷新报价，强度选择另走策略应用。"
+    },
+    {
+      "id": "generation.submit-image",
+      "module": "generation",
+      "label": "提交图片生成任务",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:generate"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。复用现有提交幂等身份；Flow 图片生成工具不代表原生生成页已覆盖。",
+      "statePrerequisites": [
+        "已登录",
+        "mode=0",
+        "参考素材校验通过",
+        "报价身份与当前请求体匹配",
+        "积分和模型可用"
+      ]
+    },
+    {
+      "id": "generation.submit-video",
+      "module": "generation",
+      "label": "提交视频生成任务",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:generate"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。包含时长与可选生成音频；Flow 视频生成工具不代表原生生成页已覆盖。",
+      "statePrerequisites": [
+        "已登录",
+        "mode!=0",
+        "参考素材校验通过",
+        "报价身份与当前请求体匹配",
+        "积分和模型可用"
+      ]
+    },
+    {
+      "id": "generation.add-reference",
+      "module": "generation",
+      "label": "从本机或资产库添加参考素材",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:reference-browse",
+        "SeeCut.action:reference-drop",
+        "SeeCut.action:reference-team",
+        "SeeCut.action:reference-source"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "所选模型支持参考素材",
+        "类型和数量符合当前模型限制"
+      ]
+    },
+    {
+      "id": "generation.remove-reference",
+      "module": "generation",
+      "label": "移除参考素材",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:reference-remove"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在参考素材"
+      ]
+    },
+    {
+      "id": "generation.recover-reference",
+      "module": "generation",
+      "label": "重试上传或替换缺失参考素材",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:reference-retry",
+        "SeeCut.action:reference-replace"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。替换应保持原槽位和同类型引用编号；上传恢复与文件替换需分别验证。",
+      "statePrerequisites": [
+        "参考素材失败、过期或本机文件缺失"
+      ]
+    },
+    {
+      "id": "generation.reference-preview",
+      "module": "generation",
+      "label": "预览参考素材",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:reference-preview"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在参考素材"
+      ]
+    },
+    {
+      "id": "generation.reference-mention",
+      "module": "generation",
+      "label": "在提示词中插入素材引用",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:reference-mention-open",
+        "SeeCut.action:reference-mention"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。提示词光标通过 prompt-cursor 状态参与引用插入，不作为独立用户功能。",
+      "statePrerequisites": [
+        "存在参考素材"
+      ]
+    },
+    {
+      "id": "generation.prompt-recommendation",
+      "module": "generation",
+      "label": "应用提示词推荐改写",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.property:prompt-apply-id",
+        "SeeCut.property:prompt-apply-prompt",
+        "SeeCut.property:prompt-apply-context",
+        "SeeCut.property:prompt-apply-draft"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。由 cloud/prompt_assistance.rs 消费属性快照，不走通用 action。",
+      "statePrerequisites": [
+        "已登录",
+        "生成页或画布提示词面板处于有效上下文",
+        "存在提示词或参考素材",
+        "推荐与当前草稿版本一致"
+      ]
+    },
+    {
+      "id": "generation.inspiration-filter",
+      "module": "generation",
+      "label": "筛选灵感案例",
+      "source": "src/crates/concat/ui/seecut/inspiration.slint",
+      "actions": [
+        "SeeCut.action:inspiration-filter"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。"
+    },
+    {
+      "id": "generation.inspiration-apply",
+      "module": "generation",
+      "label": "应用灵感案例生成配置",
+      "source": "src/crates/concat/ui/seecut/inspiration.slint",
+      "actions": [
+        "SeeCut.action:inspiration-apply"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。"
+    },
+    {
+      "id": "generation.inspiration-restore",
+      "module": "generation",
+      "label": "恢复应用灵感前的草稿",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:inspiration-restore"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在可恢复草稿"
+      ]
+    },
+    {
+      "id": "generation.template-create",
+      "module": "generation",
+      "label": "将当前配置保存为新模板",
+      "source": "src/crates/concat/ui/seecut/templates.slint",
+      "actions": [
+        "SeeCut.action:template-new",
+        "SeeCut.action:template-save-current"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "模板名称有效",
+        "当前配置可保存"
+      ]
+    },
+    {
+      "id": "generation.template-edit",
+      "module": "generation",
+      "label": "编辑模板名称和提示词",
+      "source": "src/crates/concat/ui/seecut/templates.slint",
+      "actions": [
+        "SeeCut.action:template-edit",
+        "SeeCut.action:template-save"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "目标模板存在"
+      ]
+    },
+    {
+      "id": "generation.template-overwrite",
+      "module": "generation",
+      "label": "用当前生成配置覆盖模板",
+      "source": "src/crates/concat/ui/seecut/templates.slint",
+      "actions": [
+        "SeeCut.action:template-save-current"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "template-id 指向已有模板",
+        "模板名称有效"
+      ]
+    },
+    {
+      "id": "generation.template-apply",
+      "module": "generation",
+      "label": "应用已有生成模板",
+      "source": "src/crates/concat/ui/seecut/templates.slint",
+      "actions": [
+        "SeeCut.action:template-apply"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "目标模板存在",
+        "模型目录已加载或可在登录后继续加载"
+      ]
+    },
+    {
+      "id": "generation.template-delete",
+      "module": "generation",
+      "label": "确认删除生成模板",
+      "source": "src/crates/concat/ui/seecut/templates.slint",
+      "actions": [
+        "SeeCut.action:template-delete"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "用户已确认具体模板"
+      ]
+    },
+    {
+      "id": "generation.results-refresh",
+      "module": "generation",
+      "label": "刷新生成任务和结果列表",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:tasks-refresh"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已登录"
+      ]
+    },
+    {
+      "id": "generation.result-select",
+      "module": "generation",
+      "label": "查看生成结果或失败详情",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:task-select",
+        "SeeCut.action:task-preview-open"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。失败详情、本机结果、结果待下载和不可用结果应分场景。",
+      "statePrerequisites": [
+        "任务存在"
+      ]
+    },
+    {
+      "id": "generation.refill-input",
+      "module": "generation",
+      "label": "回填历史生成输入继续编辑",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:task-refill"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。模型目录尚未加载时保留待回填任务，加载后继续；不等于重提生成。",
+      "statePrerequisites": [
+        "任务存在可回填输入快照"
+      ]
+    },
+    {
+      "id": "generation.result-reference",
+      "module": "generation",
+      "label": "将生成结果作为参考素材",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:task-reference",
+        "SeeCut.action:task-batch-reference"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "单个或批量结果可用",
+        "参考类型数量满足当前模型约束"
+      ]
+    },
+    {
+      "id": "generation.result-to-canvas",
+      "module": "generation",
+      "label": "将生成结果送入画布",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:task-canvas",
+        "SeeCut.action:task-batch-canvas"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。结果下载和目标选择缺少对应工具；仅从已注册图片库插入不能覆盖完整流程。",
+      "statePrerequisites": [
+        "所选结果为图片",
+        "结果文件可取得"
+      ]
+    },
+    {
+      "id": "generation.result-to-clip",
+      "module": "generation",
+      "label": "将生成结果送入剪辑工程",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:task-import",
+        "SeeCut.action:task-batch-clip"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "结果文件可取得"
+      ]
+    },
+    {
+      "id": "generation.result-export",
+      "module": "generation",
+      "label": "导出单个或批量生成结果",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:task-download",
+        "SeeCut.action:task-batch-export"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "结果文件可取得"
+      ]
+    },
+    {
+      "id": "generation.result-save-team",
+      "module": "generation",
+      "label": "保存生成结果到指定团队",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:task-save-team"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已登录",
+        "已选择可保存的团队",
+        "结果文件可取得"
+      ]
+    },
+    {
+      "id": "generation.result-batch-selection",
+      "module": "generation",
+      "label": "选择和取消选择批量管理结果",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:task-selection-mode",
+        "SeeCut.action:task-select-toggle"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。"
+    },
+    {
+      "id": "generation.result-delete",
+      "module": "generation",
+      "label": "确认删除选定生成结果",
+      "source": "src/crates/concat/ui/seecut/generation.slint",
+      "actions": [
+        "SeeCut.action:task-batch-freeze-delete",
+        "SeeCut.action:task-batch-cancel-delete",
+        "SeeCut.action:task-batch-confirm-delete"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。生成中的结果禁止删除；确认时使用冻结的结果集合。",
+      "statePrerequisites": [
+        "选择了具体结果",
+        "所选任务均已成功、失败或过期"
+      ]
+    },
+    {
+      "id": "assets.personal-import",
+      "module": "assets",
+      "label": "导入本机个人资产",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-browse",
+        "SeeCut.action:personal-drop"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。"
+    },
+    {
+      "id": "assets.personal-query",
+      "module": "assets",
+      "label": "搜索筛选排序个人资产",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.changed:personal-search",
+        "SeeCut.changed:personal-reference-search",
+        "SeeCut.changed:personal-filter",
+        "SeeCut.changed:personal-sort",
+        "SeeCut.changed:personal-folder-filter",
+        "SeeCut.changed:personal-source",
+        "SeeCut.changed:personal-favorites",
+        "SeeCut.changed:personal-trash",
+        "SeeCut.action:personal-refresh"
+      ],
+      "mcpTools": [
+        "library_images"
+      ],
+      "agentStatus": "partial",
+      "acceptance": "source",
+      "notes": "未做运行验证。UI 先写筛选属性，changed 只触发重绘；视图变化清空原选择集合。",
+      "limitation": "library_images 只查询版本化全局图片库，不能覆盖视频音频、收藏、文件夹、来源和回收站视图。"
+    },
+    {
+      "id": "assets.personal-preview",
+      "module": "assets",
+      "label": "打开个人资产预览",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-preview"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "个人资产存在"
+      ]
+    },
+    {
+      "id": "assets.personal-rename",
+      "module": "assets",
+      "label": "重命名个人资产",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-rename"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "目标资产存在",
+        "新名称有效"
+      ]
+    },
+    {
+      "id": "assets.personal-favorite",
+      "module": "assets",
+      "label": "收藏或取消收藏个人资产",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-favorite"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "目标资产存在"
+      ]
+    },
+    {
+      "id": "assets.personal-folder-create",
+      "module": "assets",
+      "label": "新建个人资产文件夹",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-create-folder"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "文件夹名称有效"
+      ]
+    },
+    {
+      "id": "assets.personal-folder-move",
+      "module": "assets",
+      "label": "移动个人资产到文件夹",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-move",
+        "SeeCut.action:personal-move-selected",
+        "SeeCut.action:personal-drop-folder"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "目标资产和文件夹有效"
+      ]
+    },
+    {
+      "id": "assets.personal-relink",
+      "module": "assets",
+      "label": "重新定位缺失的个人资产文件",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-relink",
+        "SeeCut.action:personal-confirm-relink"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。确认时校验冻结的资产及视图上下文。",
+      "statePrerequisites": [
+        "目标资产文件缺失或需要重新关联"
+      ]
+    },
+    {
+      "id": "assets.personal-trash",
+      "module": "assets",
+      "label": "确认将个人资产移入回收站",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-freeze-delete",
+        "SeeCut.action:personal-confirm-delete",
+        "SeeCut.action:personal-trash",
+        "SeeCut.action:personal-trash-selected"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在用户选择的具体资产"
+      ]
+    },
+    {
+      "id": "assets.personal-restore",
+      "module": "assets",
+      "label": "恢复回收站中的个人资产",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-restore",
+        "SeeCut.action:personal-restore-selected"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "目标资产处于回收站"
+      ]
+    },
+    {
+      "id": "assets.personal-reference",
+      "module": "assets",
+      "label": "将个人资产用作生成参考",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-reference",
+        "SeeCut.action:personal-reference-selected"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "所选资产本机文件存在",
+        "类型和数量满足当前生成模型约束"
+      ]
+    },
+    {
+      "id": "assets.personal-to-canvas",
+      "module": "assets",
+      "label": "将个人图片资产送入画布",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-canvas",
+        "SeeCut.action:personal-canvas-selected"
+      ],
+      "mcpTools": [
+        "library_images",
+        "insert_library_image"
+      ],
+      "agentStatus": "partial",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "所选资产为可用图片"
+      ],
+      "limitation": "工具只支持向当前已打开画布插入指定不可变图片版本，未覆盖原 UI 的目标选择和批量送入流程。"
+    },
+    {
+      "id": "assets.personal-to-clip",
+      "module": "assets",
+      "label": "将个人资产送入剪辑工程",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-project",
+        "SeeCut.action:personal-project-selected"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "所选资产本机文件存在"
+      ]
+    },
+    {
+      "id": "assets.personal-export",
+      "module": "assets",
+      "label": "导出选定个人资产副本",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-export-selected"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "所选资产本机文件存在"
+      ]
+    },
+    {
+      "id": "assets.copy-export-recovery",
+      "module": "assets",
+      "label": "取消或重试资产副本导出",
+      "source": "src/crates/concat/src/cloud.rs",
+      "actions": [
+        "SeeCut.action:export-copy-cancel",
+        "SeeCut.action:export-copy-close",
+        "SeeCut.action:export-copy-retry"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。重试保留已完成项，不能重复复制全部文件。",
+      "statePrerequisites": [
+        "存在副本导出批次"
+      ]
+    },
+    {
+      "id": "assets.personal-upload-team",
+      "module": "assets",
+      "label": "将个人资产上传到指定团队",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-teams",
+        "SeeCut.action:personal-upload"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已登录",
+        "已选择具体团队",
+        "本机资产可用"
+      ]
+    },
+    {
+      "id": "assets.team-create",
+      "module": "assets",
+      "label": "创建团队",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:team-create"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已登录",
+        "团队名称有效"
+      ]
+    },
+    {
+      "id": "assets.team-join",
+      "module": "assets",
+      "label": "通过邀请加入团队",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:team-join"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已登录",
+        "邀请令牌有效"
+      ]
+    },
+    {
+      "id": "assets.team-invite-create",
+      "module": "assets",
+      "label": "创建团队邀请",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:invite-create"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已登录",
+        "已选择团队",
+        "满足服务端团队管理权限"
+      ]
+    },
+    {
+      "id": "assets.team-invite-revoke",
+      "module": "assets",
+      "label": "撤销团队邀请",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:invite-revoke"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在具体团队邀请",
+        "满足服务端团队管理权限"
+      ]
+    },
+    {
+      "id": "assets.team-member-remove",
+      "module": "assets",
+      "label": "移除指定团队成员",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:member-remove"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已选择具体团队和成员",
+        "满足服务端团队管理权限"
+      ]
+    },
+    {
+      "id": "assets.team-query",
+      "module": "assets",
+      "label": "切换团队并查询资产和成员",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:assets-refresh",
+        "SeeCut.action:members-refresh",
+        "SeeCut.changed:team",
+        "SeeCut.changed:asset-search",
+        "SeeCut.changed:asset-filter"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。changed:team/asset-search/asset-filter 在 UI 属性更新后刷新列表。",
+      "statePrerequisites": [
+        "已登录",
+        "存在可访问团队"
+      ]
+    },
+    {
+      "id": "assets.team-upload",
+      "module": "assets",
+      "label": "上传素材到团队资产库",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:asset-upload"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已登录",
+        "已选择允许上传的团队"
+      ]
+    },
+    {
+      "id": "assets.team-trash",
+      "module": "assets",
+      "label": "将指定团队资产移入回收站",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:asset-delete"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "目标团队资产存在",
+        "满足服务端资产删除权限"
+      ]
+    },
+    {
+      "id": "assets.team-restore",
+      "module": "assets",
+      "label": "恢复指定团队资产",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:asset-restore"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "目标团队资产处于回收站",
+        "满足服务端恢复权限"
+      ]
+    },
+    {
+      "id": "assets.team-preview",
+      "module": "assets",
+      "label": "预览团队资产",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:asset-preview"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。画布仅支持图片；参考素材还受当前生成模型类型和数量约束。",
+      "statePrerequisites": [
+        "目标团队资产存在且可访问"
+      ]
+    },
+    {
+      "id": "assets.team-reference",
+      "module": "assets",
+      "label": "将团队资产用作生成参考",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:asset-reference"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。画布仅支持图片；参考素材还受当前生成模型类型和数量约束。",
+      "statePrerequisites": [
+        "目标团队资产存在且可访问"
+      ]
+    },
+    {
+      "id": "assets.team-clip",
+      "module": "assets",
+      "label": "将团队资产送入剪辑",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:asset-import"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。画布仅支持图片；参考素材还受当前生成模型类型和数量约束。",
+      "statePrerequisites": [
+        "目标团队资产存在且可访问"
+      ]
+    },
+    {
+      "id": "assets.team-canvas",
+      "module": "assets",
+      "label": "将团队图片送入画布",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:asset-canvas"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。画布仅支持图片；参考素材还受当前生成模型类型和数量约束。",
+      "statePrerequisites": [
+        "目标团队资产存在且可访问"
+      ]
+    },
+    {
+      "id": "assets.team-download",
+      "module": "assets",
+      "label": "下载团队资产",
+      "source": "src/crates/concat/ui/seecut/team.slint",
+      "actions": [
+        "SeeCut.action:asset-download"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。画布仅支持图片；参考素材还受当前生成模型类型和数量约束。",
+      "statePrerequisites": [
+        "目标团队资产存在且可访问"
+      ]
+    },
+    {
+      "id": "assets.picker",
+      "module": "assets",
+      "label": "从个人或团队资产库选择素材",
+      "source": "src/crates/concat/ui/seecut/asset-picker.slint",
+      "actions": [
+        "SeeCut.action:asset-picker-toggle",
+        "SeeCut.action:asset-picker-confirm",
+        "SeeCut.action:asset-picker-cancel",
+        "SeeCut.action:reference-source",
+        "SeeCut.changed:asset-picker-personal-filter",
+        "SeeCut.changed:asset-picker-team-search",
+        "SeeCut.changed:asset-picker-team-filter"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。changed:asset-picker-personal-filter/asset-picker-team-search/asset-picker-team-filter 依赖 UI 先写属性；确认时重新校验文件、数量及引用约束。",
+      "statePrerequisites": [
+        "选择器用途和来源已明确"
+      ]
+    },
+    {
+      "id": "assets.media-preview-play",
+      "module": "assets",
+      "label": "播放或打开预览素材",
+      "source": "src/crates/concat/ui/seecut/media-preview.slint",
+      "actions": [
+        "SeeCut.action:media-preview-action:play"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。真实调用为 SeeCut.action(\"media-preview-action\", \"play\").",
+      "statePrerequisites": [
+        "预览已打开",
+        "素材已就绪且本机文件存在"
+      ]
+    },
+    {
+      "id": "assets.media-preview-download",
+      "module": "assets",
+      "label": "确认预览素材已保存本机",
+      "source": "src/crates/concat/ui/seecut/media-preview.slint",
+      "actions": [
+        "SeeCut.action:media-preview-action:download"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。真实调用为 SeeCut.action(\"media-preview-action\", \"download\"); download 分支仅提示已在本机，不代表额外复制或导出。",
+      "statePrerequisites": [
+        "预览已打开",
+        "素材已就绪且本机文件存在"
+      ]
+    },
+    {
+      "id": "assets.media-preview-reference",
+      "module": "assets",
+      "label": "从预览将素材用作生成参考",
+      "source": "src/crates/concat/ui/seecut/media-preview.slint",
+      "actions": [
+        "SeeCut.action:media-preview-action:reference"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。真实调用为 SeeCut.action(\"media-preview-action\", \"reference\").",
+      "statePrerequisites": [
+        "预览已打开",
+        "来源不是 reference",
+        "素材满足当前模型引用限制"
+      ]
+    },
+    {
+      "id": "assets.media-preview-import",
+      "module": "assets",
+      "label": "从预览将素材送入剪辑",
+      "source": "src/crates/concat/ui/seecut/media-preview.slint",
+      "actions": [
+        "SeeCut.action:media-preview-action:import"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。真实调用为 SeeCut.action(\"media-preview-action\", \"import\").",
+      "statePrerequisites": [
+        "预览已打开",
+        "素材已就绪且本机文件存在"
+      ]
+    },
+    {
+      "id": "assets.media-preview-canvas",
+      "module": "assets",
+      "label": "从预览将图片送入画布",
+      "source": "src/crates/concat/ui/seecut/media-preview.slint",
+      "actions": [
+        "SeeCut.action:media-preview-action:canvas"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。真实调用为 SeeCut.action(\"media-preview-action\", \"canvas\").",
+      "statePrerequisites": [
+        "预览已打开",
+        "素材为可用图片"
+      ]
+    },
+    {
+      "id": "assets.media-preview-team",
+      "module": "assets",
+      "label": "从结果预览保存到团队",
+      "source": "src/crates/concat/ui/seecut/media-preview.slint",
+      "actions": [
+        "SeeCut.action:media-preview-action:team"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。真实调用为 SeeCut.action(\"media-preview-action\", \"team\").",
+      "statePrerequisites": [
+        "预览已打开",
+        "来源为 task"
+      ]
+    },
+    {
+      "id": "assets.media-preview-refill",
+      "module": "assets",
+      "label": "从结果预览回填生成输入",
+      "source": "src/crates/concat/ui/seecut/media-preview.slint",
+      "actions": [
+        "SeeCut.action:media-preview-action:refill"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。真实调用为 SeeCut.action(\"media-preview-action\", \"refill\").",
+      "statePrerequisites": [
+        "预览已打开",
+        "来源为 task",
+        "具有可回填输入"
+      ]
+    },
+    {
+      "id": "assets.media-preview-retry",
+      "module": "assets",
+      "label": "重试加载当前预览素材",
+      "source": "src/crates/concat/ui/seecut/media-preview.slint",
+      "actions": [
+        "SeeCut.action:media-preview-action:retry"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。真实调用为 SeeCut.action(\"media-preview-action\", \"retry\").",
+      "statePrerequisites": [
+        "预览已打开",
+        "来源为 personal、asset、reference 或 task"
+      ]
+    },
+    {
+      "id": "assets.reveal-library",
+      "module": "assets",
+      "label": "打开本机个人资产目录",
+      "source": "src/crates/concat/ui/seecut/personal.slint",
+      "actions": [
+        "SeeCut.action:personal-folder"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。"
+    },
+    {
+      "id": "canvas.projects",
+      "module": "canvas",
+      "label": "浏览搜索排序画布工程",
+      "source": "src/crates/concat/ui/seecut/project-gallery.slint",
+      "actions": [
+        "SeeCut.action:canvas-project-search",
+        "SeeCut.action:canvas-project-sort",
+        "SeeCut.action:canvas-project-view",
+        "SeeCut.action:canvas-projects-refresh"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。排序和视图属性先由 UI 更新，再调用 action 刷新。"
+    },
+    {
+      "id": "canvas.create-project",
+      "module": "canvas",
+      "label": "创建指定尺寸的画布工程",
+      "source": "src/crates/concat/ui/seecut/project-gallery.slint",
+      "actions": [
+        "SeeCut.action:canvas-new"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "尺寸有效"
+      ]
+    },
+    {
+      "id": "canvas.open-project",
+      "module": "canvas",
+      "label": "打开已有画布工程",
+      "source": "src/crates/concat/ui/seecut/project-gallery.slint",
+      "actions": [
+        "SeeCut.action:canvas-open"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "近期工程记录和 manifest.json 有效"
+      ]
+    },
+    {
+      "id": "canvas.import-images",
+      "module": "canvas",
+      "label": "向当前画布导入图片图层",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-open",
+        "SeeCut.action:canvas-assets",
+        "SeeCut.action:canvas-drop-batch"
+      ],
+      "mcpTools": [
+        "insert_library_image"
+      ],
+      "agentStatus": "partial",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "当前画布允许导入",
+        "图片来源有效"
+      ],
+      "limitation": "工具只支持已注册图片的不可变版本，不能覆盖本机选择、拖入或目标选择全部路径。"
+    },
+    {
+      "id": "canvas.transform-image",
+      "module": "canvas",
+      "label": "移动缩放旋转翻转画布图层",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-transform-set",
+        "Editor.canvas-nudge",
+        "Editor.canvas-flip",
+        "Editor.canvas-transform-finish",
+        "Editor.canvas-transform-resolve"
+      ],
+      "mcpTools": [
+        "move_selected_image",
+        "transform_canvas_layer"
+      ],
+      "agentStatus": "partial",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开画布并选定可变换图片图层"
+      ],
+      "limitation": "现有工具支持位置和统一缩放，未覆盖旋转、翻转及全部 UI 变换。"
+    },
+    {
+      "id": "canvas.brush-erase",
+      "module": "canvas",
+      "label": "画笔绘制和橡皮擦除",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-tool-changed",
+        "Editor.canvas-brush-size-changed",
+        "Editor.canvas-brush-opacity-changed",
+        "Editor.canvas-brush-hardness-changed",
+        "Editor.canvas-brush-color-changed",
+        "Editor.canvas-brush-press",
+        "Editor.canvas-brush-move",
+        "Editor.canvas-brush-release"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。press/move/release 合为完整笔画业务，不分别计数。",
+      "statePrerequisites": [
+        "存在可编辑画布图层"
+      ]
+    },
+    {
+      "id": "canvas.selection-fill",
+      "module": "canvas",
+      "label": "创建选区并填充或清除像素",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-selection-mode-changed",
+        "Editor.canvas-wand-tolerance-changed",
+        "Editor.canvas-wand-contiguous-changed",
+        "Editor.canvas-select-all",
+        "Editor.canvas-deselect",
+        "Editor.canvas-fill-selection",
+        "Editor.canvas-delete-selection"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开画布"
+      ]
+    },
+    {
+      "id": "canvas.layers",
+      "module": "canvas",
+      "label": "管理图层顺序分组显示混合和透明度",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-layer-picked",
+        "Editor.canvas-layer-visibility-toggled",
+        "Editor.canvas-layer-opacity-changed",
+        "Editor.canvas-layer-blend-changed",
+        "Editor.canvas-layer-renamed",
+        "Editor.canvas-layer-duplicated",
+        "Editor.canvas-layer-added",
+        "Editor.canvas-layer-group-added",
+        "Editor.canvas-layer-deleted",
+        "Editor.canvas-layer-moved",
+        "Editor.canvas-layer-dropped",
+        "Editor.canvas-layer-folded"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。project 可读取部分图层结构，不能据此视为这些管理写入已覆盖。",
+      "statePrerequisites": [
+        "已打开画布"
+      ]
+    },
+    {
+      "id": "canvas.masks",
+      "module": "canvas",
+      "label": "添加编辑和开关图层蒙版及矢量蒙版",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "Editor.canvas-layer-mask-added",
+        "Editor.canvas-layer-mask-removed",
+        "Editor.canvas-layer-mask-enable-toggled",
+        "Editor.canvas-layer-mask-paint-toggled",
+        "CanvasControls.vector-mask-add",
+        "CanvasControls.vector-mask-link",
+        "CanvasControls.vector-mask-exit"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开画布并选中适用图层"
+      ]
+    },
+    {
+      "id": "canvas.text-shape",
+      "module": "canvas",
+      "label": "创建和编辑画布文字与形状",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "CanvasControls.text-start",
+        "CanvasControls.text-change",
+        "CanvasControls.text-finish",
+        "CanvasControls.shape-pointer",
+        "CanvasControls.shape-finish",
+        "CanvasControls.shape-style"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。按完整文字或形状编辑事务验收，不逐个计数 pointer 事件。",
+      "statePrerequisites": [
+        "已打开画布"
+      ]
+    },
+    {
+      "id": "canvas.adjustments",
+      "module": "canvas",
+      "label": "添加调色调整曲线渐变和 LUT",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-adjustment-added",
+        "Editor.canvas-adjustment-param-changed",
+        "Editor.canvas-curve-set",
+        "Editor.canvas-curve-add",
+        "Editor.canvas-curve-remove",
+        "Editor.canvas-gradient-color-changed",
+        "Editor.canvas-lookup-import"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开画布"
+      ]
+    },
+    {
+      "id": "canvas.undo-redo",
+      "module": "canvas",
+      "label": "撤销或重做画布编辑",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-undo",
+        "Editor.canvas-redo"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。工具写入产生撤销步骤，不代表已暴露撤销或重做工具。",
+      "statePrerequisites": [
+        "画布有可用历史"
+      ]
+    },
+    {
+      "id": "canvas.save",
+      "module": "canvas",
+      "label": "保存当前画布工程",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-save-comp"
+      ],
+      "mcpTools": [
+        "save_canvas_project",
+        "canvas_operation"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。未命名工程仍需受信任 UI 选择位置；必须查询原操作确认实际持久化版本。",
+      "statePrerequisites": [
+        "已打开画布",
+        "当前文档版本和选择版本有效",
+        "已获得具体工具及编辑授权"
+      ]
+    },
+    {
+      "id": "canvas.save-as",
+      "module": "canvas",
+      "label": "将画布工程另存为新工程",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-save-comp-as"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开画布"
+      ]
+    },
+    {
+      "id": "canvas.export-png",
+      "module": "canvas",
+      "label": "导出画布 PNG 并注册资产",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-export-png"
+      ],
+      "mcpTools": [
+        "export_canvas_png",
+        "canvas_operation"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。实际 PNG 文件摘要、持久化版本与资产身份分别验收；注册失败属于部分完成。",
+      "statePrerequisites": [
+        "已打开画布",
+        "已获得具体工具及编辑授权"
+      ]
+    },
+    {
+      "id": "canvas.retry-registration",
+      "module": "canvas",
+      "label": "重试原画布导出文件的资产注册",
+      "source": "src/crates/concat/src/cloud.rs",
+      "actions": [
+        "SeeCut.action:personal-register-canvas"
+      ],
+      "mcpTools": [
+        "retry_canvas_registration",
+        "canvas_operation"
+      ],
+      "agentStatus": "partial",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "原导出文件存在且注册未完成",
+        "持有原操作身份和具体工具授权"
+      ],
+      "limitation": "retry_canvas_registration 只恢复本客户端原导出操作，不接受任意个人资产或新导出。"
+    },
+    {
+      "id": "canvas.unsaved-close",
+      "module": "canvas",
+      "label": "处理画布打开或退出时的未保存内容",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-open-save",
+        "Editor.canvas-open-discard",
+        "Editor.canvas-open-cancel",
+        "Editor.canvas-exit-save",
+        "Editor.canvas-exit-discard",
+        "Editor.canvas-exit-cancel"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在未保存画布内容和待执行打开或退出动作"
+      ]
+    },
+    {
+      "id": "canvas.viewport",
+      "module": "canvas",
+      "label": "缩放平移或适合窗口查看画布",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.canvas-fit",
+        "Editor.canvas-scroll",
+        "Editor.canvas-pan-press",
+        "Editor.canvas-pan-move",
+        "Editor.canvas-zoom-press",
+        "Editor.canvas-zoom-move",
+        "Editor.canvas-release"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。手势序列合为视口操作；preview 只读缩略图不等于视口控制。"
+    },
+    {
+      "id": "clip.media-bin",
+      "module": "clip",
+      "label": "导入筛选选择和移除剪辑素材",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.import-media",
+        "Editor.media-select",
+        "Editor.media-remove",
+        "Editor.media-remove-selected",
+        "Editor.media-filter-changed",
+        "Editor.media-sort-changed",
+        "Editor.media-activate",
+        "App.app-menu-selected:add-selected"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。结构读取不代表素材管理或添加时间线写入已覆盖。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "clip.timelines",
+      "module": "clip",
+      "label": "新增切换重命名关闭和排序时间线",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.tab-added",
+        "Editor.tab-selected",
+        "Editor.tab-renamed",
+        "Editor.tab-close-requested",
+        "Editor.tab-moved"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "clip.tracks",
+      "module": "clip",
+      "label": "管理轨道显示静音锁定和尺寸",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.add-track",
+        "Editor.track-removed",
+        "Editor.track-flag-changed",
+        "Editor.track-sized"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "clip.split-merge-delete",
+      "module": "clip",
+      "label": "切分合并或删除时间线片段",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.split",
+        "Editor.merge",
+        "Editor.delete-selected"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开剪辑工程",
+        "存在满足操作要求的片段选择"
+      ]
+    },
+    {
+      "id": "clip.copy-paste",
+      "module": "clip",
+      "label": "复制粘贴和复制生成片段",
+      "source": "src/crates/concat/src/studio.rs",
+      "actions": [
+        "Editor.shortcut:copy",
+        "Editor.shortcut:paste",
+        "Editor.shortcut:duplicate",
+        "Studio.clip_action:copy",
+        "Studio.clip_action:paste",
+        "Studio.clip_action:duplicate"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在可复制片段或剪贴板内容"
+      ]
+    },
+    {
+      "id": "clip.freeze-lock",
+      "module": "clip",
+      "label": "生成定格片段或锁定所在轨道",
+      "source": "src/crates/concat/src/studio.rs",
+      "actions": [
+        "Studio.clip_action:freeze",
+        "Studio.clip_action:lock"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在选定片段"
+      ]
+    },
+    {
+      "id": "clip.move-trim",
+      "module": "clip",
+      "label": "移动修剪或拖入时间线片段",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.clip-pressed",
+        "Editor.clip-dragged",
+        "Editor.clip-released",
+        "Editor.razored",
+        "Editor.dropped"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。完整拖动或修剪手势为一个业务，不能分别计算按下移动松开。",
+      "statePrerequisites": [
+        "已打开剪辑工程",
+        "目标轨道未锁定"
+      ]
+    },
+    {
+      "id": "clip.transform-crop",
+      "module": "clip",
+      "label": "设置片段位置缩放旋转裁剪和混合",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.clip-set:scale",
+        "Editor.clip-set:offset-x",
+        "Editor.clip-set:offset-y",
+        "Editor.clip-set:rotation",
+        "Editor.clip-set:stretch-x",
+        "Editor.clip-set:stretch-y",
+        "Editor.clip-set:opacity",
+        "Editor.clip-set:flip-h",
+        "Editor.clip-set:flip-v",
+        "Editor.clip-set:blend",
+        "Editor.clip-set:crop-left",
+        "Editor.clip-set:crop-top",
+        "Editor.clip-set:crop-right",
+        "Editor.clip-set:crop-bottom",
+        "Editor.clip-commit"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。ClipField 定义见 ui/timeline/model.slint；画布图层工具不适用于时间线片段。",
+      "statePrerequisites": [
+        "存在选定视频或图片片段"
+      ]
+    },
+    {
+      "id": "clip.speed",
+      "module": "clip",
+      "label": "设置片段速度变速曲线和倒放",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.clip-set:speed",
+        "Editor.clip-set:preserve-pitch",
+        "Editor.clip-set:speed-curve",
+        "Editor.clip-set:reverse",
+        "Editor.clip-commit"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在选定可变速片段"
+      ]
+    },
+    {
+      "id": "clip.titles",
+      "module": "clip",
+      "label": "创建和编辑文字片段及文字样式",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.library-add-text",
+        "Editor.clip-set-text:content",
+        "Editor.clip-set-text:font-family",
+        "Editor.clip-set-text:color",
+        "Editor.clip-set-text:stroke-color",
+        "Editor.clip-set-text:background",
+        "Editor.clip-set:font-size",
+        "Editor.clip-set:font-weight",
+        "Editor.clip-set:italic",
+        "Editor.clip-set:align",
+        "Editor.clip-set:stroke-width",
+        "Editor.clip-set:shadow",
+        "Editor.clip-set:line-height",
+        "Editor.clip-set:tracking",
+        "Editor.clip-set:text-width",
+        "Editor.clip-commit"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "clip.effects-transitions",
+      "module": "clip",
+      "label": "应用预览效果转场和滤镜",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.library-apply-effect",
+        "Editor.library-apply-transition",
+        "Editor.library-apply-filter",
+        "Editor.library-audition-filter"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在适用片段或转场位置"
+      ]
+    },
+    {
+      "id": "clip.custom-looks",
+      "module": "clip",
+      "label": "导入 LUT 或保存剪辑效果模板",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.library-import-lut",
+        "Editor.library-save-template"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。此处效果模板与 generation.templates 不同。",
+      "statePrerequisites": [
+        "LUT 文件有效或已有可保存工程"
+      ]
+    },
+    {
+      "id": "clip.effect-chain",
+      "module": "clip",
+      "label": "调整排序开关或移除效果链",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.adjust-set",
+        "Editor.chain-add",
+        "Editor.chain-toggle",
+        "Editor.chain-move-by",
+        "Editor.chain-remove",
+        "Editor.chain-set-param",
+        "Editor.add-effect",
+        "Editor.remove-effect"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在适用片段"
+      ]
+    },
+    {
+      "id": "clip.animation-keyframes",
+      "module": "clip",
+      "label": "设置片段动画和关键帧",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "Editor.clip-set:anim-in",
+        "Editor.clip-set:anim-out",
+        "Editor.clip-set:anim-combo",
+        "Editor.clip-set:anim-in-duration",
+        "Editor.clip-set:anim-out-duration",
+        "Keyframes.toggle",
+        "Keyframes.step",
+        "Keyframes.clear",
+        "Keyframes.toggle-param",
+        "Keyframes.step-param",
+        "Keyframes.clear-param"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在支持所选属性的片段",
+        "添加关键帧时播放头位于片段内"
+      ]
+    },
+    {
+      "id": "clip.cutout",
+      "module": "clip",
+      "label": "自动抠像或自定义画笔抠像",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.cutout-mode",
+        "Editor.cutout-tool",
+        "Editor.cutout-size",
+        "Editor.cutout-painting",
+        "Editor.cutout-subject",
+        "Editor.cutout-clear",
+        "Editor.clip-set:cutout-feather"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在适用视觉片段"
+      ]
+    },
+    {
+      "id": "clip.playback",
+      "module": "clip",
+      "label": "播放预览定位帧和调整时间线视图",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.play-toggled",
+        "Editor.seek",
+        "Editor.step-frames",
+        "Editor.ratio-changed",
+        "Editor.quality-changed",
+        "Editor.snap-changed",
+        "Editor.zoom-to-fit",
+        "Editor.zoom"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "clip.undo-redo",
+      "module": "clip",
+      "label": "撤销或重做剪辑工程编辑",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.app-menu-selected:undo",
+        "App.app-menu-selected:redo"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在可用编辑历史"
+      ]
+    },
+    {
+      "id": "audio.mix",
+      "module": "audio_captions",
+      "label": "设置音量音轨淡入淡出和音频效果",
+      "source": "src/crates/concat/ui/editor.slint",
+      "actions": [
+        "Editor.clip-set:volume",
+        "Editor.clip-set:audio-track",
+        "Editor.clip-set:fade-in",
+        "Editor.clip-set:fade-out",
+        "Editor.library-apply-audio",
+        "Editor.chain-set-param",
+        "Editor.clip-commit"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在带音频的片段"
+      ]
+    },
+    {
+      "id": "audio.detach-reattach",
+      "module": "audio_captions",
+      "label": "分离重新附加或静音片段音频",
+      "source": "src/crates/concat/src/studio.rs",
+      "actions": [
+        "Studio.clip_action:detach",
+        "Studio.clip_action:reattach",
+        "Studio.clip_action:mute",
+        "Editor.track-flag-changed"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "存在满足操作要求的音视频片段"
+      ]
+    },
+    {
+      "id": "captions.transcribe",
+      "module": "audio_captions",
+      "label": "将选定片段声音转为字幕",
+      "source": "src/crates/concat/ui/dialogs/captions.slint",
+      "actions": [
+        "Editor.captions",
+        "App.captions-model-changed",
+        "App.captions-placement-changed",
+        "App.captions-size-changed",
+        "App.captions-begin",
+        "App.captions-cancel"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。实际字幕片段及其时间位置需要运行验收。",
+      "statePrerequisites": [
+        "选中一个带音频片段",
+        "已安装可用转录模型"
+      ]
+    },
+    {
+      "id": "captions.from-script",
+      "module": "audio_captions",
+      "label": "将输入脚本生成为字幕片段",
+      "source": "src/crates/concat/ui/dialogs/captions.slint",
+      "actions": [
+        "Editor.captions",
+        "App.captions-text-edited",
+        "App.captions-placement-changed",
+        "App.captions-size-changed",
+        "App.captions-begin",
+        "App.captions-cancel"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。与语音转录共享入口但业务和前置条件不同。",
+      "statePrerequisites": [
+        "没有选中可转录的单个有声片段",
+        "脚本文本有效"
+      ]
+    },
+    {
+      "id": "audio.tts",
+      "module": "audio_captions",
+      "label": "将文字合成为配音并放入时间线",
+      "source": "src/crates/concat/ui/dialogs/speech.slint",
+      "actions": [
+        "Editor.speak",
+        "App.speech-text-edited",
+        "App.speech-voice-changed",
+        "App.speech-model-changed",
+        "App.speech-pace-changed",
+        "App.speech-begin",
+        "App.speech-cancel"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。选中文字片段时复用其内容；自由脚本从播放头位置放入。",
+      "statePrerequisites": [
+        "已安装可用语音模型",
+        "脚本文本有效"
+      ]
+    },
+    {
+      "id": "flow.open-workspace",
+      "module": "flow",
+      "label": "进入 Flow 并读取当前工作区",
+      "source": "src/crates/concat/ui/seecut/components.slint",
+      "actions": [
+        "SeeCut.action:navigate"
+      ],
+      "mcpTools": [
+        "context",
+        "flow_get_workspace",
+        "flow_read_canvas"
+      ],
+      "agentStatus": "partial",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。嵌入式 Flow 当前支持 macOS 和 Windows。",
+      "limitation": "工具只读取已激活工作区，不负责导航进入 Flow 或创建工程。",
+      "statePrerequisites": [
+        "导航目标 page=8",
+        "macOS 或 Windows 桌面环境"
+      ]
+    },
+    {
+      "id": "flow.inspect-types",
+      "module": "flow",
+      "label": "读取 Flow 节点类型和可用操作",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_list_node_types",
+        "flow_get_node_tools"
+      ],
+      "mcpTools": [
+        "flow_list_node_types",
+        "flow_get_node_tools"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.add-node",
+      "module": "flow",
+      "label": "创建 Flow 节点",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_add_node"
+      ],
+      "mcpTools": [
+        "flow_add_node"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "具有原始 operationId 和受信任 App 编辑授权",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.configure-node",
+      "module": "flow",
+      "label": "配置 Flow 节点提示词和参数",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_update_node",
+        "node:setConfig",
+        "node:setPrompt",
+        "node:setText"
+      ],
+      "mcpTools": [
+        "flow_update_node"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "具有原始 operationId 和受信任 App 编辑授权",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.connect-nodes",
+      "module": "flow",
+      "label": "连接 Flow 节点有效端口",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_connect_nodes"
+      ],
+      "mcpTools": [
+        "flow_connect_nodes"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "具有原始 operationId 和受信任 App 编辑授权",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.delete-nodes",
+      "module": "flow",
+      "label": "删除指定 Flow 节点",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_delete_nodes"
+      ],
+      "mcpTools": [
+        "flow_delete_nodes"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "具有原始 operationId 和受信任 App 编辑授权",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.switch-canvas",
+      "module": "flow",
+      "label": "保存并切换 Flow 画布",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_switch_canvas"
+      ],
+      "mcpTools": [
+        "flow_switch_canvas"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "具有原始 operationId 和受信任 App 编辑授权",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.generate-image",
+      "module": "flow",
+      "label": "执行 Flow 节点图片生成",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_execute_node",
+        "node:generateImage"
+      ],
+      "mcpTools": [
+        "flow_execute_node"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "具有原始 operationId 和受信任 App 编辑授权",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.generate-video",
+      "module": "flow",
+      "label": "执行 Flow 节点视频生成",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_execute_node",
+        "node:generateVideo"
+      ],
+      "mcpTools": [
+        "flow_execute_node"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "具有原始 operationId 和受信任 App 编辑授权",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.read-config",
+      "module": "flow",
+      "label": "读取 Flow 节点配置",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_get_node_config"
+      ],
+      "mcpTools": [
+        "flow_get_node_config"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.query-task",
+      "module": "flow",
+      "label": "查询原 Flow 生成任务状态",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_get_task"
+      ],
+      "mcpTools": [
+        "flow_get_task"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "已授予当前客户端相应读取权限"
+      ]
+    },
+    {
+      "id": "flow.query-operation",
+      "module": "flow",
+      "label": "查询原 Flow 操作结果",
+      "source": "src/crates/concat-editor-mcp/src/main.rs",
+      "actions": [
+        "flow_get_operation"
+      ],
+      "mcpTools": [
+        "flow_get_operation"
+      ],
+      "agentStatus": "registered",
+      "acceptance": "source",
+      "notes": "未做运行验证。公开证据为桥接工具注册和协议，未读取私有 Flow 前端，也未证明全部 Flow UI 业务已覆盖。actions 只列公开桥接实际注册名或节点工具名，不声明私有前端同名 UI 回调。",
+      "statePrerequisites": [
+        "当前嵌入式 Flow 可用",
+        "projectId/canvasId/sessionId/accountScope/revision 与当前工作区一致",
+        "已授予当前客户端相应读取权限",
+        "查询原始 operationId，不创建新操作"
+      ]
+    },
+    {
+      "id": "account.login",
+      "module": "account_settings",
+      "label": "登录账户",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:auth-open",
+        "SeeCut.action:auth-switch",
+        "SeeCut.action:auth-submit",
+        "SeeCut.action:auth-close"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。通过 auth-mode 分派到对应身份流程；模式名称以 submit_auth 的当前实现为准。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "auth-mode=0",
+        "有效邮箱和非空密码"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "account.register",
+      "module": "account_settings",
+      "label": "注册账户",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:auth-open",
+        "SeeCut.action:auth-switch",
+        "SeeCut.action:auth-submit",
+        "SeeCut.action:auth-close"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。通过 auth-mode 分派到对应身份流程；模式名称以 submit_auth 的当前实现为准。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "auth-mode=1",
+        "有效邮箱",
+        "密码为 10 到 128 个字符且两次输入一致"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "account.request-password-reset",
+      "module": "account_settings",
+      "label": "请求找回密码验证码",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:auth-open",
+        "SeeCut.action:auth-switch",
+        "SeeCut.action:auth-submit",
+        "SeeCut.action:auth-close"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。auth_request 的 mode=2 只请求 forgot-password 邮件，不提交新密码。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "auth-mode=2",
+        "邮箱规范化校验通过"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "account.verify-email",
+      "module": "account_settings",
+      "label": "验证邮箱",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:auth-open",
+        "SeeCut.action:auth-switch",
+        "SeeCut.action:auth-submit",
+        "SeeCut.action:auth-close"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。通过 auth-mode 分派到对应身份流程；模式名称以 submit_auth 的当前实现为准。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "auth-mode=3",
+        "有效邮箱和六位数字验证码"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "account.confirm-password-reset",
+      "module": "account_settings",
+      "label": "用邮件验证码设置新密码",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:auth-open",
+        "SeeCut.action:auth-switch",
+        "SeeCut.action:auth-submit",
+        "SeeCut.action:auth-close"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。auth_request 的 mode=4 调用 reset-password，适用于找回或修改密码后的验证码确认，不要求已经登录。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "auth-mode=4",
+        "有效邮箱和六位数字验证码",
+        "新密码为 10 到 128 个字符且两次输入一致"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "account.send-verification-code",
+      "module": "account_settings",
+      "label": "发送或重发邮箱验证码",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:auth-resend",
+        "SeeCut.action:auth-verify-start"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "邮箱规范化校验通过",
+        "重发冷却允许发送"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "account.logout",
+      "module": "account_settings",
+      "label": "退出当前账户",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:logout"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "已登录"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "account.wallet",
+      "module": "account_settings",
+      "label": "刷新账户余额与冻结积分",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:wallet-refresh"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已登录"
+      ]
+    },
+    {
+      "id": "account.create-purchase",
+      "module": "account_settings",
+      "label": "购买指定积分套餐",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:purchase"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。创建订单或外部支付跳转不等于支付成功。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "已登录",
+        "套餐可用",
+        "支付入口启用",
+        "用户明确授权具体购买"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "account.refresh-order",
+      "module": "account_settings",
+      "label": "查询指定订单支付状态",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:order-refresh"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。查询订单不授予创建或支付新订单的权限。",
+      "statePrerequisites": [
+        "已登录",
+        "存在属于当前账户的原订单"
+      ]
+    },
+    {
+      "id": "account.history",
+      "module": "account_settings",
+      "label": "查询分页订单和积分流水",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:history-refresh",
+        "SeeCut.action:history-page",
+        "SeeCut.changed:account-history-tab",
+        "SeeCut.changed:ledger-filter"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已登录"
+      ]
+    },
+    {
+      "id": "settings.appearance",
+      "module": "account_settings",
+      "label": "设置主题语言和减少动效",
+      "source": "src/crates/concat/ui/dialogs/settings.slint",
+      "actions": [
+        "App.settings-theme-changed",
+        "App.settings-language-changed",
+        "SeeCut.changed:reduced-motion"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。reduced-motion 在账户页和设置页均有入口。"
+    },
+    {
+      "id": "settings.local-directory",
+      "module": "account_settings",
+      "label": "设置本机结果保存目录",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:local-folder-browse"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。"
+    },
+    {
+      "id": "settings.playback-download",
+      "module": "account_settings",
+      "label": "设置播放解码和模型下载来源",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.settings-playhead-stops-changed",
+        "App.settings-custom-context-actions-changed",
+        "App.settings-hardware-decode-changed",
+        "App.settings-download-source-changed",
+        "App.settings-download-base-edited"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。"
+    },
+    {
+      "id": "settings.models",
+      "module": "account_settings",
+      "label": "下载取消移除或激活本地语音模型",
+      "source": "src/crates/concat/ui/dialogs/settings.slint",
+      "actions": [
+        "App.model-download",
+        "App.model-cancel",
+        "App.model-remove",
+        "App.model-activated"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。模型文件就绪和实际转录或合成能力需要运行验证。"
+    },
+    {
+      "id": "settings.api-server",
+      "module": "account_settings",
+      "label": "设置 API 服务监听和访问令牌",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.settings-server-enabled-changed",
+        "App.settings-server-listen-edited",
+        "App.settings-server-token-edited",
+        "App.settings-server-token-generated"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "controlBoundary": true
+    },
+    {
+      "id": "settings.mcp-grant-structure",
+      "module": "account_settings",
+      "label": "授权客户端读取工程结构",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.settings-mcp-client-edited",
+        "App.settings-mcp-grant-r"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "受信任 App 设置界面",
+        "客户端身份和目标工程明确"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "settings.mcp-grant-media",
+      "module": "account_settings",
+      "label": "授权客户端读取工程结构和媒体预览",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.settings-mcp-client-edited",
+        "App.settings-mcp-grant-m"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "受信任 App 设置界面",
+        "客户端身份和目标工程明确"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "settings.mcp-revoke-read",
+      "module": "account_settings",
+      "label": "撤销客户端读取授权",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.settings-mcp-revoke"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "受信任 App 设置界面",
+        "客户端身份和目标工程明确"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "settings.mcp-grant-edit",
+      "module": "account_settings",
+      "label": "授予客户端限定编辑权限",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.settings-mcp-grant-move"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "受信任 App 设置界面",
+        "客户端身份和目标工程明确"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "settings.mcp-renew-edit",
+      "module": "account_settings",
+      "label": "续期客户端限定编辑权限",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.settings-mcp-renew-move"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "受信任 App 设置界面",
+        "客户端身份和目标工程明确"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "settings.mcp-revoke-edit",
+      "module": "account_settings",
+      "label": "撤销客户端编辑权限",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.settings-mcp-revoke-move"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "statePrerequisites": [
+        "受信任 App 设置界面",
+        "客户端身份和目标工程明确"
+      ],
+      "controlBoundary": true
+    },
+    {
+      "id": "settings.show-log",
+      "module": "account_settings",
+      "label": "打开应用运行日志",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.settings-show-log"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。"
+    },
+    {
+      "id": "settings.clear-cache",
+      "module": "account_settings",
+      "label": "清理当前工程缓存",
+      "source": "src/crates/concat/src/lib.rs",
+      "actions": [
+        "App.app-menu-selected:clear-cache"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。",
+      "statePrerequisites": [
+        "已打开剪辑工程"
+      ]
+    },
+    {
+      "id": "assistant.sessions",
+      "module": "account_settings",
+      "label": "创建切换重命名和继续助手会话",
+      "source": "src/crates/concat/ui/seecut/assistant_state.slint",
+      "actions": [
+        "Assistant.new-session",
+        "Assistant.rename-session",
+        "Assistant.select-session",
+        "Assistant.edit-message",
+        "Assistant.send",
+        "Assistant.stop"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户操作助手的 UI 业务，未注册对应自管理 MCP 工具。"
+    },
+    {
+      "id": "assistant.references",
+      "module": "account_settings",
+      "label": "管理助手引用并送入画布或剪辑",
+      "source": "src/crates/concat/ui/seecut/assistant_state.slint",
+      "actions": [
+        "Assistant.attach",
+        "Assistant.remove-reference",
+        "Assistant.reuse-reference",
+        "Assistant.open-reference"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。引用打开到目标工作区有独立交付流程，不等同于模型发起的 MCP 工具调用。"
+    },
+    {
+      "id": "assistant.read-permission",
+      "module": "account_settings",
+      "label": "授予或撤销助手读取权限",
+      "source": "src/crates/concat/ui/seecut/assistant_state.slint",
+      "actions": [
+        "Assistant.grant-read",
+        "Assistant.revoke-read"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "controlBoundary": true
+    },
+    {
+      "id": "assistant.edit-permission",
+      "module": "account_settings",
+      "label": "授予或撤销助手编辑权限",
+      "source": "src/crates/concat/ui/seecut/assistant_state.slint",
+      "actions": [
+        "Assistant.grant-write",
+        "Assistant.revoke-write"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "controlBoundary": true
+    },
+    {
+      "id": "assistant.tool-approval",
+      "module": "account_settings",
+      "label": "批准或拒绝助手具体工具操作",
+      "source": "src/crates/concat/ui/seecut/assistant_state.slint",
+      "actions": [
+        "Assistant.allow",
+        "Assistant.reject"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。这是用户信任入口，须由用户在受信任界面操作，不能要求 Agent 自行批准或扩大权限。",
+      "controlBoundary": true
+    },
+    {
+      "id": "assistant.reconcile",
+      "module": "account_settings",
+      "label": "核对助手未确定操作结果",
+      "source": "src/crates/concat/ui/seecut/assistant_state.slint",
+      "actions": [
+        "Assistant.reconcile"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "notes": "未做运行验证。未知结果应查询原操作，不能重新提交有副作用的请求。"
+    },
+    {
+      "id": "account.change-password",
+      "module": "account_settings",
+      "label": "从已登录账户发起修改密码",
+      "source": "src/crates/concat/ui/seecut/account.slint",
+      "actions": [
+        "SeeCut.action:change-password"
+      ],
+      "statePrerequisites": [
+        "已登录",
+        "受信任账户页面"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "controlBoundary": true,
+      "notes": "未做运行验证。该动作固定当前账户邮箱并打开 mode=2 的找回密码流程；后续经 mode=4 邮件验证码确认设置新密码。这是用户信任入口，不能要求 Agent 自行批准或扩大权限。"
+    }
+  ]
+}

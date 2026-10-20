@@ -62,6 +62,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  agent-coverage:
+    name: Agent source inventory
+    if: github.event_name != 'workflow_dispatch' || (inputs.desktop_package_candidate != true && inputs.linux_window_diagnostic != true)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check recorded native commands, UI declarations and MCP registrations
+        run: python3 scripts/check-agent-coverage.py
+      - name: Check Android memory helper without changing host swap
+        run: python3 scripts/test_ci_android_memory.py -v
+
   engine:
     if: github.event_name != 'workflow_dispatch' || inputs.desktop_package_candidate != true
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && (inputs.linux_blackbox_qa && 'Linux independent black-box QA' || 'Linux actual window diagnostic') || 'Engine tests and lints' }}
