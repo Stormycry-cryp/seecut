@@ -1170,6 +1170,13 @@ impl BridgeUi {
     }
 
     fn active_ids(&mut self, studio: &Studio, app: &App) -> Option<(String, DocumentIds)> {
+        if crate::photo_workspace::has_instance(app) {
+            self.sync_workspace(None);
+            self.writes.bind_scope(None);
+            self.write_token.clear();
+            self.canvas_permits.clear();
+            return None;
+        }
         if studio.canvas.document.is_some() {
             self.ids(
                 "canvas",
@@ -1612,6 +1619,10 @@ impl BridgeUi {
     }
 
     fn handle(&mut self, request: &Request, studio: &Studio, app: &App) -> UiReply {
+        if crate::photo_workspace::has_instance(app) {
+            self.active_ids(studio, app);
+            return UiReply::Response(Response::error("unsupportedWorkspace"));
+        }
         if self.instance_id != request.instance_id {
             return UiReply::Response(Response::error("appUnavailable"));
         }
@@ -2425,6 +2436,10 @@ fn dispatch_write(request: Request) -> Response {
             if !queued.claim() {
                 return;
             }
+            if crate::photo_workspace::has_instance(&app) {
+                queued.complete(Response::error("unsupportedWorkspace"));
+                return;
+            }
             let Ok(mut studio) = shell.studio.try_borrow_mut() else {
                 queued.complete(Response::error("busy"));
                 return;
@@ -2468,6 +2483,11 @@ fn dispatch(request: Request) -> Response {
     }
     if concat_editor_mcp::validate_request_shape(&request).is_err() {
         return Response::error("invalidInput");
+    }
+    match on_ui(|_, app| crate::photo_workspace::has_instance(&app)) {
+        Ok(true) => return Response::error("unsupportedWorkspace"),
+        Ok(false) => {}
+        Err(error) => return error,
     }
     if request.method == Method::FlowWorkspace {
         let call = request.flow_workspace.clone().expect("validated Flow call");
@@ -2528,6 +2548,9 @@ fn dispatch(request: Request) -> Response {
     let reply = on_ui({
         let request = request.clone();
         move |shell, app| {
+            if crate::photo_workspace::has_instance(&app) {
+                return UiReply::Response(Response::error("unsupportedWorkspace"));
+            }
             let Ok(studio) = shell.studio.try_borrow() else {
                 return UiReply::Response(Response::error("busy"));
             };

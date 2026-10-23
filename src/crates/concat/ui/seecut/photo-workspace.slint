@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme } from "../theme/theme.slint";
+import { AppButton } from "components.slint";
+
+// Lifecycle belongs to the native host. No credentials or document JSON enter the UI.
+export global PhotoWorkspace {
+    // 0 unavailable, 1 idle, 2 opening, 3 running, 4 closing,
+    // 5 waiting for user, 6 failed without a process, 7 manual recovery.
+    in-out property <int> phase: 0;
+    in-out property <bool> managed: false;
+    in-out property <string> instance-id;
+    in-out property <string> detail: "当前版本未提供图像编辑组件。";
+    callback open-editor();
+    callback close-editor();
+}
+
+export component PhotoWorkspaceEntry inherits Rectangle {
+    height: content.preferred-height;
+    vertical-stretch: 0;
+    background: Theme.panel;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: Theme.line;
+    content := VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+        Text { text: "图像编辑器"; font-size: 18px; color: Theme.fg; }
+        Text {
+            text: "图层、选区、蒙版、文字与滤镜，在独立编辑窗口中使用。";
+            font-size: 13px; color: Theme.fg-muted; wrap: word-wrap;
+        }
+        Text { text: PhotoWorkspace.detail; color: Theme.fg; font-size: 13px; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 12px;
+            AppButton {
+                label: PhotoWorkspace.phase == 2 ? "正在打开…"
+                    : PhotoWorkspace.phase == 4 ? "正在关闭…"
+                    : PhotoWorkspace.phase == 3 || PhotoWorkspace.phase == 5 || PhotoWorkspace.phase == 7 ? "编辑窗口已打开"
+                    : PhotoWorkspace.phase == 6 ? "重试打开" : "打开图像编辑器";
+                primary: true;
+                enabled: PhotoWorkspace.phase == 1 || PhotoWorkspace.phase == 6;
+                clicked => { PhotoWorkspace.open-editor(); }
+            }
+            if PhotoWorkspace.phase == 3 || PhotoWorkspace.phase == 5: AppButton {
+                label: "关闭编辑窗口";
+                clicked => { PhotoWorkspace.close-editor(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Text {
+            text: "此编辑器暂未接入 Agent。下方仍可打开原有画布项目。";
+            font-size: 12px; color: Theme.fg-muted; wrap: word-wrap;
+        }
+    }
+}

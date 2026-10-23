@@ -1296,6 +1296,7 @@ dependencies = [
  "pollster",
  "rfd",
  "seecut-flow-core",
+ "seecut-photo-host",
  "serde",
  "serde_json",
  "sha2",
@@ -6718,6 +6719,15 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "uuid",
+]
+
+[[package]]
+name = "seecut-photo-host"
+version = "0.2.2"
+dependencies = [
+ "serde_json",
+ "sha2",
  "uuid",
 ]
 
