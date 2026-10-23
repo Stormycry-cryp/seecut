@@ -72,7 +72,7 @@ Linux 联测例子已改用现有目录权限约束下的 `app.save` 保存及�
 
 解析严格限制结果、标准 base64、512 KiB PNG、尺寸、chunk/CRC 及完整 PNG SHA-256，并按真实 native typed 字段顺序复算 view/selection/snapshot ID。宿主显式启用既有 serde_json 的 `float_roundtrip` 特性以保留原几何精度；不依赖外层 JSON 对象键序。没有独立解压像素或 ICC，pixelHash/profileHash 仍是源声明，不把容器核验当作独立像素证明。
 
-主代理在八补丁来源锁下实际执行 27 项宿主测试、all-targets 严格 Clippy、联测例子编译及 workspace fmt，均通过。新增用例包含真实认证 loopback 的两项封闭读取、u64 最大值、完整小 PNG 容器、过期无回退和本地过期零连接。metadata 是合成数据；真实完整编辑器回包到该 parser、父级交图和模型接收仍待验。
+主代理在八补丁来源锁下实际执行 27 项宿主测试、all-targets 严格 Clippy、联测例子编译及 workspace fmt，均通过。新增用例包含真实认证 loopback 的两项封闭读取、u64 最大值、完整小 PNG 容器、过期无回退和本地过期零连接。该组 metadata 是合成数据；后续真实完整编辑器已通过同一 parser，见下方最新联测；父级交图和模型接收仍待验。
 
 ## 封闭编辑与原操作查询
 
@@ -83,3 +83,11 @@ Linux 联测例子已改用现有目录权限约束下的 `app.save` 保存及�
 当前八补丁来源的宿主验证已扩展为 35 项测试，并通过 all-targets 严格 Clippy、联测例子编译及 workspace fmt。实际覆盖封闭执行与查询、原生 u64 上限、错误目标、真实认证 loopback 和 Unknown 零重发。合成回包证明解析及控制合同，真实编辑器到这些新封闭 API 的联测另行验收。
 
 七补丁实际 Linux 完整编辑器运行已通过保存换代、透明度修改/去重、撤销、切文档拒绝及 dirty 退出取消；最后测试确认 file.exit 被原自动化授权规则拒绝，通用写错误随后归为 Unknown，不能称为已证实回包丢失。本次整个探针失败且 PNG 像素回读未执行。新探针保留 dirty 提示和 Cancel，之后只关闭自有合成文档，再验证空会话的干净退出；不放宽生产授权。
+
+## 最新完整进程联测与应用元数据入口
+
+精确提交 `6d8dd80504bc6144c089ea420555d89b74567741` 的[完整编辑器隔离联测](https://github.com/Stormycry-cryp/seecut/actions/runs/39918618869)成功：真实保存关联、三次绑定、透明度与去重、撤销、旧版本/错文档拒绝、封闭快照及原记录验证、封闭编辑及原回执、dirty 提示和 Cancel、单合成文档丢弃、空 Session 正常退出、真实 Child 退出及 OS 锁释放均通过。主代理下载 artifact `12487578202` 后重解码 4 张 PNG，共核对 1024 像素。它不证明整个 SeeCut、屏幕 present、父 MCP/Task 或模型看图。
+
+新增 `owned_photo_workspace_binding(id)` 供应用同步自己管理的 Ready 编辑器与历史工程身份。该固定入口无 path/method/Agent token 输入，不采 PNG、不签发权限；与原 gated backing 入口共用完全相同的私有 typed 双读及文件核验。原 Agent after_gate 契约保持。它只可在原唯一后台 worker 执行，安装摘要前复核原 child、账户、目标与 UI 来源；缓存不代表永久当前状态。
+
+主代理在新增入口后实际执行 40 项宿主测试、all-targets 严格 Clippy、联测例子编译及 workspace fmt，全部通过。5 项新测试使用本次自有 Python Child、真实认证 TCP 与真实文件，覆盖双读、错身份/未 Ready 零读、未保存/只读拒绝、错误零重试及最终文件替换拒绝。这些合成子进程证据不代替父级 UI 绑定验收。

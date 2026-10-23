@@ -193,6 +193,35 @@ impl NativeHost {
     /// Run on a host worker. The caller must check its read lease, account and
     /// Task gates before and after this call; this crate does not grant access.
     pub fn photo_state_after_gate(&mut self, id: Uuid) -> Result<PhotoState> {
+        self.read_owned_photo_state(id)
+    }
+
+    /// Double-read current native state around real regular-file verification.
+    /// macOS/Linux only; canonicalization and metadata may block on a network
+    /// filesystem, so this is never a UI-tick operation or a hard I/O deadline.
+    /// The caller retains original read/account/Task gates and rechecks them
+    /// before publishing the returned binding. No new authorization is created.
+    pub fn photo_backing_after_gate(&mut self, id: Uuid) -> Result<PhotoBackingBinding> {
+        self.read_owned_photo_backing(id)
+    }
+
+    /// Observe this application's owned, ready editor only to establish its
+    /// workspace document/history identity. This is application metadata work,
+    /// not an Agent read: it requires no Agent token and grants no read/write
+    /// access. Never expose its path/history key to Slint, a model or logs.
+    /// Run on the existing serial host worker. The caller must recheck its
+    /// original child, account and UI target before installing the observation.
+    /// The same full double-read/file checks and platform limits as the gated
+    /// backing API apply; filesystem work has no hard cancellation deadline.
+    pub fn owned_photo_workspace_binding(&mut self, id: Uuid) -> Result<PhotoBackingBinding> {
+        self.read_owned_photo_backing(id)
+    }
+
+    fn read_owned_photo_backing(&mut self, id: Uuid) -> Result<PhotoBackingBinding> {
+        verify_backing(|| self.read_owned_photo_state(id))
+    }
+
+    fn read_owned_photo_state(&mut self, id: Uuid) -> Result<PhotoState> {
         if !cfg!(any(target_os = "macos", target_os = "linux")) {
             return Err(HostError::Unsupported);
         }
@@ -202,15 +231,6 @@ impl NativeHost {
         }
         let value = super::call(running, "seecut.state", json!({}), false)?;
         parse_state(&value, id)
-    }
-
-    /// Double-read current native state around real regular-file verification.
-    /// macOS/Linux only; canonicalization and metadata may block on a network
-    /// filesystem, so this is never a UI-tick operation or a hard I/O deadline.
-    /// The caller retains original read/account/Task gates and rechecks them
-    /// before publishing the returned binding. No new authorization is created.
-    pub fn photo_backing_after_gate(&mut self, id: Uuid) -> Result<PhotoBackingBinding> {
-        verify_backing(|| self.photo_state_after_gate(id))
     }
 }
 

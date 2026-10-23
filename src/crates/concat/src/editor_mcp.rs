@@ -3273,6 +3273,9 @@ mod tests {
             },
         );
         let mut request = Request {
+            photo_parameters: None,
+            photo_snapshot_query: None,
+            photo_snapshot_validation_query: None,
             read_source: None,
             object_id: None,
             canvas_parameters: None,
@@ -3697,6 +3700,9 @@ mod tests {
             },
         );
         let request = Request {
+            photo_parameters: None,
+            photo_snapshot_query: None,
+            photo_snapshot_validation_query: None,
             read_source: None,
             object_id: None,
             canvas_parameters: None,

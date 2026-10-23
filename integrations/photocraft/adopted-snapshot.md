@@ -61,6 +61,8 @@ UI 线程只冻结 Arc 与小型材料。首次有效请求才创建一个单线
 
 主代理在当前八补丁源码上实际执行引擎 2 项、UI 68 项及真实控制套接字 3 项回归，全部通过、0 忽略。包含真实 CPU/GPU paint→帧末确认、稳定选择组合、状态变化后持续失效及无 UI 消费时验证请求 5 秒到期。完整 desktop/CLI 已重建并核对，具体来源见 [SOURCE.md](SOURCE.md)。
 
+八补丁完整进程联测现已通过：[运行 39918618869](https://github.com/Stormycry-cryp/seecut/actions/runs/39918618869)。真实完整编辑器的一次封闭 capture 与同一原记录的一次 validate 均成功，无重新采图；capture 帧 87、validated 帧 89、年龄 44ms。主代理下载并重新解码原采用帧 PNG，256 像素、alpha 102、原 PNG/pixel/ICC 摘要匹配；同时核对三张导出 PNG。实际非整数缩放/中心/旋转及 u64MAX 视口保留正确。此运行没有把图片交给模型。
+
 ## 父级交图前的剩余条件
 
 现有 `seecut.state` 不能确认历史快照仍对应当前观看内容：View 序列化没有实际 display camera，控制回调发生在布局和输入前；平滑滚动还可能在没有新 raw event 的帧改变画面。frame 增长与否、相同文档版本或目标相机相同都不能代替新鲜度证明。

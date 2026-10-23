@@ -96,10 +96,14 @@ SeeCut 管理独立编辑进程和窗口的开发入口已提交至 Draft PR #24
 
 ## 10 月 23 日当前接线进度
 
-八项固定补丁加入原快照帧末复核，当前来源为 2024 文件、tree `254fbf10b1fb6b00955f038bf36c822562873cae618daafa68018f2c38d2cb3c`。主代理实际执行引擎 2 项、UI 68 项、打开/解绑 3 项及真实控制套接字 3 项回归，全部通过。完整 desktop/CLI 保留 HEIF 并重建成功，核对两份实际二进制；CLI 注册 935 个命令，静态候选无缺失。宿主闭合状态、文件绑定、快照/原记录复核、编辑及原回执读取已实现，35 项测试和严格 Clippy 通过。
+八项固定补丁加入原快照帧末复核，当前来源为 2024 文件、tree `254fbf10b1fb6b00955f038bf36c822562873cae618daafa68018f2c38d2cb3c`。主代理实际执行引擎 2 项、UI 68 项、打开/解绑 3 项及真实控制套接字 3 项回归，全部通过。完整 desktop/CLI 保留 HEIF 并重建成功，核对两份实际二进制；CLI 注册 935 个命令，静态候选无缺失。宿主闭合状态、文件绑定、快照/原记录复核、编辑及原回执读取已实现；新增应用内部元数据入口后，40 项测试、严格 Clippy、例子编译和 fmt 通过。
 
-七补丁真实 Linux 编辑器联测已执行保存/另存为换代、普通图层透明度与重复去重、原始采用帧、独立撤销、切文档拒绝，以及未保存退出提示和 Cancel；最终退出观测失败。源码定位为测试确认 file.exit 被现有自动化授权规则拒绝，Unknown 不代表已证明回包丢失。完整探针尚未通过，PNG 像素回读仍待验。正在调整为只关闭自有合成文档、再观察空会话正常退出，不改变生产权限白名单。
+八补丁[完整 Linux 编辑器联测](https://github.com/Stormycry-cryp/seecut/actions/runs/39918618869)已成功，精确提交 `6d8dd80504bc6144c089ea420555d89b74567741`。保存换代、普通透明度与去重、撤销、旧版本/切文档拒绝、封闭 snapshot/validate/execute/receipt、未保存提示和 Cancel、单合成文档丢弃后空 Session 正常退出、真实 Child 与配置锁释放均通过。主代理下载并重解码 4 张 16×16 PNG，共核对 1024 像素；同一原记录 capture 帧 87→验证帧 89、年龄 44ms。此前七补丁退出失败记录保留，生产权限未放宽。本次无父 MCP/Task 或模型看图验收。
 
 父级下一切片已确定：复用唯一 Photo worker，提供有界的 typed 读取与原对象验证；完整 u64 留在 Rust 内。人类发送预备一个原见证，点击后只复核该对象，冻结原 inputId/账户/许可/文档/Task 来源；过期或变化不交图。当前 Photo 图与参考图共同遵守两图预算。Task 更新的原媒体引用仍需扩协议。
 
 编辑沿原 WriteRequest、WriteRegistry 与 Receipts：原回调受理并保存 pending，后台准备后由 UI 复核原授权，单调 CAS 区分未派发取消与已开始执行；完成仅更新原附件。固定 child operation ID 从原父操作及文档身份派生一次，完整参数另行精确比较，Unknown 只查询原操作。相关代码正在分工实现；尚未证明父 MCP/Task、真实模型看图或跨功能任务完成。
+
+父级基础协议新增 4 个 Photo 方法、canonical opaque handles，以及仅供可信通道复核原快照的只读内部方法。本地 all-features 111 项协议/stdio 测试、严格 Clippy 与 fmt 通过；尚未注册为模型工具。内部复核只能提交原 expected 与 snapshot handle，不接受路径、原生数字身份、PNG、新 capture 参数或 Agent 令牌。读取 worker 的 5 项队列/取消测试、6 项真实宿主 loopback/文件生命周期测试通过，11 项原操作冻结/并发派发测试及独立 Clippy 通过；这些候选尚未全部接入父 UI，不能宣称整链可用。
+
+当前实施应用内部 owned-metadata 准备、保存关联缓存和显式 Agent 工作目标。managed child 只表示生命周期；打开/返回图像工作区选 Photo，父页面真实导航切回 Parent 并撤旧 Photo 权限。该元数据目的不伪造 ReadContext、不采图或自动授予 Agent。原 Store/账户/Doc permission 继续使用；首次图片交 provider 前复核同一原见证，provider 已真实受理后按原操作证据视为历史 HumanSource，后续执行另读当前内容。
