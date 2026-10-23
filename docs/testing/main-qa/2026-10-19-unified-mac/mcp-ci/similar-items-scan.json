@@ -1,0 +1,34 @@
+{
+  "scope": [
+    "concat",
+    "concat-canvas",
+    "concat-editor-mcp"
+  ],
+  "topLevelTestModulesScanned": 61,
+  "laterTopLevelItemCandidates": [
+    {
+      "file": "src/crates/concat/src/personal_library.rs",
+      "line": 1757,
+      "item": "mod f1_library_tests {"
+    },
+    {
+      "file": "src/crates/concat-canvas/src/document.rs",
+      "line": 1249,
+      "item": "mod f1_reference_tests {"
+    }
+  ],
+  "method": "Static line-oriented scan for unindented top-level items after mod tests; compiler Clippy remains authoritative.",
+  "reviewedCandidates": [
+    {
+      "file": "src/crates/concat/src/personal_library.rs",
+      "line": 1757,
+      "classification": "Further #[cfg(test)] module; no production item after tests"
+    },
+    {
+      "file": "src/crates/concat-canvas/src/document.rs",
+      "line": 1249,
+      "classification": "Further #[cfg(test)] module; no production item after tests"
+    }
+  ],
+  "unresolvedProductionItems": 0
+}

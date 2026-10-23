@@ -126,7 +126,7 @@ export component Select inherits Rectangle {
         // opened at the top hid whichever was chosen past the ninth.
         root.scroll = 0px;
         root.reveal-row(root.active);
-        list.show();
+        SeeCut.clip-source-will-change(); list.show();
     }
 
     fs := FocusScope {

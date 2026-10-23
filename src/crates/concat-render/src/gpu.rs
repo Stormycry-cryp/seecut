@@ -26,6 +26,9 @@
 //! the window's own device with [`WgpuCompositor::with_device`], that is the
 //! monitor with no copy anywhere.
 
+/// On-demand bounded reading of an already adopted monitor texture.
+pub mod preview;
+
 use std::collections::HashMap;
 
 use concat_core::frame::Frame;

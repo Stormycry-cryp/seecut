@@ -41,6 +41,13 @@ pub struct Host {
     /// on the CPU.
     pub gpu_device: Option<wgpu::Device>,
     pub gpu_queue: Option<wgpu::Queue>,
+    // Catalogue::builtin returns an immutable leaked &'static Catalogue. Keep
+    // that exact reference for the Host lifetime. Its allocation is never freed,
+    // so ptr::eq cannot confuse a recycled address with the original catalogue.
+    clip_preview_catalogue: RefCell<Option<&'static concat_effects::Catalogue>>,
+    pub(crate) clip_preview_busy: Arc<std::sync::atomic::AtomicBool>,
+    /// One long-lived, UI-only readback owner for this exact Device.
+    pub(crate) clip_preview_reader: RefCell<Option<concat_host::preview::PreviewReader>>,
     /// The one-export-at-a-time slot.
     pub exporter: Exporter,
     /// whisper.cpp, and its model downloads.
@@ -48,7 +55,7 @@ pub struct Host {
     /// Kokoro, and its model downloads.
     pub speech: Arc<Speech>,
     /// Titles painted to pictures, and the cache of them.
-    pub titles: concat_host::Titles,
+    pub titles: Arc<concat_host::Titles>,
     /// The cutout models, and the masks they find for the project's media.
     pub cutouts: Arc<concat_host::Cutouts>,
     /// The brush model, and the regions it reads under smart strokes.
@@ -59,7 +66,30 @@ pub struct Host {
     pub server: Option<concat_server::Server>,
 }
 
+fn same_monitor_catalogue(
+    original: &'static concat_effects::Catalogue,
+    current: &'static concat_effects::Catalogue,
+) -> bool {
+    std::ptr::eq(original, current)
+}
+
 impl Host {
+    pub(crate) fn capture_monitor_catalogue(&self) {
+        self.clip_preview_catalogue
+            .borrow_mut()
+            .get_or_insert_with(concat_effects::Catalogue::builtin);
+    }
+
+    pub(crate) fn monitor_catalogue_ready(&self) -> bool {
+        self.clip_preview_catalogue
+            .try_borrow()
+            .is_ok_and(|original| {
+                original.as_ref().is_some_and(|original| {
+                    same_monitor_catalogue(original, concat_effects::Catalogue::builtin())
+                })
+            })
+    }
+
     /// Starts every service. The audio device may not be there yet; playback
     /// keeps trying on its own thread and says so through a toast. `gpu` is
     /// the window's device; with it the monitor composites where the window
@@ -75,7 +105,7 @@ impl Host {
             None => (None, None),
         };
         Ok(Host {
-            titles: concat_host::Titles::new(&dirs),
+            titles: Arc::new(concat_host::Titles::new(&dirs)),
             cutouts: Arc::new(concat_host::Cutouts::new(&dirs.data)),
             brushes: Arc::new(concat_host::Brushes::new(&dirs.data)),
             dirs,
@@ -84,6 +114,15 @@ impl Host {
                 Some(gpu) => Monitor::with_gpu(gpu.device, gpu.queue),
                 None => Monitor::new(),
             },
+            clip_preview_catalogue: RefCell::new(None),
+            clip_preview_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            clip_preview_reader: RefCell::new(match (&device, &queue) {
+                (Some(device), Some(queue)) => Some(concat_host::preview::PreviewReader::new(
+                    device.clone(),
+                    queue.clone(),
+                )),
+                _ => None,
+            }),
             gpu_device: device,
             gpu_queue: queue,
             exporter: Exporter::new(),
@@ -670,5 +709,23 @@ pub fn media_art(
         thumbnail,
         peaks,
         strip,
+    }
+}
+
+#[cfg(test)]
+mod monitor_catalogue_tests {
+    use super::*;
+
+    #[test]
+    fn original_catalogue_identity_rejects_replacement() {
+        let first: &'static concat_effects::Catalogue =
+            Box::leak(Box::new(concat_effects::Catalogue::new()));
+        let replacement: &'static concat_effects::Catalogue =
+            Box::leak(Box::new(concat_effects::Catalogue::new()));
+        let original = first;
+        assert!(same_monitor_catalogue(original, first));
+        assert!(!same_monitor_catalogue(original, replacement));
+        // Both immutable objects remain allocated; no address can be recycled.
+        assert!(same_monitor_catalogue(original, first));
     }
 }

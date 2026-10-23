@@ -1,0 +1,25 @@
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0869803Z error: items after a test module
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0870499Z   --> crates/concat-editor-mcp/src/flow_workspace.rs:31:1
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0871261Z    |
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0871600Z 31 | mod tests {
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0872063Z    | ^^^^^^^^^
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0872417Z ...
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0872768Z 66 | impl FlowWorkspace {
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0873222Z    | ^^^^^^^^^^^^^^^^^^
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0874127Z    |
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0875021Z    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#items_after_test_module
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0892841Z    = note: `-D clippy::items-after-test-module` implied by `-D warnings`
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0893710Z    = help: to override `-D warnings` add `#[allow(clippy::items_after_test_module)]`
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.0894122Z
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.2178476Z error: could not compile `concat-editor-mcp` (lib test) due to 1 previous error
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3689330Z Command exited with non-zero status 101
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3693497Z 	Command being timed: "cargo clippy --workspace --all-targets -- -D warnings"
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3694220Z 	User time (seconds): 2307.49
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3694650Z 	System time (seconds): 63.11
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3695001Z 	Percent of CPU this job got: 99%
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3695355Z 	Elapsed (wall clock) time (h:mm:ss or m:ss): 39:42.78
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3695677Z 	Average shared text size (kbytes): 0
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3695949Z 	Average unshared data size (kbytes): 0
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3696223Z 	Average stack size (kbytes): 0
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3696466Z 	Average total size (kbytes): 0
+Engine tests and lints	UNKNOWN STEP	2026-10-19T10:48:57.3696724Z 	Maximum resident set size (kbytes): 12586320

@@ -1416,6 +1416,7 @@ name = "concat-host"
 version = "0.2.2"
 dependencies = [
  "concat-core",
+ "concat-effects",
  "concat-export",
  "concat-media",
  "concat-project",

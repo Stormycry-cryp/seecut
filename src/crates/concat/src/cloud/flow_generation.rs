@@ -146,7 +146,7 @@ pub(super) fn accept_picker(app: &App, selected: &[PickerSelection]) {
         return;
     }
     let callback = FLOW_PICKER.with(|slot| slot.borrow_mut().take());
-    ui.set_asset_picker_open(false);
+    ui.invoke_change_asset_picker_open(false);
     if let Some((_, callback)) = callback {
         callback(app, selected[0].id.clone());
     }

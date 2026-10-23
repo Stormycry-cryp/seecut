@@ -1,0 +1,66 @@
+Executable=/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/MacOS/seecut
+Identifier=cloud.stormycry.seecut.candidate.ad395f8
+Format=app bundle with Mach-O thin (arm64)
+CodeDirectory v=20400 size=1138081 flags=0x2(adhoc) hashes=35558+3 location=embedded
+VersionPlatform=1
+VersionMin=720896
+VersionSDK=984320
+Hash type=sha256 size=32
+CandidateCDHash sha256=707b1000ce8eead1331ce371cfae045ac0a6a8da
+CandidateCDHashFull sha256=707b1000ce8eead1331ce371cfae045ac0a6a8da6c199845854193a9f56271bf
+Hash choices=sha256
+CMSDigest=707b1000ce8eead1331ce371cfae045ac0a6a8da6c199845854193a9f56271bf
+CMSDigestType=2
+Executable Segment base=0
+Executable Segment limit=298237952
+Executable Segment flags=0x1
+Page size=16384
+CDHash=707b1000ce8eead1331ce371cfae045ac0a6a8da
+Signature=adhoc
+Info.plist entries=11
+TeamIdentifier=not set
+Sealed Resources version=2 rules=13 files=6381
+Internal requirements count=0 size=12
+
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libswresample.7.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libswresample.7.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libmpg123.0.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libmpg123.0.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libswscale.10.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libswscale.10.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libdav1d.7.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libvmaf.3.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libdav1d.7.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libvmaf.3.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libmp3lame.0.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libmp3lame.0.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libssl.3.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libssl.3.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavutil.61.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavutil.61.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libSvtAv1Enc.4.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libSvtAv1Enc.4.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libx264.165.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libx264.165.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavformat.63.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavformat.63.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libcrypto.3.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libcrypto.3.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libx265.217.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libx265.217.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavdevice.63.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavdevice.63.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/liblzma.5.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/liblzma.5.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libopus.0.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libopus.0.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libvpx.12.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libvpx.12.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavfilter.12.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavfilter.12.dylib
+--prepared:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavcodec.63.dylib
+--validated:/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app/Contents/Frameworks/libavcodec.63.dylib
+/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app: valid on disk
+/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app: satisfies its Designated Requirement
+
+{"action": "verify", "verified_files": 5135}

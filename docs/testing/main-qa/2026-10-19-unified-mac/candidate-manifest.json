@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "sealedAtUTC": "2026-10-19T09:00:52.281348+00:00",
+  "source": "ad395f82e0ed72ad00dd6e89431a5c80d39f0bf8",
+  "privateSource": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "app": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.app",
+  "archive": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/outputs/SeeCut-Candidate-20261019-ad395f8.zip",
+  "version": "0.2.2",
+  "bundleId": "cloud.stormycry.seecut.candidate.ad395f8",
+  "buildProfile": "dev (unoptimized + debuginfo); not a release build",
+  "architecture": "arm64",
+  "minimumMacOSFromAllMachO": "15.0.0",
+  "apiUrl": "http://127.0.0.1:18745",
+  "apiServerStarted": false,
+  "rawBinarySha256": "5aac114cd2cbf63cba423bba00f6b76cc03a4f200aea08f8287bfae224f4c6ac",
+  "packagedBinarySha256": "06d03072d812d1ef749525ca8292e4fa243ed31978427d5d51c347b7fe6e3a86",
+  "archiveSha256": "1ca60ef9fb3f8e29c1b6ac238b995377c700989f4e20ecdba01206e102d7724a",
+  "archiveBytes": 241212216,
+  "archiveMatchesBundle": true,
+  "fileCount": 6384,
+  "filesSha256": "46637ddc3db426ab26a7825bfaf190c3418155f6eca152d0a30986ba89222991",
+  "machOCount": 24,
+  "machoEdits": [
+    {
+      "file": "Contents/Resources/toonflow/build/server/node_modules/@firecrawl/anydoc-darwin-arm64/anydoc.darwin-arm64.node",
+      "action": "normalize_dylib_id",
+      "old": "/Users/runner/_work/anydoc/anydoc/target/aarch64-apple-darwin/release/deps/libanydoc_node.dylib",
+      "new": "@rpath/anydoc.darwin-arm64.node"
+    }
+  ],
+  "flowPatchSha256": "5be89ea808d94139660b4a64a909b09daa59be897e48e1c88e082bfe449f46a0",
+  "flowFreshBuildSha256": "94274f36b3b6288ef77630ffc63896ea14893ad93c3f7c7b1c2044b15cb267eb",
+  "flowPackagedSha256": "18f54c08119403743eaa0c08f19a62e9e8a44e66a6171f3972c27b3eac91ac61",
+  "flowChangedOnlyForMachOResigning": [
+    "server/node_modules/@firecrawl/anydoc-darwin-arm64/anydoc.darwin-arm64.node"
+  ],
+  "agentComponentsManifestSha256": "5a1e47eda3442300d9a9c8859922fadf27bbce243860ec07b7347d2a89534159",
+  "agentManifestResult": {
+    "action": "verify",
+    "verified_files": 5135
+  },
+  "privateFilesMatched": 15,
+  "developmentAdHocSigned": true,
+  "notarized": false,
+  "uiVerified": false,
+  "launched": false,
+  "installed": false,
+  "productionChanged": false,
+  "paidCalls": 0,
+  "portableEmpty": true
+}

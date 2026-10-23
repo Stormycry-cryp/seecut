@@ -6,12 +6,14 @@ use objc2_app_kit::NSView;
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use objc2_quartz_core::{CAShapeLayer, kCAFillRuleEvenOdd};
-use std::cell::Cell;
+use std::cell::RefCell;
 use wry::WebViewExtMacOS;
 
 #[derive(Default)]
 pub struct Ivars {
-    hole: Cell<Option<NSRect>>,
+    // The same rounded path defines both visible and interactive ownership.
+    // Its transparent corners continue to belong to the live WebView.
+    mask: RefCell<Option<Retained<CAShapeLayer>>>,
 }
 define_class!(
     #[unsafe(super(NSView))]
@@ -21,7 +23,11 @@ define_class!(
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             let local = self.convertPoint_fromView(point, unsafe { self.superview() }.as_deref());
-            if self.ivars().hole.get().is_some_and(|r| local.x >= r.origin.x && local.y >= r.origin.y && local.x <= r.origin.x+r.size.width && local.y <= r.origin.y+r.size.height) { return std::ptr::null_mut(); }
+            if self.ivars().mask.borrow().as_ref().and_then(|mask| mask.path()).is_some_and(|path| {
+                // The even-odd mask contains the WebView, excluding the rounded
+                // assistant. Test the actual mask rather than its bounding box.
+                !unsafe { objc2_core_graphics::CGPath::contains_point(Some(&path), std::ptr::null(), local, true) }
+            }) { return std::ptr::null_mut(); }
             let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
             // Empty parts of the wrapper, including the sidebar and every page
             // while Flow is hidden, belong to the native Slint parent.
@@ -43,25 +49,33 @@ impl FlowContainer {
         container.addSubview(&web);
         Some(container)
     }
-    pub(crate) fn update(&self, hole: Option<[f64; 4]>) {
+    pub(crate) fn update(&self, hole: Option<[f64; 5]>) {
         let Some(parent) = (unsafe { self.superview() }) else {
             return;
         };
         self.setFrame(parent.bounds());
         // Slint coordinates start at top-left; AppKit's content view is bottom-left.
         let rect = hole.map(|v| {
-            NSRect::new(
-                NSPoint::new(v[0], self.bounds().size.height - v[1] - v[3]),
-                NSSize::new(v[2], v[3]),
+            (
+                NSRect::new(
+                    NSPoint::new(v[0], self.bounds().size.height - v[1] - v[3]),
+                    NSSize::new(v[2], v[3]),
+                ),
+                v[4].max(0.0).min(v[2] / 2.0).min(v[3] / 2.0),
             )
         });
-        self.ivars().hole.set(rect);
         let Some(layer) = self.layer() else { return };
-        if let Some(rect) = rect {
+        if let Some((rect, radius)) = rect {
             let path = CGMutablePath::new();
             unsafe {
                 CGMutablePath::add_rect(Some(&path), std::ptr::null(), self.bounds());
-                CGMutablePath::add_rect(Some(&path), std::ptr::null(), rect);
+                CGMutablePath::add_rounded_rect(
+                    Some(&path),
+                    std::ptr::null(),
+                    rect,
+                    radius,
+                    radius,
+                );
             }
             let mask = CAShapeLayer::new();
             mask.setFrame(self.bounds());
@@ -72,10 +86,12 @@ impl FlowContainer {
             unsafe {
                 layer.setMask(Some(&mask));
             }
+            *self.ivars().mask.borrow_mut() = Some(mask);
         } else {
             unsafe {
                 layer.setMask(None);
             }
+            *self.ivars().mask.borrow_mut() = None;
         }
     }
 }

@@ -1,3 +1,4 @@
+import { SeeCut } from "../seecut/state.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
@@ -307,7 +308,7 @@ export component PaneSwitcher inherits Rectangle {
 
             touch := TouchArea {
                 mouse-cursor: pointer;
-                clicked => { menu.show(); }
+                clicked => { SeeCut.clip-source-will-change(); menu.show(); }
             }
 
             Tip {
@@ -414,7 +415,7 @@ export component AddPaneButton inherits Rectangle {
 
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { menu.show(); }
+        clicked => { SeeCut.clip-source-will-change(); menu.show(); }
     }
 
     Tip {

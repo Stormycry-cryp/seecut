@@ -1,9 +1,10 @@
+import { SeeCut } from "state.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Icon, IconButton, FocusRing, ThinScrollbar } from "../primitives/primitives.slint";
 import { Switch } from "../inspector/controls.slint";
-import { AppButton, WorkspaceSelect, AssetPreview } from "components.slint";
+import { AppButton, WorkspaceSelect, AssetPreview, CloudField } from "components.slint";
 import { EffortSlider } from "effort-slider.slint";
 
 // Text is content only. Operation state always comes from the host separately.
@@ -42,7 +43,7 @@ component AssistantReferenceTile inherits Rectangle {
     border-width: 1px; border-color: Theme.line; clip: true;
     accessible-role: button; accessible-label: root.reference.label;
     thumbnail-hover := TouchArea {
-        mouse-cursor: pointer; clicked => { preview.show(); }
+        mouse-cursor: pointer; clicked => { SeeCut.clip-source-will-change(); preview.show(); }
         if root.reference.has-image: AssetPreview { width: parent.width; height: parent.height; border-radius: 12px; source: root.reference.thumbnail; fill-frame: true; }
         if !root.reference.has-image: Icon { x: 22px; y: 22px; size: 20px; glyph: root.reference.node ? Glyph.workflow : Glyph.image; }
         remove-action := IconButton {
@@ -324,7 +325,7 @@ component AssistantSessionPicker inherits IconButton {
         root.active-row = clamp(root.current, 0, root.names.length - 1);
         root.scroll = 0px;
         root.reveal-row(root.active-row);
-        list.show();
+        SeeCut.clip-source-will-change(); list.show();
     }
     list := PopupWindow {
         x: root.width - root.list-width;
@@ -421,6 +422,10 @@ export component AssistantPanel inherits Rectangle {
     in property <bool> active: true;
     // These are facts supplied by the host, never inferred from model output.
     in property <string> current-project;
+    in property <bool> app-scope;
+    in property <bool> app-recovery-visible;
+    in property <bool> can-abandon-app-reads;
+    in property <bool> can-query-app-reads;
     in property <string> provider-label;
     in property <[string]> session-names;
     in property <string> current-session-id;
@@ -445,6 +450,21 @@ export component AssistantPanel inherits Rectangle {
     in property <bool> can-stop;
     in property <bool> can-reconcile;
     in property <string> budget-label;
+    in property <bool> task-mode;
+    in property <bool> task-visible;
+    in property <string> task-status;
+    in property <string> task-reason;
+    in property <string> task-limit-label;
+    in property <string> task-compatibility;
+    in-out property <string> task-budget-text;
+    in property <string> task-budget-reason;
+    in property <string> task-update-label;
+    in property <bool> can-edit-task-budget;
+    in property <bool> can-task-pause;
+    in property <bool> can-task-stop;
+    in property <bool> can-task-resume;
+    in property <bool> can-task-status;
+    in property <bool> can-task-update;
     in property <bool> can-connect;
     in property <string> reconcile-label: "核实原请求";
     in property <bool> connected;
@@ -462,7 +482,6 @@ export component AssistantPanel inherits Rectangle {
     in property <bool> can-grant-read;
     in property <bool> can-revoke-read;
     in property <bool> can-grant-write;
-    in property <bool> can-renew-write;
     in property <bool> can-revoke-write;
     in property <string> read-permission-status;
     in property <string> write-permission-status;
@@ -491,6 +510,12 @@ export component AssistantPanel inherits Rectangle {
     callback close-requested();
     callback send(text: string);
     callback stop();
+    callback task-pause();
+    callback task-stop();
+    callback task-resume();
+    callback task-status-requested();
+    callback task-update(string);
+    callback task-budget-edited(string);
     callback connect(service-url: string, model-name: string, api-key: string, images: bool);
     callback disconnect();
     callback connect-managed();
@@ -506,10 +531,11 @@ export component AssistantPanel inherits Rectangle {
     callback select-effort(int);
     callback refresh-models();
     callback reconcile();
+    callback abandon-app-reads();
+    callback query-app-reads();
     callback grant-read();
     callback revoke-read();
     callback grant-write();
-    callback renew-write();
     callback revoke-write();
     callback allow();
     callback reject();
@@ -528,11 +554,11 @@ export component AssistantPanel inherits Rectangle {
     function choose-permission(action: int) {
         permissions.close();
         if action == 0 { root.sign-in(); }
-        else if action == 1 { if root.read-granted { root.revoke-read(); } else { root.grant-read(); } }
-        else if action == 2 { if root.can-renew-write { root.renew-write(); } else { root.grant-write(); } }
-        else if action == 3 { root.revoke-write(); }
+        else if action == 1 { root.grant-read(); }
+        else if action == 2 { root.grant-write(); }
         else if action == 4 { if root.connected { root.disconnect(); } else { root.connect-managed(); } }
         else if action == 5 { root.refresh-models(); }
+        else if action == 6 { root.revoke-read(); }
     }
     property <string> model-name;
     property <string> session-api-key;
@@ -603,7 +629,7 @@ export component AssistantPanel inherits Rectangle {
         if !root.active || !root.history-ready { return; }
         root.rename-target = root.current-session-id;
         root.rename-title = root.session-index >= 0 && root.session-index < root.session-names.length ? root.session-names[root.session-index] : "Agent";
-        rename-popup.show();
+        SeeCut.clip-source-will-change(); rename-popup.show();
     }
     property <string> rename-title;
     property <string> rename-target;
@@ -730,6 +756,20 @@ export component AssistantPanel inherits Rectangle {
                     IconButton { glyph: Glyph.search; label: root.reconcile-label; side: 32px; enabled: root.active && root.can-reconcile; clicked => { root.reconcile(); } }
                     Rectangle { horizontal-stretch: 1; }
                 }
+                if root.app-scope && root.app-recovery-visible: HorizontalLayout {
+                    spacing: 8px;
+                    if root.can-abandon-app-reads: AppButton {
+                        label: "结束旧问题"; height: 32px; subtle: true;
+                        enabled: root.active && root.can-abandon-app-reads;
+                        clicked => { root.abandon-app-reads(); }
+                    }
+                    AppButton {
+                        label: "查询旧问题状态"; height: 32px; subtle: true;
+                        enabled: root.active && root.can-query-app-reads;
+                        clicked => { root.query-app-reads(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
                 if root.approval-visible: VerticalLayout {
                     spacing: 8px;
                     AssistantText { text: root.approval-title; font-size: Theme.fs; }
@@ -753,31 +793,10 @@ export component AssistantPanel inherits Rectangle {
                         viewport-width: self.width; horizontal-scrollbar-policy: always-off;
                         detail-text := AssistantText { width: detail-scroll.visible-width; text: root.approval-details; font-size: 12px; color: Theme.fg-muted; }
                     }
-                    AssistantText { text: "确认等待计入本轮 120 秒时限；编辑授权另有 5 分钟期限。授权到期后请续期、重新连接并确认新操作。"; font-size: 11px; color: Theme.fg-dim; }
+                    AssistantText { text: "确认等待计入本轮 120 秒时限。页面操作授权在当前会话有效；切回允许读取会撤销旧确认。"; font-size: 11px; color: Theme.fg-dim; }
                 }
                 if root.settings-open: VerticalLayout {
                     spacing: 12px;
-                    VerticalLayout {
-                        spacing: 4px;
-                        if root.read-permission-status != "": AssistantText { text: root.read-permission-status; color: Theme.fg-muted; }
-                        AppButton {
-                            label: root.read-granted ? "撤销读取与预览" : "允许读取与预览";
-                            enabled: root.active && (root.read-granted ? root.can-revoke-read : root.can-grant-read);
-                            height: 36px;
-                            clicked => { if root.read-granted { root.revoke-read(); } else { root.grant-read(); } }
-                        }
-                        if root.write-permission-status != "": AssistantText { text: root.write-permission-status; color: Theme.fg-muted; }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            AppButton {
-                                label: root.can-renew-write ? "续期 · 5分钟" : "允许编辑 · 5分钟";
-                                enabled: root.active && (root.can-renew-write || root.can-grant-write);
-                                height: 36px;
-                                clicked => { if root.can-renew-write { root.renew-write(); } else { root.grant-write(); } }
-                            }
-                            if root.can-revoke-write: AppButton { label: "撤销"; accessible-name: "撤销编辑权限"; enabled: root.active && (root.can-revoke-write); height: 36px; clicked => { root.revoke-write(); } }
-                        }
-                    }
                     if !root.developer-tools: VerticalLayout {
                         spacing: 8px;
                         AssistantText { text: root.connection; color: Theme.fg-muted; }
@@ -857,6 +876,11 @@ export component AssistantPanel inherits Rectangle {
             height: self.preferred-height;
             padding: 12px;
             spacing: 8px;
+            if root.task-visible && root.can-task-update: AppButton {
+                label: root.task-update-label; height: 30px; subtle: true;
+                enabled: root.active && root.can-task-update && (root.draft != "" || root.task-update-label == "核实原补充");
+                clicked => { root.task-update(root.draft); }
+            }
             if !root.follow-tail: HorizontalLayout {
                 Rectangle { horizontal-stretch: 1; }
                 IconButton { side: 28px; glyph: Glyph.chevron-down; label: "回到最新消息"; clicked => { scroll-settled.stop(); root.follow-tail = true; body.viewport-y = min(0px, body.visible-height - body.viewport-height); } }
@@ -865,13 +889,41 @@ export component AssistantPanel inherits Rectangle {
             if !root.can-send && !root.busy && !root.unknown && root.send-disabled-reason != "": AssistantText {
                 text: !root.signed-in ? "登录后与 Agent 协作" : root.send-disabled-reason; font-size: Theme.fs; color: Theme.fg-muted;
             }
+            if root.task-visible: VerticalLayout {
+                spacing: 4px;
+                AssistantText { text: root.task-status; font-size: 12px; }
+                if root.task-reason != "": AssistantText { text: root.task-reason; color: Theme.fg-muted; font-size: 11px; }
+                if root.task-limit-label != "": AssistantText { text: root.task-limit-label; color: Theme.fg-muted; font-size: 11px; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    AppButton { label: "暂停"; subtle: true; height: 30px; enabled: root.active && root.can-task-pause; clicked => { root.task-pause(); } }
+                    AppButton { label: "继续"; subtle: true; height: 30px; enabled: root.active && root.can-task-resume; clicked => { root.task-resume(); } }
+                    AppButton { label: "停止"; subtle: true; height: 30px; enabled: root.active && root.can-task-stop; clicked => { root.task-stop(); } }
+                    AppButton { label: "查询"; subtle: true; height: 30px; enabled: root.active && root.can-task-status; clicked => { root.task-status-requested(); } }
+                }
+            }
+            if root.task-mode && root.can-edit-task-budget: VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    AssistantText { text: "任务推理积分上限"; vertical-alignment: center; horizontal-stretch: 1; font-size: 12px; }
+                    CloudField { width: 120px; value <=> root.task-budget-text; placeholder: "正整数"; enabled: root.active && root.can-edit-task-budget; edited(value) => { root.task-budget-edited(value); } }
+                }
+                AssistantText { text: "本任务可读取本地素材、修改当前工程并保存结果。撤销、重做及其他操作另行确认；生成费用另计"; color: Theme.fg-muted; font-size: 11px; }
+                if root.task-budget-reason != "": AssistantText { text: root.task-budget-reason; color: Theme.fg-muted; font-size: 11px; }
+            }
+            if root.task-compatibility != "": AssistantText { text: root.task-compatibility; font-size: 11px; color: Theme.fg-muted; }
+            if root.app-scope: AssistantText {
+                text: root.write-granted ? "可读取页面内容，并按要求切换生成、素材、模板、账户、积分、设置和项目列表。" : "允许读取后，可询问页面文字和现有媒体预览；允许页面操作后，可让 Agent 切换页面。";
+                font-size: 11px; color: Theme.fg-muted;
+            }
             composer := AssistantInput {
                 value <=> root.draft;
                 label: "给 Agent 的问题"; placeholder: "与 Agent 协作…";
                 multiline: true; external-toolbar: true;
                 attachment-height: root.draft-references.length > 0 ? 76px : 0px;
                 // Connection and turn state gate sending, while drafts remain editable.
-                enabled: root.active && root.history-ready && !root.settings-open && !root.unknown;
+                enabled: root.active && root.history-ready && !root.settings-open && (!root.unknown || root.app-scope);
                 send-enabled: root.active && (root.send-ready);
                 busy: root.busy; can-stop: root.active && !root.settings-open && root.can-stop;
                 submit => { root.submit(); }
@@ -891,7 +943,7 @@ export component AssistantPanel inherits Rectangle {
                     IconButton {
                         side: 30px; height: 36px; icon-size: 19px; glyph: Glyph.plus; label: "添加引用";
                         enabled: root.active && root.history-ready && !root.busy && !root.unknown;
-                        clicked => { attachments.show(); }
+                        clicked => { SeeCut.clip-source-will-change(); attachments.show(); }
                         attachments := PopupWindow {
                             close-policy: close-on-click-outside;
                             x: 0px; y: -92px; width: 200px; height: 84px;
@@ -908,23 +960,22 @@ export component AssistantPanel inherits Rectangle {
                         side: 28px; height: 36px; icon-size: 16px;
                         glyph: root.write-granted ? Glyph.unlock : Glyph.lock;
                         label: "当前页面权限"; checked: root.read-granted; enabled: root.active;
-                        clicked => { permissions.show(); }
+                        clicked => { SeeCut.clip-source-will-change(); permissions.show(); }
                         permissions := PopupWindow {
                             close-policy: close-on-click-outside;
-                            x: 0px; y: -self.height - 8px; width: 258px; height: root.signed-in ? 202px : 52px;
+                            x: 0px; y: -self.height - 8px; width: 258px; height: root.signed-in ? 170px : 52px;
                             Rectangle {
                                 background: Theme.panel; border-radius: 12px; border-width: 1px; border-color: Theme.line;
                                 VerticalLayout {
                                     padding: 8px; spacing: 4px; alignment: start;
                                     if !root.signed-in: AgentMenuAction { text: "登录账户"; glyph: Glyph.lock; clicked => { root.choose-permission(0); } }
-                                    if root.signed-in: AgentMenuAction { text: root.read-granted ? "撤销读取与预览" : "允许读取与预览"; glyph: Glyph.eye;
-                                        enabled: root.active && (root.read-granted ? root.can-revoke-read : root.can-grant-read);
+                                    if root.signed-in: AgentMenuAction { text: root.app-scope && !root.read-granted ? "允许读取文字和媒体预览" : "允许读取"; glyph: root.read-granted && !root.write-granted ? Glyph.check : Glyph.eye;
+                                        enabled: root.active && (root.can-grant-read || (root.app-scope && root.can-revoke-read));
                                         clicked => { root.choose-permission(1); } }
-                                    if root.signed-in: AgentMenuAction { text: root.can-renew-write ? "续期页面操作 · 5分钟" : "允许页面操作 · 5分钟"; glyph: Glyph.unlock;
-                                        enabled: root.active && (root.can-renew-write || root.can-grant-write);
+                                    if root.signed-in: AgentMenuAction { text: "允许页面操作"; glyph: root.write-granted ? Glyph.check : Glyph.unlock;
+                                        enabled: root.active && root.can-grant-write;
                                         clicked => { root.choose-permission(2); } }
-                                    if root.signed-in: AgentMenuAction { text: "撤销页面操作权限"; glyph: Glyph.lock; enabled: root.can-revoke-write;
-                                        clicked => { root.choose-permission(3); } }
+                                    if root.signed-in: Rectangle { height: 1px; background: Theme.line; }
                                     if root.signed-in: AgentMenuAction { text: root.connect-label; glyph: root.connected ? Glyph.close : Glyph.play;
                                         enabled: root.active && (root.connected ? root.can-disconnect : root.can-connect) && !root.connecting;
                                         clicked => { root.choose-permission(4); } }
@@ -938,7 +989,7 @@ export component AssistantPanel inherits Rectangle {
                         background: model-touch.has-hover ? Theme.field-hover : transparent;
                         accessible-role: button; accessible-label: root.signed-in ? "选择模型与强度" : "登录账户";
                         accessible-enabled: root.active;
-                        accessible-action-default => { if root.active { if root.signed-in { models.show(); } else { root.sign-in(); } } }
+                        accessible-action-default => { if root.active { if root.signed-in { SeeCut.clip-source-will-change(); models.show(); } else { root.sign-in(); } } }
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 4px; spacing: 4px;
                             Text { text: !root.signed-in ? "登录账户" : root.provider-label == "" ? "选择模型" : root.provider-label; font-family: Theme.font; font-size: Theme.fs; color: Theme.fg;
@@ -948,10 +999,10 @@ export component AssistantPanel inherits Rectangle {
                         }
                         model-focus := FocusScope {
                             enabled: root.active;
-                            key-pressed(event) => { if event.text == " " || event.text == "\n" { if !event.repeat { if root.signed-in { models.show(); } else { root.sign-in(); } } return EventResult.accept; } return EventResult.reject; }
+                            key-pressed(event) => { if event.text == " " || event.text == "\n" { if !event.repeat { if root.signed-in { SeeCut.clip-source-will-change(); models.show(); } else { root.sign-in(); } } return EventResult.accept; } return EventResult.reject; }
                         }
                         forward-focus: model-focus;
-                        model-touch := TouchArea { enabled: root.active; mouse-cursor: pointer; clicked => { if root.signed-in { models.show(); } else { root.sign-in(); } } }
+                        model-touch := TouchArea { enabled: root.active; mouse-cursor: pointer; clicked => { if root.signed-in { SeeCut.clip-source-will-change(); models.show(); } else { root.sign-in(); } } }
                         models := PopupWindow {
                             close-policy: close-on-click-outside;
                             x: min(0px, model-button.width - self.width); y: -self.height - 8px; width: min(300px, root.width - 28px); height: root.effort-visible ? 110px : 60px;

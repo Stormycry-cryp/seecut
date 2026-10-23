@@ -12,6 +12,8 @@ pub(crate) fn candidates() -> Value {
     )
 }
 
+type PendingAssistance = (String, &'static str, Receiver<Result<Value, ClientError>>);
+
 #[derive(Default)]
 struct Assistance {
     rewrite_backup: Option<Box<inspiration::Draft>>,
@@ -24,7 +26,7 @@ struct Assistance {
     pulse_until: Option<Instant>,
     capabilities: Option<Value>,
     context_failed: String,
-    pending: Option<(String, &'static str, Receiver<Result<Value, ClientError>>)>,
+    pending: Option<PendingAssistance>,
 }
 
 fn signature(app: &App, cloud: &Cloud) -> String {

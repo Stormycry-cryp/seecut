@@ -79,9 +79,14 @@ impl MediaInfo {
 
 /// Opens the file and summarises what it found.
 pub fn probe(path: impl AsRef<Path>) -> Result<MediaInfo> {
+    probe_with_policy(path, crate::InputPolicy::default())
+}
+
+/// Probe using one explicit input resource policy; the default API stays compatible.
+pub fn probe_with_policy(path: impl AsRef<Path>, policy: crate::InputPolicy) -> Result<MediaInfo> {
     ffi::init();
     let path = path.as_ref();
-    let input = ffmpeg::format::input(path).map_err(|error| ffi::fail("open", path, error))?;
+    let input = crate::input::Input::open(path, policy)?;
 
     let duration = input.duration();
     let duration =

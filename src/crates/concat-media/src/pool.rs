@@ -183,6 +183,7 @@ impl Reader {
         rate: FrameRate,
         still: bool,
         index: i64,
+        policy: crate::InputPolicy,
     ) -> Result<Self> {
         // Unpaced, so every source frame comes out with its own timestamp
         // and the index is read from that; a seek lands on the keyframe at
@@ -203,7 +204,7 @@ impl Reader {
         if let Some(pre) = pre {
             options = options.prefiltered(pre);
         }
-        let decoder = Decoder::open(path, &options)?;
+        let decoder = Decoder::open_with_policy(path, &options, policy)?;
         Ok(Self {
             decoder,
             next_index: i64::MIN,
@@ -268,6 +269,7 @@ struct Readers {
 /// behind each other. Two callers wanting the *same* reader take turns,
 /// which is what a single decoder demands anyway.
 pub struct ReaderPool {
+    policy: crate::InputPolicy,
     cache: Mutex<FrameCache>,
     readers: Mutex<Readers>,
     facts: Mutex<HashMap<PathBuf, Arc<MediaFacts>>>,
@@ -294,7 +296,17 @@ impl ReaderPool {
     /// A pool with `cache_bytes` of frame cache and up to `max_readers` warm
     /// decoders.
     pub fn new(cache_bytes: usize, max_readers: usize) -> Self {
+        Self::new_with_policy(cache_bytes, max_readers, crate::InputPolicy::default())
+    }
+
+    /// One immutable resource policy for all facts, readers and cached frames.
+    pub fn new_with_policy(
+        cache_bytes: usize,
+        max_readers: usize,
+        policy: crate::InputPolicy,
+    ) -> Self {
         Self {
+            policy,
             cache: Mutex::new(FrameCache::new(cache_bytes)),
             readers: Mutex::new(Readers {
                 warm: HashMap::new(),
@@ -524,7 +536,7 @@ impl ReaderPool {
                     frames: None,
                 }
             } else {
-                let info = probe::probe(path)?;
+                let info = probe::probe_with_policy(path, self.policy)?;
                 let rate = info
                     .video
                     .as_ref()
@@ -591,7 +603,15 @@ impl ReaderPool {
         // part, and nobody else needs to wait for it. A decode in flight on
         // an evicted reader finishes on its own handle.
         let opened = Arc::new(Mutex::new(Reader::open(
-            path, width, height, chain, pre, rate, still, target,
+            path,
+            width,
+            height,
+            chain,
+            pre,
+            rate,
+            still,
+            target,
+            self.policy,
         )?));
         let mut readers = self
             .readers

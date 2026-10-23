@@ -10,7 +10,7 @@ export component MediaPreview inherits Modal {
     glyph: SeeCut.media-preview-item.kind == "audio" ? Glyph.music : SeeCut.media-preview-item.kind == "video" ? Glyph.film : Glyph.image;
     surface-width: Math.min(1080px, root.width - 32px);
     surface-height: Math.min(780px, root.height - 40px);
-    closed => { SeeCut.media-preview-open = false; }
+    closed => { SeeCut.change-media-preview-open(false); }
     property <bool> usable: SeeCut.media-preview-item.ready && !SeeCut.media-preview-loading && SeeCut.media-preview-error == "";
     property <bool> is-result: SeeCut.media-preview-source == "task";
     property <bool> is-image: SeeCut.media-preview-item.kind == "image";
@@ -18,7 +18,7 @@ export component MediaPreview inherits Modal {
     preview-keys := FocusScope {
         enabled: root.open;
         key-pressed(event) => {
-            if event.text == Key.Escape { SeeCut.media-preview-open = false; return accept; }
+            if event.text == Key.Escape { SeeCut.change-media-preview-open(false); return accept; }
             return reject;
         }
         VerticalLayout {
@@ -65,7 +65,7 @@ export component MediaPreview inherits Modal {
                 if !root.is-image: AppButton { label: "用播放器打开"; glyph: Glyph.play; enabled: root.usable; clicked => { SeeCut.action("media-preview-action", "play"); } }
                 if root.is-result: AppButton { label: "保存本地"; enabled: root.usable; clicked => { SeeCut.action("media-preview-action", "download"); } }
                 if root.is-result: WorkspaceIcon { label: "保存到团队资产库"; glyph: Glyph.folder; enabled: root.usable && SeeCut.signed-in; clicked => { SeeCut.action("media-preview-action", "team"); } }
-                AppButton { label: "关闭"; clicked => { SeeCut.media-preview-open = false; } }
+                AppButton { label: "关闭"; clicked => { SeeCut.change-media-preview-open(false); } }
             }
         }
     }

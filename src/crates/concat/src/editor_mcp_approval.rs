@@ -2,6 +2,49 @@
 use concat_editor_mcp::FlowWorkspace;
 use serde_json::Value;
 
+pub(super) fn canvas_edit_summary(edit: &concat_editor_mcp::CanvasEdit) -> (String, String) {
+    use concat_editor_mcp::CanvasEdit::*;
+    let title = match edit {
+        LayerSelect { .. } => "选择图层",
+        LayerAdd => "新建图层",
+        LayerDelete { .. } => "删除图层",
+        LayerMove { .. } => "调整图层顺序",
+        GroupAdd => "新建图层组",
+        LayerMoveInto { .. } => "移动图层到组",
+        GroupSetExpanded { .. } => "展开或收起图层组",
+        LayerSetVisibility { .. } => "设置图层显隐",
+        LayerSetOpacity { .. } => "设置图层透明度",
+        SelectionRect { .. } => "设置矩形选区",
+        SelectionAll => "选择全部像素",
+        SelectionClear => "取消像素选区",
+        SelectionFill { .. } => "填充像素选区",
+        SelectionDelete { .. } => "清除选区像素",
+        MaskAdd { .. } => "新增图层蒙版",
+        MaskRemove { .. } => "移除图层蒙版",
+        MaskSetEnabled { .. } => "设置蒙版启停",
+        MaskSelect { .. } => "选择蒙版绘制",
+        BrushSet { .. } => "设置画笔",
+        BrushStroke { .. } => "绘制笔触",
+        Undo => "撤销画布编辑",
+        Redo => "重做画布编辑",
+        AdjustmentAdd { .. } => "新增调整图层",
+        AdjustmentSetParameter { .. } => "设置调整参数",
+        CurveSet { .. } | CurveAdd { .. } | CurveRemove { .. } => "编辑颜色曲线",
+    };
+    let description = match edit {
+        BrushStroke {
+            object_id,
+            target,
+            points,
+        } => format!(
+            "{object_id} · {target:?} · {} 个文档像素坐标点，完整坐标见参数详情",
+            points.len()
+        ),
+        _ => serde_json::to_string(edit).unwrap_or_default(),
+    };
+    (title.into(), description)
+}
+
 fn short(value: &str, limit: usize) -> String {
     let clean: String = value.chars().filter(|c| !c.is_control()).collect();
     let mut result: String = clean.chars().take(limit).collect();

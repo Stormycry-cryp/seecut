@@ -1,0 +1,10 @@
+✔ COTO approval chain with simulated editor only; allow=true (880.860625ms)
+✔ COTO approval chain with simulated editor only; allow=false (215.37875ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1502.838208

@@ -2,6 +2,11 @@
 //! Minimal UI-independent controller for the documented HOST-IPC-V1 protocol.
 //! Only the trusted host constructs configuration; no credential discovery or automatic retry.
 use super::agent_process::{self, BridgeError, Event, Handle, LaunchSpec};
+use crate::agent_app_control_input::{
+    InputBinding, Proposal as AppControlProposal, Tracker as AppControlTracker,
+};
+use crate::agent_observation::DocumentObservationBinding;
+use crate::agent_tasks::{self, TaskProjection, TaskStatus, TaskSummary};
 use serde_json::{Value, json};
 use sha2::Digest;
 use std::collections::{BTreeMap, VecDeque};
@@ -12,11 +17,13 @@ const TEXT_LIMIT: usize = 64 * 1024;
 const MAX_TOOL_PROGRESS: usize = 12;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub use super::agent_identity::DocumentIdentity;
+pub use super::agent_identity::{AgentScope, DocumentIdentity};
+#[cfg(test)]
+use concat_editor_mcp::app_read::AppViewBinding;
 /// Credentials deliberately have no Debug implementation and are never written to disk/logs.
 pub struct ConnectionConfig {
     pub launch: LaunchSpec,
-    pub document: DocumentIdentity,
+    pub scope: AgentScope,
     pub client_id: String,
     pub mcp_client_path: PathBuf,
     pub mcp_environment: BTreeMap<String, String>,
@@ -26,6 +33,7 @@ pub struct ConnectionConfig {
     pub provider: Value,
     pub read_token: String,
     pub write_token: Option<String>,
+    pub app_control_token: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -65,6 +73,15 @@ pub enum UiError {
     SessionRecoveryRequired,
     ModelSelectionUnavailable,
     InvalidInput,
+    TaskRevisionChanged,
+    ObservationUnavailable,
+    ObservationChanged,
+    ObservationInvalid,
+    ObservationUnsupported,
+    TaskObservationUnavailable,
+    TaskObservationMissing,
+    TaskObservationChanged,
+    TaskObservationConflict,
 }
 impl UiError {
     pub fn message(self) -> &'static str {
@@ -82,7 +99,26 @@ impl UiError {
             Self::ServiceUnavailable => "Agent 服务暂不可用，请稍后重试",
             Self::SessionRecoveryRequired => "会话需要恢复，请重新连接后发送新问题",
             Self::ModelSelectionUnavailable => "模型或档位已变更，请重新选择",
+            Self::TaskRevisionChanged => "任务修订已变化，补充要求已保留，请核对后重试原请求",
             Self::InvalidInput => "当前模型无法处理这些内容，请调整文字或附件",
+            Self::ObservationUnavailable => {
+                "当前运行组件不支持保存发问时的文档状态，请更新运行组件"
+            }
+            Self::ObservationChanged => "发问时的工程、选择或视图已变化，请核对后重新发送",
+            Self::ObservationInvalid => "无法核对发问时的文档记录，请检查运行组件",
+            Self::ObservationUnsupported => "当前输入方式尚不支持文档观察绑定",
+            Self::TaskObservationUnavailable => {
+                "当前运行组件不支持保存任务发起和补充时的文档状态，请更新运行组件"
+            }
+            Self::TaskObservationMissing => {
+                "原任务请求缺少发问时的文档记录，已保留且不会重发，请先查询原任务状态"
+            }
+            Self::TaskObservationChanged => {
+                "原问题引用的页面、选择或内容已变化，请重新提出要求；已有任务请先停止后重建"
+            }
+            Self::TaskObservationConflict => {
+                agent_tasks::blocked_reason_label("human_observation_conflict")
+            }
         }
     }
 }
@@ -103,6 +139,93 @@ pub struct EditorRecovery {
     pub document_session_id: String,
     pub retry_registration: bool,
     pub is_flow: bool,
+    pub is_clip: bool,
+}
+
+/// A bounded host projection. Only the current pending queues decide recovery;
+/// historical samples are display evidence and are never replayed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppReadRecovery {
+    pub can_abandon: bool,
+    pub reason: String,
+    evidence: Value,
+}
+impl AppReadRecovery {
+    fn parse(value: &Value) -> Option<Self> {
+        let can_abandon = value["canAbandon"].as_bool()?;
+        let reason = value["reason"].as_str()?;
+        if !matches!(
+            reason,
+            "ready"
+                | "nothing_pending"
+                | "active_turn"
+                | "billing_unavailable"
+                | "account_scope"
+                | "billing_pending"
+                | "unrecognized_history"
+        ) || can_abandon != (reason == "ready")
+        {
+            return None;
+        }
+        let ids = |key: &str, max: usize| -> Option<usize> {
+            let values = value[key].as_array()?;
+            if values.len() > max {
+                return None;
+            }
+            let mut unique = std::collections::BTreeSet::new();
+            for id in values {
+                let id = id.as_str()?;
+                if id.is_empty() || id.len() > 256 || !unique.insert(id) {
+                    return None;
+                }
+            }
+            Some(values.len())
+        };
+        let pending = ids("pendingInputIds", 8)?;
+        let reads = ids("readInvocationIds", 128)?;
+        if can_abandon && pending == 0 && reads == 0 {
+            return None;
+        }
+        if reason == "nothing_pending" && (pending != 0 || reads != 0) {
+            return None;
+        }
+        for (sample, total, truncated) in [
+            (
+                "recentWithdrawnInputIds",
+                "withdrawnInputTotal",
+                "withdrawnInputTruncated",
+            ),
+            (
+                "recentAbandonedReadInvocationIds",
+                "abandonedReadInvocationTotal",
+                "abandonedReadInvocationTruncated",
+            ),
+        ] {
+            let count = ids(sample, 64)? as u64;
+            let total = value[total]
+                .as_u64()
+                .filter(|n| *n <= 9_007_199_254_740_991)?;
+            if count != total.min(64) || value[truncated].as_bool()? != (total > 64) {
+                return None;
+            }
+        }
+        Some(Self {
+            can_abandon,
+            reason: reason.into(),
+            evidence: value.clone(),
+        })
+    }
+    pub fn message(&self) -> &'static str {
+        match self.reason.as_str() {
+            "ready" => "旧问题无法继续读取原页面。结束后可发送新问题，历史记录会保留。",
+            "active_turn" => "旧问题仍在处理，请先停止并等待结束",
+            "billing_pending" => "请先核实原问题的推理和积分，再结束旧问题",
+            "billing_unavailable" => "暂时无法核实原问题的积分，请稍后查询",
+            "account_scope" => "请使用原账户恢复此会话",
+            "unrecognized_history" => "旧问题的记录暂时无法核实，请保留会话并检查运行时版本",
+            _ => "",
+        }
+    }
 }
 impl EditorRecovery {
     pub fn query_arguments(&self) -> Value {
@@ -126,7 +249,17 @@ pub struct View<'a> {
     pub budget_label: &'a str,
     pub billing_revision: u64,
 }
-#[derive(Clone, Copy)]
+impl View<'_> {
+    pub fn unknown_or_blocked(&self) -> bool {
+        self.phase == Phase::OutcomeUnknown
+            || self.outcome == Some(TaskOutcome::OutcomeUnknown)
+            || self.account_expired
+            || self
+                .error
+                .is_some_and(|error| !matches!(error, UiError::Busy | UiError::TaskRevisionChanged))
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ToolAction {
     Context,
     Project,
@@ -134,29 +267,43 @@ enum ToolAction {
     Capabilities,
     Move,
     Library,
+    LibraryAssets,
     Insert,
     Transform,
+    CanvasEdit,
+    ClipEdit,
     Save,
     Export,
     Operation,
     RegistrationRetry,
     FlowRead,
     FlowWrite,
+    TaskProgress,
+    AppRead,
+    AppNavigate,
+    AppOperation,
 }
 impl ToolAction {
     fn from_name(name: &str) -> Option<Self> {
         match name {
+            "app_navigate" => Some(Self::AppNavigate),
+            "app_operation" => Some(Self::AppOperation),
+            "app_context" | "page_items" | "page_preview" => Some(Self::AppRead),
+            "task_status" | "task_checkpoint" => Some(Self::TaskProgress),
             "context" => Some(Self::Context),
             "project" => Some(Self::Project),
             "preview" => Some(Self::Preview),
             "capabilities" => Some(Self::Capabilities),
             "move_selected_image" => Some(Self::Move),
             "library_images" => Some(Self::Library),
+            "library_assets" => Some(Self::LibraryAssets),
             "insert_library_image" => Some(Self::Insert),
             "transform_canvas_layer" => Some(Self::Transform),
+            "canvas_edit" => Some(Self::CanvasEdit),
+            "clip_edit" => Some(Self::ClipEdit),
             "save_canvas_project" => Some(Self::Save),
             "export_canvas_png" => Some(Self::Export),
-            "canvas_operation" => Some(Self::Operation),
+            "canvas_operation" | "clip_operation" => Some(Self::Operation),
             "retry_canvas_registration" => Some(Self::RegistrationRetry),
             "flow_get_workspace"
             | "flow_read_canvas"
@@ -173,9 +320,12 @@ impl ToolAction {
     fn is_write(self) -> bool {
         matches!(
             self,
-            Self::Move
+            Self::AppNavigate
+                | Self::Move
                 | Self::Insert
                 | Self::Transform
+                | Self::CanvasEdit
+                | Self::ClipEdit
                 | Self::Save
                 | Self::Export
                 | Self::RegistrationRetry
@@ -184,14 +334,21 @@ impl ToolAction {
     }
     fn label(self) -> &'static str {
         match self {
+            Self::AppRead => "读取当前应用页面",
+            Self::AppNavigate => "切换应用页面",
+            Self::AppOperation => "核对页面切换结果",
+            Self::TaskProgress => "核对任务进度",
             Self::Context => "读取当前页面",
             Self::Project => "读取工程信息",
             Self::Preview => "查看画布预览",
             Self::Capabilities => "检查可用操作",
             Self::Move => "发送移动请求",
             Self::Library => "查找库内图片",
+            Self::LibraryAssets => "查找本地素材",
             Self::Insert => "放入画布",
             Self::Transform => "调整图层",
+            Self::CanvasEdit => "编辑画布",
+            Self::ClipEdit => "编辑剪辑",
             Self::Save => "保存画布",
             Self::Export => "导出并入库",
             Self::Operation => "核对操作结果",
@@ -230,16 +387,66 @@ impl ToolProgress {
         )
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TaskCommand {
+    Pause,
+    Resume,
+    Stop,
+    Status,
+    Update,
+}
+impl TaskCommand {
+    fn method(self) -> &'static str {
+        match self {
+            Self::Pause => "task.pause",
+            Self::Resume => "task.resume",
+            Self::Stop => "task.stop",
+            Self::Status => "task.status",
+            Self::Update => "task.update",
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AppRecovery {
+    pub invocation_id: String,
+}
 enum Request {
     Initialize,
+    Permissions {
+        revision: u64,
+        operate: bool,
+    },
     Create,
-    Send { input_id: String },
+    Send {
+        input_id: String,
+    },
+    TaskCreate {
+        task_id: String,
+        previous_task_id: Option<String>,
+    },
+    TaskControl {
+        task_id: String,
+        action: TaskCommand,
+        update_id: Option<String>,
+        fence_revision: u64,
+    },
     Stop,
-    Approve { approval_id: String },
+    Approve {
+        approval_id: String,
+    },
     Close,
     Reconcile,
     RecoveryStatus,
-    EditorReconcile { operation_id: String },
+    AbandonAppReads,
+    AppReconcile {
+        invocation_id: String,
+    },
+    AppControlAuthorize {
+        allowed: bool,
+    },
+    EditorReconcile {
+        operation_id: String,
+    },
 }
 struct Pending {
     id: String,
@@ -247,18 +454,48 @@ struct Pending {
     since: Instant,
 }
 
+enum InputObservation {
+    Document(String, Box<DocumentObservationBinding>),
+    App(String, InputBinding),
+}
+impl InputObservation {
+    fn input_id(&self) -> &str {
+        match self {
+            Self::Document(id, _) | Self::App(id, _) => id,
+        }
+    }
+}
+
 pub struct Controller {
     process: Option<Handle>,
-    document: Option<DocumentIdentity>,
+    scope: Option<AgentScope>,
     session_id: String,
     restore: bool,
     recover_existing: bool,
     model_selection_supported: bool,
+    document_observation_supported: bool,
+    task_observation_supported: bool,
+    tasks_supported: bool,
+    ipc_generation: u64,
+    tasks: TaskProjection,
+    task_fenced: bool,
+    retired_task_turns: VecDeque<String>,
+    task_permit_revision: u64,
+    task_requested_epoch: Option<u64>,
+    active_task_turn: bool,
+    task_turn_binding: Option<TaskSummary>,
+    ended_task_turns: VecDeque<String>,
+    acknowledged_task_update: Option<String>,
+    rejected_task_update: Option<String>,
+    permissions_supported: bool,
+    permission_revision: u64,
     session_opened: bool,
     phase: Phase,
     pending: VecDeque<Pending>,
     counter: u64,
     turn_id: Option<String>,
+    // One host-created ordinary input, before or after its real turn starts.
+    send_turn: Option<(String, Option<String>)>,
     last_result_turn: Option<String>,
     last_seq: u64,
     text: String,
@@ -271,6 +508,11 @@ pub struct Controller {
     managed_mode: bool,
     model_unknown: bool,
     recovery_pending: bool,
+    app_read_recovery: Option<AppReadRecovery>,
+    app_control_supported: bool,
+    app_recovery: Vec<AppRecovery>,
+    app_control_inputs: AppControlTracker,
+    app_restore_required: bool,
     last_model_state: Option<Value>,
     account_expired: bool,
     budget_label: String,
@@ -291,16 +533,33 @@ impl Default for Controller {
     fn default() -> Self {
         Self {
             process: None,
-            document: None,
+            scope: None,
             session_id: String::new(),
             restore: false,
             recover_existing: false,
             model_selection_supported: false,
+            document_observation_supported: false,
+            task_observation_supported: false,
+            tasks_supported: false,
+            ipc_generation: 0,
+            tasks: TaskProjection::default(),
+            task_fenced: false,
+            retired_task_turns: VecDeque::new(),
+            task_permit_revision: 0,
+            task_requested_epoch: None,
+            active_task_turn: false,
+            task_turn_binding: None,
+            ended_task_turns: VecDeque::new(),
+            acknowledged_task_update: None,
+            rejected_task_update: None,
+            permissions_supported: false,
+            permission_revision: 0,
             session_opened: false,
             phase: Phase::Disconnected,
             pending: VecDeque::new(),
             counter: 0,
             turn_id: None,
+            send_turn: None,
             last_result_turn: None,
             last_seq: 0,
             text: String::new(),
@@ -313,6 +572,11 @@ impl Default for Controller {
             managed_mode: false,
             model_unknown: false,
             recovery_pending: false,
+            app_read_recovery: None,
+            app_control_supported: false,
+            app_recovery: Vec::new(),
+            app_control_inputs: AppControlTracker::default(),
+            app_restore_required: false,
             last_model_state: None,
             account_expired: false,
             budget_label: "0".into(),
@@ -340,7 +604,10 @@ impl Controller {
                 && config.restore
                 && config.local_session_id == self.session_id
                 && config.client_id == self.editor_client
-                && self.document.as_ref() == Some(&config.document)
+                && self
+                    .scope
+                    .as_ref()
+                    .is_some_and(|old| old.same_restore_scope(&config.scope))
                 && self.managed_mode == (config.provider["protocol"] == "seecut-managed"))
         {
             return Err(UiError::VerifyRequired);
@@ -349,9 +616,23 @@ impl Controller {
             return Err(UiError::Busy);
         }
         let valid_id = |id: &str| max64(id);
-        if config.document.instance_id.is_empty()
-            || config.document.project_id.is_empty()
-            || !valid_id(&config.document.document_session_id)
+        if config.scope.instance_id().is_empty()
+            || match &config.scope {
+                AgentScope::Document(document) => {
+                    document.project_id.is_empty()
+                        || !valid_id(&document.document_session_id)
+                        || config.app_control_token.is_some()
+                }
+                AgentScope::App(app) => {
+                    !concat_editor_mcp::AppReadScope {
+                        account_scope: app.account_scope.clone(),
+                        app_session_id: app.app_session_id.clone(),
+                        app_control_protocol_version: None,
+                    }
+                    .valid()
+                        || config.write_token.is_some()
+                }
+            }
             || !valid_id(&config.client_id)
             || !valid_session_id(&config.local_session_id)
             || (!self.session_id.is_empty() && self.session_id != config.local_session_id)
@@ -379,13 +660,17 @@ impl Controller {
         }
         let preserve_cost = config.restore
             && self.session_id == config.local_session_id
-            && self.document.as_ref() == Some(&config.document)
+            && self
+                .scope
+                .as_ref()
+                .is_some_and(|old| old.same_restore_scope(&config.scope))
             && self.managed_mode
             && config.provider["protocol"] == "seecut-managed"
             && account_fingerprint.is_some()
             && self.cost_account_fingerprint == account_fingerprint;
         self.cost_account_fingerprint = account_fingerprint;
         self.cost_waiting_for_turn = false;
+        self.send_turn = None;
         if !preserve_cost {
             self.cost_turn_id = None;
             self.budget_label = "0".into();
@@ -393,8 +678,28 @@ impl Controller {
         self.session_id = config.local_session_id;
         self.restore = config.restore;
         self.recover_existing = false;
+        self.app_control_supported = false;
+        self.app_control_inputs = AppControlTracker::default();
         self.model_selection_supported = false;
+        self.document_observation_supported = false;
+        self.task_observation_supported = false;
+        self.tasks_supported = false;
+        self.ipc_generation = self
+            .ipc_generation
+            .checked_add(1)
+            .ok_or(UiError::Protocol)?;
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::SessionChanged,
+        );
+        self.tasks.begin_connection(self.ipc_generation);
+        self.task_fenced = self.tasks.current_task_id.is_some();
+        self.permissions_supported = false;
+        self.permission_revision = 0;
         self.secrets = vec![config.read_token.clone()];
+        if let Some(token) = &config.app_control_token {
+            self.secrets.push(token.clone());
+        }
         if let Some(token) = &config.write_token {
             self.secrets.push(token.clone());
         }
@@ -414,19 +719,40 @@ impl Controller {
         self.model_unknown = self.managed_mode && self.model_unknown;
         self.account_expired = false;
         self.recovery_pending = false;
+        self.app_read_recovery = None;
         self.last_model_state = None;
         self.billing_fingerprint = Value::Null;
         self.secrets.retain(|value| !value.is_empty());
-        let params = json!({"protocolVersion":1,"appProtocolVersion":1,"instanceId":config.document.instance_id,"clientId":config.client_id,"clientPath":config.mcp_client_path,"mcpEnvironment":config.mcp_environment,"sessionDirectory":config.session_directory,"provider":config.provider,"readToken":config.read_token,"writeToken":config.write_token});
+        let mut params = json!({"protocolVersion":1,"appProtocolVersion":1,"instanceId":config.scope.instance_id(),"clientId":config.client_id,"clientPath":config.mcp_client_path,"mcpEnvironment":config.mcp_environment,"sessionDirectory":config.session_directory,"provider":config.provider,"readToken":config.read_token});
+        match &config.scope {
+            AgentScope::Document(_) => {
+                params["taskProtocolVersion"] = json!(1);
+                params["documentObservationProtocolVersion"] = json!(1);
+                params["taskObservationProtocolVersion"] = json!(1);
+                if let Some(token) = &config.write_token {
+                    params["writeToken"] = json!(token);
+                }
+            }
+            AgentScope::App(app) => {
+                params["scopeKind"] = json!("app");
+                params["appReadProtocolVersion"] = json!(1);
+                params["appControlProtocolVersion"] = json!(1);
+                if let Some(token) = &config.app_control_token {
+                    params["appControlToken"] = json!(token);
+                }
+                params["accountScope"] = json!(app.account_scope);
+                params["appSessionId"] = json!(app.app_session_id);
+            }
+        }
         // The runtime distinguishes absent writeToken from null.
-        let mut params = params;
         if params["writeToken"].is_null() {
             params.as_object_mut().unwrap().remove("writeToken");
         }
         let handle = agent_process::start(config.launch).map_err(bridge_error)?;
         self.process = Some(handle);
-        self.document = Some(config.document);
+        self.scope = Some(config.scope);
         self.pending.clear();
+        self.send_turn = None;
         self.turn_id = None;
         self.last_result_turn = None;
         self.last_seq = 0;
@@ -477,21 +803,426 @@ impl Controller {
         self.process.is_some()
     }
     /// Negotiated for this process only; a reconnect must advertise it again.
+    pub fn supports_app_control(&self) -> bool {
+        self.process.is_some() && self.app_scope() && self.app_control_supported
+    }
+    pub(crate) fn take_app_control_proposals(&mut self) -> Vec<AppControlProposal> {
+        self.app_control_inputs.take_pending()
+    }
+    pub(crate) fn app_control_proposal_current(&self, proposal: &AppControlProposal) -> bool {
+        self.supports_app_control()
+            && !self.blocked()
+            && self.turn_id.as_deref() == Some(&proposal.turn_id)
+            && self.app_control_inputs.current(proposal)
+    }
+    pub(crate) fn app_control_should_fence(&self) -> bool {
+        self.app_scope()
+            && (self.turn_id.is_none()
+                || self.blocked()
+                || self.ignore_runtime_events
+                || matches!(
+                    self.phase,
+                    Phase::Disconnected | Phase::Failed | Phase::Closing | Phase::Stopping
+                ))
+    }
+    pub(crate) fn fence_app_control(&mut self) {
+        self.app_control_inputs.fence();
+    }
+    /// Host-only ACK follows installation of the exact native permit.
+    pub(crate) fn authorize_app_control(
+        &mut self,
+        proposal: &AppControlProposal,
+        allowed: bool,
+    ) -> Result<(), UiError> {
+        if !self.supports_app_control() || (allowed && !self.app_control_proposal_current(proposal))
+        {
+            return Err(UiError::Protocol);
+        }
+        self.enqueue("app.control.authorize", json!({"sessionId": proposal.session_id,"inputId":proposal.intent.input_id,"turnId":proposal.turn_id,"invocationId":proposal.invocation_id,"operationId":proposal.intent.operation_id,"allowed":allowed}), Request::AppControlAuthorize { allowed })
+    }
     pub fn supports_model_selection(&self) -> bool {
         self.process.is_some() && self.model_selection_supported
+    }
+    pub fn supports_document_observation(&self) -> bool {
+        self.process.is_some()
+            && self.document_observation_supported
+            && self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.document().is_some())
+    }
+    pub fn document_observation_unavailable(&self) -> bool {
+        self.phase == Phase::Ready
+            && self.session_opened
+            && self.process.is_some()
+            && self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.document().is_some())
+            && !self.supports_document_observation()
+    }
+    pub fn acknowledged_task_update(&self) -> Option<&str> {
+        self.acknowledged_task_update.as_deref().or_else(|| {
+            self.current_task()
+                .and_then(|v| v.last_update_id.as_deref())
+        })
+    }
+    pub fn rejected_task_update(&self) -> Option<&str> {
+        self.rejected_task_update.as_deref()
+    }
+    pub fn retry_task_update(
+        &mut self,
+        intent: &agent_tasks::TaskUpdateIntent,
+    ) -> Result<(), UiError> {
+        if !intent.valid() || self.current_task_id() != Some(intent.task_id.as_str()) {
+            return Err(UiError::InvalidInput);
+        }
+        let binding = self.checked_task_observation(intent.observation_binding.as_ref())?;
+        if !self.can_task_command(TaskCommand::Update) {
+            return Err(UiError::Busy);
+        }
+        self.task_requested_epoch = self
+            .current_task()
+            .and_then(|v| v.control_epoch.checked_add(1));
+        self.fence_task();
+        self.enqueue("task.update",json!({"sessionId":self.session_id,"taskId":intent.task_id,"clientRequestId":intent.client_request_id,"expectedRevision":intent.expected_revision,"message":intent.message,"observationBinding":binding}),Request::TaskControl {task_id:intent.task_id.clone(),action:TaskCommand::Update,update_id:Some(intent.client_request_id.clone()),fence_revision:self.task_permit_revision})
+    }
+    pub fn supports_tasks(&self) -> bool {
+        self.process.is_some() && self.tasks_supported
+    }
+    pub fn supports_task_observation(&self) -> bool {
+        self.supports_tasks()
+            && self.task_observation_supported
+            && self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.document().is_some())
+    }
+    pub fn task_observation_unavailable(&self) -> bool {
+        self.session_opened
+            && self.supports_tasks()
+            && matches!(
+                self.phase,
+                Phase::Ready | Phase::Running | Phase::AwaitingApproval | Phase::Stopping
+            )
+            && !self.supports_task_observation()
+    }
+    fn checked_task_observation(
+        &self,
+        binding: Option<&DocumentObservationBinding>,
+    ) -> Result<Value, UiError> {
+        if !self.supports_task_observation() {
+            return Err(UiError::TaskObservationUnavailable);
+        }
+        let binding = binding.ok_or(UiError::TaskObservationMissing)?;
+        let identity = self
+            .scope
+            .as_ref()
+            .and_then(AgentScope::document)
+            .ok_or(UiError::DocumentChanged)?;
+        if !binding.matches_identity(identity, &self.editor_client) {
+            return Err(UiError::ObservationChanged);
+        }
+        serde_json::to_value(binding).map_err(|_| UiError::ObservationInvalid)
+    }
+    pub fn restore_task(&mut self, task_id: Option<String>) -> bool {
+        if self.process.is_some() {
+            return false;
+        }
+        let Some(tasks) = TaskProjection::restored(task_id) else {
+            return false;
+        };
+        self.tasks = tasks;
+        true
+    }
+    pub fn current_task_id(&self) -> Option<&str> {
+        self.tasks.current_task_id.as_deref()
+    }
+    pub fn current_task(&self) -> Option<&TaskSummary> {
+        self.tasks.current()
+    }
+    pub fn task_permit_revision(&self) -> u64 {
+        self.task_permit_revision
+    }
+    pub fn withdraw_task_approvals(&mut self) {
+        if self.current_task_id().is_some() {
+            self.fence_task();
+        }
+    }
+    pub fn ipc_generation(&self) -> u64 {
+        self.ipc_generation
+    }
+    pub fn task_turn_binding(&self) -> Option<&TaskSummary> {
+        self.task_turn_binding.as_ref()
+    }
+    pub fn task_turn_ended(&self, turn: &str) -> bool {
+        self.ended_task_turns.iter().any(|v| v == turn)
+    }
+    pub fn current_turn_id(&self) -> Option<&str> {
+        self.turn_id.as_deref()
+    }
+    pub fn is_task_turn(&self) -> bool {
+        self.active_task_turn && self.turn_id.is_some()
+    }
+    pub fn task_idle(&self) -> bool {
+        self.supports_tasks()
+            && self.turn_id.is_none()
+            && self.pending.is_empty()
+            && self.current_task().is_some_and(|v| {
+                matches!(
+                    v.status,
+                    TaskStatus::Paused
+                        | TaskStatus::Stopped
+                        | TaskStatus::Completed
+                        | TaskStatus::Failed
+                        | TaskStatus::Blocked
+                )
+            })
+    }
+    pub fn task_active(&self) -> bool {
+        self.tasks_supported
+            && self.current_task_id().is_some()
+            && self
+                .current_task()
+                .is_none_or(|task| !task.status.terminal())
+    }
+    fn task_approval_fenced(&self) -> bool {
+        self.tasks_supported
+            && self.active_task_turn
+            && (self.task_fenced
+                || self
+                    .turn_id
+                    .as_ref()
+                    .is_some_and(|turn| self.retired_task_turns.contains(turn)))
+    }
+    fn fence_task(&mut self) {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Stopped);
+        for turn in [
+            self.turn_id.as_ref(),
+            self.approval.as_ref().map(|v| &v.turn_id),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>()
+        {
+            if !self.retired_task_turns.contains(&turn) {
+                self.retired_task_turns.push_back(turn);
+            }
+        }
+        while self.retired_task_turns.len() > 128 {
+            self.retired_task_turns.pop_front();
+        }
+        self.task_fenced = true;
+        self.approval = None;
+        self.task_permit_revision = self.task_permit_revision.saturating_add(1);
+    }
+    fn task_state(&mut self, generation: u64, value: &Value) {
+        if generation != self.ipc_generation {
+            return;
+        }
+        let Some(next) = TaskSummary::parse(value, &self.session_id) else {
+            self.fail(UiError::Protocol);
+            return;
+        };
+        if self.current_task_id() != Some(next.id.as_str()) {
+            return;
+        }
+        let old_epoch = self.current_task().map(|v| v.control_epoch);
+        let old_turn = self.current_task().and_then(|v| v.active_turn_id.clone());
+        if !self.tasks.accept(generation, &self.session_id, value) {
+            return;
+        }
+        if old_epoch.is_some_and(|v| v != next.control_epoch)
+            || matches!(next.status, TaskStatus::Paused | TaskStatus::Stopped)
+        {
+            self.fence_task();
+            if let Some(turn) = old_turn
+                && !self.retired_task_turns.contains(&turn)
+            {
+                self.retired_task_turns.push_back(turn);
+            }
+        }
+        if matches!(
+            next.status,
+            TaskStatus::Paused | TaskStatus::Stopped | TaskStatus::Failed
+        ) {
+            crate::clip_export_fence::revoke_session(
+                &self.session_id,
+                concat_host::export_publication::PublishRevocation::Stopped,
+            );
+        }
+        if next.status == TaskStatus::Running
+            && self.task_requested_epoch == Some(next.control_epoch)
+        {
+            self.task_fenced = false;
+        }
+        if self.turn_id.is_none() {
+            self.outcome = match next.status {
+                TaskStatus::Completed => Some(TaskOutcome::Completed),
+                TaskStatus::Failed => Some(TaskOutcome::Failed),
+                TaskStatus::Stopped => Some(TaskOutcome::Stopped),
+                _ => self.outcome,
+            };
+        }
+    }
+    pub fn can_task_command(&self, action: TaskCommand) -> bool {
+        if !self.supports_tasks()
+            || !self.session_opened
+            || self.ignore_runtime_events
+            || self.current_task_id().is_none()
+            || self.pending.iter().any(|p| match (&p.request, action) {
+                // Human withdrawal has priority over unknown create/status ACKs
+                // and pending resume/update. Do not queue duplicate withdrawals.
+                (
+                    Request::TaskControl {
+                        action: TaskCommand::Pause | TaskCommand::Stop,
+                        ..
+                    },
+                    TaskCommand::Pause | TaskCommand::Stop,
+                ) => true,
+                (
+                    Request::TaskControl { .. } | Request::TaskCreate { .. },
+                    TaskCommand::Pause | TaskCommand::Stop,
+                ) => false,
+                (Request::TaskControl { .. } | Request::TaskCreate { .. }, _) => true,
+                _ => false,
+            })
+        {
+            return false;
+        }
+        let status = self.current_task().map(|v| v.status);
+        match action {
+            TaskCommand::Status => true,
+            TaskCommand::Pause => matches!(
+                status,
+                Some(TaskStatus::Running | TaskStatus::WaitingJob | TaskStatus::Blocked)
+            ),
+            TaskCommand::Stop => status.is_some_and(|v| {
+                !matches!(
+                    v,
+                    TaskStatus::Completed | TaskStatus::Stopped | TaskStatus::Failed
+                )
+            }),
+            TaskCommand::Resume => {
+                !self.blocked()
+                    && matches!(
+                        status,
+                        Some(TaskStatus::Paused | TaskStatus::Stopped | TaskStatus::Blocked)
+                    )
+            }
+            TaskCommand::Update => {
+                !self.blocked()
+                    && status
+                        .is_some_and(|v| !matches!(v, TaskStatus::Completed | TaskStatus::Failed))
+            }
+        }
+    }
+    pub fn task_command(&mut self, action: TaskCommand) -> Result<(), UiError> {
+        if action == TaskCommand::Update {
+            return Err(UiError::InvalidInput);
+        }
+        if !self.can_task_command(action) {
+            return Err(UiError::Busy);
+        }
+        let task_id = self.current_task_id().ok_or(UiError::Protocol)?.to_owned();
+        let params = json!({"sessionId":self.session_id,"taskId":task_id});
+        if matches!(action, TaskCommand::Resume | TaskCommand::Update) {
+            self.task_requested_epoch = self
+                .current_task()
+                .and_then(|v| v.control_epoch.checked_add(1));
+        }
+        if matches!(
+            action,
+            TaskCommand::Pause | TaskCommand::Stop | TaskCommand::Update
+        ) {
+            if let Some(turn) = self.current_task().and_then(|v| v.active_turn_id.clone())
+                && !self.retired_task_turns.contains(&turn)
+            {
+                self.retired_task_turns.push_back(turn);
+            }
+            self.fence_task();
+            self.task_requested_epoch = None;
+        }
+        self.enqueue(
+            action.method(),
+            params,
+            Request::TaskControl {
+                task_id,
+                action,
+                update_id: None,
+                fence_revision: self.task_permit_revision,
+            },
+        )
+    }
+    pub(crate) fn create_task(
+        &mut self,
+        intent: &agent_tasks::TaskIntent,
+        content: Vec<Value>,
+        selection: Value,
+    ) -> Result<(), UiError> {
+        if !self.supports_tasks() {
+            return Err(UiError::Protocol);
+        }
+        if !intent.valid() {
+            return Err(UiError::InvalidInput);
+        }
+        let binding = self.checked_task_observation(intent.initial_observation_binding.as_ref())?;
+        if !self.view().can_send || self.task_active() {
+            return Err(UiError::Busy);
+        }
+        if !valid_model_selection(&selection) {
+            return Err(UiError::Configuration);
+        }
+        let mut params = agent_tasks::create_request(
+            &self.session_id,
+            &intent.client_request_id,
+            &intent.goal,
+            &content,
+            &selection,
+            intent.max_task_credits,
+        )
+        .ok_or(UiError::InvalidInput)?;
+        params["initialObservationBinding"] = binding;
+        let task_id = intent.task_id.clone();
+        let previous_task_id = self.current_task_id().map(str::to_owned);
+        self.enqueue(
+            "task.create",
+            params,
+            Request::TaskCreate {
+                task_id: task_id.clone(),
+                previous_task_id,
+            },
+        )?;
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::Stopped,
+        );
+        self.tasks.select_created_task(&task_id);
+        self.task_fenced = false;
+        self.retired_task_turns.clear();
+        self.text.clear();
+        self.tool_progress.clear();
+        self.progress.clear();
+        self.outcome = None;
+        self.error = None;
+        Ok(())
     }
     fn can_restore_original(&self) -> bool {
         self.session_opened
             && !self.session_id.is_empty()
             && !self.editor_client.is_empty()
-            && self.document.is_some()
+            && self.scope.is_some()
     }
     pub fn view(&self) -> View<'_> {
         View {
             can_connect: self.process.is_none()
                 && (!self.unknown_latched || self.can_restore_original()),
             can_reconcile: ((self.managed_mode && self.model_unknown)
-                || (!self.editor_recovery.is_empty() && self.unknown_latched))
+                || (!self.editor_recovery.is_empty() && self.unknown_latched)
+                || (!self.app_recovery.is_empty()
+                    && self.app_control_supported
+                    && self.unknown_latched))
                 && !self.account_expired
                 && self.process.is_some()
                 && self.turn_id.is_none()
@@ -506,7 +1237,13 @@ impl Controller {
             approval: self.approval.as_ref(),
             outcome: self.outcome,
             error: self.error,
-            can_send: self.phase == Phase::Ready && self.pending.is_empty() && !self.blocked(),
+            can_send: self.phase == Phase::Ready
+                && self.pending.is_empty()
+                && !self.blocked()
+                && (!self.tasks_supported
+                    || self.tasks.current_task_id.is_none()
+                    || self.tasks.current().is_some_and(|t| t.status.terminal())
+                    || self.task_idle()),
             can_stop: self.turn_id.is_some()
                 && !self
                     .pending
@@ -516,34 +1253,157 @@ impl Controller {
                     self.phase,
                     Phase::Running | Phase::AwaitingApproval | Phase::OutcomeUnknown
                 ),
-            can_approve: self.phase == Phase::AwaitingApproval
+            can_approve: !self.task_approval_fenced()
+                && self.phase == Phase::AwaitingApproval
                 && self.approval.is_some()
                 && !self.blocked()
-                && !self
-                    .pending
-                    .iter()
-                    .any(|p| matches!(p.request, Request::Stop | Request::Approve { .. })),
+                && !self.pending.iter().any(|p| {
+                    matches!(
+                        p.request,
+                        Request::Stop | Request::Approve { .. } | Request::Permissions { .. }
+                    )
+                }),
         }
     }
-    pub fn send_text(&mut self, text: &str) -> Result<(), UiError> {
+    /// Replace only the editor transport credentials within the opened session.
+    pub fn update_permissions(&mut self, write_token: Option<String>) -> Result<(), UiError> {
+        if self
+            .scope
+            .as_ref()
+            .is_some_and(|scope| scope.app().is_some())
+            || !self.session_opened
+            || self.process.is_none()
+            || !self.permissions_supported
+        {
+            return Err(UiError::Protocol);
+        }
+        self.permission_revision += 1;
+        let revision = self.permission_revision;
+        let operate = write_token.is_some();
+        if let Some(token) = &write_token {
+            self.secrets.push(token.clone());
+        }
+        self.approval = None;
+        self.enqueue("session.permissions", json!({"version":1,"sessionId":self.session_id,
+            "revision":revision,"mode":if operate {"operate"} else {"read"},"writeToken":write_token}),
+            Request::Permissions { revision, operate })
+    }
+    pub fn update_app_control_permissions(&mut self, token: Option<String>) -> Result<(), UiError> {
+        if !self.supports_app_control() || !self.permissions_supported || !self.session_opened {
+            return Err(UiError::Protocol);
+        }
+        self.fence_app_control();
+        self.permission_revision = self
+            .permission_revision
+            .checked_add(1)
+            .ok_or(UiError::Protocol)?;
+        let revision = self.permission_revision;
+        let operate = token.is_some();
+        if let Some(value) = &token {
+            self.secrets.push(value.clone());
+        }
+        self.enqueue("session.permissions", json!({"version":1,"sessionId":self.session_id,"revision":revision,"mode":if operate {"operate"}else{"read"},"appControlToken":token}), Request::Permissions{revision,operate})
+    }
+    #[cfg(test)]
+    pub(crate) fn send_text(&mut self, text: &str) -> Result<(), UiError> {
         self.send_text_with_selection(text, None)
     }
     /// Selection is consumed by this new input only. It is never installed as
     /// mutable controller state or attached to stop, reconciliation or recovery.
-    pub fn send_text_with_selection(
+    #[cfg(test)]
+    pub(crate) fn send_text_with_selection(
         &mut self,
         text: &str,
         selection: Option<Value>,
     ) -> Result<(), UiError> {
         self.send_content_with_selection(vec![json!({"type":"text","text":text})], selection)
     }
-    pub fn send_content_with_selection(
+    #[cfg(test)]
+    pub(crate) fn send_content_with_selection(
         &mut self,
         content: Vec<Value>,
         selection: Option<Value>,
     ) -> Result<(), UiError> {
+        // Existing controller fixtures provide a deliberate native observation.
+        // Production callers must supply the binding captured at the UI click.
+        let observation = self
+            .scope
+            .as_ref()
+            .and_then(AgentScope::document)
+            .map(|identity| {
+                let binding = serde_json::from_value(json!({
+                    "appInstanceId": identity.instance_id,
+                    "clientId": self.editor_client,
+                    "kind": "canvas",
+                    "projectId": identity.project_id,
+                    "documentSessionId": identity.document_session_id,
+                    "revision": 1, "contextRevision": 1, "selectionRevision": 1,
+                    "selectedObjectIds": [], "viewStateId": null
+                }))
+                .unwrap();
+                InputObservation::Document(
+                    format!("input-{}", uuid::Uuid::new_v4()),
+                    Box::new(binding),
+                )
+            });
+        self.send_frozen_content(content, selection, observation)
+    }
+    pub(crate) fn send_document_content(
+        &mut self,
+        input_id: &str,
+        content: Vec<Value>,
+        selection: Option<Value>,
+        observation: DocumentObservationBinding,
+    ) -> Result<(), UiError> {
+        self.send_frozen_content(
+            content,
+            selection,
+            Some(InputObservation::Document(
+                input_id.to_owned(),
+                Box::new(observation),
+            )),
+        )
+    }
+    /// App observations are frozen by the human send action before attachment work.
+    pub fn send_app_content(
+        &mut self,
+        input_id: &str,
+        content: Vec<Value>,
+        selection: Option<Value>,
+        view: InputBinding,
+    ) -> Result<(), UiError> {
+        self.send_frozen_content(
+            content,
+            selection,
+            Some(InputObservation::App(input_id.to_owned(), view)),
+        )
+    }
+    fn send_frozen_content(
+        &mut self,
+        content: Vec<Value>,
+        selection: Option<Value>,
+        observation: Option<InputObservation>,
+    ) -> Result<(), UiError> {
         if let Some(error) = self.blocking_error() {
             return Err(error);
+        }
+        let is_app = self
+            .scope
+            .as_ref()
+            .is_some_and(|scope| scope.app().is_some());
+        let valid_observation = match (&self.scope, &observation) {
+            (Some(AgentScope::App(identity)), Some(InputObservation::App(id, view))) => {
+                max64(id) && view.matches_scope(identity, &self.editor_client)
+            }
+            (
+                Some(AgentScope::Document(identity)),
+                Some(InputObservation::Document(id, binding)),
+            ) => max64(id) && binding.matches_identity(identity, &self.editor_client),
+            (None, None) => true,
+            _ => false,
+        };
+        if !valid_observation {
+            return Err(UiError::Configuration);
         }
         if !self.view().can_send {
             return Err(UiError::Busy);
@@ -583,14 +1443,48 @@ impl Controller {
                 return Err(UiError::Configuration);
             }
         }
+        if !is_app && self.scope.is_some() && !self.supports_document_observation() {
+            return Err(UiError::ObservationUnavailable);
+        }
         // IPC counters restart with the process; persisted sessions must never
         // mistake a new explicit question for an already accepted input.
-        let input_id = format!("input-{}", uuid::Uuid::new_v4());
+        let input_id = observation
+            .as_ref()
+            .map(|observation| observation.input_id().to_owned())
+            .unwrap_or_else(|| format!("input-{}", uuid::Uuid::new_v4()));
         let mut params = json!({"sessionId":self.session_id,"inputId":input_id,"mode":"follow_up","content":content});
+        let app_input = match &observation {
+            Some(InputObservation::App(_, view)) => Some(view.clone()),
+            _ => None,
+        };
+        if self.app_control_supported
+            && app_input
+                .as_ref()
+                .is_some_and(|binding| !self.app_control_inputs.can_remember(&input_id, binding))
+        {
+            return Err(UiError::InvalidInput);
+        }
+        match observation {
+            Some(InputObservation::App(_, view)) => params["appViewBinding"] = json!(view.page()),
+            Some(InputObservation::Document(_, binding)) => {
+                params["observationBinding"] = json!(binding);
+            }
+            None => {}
+        }
         if let Some(selection) = selection {
             params["modelSelection"] = selection;
         }
-        self.enqueue("send", params, Request::Send { input_id })?;
+        self.enqueue(
+            "send",
+            params,
+            Request::Send {
+                input_id: input_id.clone(),
+            },
+        )?;
+        if let Some(binding) = app_input.filter(|_| self.app_control_supported) {
+            self.app_control_inputs.remember(&input_id, binding);
+        }
+        self.send_turn = Some((input_id, None));
         self.text.clear();
         self.tool_progress.clear();
         self.progress.clear();
@@ -604,6 +1498,12 @@ impl Controller {
     }
     /// Enqueue isn't confirmation. Phase becomes Stopping only on the real {stopping:true} reply.
     pub fn stop(&mut self) -> Result<(), UiError> {
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::Stopped,
+        );
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Stopped);
+        self.fence_app_control();
         if !self.view().can_stop {
             return Err(UiError::Busy);
         }
@@ -645,6 +1545,192 @@ impl Controller {
             Request::Reconcile,
         )
     }
+    pub fn app_scope(&self) -> bool {
+        self.scope
+            .as_ref()
+            .is_some_and(|scope| scope.app().is_some())
+    }
+    pub fn requires_app_restore(&self) -> bool {
+        self.app_scope() && self.app_restore_required
+    }
+    pub fn app_read_recovery(&self) -> Option<&AppReadRecovery> {
+        self.app_read_recovery.as_ref()
+    }
+    pub fn can_query_app_reads(&self) -> bool {
+        self.app_scope()
+            && self.session_opened
+            && self.process.is_some()
+            && self.turn_id.is_none()
+            && self.pending.is_empty()
+            && !self.ignore_runtime_events
+            && !self.account_expired
+    }
+    pub fn can_abandon_app_reads(&self) -> bool {
+        self.can_query_app_reads()
+            && !self.model_unknown
+            && self
+                .app_read_recovery
+                .as_ref()
+                .is_some_and(|r| r.can_abandon)
+    }
+    pub fn query_app_reads(&mut self) -> Result<(), UiError> {
+        if !self.can_query_app_reads() {
+            return Err(UiError::Busy);
+        }
+        self.enqueue(
+            "status",
+            json!({"sessionId":self.session_id}),
+            Request::RecoveryStatus,
+        )
+    }
+    /// Human-only recovery. Never sends the old input or invokes a model/tool.
+    pub fn abandon_app_reads(&mut self) -> Result<(), UiError> {
+        if !self.can_abandon_app_reads() {
+            return Err(UiError::Busy);
+        }
+        self.enqueue(
+            "app.abandonReads",
+            json!({"sessionId":self.session_id}),
+            Request::AbandonAppReads,
+        )
+    }
+    fn apply_app_summary(&mut self, summary: &Value) -> bool {
+        if !self.app_scope() {
+            return false;
+        }
+        let Some(recovery) = AppReadRecovery::parse(&summary["readRecovery"]) else {
+            return false;
+        };
+        let Some(pending) = summary["pendingInputCount"].as_u64().filter(|n| *n <= 8) else {
+            return false;
+        };
+        if summary["sessionId"].as_str() != Some(self.session_id.as_str())
+            || recovery.evidence["pendingInputIds"]
+                .as_array()
+                .map(Vec::len)
+                != Some(pending as usize)
+            || !summary["recoveryRequired"].is_boolean()
+            || !summary["toolState"]["outcomeUnknown"].is_boolean()
+            || !self.update_editor_recovery(&summary["toolState"])
+            || (self.managed_mode && !self.apply_model_state(&summary["modelState"]))
+        {
+            return false;
+        }
+        self.app_read_recovery = Some(recovery);
+        self.recovery_pending = pending > 0
+            || summary["recoveryRequired"] == true
+            || summary["activeTurnId"].as_str().is_some();
+        self.unknown_latched = summary["toolState"]["outcomeUnknown"] == true;
+        if !self.blocked() && self.outcome == Some(TaskOutcome::OutcomeUnknown) {
+            self.outcome = None;
+        }
+        self.error = self.blocking_error();
+        if self.turn_id.is_none() {
+            self.phase = if self.blocked() {
+                Phase::OutcomeUnknown
+            } else {
+                Phase::Ready
+            };
+        }
+        true
+    }
+    fn update_app_recovery(&mut self, tools: &Value) -> bool {
+        let Some(items) = tools.get("unresolved") else {
+            self.app_recovery.clear();
+            return true;
+        };
+        let Some(items) = items.as_array().filter(|items| items.len() <= 128) else {
+            return false;
+        };
+        let mut recovery = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for item in items {
+            let Some(object) = item.as_object().filter(|object| {
+                object.len() == 2
+                    && object.contains_key("invocationId")
+                    && object.contains_key("tool")
+            }) else {
+                return false;
+            };
+            let Some(id) = object["invocationId"].as_str().filter(|id| {
+                !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+            }) else {
+                return false;
+            };
+            if !seen.insert(id) {
+                return false;
+            }
+            match object["tool"].as_str() {
+                Some("app_navigate") if self.app_control_supported => recovery.push(AppRecovery {
+                    invocation_id: id.into(),
+                }),
+                Some("capabilities" | "app_context" | "page_items" | "page_preview") => {}
+                Some("app_operation") if self.app_control_supported => {}
+                _ => return false,
+            }
+        }
+        self.app_recovery = recovery;
+        true
+    }
+    pub(crate) fn app_recovery(&self) -> Option<&AppRecovery> {
+        if self.view().can_reconcile {
+            self.app_recovery.first()
+        } else {
+            None
+        }
+    }
+    pub(crate) fn reconcile_app(&mut self, recovery: &AppRecovery) -> Result<(), UiError> {
+        if self.app_recovery() != Some(recovery) {
+            return Err(UiError::Busy);
+        }
+        self.enqueue(
+            "app.reconcileOperation",
+            json!({"sessionId":self.session_id,"invocationId":recovery.invocation_id}),
+            Request::AppReconcile {
+                invocation_id: recovery.invocation_id.clone(),
+            },
+        )
+    }
+    fn settled_app_write(&self, invocation: &str, data: &Value) -> bool {
+        let Some(proposal) = self.app_control_inputs.proposal(invocation) else {
+            return false;
+        };
+        let metadata = &data["metadata"];
+        if metadata["version"].as_u64() == Some(1)
+            && metadata["status"] == "not_dispatched"
+            && metadata["navigationSent"].as_bool() == Some(false)
+            && metadata["resultAvailable"].as_bool() == Some(false)
+            && metadata["operationId"].as_str() == Some(&proposal.intent.operation_id)
+            && metadata["clientSequence"].as_u64() == Some(proposal.intent.client_sequence)
+            && metadata["reasonCode"].as_str().is_some_and(|code| {
+                !code.is_empty() && code.len() <= 128 && !code.chars().any(char::is_control)
+            })
+            && metadata.as_object().is_some_and(|object| object.len() == 7)
+            && data["message"]["isError"].as_bool() == Some(true)
+        {
+            return true;
+        }
+        let Ok(receipt) = serde_json::from_value::<concat_editor_mcp::AppNavigationReceipt>(
+            metadata["appControlReceipt"].clone(),
+        ) else {
+            return false;
+        };
+        receipt.valid()
+            && receipt.session_id == proposal.session_id
+            && receipt.operation_id == proposal.intent.operation_id
+            && receipt.client_sequence == proposal.intent.client_sequence
+            && receipt.before == proposal.intent.before
+            && receipt.target == proposal.intent.target
+            && receipt.origin.app_instance_id == proposal.source.app_instance_id
+            && receipt.origin.app_session_id == proposal.source.app_session_id
+            && receipt.origin.client_id == proposal.source.client_id
+            && receipt.durability == concat_editor_mcp::AppOperationDurability::Confirmed
+            && matches!(
+                receipt.status,
+                concat_editor_mcp::AppOperationStatus::Completed
+                    | concat_editor_mcp::AppOperationStatus::Cancelled
+            )
+    }
     pub fn editor_recovery(&self) -> Option<&EditorRecovery> {
         if self.view().can_reconcile && !self.model_unknown {
             self.editor_recovery.first()
@@ -669,11 +1755,20 @@ impl Controller {
         )
     }
     fn update_editor_recovery(&mut self, tools: &Value) -> bool {
+        if self.app_scope() && !self.update_app_recovery(tools) {
+            return false;
+        }
         let Some(items) = tools.get("recoveryOperations").and_then(Value::as_array) else {
             self.editor_recovery.clear();
             return true;
         };
-        if items.len() > 128 {
+        if items.len() > 128
+            || (self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.app().is_some())
+                && !items.is_empty())
+        {
             return false;
         }
         let mut next = Vec::new();
@@ -684,6 +1779,8 @@ impl Controller {
                     Some(
                         "insert_library_image"
                             | "transform_canvas_layer"
+                            | "canvas_edit"
+                            | "clip_edit"
                             | "save_canvas_project"
                             | "export_canvas_png"
                             | "flow_add_node"
@@ -699,8 +1796,7 @@ impl Controller {
             }
             let binding = &item["binding"];
             let parameters = &item["parameters"];
-            if binding["instanceId"].as_str()
-                != self.document.as_ref().map(|d| d.instance_id.as_str())
+            if binding["instanceId"].as_str() != self.scope.as_ref().map(AgentScope::instance_id)
                 || binding["clientId"].as_str() != Some(self.editor_client.as_str())
             {
                 continue;
@@ -742,6 +1838,7 @@ impl Controller {
                 client_sequence: sequence,
                 project_id: project.into(),
                 document_session_id: session.into(),
+                is_clip: item["toolName"] == "clip_edit",
                 is_flow: item["toolName"]
                     .as_str()
                     .is_some_and(|n| n.starts_with("flow_")),
@@ -860,6 +1957,15 @@ impl Controller {
     }
     /// Stop the old runtime and close its session. Reconnection requires another explicit connect.
     pub fn disconnect(&mut self) {
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::SessionChanged,
+        );
+        crate::clip_save_fence::invalidate(
+            concat_host::projects::SaveInvalidation::ConversationChanged,
+        );
+        self.fence_app_control();
+        self.task_observation_supported = false;
         self.mark_interrupted_model();
         self.ignore_runtime_events = true;
         self.approval = None;
@@ -882,6 +1988,12 @@ impl Controller {
     /// App exit may use this immediately, without waiting for a session.close response.
     /// The actual process-exit wait is agent_process::shutdown_all_at_exit, never this UI call.
     pub fn shutdown_now(&mut self) {
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::SessionChanged,
+        );
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
+        self.task_observation_supported = false;
         self.mark_interrupted_model();
         self.ignore_runtime_events = true;
         self.approval = None;
@@ -899,11 +2011,8 @@ impl Controller {
         }
     }
     /// Called by a host timer with the actual currently active document identity; no model polling.
-    pub fn tick(&mut self, current: Option<&DocumentIdentity>) {
-        if self.process.is_some()
-            && self.document.as_ref() != current
-            && !self.ignore_runtime_events
-        {
+    pub fn tick(&mut self, current: Option<&AgentScope>) {
+        if self.process.is_some() && self.scope.as_ref() != current && !self.ignore_runtime_events {
             self.disconnect();
             self.error = Some(UiError::DocumentChanged);
             self.text.clear();
@@ -916,6 +2025,25 @@ impl Controller {
             };
             self.handle_event(event);
         }
+        // Lost cleanup receipts are resolved through the original status, never
+        // by replaying the old input or silently repeating the human action.
+        if let Some(index) = self.pending.iter().position(|pending| {
+            matches!(pending.request, Request::AbandonAppReads)
+                && pending.since.elapsed() >= RESPONSE_TIMEOUT
+        }) {
+            self.pending.remove(index);
+            if let Err(error) = self.query_app_reads() {
+                self.fail(error);
+            }
+        }
+        if self.app_scope()
+            && (self.blocked() || self.last_result_turn.is_some())
+            && self.app_read_recovery.is_none()
+            && self.can_query_app_reads()
+            && let Err(error) = self.query_app_reads()
+        {
+            self.fail(error);
+        }
         if self
             .pending
             .iter()
@@ -925,6 +2053,11 @@ impl Controller {
         }
     }
     fn fail(&mut self, error: UiError) {
+        crate::clip_export_fence::revoke_session(
+            &self.session_id,
+            concat_host::export_publication::PublishRevocation::SessionChanged,
+        );
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Stopped);
         self.mark_interrupted_model();
         if self.write_in_flight {
             self.unknown();
@@ -937,6 +2070,7 @@ impl Controller {
         };
         self.approval = None;
         self.pending.clear();
+        self.send_turn = None;
         self.ignore_runtime_events = true;
         if let Some(process) = &self.process {
             process.request_shutdown();
@@ -960,6 +2094,9 @@ impl Controller {
         }
     }
     fn unknown(&mut self) {
+        if self.app_scope() {
+            self.app_read_recovery = None;
+        }
         self.unknown_latched = true;
         self.phase = Phase::OutcomeUnknown;
         self.outcome = Some(TaskOutcome::OutcomeUnknown);
@@ -982,6 +2119,15 @@ impl Controller {
                     && value["toolState"]["outcomeUnknown"].as_bool() == Some(true) =>
             {
                 self.unknown();
+            }
+            Event::Task(value) if !self.ignore_runtime_events => {
+                if !self.tasks_supported
+                    || value["sessionId"].as_str() != Some(self.session_id.as_str())
+                {
+                    self.fail(UiError::Protocol);
+                } else {
+                    self.task_state(self.ipc_generation, &value["task"]);
+                }
             }
             Event::Managed(value) if !self.ignore_runtime_events => {
                 if value["sessionId"].as_str() != Some(self.session_id.as_str())
@@ -1006,7 +2152,9 @@ impl Controller {
                 }
                 let was_closing = self.phase == Phase::Closing;
                 self.process.take();
+                self.task_observation_supported = false;
                 self.pending.clear();
+                self.send_turn = None;
                 self.approval = None;
                 self.turn_id = None;
                 self.secrets.clear();
@@ -1047,6 +2195,23 @@ impl Controller {
             return;
         };
         let data = &event["data"];
+        if tool == "app_navigate"
+            && !self.unknown_latched
+            && self.write_in_flight
+            && event["turnId"].as_str() == Some(turn.as_str())
+            && matches!(
+                event["type"].as_str(),
+                Some("tool.failed" | "tool.completed")
+            )
+            && data["invocationId"].as_str() == Some(invocation.as_str())
+            && data["message"]["toolName"] == "app_navigate"
+            && self.settled_app_write(invocation, data)
+        {
+            self.write_in_flight = false;
+            self.write_identity = None;
+            self.write_operation = None;
+            return;
+        }
         if !self.write_in_flight
             || event["turnId"].as_str() != Some(turn.as_str())
             || event["type"].as_str() != Some("tool.failed")
@@ -1071,6 +2236,21 @@ impl Controller {
         let pending = self.pending.remove(index).unwrap();
         if value.get("error").is_some() {
             let code = value["error"]["code"].as_str().unwrap_or("");
+            if self.app_scope()
+                && matches!(pending.request, Request::Create)
+                && code == "rebind_required"
+            {
+                self.app_restore_required = true;
+                self.fail(UiError::SessionRecoveryRequired);
+                return;
+            }
+            if self.app_scope() && matches!(pending.request, Request::AbandonAppReads) {
+                self.app_read_recovery = None;
+                if let Err(error) = self.query_app_reads() {
+                    self.fail(error);
+                }
+                return;
+            }
             // recovery_required also covers interrupted inputs and managed budgets.
             // Query the original session before classifying an edit as UNKNOWN.
             if code == "recovery_required" {
@@ -1090,7 +2270,15 @@ impl Controller {
                 }
                 return;
             }
-            let error = remote_error(code);
+            let error = if code == "stale_observation"
+                && matches!(
+                    pending.request,
+                    Request::TaskCreate { .. } | Request::TaskControl { .. }
+                ) {
+                UiError::TaskObservationChanged
+            } else {
+                remote_error(code)
+            };
             if error == UiError::Protocol {
                 self.fail(error);
                 return;
@@ -1111,14 +2299,39 @@ impl Controller {
                 return;
             }
             match pending.request {
+                Request::TaskCreate {
+                    previous_task_id, ..
+                } => {
+                    self.tasks = TaskProjection::restored(previous_task_id).unwrap_or_default();
+                    crate::clip_export_fence::revoke_session(
+                        &self.session_id,
+                        concat_host::export_publication::PublishRevocation::SessionChanged,
+                    );
+                    self.tasks.begin_connection(self.ipc_generation);
+                    self.phase = if self.blocked() {
+                        Phase::OutcomeUnknown
+                    } else {
+                        Phase::Ready
+                    };
+                    self.error = Some(error);
+                }
+                Request::TaskControl { update_id, .. } => {
+                    if code == "task_revision_conflict" {
+                        self.rejected_task_update = update_id;
+                    }
+                    self.task_requested_epoch = None;
+                    self.error = Some(error);
+                }
                 Request::Send { .. } if !self.unknown_latched => {
+                    self.send_turn = None;
                     self.phase = Phase::Ready;
                     self.error = Some(error);
                 }
                 Request::Approve { .. }
                 | Request::Stop
                 | Request::Reconcile
-                | Request::EditorReconcile { .. } => {
+                | Request::EditorReconcile { .. }
+                | Request::AppReconcile { .. } => {
                     self.error = Some(error);
                 }
                 Request::Close => {
@@ -1141,17 +2354,48 @@ impl Controller {
                 }
                 if result["protocolVersion"].as_u64() != Some(1)
                     || result["instanceId"].as_str()
-                        != self.document.as_ref().map(|d| d.instance_id.as_str())
+                        != self.scope.as_ref().map(AgentScope::instance_id)
                     || (self.restore
                         && result["capabilities"]["session_restore_rebind"].as_bool() != Some(true))
                 {
                     self.fail(UiError::Protocol);
                     return;
                 }
-                let document = self.document.as_ref().unwrap();
+                let scope = self.scope.as_ref().unwrap();
+                if scope.app().is_some()
+                    && (result["capabilities"]["app_read_scope"] != true
+                        || result["capabilities"]["app_read_protocol_version"].as_u64() != Some(1))
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                self.app_control_supported = scope.app().is_some()
+                    && result["capabilities"]["app_control_scope"] == true
+                    && result["capabilities"]["app_control_protocol_version"].as_u64() == Some(1);
+                self.permissions_supported =
+                    result["capabilities"]["session_permissions"].as_bool() == Some(true);
                 self.model_selection_supported =
                     result["capabilities"]["turn_model_selection"].as_bool() == Some(true);
-                let mut params = json!({"sessionId":self.session_id,"projectId":document.project_id,"documentSessionId":document.document_session_id});
+                self.document_observation_supported = scope.document().is_some()
+                    && result["capabilities"]["document_observation_binding"].as_bool()
+                        == Some(true)
+                    && result["capabilities"]["document_observation_protocol_version"].as_u64()
+                        == Some(1);
+                self.task_observation_supported = scope.document().is_some()
+                    && result["capabilities"]["task_observation_binding"].as_bool() == Some(true)
+                    && result["capabilities"]["task_observation_protocol_version"].as_u64()
+                        == Some(1);
+                self.tasks_supported = scope.document().is_some()
+                    && result["capabilities"]["durable_tasks"] == true
+                    && result["capabilities"]["task_protocol_version"].as_u64() == Some(1);
+                let mut params = match scope {
+                    AgentScope::Document(document) => {
+                        json!({"sessionId":self.session_id,"projectId":document.project_id,"documentSessionId":document.document_session_id})
+                    }
+                    AgentScope::App(app) => {
+                        json!({"sessionId":self.session_id,"scopeKind":"app","accountScope":app.account_scope,"appSessionId":app.app_session_id})
+                    }
+                };
                 self.recover_existing = !self.restore
                     && result["capabilities"]["session_create_or_restore"].as_bool() == Some(true);
                 let method = if self.restore {
@@ -1182,7 +2426,10 @@ impl Controller {
                         // was lost. Only an advertised, explicit recovery may
                         // open that same record; the host never retries a send.
                         params["recoverExisting"] = json!(true);
-                        params["rebind"] = json!(true);
+                        // App probing does not imply authority to rebind old reads.
+                        if scope.document().is_some() {
+                            params["rebind"] = json!(true);
+                        }
                     }
                     "session.create"
                 };
@@ -1232,6 +2479,13 @@ impl Controller {
                     return;
                 }
                 self.session_opened = true;
+                self.app_restore_required = false;
+                if self.app_scope() {
+                    if !self.apply_app_summary(result) {
+                        self.fail(UiError::Protocol);
+                    }
+                    return;
+                }
                 if restoring {
                     self.recovery_pending = result["recoveryRequired"] == true
                         || result["pendingInputCount"].as_u64().is_some_and(|n| n > 0);
@@ -1245,6 +2499,71 @@ impl Controller {
                         Phase::Ready
                     };
                     self.error = self.blocking_error();
+                }
+                if self.tasks_supported
+                    && let Some(task_id) = self.current_task_id().map(str::to_owned)
+                    && let Err(error) = self.enqueue(
+                        "task.status",
+                        json!({"sessionId":self.session_id,"taskId":task_id}),
+                        Request::TaskControl {
+                            task_id,
+                            action: TaskCommand::Status,
+                            update_id: None,
+                            fence_revision: self.task_permit_revision,
+                        },
+                    )
+                {
+                    self.fail(error);
+                }
+            }
+            Request::TaskCreate { task_id, .. }
+            | Request::TaskControl {
+                task_id,
+                action: TaskCommand::Status,
+                ..
+            } => {
+                if result["id"].as_str() != Some(task_id.as_str()) {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                self.task_state(self.ipc_generation, result);
+            }
+            Request::TaskControl {
+                task_id,
+                action,
+                update_id,
+                fence_revision,
+            } => {
+                if result["id"].as_str() != Some(task_id.as_str()) {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                self.task_state(self.ipc_generation, result);
+                if action == TaskCommand::Update {
+                    self.acknowledged_task_update = update_id;
+                    self.rejected_task_update = None;
+                }
+                if matches!(action, TaskCommand::Resume | TaskCommand::Update)
+                    && fence_revision == self.task_permit_revision
+                {
+                    if self.current_task().is_some_and(|task| {
+                        task.status == TaskStatus::Running
+                            && (Some(task.control_epoch) == self.task_requested_epoch
+                                || action == TaskCommand::Update
+                                    && result["controlEpoch"].as_u64() == Some(task.control_epoch))
+                    }) {
+                        self.task_fenced = false;
+                    }
+                    self.task_requested_epoch = None;
+                }
+            }
+            Request::Permissions { revision, operate } => {
+                if result["updated"].as_bool() != Some(true)
+                    || result["sessionId"].as_str() != Some(self.session_id.as_str())
+                    || result["revision"].as_u64() != Some(revision)
+                    || result["mode"].as_str() != Some(if operate { "operate" } else { "read" })
+                {
+                    self.fail(UiError::Protocol);
                 }
             }
             Request::Send { input_id } => {
@@ -1326,6 +2645,12 @@ impl Controller {
                 }
             }
             Request::RecoveryStatus => {
+                if self.app_scope() {
+                    if !self.apply_app_summary(result) {
+                        self.fail(UiError::Protocol);
+                    }
+                    return;
+                }
                 if !self.update_editor_recovery(&result["toolState"]) {
                     self.fail(UiError::Protocol);
                     return;
@@ -1364,6 +2689,80 @@ impl Controller {
             Request::Reconcile => {
                 if !self.apply_model_state(&result["modelState"]) {
                     self.fail(UiError::Protocol);
+                } else if self.app_scope()
+                    && let Err(error) = self.query_app_reads()
+                {
+                    self.fail(error);
+                }
+            }
+            Request::AbandonAppReads => {
+                if result["sessionId"].as_str() != Some(self.session_id.as_str())
+                    || !matches!(
+                        result["status"].as_str(),
+                        Some("stale_reads_abandoned" | "unchanged")
+                    )
+                    || result["resultAvailable"].as_bool() != Some(false)
+                    || result["readRecovery"] != result["session"]["readRecovery"]
+                    || !self.apply_app_summary(&result["session"])
+                {
+                    self.fail(UiError::Protocol);
+                }
+            }
+            Request::AppReconcile { invocation_id } => {
+                let Ok(receipt) = serde_json::from_value::<concat_editor_mcp::AppNavigationReceipt>(
+                    result["receipt"].clone(),
+                ) else {
+                    self.fail(UiError::Protocol);
+                    return;
+                };
+                let terminal = receipt.durability
+                    == concat_editor_mcp::AppOperationDurability::Confirmed
+                    && matches!(
+                        receipt.status,
+                        concat_editor_mcp::AppOperationStatus::Completed
+                            | concat_editor_mcp::AppOperationStatus::Cancelled
+                    );
+                if !receipt.valid()
+                    || receipt.session_id != self.session_id
+                    || receipt.origin.client_id != self.editor_client
+                    || result["verified"].as_bool() != Some(terminal)
+                    || (terminal
+                        && result["completed"].as_bool()
+                            != Some(
+                                receipt.status == concat_editor_mcp::AppOperationStatus::Completed,
+                            ))
+                    || (!terminal && result["status"] != "outcomeUnknown")
+                    || !self.apply_app_summary(&result["session"])
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                if terminal {
+                    if self
+                        .app_recovery
+                        .iter()
+                        .any(|entry| entry.invocation_id == invocation_id)
+                    {
+                        self.fail(UiError::Protocol);
+                        return;
+                    }
+                    if self
+                        .write_identity
+                        .as_ref()
+                        .is_some_and(|(_, id, tool)| id == &invocation_id && tool == "app_navigate")
+                    {
+                        self.write_in_flight = false;
+                        self.write_identity = None;
+                        self.write_operation = None;
+                    }
+                    self.outcome = Some(TaskOutcome::OperationVerified);
+                }
+            }
+            Request::AppControlAuthorize { allowed } => {
+                if result["accepted"].as_bool() != Some(true)
+                    || result["allowed"].as_bool() != Some(allowed)
+                {
+                    self.fail(UiError::Protocol);
                 }
             }
             Request::Close => {
@@ -1401,11 +2800,28 @@ impl Controller {
             if self.unknown_latched {
                 return;
             }
-            if !self
-                .pending
-                .iter()
-                .any(|p| matches!(p.request, Request::Send { .. }))
-                && self.phase != Phase::Running
+            // ACK may remove Pending::Send before the real COTO start arrives.
+            let explicit_send = self
+                .send_turn
+                .as_ref()
+                .is_some_and(|(_, turn)| turn.is_none());
+            let task_turn = turn.is_some_and(|turn| {
+                self.tasks.current().is_some_and(|task| {
+                    !self.retired_task_turns.iter().any(|v| v == turn)
+                        && task.active_input_id.as_deref().is_some_and(|input| {
+                            self.tasks
+                                .owns_automatic_turn(self.ipc_generation, input, turn)
+                        })
+                })
+            });
+            if !explicit_send
+                && !task_turn
+                && (self.tasks_supported
+                    || self
+                        .scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.app().is_some())
+                    || self.phase != Phase::Running)
             {
                 self.fail(UiError::Protocol);
                 return;
@@ -1414,6 +2830,29 @@ impl Controller {
                 self.fail(UiError::Protocol);
                 return;
             };
+            if explicit_send {
+                if task_turn {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                if let Some((_, admitted)) = self.send_turn.as_mut() {
+                    *admitted = Some(turn.to_owned());
+                }
+            }
+            if task_turn {
+                if self.turn_id.as_deref().is_some_and(|old| old != turn) {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                self.task_turn_binding = self.current_task().cloned();
+                self.text.clear();
+                self.tool_progress.clear();
+                self.progress.clear();
+                self.outcome = None;
+                self.error = self.blocking_error();
+            }
+            self.active_task_turn = task_turn;
+            self.last_result_turn = None;
             self.turn_id = Some(turn.to_owned());
             if self.cost_waiting_for_turn || self.cost_turn_id.as_deref() != Some(turn) {
                 self.cost_turn_id = Some(turn.to_owned());
@@ -1445,7 +2884,63 @@ impl Controller {
             self.track_tool_progress(kind, data);
         }
         match kind {
+            "input.applied"
+                if self.tasks_supported
+                    || self
+                        .scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.app().is_some()) =>
+            {
+                if self.app_control_supported && self.app_scope() {
+                    if !turn
+                        .zip(data["inputId"].as_str())
+                        .is_some_and(|(turn, input)| {
+                            self.app_control_inputs.applied(turn, input, seq)
+                        })
+                    {
+                        self.fail(UiError::Protocol);
+                    }
+                    return;
+                }
+                if self.tasks.current().is_some_and(|task| {
+                    task.active_turn_id.as_deref() == turn
+                        && data["inputId"].as_str() != task.active_input_id.as_deref()
+                }) || self.send_turn.as_ref().is_some_and(|(input, admitted)| {
+                    admitted.as_deref() == turn && data["inputId"].as_str() != Some(input.as_str())
+                }) {
+                    self.fail(UiError::Protocol);
+                }
+            }
             "tool.started" => {
+                if self
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.app().is_some())
+                    && !matches!(
+                        data["call"]["name"]
+                            .as_str()
+                            .and_then(ToolAction::from_name),
+                        Some(ToolAction::AppRead | ToolAction::Capabilities)
+                    )
+                    && !(self.app_control_supported
+                        && matches!(
+                            data["call"]["name"].as_str(),
+                            Some("app_navigate" | "app_operation")
+                        ))
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                if data["call"]["name"] == "app_navigate"
+                    && !turn.is_some_and(|turn| {
+                        self.app_control_inputs
+                            .started(&self.session_id, turn, seq, data)
+                            .is_some()
+                    })
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
                 // A registration retry acts on the outstanding original export.
                 // Its fresh COTO invocation must not erase that business identity.
                 if data["call"]["name"] == "retry_canvas_registration"
@@ -1488,7 +2983,16 @@ impl Controller {
                             && data["message"]["toolName"].as_str() == Some(tool.as_str())
                     },
                 );
-                if owns_write {
+                if owns_write && self.app_scope() && data["message"]["toolName"] == "app_navigate" {
+                    if data["invocationId"]
+                        .as_str()
+                        .is_some_and(|id| self.settled_app_write(id, data))
+                    {
+                        self.write_in_flight = false;
+                        self.write_identity = None;
+                        self.write_operation = None;
+                    }
+                } else if owns_write {
                     if data["metadata"]["postVerification"].as_str() == Some("pending") {
                         self.write_operation = data["metadata"]["operationId"]
                             .as_str()
@@ -1500,13 +3004,14 @@ impl Controller {
                             )
                             .map(|(id, sequence)| (id.to_owned(), sequence));
                         self.outcome = Some(TaskOutcome::SubmittedPendingVerification);
-                    } else {
+                    } else if data["metadata"]["postVerification"] == "verified" {
                         self.write_in_flight = false;
                         self.write_identity = None;
+                        self.write_operation = None;
                     }
                 } else if matches!(
                     data["message"]["toolName"].as_str(),
-                    Some("canvas_operation" | "retry_canvas_registration")
+                    Some("canvas_operation" | "clip_operation" | "retry_canvas_registration")
                 ) && data["metadata"]["postVerification"].as_str() == Some("verified")
                     && self
                         .write_identity
@@ -1552,6 +3057,17 @@ impl Controller {
                 }
             }
             "approval.required" => {
+                if self
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.app().is_some())
+                {
+                    self.fail(UiError::Protocol);
+                    return;
+                }
+                if self.task_approval_fenced() {
+                    return;
+                }
                 if self.blocked() {
                     return;
                 }
@@ -1567,11 +3083,15 @@ impl Controller {
                         tool,
                         "move_selected_image"
                             | "library_images"
+                            | "library_assets"
                             | "insert_library_image"
                             | "transform_canvas_layer"
+                            | "canvas_edit"
+                            | "clip_edit"
                             | "save_canvas_project"
                             | "export_canvas_png"
                             | "canvas_operation"
+                            | "clip_operation"
                             | "retry_canvas_registration"
                             | "flow_add_node"
                             | "flow_update_node"
@@ -1684,7 +3204,17 @@ impl Controller {
             self.fail(UiError::Protocol);
             return;
         }
+        if self.active_task_turn {
+            self.ended_task_turns.push_back(turn.to_owned());
+            while self.ended_task_turns.len() > 128 {
+                self.ended_task_turns.pop_front();
+            }
+        }
         self.last_result_turn = Some(turn.to_owned());
+        if self.app_scope() {
+            self.app_read_recovery = None;
+        }
+        self.send_turn = None;
         self.turn_id = None;
         self.approval = None;
         if let Some(text) = result["text"].as_str() {
@@ -1754,6 +3284,12 @@ impl Controller {
                 }
             },
         );
+        if self.active_task_turn
+            && self.tasks.current().is_some_and(|t| !t.status.terminal())
+            && self.outcome == Some(TaskOutcome::Completed)
+        {
+            self.outcome = Some(TaskOutcome::SubmittedPendingVerification);
+        }
         self.phase = if self.blocked() {
             Phase::OutcomeUnknown
         } else {
@@ -1957,16 +3493,36 @@ fn bridge_error(error: BridgeError) -> UiError {
 }
 fn remote_error(code: &str) -> UiError {
     match code {
-        "invalid_input" | "input_limit" | "media_limit" => UiError::InvalidInput,
+        "task_invalid"
+        | "task_gate"
+        | "task_capacity"
+        | "task_context_capacity"
+        | "invalid_input"
+        | "input_limit"
+        | "media_limit" => UiError::InvalidInput,
+        "task_revision_conflict" => UiError::TaskRevisionChanged,
+        "human_observation_conflict" => UiError::TaskObservationConflict,
+        "stale_observation" => UiError::ObservationChanged,
+        "invalid_observation_binding" | "input_observation_missing" | "task_observation_source" => {
+            UiError::ObservationInvalid
+        }
+        "task_observation_not_implemented" | "observation_steer_unsupported" => {
+            UiError::ObservationUnsupported
+        }
+        "task_stale" | "task_conflict" => UiError::Busy,
         "turn_settling" | "managed_busy" | "session_busy" => UiError::Busy,
         "managed_unknown" | "managed_transport" | "managed_timeout" => UiError::ModelVerifyRequired,
-        "managed_protocol" | "idempotency_conflict" => UiError::Protocol,
+        "managed_protocol" | "idempotency_conflict" | "version_mismatch" => UiError::Protocol,
         "managed_account_expired" => UiError::AccountExpired,
         "managed_unavailable" | "managed_http" => UiError::ServiceUnavailable,
         "managed_policy_unavailable" => UiError::ModelSelectionUnavailable,
         "tool_denied" | "notAuthorized" | "approval_expired" => UiError::AuthorizationRequired,
-        "project_conflict" | "session_scope" | "instance_conflict" | "managed_scope"
-        | "account_scope" => UiError::DocumentChanged,
+        "project_conflict"
+        | "session_scope"
+        | "instance_conflict"
+        | "managed_scope"
+        | "account_scope"
+        | "input_scope_expired" => UiError::DocumentChanged,
         "outcome_unknown" => UiError::VerifyRequired,
         "recovery_required" => UiError::SessionRecoveryRequired,
         "provider_configuration"
@@ -1979,6 +3535,28 @@ fn remote_error(code: &str) -> UiError {
 
 #[cfg(all(test, unix, not(any(target_os = "ios", target_os = "android"))))]
 mod tests {
+
+    #[test]
+    fn clip_save_native_controller_stop_disconnect_and_shutdown_revoke_original() {
+        for action in 0..3 {
+            let (mut controller, _) = task_controller();
+            let pending = crate::clip_save_fence::test_support::PendingSave::new();
+            match action {
+                0 => {
+                    let _ = controller.stop();
+                }
+                1 => controller.disconnect(),
+                _ => controller.shutdown_now(),
+            }
+            pending.assert_not_committed();
+        }
+    }
+    fn document_mut(scope: &mut AgentScope) -> &mut DocumentIdentity {
+        match scope {
+            AgentScope::Document(document) => document,
+            AgentScope::App(_) => panic!("document fixture"),
+        }
+    }
     use super::*;
     #[test]
     fn rejected_content_is_not_reported_as_a_disconnected_agent() {
@@ -1990,9 +3568,1116 @@ mod tests {
 
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::{fs, thread};
-    const FIXTURE: &str = r#"import sys,json,time,pathlib,os
+    fn frozen_document_observation(fixture: &Fixture) -> DocumentObservationBinding {
+        frozen_observation(&fixture.identity)
+    }
+    fn frozen_task_intent(identity: &DocumentIdentity) -> agent_tasks::TaskIntent {
+        agent_tasks::TaskIntent {
+            client_request_id: "original-create".into(),
+            task_id: agent_tasks::task_id_for("original-create"),
+            goal: "保留完整原目标".into(),
+            max_task_credits: 40,
+            initial_observation_binding: Some(frozen_observation(identity)),
+        }
+    }
+    fn frozen_observation(identity: &DocumentIdentity) -> DocumentObservationBinding {
+        serde_json::from_value(json!({
+            "appInstanceId": identity.instance_id,
+            "clientId": "client-1",
+            "kind": "clip",
+            "projectId": identity.project_id,
+            "documentSessionId": identity.document_session_id,
+            "revision": 7, "contextRevision": 9, "selectionRevision": 11,
+            "selectedObjectIds": (0..300).map(|index| format!("clip:{index}")).collect::<Vec<_>>(),
+            "viewStateId": format!("view-v1-{}", "a".repeat(64))
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn document_input_preserves_original_identity_full_selection_and_view() {
+        let mut fixture = Fixture::new("finish");
+        fixture.ready();
+        assert!(fixture.controller.supports_document_observation());
+        let binding = frozen_document_observation(&fixture);
+        fixture
+            .controller
+            .send_document_content(
+                "original-human-input",
+                vec![json!({"type":"text","text":"当前选择是什么"})],
+                None,
+                binding.clone(),
+            )
+            .unwrap();
+        fixture.until(|controller| controller.view().outcome == Some(TaskOutcome::Completed));
+        let requests = fixture.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["params"]["inputId"], "original-human-input");
+        assert_eq!(requests[0]["params"]["observationBinding"], json!(binding));
+        assert!(requests[0]["params"].get("appViewBinding").is_none());
+        assert_eq!(requests[0]["params"]["mode"], "follow_up");
+    }
+    #[test]
+    fn document_observation_requires_exact_capability_without_closing_connection() {
+        for scenario in [
+            "old-runtime",
+            "doc-no-cap",
+            "doc-false-cap",
+            "doc-string-cap",
+            "doc-wrong-version",
+        ] {
+            let mut fixture = Fixture::new(scenario);
+            fixture.ready();
+            let binding = frozen_document_observation(&fixture);
+            assert!(
+                !fixture.controller.supports_document_observation(),
+                "{scenario}"
+            );
+            assert!(fixture.controller.document_observation_unavailable());
+            assert_eq!(
+                fixture.controller.send_document_content(
+                    "original-human-input",
+                    vec![json!({"type":"text","text":"不要退回未绑定发送"})],
+                    None,
+                    binding,
+                ),
+                Err(UiError::ObservationUnavailable),
+                "{scenario}"
+            );
+            assert!(fixture.controller.process_present());
+            assert!(fixture.controller.session_opened());
+            assert!(fixture.requests().is_empty());
+            fixture.controller.disconnect();
+            assert!(!fixture.controller.document_observation_unavailable());
+            fixture.until(|controller| !controller.process_present());
+            assert!(!fixture.controller.document_observation_unavailable());
+        }
+    }
+    #[test]
+    fn document_observation_refuses_changed_scope_before_enqueue() {
+        let mut fixture = Fixture::new("finish");
+        fixture.ready();
+        for axis in 0..4 {
+            let mut binding = frozen_document_observation(&fixture);
+            match axis {
+                0 => binding.app_instance_id = "other-instance".into(),
+                1 => binding.client_id = "other-client".into(),
+                2 => binding.project_id = "other-project".into(),
+                _ => binding.document_session_id = "other-document".into(),
+            }
+            assert_eq!(
+                fixture.controller.send_document_content(
+                    "original-human-input",
+                    vec![json!({"type":"text","text":"只发送原文档"})],
+                    None,
+                    binding,
+                ),
+                Err(UiError::Configuration)
+            );
+        }
+        assert_eq!(
+            fixture.controller.send_frozen_content(
+                vec![json!({"type":"text","text":"不能退回未绑定输入"})],
+                None,
+                None,
+            ),
+            Err(UiError::Configuration)
+        );
+        assert!(fixture.requests().is_empty());
+    }
+    #[test]
+    fn document_observation_lost_ack_restores_original_session_without_resend() {
+        let mut fixture = Fixture::new("doc-lost-ack");
+        fixture.ready();
+        let binding = frozen_document_observation(&fixture);
+        fixture
+            .controller
+            .send_document_content(
+                "original-human-input",
+                vec![json!({"type":"text","text":"保留原问题"})],
+                None,
+                binding.clone(),
+            )
+            .unwrap();
+        thread::sleep(Duration::from_millis(100));
+        fixture.controller.pending.front_mut().unwrap().since = Instant::now() - RESPONSE_TIMEOUT;
+        fixture.until(|controller| !controller.process_present());
+        let restore = fixture.original_restore_config("doc-lost-ack");
+        fixture.controller.connect(restore).unwrap();
+        fixture.ready();
+        let requests = fixture.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["params"]["inputId"], "original-human-input");
+        assert_eq!(requests[0]["params"]["observationBinding"], json!(binding));
+        assert_eq!(
+            fs::read_to_string(fixture.directory.join("methods.txt")).unwrap(),
+            "initialize\nsession.create\nsend\ninitialize\nsession.restore\n"
+        );
+    }
+    #[test]
+    fn stale_document_observation_reports_changed_view_and_allows_new_human_input() {
+        let mut fixture = Fixture::new("doc-stale");
+        fixture.ready();
+        fixture.controller.send_text("读取原视图").unwrap();
+        fixture.until(|controller| controller.view().error == Some(UiError::ObservationChanged));
+        assert!(fixture.controller.view().can_send);
+        assert!(fixture.controller.process_present());
+        assert_eq!(fixture.requests().len(), 1);
+        fixture.controller.send_text("核对后的新问题").unwrap();
+        fixture.until(|controller| controller.view().error == Some(UiError::ObservationChanged));
+        let requests = fixture.requests();
+        assert_eq!(requests.len(), 2);
+        assert_ne!(
+            requests[0]["params"]["inputId"],
+            requests[1]["params"]["inputId"]
+        );
+        for code in [
+            "stale_observation",
+            "invalid_observation_binding",
+            "input_observation_missing",
+            "input_scope_expired",
+            "task_observation_not_implemented",
+            "observation_steer_unsupported",
+        ] {
+            assert_ne!(remote_error(code), UiError::Connection, "{code}");
+        }
+    }
+
+    fn task_summary_value(id: &str, state: u64, epoch: u64, turn: Option<&str>) -> Value {
+        json!({"id":id,"sessionId":"fixture-session","taskRevision":state,"controlEpoch":epoch,"status":"running","blockedReason":null,
+            "rounds":if turn.is_some(){1}else{0},"activeInputId":turn.map(|_|"original-input"),"activeTurnId":turn,"roundOrdinal":turn.map(|_|1),
+            "verifiedSteps":0,"totalSteps":1,"evidenceCount":0,"stateRevision":state,"lastUpdateId":null})
+    }
+    fn task_controller() -> (Controller, String) {
+        let id = agent_tasks::task_id_for("original-request");
+        let mut c = Controller {
+            session_id: "fixture-session".into(),
+            tasks_supported: true,
+            ipc_generation: 1,
+            phase: Phase::Ready,
+            ..Controller::default()
+        };
+        c.tasks = agent_tasks::TaskProjection::restored(Some(id.clone())).unwrap();
+        c.tasks.begin_connection(1);
+        (c, id)
+    }
+    fn task_event(c: &mut Controller, seq: u64, kind: &str, turn: &str, data: Value) {
+        c.handle_event(Event::Runtime(json!({"version":1,"type":"event","event":{"schemaVersion":1,"sessionId":"fixture-session","seq":seq,"turnId":turn,"type":kind,"data":data}})));
+    }
+    #[test]
+    fn task_projection_admits_only_current_real_turn_and_fences_old_approval() {
+        let (mut c, id) = task_controller();
+        c.task_state(1, &task_summary_value(&id, 1, 1, Some("turn-1")));
+        task_event(&mut c, 1, "turn.started", "turn-1", json!({}));
+        assert_eq!(c.current_turn_id(), Some("turn-1"));
+        task_event(
+            &mut c,
+            2,
+            "approval.required",
+            "turn-1",
+            json!({"approvalId":"old","tool":"move_selected_image","arguments":{"objectId":"layer:1","deltaX":1,"deltaY":2}}),
+        );
+        assert!(c.view().approval.is_some());
+        let old = c.task_permit_revision();
+        c.withdraw_task_approvals();
+        assert!(c.view().approval.is_none());
+        assert!(c.task_permit_revision() > old);
+        task_event(
+            &mut c,
+            3,
+            "approval.required",
+            "turn-1",
+            json!({"approvalId":"late","tool":"move_selected_image","arguments":{"objectId":"layer:1","deltaX":1,"deltaY":2}}),
+        );
+        assert!(c.view().approval.is_none());
+        c.task_state(0, &task_summary_value(&id, 99, 9, Some("old-connection")));
+        assert_eq!(c.current_task().unwrap().control_epoch, 1);
+        let (mut bad, id) = task_controller();
+        bad.task_state(1, &task_summary_value(&id, 1, 1, Some("expected")));
+        task_event(&mut bad, 1, "turn.started", "forged", json!({}));
+        assert_eq!(bad.view().phase, Phase::Failed);
+    }
+    #[test]
+    fn task_verified_not_sent_clears_only_exact_invocation_and_unverified_failure_stays_unknown() {
+        for tool in ["canvas_edit", "flow_add_node", "move_selected_image"] {
+            for (verified, exact) in [(true, true), (false, true), (true, false)] {
+                let (mut c, id) = task_controller();
+                c.task_state(1, &task_summary_value(&id, 1, 1, Some("turn-1")));
+                task_event(&mut c, 1, "turn.started", "turn-1", json!({}));
+                task_event(
+                    &mut c,
+                    2,
+                    "tool.started",
+                    "turn-1",
+                    json!({"invocationId":"turn-1_allocated-task-write","call":{"id":"allocated-task-write","name":tool,"arguments":{}}}),
+                );
+                assert!(c.write_in_flight);
+                task_event(
+                    &mut c,
+                    3,
+                    "tool.failed",
+                    "turn-1",
+                    json!({"invocationId":if exact{"turn-1_allocated-task-write"}else{"turn-1_other"},
+                    "message":{"id":"message-1","role":"tool","content":[{"type":"text","text":"任务已暂停，本次编辑未发送"}],"toolCallId":"allocated-task-write","toolName":tool,"isError":true},
+                    "metadata":{"operationId":"scm2:1:14:fixture-client:5:doc-1:1","clientSequence":1,"appStatus":"not_sent","postVerification":if verified{"verified"}else{"pending"},"reasonCode":"task_execution_blocked"}}),
+                );
+                assert_eq!(c.write_in_flight, !(verified && exact));
+                c.handle_event(Event::Exit {
+                    code: Some(1),
+                    requested: false,
+                });
+                assert_eq!(c.unknown_latched, !(verified && exact));
+            }
+        }
+    }
+    #[test]
+    fn task_jsonl_create_keeps_original_content_and_continues_real_rounds() {
+        let mut f = Fixture::new("task-rounds");
+        f.ready();
+        assert!(f.controller.supports_tasks());
+        f.controller
+            .create_task(
+                &frozen_task_intent(&f.identity),
+                vec![json!({"type":"text","text":"原附件引用"})],
+                json!({"modelId":"agent.fast"}),
+            )
+            .unwrap();
+        f.until(|c| {
+            c.current_task()
+                .is_some_and(|task| task.status == TaskStatus::Completed)
+        });
+        assert_eq!(f.controller.current_task().unwrap().rounds, 2);
+        assert!(f.controller.task_turn_ended("turn-1"));
+        assert!(f.controller.task_turn_ended("turn-2"));
+        assert_eq!(f.requests().len(), 1);
+        assert_eq!(f.requests()[0]["method"], "task.create");
+        assert_eq!(
+            f.requests()[0]["params"]["initialObservationBinding"],
+            json!(frozen_document_observation(&f))
+        );
+        assert!(
+            f.requests()[0]["params"]
+                .get("observationBinding")
+                .is_none()
+        );
+        assert_eq!(f.controller.view().outcome, Some(TaskOutcome::Completed));
+    }
+    #[test]
+    fn task_observation_capability_is_independent_and_reset_on_reconnect() {
+        for scenario in [
+            "task-no-observation",
+            "task-false-observation",
+            "task-string-observation",
+            "task-no-observation-version",
+            "task-wrong-observation-version",
+        ] {
+            let mut f = Fixture::new(scenario);
+            f.ready();
+            assert!(f.controller.supports_tasks());
+            assert!(f.controller.supports_document_observation());
+            assert!(!f.controller.supports_task_observation());
+            assert!(f.controller.task_observation_unavailable());
+            let before = f.controller.task_permit_revision();
+            assert_eq!(
+                f.controller.create_task(
+                    &frozen_task_intent(&f.identity),
+                    vec![json!({"type":"text","text":"原附件引用"})],
+                    json!({"modelId":"agent.fast"}),
+                ),
+                Err(UiError::TaskObservationUnavailable)
+            );
+            assert!(f.controller.current_task_id().is_none());
+            assert_eq!(f.controller.task_permit_revision(), before);
+            assert!(f.requests().is_empty());
+            f.controller.disconnect();
+            assert!(!f.controller.task_observation_unavailable());
+            assert!(!f.controller.task_observation_supported);
+            f.until(|c| !c.process_present());
+            let config = f.original_restore_config("task-rounds");
+            f.controller.connect(config).unwrap();
+            assert!(!f.controller.task_observation_supported);
+            f.ready();
+            assert!(f.controller.supports_task_observation());
+            assert!(!f.controller.task_observation_unavailable());
+        }
+        let mut f = Fixture::new("task-no-doc-observation");
+        f.ready();
+        assert!(!f.controller.supports_document_observation());
+        assert!(f.controller.supports_task_observation());
+        f.controller
+            .create_task(
+                &frozen_task_intent(&f.identity),
+                vec![json!({"type":"text","text":"原附件引用"})],
+                json!({"modelId":"agent.fast"}),
+            )
+            .unwrap();
+        f.until(|c| c.view().approval.is_some());
+    }
+    #[test]
+    fn task_create_and_update_reject_unbound_or_cross_scope_before_mutating_task() {
+        let mut f = Fixture::new("task-controls");
+        f.ready();
+        let original = frozen_task_intent(&f.identity);
+        for axis in 0..5 {
+            let mut intent = original.clone();
+            if axis == 4 {
+                intent.initial_observation_binding = None;
+            } else {
+                let binding = intent.initial_observation_binding.as_mut().unwrap();
+                match axis {
+                    0 => binding.app_instance_id = "different-instance".into(),
+                    1 => binding.client_id = "different-client".into(),
+                    2 => binding.project_id = "different-project".into(),
+                    _ => binding.document_session_id = "different-doc".into(),
+                }
+            }
+            let before = f.controller.task_permit_revision();
+            assert_eq!(
+                f.controller.create_task(
+                    &intent,
+                    vec![json!({"type":"text","text":"原附件引用"})],
+                    json!({"modelId":"agent.fast"}),
+                ),
+                Err(if axis == 4 {
+                    UiError::TaskObservationMissing
+                } else {
+                    UiError::ObservationChanged
+                })
+            );
+            assert!(f.controller.current_task_id().is_none());
+            assert_eq!(f.controller.task_permit_revision(), before);
+            assert!(f.requests().is_empty());
+        }
+        f.controller
+            .create_task(
+                &original,
+                vec![json!({"type":"text","text":"原附件引用"})],
+                json!({"modelId":"agent.fast"}),
+            )
+            .unwrap();
+        f.until(|c| c.view().approval.is_some());
+        f.controller.task_command(TaskCommand::Pause).unwrap();
+        f.until(|c| {
+            c.current_task()
+                .is_some_and(|task| task.status == TaskStatus::Paused)
+                && c.pending.is_empty()
+                && c.turn_id.is_none()
+        });
+        let expected = f.controller.current_task().unwrap().clone();
+        let requests = f.requests();
+        for axis in 0..6 {
+            let mut intent = agent_tasks::TaskUpdateIntent {
+                client_request_id: "original-update".into(),
+                task_id: original.task_id.clone(),
+                message: "保留原补充".into(),
+                expected_revision: expected.task_revision,
+                retries: 0,
+                confirmed: false,
+                observation_binding: original.initial_observation_binding.clone(),
+            };
+            if axis == 4 {
+                intent.observation_binding = None;
+            } else if axis == 5 {
+                f.controller.task_observation_supported = false;
+            } else {
+                let binding = intent.observation_binding.as_mut().unwrap();
+                match axis {
+                    0 => binding.app_instance_id = "different-instance".into(),
+                    1 => binding.client_id = "different-client".into(),
+                    2 => binding.project_id = "different-project".into(),
+                    _ => binding.document_session_id = "different-doc".into(),
+                }
+            }
+            let before = f.controller.task_permit_revision();
+            let epoch = f.controller.task_requested_epoch;
+            assert_eq!(
+                f.controller.retry_task_update(&intent),
+                Err(match axis {
+                    4 => UiError::TaskObservationMissing,
+                    5 => UiError::TaskObservationUnavailable,
+                    _ => UiError::ObservationChanged,
+                })
+            );
+            assert_eq!(f.controller.current_task(), Some(&expected));
+            assert_eq!(f.controller.task_permit_revision(), before);
+            assert_eq!(f.controller.task_requested_epoch, epoch);
+            assert_eq!(f.requests(), requests);
+        }
+    }
+    #[test]
+    fn task_lost_create_and_update_receipts_restore_original_status_without_replay() {
+        for scenario in ["task-create-lost-restore", "task-update-lost-restore"] {
+            let mut f = Fixture::new(scenario);
+            f.ready();
+            let original = frozen_task_intent(&f.identity);
+            f.controller
+                .create_task(
+                    &original,
+                    vec![json!({"type":"text","text":"原附件引用"})],
+                    json!({"modelId":"agent.fast"}),
+                )
+                .unwrap();
+            if scenario == "task-update-lost-restore" {
+                f.until(|c| c.view().approval.is_some());
+                f.controller.task_command(TaskCommand::Pause).unwrap();
+                f.until(|c| {
+                    c.current_task()
+                        .is_some_and(|task| task.status == TaskStatus::Paused)
+                        && c.pending.is_empty()
+                        && c.turn_id.is_none()
+                });
+                let update = agent_tasks::TaskUpdateIntent {
+                    client_request_id: "original-update".into(),
+                    task_id: original.task_id.clone(),
+                    message: "保留原补充".into(),
+                    expected_revision: f.controller.current_task().unwrap().task_revision,
+                    retries: 0,
+                    confirmed: false,
+                    observation_binding: original.initial_observation_binding.clone(),
+                };
+                f.controller.retry_task_update(&update).unwrap();
+            }
+            thread::sleep(Duration::from_millis(100));
+            f.controller.pending.front_mut().unwrap().since = Instant::now() - RESPONSE_TIMEOUT;
+            f.until(|c| !c.process_present());
+            assert!(!f.controller.task_observation_supported);
+            let config = f.original_restore_config(scenario);
+            f.controller.connect(config).unwrap();
+            f.until(|c| c.current_task().is_some() && c.pending.is_empty());
+            assert_eq!(
+                f.controller.current_task_id(),
+                Some(original.task_id.as_str())
+            );
+            let requests = f.requests();
+            let creates = requests
+                .iter()
+                .filter(|r| r["method"] == "task.create")
+                .collect::<Vec<_>>();
+            assert_eq!(creates.len(), 1);
+            assert_eq!(
+                creates[0]["params"]["clientRequestId"],
+                original.client_request_id
+            );
+            assert_eq!(
+                creates[0]["params"]["initialObservationBinding"],
+                json!(original.initial_observation_binding)
+            );
+            let updates = requests
+                .iter()
+                .filter(|r| r["method"] == "task.update")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                updates.len(),
+                usize::from(scenario == "task-update-lost-restore")
+            );
+            if let Some(update) = updates.first() {
+                assert_eq!(update["params"]["clientRequestId"], "original-update");
+                assert_eq!(
+                    update["params"]["observationBinding"],
+                    json!(original.initial_observation_binding)
+                );
+                assert_eq!(
+                    f.controller.acknowledged_task_update(),
+                    Some("original-update")
+                );
+            }
+            assert_eq!(requests.last().unwrap()["method"], "task.status");
+            let methods = fs::read_to_string(f.directory.join("methods.txt")).unwrap();
+            assert!(methods.ends_with("initialize\nsession.restore\ntask.status\n"));
+        }
+    }
+    #[test]
+    fn task_observation_rejections_keep_sources_and_show_actionable_reasons() {
+        for (scenario, expected) in [
+            ("task-stale-observation", UiError::TaskObservationChanged),
+            (
+                "task-human-observation-conflict",
+                UiError::TaskObservationConflict,
+            ),
+            (
+                "task-invalid-observation-source",
+                UiError::ObservationInvalid,
+            ),
+        ] {
+            let mut f = Fixture::new(scenario);
+            f.ready();
+            let intent = frozen_task_intent(&f.identity);
+            f.controller
+                .create_task(
+                    &intent,
+                    vec![json!({"type":"text","text":"原附件引用"})],
+                    json!({"modelId":"agent.fast"}),
+                )
+                .unwrap();
+            f.until(|c| c.view().error == Some(expected));
+            assert!(f.controller.process_present());
+            assert_eq!(f.requests().len(), 1);
+            assert_eq!(
+                f.requests()[0]["params"]["initialObservationBinding"],
+                json!(intent.initial_observation_binding)
+            );
+            assert!(!expected.message().contains("连接"));
+        }
+    }
+    #[test]
+    fn task_jsonl_pause_resume_stop_use_original_id_and_revoke_old_card() {
+        let mut f = Fixture::new("task-controls");
+        f.ready();
+        f.controller
+            .create_task(
+                &frozen_task_intent(&f.identity),
+                vec![json!({"type":"text","text":"原附件引用"})],
+                json!({"modelId":"agent.fast"}),
+            )
+            .unwrap();
+        f.until(|c| c.view().approval.is_some());
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
+        f.controller.task_command(TaskCommand::Pause).unwrap();
+        pending_save.assert_not_committed();
+        f.until(|c| {
+            c.current_task()
+                .is_some_and(|task| task.status == TaskStatus::Paused)
+                && c.turn_id.is_none()
+        });
+        assert!(f.controller.view().approval.is_none());
+        f.controller.task_command(TaskCommand::Resume).unwrap();
+        f.until(|c| c.view().approval.is_some_and(|a| a.id == "task-approval-2"));
+        assert_eq!(
+            f.controller.approve("task-approval-1", true),
+            Err(UiError::AuthorizationRequired)
+        );
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
+        f.controller.task_command(TaskCommand::Stop).unwrap();
+        pending_save.assert_not_committed();
+        f.until(|c| {
+            c.current_task()
+                .is_some_and(|task| task.status == TaskStatus::Stopped)
+                && c.turn_id.is_none()
+        });
+        assert!(f.requests().iter().all(|r| r["method"] == "task.create"
+            || r["params"]["taskId"] == agent_tasks::task_id_for("original-create")));
+    }
+    #[test]
+    fn task_jsonl_update_retries_only_original_id_after_known_zero_mutation_conflict() {
+        let mut f = Fixture::new("task-controls");
+        f.ready();
+        f.controller
+            .create_task(
+                &frozen_task_intent(&f.identity),
+                vec![json!({"type":"text","text":"原附件引用"})],
+                json!({"modelId":"agent.fast"}),
+            )
+            .unwrap();
+        f.until(|c| c.view().approval.is_some());
+        f.controller.task_command(TaskCommand::Pause).unwrap();
+        f.until(|c| {
+            c.current_task()
+                .is_some_and(|t| t.status == TaskStatus::Paused)
+                && c.turn_id.is_none()
+        });
+        let original_revision = f.controller.current_task().unwrap().task_revision;
+        let mut original = agent_tasks::TaskUpdateIntent {
+            client_request_id: "original-update".into(),
+            task_id: agent_tasks::task_id_for("original-create"),
+            message: "保留原补充".into(),
+            expected_revision: original_revision + 1,
+            retries: 0,
+            confirmed: false,
+            observation_binding: Some(frozen_document_observation(&f)),
+        };
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
+        f.controller.retry_task_update(&original).unwrap();
+        pending_save.assert_not_committed();
+        f.until(|c| c.rejected_task_update() == Some("original-update"));
+        assert_eq!(
+            f.controller.current_task().unwrap().task_revision,
+            original_revision
+        );
+        assert!(
+            f.controller
+                .current_task()
+                .unwrap()
+                .last_update_id
+                .is_none()
+        );
+        original.expected_revision = original_revision;
+        original.retries = 1;
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
+        f.controller.retry_task_update(&original).unwrap();
+        pending_save.assert_not_committed();
+        f.until(|c| c.acknowledged_task_update.as_deref() == Some("original-update"));
+        let applied_revision = f.controller.current_task().unwrap().task_revision;
+        f.controller.acknowledged_task_update = None;
+        // A lost ACK is retrievable with the same original revision and ID.
+        let pending_save = crate::clip_save_fence::test_support::PendingSave::new();
+        f.controller.retry_task_update(&original).unwrap();
+        pending_save.assert_not_committed();
+        f.until(|c| c.acknowledged_task_update.as_deref() == Some("original-update"));
+        assert_eq!(
+            f.controller.current_task().unwrap().task_revision,
+            applied_revision
+        );
+        assert_eq!(
+            f.controller
+                .current_task()
+                .unwrap()
+                .last_update_id
+                .as_deref(),
+            Some("original-update")
+        );
+        let updates = f
+            .requests()
+            .into_iter()
+            .filter(|r| r["method"] == "task.update")
+            .collect::<Vec<_>>();
+        assert_eq!(updates.len(), 3);
+        assert!(
+            updates
+                .iter()
+                .all(|r| r["params"]["clientRequestId"] == "original-update"
+                    && r["params"]["message"] == "保留原补充"
+                    && r["params"]["observationBinding"] == json!(original.observation_binding))
+        );
+        assert_eq!(updates[1], updates[2]);
+    }
+    #[test]
+    fn task_restore_selects_persisted_id_and_requires_new_connection_projection() {
+        let (mut c, id) = task_controller();
+        c.task_state(1, &task_summary_value(&id, 10, 2, None));
+        c.ipc_generation = 2;
+        c.tasks.begin_connection(2);
+        c.task_fenced = true;
+        assert_eq!(c.current_task_id(), Some(id.as_str()));
+        assert!(c.current_task().is_none());
+        c.task_state(1, &task_summary_value(&id, 99, 99, Some("old-connection")));
+        c.task_state(
+            2,
+            &task_summary_value(&agent_tasks::task_id_for("other"), 99, 99, None),
+        );
+        assert!(c.current_task().is_none());
+        let mut restored = task_summary_value(&id, 11, 2, None);
+        restored["stateRevision"] = json!(1);
+        restored["status"] = json!("paused");
+        c.task_state(2, &restored);
+        assert_eq!(c.current_task().unwrap().task_revision, 11);
+        assert!(c.task_fenced);
+        assert!(c.current_turn_id().is_none());
+        assert!(c.view().approval.is_none());
+    }
+    #[test]
+    fn task_unknown_create_ack_and_pending_status_never_prevent_human_withdrawal() {
+        for (scenario, action) in [
+            ("task-create-ack-lost", TaskCommand::Stop),
+            ("task-status-ack-lost", TaskCommand::Pause),
+        ] {
+            let mut f = Fixture::new(scenario);
+            f.ready();
+            f.controller
+                .create_task(
+                    &frozen_task_intent(&f.identity),
+                    vec![json!({"type":"text","text":"原附件引用"})],
+                    json!({"modelId":"agent.fast"}),
+                )
+                .unwrap();
+            f.until(|c| c.view().approval.is_some());
+            if action == TaskCommand::Pause {
+                f.controller.task_command(TaskCommand::Status).unwrap();
+                f.until(|c| c.current_task().is_some_and(|t| t.state_revision >= 3));
+            }
+            assert!(f.controller.can_task_command(action));
+            let before = f.controller.task_permit_revision();
+            f.controller.task_command(action).unwrap();
+            assert!(f.controller.task_permit_revision() > before);
+            assert!(!f.controller.can_task_command(action));
+            f.until(|c| {
+                c.current_task()
+                    .is_some_and(|t| matches!(t.status, TaskStatus::Paused | TaskStatus::Stopped))
+                    && c.turn_id.is_none()
+            });
+            assert!(f.controller.task_fenced);
+            assert!(f.controller.view().approval.is_none());
+            assert!(f.requests().iter().any(|r| r["method"] == action.method()));
+        }
+    }
+    #[test]
+    fn task_late_resume_and_update_ack_cannot_undo_a_new_human_fence() {
+        for action in [TaskCommand::Resume, TaskCommand::Update] {
+            let (mut c, id) = task_controller();
+            c.task_state(1, &task_summary_value(&id, 1, 1, Some("old-turn")));
+            c.task_requested_epoch = Some(2);
+            c.pending.push_back(Pending {
+                id: "old-control".into(),
+                request: Request::TaskControl {
+                    task_id: id.clone(),
+                    action,
+                    update_id: (action == TaskCommand::Update).then(|| "original-update".into()),
+                    fence_revision: c.task_permit_revision,
+                },
+                since: Instant::now(),
+            });
+            c.withdraw_task_approvals();
+            c.task_requested_epoch = None;
+            let newer = task_summary_value(&id, 2, 2, None);
+            c.response(json!({"version":1,"type":"response","id":"old-control","result":newer}));
+            assert!(c.task_fenced);
+            assert!(c.view().approval.is_none());
+        }
+    }
+    #[test]
+    fn completed_task_does_not_redirect_new_read_chat_stop_to_task_control() {
+        let mut f = Fixture::new("task-rounds");
+        f.ready();
+        f.controller
+            .create_task(
+                &frozen_task_intent(&f.identity),
+                vec![json!({"type":"text","text":"原附件引用"})],
+                json!({"modelId":"agent.fast"}),
+            )
+            .unwrap();
+        f.until(|c| {
+            c.current_task()
+                .is_some_and(|t| t.status == TaskStatus::Completed)
+        });
+        assert!(!f.controller.is_task_turn());
+        let task_id = f.controller.current_task_id().unwrap().to_owned();
+        f.controller.send_text("读取新问题").unwrap();
+        f.until(|c| c.view().phase == Phase::Running && c.current_turn_id().is_some());
+        assert!(!f.controller.is_task_turn());
+        assert_eq!(f.controller.current_task_id(), Some(task_id.as_str()));
+        f.controller.stop().unwrap();
+        f.until(|c| c.view().outcome == Some(TaskOutcome::Stopped));
+        assert_eq!(f.requests().last().unwrap()["method"], "stop");
+        assert_eq!(
+            f.controller.current_task().unwrap().status,
+            TaskStatus::Completed
+        );
+    }
+    #[test]
+    fn task_negotiated_chat_admission_is_one_host_input_and_checks_applied_identity() {
+        for wrong_input in [false, true] {
+            let (mut c, _) = task_controller();
+            c.send_turn = Some(("human-input".into(), None));
+            task_event(&mut c, 1, "turn.started", "human-turn", json!({}));
+            assert_eq!(c.current_turn_id(), Some("human-turn"));
+            assert!(!c.is_task_turn());
+            if wrong_input {
+                task_event(
+                    &mut c,
+                    2,
+                    "input.applied",
+                    "human-turn",
+                    json!({"inputId":"other-input"}),
+                );
+            } else {
+                task_event(
+                    &mut c,
+                    2,
+                    "input.applied",
+                    "human-turn",
+                    json!({"inputId":"human-input"}),
+                );
+                assert_ne!(c.view().phase, Phase::Failed);
+                task_event(&mut c, 3, "turn.started", "unsolicited-turn", json!({}));
+            }
+            assert_eq!(c.view().phase, Phase::Failed);
+            assert!(c.send_turn.is_none());
+        }
+    }
+    fn app_control_settlement_fixture() -> (Controller, Value) {
+        let identity = crate::agent_identity::AppIdentity {
+            instance_id: "instance".into(),
+            account_scope: "a".repeat(64),
+            app_session_id: "app-session".into(),
+        };
+        let page = concat_editor_mcp::AppViewBinding {
+            page_id: concat_editor_mcp::AppPageId::Generation,
+            page_epoch: 1,
+            page_state_id: format!("app-page-v1-{}", "b".repeat(64)),
+        };
+        let source = crate::agent_app_control_input::InputBinding::new(&identity, "client", &page);
+        let mut c = Controller {
+            scope: Some(AgentScope::App(identity)),
+            session_id: "session".into(),
+            editor_client: "client".into(),
+            app_control_supported: true,
+            ..Controller::default()
+        };
+        c.app_control_inputs.remember("input", source.clone());
+        c.app_control_inputs.applied("turn", "input", 1);
+        let operation = concat_editor_mcp::app_operation_id("client", "session", 1).unwrap();
+        c.app_control_inputs.started("session", "turn", 2, &json!({
+            "invocationId":"invoke", "call":{"name":"app_navigate","arguments":{"target":"settings"}},
+            "appViewBinding":source,"appControlIntent":{"version":1,"inputId":"input",
+                "operationId":operation,"clientSequence":1,"before":page,"target":"settings"}
+        })).unwrap();
+        let receipt = json!({"appControlProtocolVersion":1,"operationId":operation,
+            "sessionId":"session","clientSequence":1,
+            "origin":{"appInstanceId":"instance","clientId":"client","appSessionId":"app-session"},
+            "before":page,"target":"settings","recordedStatus":"cancelled","status":"cancelled",
+            "durability":"confirmed","completion":null,"humanGate":null,"currentObservation":null});
+        (c, receipt)
+    }
+    #[test]
+    fn app_navigation_settlement_requires_exact_durable_original_receipt() {
+        let (c, receipt) = app_control_settlement_fixture();
+        let data = json!({"metadata":{"appControlReceipt":receipt}});
+        assert!(c.settled_app_write("invoke", &data));
+        assert!(!c.settled_app_write("another-invoke", &data));
+        for (key, value) in [
+            ("durability", json!("unconfirmed")),
+            ("target", json!("account")),
+            ("sessionId", json!("another-session")),
+            ("status", json!("outcomeUnknown")),
+        ] {
+            let mut changed = data.clone();
+            changed["metadata"]["appControlReceipt"][key] = value;
+            assert!(!c.settled_app_write("invoke", &changed), "{key}");
+        }
+        assert!(!c.settled_app_write(
+            "invoke",
+            &json!({"metadata":{"postVerification":{"verified":true}}})
+        ));
+    }
+    #[test]
+    fn app_navigation_not_dispatched_settles_only_exact_closed_refusal() {
+        let (c, receipt) = app_control_settlement_fixture();
+        let data = json!({"message":{"isError":true},"metadata":{"version":1,
+            "status":"not_dispatched","navigationSent":false,"resultAvailable":false,
+            "operationId":receipt["operationId"],"clientSequence":1,"reasonCode":"revoked"}});
+        assert!(c.settled_app_write("invoke", &data));
+        let mut changed = data.clone();
+        changed["metadata"]["navigationSent"] = json!(true);
+        assert!(!c.settled_app_write("invoke", &changed));
+        changed = data.clone();
+        changed["metadata"]["extra"] = json!(true);
+        assert!(!c.settled_app_write("invoke", &changed));
+        changed = data.clone();
+        changed["metadata"]["clientSequence"] = json!(2);
+        assert!(!c.settled_app_write("invoke", &changed));
+    }
+    #[test]
+    fn app_recovery_is_closed_bounded_and_independent_of_model_unknown() {
+        let (mut c, _) = app_control_settlement_fixture();
+        c.model_unknown = true;
+        assert!(c.update_app_recovery(&json!({"unresolved":[
+            {"invocationId":"invoke","tool":"app_navigate"},
+            {"invocationId":"query","tool":"app_operation"}]})));
+        assert_eq!(c.app_recovery.len(), 1);
+        assert!(c.model_unknown);
+        assert!(!c.update_app_recovery(&json!({"unresolved":[
+            {"invocationId":"invoke","tool":"app_navigate","operationId":"untrusted"}]})));
+        assert!(!c.update_app_recovery(&json!({"unresolved":[
+            {"invocationId":"invoke","tool":"app_navigate"},
+            {"invocationId":"invoke","tool":"app_navigate"}]})));
+        c.app_control_supported = false;
+        assert!(!c.update_app_recovery(&json!({"unresolved":[
+            {"invocationId":"invoke","tool":"app_navigate"}]})));
+    }
+    #[test]
+    fn app_scope_accepts_only_the_exact_four_read_tool_names() {
+        for name in ["capabilities", "app_context", "page_items", "page_preview"] {
+            let mut controller = Controller {
+                scope: Some(AgentScope::App(crate::agent_identity::AppIdentity {
+                    instance_id: "instance".into(),
+                    account_scope: "a".repeat(64),
+                    app_session_id: "app-session".into(),
+                })),
+                session_id: "fixture-session".into(),
+                turn_id: Some("human-turn".into()),
+                phase: Phase::Running,
+                ..Controller::default()
+            };
+            task_event(
+                &mut controller,
+                1,
+                "tool.started",
+                "human-turn",
+                json!({"invocationId":"read-1","call":{"name":name}}),
+            );
+            assert_ne!(controller.view().phase, Phase::Failed, "{name}");
+            assert!(!controller.write_in_flight);
+        }
+        for name in [
+            "context",
+            "project",
+            "preview",
+            "canvas_edit",
+            "clip_edit",
+            "flow_get_workspace",
+            "app_page_items",
+            "app_page_preview",
+            "task_checkpoint",
+        ] {
+            let mut controller = Controller {
+                scope: Some(AgentScope::App(crate::agent_identity::AppIdentity {
+                    instance_id: "instance".into(),
+                    account_scope: "a".repeat(64),
+                    app_session_id: "app-session".into(),
+                })),
+                session_id: "fixture-session".into(),
+                turn_id: Some("human-turn".into()),
+                phase: Phase::Running,
+                ..Controller::default()
+            };
+            task_event(
+                &mut controller,
+                1,
+                "tool.started",
+                "human-turn",
+                json!({"invocationId":"read-1","call":{"name":name}}),
+            );
+            assert_eq!(controller.view().phase, Phase::Failed, "{name}");
+            assert!(!controller.write_in_flight);
+        }
+    }
+
+    #[test]
+    fn app_scope_negotiates_without_document_write_or_task_and_sends_original_view() {
+        let mut fixture = Fixture::new("app-finish");
+        fixture.ready();
+        assert!(!fixture.controller.supports_tasks());
+        assert_eq!(
+            fixture
+                .controller
+                .update_permissions(Some("forbidden".into())),
+            Err(UiError::Protocol)
+        );
+        assert_eq!(
+            fixture.controller.send_text("unbound app read"),
+            Err(UiError::Configuration)
+        );
+        let document_binding = frozen_document_observation(&fixture);
+        assert_eq!(
+            fixture.controller.send_document_content(
+                "forbidden-document-input",
+                vec![json!({"type":"text","text":"不能混用文档绑定"})],
+                None,
+                document_binding,
+            ),
+            Err(UiError::Configuration)
+        );
+        let view: AppViewBinding = serde_json::from_value(json!({"pageId":"personalLibrary","pageEpoch":3,"pageStateId":format!("app-page-v1-{}","a".repeat(64))})).unwrap();
+        let view = InputBinding::new(
+            fixture.controller.scope.as_ref().unwrap().app().unwrap(),
+            &fixture.controller.editor_client,
+            &view,
+        );
+        fixture
+            .controller
+            .send_app_content(
+                "input-original",
+                vec![json!({"type":"text","text":"这张图片是什么"})],
+                None,
+                view,
+            )
+            .unwrap();
+        fixture.until(|controller| controller.view().outcome == Some(TaskOutcome::Completed));
+        assert!(!fixture.controller.write_in_flight);
+        let requests = fs::read_to_string(fixture.directory.join("requests.jsonl")).unwrap();
+        let request: Value = serde_json::from_str(requests.lines().next().unwrap()).unwrap();
+        assert_eq!(request["params"]["inputId"], "input-original");
+        assert_eq!(
+            request["params"]["appViewBinding"]
+                .as_object()
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+    #[test]
+    fn app_scope_refuses_missing_negotiation_and_document_business_recovery() {
+        let mut fixture = Fixture::new("app-no-cap");
+        fixture.until(|controller| controller.view().phase == Phase::Failed);
+        assert_eq!(fixture.controller.view().error, Some(UiError::Protocol));
+        let trace = fs::read_to_string(fixture.directory.join("methods.txt")).unwrap();
+        assert!(!trace.contains("session.create"));
+        assert!(!fixture.controller.update_editor_recovery(
+            &json!({"recoveryOperations":[{"sessionId":"fixture-session"}]})
+        ));
+    }
+    #[test]
+    fn app_recovery_ends_only_old_reads_and_never_resends_input() {
+        let mut fixture = Fixture::new("app-recovery");
+        fixture.until(Controller::can_abandon_app_reads);
+        assert!(!fixture.controller.view().can_send);
+        fixture.controller.abandon_app_reads().unwrap();
+        fixture.until(|c| c.view().can_send);
+        assert_ne!(
+            fixture.controller.view().outcome,
+            Some(TaskOutcome::OperationVerified)
+        );
+        assert!(!fixture.controller.can_abandon_app_reads());
+        let methods = fs::read_to_string(fixture.directory.join("methods.txt")).unwrap();
+        assert_eq!(methods, "initialize\nsession.create\napp.abandonReads\n");
+        assert!(Controller::default().abandon_app_reads().is_err());
+    }
+    #[test]
+    fn app_abandon_lost_ack_queries_original_status_without_repeating_action() {
+        let mut fixture = Fixture::new("app-abandon-lost");
+        fixture.until(Controller::can_abandon_app_reads);
+        fixture.controller.abandon_app_reads().unwrap();
+        // Let the child commit cleanup, then expire just the receipt deadline.
+        thread::sleep(Duration::from_millis(100));
+        fixture.controller.pending.front_mut().unwrap().since = Instant::now() - RESPONSE_TIMEOUT;
+        fixture.until(|c| c.view().can_send);
+        let methods = fs::read_to_string(fixture.directory.join("methods.txt")).unwrap();
+        assert_eq!(
+            methods,
+            "initialize\nsession.create\napp.abandonReads\nstatus\n"
+        );
+        assert_ne!(
+            fixture.controller.view().outcome,
+            Some(TaskOutcome::OperationVerified)
+        );
+    }
+    #[test]
+    fn app_create_probe_requires_a_second_explicit_restore_after_rebind_error() {
+        let mut fixture = Fixture::new("app-rebind-required");
+        fixture.until(|c| c.requires_app_restore() && !c.process_present());
+        assert!(!fixture.controller.session_opened());
+        assert_eq!(
+            fs::read_to_string(fixture.directory.join("methods.txt")).unwrap(),
+            "initialize\nsession.create\n"
+        );
+        let mut config = fixture.original_restore_config("app-rebind-required");
+        config.scope = fixture.scope.clone();
+        config.write_token = None;
+        fixture.controller.connect(config).unwrap();
+        fixture.ready();
+        assert!(!fixture.controller.requires_app_restore());
+        assert_eq!(
+            fs::read_to_string(fixture.directory.join("methods.txt")).unwrap(),
+            "initialize\nsession.create\ninitialize\nsession.restore\n"
+        );
+    }
+    #[test]
+    fn app_recovery_current_queues_do_not_require_complete_old_history() {
+        let mut fixture = Fixture::new("app-recovery");
+        fixture.until(Controller::can_abandon_app_reads);
+        let mut value = fixture
+            .controller
+            .app_read_recovery()
+            .unwrap()
+            .evidence
+            .clone();
+        value["recentWithdrawnInputIds"] =
+            json!((0..64).map(|n| format!("old-{n}")).collect::<Vec<_>>());
+        value["withdrawnInputTotal"] = json!(200);
+        value["withdrawnInputTruncated"] = json!(true);
+        assert!(AppReadRecovery::parse(&value).unwrap().can_abandon);
+        value["withdrawnInputTruncated"] = json!(false);
+        assert!(AppReadRecovery::parse(&value).is_none());
+        value["withdrawnInputTruncated"] = json!(true);
+        value["canAbandon"] = json!(false);
+        assert!(AppReadRecovery::parse(&value).is_none());
+    }
+
+    const FIXTURE: &str = r#"import sys,json,time,pathlib,os,hashlib
 scenario='finish';session='';seq=0;managed=False
-revision=0
+revision=0;app_abandoned=False
+def app_summary():
+    pending=scenario in ('app-recovery','app-abandon-lost') and not app_abandoned
+    recovery={'canAbandon':pending,'reason':'ready' if pending else 'nothing_pending','pendingInputIds':['old-input'] if pending else [],'readInvocationIds':['old-read'] if pending else [],'recentWithdrawnInputIds':['old-input'] if app_abandoned else [],'withdrawnInputTotal':1 if app_abandoned else 0,'withdrawnInputTruncated':False,'recentAbandonedReadInvocationIds':['old-read'] if app_abandoned else [],'abandonedReadInvocationTotal':1 if app_abandoned else 0,'abandonedReadInvocationTruncated':False}
+    return {'sessionId':session,'status':'interrupted' if pending else 'idle','activeTurnId':None,'recoveryRequired':pending,'pendingInputCount':1 if pending else 0,'toolState':{'outcomeUnknown':pending,'unresolved':[],'recoveryOperations':[],'observed':[]},'readRecovery':recovery}
 original_path=pathlib.Path(__file__).with_name('original-operation.json')
 def original_store(record):
     temporary=original_path.with_suffix('.tmp')
@@ -2014,18 +4699,34 @@ def reply(f,result=None,error=None):
     frame={'version':1,'type':'response','id':f['id']}
     frame['error' if error else 'result']=error if error else result
     print(json.dumps(frame),flush=True)
-def event(kind,data={}):
+def event(kind,data={},turn='turn-1'):
     global seq
     seq+=1
-    print(json.dumps({'version':1,'type':'event','event':{'schemaVersion':1,'seq':seq,'eventId':str(seq),'timestamp':'2026-10-05','sessionId':session,'turnId':'turn-1','type':kind,'data':data}}),flush=True)
+    print(json.dumps({'version':1,'type':'event','event':{'schemaVersion':1,'seq':seq,'eventId':str(seq),'timestamp':'2026-10-05','sessionId':session,'turnId':turn,'type':kind,'data':data}}),flush=True)
 def final(status='completed',unknown=False,pending=False,failed=False):
     observed=[{'invocationId':'older_move','state':'failed','tool':'move_selected_image'}]
     if pending or failed: observed.append({'invocationId':'turn-1_move','state':'failed' if failed else 'completed','tool':'move_selected_image','appStatus':'notAuthorized' if failed else 'ok','postVerification':'pending' if pending else 'verified'})
     print(json.dumps({'version':1,'type':'result','sessionId':session,'result':{'turnId':'turn-1','status':status,'text':'模型结果 inference-secret read-secret write-secret'},'toolState':{'outcomeUnknown':unknown,'unresolved':[],'recoveryOperations':[],'observed':observed}}),flush=True)
+task=None;task_state_revision=0
+updates={}
+def task_observation(binding):
+    assert binding['appInstanceId']=='12345678-1234-1234-1234-123456789abc' and binding['clientId']=='client-1' and binding['projectId']=='project-1' and binding['documentSessionId']=='doc-1'
+    assert binding['kind']=='clip' and binding['revision']==7 and binding['contextRevision']==9 and binding['selectionRevision']==11
+    assert binding['selectedObjectIds']==['clip:'+str(n) for n in range(300)] and binding['viewStateId']=='view-v1-'+'a'*64
+
+def task_state():
+    global task_state_revision
+    task_state_revision+=1;task['stateRevision']=task_state_revision
+    print(json.dumps({'version':1,'type':'task.state','sessionId':session,'task':task}),flush=True)
+def task_start(ordinal):
+    task.update(rounds=ordinal,activeInputId='input-'+str(ordinal),activeTurnId='turn-'+str(ordinal),roundOrdinal=ordinal)
+    task['taskRevision']+=1;task_state();event('turn.started',{},task['activeTurnId'])
+def task_final(ordinal,status='completed'):
+    print(json.dumps({'version':1,'type':'result','sessionId':session,'result':{'turnId':'turn-'+str(ordinal),'status':status,'text':'round-'+str(ordinal)},'toolState':{'outcomeUnknown':False,'unresolved':[],'recoveryOperations':[],'observed':[]}}),flush=True)
 for line in sys.stdin:
     f=json.loads(line);p=f['params'];m=f['method']
     with pathlib.Path(__file__).with_name('methods.txt').open('a') as trace: trace.write(m+'\n')
-    if m in ('send','stop','reconcile','editor.reconcile'):
+    if m in ('send','stop','reconcile','editor.reconcile') or m.startswith('task.'):
         with pathlib.Path(__file__).with_name('requests.jsonl').open('a') as trace: trace.write(json.dumps({'method':m,'params':p})+'\n')
     if m=='initialize':
         assert p['protocolVersion']==1 and p['appProtocolVersion']==1
@@ -2035,17 +4736,43 @@ for line in sys.stdin:
         assert p['mcpEnvironment']['TMPDIR']==p['sessionDirectory']
         scenario=p['provider']['model'];time.sleep(.08)
         if scenario=='init-fail': reply(f,error={'code':'provider_configuration','message':'raw inference-secret'});continue
-        capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True,'turn_model_selection':True}
+        if scenario.startswith('app-'):
+            assert p['scopeKind']=='app' and p['appReadProtocolVersion']==1 and p['accountScope']=='a'*64 and p['appSessionId']=='app-session'
+            assert all(key not in p for key in ('projectId','documentSessionId','taskProtocolVersion','documentObservationProtocolVersion','taskObservationProtocolVersion','writeToken'))
+        else: assert p['documentObservationProtocolVersion']==1 and p['taskObservationProtocolVersion']==1
+        capabilities={} if scenario=='old-runtime' else {'session_restore_rebind':True,'session_create_or_restore':True,'turn_model_selection':True,'session_permissions':True}
+        if scenario.startswith('app-') and scenario!='app-no-cap': capabilities.update(app_read_scope=True,app_read_protocol_version=1,durable_tasks=True,task_protocol_version=1,task_observation_binding=True,task_observation_protocol_version=1)
+        if not scenario.startswith('app-') and scenario!='old-runtime': capabilities.update(document_observation_binding=True,document_observation_protocol_version=1)
+        if scenario=='doc-no-cap': capabilities.pop('document_observation_binding')
+        if scenario=='doc-false-cap': capabilities['document_observation_binding']=False
+        if scenario=='doc-string-cap': capabilities['document_observation_binding']='true'
+        if scenario=='doc-wrong-version': capabilities['document_observation_protocol_version']=2
+        if scenario.startswith('task-'):
+            assert p['taskProtocolVersion']==1
+            capabilities.update(durable_tasks=True,task_protocol_version=1,task_observation_binding=True,task_observation_protocol_version=1)
+        if scenario=='task-no-observation': capabilities.pop('task_observation_binding')
+        if scenario=='task-false-observation': capabilities['task_observation_binding']=False
+        if scenario=='task-string-observation': capabilities['task_observation_binding']='true'
+        if scenario=='task-no-observation-version': capabilities.pop('task_observation_protocol_version')
+        if scenario=='task-wrong-observation-version': capabilities['task_observation_protocol_version']=2
+        if scenario=='task-no-doc-observation': capabilities.pop('document_observation_binding')
         if scenario=='selection-absent': capabilities.pop('turn_model_selection')
         if scenario=='selection-false': capabilities['turn_model_selection']=False
         if scenario=='selection-string': capabilities['turn_model_selection']='true'
         reply(f,{'protocolVersion':1,'instanceId':p['instanceId'],'capabilities':capabilities})
     elif m in ('session.create','session.restore'):
-        assert p['projectId']=='project-1' and p['documentSessionId']=='doc-1'
+        if scenario.startswith('app-'):
+            assert p['scopeKind']=='app' and p['accountScope']=='a'*64 and p['appSessionId']=='app-session'
+            assert all(key not in p for key in ('projectId','documentSessionId','writeToken'))
+        else: assert p['projectId']=='project-1' and p['documentSessionId']=='doc-1'
         if m=='session.restore': assert p['rebind'] is True and 'recoverExisting' not in p
+        elif scenario.startswith('app-'): assert p['recoverExisting'] is True and 'rebind' not in p
         elif scenario=='old-runtime': assert 'rebind' not in p and 'recoverExisting' not in p
         else: assert p['rebind'] is True and p['recoverExisting'] is True
         session=p['sessionId'];time.sleep(.08)
+        if scenario=='app-rebind-required' and m=='session.create': reply(f,error={'code':'rebind_required','message':'explicit restore required'});continue
+        if scenario.startswith('app-'): reply(f,app_summary());continue
+        if m=='session.restore' and scenario in ('task-create-lost-restore','task-update-lost-restore'): task=json.loads(pathlib.Path(__file__).with_name('task-status.json').read_text())
         if m=='session.restore' and scenario in ('exit-insert','exit-export','first-terminal-lost','lost-reconcile-reply'):
             record=json.loads(original_path.read_text())
             if scenario=='first-terminal-lost': assert p['recoveryInvocations']==[{'turnId':'turn-1','invocationId':'turn-1_canvas','toolName':record['toolName']}]
@@ -2057,6 +4784,17 @@ for line in sys.stdin:
         status='interrupted' if scenario in ('restore-interrupted','restore-pending','create-existing-clean','create-existing-pending','create-existing-unknown') else 'idle'
         pending=scenario in ('restore-pending','create-existing-pending')
         reply(f,{'sessionId':session if scenario!='bad-session' else 'other','status':status,'recoveryRequired':pending,'pendingInputCount':1 if pending else 0,'toolState':{'outcomeUnknown':scenario in ('restore-unknown','create-existing-unknown'),'unresolved':[],'recoveryOperations':[],'observed':[]},'modelState':modelstate(True) if managed else None})
+    elif m=='status' and scenario.startswith('app-'):
+        assert p=={'sessionId':session};reply(f,app_summary())
+    elif m=='app.abandonReads':
+        assert scenario.startswith('app-') and p=={'sessionId':session}
+        was_abandoned=app_abandoned;app_abandoned=True
+        if scenario=='app-abandon-lost' and not was_abandoned: continue
+        summary=app_summary();reply(f,{'sessionId':session,'status':'unchanged' if was_abandoned else 'stale_reads_abandoned','resultAvailable':False,'readRecovery':summary['readRecovery'],'session':summary})
+    elif m=='session.permissions':
+        assert p['sessionId']==session and p['version']==1
+        assert p['writeToken'] is None if p['mode']=='read' else isinstance(p['writeToken'],str)
+        reply(f,{'updated':True,'sessionId':session,'revision':p['revision']+1 if scenario=='bad-permission-ack' else p['revision'],'mode':p['mode']})
     elif m=='reconcile':
         assert managed and p=={'sessionId':session}
         reply(f,{'modelState':modelstate(False)})
@@ -2066,8 +4804,64 @@ for line in sys.stdin:
         record['queries']+=1;record['status']='verified';original_store(record)
         if scenario=='lost-reconcile-reply' and record['queries']==1: sys.exit(0)
         reply(f,{'verified':True,'success':True,'receipt':record['result'],'session':{'sessionId':session,'pendingInputCount':0,'toolState':{'outcomeUnknown':False,'unresolved':[],'recoveryOperations':[],'observed':[]}}})
+    elif m=='task.create':
+        task_observation(p['initialObservationBinding']);assert 'observationBinding' not in p
+        if scenario in ('task-stale-observation','task-human-observation-conflict','task-invalid-observation-source'):
+            code={'task-stale-observation':'stale_observation','task-human-observation-conflict':'human_observation_conflict','task-invalid-observation-source':'task_observation_source'}[scenario]
+            reply(f,error={'code':code,'message':'fixture'});continue
+        assert p['goal']=='保留完整原目标' and p['maxTaskCredits']==40
+        assert p['content']==[{'type':'text','text':'原附件引用'}]
+        assert p['deliverables']==[{'id':'result','description':'按用户目标完成并核对结果'}]
+        task={'id':'task-'+hashlib.sha256(p['clientRequestId'].encode()).hexdigest(),'sessionId':session,'taskRevision':1,'controlEpoch':1,'status':'running','blockedReason':None,'rounds':0,'activeInputId':None,'activeTurnId':None,'roundOrdinal':None,'verifiedSteps':0,'totalSteps':1,'evidenceCount':0,'stateRevision':1,'lastUpdateId':None}
+        if scenario=='task-create-lost-restore':
+            pathlib.Path(__file__).with_name('task-status.json').write_text(json.dumps(task));continue
+        late_create=json.loads(json.dumps(task)) if scenario=='task-create-ack-lost' else None
+        if late_create is None: reply(f,task)
+        else: late_create_frame=f
+        task_state();task_start(1)
+        if scenario=='task-rounds':
+            event('text.delta',{'text':'第一轮'},'turn-1');task_final(1)
+            task_start(2);event('text.delta',{'text':'第二轮'},'turn-2');task_final(2)
+            task.update(status='completed',activeTurnId=None,activeInputId=None,roundOrdinal=None,verifiedSteps=1,evidenceCount=1);task['taskRevision']+=1;task_state()
+        else:
+            event('approval.required',{'approvalId':'task-approval-1','tool':'move_selected_image','arguments':{'projectId':'project-1','documentSessionId':'doc-1','revision':0,'selectionRevision':1,'objectId':'layer:1','deltaX':1,'deltaY':2}})
+    elif m in ('task.pause','task.stop','task.resume','task.status','task.update'):
+        assert p['taskId']==task['id'] and p['sessionId']==session
+        if m=='task.status':
+            task_state()
+            if scenario!='task-status-ack-lost': reply(f,task)
+            continue
+        if m=='task.update':
+            task_observation(p['observationBinding']);assert 'initialObservationBinding' not in p
+            key=p['clientRequestId']
+            if key not in updates:
+                if p['expectedRevision']!=task['taskRevision']:
+                    reply(f,error={'code':'task_revision_conflict','message':'zero mutation'});continue
+                updates[key]={'message':p['message'],'observationBinding':p['observationBinding']};task.update(lastUpdateId=key,status='running');task['controlEpoch']+=1;task['taskRevision']+=1
+            else: assert updates[key]=={'message':p['message'],'observationBinding':p['observationBinding']}
+            if scenario=='task-update-lost-restore':
+                pathlib.Path(__file__).with_name('task-status.json').write_text(json.dumps(task));continue
+            task_state();reply(f,task);continue
+        task['controlEpoch']+=1;task['taskRevision']+=1
+        task['status']={'task.pause':'paused','task.stop':'stopped','task.resume':'running'}[m]
+        if m!='task.resume': task.update(activeTurnId=None,activeInputId=None,roundOrdinal=None)
+        task_state();reply(f,task)
+        if late_create is not None:
+            reply(late_create_frame,late_create);late_create=None
+        if m=='task.pause': task_final(1,'interrupted')
+        elif m=='task.resume':
+            task_start(2);event('approval.required',{'approvalId':'task-approval-2','tool':'move_selected_image','arguments':{'objectId':'layer:1','deltaX':1,'deltaY':2}},'turn-2')
+        elif m=='task.stop': task_final(task['rounds'],'interrupted')
     elif m=='send':
         assert p['sessionId']==session and p['mode']=='follow_up' and p['content'][0]['type']=='text'
+        if not scenario.startswith('app-'):
+            binding=p['observationBinding']
+            assert binding['appInstanceId']=='12345678-1234-1234-1234-123456789abc' and binding['clientId']=='client-1' and binding['projectId']=='project-1' and binding['documentSessionId']=='doc-1'
+            assert 'viewStateId' in binding and 'appViewBinding' not in p
+        if scenario=='doc-lost-ack': continue
+        if scenario=='doc-stale': reply(f,error={'code':'stale_observation','message':'fixture'});continue
+        if scenario.startswith('app-'):
+            assert p['inputId']=='input-original' and p['appViewBinding']=={'pageId':'personalLibrary','pageEpoch':3,'pageStateId':'app-page-v1-'+'a'*64}
         if scenario=='selection-policy-rejected':
             reply(f,error={'code':'managed_policy_unavailable','message':'raw service details'});continue
         if scenario=='settling-once':
@@ -2086,6 +4880,7 @@ for line in sys.stdin:
             event('tool.completed',{'invocationId':'turn-1_canvas','message':{'toolName':name},'metadata':{'postVerification':'pending','operationId':operation,'clientSequence':1}})
             print(json.dumps({'version':1,'type':'result','sessionId':session,'result':{'turnId':'turn-1','status':'interrupted','text':''},'toolState':recovery_state(record)}),flush=True);continue
         event('text.delta',{'text':'处理中 read-secret'})
+        if scenario.startswith('task-'): continue
         if scenario in ('approval','stop'):
             event('approval.required',{'approvalId':'approval-1','tool':'move_selected_image','arguments':{'objectId':'layer:1','deltaX':-20,'deltaY':0}})
         elif scenario=='unknown':
@@ -2105,6 +4900,7 @@ for line in sys.stdin:
     struct Fixture {
         controller: Controller,
         identity: DocumentIdentity,
+        scope: AgentScope,
         directory: PathBuf,
     }
     impl Fixture {
@@ -2126,10 +4922,19 @@ for line in sys.stdin:
                 project_id: "project-1".into(),
                 document_session_id: "doc-1".into(),
             };
+            let scope = if scenario.starts_with("app-") {
+                AgentScope::App(crate::agent_identity::AppIdentity {
+                    instance_id: identity.instance_id.clone(),
+                    account_scope: "a".repeat(64),
+                    app_session_id: "app-session".into(),
+                })
+            } else {
+                identity.clone().into()
+            };
             let mut controller = Controller::default();
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let result = controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},document:identity.clone(),client_id:"client-1".into(),mcp_client_path:entry.clone(),mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),local_session_id:session_id.into(),restore,provider:if scenario == "managed" {json!({"protocol":"seecut-managed","model":scenario,"sessionToken":"inference-secret"})} else {json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"})},read_token:"read-secret".into(),write_token:Some("write-secret".into())});
+                let result = controller.connect(ConnectionConfig{launch:LaunchSpec{executable:fs::canonicalize("/usr/bin/python3").unwrap(),entrypoint:entry.clone(),environment:BTreeMap::new()},scope:scope.clone(),client_id:"client-1".into(),mcp_client_path:entry.clone(),mcp_environment:BTreeMap::from([("TMPDIR".into(),directory.to_string_lossy().into_owned())]),session_directory:directory.clone(),local_session_id:session_id.into(),restore,provider:if scenario == "managed" {json!({"protocol":"seecut-managed","model":scenario,"sessionToken":"inference-secret"})} else {json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"})},read_token:"read-secret".into(),write_token:(!scenario.starts_with("app-")).then(||"write-secret".into()),app_control_token:None});
                 match result {
                     Ok(()) => break,
                     // Parallel fixtures can contend on the nonblocking registration/input
@@ -2137,7 +4942,7 @@ for line in sys.stdin:
                     Err(UiError::Busy) => {
                         controller.shutdown_now();
                         while controller.process.is_some() {
-                            controller.tick(Some(&identity));
+                            controller.tick(Some(&scope));
                             assert!(Instant::now() < deadline, "busy fixture cleanup timed out");
                             thread::yield_now();
                         }
@@ -2154,13 +4959,14 @@ for line in sys.stdin:
             Self {
                 controller,
                 identity,
+                scope,
                 directory,
             }
         }
         fn until(&mut self, condition: impl Fn(&Controller) -> bool) {
             let deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < deadline {
-                self.controller.tick(Some(&self.identity));
+                self.controller.tick(Some(&self.scope));
                 if condition(&self.controller) {
                     return;
                 }
@@ -2182,7 +4988,7 @@ for line in sys.stdin:
                     entrypoint: entry.clone(),
                     environment: BTreeMap::new(),
                 },
-                document: self.identity.clone(),
+                scope: self.identity.clone().into(),
                 client_id: "client-1".into(),
                 mcp_client_path: entry,
                 mcp_environment: BTreeMap::from([(
@@ -2195,6 +5001,7 @@ for line in sys.stdin:
                 provider: json!({"protocol":"fixture","model":scenario,"apiKey":"inference-secret"}),
                 read_token: "read-secret".into(),
                 write_token: None,
+                app_control_token: None,
             }
         }
         fn requests(&self) -> Vec<Value> {
@@ -2213,7 +5020,7 @@ for line in sys.stdin:
             self.controller.disconnect();
             let deadline = Instant::now() + Duration::from_secs(5);
             while self.controller.process.is_some() && Instant::now() < deadline {
-                self.controller.tick(Some(&self.identity));
+                self.controller.tick(Some(&self.scope));
                 thread::sleep(Duration::from_millis(10));
             }
             assert!(self.controller.process.is_none());
@@ -2345,7 +5152,17 @@ for line in sys.stdin:
             assert!(f.controller.pending.is_empty());
             assert!(f.requests().is_empty());
             assert!(f.controller.view().can_send);
-            f.controller.send_text("旧协议仍可明确发送").unwrap();
+            if scenario == "old-runtime" {
+                assert_eq!(
+                    f.controller.send_text("旧协议不得发送未绑定问题"),
+                    Err(UiError::ObservationUnavailable)
+                );
+                assert!(f.requests().is_empty());
+                continue;
+            }
+            f.controller
+                .send_text("模型选择旧协议仍可发送带观察的问题")
+                .unwrap();
             f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
             let requests = f.requests();
             assert_eq!(requests.len(), 1);
@@ -2820,6 +5637,7 @@ for line in sys.stdin:
         assert!(c.apply_model_state(&cost_state("old-turn", 7)));
         c.cost_turn_id = None;
         c.cost_waiting_for_turn = true;
+        c.send_turn = Some(("input".into(), None));
         c.budget_label = "0".into();
         c.pending.push_back(Pending {
             id: "send".into(),
@@ -2867,11 +5685,11 @@ for line in sys.stdin:
             let entry = f.directory.join("fixture.py");
             f.controller.connect(ConnectionConfig {
                 launch: LaunchSpec { executable: fs::canonicalize("/usr/bin/python3").unwrap(), entrypoint: entry.clone(), environment: BTreeMap::new() },
-                document, client_id: "client-1".into(), mcp_client_path: entry,
+                scope: document.into(), client_id: "client-1".into(), mcp_client_path: entry,
                 mcp_environment: BTreeMap::from([("TMPDIR".into(), f.directory.to_string_lossy().into_owned())]),
                 session_directory: f.directory.clone(), local_session_id: "managed-test".into(), restore: true,
                 provider: json!({"protocol":"seecut-managed","model":"managed","sessionToken":token}),
-                read_token: "read-secret".into(), write_token: Some("write-secret".into()),
+                read_token: "read-secret".into(), write_token: Some("write-secret".into()), app_control_token: None,
             }).unwrap();
         }
         let identity = f.identity.clone();
@@ -3196,6 +6014,44 @@ for line in sys.stdin:
         fixture.until(|c| c.view().outcome.is_some());
     }
     #[test]
+    fn permission_hot_switch_keeps_process_session_and_never_resends_input() {
+        let mut f = Fixture::new("finish");
+        f.ready();
+        let session = f.controller.session_id.clone();
+        f.controller
+            .update_permissions(Some("transient-write-secret".into()))
+            .unwrap();
+        f.controller.update_permissions(None).unwrap();
+        assert!(!f.controller.view().can_send);
+        f.until(|c| c.pending.is_empty());
+        assert!(f.controller.process_present() && f.controller.view().can_send);
+        assert_eq!(f.controller.session_id, session);
+        f.controller
+            .update_permissions(Some("new-write-secret".into()))
+            .unwrap();
+        f.until(|c| c.pending.is_empty());
+        f.controller.send_text("读取权限切换后的工程").unwrap();
+        f.until(|c| c.view().outcome == Some(TaskOutcome::Completed));
+        let trace = std::fs::read_to_string(f.directory.join("methods.txt")).unwrap();
+        assert_eq!(trace.lines().filter(|m| *m == "initialize").count(), 1);
+        assert_eq!(trace.lines().filter(|m| *m == "session.create").count(), 1);
+        assert_eq!(trace.lines().filter(|m| *m == "send").count(), 1);
+    }
+    #[test]
+    fn permission_bad_ack_fails_closed_and_old_runtime_cannot_hot_switch() {
+        let mut f = Fixture::new("bad-permission-ack");
+        f.ready();
+        f.controller.update_permissions(None).unwrap();
+        f.until(|c| c.view().error == Some(UiError::Protocol));
+        assert!(!f.controller.view().can_send);
+        let mut old = Fixture::new("old-runtime");
+        old.ready();
+        assert_eq!(
+            old.controller.update_permissions(None),
+            Err(UiError::Protocol)
+        );
+    }
+    #[test]
     fn connection_waits_for_both_real_responses_and_never_replays() {
         let mut fixture = Fixture::new("finish");
         assert_eq!(fixture.controller.view().phase, Phase::Initializing);
@@ -3468,7 +6324,9 @@ for line in sys.stdin:
         let mut fixture = Fixture::new("finish");
         fixture.ready();
         fixture.identity.project_id = "project-2".into();
-        fixture.controller.tick(Some(&fixture.identity));
+        fixture
+            .controller
+            .tick(Some(&fixture.identity.clone().into()));
         assert_eq!(fixture.controller.view().phase, Phase::Closing);
         assert_eq!(
             fixture.controller.view().error,
@@ -3514,6 +6372,7 @@ for line in sys.stdin:
             document_session_id: f.identity.document_session_id.clone(),
             retry_registration: false,
             is_flow: false,
+            is_clip: false,
         });
         f.controller.write_in_flight = true;
         f.controller.write_identity = Some((
@@ -3533,7 +6392,7 @@ for line in sys.stdin:
                     entrypoint: entry.clone(),
                     environment: BTreeMap::new(),
                 },
-                document: f.identity.clone(),
+                scope: f.identity.clone().into(),
                 client_id: "client-1".into(),
                 mcp_client_path: entry,
                 mcp_environment: BTreeMap::from([(
@@ -3546,6 +6405,7 @@ for line in sys.stdin:
                 provider: json!({"protocol":"fixture","model":"finish","apiKey":"inference-secret"}),
                 read_token: "read-secret".into(),
                 write_token: None,
+                app_control_token: None,
             }
         };
         for changed in 0..4 {
@@ -3553,7 +6413,7 @@ for line in sys.stdin:
             match changed {
                 0 => c.restore = false,
                 1 => c.client_id = "other-client".into(),
-                2 => c.document.document_session_id = "other-document".into(),
+                2 => document_mut(&mut c.scope).document_session_id = "other-document".into(),
                 _ => c.provider["protocol"] = json!("seecut-managed"),
             }
             assert_eq!(f.controller.connect(c), Err(UiError::VerifyRequired));
@@ -3599,10 +6459,13 @@ for line in sys.stdin:
                 match changed {
                     0 => config.restore = false,
                     1 => config.client_id = "other-client".into(),
-                    2 => config.document.document_session_id = "other-document".into(),
+                    2 => {
+                        document_mut(&mut config.scope).document_session_id =
+                            "other-document".into()
+                    }
                     3 => config.local_session_id = "other-session".into(),
-                    4 => config.document.instance_id = "other-instance".into(),
-                    _ => config.document.project_id = "other-project".into(),
+                    4 => document_mut(&mut config.scope).instance_id = "other-instance".into(),
+                    _ => document_mut(&mut config.scope).project_id = "other-project".into(),
                 }
                 assert_eq!(f.controller.connect(config), Err(UiError::VerifyRequired));
             }

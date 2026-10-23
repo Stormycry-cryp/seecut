@@ -50,7 +50,7 @@ pub(crate) enum LeaseStatus<'a> {
     Active {
         scope: &'a Scope,
         client: &'a str,
-        remaining_minutes: u64,
+        remaining_minutes: Option<u64>,
     },
     Expired {
         scope: &'a Scope,
@@ -68,7 +68,7 @@ struct Lease {
     scope: Scope,
     client: String,
     token: String,
-    expires_at: Instant,
+    expires_at: Option<Instant>,
 }
 
 enum Outcome<R> {
@@ -129,6 +129,9 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
     /// grants or extends a lease. An unchanged binding keeps its exact deadline.
     pub fn bind_scope(&mut self, scope: Option<Scope>) {
         if self.scope != scope {
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::DocumentChanged,
+            );
             self.lease = None;
             self.histories.clear();
             self.scope = scope;
@@ -156,7 +159,7 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
             return Err(RegistryError::InvalidInput);
         }
         if let Some(lease) = &self.lease
-            && now < lease.expires_at
+            && lease.expires_at.is_none_or(|deadline| now < deadline)
         {
             return Err(if lease.client == client {
                 RegistryError::AlreadyGranted
@@ -167,12 +170,28 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
         let expires_at = now
             .checked_add(LEASE_DURATION)
             .ok_or(RegistryError::InvalidInput)?;
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.lease = Some(Lease {
             scope: scope.clone(),
             client: client.to_owned(),
             token,
-            expires_at,
+            expires_at: Some(expires_at),
         });
+        Ok(())
+    }
+
+    /// Session-scoped authority for the built-in Agent. The trusted host binds
+    /// its account/conversation and revokes on every lifecycle change. There is
+    /// no clock deadline; external clients keep the bounded lease API above.
+    pub fn trusted_grant_session(
+        &mut self,
+        scope: &Scope,
+        client: &str,
+        token: String,
+        now: Instant,
+    ) -> Result<(), RegistryError> {
+        self.trusted_grant(scope, client, token, now)?;
+        self.lease.as_mut().expect("just granted").expires_at = None;
         Ok(())
     }
 
@@ -191,7 +210,7 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
         }
         let lease = self.lease.as_mut().ok_or(RegistryError::Unauthorized)?;
         if lease.client != client {
-            return Err(if now < lease.expires_at {
+            return Err(if lease.expires_at.is_none_or(|deadline| now < deadline) {
                 RegistryError::ClientConflict
             } else {
                 RegistryError::Unauthorized
@@ -200,13 +219,28 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
         let expires_at = now
             .checked_add(LEASE_DURATION)
             .ok_or(RegistryError::InvalidInput)?;
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         lease.token = token;
-        lease.expires_at = expires_at;
+        lease.expires_at = Some(expires_at);
         Ok(())
     }
 
     pub fn revoke(&mut self) {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.lease = None;
+    }
+
+    /// The actual original deadline, after checking the exact original token.
+    /// None means a live Agent-session lease, not a newly extended deadline.
+    pub fn original_deadline(
+        &self,
+        scope: &Scope,
+        client: &str,
+        token: &str,
+        now: Instant,
+    ) -> Result<Option<Instant>, RegistryError> {
+        self.authorize(scope, scope, client, token, now)?;
+        Ok(self.lease.as_ref().and_then(|lease| lease.expires_at))
     }
 
     /// Suitable for a UI refresh on user actions or expiration; minutes are
@@ -215,19 +249,22 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
         let Some(lease) = &self.lease else {
             return LeaseStatus::Unauthorized;
         };
-        if now >= lease.expires_at {
+        if lease.expires_at.is_some_and(|deadline| now >= deadline) {
             return LeaseStatus::Expired {
                 scope: &lease.scope,
                 client: &lease.client,
             };
         }
-        let remaining = lease.expires_at.duration_since(now);
-        let whole_minutes = remaining.as_secs() / 60;
-        let fraction = remaining.as_secs() % 60 != 0 || remaining.subsec_nanos() != 0;
+        let remaining_minutes = lease.expires_at.map(|deadline| {
+            let remaining = deadline.duration_since(now);
+            let whole_minutes = remaining.as_secs() / 60;
+            let fraction = remaining.as_secs() % 60 != 0 || remaining.subsec_nanos() != 0;
+            whole_minutes + u64::from(fraction)
+        });
         LeaseStatus::Active {
             scope: &lease.scope,
             client: &lease.client,
-            remaining_minutes: whole_minutes + u64::from(fraction),
+            remaining_minutes,
         }
     }
 
@@ -246,7 +283,7 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
         if lease.scope != *current || lease.client != authenticated_client || lease.token != token {
             return Err(RegistryError::Unauthorized);
         }
-        if now >= lease.expires_at {
+        if lease.expires_at.is_some_and(|deadline| now >= deadline) {
             return Err(RegistryError::LeaseExpired);
         }
         Ok(())
@@ -384,6 +421,31 @@ impl<P: PartialEq + Clone, R: Clone> WriteRegistry<P, R> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn clip_save_original_pending_is_revoked_before_native_lease_renewal() {
+        let now = Instant::now();
+        let mut registry = granted(now);
+        let pending = crate::clip_save_fence::test_support::PendingSave::new();
+        registry
+            .trusted_renew(&scope(), "alice", "replacement-token".into(), now)
+            .unwrap();
+        pending.assert_not_committed();
+    }
+
+    #[test]
+    fn clip_save_original_pending_is_revoked_before_native_scope_or_lease_removal() {
+        for change_scope in [false, true] {
+            let mut registry = granted(Instant::now());
+            let pending = crate::clip_save_fence::test_support::PendingSave::new();
+            if change_scope {
+                registry.bind_scope(None);
+            } else {
+                registry.revoke();
+            }
+            pending.assert_not_committed();
+        }
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct Params {
         revision: u64,
@@ -479,7 +541,7 @@ mod tests {
                 LeaseStatus::Active {
                     scope: &scope(),
                     client: "alice",
-                    remaining_minutes: minutes,
+                    remaining_minutes: Some(minutes),
                 }
             );
         }
@@ -488,7 +550,7 @@ mod tests {
             LeaseStatus::Active {
                 scope: &scope(),
                 client: "alice",
-                remaining_minutes: 2,
+                remaining_minutes: Some(2),
             }
         );
         assert!(matches!(
@@ -501,6 +563,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn session_lifetime_is_explicit_and_revocation_keeps_deduplication() {
+        let now = Instant::now();
+        let mut registry = Registry::new();
+        registry.bind_scope(Some(scope()));
+        registry
+            .trusted_grant_session(&scope(), "alice", "token".into(), now)
+            .unwrap();
+        let later = now + Duration::from_secs(12 * 3600);
+        assert!(matches!(
+            registry.lease_status(later),
+            LeaseStatus::Active {
+                remaining_minutes: None,
+                ..
+            }
+        ));
+        assert_eq!(begin(&mut registry, 1, later), Ok(Begin::New));
+        registry.finish(&scope(), &key(1), "done", later).unwrap();
+        registry.revoke();
+        assert_eq!(
+            begin(&mut registry, 1, later),
+            Err(RegistryError::Unauthorized)
+        );
+        registry
+            .trusted_grant_session(&scope(), "alice", "new-token".into(), later)
+            .unwrap();
+        assert_eq!(
+            registry.begin(&scope(), &scope(), &key(1), "new-token", &params(), later),
+            Ok(Begin::Cached("done"))
+        );
+        assert_eq!(
+            begin(&mut registry, 1, later),
+            Err(RegistryError::Unauthorized)
+        );
+        registry.bind_scope(None);
+        registry.bind_scope(Some(scope()));
+        assert_eq!(
+            registry.authorize(&scope(), &scope(), "alice", "new-token", later),
+            Err(RegistryError::Unauthorized)
+        );
+    }
     #[test]
     fn explicit_renew_rotates_token_and_revoke_requires_new_grant() {
         let now = Instant::now();

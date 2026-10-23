@@ -63,9 +63,105 @@ export global SeeCut {
     in-out property <bool> canvas-prompt-open;
     changed canvas-prompt-open => { self.prompt-context-revision += 1; }
     in-out property <int> prompt-context-revision;
-    changed canvas-gallery-open => { if self.canvas-gallery-open { self.canvas-prompt-open = false; self.prompt-context-revision += 1; } }
+    callback app-page-navigation-changed();
+    // Synchronous pre-change gate; changed-property notifications are too late.
+    callback clip-source-will-change();
+    callback clip-export-scope-will-change();
+    public function change-page(next: int) {
+        if self.page != next { self.clip-export-scope-will-change(); self.clip-source-will-change(); }
+        self.page = next;
+    }
+    public function change-canvas-gallery-open(next: bool) {
+        if self.canvas-gallery-open != next { self.clip-export-scope-will-change(); self.clip-source-will-change(); }
+        self.canvas-gallery-open = next;
+    }
+    public function change-auth-open(next: bool) {
+        if self.auth-open != next { self.clip-source-will-change(); }
+        self.auth-open = next;
+    }
+    public function change-handoff-open(next: bool) {
+        if self.handoff-open != next { self.clip-source-will-change(); }
+        self.handoff-open = next;
+    }
+    public function change-canvas-export-open(next: bool) {
+        if self.canvas-export-open != next { self.clip-source-will-change(); }
+        self.canvas-export-open = next;
+    }
+    public function change-clip-export-open(next: bool) {
+        if self.clip-export-open != next { self.clip-source-will-change(); }
+        self.clip-export-open = next;
+    }
+    public function change-result-preview-open(next: bool) {
+        if self.result-preview-open != next { self.clip-source-will-change(); }
+        self.result-preview-open = next;
+    }
+    public function change-media-preview-open(next: bool) {
+        if self.media-preview-open != next { self.clip-source-will-change(); }
+        self.media-preview-open = next;
+    }
+    public function change-asset-picker-open(next: bool) {
+        if self.asset-picker-open != next { self.clip-source-will-change(); }
+        self.asset-picker-open = next;
+    }
+    public function change-personal-dialog(next: int) {
+        if self.personal-dialog != next { self.clip-source-will-change(); }
+        self.personal-dialog = next;
+    }
+    public function change-personal-menu(next: int) {
+        if self.personal-menu != next { self.clip-source-will-change(); }
+        self.personal-menu = next;
+    }
+    public function change-template-menu-id(next: string) {
+        if self.template-menu-id != next { self.clip-source-will-change(); }
+        self.template-menu-id = next;
+    }
+    public function change-template-delete-id(next: string) {
+        if self.template-delete-id != next { self.clip-source-will-change(); }
+        self.template-delete-id = next;
+    }
+    public function change-template-editor-open(next: bool) {
+        if self.template-editor-open != next { self.clip-source-will-change(); }
+        self.template-editor-open = next;
+    }
+    public function change-generation-parameters-open(next: bool) {
+        if self.generation-parameters-open != next { self.clip-source-will-change(); }
+        self.generation-parameters-open = next;
+    }
+    public function change-inspiration-preview-open(next: bool) {
+        if self.inspiration-preview-open != next { self.clip-source-will-change(); }
+        self.inspiration-preview-open = next;
+    }
+    public function change-export-copy-open(next: bool) {
+        if self.export-copy-open != next { self.clip-source-will-change(); }
+        self.export-copy-open = next;
+    }
+    public function change-task-delete-open(next: bool) {
+        if self.task-delete-open != next { self.clip-source-will-change(); }
+        self.task-delete-open = next;
+    }
+    public function change-save-team-task(next: string) {
+        if self.save-team-task != next { self.clip-source-will-change(); }
+        self.save-team-task = next;
+    }
+    public function change-canvas-create-open(next: bool) {
+        if self.canvas-create-open != next { self.clip-source-will-change(); }
+        self.canvas-create-open = next;
+    }
+    public function change-team-dialog(next: int) {
+        if self.team-dialog != next { self.clip-source-will-change(); }
+        self.team-dialog = next;
+    }
+    public function change-team-menu(next: int) {
+        if self.team-menu != next { self.clip-source-will-change(); }
+        self.team-menu = next;
+    }
+    changed canvas-gallery-open => {
+        self.app-page-navigation-changed();
+        if self.canvas-gallery-open { self.canvas-prompt-open = false; self.prompt-context-revision += 1; }
+    }
     in-out property <int> page: 1;
     changed page => {
+        self.app-page-navigation-changed();
         self.prompt-context-revision += 1;
         self.personal-relink-view += 1;
         self.personal-relink-context-changed();
@@ -254,6 +350,7 @@ export global SeeCut {
     in-out property <bool> history-previous;
     in-out property <bool> history-next;
     in-out property <int> history-page: 1;
+    in-out property <string> account-expanded-entry;
     in-out property <int> history-view-revision;
     in-out property <string> history-error;
     in-out property <string> history-notice;

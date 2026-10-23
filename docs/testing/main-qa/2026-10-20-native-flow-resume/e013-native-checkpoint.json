@@ -1,0 +1,14 @@
+{
+  "timeUTC": "2026-10-20T00:14:44.198108+00:00",
+  "head": "e0136fb072ab1f9fe9980687d5d178d63fd6d434",
+  "actualNativeUI": [
+    "Documents allow led to successful catalog load",
+    "failed cards show specific short reason and elided prompt",
+    "info icon opens safe explanatory detail",
+    "edit input restores prompt and synthetic reference",
+    "restored reference can be removed"
+  ],
+  "refillTaskAndWalletSnapshotUnchanged": true,
+  "newGenerationSubmitted": false,
+  "provider": "synthetic loopback fixture"
+}

@@ -1,0 +1,27 @@
+Analysis of sampling seecut (pid 36626) every 10 milliseconds
+Process:         seecut [36626]
+Path:            /Users/USER/Documents/*/SeeCut-Frontend-QA-35a7600-Run.app/Contents/MacOS/seecut
+Load Address:    0x104668000
+Identifier:      cloud.stormycry.seecut.devqa.35a7600
+Version:         0.2.2 (0.2.2)
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  launchd [1]
+Target Type:     live task
+
+Date/Time:       2026-10-20 02:04:55.533 +0800
+Launch Time:     2026-10-20 02:02:46.646 +0800
+OS Version:      macOS 26.6 (25G72)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         166.3M
+Physical footprint (peak):  314.3M
+Idle exit:                  untracked
+    +                                                                       27 concat::cloud::poll::_$u7b$$u7b$closure$u7d$$u7d$::h647650c00ac40f0e  (in seecut) + 1516  [0x10c94e29c]
+    +                                                                         27 concat::cloud::publish::h7492f7643c5412b9  (in seecut) + 39332  [0x10c95a0d8]
+    +                                                                           27 std::fs::read::h60889983bf1fa9c4  (in seecut) + 80  [0x10fa96950]
+    +                                                                             27 std::fs::read::inner::hba9429014454233d  (in seecut) + 168  [0x11068d040]
+    +                                                                               27 std::sys::fs::unix::File::open_c::h5ff052daf914d327  (in seecut) + 260  [0x110692ad0]
+    +                                                                                   27 __open  (in libsystem_kernel.dylib) + 8  [0x190428694]
+        __open  (in libsystem_kernel.dylib)        27

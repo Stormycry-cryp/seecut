@@ -3,6 +3,13 @@
 use serde_json::Value;
 pub(crate) const ACCOUNT_EXPIRED: &str = "登录已过期，请重新登录";
 
+/// Exact selected model/effort policy cap; balances never establish this value.
+pub(crate) fn next_turn_cap(policy: &Value) -> Option<u64> {
+    policy.get("agent").unwrap_or(policy)["max_turn_credits"]
+        .as_u64()
+        .filter(|v| *v > 0 && *v <= 9_007_199_254_740_991)
+}
+
 #[derive(Clone)]
 pub(crate) struct Choice {
     pub(crate) id: String,
@@ -523,6 +530,35 @@ pub(crate) fn fetch(base: &str, token: &str) -> Result<Directory, &'static str> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn task_cap_uses_selected_public_policy_and_rejects_unsafe_values() {
+        assert_eq!(
+            super::next_turn_cap(
+                &serde_json::json!({"agent":{"max_turn_credits":25},"balance":900})
+            ),
+            Some(25)
+        );
+        assert_eq!(
+            super::next_turn_cap(&serde_json::json!({"max_turn_credits":75})),
+            Some(75)
+        );
+        for value in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!("25"),
+            serde_json::json!(9007199254740992_u64),
+        ] {
+            assert_eq!(
+                super::next_turn_cap(&serde_json::json!({"max_turn_credits":value})),
+                None
+            );
+        }
+        assert_eq!(
+            super::next_turn_cap(&serde_json::json!({"balance":1000})),
+            None
+        );
+    }
+
     #[test]
     fn image_capability_follows_each_selected_model_and_defaults_to_reference_only() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(

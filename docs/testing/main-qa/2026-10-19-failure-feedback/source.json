@@ -1,0 +1,11 @@
+{
+  "baseCommit": "28eb593b19c015ba24f212d9a061952da3812b86",
+  "files": {
+    "src/crates/concat/src/cloud.rs": "6f1a8816cb2eafbb091bd52a3339300552227e45f15d3937f7fc2c64885d247d",
+    "src/crates/concat/src/cloud/failure_feedback.rs": "31bc078b24cc562e23f361f1534252946f7740edcbe2fcfce49fa20536c6800c",
+    "src/crates/concat/src/cloud/preview_validation.rs": "4a62883948b94f93645971af56e202c966458ce58eaefabbd4592ec4bae535ca",
+    "src/crates/concat/src/ui_preview.rs": "2851b8c0a166166088a8d150cd829d74ec0727e2d5c7c9f944046ec23b1b0bbf",
+    "src/crates/concat/ui/seecut/generation.slint": "9a202c253ee6dbccc100f94b870ef490ee3bfbd11848ada03c2c5d45cfe0d349"
+  },
+  "scope": "failure feedback and offline fixture; no native app packaging"
+}

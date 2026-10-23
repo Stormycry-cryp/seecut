@@ -20,11 +20,210 @@ use std::{
 };
 use url::Url;
 
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod app_page_snapshot;
+mod failure_feedback;
 mod flow_generation;
 mod flow_parameters;
 mod generation_state;
 mod inspiration;
 mod preview_validation;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+thread_local! {static APP_READ_NAVIGATION:Rc<crate::editor_mcp_app_page::Navigation>=Rc::new(crate::editor_mcp_app_page::Navigation::default());}
+
+/// Actual UI navigation event; no list hashing, Cloud borrow or Bridge borrow.
+pub(crate) fn app_page_navigation_changed() {
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    APP_READ_NAVIGATION.with(|navigation| {
+        let _ = navigation.navigation();
+    });
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_read_navigation() -> Rc<crate::editor_mcp_app_page::Navigation> {
+    APP_READ_NAVIGATION.with(Rc::clone)
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_read_gate(
+    studio: &crate::studio::Studio,
+    app: &App,
+) -> Result<(), crate::editor_mcp_app_page::Error> {
+    let state = EXPORT_ACCOUNT.with(|slot| {
+        slot.try_borrow()
+            .map_err(|_| crate::editor_mcp_app_page::Error::Busy)?
+            .upgrade()
+            .ok_or(crate::editor_mcp_app_page::Error::SignedOut)
+    })?;
+    let cloud = state
+        .try_borrow()
+        .map_err(|_| crate::editor_mcp_app_page::Error::Busy)?;
+    let auth_busy =
+        is_auth_job(&cloud.active_name) || cloud.pending.iter().any(|(name, _)| is_auth_job(name));
+    crate::editor_mcp_app_page::read_gate(
+        app.get_app_read_blocked(),
+        studio.exit_pending,
+        studio.open_menu >= 0,
+        purchase_busy(&cloud),
+        auth_busy,
+    )
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_read_identity(
+    instance: &str,
+) -> Result<(u64, crate::agent_identity::AppIdentity), crate::editor_mcp_app_page::Error> {
+    let access = EXPORT_ACCOUNT.with(|slot| {
+        slot.try_borrow()
+            .map(|state| AccountAccess {
+                state: state.clone(),
+            })
+            .map_err(|_| crate::editor_mcp_app_page::Error::Busy)
+    })?;
+    let navigation = app_read_navigation();
+    match app_page_snapshot::identity(&access) {
+        Ok(trusted) => navigation.account(Some(trusted))?,
+        Err(crate::editor_mcp_app_page::Error::SignedOut) => {
+            let _ = navigation.account(None);
+            return Err(crate::editor_mcp_app_page::Error::SignedOut);
+        }
+        Err(error) => return Err(error),
+    }
+    navigation.identity(instance.to_owned())
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_read_snapshot(
+    app: &App,
+    studio: &crate::studio::Studio,
+    models: &crate::studio::Models,
+    registry: &mut crate::editor_mcp_app_page::AppPages<slint::Image>,
+) -> Result<crate::editor_mcp_app_page::Context, crate::editor_mcp_app_page::Error> {
+    let access = EXPORT_ACCOUNT.with(|slot| {
+        slot.try_borrow()
+            .map(|state| AccountAccess {
+                state: state.clone(),
+            })
+            .map_err(|_| crate::editor_mcp_app_page::Error::Busy)
+    })?;
+    app_page_snapshot::capture(&access, app, studio, models, registry)
+}
+
+/// 原导航包装器完成同步采纳后才可构造；ID 不来自模型或 operationId。
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) struct AppNavigationAdoption {
+    navigation_id: uuid::Uuid,
+    operation_id: String,
+    page: concat_editor_mcp::AppViewBinding,
+}
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+impl AppNavigationAdoption {
+    /// 仅模拟原生包装器返回，用于无窗口状态机测试；不证明真实页面导航。
+    #[cfg(test)]
+    pub(crate) fn for_state_machine_test(
+        dispatch: crate::agent_app_control_core::HostDispatch,
+        page: concat_editor_mcp::AppViewBinding,
+    ) -> Self {
+        Self {
+            navigation_id: uuid::Uuid::new_v4(),
+            operation_id: dispatch.intent.operation_id,
+            page,
+        }
+    }
+    pub(crate) fn page(&self) -> &concat_editor_mcp::AppViewBinding {
+        &self.page
+    }
+    pub(crate) fn matches(&self, operation: &str, target: concat_editor_mcp::AppPageId) -> bool {
+        !self.navigation_id.is_nil()
+            && self.operation_id == operation
+            && self.page.page_id == target
+    }
+}
+
+/// 只接受 core commit 后的闭合导航；仍走现有页面入口和设置 Open/Close。
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+pub(crate) fn app_control_navigate(
+    shell: &crate::host::Shell,
+    app: &App,
+    dispatch: crate::agent_app_control_core::HostDispatch,
+) -> Result<AppNavigationAdoption, crate::agent_app_control_core::Error> {
+    use crate::agent_app_control_core::{Action, Error};
+    use concat_editor_mcp::AppPageId;
+    if dispatch.correlation_id != dispatch.intent.operation_id {
+        return Err(Error::Conflict);
+    }
+    let Action::Navigate { target } = dispatch.intent.target;
+    let expected = &dispatch.intent.authority;
+    let check_identity = || {
+        let (epoch, actual) =
+            app_read_identity(&expected.instance_id).map_err(|_| Error::NotAuthorized)?;
+        if epoch != expected.account_epoch
+            || actual.account_scope != expected.account_scope
+            || actual.app_session_id != expected.app_session_id
+        {
+            return Err(Error::NotAuthorized);
+        }
+        Ok(())
+    };
+    check_identity()?;
+    {
+        let studio = shell.studio.try_borrow().map_err(|_| Error::Busy)?;
+        app_read_gate(&studio, app).map_err(|_| Error::NotAuthorized)?;
+        let ui = app.global::<SeeCut>();
+        if (ui.get_page() == 0 && !studio.on_start)
+            || (ui.get_page() == 6 && !ui.get_canvas_gallery_open())
+            || ui.get_page() == 8
+        {
+            return Err(Error::NotAuthorized);
+        }
+    }
+    let state = EXPORT_ACCOUNT.with(|slot| {
+        slot.try_borrow()
+            .map_err(|_| Error::Busy)?
+            .upgrade()
+            .ok_or(Error::NotAuthorized)
+    })?;
+    let navigation_id = uuid::Uuid::new_v4();
+    {
+        let mut studio = shell.studio.try_borrow_mut().map_err(|_| Error::Busy)?;
+        let message = if target == AppPageId::Settings {
+            crate::panes::settings::SettingsMsg::Open
+        } else {
+            crate::panes::settings::SettingsMsg::Close
+        };
+        studio.handle(crate::panes::Msg::Settings(message));
+        studio.publish(app, &shell.models);
+    }
+    if target != AppPageId::Settings {
+        let page = match target {
+            AppPageId::Generation => 1,
+            AppPageId::PersonalLibrary => 5,
+            AppPageId::TeamLibrary => 2,
+            AppPageId::Templates => 7,
+            AppPageId::Account => 4,
+            AppPageId::Credits => 3,
+            AppPageId::Projects => 6,
+            AppPageId::Settings => unreachable!(),
+        };
+        navigate(app, &state, page);
+    }
+    check_identity()?;
+    let page = {
+        let studio = shell.studio.try_borrow().map_err(|_| Error::Busy)?;
+        let mut bridge = studio
+            .editor_mcp
+            .try_borrow_mut()
+            .map_err(|_| Error::Busy)?;
+        bridge
+            .assistant_app_view(&studio, app, &shell.models)
+            .map_err(|_| Error::Unknown)?
+    };
+    if page.page_id != target {
+        return Err(Error::Unknown);
+    }
+    Ok(AppNavigationAdoption {
+        navigation_id,
+        operation_id: dispatch.intent.operation_id,
+        page,
+    })
+}
+
 pub(crate) mod prompt_assistance;
 pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, media_kind};
 
@@ -32,6 +231,10 @@ pub(crate) use flow_generation::{ImageClient, RegisteredAsset, library_asset, me
 /// a signed-out synthetic Cloud. Normal startup never invokes this entry.
 pub(crate) fn validate_preview_state(app: &App, directory: &std::path::Path) -> Result<(), String> {
     preview_validation::run(app, directory)
+}
+
+pub(crate) fn validate_failure_preview(app: &App, directory: &Path) -> Result<(), String> {
+    preview_validation::failure_recovery(app, directory)
 }
 
 fn project_media_error() -> String {
@@ -58,6 +261,22 @@ pub(crate) fn canvas_output_scope() -> String {
             flow_generation::output_identity(&cloud, "canvas:scope").map(|identity| identity.scope)
         })
         .unwrap_or_else(|| "local".into())
+}
+/// Reentrant UI callbacks must refuse capture instead of panicking or treating
+/// a temporarily borrowed signed-in account as an anonymous local account.
+pub(crate) fn try_canvas_output_scope() -> Result<String, ()> {
+    EXPORT_ACCOUNT.with(|slot| {
+        let Some(state) = slot.try_borrow().map_err(|_| ())?.upgrade() else {
+            return Ok("local".into());
+        };
+        let cloud = state.try_borrow().map_err(|_| ())?;
+        if cloud.token.is_empty() {
+            return Ok("local".into());
+        }
+        Ok(flow_generation::output_identity(&cloud, "canvas:scope")
+            .map(|identity| identity.scope)
+            .unwrap_or_else(|| "local".into()))
+    })
 }
 pub(crate) struct AccountSnapshot {
     pub epoch: u64,
@@ -204,7 +423,7 @@ impl AccountAccess {
         clear_session(app, &state, true);
         let ui = app.global::<SeeCut>();
         switch_auth(&ui, 0);
-        ui.set_auth_open(true);
+        ui.invoke_change_auth_open(true);
         ui.set_error("登录状态已失效，请重新登录".into());
         sync_operation_state(app, &state);
     }
@@ -1178,7 +1397,7 @@ fn poll(
                 {
                     clear_session(&app, &state, true);
                     switch_auth(&ui, 0);
-                    ui.set_auth_open(true);
+                    ui.invoke_change_auth_open(true);
                     ui.set_error("登录状态已失效，请重新登录".into());
                     sync_operation_state(&app, &state);
                     return;
@@ -1186,7 +1405,7 @@ fn poll(
                 if name == "logout" {
                     clear_session(&app, &state, false);
                     switch_auth(&ui, 0);
-                    ui.set_auth_open(true);
+                    ui.invoke_change_auth_open(true);
                     ui.set_notice("已在本机退出登录".into());
                     sync_operation_state(&app, &state);
                     return;
@@ -2389,7 +2608,7 @@ fn sync_picker_selection(ui: &SeeCut, state: &Rc<RefCell<Cloud>>) {
 
 fn begin_asset_picker(app: &App, state: &Rc<RefCell<Cloud>>, purpose: &str, source: i32) {
     let ui = app.global::<SeeCut>();
-    ui.set_asset_picker_open(true);
+    ui.invoke_change_asset_picker_open(true);
     ui.set_asset_picker_purpose(purpose.into());
     ui.set_asset_picker_source(source);
     ui.set_personal_reference_search("".into());
@@ -2446,12 +2665,12 @@ fn show_auth(app: &App, state: &Rc<RefCell<Cloud>>, target: Option<i32>) {
     if !ui.get_signed_in() {
         switch_auth(&ui, 0);
     }
-    ui.set_auth_open(true);
+    ui.invoke_change_auth_open(true);
 }
 
 fn load_page(app: &App, state: &Rc<RefCell<Cloud>>, page: i32) {
     let ui = app.global::<SeeCut>();
-    ui.set_page(page);
+    ui.invoke_change_page(page);
     match page {
         5 => personal_job(app, state, "list", Value::Null),
         7 => {
@@ -2917,7 +3136,7 @@ fn template_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                 )
                 .map(|saved_id| {
                     ui.set_template_id(saved_id.into());
-                    ui.set_template_editor_open(false);
+                    ui.invoke_change_template_editor_open(false);
                     ui.set_notice("模板已保存".into());
                 })
         }
@@ -3001,7 +3220,7 @@ fn apply_task_snapshot(
     apply_generation_configuration(app, state, &configuration, "历史任务", false)?;
     let ui = app.global::<SeeCut>();
     ui.set_generation_step(0);
-    ui.set_result_preview_open(false);
+    ui.invoke_change_result_preview_open(false);
     if state.borrow().effort_confirmation_required {
         let previous = ui.get_recovery_warning().to_string();
         let warning = if previous.is_empty() {
@@ -3155,7 +3374,7 @@ fn apply_generation_configuration(
     ui.set_quote("".into());
     ui.set_can_generate(false);
     ui.set_insufficient_credits(false);
-    ui.set_page(1);
+    ui.invoke_change_page(1);
     render_references(app, state);
     ui.set_reference_error("".into());
     let had_references = !references.is_empty();
@@ -3185,7 +3404,7 @@ fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
 fn navigate_unchecked(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
     let ui = app.global::<SeeCut>();
     if target == 6 {
-        ui.set_canvas_gallery_open(true);
+        ui.invoke_change_canvas_gallery_open(true);
         refresh_canvas_projects(app, state);
     }
     if should_clear_identity_error_for_target(target, ui.get_error().as_str()) {
@@ -3397,7 +3616,7 @@ fn begin_handoff_with_imports(
         awaiting_new_project: false,
         clip_open: None,
     });
-    ui.set_handoff_open(true);
+    ui.invoke_change_handoff_open(true);
 }
 
 fn clip_imports(
@@ -3416,7 +3635,7 @@ fn clip_imports(
 fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
     let ui = app.global::<SeeCut>();
     let Some(pending) = state.borrow().pending_handoff.clone() else {
-        ui.set_handoff_open(false);
+        ui.invoke_change_handoff_open(false);
         return;
     };
     if !ui
@@ -3432,9 +3651,9 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
             ui.set_error("无法准备画布素材".into());
             return;
         };
-        ui.set_handoff_open(false);
-        ui.set_canvas_gallery_open(false);
-        ui.set_page(6);
+        ui.invoke_change_handoff_open(false);
+        ui.invoke_change_canvas_gallery_open(false);
+        ui.invoke_change_page(6);
         if id == "new" {
             app.invoke_canvas_new_with_paths(payload.into());
         } else if id == "current" {
@@ -3452,9 +3671,9 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
             (state.borrow().pending_imports.len() + pending.imports.len()) as i32,
         );
         app.invoke_project_open_cancel();
-        ui.set_page(0);
-        app.set_clip_create_open(true);
-        ui.set_handoff_open(false);
+        ui.invoke_change_page(0);
+        app.invoke_change_clip_create_open(true);
+        ui.invoke_change_handoff_open(false);
         return;
     } else if id == "current" {
         if let Some(handoff) = state.borrow_mut().pending_handoff.as_mut() {
@@ -3469,13 +3688,13 @@ fn select_handoff(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
                 path.to_owned(),
             ));
         }
-        ui.set_handoff_open(false);
-        ui.set_page(0);
+        ui.invoke_change_handoff_open(false);
+        ui.invoke_change_page(0);
         app.invoke_start_open_recent(path.into());
         return;
     }
     state.borrow_mut().pending_handoff = None;
-    ui.set_handoff_open(false);
+    ui.invoke_change_handoff_open(false);
 }
 
 fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
@@ -3554,7 +3773,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
             if name.starts_with("personal-dialog-") {
                 ui.set_personal_dialog_busy(false);
                 ui.set_personal_dialog_error("".into());
-                ui.set_personal_dialog(0);
+                ui.invoke_change_personal_dialog(0);
             }
             if name == "personal-cache" {
                 render_tasks(app, state);
@@ -3583,7 +3802,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     .into(),
             );
             ui.set_auth_password("".into());
-            ui.set_auth_open(false);
+            ui.invoke_change_auth_open(false);
             let uid = text(&value["user"], "id");
             let history_name = format!("{uid}-history.json");
             let task_snapshot_name = format!("{uid}-task-inputs.json");
@@ -3634,7 +3853,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
         "logout" => {
             clear_session(app, state, false);
             switch_auth(&ui, 0);
-            ui.set_auth_open(true);
+            ui.invoke_change_auth_open(true);
         }
         "register" => {
             switch_auth(&ui, 3);
@@ -3794,8 +4013,8 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                     state.borrow_mut().pending_personal_references.clear();
                 }
                 if !pending.is_empty() {
-                    ui.set_asset_picker_open(false);
-                    ui.set_page(1);
+                    ui.invoke_change_asset_picker_open(false);
+                    ui.invoke_change_page(1);
                 }
                 for (path, name) in pending {
                     upload_personal_reference(app, state, path, name);
@@ -3918,7 +4137,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 Some(index) => ui.set_selected_task(index),
                 None if ui.get_result_preview_open() => {
                     ui.set_selected_task(-1);
-                    ui.set_result_preview_open(false);
+                    ui.invoke_change_result_preview_open(false);
                 }
                 None => ui.set_selected_task(-1),
             }
@@ -4113,7 +4332,7 @@ fn publish(app: &App, state: &Rc<RefCell<Cloud>>, name: &str, value: Value) {
                 "import" => begin_handoff(app, state, "clip", vec![PathBuf::from(&path)]),
                 "reference" => upload_file(app, state, path.clone(), "generation_input"),
                 "canvas" => {
-                    ui.set_asset_picker_open(false);
+                    ui.invoke_change_asset_picker_open(false);
                     begin_handoff(app, state, "canvas", vec![PathBuf::from(&path)]);
                 }
                 "download" => ui.set_notice("结果已保存到本机".into()),
@@ -4253,7 +4472,8 @@ fn render_tasks(app: &App, state: &Rc<RefCell<Cloud>>) {
                 .cloned()
                 .or_else(|| server_task_snapshot(v).ok());
             item.refillable = snapshot.is_some();
-            if item.kind.as_str() == "video"
+            if !item.failed
+                && item.kind.as_str() == "video"
                 && let Some(snapshot) = snapshot.as_ref()
                 && let Some(duration) = snapshot.parameters.get("duration")
             {
@@ -4519,7 +4739,7 @@ fn continue_result_batch(app: &App, state: &Rc<RefCell<Cloud>>) {
                 ui.set_error(error.into());
                 return;
             }
-            ui.set_page(1);
+            ui.invoke_change_page(1);
             ui.set_generation_step(0);
             for path in paths {
                 upload_file(
@@ -4748,7 +4968,7 @@ fn begin_copy_export(
     ui.set_export_copy_progress(0);
     ui.set_export_copy_error("".into());
     ui.set_export_copy_running(true);
-    ui.set_export_copy_open(true);
+    ui.invoke_change_export_copy_open(true);
     state.borrow_mut().export_copy = Some(batch);
     job(
         app,
@@ -5125,7 +5345,7 @@ fn cancel_personal_relink(app: &App, state: &Rc<RefCell<Cloud>>, token: &str) {
         ui.set_personal_relink_id("".into());
         if ui.get_personal_dialog() == 6 {
             ui.set_personal_dialog_busy(false);
-            ui.set_personal_dialog(0);
+            ui.invoke_change_personal_dialog(0);
             ui.set_personal_dialog_error("".into());
         }
     }
@@ -5177,7 +5397,7 @@ fn submit_personal_relink(app: &App, state: &Rc<RefCell<Cloud>>, token: &str, co
             if ui.get_personal_dialog() == 6 {
                 // The confirmed operation continues on the card. Do not let
                 // its busy state leak into another personal-library dialog.
-                ui.set_personal_dialog(0);
+                ui.invoke_change_personal_dialog(0);
             }
             job(app, state, format!("personal-relink:{token}"), req);
         }
@@ -5236,7 +5456,7 @@ fn begin_personal_relink(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
     if needs_confirmation {
         ui.set_personal_dialog_busy(false);
         ui.set_personal_dialog_error("".into());
-        ui.set_personal_dialog(6);
+        ui.invoke_change_personal_dialog(6);
     } else {
         submit_personal_relink(app, state, &token, false);
     }
@@ -5288,10 +5508,10 @@ fn finish_personal_relink(
     let same_view = pending.view == ui.get_personal_relink_view();
     ui.set_personal_relink_id("".into());
     ui.set_inspiration_can_restore(false);
-    ui.set_inspiration_preview_open(false);
+    ui.invoke_change_inspiration_preview_open(false);
     if ui.get_personal_dialog() == 6 {
         ui.set_personal_dialog_busy(false);
-        ui.set_personal_dialog(0);
+        ui.invoke_change_personal_dialog(0);
         ui.set_personal_dialog_error("".into());
     }
     match result {
@@ -5990,14 +6210,14 @@ fn continue_picker_batch(app: &App, state: &Rc<RefCell<Cloud>>) {
     state.borrow_mut().picker_batch = None;
     clear_picker_selection(&ui, state);
     state.borrow_mut().picker_context.clear();
-    ui.set_asset_picker_open(false);
+    ui.invoke_change_asset_picker_open(false);
     render_assets(app, state);
     if purpose == "import" {
         for item in selected {
             import_or_queue_named(app, state, item.local_path, Some(item.name));
         }
     } else {
-        ui.set_page(1);
+        ui.invoke_change_page(1);
         ui.set_generation_step(0);
         for item in selected {
             upload_file(app, state, item.local_path, "generation_input");
@@ -6115,7 +6335,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
             }
             state.borrow_mut().pending_delete_ids = ids;
             ui.set_personal_delete_count(state.borrow().pending_delete_ids.len() as i32);
-            ui.set_personal_dialog(5);
+            ui.invoke_change_personal_dialog(5);
         }
         "personal-confirm-delete" => {
             let ids = std::mem::take(&mut state.borrow_mut().pending_delete_ids);
@@ -6245,7 +6465,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                             return;
                         }
                     }
-                    ui.set_page(1);
+                    ui.invoke_change_page(1);
                     if !ui.get_signed_in() || state.borrow().models.is_empty() {
                         for asset in &selected {
                             enqueue_personal_reference(
@@ -6383,7 +6603,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
             match action {
                 "personal-preview" => open_personal_media_preview(app, state, id),
                 "personal-project" => {
-                    ui.set_asset_picker_open(false);
+                    ui.invoke_change_asset_picker_open(false);
                     begin_handoff_with_imports(
                         app,
                         state,
@@ -6396,7 +6616,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                         ui.set_error("只有图片素材可以打开到画布".into());
                         return;
                     }
-                    ui.set_asset_picker_open(false);
+                    ui.invoke_change_asset_picker_open(false);
                     begin_handoff_with_imports(
                         app,
                         state,
@@ -6406,7 +6626,7 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                 }
                 "personal-reference" => {
                     if !ui.get_signed_in() {
-                        ui.set_asset_picker_open(false);
+                        ui.invoke_change_asset_picker_open(false);
                         enqueue_personal_reference(
                             &mut state.borrow_mut().pending_personal_references,
                             path,
@@ -6415,8 +6635,8 @@ fn personal_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str, id: &str
                         show_auth(app, state, Some(1));
                         return;
                     }
-                    ui.set_page(1);
-                    ui.set_asset_picker_open(false);
+                    ui.invoke_change_page(1);
+                    ui.invoke_change_asset_picker_open(false);
                     if state.borrow().models.is_empty() {
                         enqueue_personal_reference(
                             &mut state.borrow_mut().pending_personal_references,
@@ -6838,7 +7058,7 @@ fn set_media_preview(
     ui.set_media_preview_item(item);
     ui.set_media_preview_loading(loading);
     ui.set_media_preview_error(error.into());
-    ui.set_media_preview_open(true);
+    ui.invoke_change_media_preview_open(true);
     token
 }
 
@@ -6922,7 +7142,8 @@ fn open_task_media_preview(app: &App, state: &Rc<RefCell<Cloud>>, id: &str) {
     if text(&task, "status") == "failed" {
         if let Some(index) = selected_task_index(&state.borrow().tasks, id) {
             app.global::<SeeCut>().set_selected_task(index);
-            app.global::<SeeCut>().set_result_preview_open(true);
+            app.global::<SeeCut>()
+                .invoke_change_result_preview_open(true);
         }
         return;
     }
@@ -7008,8 +7229,8 @@ fn media_preview_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str) {
             ui.set_media_preview_error(error.into());
             return;
         }
-        ui.set_media_preview_open(false);
-        ui.set_page(1);
+        ui.invoke_change_media_preview_open(false);
+        ui.invoke_change_page(1);
         return;
     }
     if !item.ready || ui.get_media_preview_loading() {
@@ -7041,7 +7262,7 @@ fn media_preview_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str) {
         "reference" if source != "reference" => {
             if source == "personal" && (!ui.get_signed_in() || state.borrow().models.is_empty()) {
                 personal_action(app, state, "personal-reference", &id);
-                ui.set_media_preview_open(false);
+                ui.invoke_change_media_preview_open(false);
                 return;
             }
             if let Some(error) = reference_add_error(&ui, &state.borrow(), item.kind.as_str()) {
@@ -7049,16 +7270,16 @@ fn media_preview_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str) {
                 return;
             }
             upload_file(app, state, path, "generation_input");
-            ui.set_page(1);
+            ui.invoke_change_page(1);
             ui.set_generation_step(0);
-            ui.set_media_preview_open(false);
+            ui.invoke_change_media_preview_open(false);
         }
         "import" => {
             import_or_queue_named(app, state, path, Some(item.name.to_string()));
-            ui.set_media_preview_open(false);
+            ui.invoke_change_media_preview_open(false);
         }
         "canvas" if item.kind == "image" => {
-            ui.set_media_preview_open(false);
+            ui.invoke_change_media_preview_open(false);
             begin_handoff_with_imports(
                 app,
                 state,
@@ -7070,9 +7291,9 @@ fn media_preview_action(app: &App, state: &Rc<RefCell<Cloud>>, action: &str) {
             );
         }
         "team" if source == "task" => {
-            ui.set_page(1);
-            ui.set_save_team_task(id.into());
-            ui.set_media_preview_open(false);
+            ui.invoke_change_page(1);
+            ui.invoke_change_save_team_task(id.into());
+            ui.invoke_change_media_preview_open(false);
         }
         _ => {}
     }
@@ -7466,7 +7687,8 @@ fn download_asset_with_token(
             "import" => begin_handoff(app, state, "clip", vec![PathBuf::from(path)]),
             "reference" => upload_file(app, state, path.clone(), "generation_input"),
             "canvas" => {
-                app.global::<SeeCut>().set_asset_picker_open(false);
+                app.global::<SeeCut>()
+                    .invoke_change_asset_picker_open(false);
                 begin_handoff(app, state, "canvas", vec![PathBuf::from(path)]);
             }
             "download" => app.global::<SeeCut>().set_notice("素材已保存到本机".into()),
@@ -7540,7 +7762,7 @@ fn import_paths(app: &App, paths: Vec<PathBuf>) {
     if paths.is_empty() {
         return;
     }
-    app.global::<SeeCut>().set_page(0);
+    app.global::<SeeCut>().invoke_change_page(0);
     app.global::<SeeCut>().set_notice("".into());
     crate::host::on_ui(move |studio, _, _| {
         studio.handle(crate::panes::Msg::Media(
@@ -7553,7 +7775,7 @@ fn import_named_paths(app: &App, imports: Vec<crate::panes::media_bin::MediaImpo
     if imports.is_empty() {
         return;
     }
-    app.global::<SeeCut>().set_page(0);
+    app.global::<SeeCut>().invoke_change_page(0);
     app.global::<SeeCut>().set_notice("".into());
     crate::host::on_ui(move |studio, _, _| {
         let Some(session) = studio.media_import_session() else {
@@ -7599,7 +7821,7 @@ fn import_or_queue_named(
         cloud.pending_imports.len()
     };
     ui.set_pending_import_count(count as i32);
-    ui.set_page(0);
+    ui.invoke_change_page(0);
     ui.set_notice("".into());
 }
 
@@ -7635,7 +7857,7 @@ pub(crate) fn clip_open_completed(studio: &mut crate::studio::Studio, app: &App,
             session,
         },
     ));
-    app.global::<SeeCut>().set_page(0);
+    app.global::<SeeCut>().invoke_change_page(0);
 }
 
 fn import_current_clip_paths(app: &App, imports: Vec<crate::panes::media_bin::MediaImport>) {
@@ -7651,7 +7873,7 @@ fn import_current_clip_paths(app: &App, imports: Vec<crate::panes::media_bin::Me
         }
         shell.studio.borrow().publish(&app, &shell.models);
     });
-    app.global::<SeeCut>().set_page(0);
+    app.global::<SeeCut>().invoke_change_page(0);
 }
 
 fn completed_clip_imports(cloud: &mut Cloud, id: u64) -> Result<String, serde_json::Error> {
@@ -7714,6 +7936,7 @@ fn cancel_project_import(app: &App, state: &Rc<RefCell<Cloud>>) {
 }
 fn task_item(v: &Value) -> CloudItem {
     let status = text(v, "status");
+    let failure = failure_feedback::copy(&text(&v["error"], "code"));
     let completed_spec = if text(v, "kind") == "video" {
         let duration = v["request"]["duration"].as_u64();
         let resolution = text(&v["request"], "resolution");
@@ -7737,12 +7960,7 @@ fn task_item(v: &Value) -> CloudItem {
         id: text(v, "id").into(),
         name: text(v, "prompt").into(),
         detail: if status == "failed" {
-            let message = text(&v["error"], "message");
-            if message.is_empty() {
-                "未返回失败原因".into()
-            } else {
-                message
-            }
+            failure.1.to_owned()
         } else {
             text(v, "model")
         }
@@ -7752,7 +7970,7 @@ fn task_item(v: &Value) -> CloudItem {
             "submitting" | "provider_accepted" | "processing" => "生成中",
             "validating" => "保存结果",
             "succeeded" => &completed_spec,
-            "failed" => "生成失败",
+            "failed" => failure.0,
             _ => "待核实",
         }
         .into(),
@@ -8066,6 +8284,10 @@ fn update_model_options_inner(
 }
 
 fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bool) {
+    crate::clip_export_fence::invalidate(
+        concat_host::export_publication::PublishRevocation::AccountChanged,
+    );
+    crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::AccountChanged);
     let mut cloud = state.borrow_mut();
     cloud.token.clear();
     cloud.quote_id.clear();
@@ -8131,6 +8353,10 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     cloud.inspiration_backup = None;
     cloud.epoch += 1;
     drop(cloud);
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    {
+        let _ = app_read_navigation().account(None);
+    }
     // Revoke the old account's App permissions synchronously, before another
     // queued MCP write can be dispatched. The Agent timer also closes its runtime.
     #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
@@ -8138,14 +8364,16 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
         if let Some(bridge) = slot.borrow().upgrade() {
             // Native dialogs may hold Studio while pumping this account callback.
             // Bridge ownership is independent so revocation remains synchronous.
-            bridge.borrow_mut().revoke_assistant_for_account_change();
+            let mut bridge = bridge.borrow_mut();
+            bridge.revoke_assistant_for_account_change();
+            bridge.revoke_all_app_reads();
         }
     });
     let ui = app.global::<SeeCut>();
     ui.set_personal_relink_id("".into());
     if ui.get_personal_dialog() == 6 {
         ui.set_personal_dialog_busy(false);
-        ui.set_personal_dialog(0);
+        ui.invoke_change_personal_dialog(0);
         ui.set_personal_dialog_error("".into());
     }
     ui.set_signed_in(false);
@@ -8187,13 +8415,13 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
     ui.set_insufficient_credits(false);
     ui.set_recovery_warning("".into());
     ui.set_asset_picker_selected_count(0);
-    ui.set_media_preview_open(false);
+    ui.invoke_change_media_preview_open(false);
     ui.set_media_preview_loading(false);
     ui.set_media_preview_error("".into());
     ui.set_selected_task(-1);
-    ui.set_save_team_task("".into());
+    ui.invoke_change_save_team_task("".into());
     if !preserve_auth_intent {
-        ui.set_asset_picker_open(false);
+        ui.invoke_change_asset_picker_open(false);
     }
     ui.set_mention_open(false);
     ui.set_reference_error(
@@ -8406,8 +8634,8 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
     // Generation choices, folders and persisted drafts are read independently.
     app.global::<SeeCut>()
         .set_local_folder(folder.to_string_lossy().into_owned().into());
-    app.global::<SeeCut>().set_page(1);
-    app.global::<SeeCut>().set_auth_open(false);
+    app.global::<SeeCut>().invoke_change_page(1);
+    app.global::<SeeCut>().invoke_change_auth_open(false);
     app.global::<SeeCut>().set_pending_import_count(0);
     let state = Rc::new(RefCell::new(Cloud {
         base,
@@ -8420,6 +8648,12 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         .filter(|choice| choice.valid()),
         ..Cloud::default()
     }));
+    app.global::<SeeCut>()
+        .on_app_page_navigation_changed(app_page_navigation_changed);
+    app.global::<SeeCut>()
+        .on_clip_source_will_change(crate::clip_save_fence::before_change);
+    app.global::<SeeCut>()
+        .on_clip_export_scope_will_change(crate::clip_export_fence::document_will_change);
     inspiration::render(app);
     let account = AccountAccess {
         state: Rc::downgrade(&state),
@@ -8458,8 +8692,8 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         };
         if matched && !app.get_clip_create_open() {
             let ui = app.global::<SeeCut>();
-            ui.set_page(ui.get_handoff_source_page());
-            ui.set_handoff_open(true);
+            ui.invoke_change_page(ui.get_handoff_source_page());
+            ui.invoke_change_handoff_open(true);
         }
     });
     let completed_state = state.clone();
@@ -8488,7 +8722,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
                 ui.set_project_open(true);
                 ui.set_pending_import_count(0);
                 if bound {
-                    ui.set_handoff_open(false);
+                    ui.invoke_change_handoff_open(false);
                 }
                 encoded.into()
             }
@@ -8527,17 +8761,17 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
     app.global::<SeeCut>().on_action(move |name, id| { let Some(app)=weak.upgrade() else{return}; let ui=app.global::<SeeCut>(); let team=team_id(&ui,&shared.borrow()); match name.as_str() {
         name if name.starts_with("inspiration-") => inspiration::action(&app,&shared,name,id.as_str()),
         "handoff-select" => select_handoff(&app, &shared, id.as_str()),
-        "handoff-cancel" => { shared.borrow_mut().pending_handoff = None; ui.set_handoff_open(false); },
+        "handoff-cancel" => { shared.borrow_mut().pending_handoff = None; ui.invoke_change_handoff_open(false); },
         "handoff-complete" => {
             shared.borrow_mut().pending_handoff = None;
-            ui.set_handoff_open(false);
-            ui.set_page(6);
-            ui.set_canvas_gallery_open(false);
+            ui.invoke_change_handoff_open(false);
+            ui.invoke_change_page(6);
+            ui.invoke_change_canvas_gallery_open(false);
         },
         "handoff-failed" => {
             if shared.borrow().pending_handoff.is_some() {
-                ui.set_page(ui.get_handoff_source_page());
-                ui.set_handoff_open(true);
+                ui.invoke_change_page(ui.get_handoff_source_page());
+                ui.invoke_change_handoff_open(true);
                 if !id.is_empty() { ui.set_error(id); }
             }
         },
@@ -8550,8 +8784,8 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
             };
             if restore {
                 ui.set_pending_import_count(shared.borrow().pending_imports.len() as i32);
-                ui.set_page(ui.get_handoff_source_page());
-                ui.set_handoff_open(true);
+                ui.invoke_change_page(ui.get_handoff_source_page());
+                ui.invoke_change_handoff_open(true);
             }
         },
         "clip-project-search" => {
@@ -8600,13 +8834,13 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
             }
             ui.set_task_delete_count(ids.len() as i32);
             shared.borrow_mut().pending_task_delete_ids = ids;
-            ui.set_task_delete_open(true);
+            ui.invoke_change_task_delete_open(true);
         },
-        "task-batch-cancel-delete" => { shared.borrow_mut().pending_task_delete_ids.clear(); ui.set_task_delete_open(false); },
+        "task-batch-cancel-delete" => { shared.borrow_mut().pending_task_delete_ids.clear(); ui.invoke_change_task_delete_open(false); },
         "task-batch-confirm-delete" => {
             let ids = std::mem::take(&mut shared.borrow_mut().pending_task_delete_ids);
             if !ids.is_empty() {
-                ui.set_task_delete_open(false);
+                ui.invoke_change_task_delete_open(false);
                 job(&app, &shared, "tasks-trash".into(), request("POST", "/api/generation/tasks/trash", json!({"ids": ids})));
             }
         },
@@ -8615,16 +8849,16 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
             let (width, height) = id.split_once(',')
                 .and_then(|(width, height)| Some((width.parse::<i32>().ok()?, height.parse::<i32>().ok()?)))
                 .unwrap_or((1920, 1080));
-            ui.set_canvas_gallery_open(false);
-            ui.set_page(6);
+            ui.invoke_change_canvas_gallery_open(false);
+            ui.invoke_change_page(6);
             app.invoke_canvas_new(width, height);
         },
         "canvas-open" => {
             let path = PathBuf::from(id.as_str());
             if crate::panes::canvas::canvas_recent_paths().ok().is_some_and(|paths| paths.contains(&path))
                 && path.join("manifest.json").is_file() {
-                ui.set_canvas_gallery_open(false);
-                ui.set_page(6);
+                ui.invoke_change_canvas_gallery_open(false);
+                ui.invoke_change_page(6);
                 app.invoke_open_canvas_path(id);
             } else {
                 ui.set_error("画布项目不存在，请刷新后重试".into());
@@ -8635,10 +8869,10 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         name if name.starts_with("template-") => template_action(&app,&shared,name,id.as_str()),
         "auth-open" => show_auth(&app,&shared,id.parse::<i32>().ok()),
         "auth-close" if !ui.get_auth_busy() => {
-            ui.set_auth_open(false);
+            ui.invoke_change_auth_open(false);
             ui.set_error("".into());
             ui.set_notice("".into());
-            if !ui.get_signed_in() && ui.get_page()==4 { ui.set_page(1); }
+            if !ui.get_signed_in() && ui.get_page()==4 { ui.invoke_change_page(1); }
             ui.set_auth_password("".into());
             ui.set_auth_password_confirm("".into());
             ui.set_auth_token("".into());
@@ -8654,14 +8888,14 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         "auth-switch" if !ui.get_auth_busy() => {
             let mode=id.parse::<i32>().unwrap_or(0).clamp(0,4);
             if mode==0 && ui.get_signed_in() && matches!(ui.get_auth_mode(),2|4) {
-                ui.set_auth_open(false);
-                ui.set_page(4);
+                ui.invoke_change_auth_open(false);
+                ui.invoke_change_page(4);
                 shared.borrow_mut().auth_return_page=None;
             } else { switch_auth(&ui,mode); }
         },
         "auth-resend" => send_auth_code(&app, &shared, ui.get_auth_mode()),
         "auth-verify-start" => { if let Err(error) = normalized_auth_email(ui.get_auth_email().as_str()) { ui.set_error(error.into()); } else if !ui.get_auth_busy() { switch_auth(&ui, 3); send_auth_code(&app, &shared, 3); } },
-        "change-password"=>{ui.set_auth_email(ui.get_email());switch_auth(&ui,2);ui.set_auth_open(true);},
+        "change-password"=>{ui.set_auth_email(ui.get_email());switch_auth(&ui,2);ui.invoke_change_auth_open(true);},
         "logout"=>job(&app,&shared,"logout".into(),request("POST","/api/auth/logout",Value::Null)),
         "history-page" => history_page_action(&app, &shared, id.as_str()),
         "history-refresh" => load_history(&app, &shared, false),
@@ -8691,7 +8925,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
         "export-copy-close"=>{
             if shared.borrow().export_copy.as_ref().is_some_and(|batch| !batch.running) {
                 shared.borrow_mut().export_copy = None;
-                ui.set_export_copy_open(false);
+                ui.invoke_change_export_copy_open(false);
             }
         },
         "export-copy-retry"=>{
@@ -8723,7 +8957,7 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
             shared.borrow_mut().picker_batch = None;
             clear_picker_selection(&ui,&shared);
             shared.borrow_mut().picker_context.clear();
-            ui.set_asset_picker_open(false);
+            ui.invoke_change_asset_picker_open(false);
             ui.set_error("".into());
             render_personal(&app,&shared);
             render_assets(&app,&shared);
@@ -8819,7 +9053,9 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
             ui.set_error("".into());
             ui.set_selected_task(selected_task_index(&shared.borrow().tasks, id.as_str()).unwrap_or(-1));
             let task=shared.borrow().tasks.iter().find(|task|text(task,"id")==id.as_str()).cloned();
-            let Some(task)=task else {ui.set_error("未找到该生成结果，请刷新后重试".into());ui.set_result_preview_open(false);return;};
+            let Some(task)=task else {ui.set_error("未找到该生成结果，请刷新后重试".into());ui.invoke_change_result_preview_open(false);return;};
+            // Failure selection opens its recovery details, not a media download.
+            if text(&task,"status")=="failed" { return; }
             let local=shared.borrow().local.get(id.as_str()).filter(|path|std::path::Path::new(path).is_file()).cloned();
             if local.is_none() {
                 if text(&task,"status")!="succeeded" {
@@ -8876,16 +9112,16 @@ pub(crate) fn bind(app: &App) -> AccountAccess {
                 let is_motion=shared.borrow().assets.iter().find(|v|text(v,"id")==id.as_str()).is_some_and(|v|text(v,"content_type").starts_with("video/") || text(v,"content_type").starts_with("audio/"));
                 if is_motion && ui.get_mode()==0 {ui.set_mode(1);ui.set_model_index(0);update_model_options(&app,&shared);}
                 if shared.borrow().references.len()>=ui.get_reference_max().max(0) as usize {ui.set_error(format!("当前模型最多支持 {} 项参考素材",ui.get_reference_max()).into());return;}
-                ui.set_asset_picker_open(false);ui.set_page(1);
+                ui.invoke_change_asset_picker_open(false);ui.invoke_change_page(1);
             }
-            if name=="asset-import" {ui.set_asset_picker_open(false);}
+            if name=="asset-import" {ui.invoke_change_asset_picker_open(false);}
             if name=="asset-canvas" {
                 let is_image=shared.borrow().assets.iter().find(|v|text(v,"id")==id.as_str()).is_some_and(|v|text(v,"content_type").starts_with("image/"));
                 if !is_image {ui.set_error("只有图片素材可以打开到画布".into());return;}
             }
             download_asset(&app,&shared,id.as_str(),match name.as_str(){"asset-reference"=>"reference","asset-import"=>"import","asset-download"=>"download","asset-canvas"=>"canvas",_=>"preview"});
         },
-        "local-folder-browse"=>{#[cfg(not(any(target_os="ios",target_os="android")))]if let Some(folder)=rfd::FileDialog::new().pick_folder(){ui.set_local_folder(folder.to_string_lossy().into_owned().into());shared.borrow_mut().folder=folder;save_preferences(&app,&shared);}},
+        "local-folder-browse"=>{#[cfg(not(any(target_os="ios",target_os="android")))]if let Some(folder)=crate::platform::pick_folder("选择文件夹", ""){ui.set_local_folder(folder.to_string_lossy().into_owned().into());shared.borrow_mut().folder=folder;save_preferences(&app,&shared);}},
         _=>{}
     }});
     let weak = app.as_weak();
@@ -9046,6 +9282,7 @@ fn heartbeat(weak: slint::Weak<App>, state: Rc<RefCell<Cloud>>) {
 
 #[cfg(test)]
 mod reference_tests {
+    use super::failure_feedback;
     use super::{
         Cloud, DEFAULT_API_URL, ExportCopyItem, ExportCopyJob, NavigationDecision, PickerSelection,
         TaskInputSnapshot, auth_request, auth_return_target, can_start_request,
@@ -10291,10 +10528,25 @@ mod reference_tests {
     }
 
     #[test]
-    fn failed_task_exposes_raw_failure_state_and_a_fallback_reason() {
+    fn failed_task_exposes_safe_failure_state_and_a_fallback_reason() {
         let item = task_item(&json!({"id":"task-1","kind":"image","status":"failed"}));
         assert!(item.failed);
-        assert_eq!(item.detail.as_str(), "未返回失败原因");
+        assert_eq!(item.status.as_str(), "生成未完成");
+        assert!(item.detail.contains("无法确认"));
+        for code in [
+            "REFERENCE_URL_UNAVAILABLE",
+            "XIANGXIN_UNAVAILABLE",
+            "unknown",
+        ] {
+            let task = json!({"id":"task-1","kind":"image","status":"failed",
+                "error":{"code":code,"message":"https://private.invalid/?token=SECRET Bearer SECRET"}});
+            let reopened: Value = serde_json::from_str(&task.to_string()).unwrap();
+            let item = task_item(&reopened);
+            assert_eq!(item.status.as_str(), failure_feedback::copy(code).0);
+            assert_eq!(item.detail.as_str(), failure_feedback::copy(code).1);
+            assert!(!item.ready);
+            assert!(!item.detail.contains("SECRET"));
+        }
     }
 
     #[test]

@@ -102,6 +102,7 @@ export component App inherits Window {
     out property <float> flow-overlay-y: assistant-panel.absolute-position.y / 1px;
     out property <float> flow-overlay-width: assistant-panel.width / 1px;
     out property <float> flow-overlay-height: assistant-panel.height / 1px;
+    out property <float> flow-overlay-radius: assistant-panel.surface-radius / 1px;
     out property <bool> flow-overlay-visible: Assistant.enabled && !root.assistant-ui-blocked;
     in property <string> flow-host-error;
     in property <string> flow-close-error;
@@ -119,7 +120,7 @@ export component App inherits Window {
     changed on-start => {
         SeeCut.project-open = !root.on-start;
         if (!root.on-start) {
-            root.clip-create-open = false;
+            root.change-clip-create-open(false);
             // This change handler can run while AccessKit is building its tree.
             // Restore focus after that pass, as for a mounted canvas editor.
             root.focus-return = 0;
@@ -127,7 +128,25 @@ export component App inherits Window {
             root.focus-restore-pending = true;
         }
     }
-    property <bool> assistant-modal-active: root.workflow-modal-open || root.sheet-open
+    // App reads may coexist with an existing media preview or Settings sheet.
+    // All editing, account and handoff dialogs keep the original assistant fence.
+    // The native reader uses this same gate before capture and before returning
+    // media. It must not expose the page beneath an unsupported dialog.
+    out property <bool> app-read-blocked: root.flow-close-error != "" || root.clip-create-open
+        || SeeCut.generation-parameters-open || SeeCut.auth-open || SeeCut.asset-picker-open
+        || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open
+        || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open
+        || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm
+        || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0
+        || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != ""
+        || root.export.open || root.project-sheet.open || root.captions.open || root.speech.open
+        || SeeCut.save-team-task != "" || SeeCut.canvas-create-open
+        || SeeCut.team-dialog > 0 || SeeCut.team-menu > 0;
+    property <bool> assistant-blocking-workflow-modal: root.app-read-blocked
+        || (!Assistant.app-scope && (SeeCut.inspiration-preview-open || SeeCut.result-preview-open || SeeCut.media-preview-open));
+    property <bool> assistant-modal-active: root.assistant-blocking-workflow-modal
+        || root.export.open || (!Assistant.app-scope && root.settings.open)
+        || root.project-sheet.open || root.captions.open || root.speech.open
         || SeeCut.save-team-task != ""
         || SeeCut.canvas-create-open || SeeCut.team-dialog > 0 || SeeCut.team-menu > 0;
     property <bool> assistant-modal-exiting;
@@ -135,13 +154,17 @@ export component App inherits Window {
         root.assistant-modal-exiting = !root.assistant-modal-active && !SeeCut.reduced-motion;
         if root.assistant-modal-exiting { assistant-modal-settled.start(); assistant-modal-settled.restart(); }
         else { assistant-modal-settled.stop(); }
-        if !root.assistant-modal-active && !root.assistant-modal-exiting {
+        if !root.assistant-modal-active && !root.assistant-modal-exiting
+            && !root.workflow-modal-open && !root.sheet-open {
             root.focus-restore-pending = true;
         }
     }
     assistant-modal-settled := Timer {
         running: false; interval: 200ms;
-        triggered => { self.stop(); root.assistant-modal-exiting = false; root.restore-focus(); }
+        triggered => {
+            self.stop(); root.assistant-modal-exiting = false;
+            if !root.workflow-modal-open && !root.sheet-open { root.restore-focus(); }
+        }
     }
     property <bool> assistant-ui-blocked: root.assistant-modal-active || root.assistant-modal-exiting;
     property <bool> assistant-show: Assistant.enabled && Assistant.open && !root.assistant-ui-blocked;
@@ -173,9 +196,17 @@ export component App inherits Window {
     property <bool> sheet-open: root.export.open || root.settings.open
         || root.project-sheet.open || root.captions.open || root.speech.open;
     in-out property <bool> canvas-open-menu;
+    public function change-canvas-open-menu(next: bool) {
+        if root.canvas-open-menu != next { SeeCut.clip-source-will-change(); }
+        root.canvas-open-menu = next;
+    }
     property <bool> canvas-space-hand: false;
     property <int> canvas-tool-before-space: 0;
     in-out property <bool> clip-create-open;
+    public function change-clip-create-open(next: bool) {
+        if root.clip-create-open != next { SeeCut.clip-source-will-change(); }
+        root.clip-create-open = next;
+    }
     changed clip-create-open => { if !root.clip-create-open { root.focus-restore-pending = true; } }
     callback canvas-export-library();
     callback export-destination-selected(to-library: bool);
@@ -196,14 +227,14 @@ export component App inherits Window {
         }
     }
     changed workspace-page => {
-        SeeCut.generation-parameters-open = false; SeeCut.inspiration-preview-open = false; SeeCut.result-preview-open = false; SeeCut.media-preview-open = false;
-        SeeCut.personal-menu = 0;
-        SeeCut.template-menu-id = "";
-        root.canvas-open-menu = false;
-        SeeCut.personal-dialog = 0;
-        SeeCut.template-delete-id = "";
-        SeeCut.canvas-create-open = false;
-        SeeCut.team-dialog = 0;
+        SeeCut.change-generation-parameters-open(false); SeeCut.change-inspiration-preview-open(false); SeeCut.change-result-preview-open(false); SeeCut.change-media-preview-open(false);
+        SeeCut.change-personal-menu(0);
+        SeeCut.change-template-menu-id("");
+        root.change-canvas-open-menu(false);
+        SeeCut.change-personal-dialog(0);
+        SeeCut.change-template-delete-id("");
+        SeeCut.change-canvas-create-open(false);
+        SeeCut.change-team-dialog(0);
     }
     property <bool> workflow-modal-open: root.flow-close-error != "" || root.clip-create-open || SeeCut.generation-parameters-open || SeeCut.inspiration-preview-open || SeeCut.result-preview-open || SeeCut.media-preview-open || SeeCut.auth-open || SeeCut.asset-picker-open || SeeCut.template-editor-open || SeeCut.handoff-open || SeeCut.canvas-export-open || SeeCut.clip-export-open || SeeCut.export-copy-open || SeeCut.task-delete-open || root.relink.open || Editor.canvas-open-confirm || Editor.canvas-transform-confirm || Editor.canvas-exit-confirm || root.canvas-open-menu || SeeCut.personal-menu > 0 || SeeCut.template-menu-id != "" || SeeCut.personal-dialog > 0 || SeeCut.template-delete-id != "";
     // A small set of stable opening controls can receive focus again after
@@ -519,25 +550,25 @@ export component App inherits Window {
             if event.text == Key.Escape && Editor.canvas-transform-confirm { Editor.canvas-transform-resolve(0); return accept; }
             if event.text == Key.Escape && Editor.canvas-exit-confirm { Editor.canvas-exit-cancel(); return accept; }
             if event.text == Key.Escape && root.clip-create-open {
-                root.clip-create-open = false; root.project-open-cancel();
+                root.change-clip-create-open(false); root.project-open-cancel();
                 SeeCut.action("handoff-create-cancel", ""); return accept;
             }
-            if event.text == Key.Escape && root.canvas-open-menu { root.canvas-open-menu = false; return accept; }
+            if event.text == Key.Escape && root.canvas-open-menu { root.change-canvas-open-menu(false); return accept; }
             if event.text == Key.Escape && Editor.canvas-open-confirm { Editor.canvas-open-cancel(); return accept; }
             if event.text == Key.Escape && SeeCut.export-copy-open { if !SeeCut.export-copy-running { SeeCut.action("export-copy-close", ""); } return accept; }
-            if event.text == Key.Escape && SeeCut.canvas-export-open { SeeCut.canvas-export-open = false; return accept; }
-            if event.text == Key.Escape && SeeCut.handoff-open { SeeCut.handoff-open = false; SeeCut.action("handoff-cancel", ""); return accept; }
-            if event.text == Key.Escape && SeeCut.task-delete-open { SeeCut.task-delete-open = false; SeeCut.action("task-batch-cancel-delete", ""); return accept; }
-            if event.text == Key.Escape && SeeCut.clip-export-open { SeeCut.clip-export-open = false; return accept; }
-            if event.text == Key.Escape && SeeCut.media-preview-open { SeeCut.media-preview-open = false; return accept; }
-            if event.text == Key.Escape && SeeCut.inspiration-preview-open { SeeCut.inspiration-preview-open = false; return accept; }
-            if event.text == Key.Escape && SeeCut.result-preview-open { SeeCut.result-preview-open = false; return accept; }
-            if event.text == Key.Escape && SeeCut.generation-parameters-open { SeeCut.generation-parameters-open = false; return accept; }
-            if event.text == Key.Escape && SeeCut.personal-menu > 0 { SeeCut.personal-menu = 0; return accept; }
-            if event.text == Key.Escape && SeeCut.template-menu-id != "" { SeeCut.template-menu-id = ""; return accept; }
-            if event.text == Key.Escape && SeeCut.template-editor-open { SeeCut.template-editor-open = false; return accept; }
-            if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.template-delete-id = ""; return accept; }
-            if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.personal-dialog = 0; SeeCut.personal-dialog-error = ""; } return accept; }
+            if event.text == Key.Escape && SeeCut.canvas-export-open { SeeCut.change-canvas-export-open(false); return accept; }
+            if event.text == Key.Escape && SeeCut.handoff-open { SeeCut.change-handoff-open(false); SeeCut.action("handoff-cancel", ""); return accept; }
+            if event.text == Key.Escape && SeeCut.task-delete-open { SeeCut.change-task-delete-open(false); SeeCut.action("task-batch-cancel-delete", ""); return accept; }
+            if event.text == Key.Escape && SeeCut.clip-export-open { SeeCut.change-clip-export-open(false); return accept; }
+            if event.text == Key.Escape && SeeCut.media-preview-open { SeeCut.change-media-preview-open(false); return accept; }
+            if event.text == Key.Escape && SeeCut.inspiration-preview-open { SeeCut.change-inspiration-preview-open(false); return accept; }
+            if event.text == Key.Escape && SeeCut.result-preview-open { SeeCut.change-result-preview-open(false); return accept; }
+            if event.text == Key.Escape && SeeCut.generation-parameters-open { SeeCut.change-generation-parameters-open(false); return accept; }
+            if event.text == Key.Escape && SeeCut.personal-menu > 0 { SeeCut.change-personal-menu(0); return accept; }
+            if event.text == Key.Escape && SeeCut.template-menu-id != "" { SeeCut.change-template-menu-id(""); return accept; }
+            if event.text == Key.Escape && SeeCut.template-editor-open { SeeCut.change-template-editor-open(false); return accept; }
+            if event.text == Key.Escape && SeeCut.template-delete-id != "" { SeeCut.change-template-delete-id(""); return accept; }
+            if event.text == Key.Escape && SeeCut.personal-dialog > 0 { if !SeeCut.personal-dialog-busy { SeeCut.change-personal-dialog(0); SeeCut.personal-dialog-error = ""; } return accept; }
             if event.text == Key.Escape && root.settings.open { root.settings-closed(); return accept; }
             if CanvasControls.text-editing { return reject; }
             if (SeeCut.page == 6 && !SeeCut.canvas-gallery-open && !SeeCut.canvas-prompt-open && !root.workflow-modal-open && !root.sheet-open) {
@@ -745,7 +776,7 @@ export component App inherits Window {
                                 padding-top: 12px; padding-bottom: 12px; padding-left: 16px; padding-right: 16px; spacing: 10px;
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.chevron-left; label: "返回画布项目"; clicked => {
                                     if !root.canvas-leave-page(6) {
-                                        SeeCut.canvas-gallery-open = true;
+                                        SeeCut.change-canvas-gallery-open(true);
                                         SeeCut.action("canvas-projects-refresh", "");
                                     }
                                 } }
@@ -763,7 +794,7 @@ export component App inherits Window {
                                 canvas-open-button := WorkspaceIcon {
                                     width: 32px; height: 32px; side: 32px;
                                     glyph: Glyph.folder; label: "打开画布";
-                                    clicked => { root.focus-return = 1; root.canvas-open-menu = !root.canvas-open-menu; }
+                                    clicked => { root.focus-return = 1; root.change-canvas-open-menu(!root.canvas-open-menu); }
                                 }
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.undo; label: "撤销"; enabled: Editor.canvas-can-undo; clicked => { Editor.canvas-undo(); } }
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.redo; label: "重做"; enabled: Editor.canvas-can-redo; clicked => { Editor.canvas-redo(); } }
@@ -772,7 +803,7 @@ export component App inherits Window {
                                 WorkspaceIcon { width: 32px; height: 32px; side: 32px; glyph: Glyph.copy; label: "另存画布工程"; enabled: Editor.canvas-has-document; clicked => { Editor.canvas-save-comp-as(); } }
                                 canvas-export-button := WorkspaceIcon {
                                     width: 32px; height: 32px; side: 32px; glyph: Glyph.export; label: "导出画布"; enabled: Editor.canvas-has-document && !Editor.canvas-export-busy;
-                                    clicked => { root.focus-return = 2; SeeCut.canvas-export-open = true; }
+                                    clicked => { root.focus-return = 2; SeeCut.change-canvas-export-open(true); }
                                 }
                                 WorkspaceIcon {
                                     width: 32px; height: 32px; side: 32px; glyph: Glyph.sliders;
@@ -864,7 +895,7 @@ export component App inherits Window {
         create => { root.start-create(); }
         dismiss-error => { root.start-dismiss-error(); }
         closed => {
-            root.clip-create-open = false; root.project-open-cancel();
+            root.change-clip-create-open(false); root.project-open-cancel();
             SeeCut.action("handoff-create-cancel", "");
         }
     }
@@ -1011,13 +1042,13 @@ export component App inherits Window {
         prominent-close: true;
         surface-width: Math.min(544px, root.width - 32px);
         surface-height: 214px;
-        closed => { SeeCut.clip-export-open = false; }
+        closed => { SeeCut.change-clip-export-open(false); }
         VerticalLayout {
             padding-left: 24px; padding-right: 24px;
             padding-top: 6px; padding-bottom: 34px;
             spacing: 16px;
-            AppButton { height: 48px; label: "导出至资产库"; clicked => { SeeCut.clip-export-open = false; root.export-destination-selected(true); } }
-            AppButton { height: 48px; label: "导出至其他文件夹"; subtle: true; subtle-normal-ink: true; clicked => { SeeCut.clip-export-open = false; root.export-destination-selected(false); } }
+            AppButton { height: 48px; label: "导出至资产库"; clicked => { SeeCut.change-clip-export-open(false); root.export-destination-selected(true); } }
+            AppButton { height: 48px; label: "导出至其他文件夹"; subtle: true; subtle-normal-ink: true; clicked => { SeeCut.change-clip-export-open(false); root.export-destination-selected(false); } }
         }
     }
     Modal {
@@ -1025,13 +1056,13 @@ export component App inherits Window {
         title: "删除生成结果";
         glyph: Glyph.trash;
         surface-width: 400px;
-        closed => { SeeCut.task-delete-open = false; SeeCut.action("task-batch-cancel-delete", ""); }
+        closed => { SeeCut.change-task-delete-open(false); SeeCut.action("task-batch-cancel-delete", ""); }
         VerticalLayout {
             padding: 20px; spacing: 16px;
             Text { text: "从结果列表移除 " + SeeCut.task-delete-count + " 项？已入库素材和任务记录仍保留。"; color: Theme.fg; wrap: word-wrap; }
             HorizontalLayout {
                 alignment: end; spacing: 8px;
-                AppButton { label: "取消"; clicked => { SeeCut.task-delete-open = false; SeeCut.action("task-batch-cancel-delete", ""); } }
+                AppButton { label: "取消"; clicked => { SeeCut.change-task-delete-open(false); SeeCut.action("task-batch-cancel-delete", ""); } }
                 AppButton { label: "删除"; danger: true; clicked => { SeeCut.action("task-batch-confirm-delete", ""); } }
             }
         }
@@ -1043,7 +1074,7 @@ export component App inherits Window {
         title-at-start: true;
         surface-width: Math.min(720px, root.width - 32px);
         surface-height: Math.min(490px, root.height - 32px);
-        closed => { SeeCut.handoff-open = false; SeeCut.action("handoff-cancel", ""); }
+        closed => { SeeCut.change-handoff-open(false); SeeCut.action("handoff-cancel", ""); }
         VerticalLayout {
             padding: 24px; padding-top: 4px; spacing: 16px; vertical-stretch: 1;
             Text { text: "所选素材会一起加入同一个项目"; color: Theme.fg-muted; font-size: 13px; }
@@ -1105,7 +1136,7 @@ export component App inherits Window {
             Rectangle { vertical-stretch: 1; }
             HorizontalLayout {
                 alignment: end; spacing: 8px;
-                AppButton { width: 96px; label: "取消"; clicked => { SeeCut.handoff-open = false; SeeCut.action("handoff-cancel", ""); } }
+                AppButton { width: 96px; label: "取消"; clicked => { SeeCut.change-handoff-open(false); SeeCut.action("handoff-cancel", ""); } }
                 AppButton { width: 104px; label: "加入并打开"; primary: true; enabled: SeeCut.handoff-selected-id != ""; clicked => { SeeCut.action("handoff-select", SeeCut.handoff-selected-id); } }
             }
         }
@@ -1119,13 +1150,13 @@ export component App inherits Window {
         prominent-close: true;
         surface-width: Math.min(544px, root.width - 32px);
         surface-height: 214px;
-        closed => { SeeCut.canvas-export-open = false; }
+        closed => { SeeCut.change-canvas-export-open(false); }
         VerticalLayout {
             padding-left: 24px; padding-right: 24px;
             padding-top: 6px; padding-bottom: 34px;
             spacing: 16px;
-            AppButton { height: 48px; label: "导出至资产库"; clicked => { SeeCut.canvas-export-open = false; root.canvas-export-library(); } }
-            AppButton { height: 48px; label: "导出至其他文件夹"; subtle: true; subtle-normal-ink: true; clicked => { SeeCut.canvas-export-open = false; Editor.canvas-export-png(); } }
+            AppButton { height: 48px; label: "导出至资产库"; clicked => { SeeCut.change-canvas-export-open(false); root.canvas-export-library(); } }
+            AppButton { height: 48px; label: "导出至其他文件夹"; subtle: true; subtle-normal-ink: true; clicked => { SeeCut.change-canvas-export-open(false); Editor.canvas-export-png(); } }
         }
     }
     Modal {
@@ -1190,7 +1221,7 @@ export component App inherits Window {
         closed => { Editor.canvas-transform-resolve(0); }
         changed open => {
             if Editor.canvas-transform-confirm {
-                root.canvas-open-menu = false;
+                root.change-canvas-open-menu(false);
                 transform-keys.focus();
             }
         }
@@ -1229,14 +1260,14 @@ export component App inherits Window {
             }
         }
     }
-    if root.canvas-open-menu: TouchArea { clicked => { root.canvas-open-menu = false; } }
+    if root.canvas-open-menu: TouchArea { clicked => { root.change-canvas-open-menu(false); } }
     if root.canvas-open-menu: Rectangle {
         x: Math.max(84px, root.width - 470px); y: 76px; width: 244px; height: 130px;
         background: Theme.raised; border-radius: Theme.r-lg; border-width: 1px; border-color: Theme.line-strong;
         VerticalLayout { padding: 8px; spacing: 0px;
-            MenuAction { auto-focus: true; close-on-escape: true; label: "从资产库选择图片"; glyph: Glyph.folder; cancelled => { root.canvas-open-menu = false; } clicked => { root.canvas-open-menu = false; root.focus-return = 1; SeeCut.action("canvas-assets", ""); } }
-            MenuAction { close-on-escape: true; label: "打开本机图片"; glyph: Glyph.image; cancelled => { root.canvas-open-menu = false; } clicked => { root.canvas-open-menu = false; Editor.canvas-open(); } }
-            MenuAction { close-on-escape: true; label: "打开画布工程"; glyph: Glyph.folder-plus; cancelled => { root.canvas-open-menu = false; } clicked => { root.canvas-open-menu = false; Editor.canvas-project-open(); } }
+            MenuAction { auto-focus: true; close-on-escape: true; label: "从资产库选择图片"; glyph: Glyph.folder; cancelled => { root.change-canvas-open-menu(false); } clicked => { root.change-canvas-open-menu(false); root.focus-return = 1; SeeCut.action("canvas-assets", ""); } }
+            MenuAction { close-on-escape: true; label: "打开本机图片"; glyph: Glyph.image; cancelled => { root.change-canvas-open-menu(false); } clicked => { root.change-canvas-open-menu(false); Editor.canvas-open(); } }
+            MenuAction { close-on-escape: true; label: "打开画布工程"; glyph: Glyph.folder-plus; cancelled => { root.change-canvas-open-menu(false); } clicked => { root.change-canvas-open-menu(false); Editor.canvas-project-open(); } }
         }
     }
     Modal {
@@ -1247,7 +1278,7 @@ export component App inherits Window {
         closed => { Editor.canvas-exit-cancel(); }
         changed open => {
             if Editor.canvas-exit-confirm {
-                root.canvas-open-menu = false;
+                root.change-canvas-open-menu(false);
                 exit-keys.focus();
             }
         }
@@ -1295,6 +1326,7 @@ export component App inherits Window {
     assistant-panel := AssistantFloating {
         room-width: root.width;
         room-height: root.height;
+        over-webview: root.macos && root.flow-host-active;
         animations-active: !root.minimized && Assistant.window-visible && Assistant.window-focused;
         visible: Assistant.enabled;
         enabled: !root.assistant-ui-blocked;

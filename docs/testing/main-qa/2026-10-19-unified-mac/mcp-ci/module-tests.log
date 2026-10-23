@@ -1,0 +1,15 @@
+   Compiling concat-editor-mcp v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-editor-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.69s
+     Running unittests src/lib.rs (../.toonflow/native-target/debug/deps/concat_editor_mcp-dff30c69c713060d)
+
+running 2 tests
+test flow_workspace::tests::only_reads_can_omit_original_operation_identity ... ok
+test flow_workspace::tests::rejects_unbounded_or_unrecognized_call_fields ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (../.toonflow/native-target/debug/deps/seecut_editor_mcp-f4707c137c477786)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s

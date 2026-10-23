@@ -1,0 +1,4 @@
+    Checking serde_json v1.0.151
+    Checking serde v1.0.229
+    Checking concat-editor-mcp v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-editor-mcp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.04s

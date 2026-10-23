@@ -1,0 +1,20 @@
+    Checking num-traits v0.2.19
+    Checking serde v1.0.229
+    Checking futures-util v0.3.34
+    Checking once_cell v1.21.4
+   Compiling serde_json v1.0.151
+    Checking tokio v1.53.1
+    Checking ref-cast v1.0.27
+    Checking indexmap v2.14.0
+    Checking thiserror v2.0.20
+    Checking tracing-core v0.1.36
+    Checking chrono v0.4.45
+    Checking tracing v0.1.44
+    Checking schemars v1.2.2
+   Compiling rmcp-macros v3.4.0
+    Checking futures-executor v0.3.34
+    Checking futures v0.3.34
+    Checking tokio-util v0.7.19
+    Checking rmcp v3.4.0
+    Checking concat-editor-mcp v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-editor-mcp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.60s

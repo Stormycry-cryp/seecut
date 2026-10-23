@@ -27,42 +27,6 @@ pub struct FlowWorkspace {
     pub operation_id: Option<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn call(name: &str) -> FlowWorkspace {
-        FlowWorkspace {
-            project_id: "project".into(),
-            canvas_id: "canvas".into(),
-            session_id: "opening".into(),
-            account_scope: "account:1".into(),
-            revision: 4,
-            name: name.into(),
-            args: serde_json::json!({}),
-            operation_id: None,
-        }
-    }
-    #[test]
-    fn only_reads_can_omit_original_operation_identity() {
-        assert!(call("flow_get_node_config").valid());
-        assert!(call("flow_get_task").valid());
-        assert!(!call("flow_execute_node").valid());
-        assert!(!call("flow_get_operation").valid());
-        let mut query = call("flow_get_operation");
-        query.operation_id = Some("original".into());
-        assert!(query.valid());
-        assert!(!call("flow_write").valid());
-    }
-    #[test]
-    fn rejects_unbounded_or_unrecognized_call_fields() {
-        let mut value = serde_json::to_value(call("flow_read_canvas")).unwrap();
-        value["writeToken"] = serde_json::json!("unexpected");
-        assert!(serde_json::from_value::<FlowWorkspace>(value).is_err());
-        let mut oversized = call("flow_read_canvas");
-        oversized.args = serde_json::json!({"text":"x".repeat(32769)});
-        assert!(!oversized.valid());
-    }
-}
 impl FlowWorkspace {
     /// Whether the operation only observes current state or a saved receipt.
     pub fn is_read(&self) -> bool {
@@ -104,5 +68,42 @@ impl FlowWorkspace {
                     .operation_id
                     .as_ref()
                     .is_some_and(|s| !s.is_empty() && s.len() <= 192))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn call(name: &str) -> FlowWorkspace {
+        FlowWorkspace {
+            project_id: "project".into(),
+            canvas_id: "canvas".into(),
+            session_id: "opening".into(),
+            account_scope: "account:1".into(),
+            revision: 4,
+            name: name.into(),
+            args: serde_json::json!({}),
+            operation_id: None,
+        }
+    }
+    #[test]
+    fn only_reads_can_omit_original_operation_identity() {
+        assert!(call("flow_get_node_config").valid());
+        assert!(call("flow_get_task").valid());
+        assert!(!call("flow_execute_node").valid());
+        assert!(!call("flow_get_operation").valid());
+        let mut query = call("flow_get_operation");
+        query.operation_id = Some("original".into());
+        assert!(query.valid());
+        assert!(!call("flow_write").valid());
+    }
+    #[test]
+    fn rejects_unbounded_or_unrecognized_call_fields() {
+        let mut value = serde_json::to_value(call("flow_read_canvas")).unwrap();
+        value["writeToken"] = serde_json::json!("unexpected");
+        assert!(serde_json::from_value::<FlowWorkspace>(value).is_err());
+        let mut oversized = call("flow_read_canvas");
+        oversized.args = serde_json::json!({"text":"x".repeat(32769)});
+        assert!(!oversized.valid());
     }
 }

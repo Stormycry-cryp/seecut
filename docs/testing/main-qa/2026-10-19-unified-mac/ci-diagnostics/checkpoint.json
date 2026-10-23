@@ -1,0 +1,35 @@
+{
+  "recordedAtUTC": "2026-10-19T16:16:54.212543+00:00",
+  "baselineSource": "4a2d3d8893f33eb6c6621d1699d49a44573f6958",
+  "oldRun": 39257512199,
+  "oldAttempt": 2,
+  "oldJob": 118107281225,
+  "confirmedFailure": "runner shutdown signal and operation canceled at 2026-10-19T15:47:23Z",
+  "shutdownCause": "unknown; not established as OOM, configured timeout, concurrency cancellation or a named user cancellation",
+  "officialMetadataLimit": "actor/triggering_actor identify run initiators, not the shutdown origin; no newer same-branch CI was visible before this repair",
+  "oldWorkflowTimeoutMinutes": 360,
+  "oldJobMinutesToShutdown": 97.37,
+  "concurrency": "unchanged; ci-${github.ref}, cancel-in-progress true for ordinary CI",
+  "freshWeeklyQuota": {
+    "checkedAtUTC": "2026-10-19T16:15:58Z",
+    "windowDurationMins": 10080,
+    "remainingPercent": 55,
+    "resetsAtUTC": "2026-10-25T01:02:41Z",
+    "stopAtRemainingPercent": 50
+  },
+  "phaseDeadlinesMinutes": {
+    "workspace-clippy": 60,
+    "workspace-compile": 90,
+    "workspace-test": 30,
+    "grpc-clippy": 30,
+    "grpc-compile": 45,
+    "grpc-test": 20
+  },
+  "localValidation": "4 supervisor behavior tests, YAML/command coverage checks and diff checks passed",
+  "appChanged": false,
+  "appBuilt": false,
+  "sourceLogicChanged": false,
+  "paidCalls": 0,
+  "productionChanged": false,
+  "newValidationRun": "pending push of the repair; never rerun the old revision unchanged"
+}

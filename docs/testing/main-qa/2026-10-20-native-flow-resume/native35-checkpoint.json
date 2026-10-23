@@ -1,0 +1,18 @@
+{
+  "source": "35a7600f69015ebcadcc75ae45e4f7cac915885e",
+  "bundle": "cloud.stormycry.seecut.devqa.35a7600",
+  "binarySha256": "db855a6b85bb0ee4aaebd67d01d92d58972e46807974292ce93144666eef855d",
+  "documentsRuntimeRead": "passed; synthetic login and catalogue loaded; reference selected from protected owned inputs",
+  "referenceRemoval": "passed real mouse move onto sibling close and click; reference count 1 to 0; original file preserved",
+  "screenshots": [
+    "03-authenticated.png",
+    "04-reference-added.png",
+    "05-remove-hover.png",
+    "06-reference-removed.png"
+  ],
+  "quota": {
+    "at": "2026-10-20T00:08:35.142Z",
+    "remaining": 48,
+    "window": 10080
+  }
+}

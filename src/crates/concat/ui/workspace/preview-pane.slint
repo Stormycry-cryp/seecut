@@ -1,3 +1,4 @@
+import { SeeCut } from "../seecut/state.slint";
 import { LauncherSafeArea, LauncherControlRow } from "../seecut/launcher-safe-area.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
@@ -126,7 +127,7 @@ component RatioPicker inherits Rectangle {
         mouse-cursor: pointer;
         clicked => {
             root.active = root.current;
-            list.show();
+            SeeCut.clip-source-will-change(); list.show();
         }
     }
 

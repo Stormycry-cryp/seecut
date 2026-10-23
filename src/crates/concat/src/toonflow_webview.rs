@@ -69,6 +69,7 @@ mod native {
         loaded: bool,
         app_ready: bool,
         pending_close: Option<String>,
+        close_dialog: Option<crate::clip_save_fence::NativeDialog>,
         close_permit: bool,
     }
 
@@ -77,12 +78,19 @@ mod native {
         static HOST: RefCell<Host> = RefCell::new(Host::default());
     }
 
+    fn set_close_error(app: &App, message: slint::SharedString) {
+        if app.get_flow_close_error() != message {
+            crate::clip_save_fence::before_change();
+        }
+        app.set_flow_close_error(message);
+    }
+
     pub(super) fn configure(app: &App, endpoint: Result<String, String>) {
         app.on_flow_close_cancel({
             let weak = app.as_weak();
             move || {
                 if let Some(app) = weak.upgrade() {
-                    app.set_flow_close_error("".into());
+                    set_close_error(&app, "".into());
                 }
             }
         });
@@ -90,7 +98,7 @@ mod native {
             let weak = app.as_weak();
             move || {
                 if let Some(app) = weak.upgrade() {
-                    app.set_flow_close_error("".into());
+                    set_close_error(&app, "".into());
                     app.invoke_titlebar_close();
                 }
             }
@@ -262,19 +270,20 @@ mod native {
                         let ratio = scale / window.scale_factor();
                         overlay.update(app.get_flow_overlay_visible().then(|| {
                             [
-                                f64::from(app.get_flow_overlay_x() - 8.0) * ratio,
-                                f64::from(app.get_flow_overlay_y() - 8.0) * ratio,
-                                f64::from(app.get_flow_overlay_width() + 16.0) * ratio,
-                                f64::from(app.get_flow_overlay_height() + 16.0) * ratio,
+                                f64::from(app.get_flow_overlay_x()) * ratio,
+                                f64::from(app.get_flow_overlay_y()) * ratio,
+                                f64::from(app.get_flow_overlay_width()) * ratio,
+                                f64::from(app.get_flow_overlay_height()) * ratio,
+                                f64::from(app.get_flow_overlay_radius()) * ratio,
                             ]
                         }));
                     }
                     let show = visible && host.loaded && host.app_ready;
                     let assistant_open = app.global::<crate::Assistant>().get_open();
-                    if host.visible != show {
-                        if let Err(error) = webview.set_visible(show) {
-                            log::warn!("Flow WebView visibility: {error}");
-                        }
+                    if host.visible != show
+                        && let Err(error) = webview.set_visible(show)
+                    {
+                        log::warn!("Flow WebView visibility: {error}");
                     }
                     if host.visible != show || host.assistant_open != assistant_open {
                         let _ = if show && !assistant_open {
@@ -342,6 +351,7 @@ mod native {
     }
 
     pub(super) fn defer_close(app: &App) -> bool {
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
         HOST.with(|state| {
             let mut host = state.borrow_mut();
             if host.close_permit {
@@ -364,6 +374,7 @@ mod native {
                 requestId,message:String(error?.message||error)}}));}}}})();",
                 request_id
             );
+            host.close_dialog = Some(crate::clip_save_fence::NativeDialog::enter());
             host.pending_close = Some(request_id.clone());
             let result = host
                 .webview
@@ -372,7 +383,8 @@ mod native {
                 .evaluate_script(&script);
             if let Err(error) = result {
                 host.pending_close = None;
-                app.set_flow_close_error(format!("无法确认 Flow 已保存：{error}").into());
+                host.close_dialog = None;
+                set_close_error(app, format!("无法确认 Flow 已保存：{error}").into());
             } else {
                 slint::Timer::single_shot(std::time::Duration::from_secs(10), move || {
                     close_error(
@@ -392,11 +404,12 @@ mod native {
                 return false;
             }
             host.pending_close = None;
+            host.close_dialog = None;
             true
         });
         if matched {
             crate::host::Shell::with(|_, app| {
-                app.set_flow_close_error(message.chars().take(600).collect::<String>().into());
+                set_close_error(&app, message.chars().take(600).collect::<String>().into());
             });
         }
     }
@@ -418,12 +431,13 @@ mod native {
                         return false;
                     }
                     host.pending_close = None;
+                    host.close_dialog = None;
                     host.close_permit = true;
                     true
                 });
                 if matched {
                     crate::host::Shell::with(|_, app| {
-                        app.set_flow_close_error("".into());
+                        set_close_error(&app, "".into());
                         app.invoke_titlebar_close();
                     });
                 }

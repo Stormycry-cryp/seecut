@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "qaOnly": true,
+  "distributable": false,
+  "ciStatus": "unverified; remote validation monitored by parent",
+  "ciRun": 39284294989,
+  "sealedAtUTC": "2026-10-19T17:26:21.291083+00:00",
+  "source": "272bcf1f4b2e822b0d7ed94cf8b67b6e27289c95",
+  "privateSource": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "app": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Frontend-QA-272bcf1.app",
+  "archive": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/SeeCut-Frontend-QA-272bcf1.zip",
+  "version": "0.2.2",
+  "bundleId": "cloud.stormycry.seecut.devqa.272bcf1",
+  "buildProfile": "dev (unoptimized + debuginfo); not a release build",
+  "architecture": "arm64",
+  "minimumMacOSFromAllMachO": "15.0.0",
+  "apiUrl": "http://127.0.0.1:18745",
+  "apiServerStarted": false,
+  "rawBinarySha256": "06a5060f912f0f18a1e707821a29f5122f097551358908c8f00ea2168a59cfb9",
+  "packagedBinarySha256": "d8592c81c6742d0a56e9fa8dce74b421d962bbbb4b9421109b96edf1b65e992e",
+  "archiveSha256": "d9c57277dbd7c02f26ebb62ee0e20d2637451171c03eb404cf61b3f187262e64",
+  "archiveBytes": 240858033,
+  "archiveMatchesBundle": true,
+  "fileCount": 6384,
+  "filesSha256": "e76f93f9a837a27be4c34e7049004f2525dcfe22e5b08582679ca439313145be",
+  "machOCount": 24,
+  "machoEdits": [
+    {
+      "file": "Contents/Resources/toonflow/build/server/node_modules/@firecrawl/anydoc-darwin-arm64/anydoc.darwin-arm64.node",
+      "action": "normalize_dylib_id",
+      "old": "/Users/runner/_work/anydoc/anydoc/target/aarch64-apple-darwin/release/deps/libanydoc_node.dylib",
+      "new": "@rpath/anydoc.darwin-arm64.node"
+    }
+  ],
+  "flowPatchSha256": "5be89ea808d94139660b4a64a909b09daa59be897e48e1c88e082bfe449f46a0",
+  "flowFreshBuildSha256": "94274f36b3b6288ef77630ffc63896ea14893ad93c3f7c7b1c2044b15cb267eb",
+  "flowPackagedSha256": "18f54c08119403743eaa0c08f19a62e9e8a44e66a6171f3972c27b3eac91ac61",
+  "flowChangedOnlyForMachOResigning": [
+    "server/node_modules/@firecrawl/anydoc-darwin-arm64/anydoc.darwin-arm64.node"
+  ],
+  "agentComponentsManifestSha256": "d23e1776d6ac72b19ed3858fe747b65564366fe17011d4517bf06af7ec7fb447",
+  "agentManifestResult": {
+    "action": "verify",
+    "verified_files": 5135
+  },
+  "privateFilesMatched": 15,
+  "developmentAdHocSigned": true,
+  "notarized": false,
+  "uiVerified": false,
+  "launched": false,
+  "installed": false,
+  "productionChanged": false,
+  "paidCalls": 0,
+  "portableEmpty": true
+}

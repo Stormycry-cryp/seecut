@@ -1,7 +1,7 @@
 import {test,expect,mock} from 'bun:test';
 let graph:any,dispose:()=>void;
-mock.module('vue',()=>({nextTick:async()=>{},onScopeDispose:(fn:()=>void)=>{dispose=fn}}));
-mock.module('@vue-flow/core',()=>({useVueFlow:()=>graph}));
+mock.module('vue',()=>({getCurrentScope:()=>({}),nextTick:async()=>{},onScopeDispose:(fn:()=>void)=>{dispose=fn}}));
+mock.module('@vue-flow/core',()=>({useNodeId:()=>'image',useVueFlow:()=>graph}));
 mock.module('@earendil-works/pi-agent-core',()=>({runAgentLoop:()=>{throw Error('unexpected model call')}}));
 mock.module('@earendil-works/pi-ai',()=>({createAssistantMessageEventStream:()=>{throw Error('unexpected model call')}}));
 mock.module('eventsource-parser/stream',()=>({EventSourceParserStream:class {}}));

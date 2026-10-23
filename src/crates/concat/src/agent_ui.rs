@@ -90,14 +90,17 @@ fn bind_geometry(app: &App) {
 mod desktop {
     use super::*;
     use crate::agent_controller::{
-        ConnectionConfig, Controller, DocumentIdentity, Phase, TaskOutcome,
+        ConnectionConfig, Controller, DocumentIdentity, Phase, TaskCommand, TaskOutcome, UiError,
     };
+    use crate::agent_identity::AgentScope;
     use crate::agent_process::LaunchSpec;
     use crate::agent_sessions::{
-        self, Archive, ContextReference, Message, Record, Reference, RequestSnapshot, Store,
+        self, AppReference, AppReferenceScope, Archive, ContextReference, DocumentReference,
+        HistoryScope, Message, Record, Reference, RequestSnapshot, Store,
     };
     use crate::editor_mcp::{
-        ASSISTANT_CLIENT_ID, AssistantPermission, AssistantPermissionError, AssistantSnapshot,
+        ASSISTANT_CLIENT_ID, AssistantAppSnapshot, AssistantPermission, AssistantPermissionError,
+        AssistantSnapshot,
     };
     use crate::host::{Shell, spawn_detached};
     use crate::ui::AssistantMessage;
@@ -113,36 +116,131 @@ mod desktop {
     // Leave room for one complete 32 KiB input and bounded streaming reply.
     const NEW_TURN_HISTORY_LIMIT: usize = 128 * 1024;
 
+    // The native bridge chooses one real current scope. Credentials stay outside Slint/history.
+    struct ScopeSnapshot {
+        scope: Option<AgentScope>,
+        project_name: String,
+        project_key: String,
+        read_token: Option<String>,
+        write_token: Option<String>,
+        app_control_token: Option<String>,
+        read_status: String,
+        write_status: String,
+        can_grant_read: bool,
+        can_revoke_read: bool,
+        can_grant_write: bool,
+        can_revoke_write: bool,
+    }
+    impl ScopeSnapshot {
+        fn choose(document: AssistantSnapshot, app: AssistantAppSnapshot) -> Self {
+            if let Some(identity) = app.identity {
+                Self {
+                    scope: Some(AgentScope::App(identity)),
+                    project_name: app.page_label,
+                    project_key: String::new(),
+                    read_token: app.read_token,
+                    write_token: None,
+                    app_control_token: app.control_token,
+                    read_status: app.read_status,
+                    write_status: app.control_status,
+                    can_grant_read: app.can_grant_read,
+                    can_revoke_read: app.can_revoke_read,
+                    can_grant_write: app.can_grant_control,
+                    can_revoke_write: app.can_revoke_control,
+                }
+            } else {
+                Self {
+                    scope: document.document.map(AgentScope::Document),
+                    project_name: document.project_name,
+                    project_key: document.project_key,
+                    read_token: document.read_token,
+                    write_token: document.write_token,
+                    app_control_token: None,
+                    read_status: document.read_status,
+                    write_status: document.write_status,
+                    can_grant_read: document.can_grant_read,
+                    can_revoke_read: document.can_revoke_read,
+                    can_grant_write: document.can_grant_write,
+                    can_revoke_write: document.can_revoke_write,
+                }
+            }
+        }
+        fn document(&self) -> Option<&DocumentIdentity> {
+            self.scope.as_ref().and_then(AgentScope::document)
+        }
+        fn is_app(&self) -> bool {
+            self.scope
+                .as_ref()
+                .is_some_and(|scope| scope.app().is_some())
+        }
+        fn history_scope(&self) -> Option<HistoryScope> {
+            match self.scope.as_ref()? {
+                AgentScope::Document(_) if !self.project_key.is_empty() => {
+                    Some(HistoryScope::Document(self.project_key.clone()))
+                }
+                AgentScope::App(app) => Some(HistoryScope::App(app.account_scope.clone())),
+                _ => None,
+            }
+        }
+        fn reference(&self) -> Option<ContextReference> {
+            match self.scope.as_ref()? {
+                AgentScope::Document(_) => Some(ContextReference::Document(DocumentReference {
+                    project_key: self.project_key.clone(),
+                    project_name: self.project_name.clone(),
+                })),
+                AgentScope::App(app) => Some(ContextReference::App(AppReference {
+                    app_scope: AppReferenceScope {
+                        instance_id: app.instance_id.clone(),
+                        account_scope: app.account_scope.clone(),
+                        app_session_id: app.app_session_id.clone(),
+                    },
+                    page_name: self.project_name.clone(),
+                })),
+            }
+        }
+    }
+
     // Never Debug/serialize this: comparison includes real lease tokens.
     #[derive(Clone, PartialEq, Eq)]
     struct Lease {
-        document: Option<DocumentIdentity>,
+        scope: Option<AgentScope>,
         read: Option<String>,
         write: Option<String>,
+        app_control: Option<String>,
     }
     impl Lease {
-        fn from_snapshot(snapshot: &AssistantSnapshot) -> Self {
+        fn from_snapshot(snapshot: &ScopeSnapshot) -> Self {
             Self {
-                document: snapshot.document.clone(),
+                scope: snapshot.scope.clone(),
                 read: snapshot.read_token.clone(),
                 write: snapshot.write_token.clone(),
+                app_control: snapshot.app_control_token.clone(),
             }
         }
     }
-    fn lease_change_notice(old: &Lease, next: &Lease, can_renew: bool) -> &'static str {
-        if old.document != next.document {
+    fn lease_change_notice(old: &Lease, next: &Lease) -> &'static str {
+        if old.scope != next.scope {
+            if old
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.app().is_some())
+                || next
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.app().is_some())
+            {
+                return "账户或页面会话已变化，请重新授权并恢复会话";
+            }
             return "工程已变化，请重新连接；旧确认不再有效";
         }
-        if old.write != next.write {
-            if next.write.is_some() {
-                return "编辑授权已更新，连接已断开；请重新连接并确认新操作";
-            }
-            if can_renew {
-                return "编辑授权已到期，连接已断开；请续期 5 分钟，再重新连接并确认新操作";
-            }
-            return "编辑授权已撤销，连接已断开；重新授权后连接并确认新操作";
+        if old.read != next.read {
+            return "读取权限已变化，请检查授权并重新连接；旧确认不再有效";
         }
-        "读取权限已变化，请检查授权并重新连接；旧确认不再有效"
+        if next.write.is_some() {
+            "已允许页面操作，当前会话有效"
+        } else {
+            "已切换为允许读取；页面操作与旧确认已撤销"
+        }
     }
 
     #[cfg(feature = "assistant-local-dev")]
@@ -207,8 +305,50 @@ mod desktop {
         assistant_row: Option<usize>,
         approval: Option<FrozenApproval>,
         editor_recovery: Option<crate::agent_controller::EditorRecovery>,
+        app_recovery: Option<crate::agent_controller::AppRecovery>,
+        task_budget_text: String,
+        task_budget_policy: Option<serde_json::Value>,
+        task_permits: Vec<(u64, Instant)>,
+        task_display_turn: Option<String>,
+        task_grant: Option<crate::agent_task_grant::TaskGrant>,
+        update_grant: Option<crate::agent_task_grant::UpdateGrant>,
+        grant_seen_turn: Option<String>,
+        auto_approving: bool,
+        auto_attempted: Option<FrozenApproval>,
+        task_permit_revision: u64,
     }
     impl State {
+        fn task_policy(&self) -> Option<serde_json::Value> {
+            let choice = self.catalog.current()?;
+            if self.record.selected_effort_id.is_some() {
+                self.selected_effort()?.policy_for(&choice.id)
+            } else {
+                Some(choice.policy.clone())
+            }
+        }
+        fn sync_task_budget(&mut self) {
+            let policy = self.task_policy();
+            if policy != self.task_budget_policy {
+                self.task_budget_text = policy
+                    .as_ref()
+                    .and_then(crate::agent_models::next_turn_cap)
+                    .and_then(crate::agent_tasks::default_task_budget)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                if self.task_budget_policy.is_some() {
+                    self.notice = "模型或强度已变化，请核对已更新的任务积分上限".into();
+                }
+                self.task_budget_policy = policy;
+            }
+        }
+        fn task_budget(&self) -> Result<u64, &'static str> {
+            let cap = self
+                .task_budget_policy
+                .as_ref()
+                .and_then(crate::agent_models::next_turn_cap)
+                .ok_or("当前模型的单轮额度暂不可用，请刷新模型")?;
+            crate::agent_tasks::parse_task_budget(&self.task_budget_text, cap)
+        }
         fn can_select_model(&self) -> bool {
             !cfg!(feature = "assistant-local-dev")
                 && !self.catalog.loading
@@ -397,7 +537,7 @@ mod desktop {
         state: RefCell<State>,
         parked: RefCell<Vec<State>>,
         retiring: RefCell<Vec<Retiring>>,
-        scope: RefCell<Option<(String, String)>>,
+        scope: RefCell<Option<(String, HistoryScope)>>,
         data: Option<PathBuf>,
         store: RefCell<Option<Store>>,
         history_error: RefCell<Option<&'static str>>,
@@ -408,6 +548,11 @@ mod desktop {
     }
     impl Drop for Binding {
         fn drop(&mut self) {
+            crate::clip_export_fence::invalidate(
+                concat_host::export_publication::PublishRevocation::DocumentChanged,
+            );
+            crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
+            Self::fence_app_control_native(true);
             self.timer.stop();
             self.state.get_mut().controller.shutdown_now();
             for state in self.parked.get_mut() {
@@ -423,6 +568,11 @@ mod desktop {
     impl Binding {
         /// Start bounded process shutdown before the app's exit-only reaping hook.
         pub(crate) fn shutdown(&self, app: &App) {
+            crate::clip_export_fence::invalidate(
+                concat_host::export_publication::PublishRevocation::DocumentChanged,
+            );
+            crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Discarded);
+            Self::fence_app_control_native(true);
             self.state.borrow_mut().record.draft =
                 app.global::<Assistant>().get_draft().to_string();
             let _ = self.persist(true);
@@ -465,13 +615,12 @@ mod desktop {
                 false
             });
         }
-        fn sync_scope(&self, app: &App, snapshot: &AssistantSnapshot) {
+        fn sync_scope(&self, app: &App, snapshot: &ScopeSnapshot) {
             let account = self.account.history_scope().or_else(|| {
                 cfg!(feature = "assistant-local-dev").then(|| "local-development".into())
             });
-            let next = account
-                .filter(|_| !snapshot.project_key.is_empty())
-                .map(|account| (account, snapshot.project_key.clone()));
+            let next =
+                account.and_then(|account| snapshot.history_scope().map(|scope| (account, scope)));
             if *self.scope.borrow() == next
                 && self.state.borrow().account_epoch == self.account.epoch()
             {
@@ -480,6 +629,13 @@ mod desktop {
             if !self.retiring.borrow().is_empty() {
                 return;
             }
+            crate::clip_export_fence::revoke_client(
+                crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::ConversationChanged,
+            );
             self.state.borrow_mut().record.draft =
                 app.global::<Assistant>().get_draft().to_string();
             let _ = self.persist(true);
@@ -491,6 +647,9 @@ mod desktop {
             let mut states = vec![old];
             states.append(&mut self.parked.borrow_mut());
             for state in &mut states {
+                revoke_task_permits(state);
+                state.task_grant = None;
+                state.update_grant = None;
                 state.catalog.clear();
             }
             let old_store = self.store.borrow_mut().take();
@@ -518,7 +677,8 @@ mod desktop {
             if let Some((account, project)) = &next {
                 let loaded = (|| {
                     let data = self.data.as_deref().ok_or("Agent 数据目录不可用")?;
-                    let store = Store::open(&session_directory(data)?, account, project)?;
+                    let store =
+                        Store::open_scope(&session_directory(data)?, account, project.clone())?;
                     let archive = store.load()?;
                     *self.store.borrow_mut() = Some(store);
                     Ok::<_, &'static str>(archive)
@@ -626,6 +786,14 @@ mod desktop {
             Ok(())
         }
         fn new_session(&self, app: &App) {
+            crate::clip_export_fence::revoke_client(
+                crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::ConversationChanged,
+            );
+            Self::fence_app_control_native(true);
             self.refresh(app);
             if !app.global::<Assistant>().get_open()
                 || !app.global::<Assistant>().get_can_create_session()
@@ -812,6 +980,14 @@ mod desktop {
             }
         }
         fn select_session(&self, app: &App, index: i32) {
+            crate::clip_export_fence::revoke_client(
+                crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::ConversationChanged,
+            );
+            Self::fence_app_control_native(true);
             self.refresh(app);
             let Ok(index) = usize::try_from(index) else {
                 return;
@@ -843,7 +1019,7 @@ mod desktop {
         fn other_session_reason(&self) -> &'static str {
             parked_connection_reason(&self.parked.borrow(), !self.retiring.borrow().is_empty())
         }
-        fn snapshot(app: &App) -> Option<AssistantSnapshot> {
+        fn snapshot(app: &App) -> Option<ScopeSnapshot> {
             let mut result = None;
             Shell::with(|shell, _| {
                 // Native file dialogs may run a nested event loop while their
@@ -855,7 +1031,9 @@ mod desktop {
                     return;
                 };
                 // Bridge and studio borrows end before any setter or callback runs.
-                result = Some(bridge.assistant_snapshot(&studio, app));
+                let document = bridge.assistant_snapshot(&studio, app);
+                let app_snapshot = bridge.assistant_app_snapshot(&studio, app);
+                result = Some(ScopeSnapshot::choose(document, app_snapshot));
             });
             result
         }
@@ -866,6 +1044,27 @@ mod desktop {
             };
             self.drain_retiring();
             self.sync_scope(app, &snapshot);
+            let owner =
+                (self.account.signed_in() || cfg!(feature = "assistant-local-dev")).then(|| {
+                    format!(
+                        "{:?}:{}",
+                        self.account.epoch(),
+                        self.state.borrow().record.id
+                    )
+                });
+            Shell::with(|shell, _| {
+                let studio = shell.studio.borrow();
+                let mut bridge = studio.editor_mcp.borrow_mut();
+                bridge.bind_assistant_session(owner);
+                bridge.bind_app_control_session(if snapshot.is_app() && self.account.signed_in() {
+                    Some(self.state.borrow().record.id.clone())
+                } else {
+                    None
+                });
+            });
+            let Some(snapshot) = Self::snapshot(app) else {
+                return;
+            };
             self.state.borrow_mut().record.draft =
                 app.global::<Assistant>().get_draft().to_string();
             self.load_models(app);
@@ -874,11 +1073,15 @@ mod desktop {
             }
             {
                 let mut state = self.state.borrow_mut();
-                state.controller.tick(snapshot.document.as_ref());
+                state.controller.tick(snapshot.scope.as_ref());
+                if state.task_permit_revision != state.controller.task_permit_revision() {
+                    revoke_task_permits(&mut state);
+                    state.task_permit_revision = state.controller.task_permit_revision();
+                }
                 capture(&mut state);
             }
             for state in self.parked.borrow_mut().iter_mut() {
-                state.controller.tick(snapshot.document.as_ref());
+                state.controller.tick(snapshot.scope.as_ref());
                 capture(state);
                 // Idle background sessions release the one execution connection.
                 // Running and uncertain work keeps its original owner and callbacks.
@@ -969,10 +1172,11 @@ mod desktop {
                         state.preparing = false;
                         match config {
                             Ok(config)
-                                if snapshot.document.as_ref() == Some(&config.document)
+                                if snapshot.scope.as_ref() == Some(&config.scope)
                                     && snapshot.read_token.as_deref()
                                         == Some(config.read_token.as_str())
-                                    && snapshot.write_token == config.write_token =>
+                                    && snapshot.write_token == config.write_token
+                                    && snapshot.app_control_token == config.app_control_token =>
                             {
                                 state.notice.clear();
                                 match state.controller.connect(*config) {
@@ -1013,8 +1217,236 @@ mod desktop {
             if billing_changed && self.account.signed_in() {
                 self.account.refresh_wallet(app);
             }
+            self.drain_app_control(app);
+            self.sync_task_grant(&snapshot);
             self.publish(app, &snapshot);
+            self.try_auto_approve(app);
             let _ = self.persist(false);
+        }
+        fn fence_app_control_native(revoke: bool) {
+            Shell::with(|shell, _| {
+                if let Ok(studio) = shell.studio.try_borrow()
+                    && let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut()
+                {
+                    if revoke {
+                        bridge.revoke_app_control();
+                    } else {
+                        bridge.fence_app_control();
+                    }
+                }
+            });
+        }
+        fn drain_app_control(&self, app: &App) {
+            let (fence, proposals) = {
+                let mut state = self.state.borrow_mut();
+                (
+                    state.controller.app_control_should_fence(),
+                    state.controller.take_app_control_proposals(),
+                )
+            };
+            if fence {
+                Self::fence_app_control_native(false);
+            }
+            for proposal in proposals {
+                let current = self
+                    .state
+                    .borrow()
+                    .controller
+                    .app_control_proposal_current(&proposal);
+                let mut registered = false;
+                if current {
+                    Shell::with(|shell, _| {
+                        if let Ok(studio) = shell.studio.try_borrow()
+                            && let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut()
+                        {
+                            registered = bridge
+                                .register_app_control(&studio, app, &shell.models, proposal.clone())
+                                .is_ok();
+                        }
+                    });
+                }
+                if !registered {
+                    let _ = self
+                        .state
+                        .borrow_mut()
+                        .controller
+                        .authorize_app_control(&proposal, false);
+                }
+            }
+            let mut decisions = Vec::new();
+            Shell::with(|shell, _| {
+                if let Ok(studio) = shell.studio.try_borrow()
+                    && let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut()
+                {
+                    // Keep ownership of each Prepared inside this same UI/Bridge borrow.
+                    for registration in bridge.take_ready_app_control() {
+                        let proposal = registration.proposal.clone();
+                        let current = self
+                            .state
+                            .borrow()
+                            .controller
+                            .app_control_proposal_current(&proposal);
+                        let allowed = bridge.finish_app_control_registration(
+                            registration,
+                            current,
+                            &studio,
+                            app,
+                            &shell.models,
+                        );
+                        decisions.push((proposal, allowed));
+                    }
+                }
+            });
+            for (proposal, allowed) in decisions {
+                let sent = self
+                    .state
+                    .borrow_mut()
+                    .controller
+                    .authorize_app_control(&proposal, allowed)
+                    .is_ok();
+                if !sent || !allowed {
+                    Shell::with(|shell, _| {
+                        if let Ok(studio) = shell.studio.try_borrow()
+                            && let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut()
+                        {
+                            bridge.cancel_app_control_proposal(&proposal.intent.operation_id);
+                        }
+                    });
+                }
+            }
+        }
+        fn grant_scope(
+            &self,
+            state: &State,
+            snapshot: &ScopeSnapshot,
+        ) -> Option<crate::agent_task_grant::GrantScope> {
+            let account_epoch = self.account.epoch()?;
+            if state.runtime_account_epoch != Some(account_epoch) || !self.account.signed_in() {
+                return None;
+            }
+            let lease = state.lease.as_ref()?;
+            if lease.scope != snapshot.scope
+                || lease.read != snapshot.read_token
+                || lease.write != snapshot.write_token
+            {
+                return None;
+            }
+            Some(crate::agent_task_grant::GrantScope {
+                task_id: state.controller.current_task_id()?.into(),
+                document: snapshot.document().cloned()?,
+                ipc_generation: state.controller.ipc_generation(),
+                account_epoch,
+                read_lease: snapshot.read_token.clone()?,
+                write_lease: snapshot.write_token.clone()?,
+            })
+        }
+        fn sync_task_grant(&self, snapshot: &ScopeSnapshot) {
+            let mut state = self.state.borrow_mut();
+            let scope = self.grant_scope(&state, snapshot);
+            let view = state.controller.view();
+            let blocked = view.unknown_or_blocked();
+            let disconnected = matches!(
+                view.phase,
+                Phase::Disconnected
+                    | Phase::Failed
+                    | Phase::Closing
+                    | Phase::Initializing
+                    | Phase::OpeningSession
+            );
+            if blocked || disconnected || scope.is_none() {
+                revoke_task_permits(&mut state);
+                state.task_grant = None;
+                state.update_grant = None;
+                return;
+            }
+            let scope = scope.unwrap();
+            if state
+                .task_grant
+                .as_ref()
+                .is_some_and(|g| !g.remains_bound(&scope, state.controller.current_task()))
+            {
+                revoke_task_permits(&mut state);
+                state.task_grant = None;
+            }
+            if state
+                .update_grant
+                .as_ref()
+                .is_some_and(|g| !g.remains_bound(&scope, state.controller.current_task()))
+            {
+                revoke_task_permits(&mut state);
+                state.update_grant = None;
+            }
+            if let Some(admitted) = state.controller.task_turn_binding().cloned()
+                && let Some(turn) = state.controller.current_turn_id().map(str::to_owned)
+                && state.controller.is_task_turn()
+                && state.grant_seen_turn.as_deref() != Some(turn.as_str())
+            {
+                state.grant_seen_turn = Some(turn.clone());
+                if state
+                    .update_grant
+                    .as_ref()
+                    .is_some_and(|g| admitted.control_epoch >= g.expected_epoch())
+                {
+                    let candidate = state.update_grant.take().unwrap();
+                    let previous_ended = candidate
+                        .previous_turn()
+                        .is_none_or(|old| state.controller.task_turn_ended(old));
+                    state.task_grant =
+                        candidate.next_turn(&scope, &admitted, &turn, previous_ended, blocked);
+                }
+            }
+        }
+        fn auto_allowed(&self, app: &App) -> bool {
+            let Some(snapshot) = Self::snapshot(app) else {
+                return false;
+            };
+            let state = self.state.borrow();
+            let Some(scope) = self.grant_scope(&state, &snapshot) else {
+                return false;
+            };
+            let view = state.controller.view();
+            let (Some(grant), Some(current), Some(admitted), Some(turn), Some(approval)) = (
+                state.task_grant.as_ref(),
+                state.controller.current_task(),
+                state.controller.task_turn_binding(),
+                state.controller.current_turn_id(),
+                state.approval.as_ref(),
+            ) else {
+                return false;
+            };
+            view.can_approve
+                && state.controller.is_task_turn()
+                && approval.turn_id == turn
+                && grant.allows(
+                    &scope,
+                    current,
+                    admitted,
+                    turn,
+                    &approval.tool,
+                    &approval.arguments,
+                    view.unknown_or_blocked(),
+                )
+        }
+        fn try_auto_approve(&self, app: &App) {
+            {
+                let state = self.state.borrow();
+                if state.auto_approving
+                    || state.approval.is_none()
+                    || state.auto_attempted == state.approval
+                {
+                    return;
+                }
+            }
+            if !self.auto_allowed(app) {
+                return;
+            }
+            {
+                let mut state = self.state.borrow_mut();
+                state.auto_attempted = state.approval.clone();
+                state.auto_approving = true;
+            }
+            self.approve_checked(app, true, false);
+            self.state.borrow_mut().auto_approving = false;
         }
         fn schedule(self: &Rc<Self>, app: &App) {
             let phase = self.state.borrow().controller.view().phase;
@@ -1047,34 +1479,76 @@ mod desktop {
                     }
                 });
         }
-        fn sync_lease(&self, snapshot: &AssistantSnapshot) -> bool {
+        fn sync_lease(&self, snapshot: &ScopeSnapshot) -> bool {
             let next = Lease::from_snapshot(snapshot);
-            let sync = |state: &mut State| {
-                if state.lease.as_ref().is_some_and(|old| old != &next) {
-                    state.controller.disconnect();
-                    state.preparing = false;
-                    state.selecting = false;
-                    state.epoch = next_epoch();
-                    state.approval = None;
-                    state.notice = lease_change_notice(
-                        state.lease.as_ref().unwrap(),
-                        &next,
-                        snapshot.can_renew_write,
-                    )
-                    .into();
+            let sync = |state: &mut State, current: bool| {
+                if !current || state.lease.as_ref().is_some_and(|old| old != &next) {
+                    revoke_task_permits(state);
+                    state.task_grant = None;
+                    state.update_grant = None;
                 }
-                state.lease = Some(Lease::from_snapshot(snapshot));
+                if let Some(old) = state.lease.as_ref().filter(|old| *old != &next) {
+                    let hot = current
+                        && old.scope == next.scope
+                        && old.read == next.read
+                        && next.read.is_some()
+                        && !state.preparing
+                        && state.controller.process_present();
+                    let notice = lease_change_notice(old, &next);
+                    let updated = hot
+                        && if snapshot.is_app() {
+                            state
+                                .controller
+                                .update_app_control_permissions(next.app_control.clone())
+                                .is_ok()
+                        } else {
+                            state
+                                .controller
+                                .update_permissions(next.write.clone())
+                                .is_ok()
+                        };
+                    if !updated {
+                        state.controller.disconnect();
+                        state.preparing = false;
+                        state.selecting = false;
+                        state.epoch = next_epoch();
+                    }
+                    state.approval = None;
+                    state.notice = notice.into();
+                }
+                // Parked conversations must never inherit another conversation's tokens.
+                state.lease = if current { Some(next.clone()) } else { None };
             };
-            sync(&mut self.state.borrow_mut());
+            sync(&mut self.state.borrow_mut(), true);
             for state in self.parked.borrow_mut().iter_mut() {
-                sync(state);
+                sync(state, false);
             }
             false
         }
-        fn publish(&self, app: &App, snapshot: &AssistantSnapshot) {
+        fn publish(&self, app: &App, snapshot: &ScopeSnapshot) {
             let mut state = self.state.borrow_mut();
+            state.sync_task_budget();
             let view = state.controller.view();
             let phase = view.phase;
+            let task_mode = snapshot.write_token.is_some() && state.controller.supports_tasks();
+            let document_observation_unavailable = !snapshot.is_app()
+                && !task_mode
+                && state.controller.document_observation_unavailable();
+            let task_observation_unavailable =
+                !snapshot.is_app() && state.controller.task_observation_unavailable();
+            let pending_update = state.record.task_updates.iter().find(|intent| {
+                !intent.confirmed
+                    && Some(intent.task_id.as_str()) == state.controller.current_task_id()
+            });
+            let task_update_observation_missing =
+                pending_update.is_some_and(|intent| intent.observation_binding.is_none());
+            let task_observation_reason = if task_observation_unavailable {
+                UiError::TaskObservationUnavailable.message()
+            } else if task_update_observation_missing {
+                UiError::TaskObservationMissing.message()
+            } else {
+                ""
+            };
             let unknown = view.outcome == Some(TaskOutcome::OutcomeUnknown)
                 || phase == Phase::OutcomeUnknown
                 || state.record.pending == "unknown";
@@ -1088,21 +1562,31 @@ mod desktop {
                         | Phase::Stopping
                         | Phase::Closing
                 )
-                || (phase == Phase::Ready && !view.can_send && view.error.is_none());
+                || (phase == Phase::Ready
+                    && !view.can_send
+                    && view.error.is_none()
+                    && !state.controller.task_idle());
             let outcome = outcome_label(view.outcome);
             let history_error = *self.history_error.borrow();
             let status = if let Some(error) = history_error {
                 error
             } else if !state.notice.is_empty() {
                 &state.notice
+            } else if state.controller.requires_app_restore() {
+                "原会话已保留。允许读取后，点击恢复原会话；旧问题不会自动重发。"
             } else if unknown && view.can_connect {
                 "恢复连接后核实原请求"
+            } else if snapshot.is_app()
+                && let Some(recovery) = state.controller.app_read_recovery()
+                && !recovery.message().is_empty()
+            {
+                recovery.message()
             } else if unknown {
                 view.error
-                    .map(|error| error.message())
+                    .map(|error| scope_error_message(error, snapshot.is_app()))
                     .unwrap_or("操作结果待核实")
             } else if let Some(error) = view.error {
-                error.message()
+                scope_error_message(error, snapshot.is_app())
             } else if view.outcome == Some(TaskOutcome::Stopped) {
                 stopped_hint()
             } else if !outcome.is_empty() {
@@ -1113,6 +1597,12 @@ mod desktop {
                     Phase::AwaitingApproval => "等待你确认当前操作",
                     Phase::Stopping => "正在停止，等待结果",
                     Phase::Ready if busy => "已提交，等待 Agent 回应",
+                    Phase::Ready if task_mode && task_observation_unavailable => {
+                        UiError::TaskObservationUnavailable.message()
+                    }
+                    Phase::Ready if document_observation_unavailable => {
+                        UiError::ObservationUnavailable.message()
+                    }
                     Phase::Ready => "可以发送问题",
                     _ => "",
                 }
@@ -1139,6 +1629,7 @@ mod desktop {
                     && history_error.is_none()
                     && self.parked.borrow().len() + 1 < agent_sessions::MAX_SESSIONS,
             );
+            ui.set_app_scope(snapshot.is_app());
             ui.set_current_project(snapshot.project_name.as_str().into());
             ui.set_provider_label(state.provider_label.as_str().into());
             let model_indices = state.model_indices();
@@ -1227,8 +1718,89 @@ mod desktop {
                 0
             });
             ui.set_unknown(unknown);
+            let task_budget_reason = if task_mode && !state.controller.task_active() {
+                state.task_budget().err().unwrap_or("")
+            } else {
+                ""
+            };
+            ui.set_task_mode(task_mode);
+            ui.set_task_budget_text(state.task_budget_text.as_str().into());
+            ui.set_task_budget_reason(task_budget_reason.into());
+            ui.set_can_edit_task_budget(task_mode && !state.controller.task_active() && !busy);
+            let task = state.controller.current_task();
+            let task_cap = state
+                .record
+                .request_snapshots
+                .iter()
+                .rev()
+                .filter_map(|v| v.task.as_ref())
+                .find(|v| Some(v.task_id.as_str()) == state.controller.current_task_id())
+                .map(|v| v.max_task_credits);
+            ui.set_task_visible(!snapshot.is_app() && state.controller.current_task_id().is_some());
+            ui.set_task_status(
+                task.map(|v| {
+                    format!(
+                        "{} · 步骤 {}/{} · {}轮",
+                        v.status.label(),
+                        v.verified_steps,
+                        v.total_steps,
+                        v.rounds
+                    )
+                })
+                .unwrap_or_else(|| "等待查询原任务状态".into())
+                .into(),
+            );
+            ui.set_task_reason(
+                task.and_then(|v| v.blocked_reason.as_deref())
+                    .map(crate::agent_tasks::blocked_reason_label)
+                    .unwrap_or("")
+                    .into(),
+            );
+            ui.set_task_limit_label(
+                task_cap
+                    .map(|v| format!("本任务推理上限 {} 积分，生成费用另计", v))
+                    .unwrap_or_default()
+                    .into(),
+            );
+            ui.set_can_task_pause(state.controller.can_task_command(TaskCommand::Pause));
+            ui.set_can_task_stop(state.controller.can_task_command(TaskCommand::Stop));
+            ui.set_can_task_resume(
+                snapshot.write_token.is_some()
+                    && state.controller.can_task_command(TaskCommand::Resume),
+            );
+            ui.set_can_task_status(state.controller.can_task_command(TaskCommand::Status));
+            ui.set_can_task_update(
+                state.controller.can_task_command(TaskCommand::Update)
+                    && state.controller.supports_task_observation()
+                    && !task_update_observation_missing,
+            );
+            ui.set_task_update_label(
+                if pending_update.is_some() {
+                    "核实原补充"
+                } else {
+                    "补充要求"
+                }
+                .into(),
+            );
+            ui.set_task_compatibility(
+                if !task_observation_reason.is_empty() {
+                    task_observation_reason
+                } else if snapshot.write_token.is_some()
+                    && !state.controller.supports_tasks()
+                    && state.controller.session_opened()
+                {
+                    "当前 Agent 版本使用单轮执行，操作仍逐项确认"
+                } else {
+                    ""
+                }
+                .into(),
+            );
             ui.set_can_send(
                 view.can_send
+                    && (!task_mode || !state.controller.task_active())
+                    && (!task_mode || !task_observation_unavailable)
+                    && !document_observation_unavailable
+                    && task_budget_reason.is_empty()
                     && !state.preparing
                     && snapshot.read_token.is_some()
                     && history_error.is_none()
@@ -1256,8 +1828,22 @@ mod desktop {
             }
             ui.set_can_stop(view.can_stop);
             ui.set_can_reconcile(view.can_reconcile);
+            let app_recovery_visible = snapshot.is_app()
+                && state
+                    .controller
+                    .app_read_recovery()
+                    .is_some_and(|r| r.reason != "nothing_pending");
+            ui.set_app_recovery_visible(app_recovery_visible);
+            ui.set_can_abandon_app_reads(
+                app_recovery_visible && state.controller.can_abandon_app_reads(),
+            );
+            ui.set_can_query_app_reads(
+                app_recovery_visible && state.controller.can_query_app_reads(),
+            );
             ui.set_reconcile_label(
-                if state
+                if state.controller.app_recovery().is_some() {
+                    "核实原页面操作"
+                } else if state
                     .controller
                     .editor_recovery()
                     .is_some_and(|operation| operation.retry_registration)
@@ -1284,7 +1870,7 @@ mod desktop {
             );
             ui.set_can_select_model(history_error.is_none() && state.can_select_model());
             ui.set_can_disconnect(connected && !busy);
-            ui.set_connect_label(if state.preparing || matches!(phase, Phase::Initializing | Phase::OpeningSession) { "正在连接…" } else if phase == Phase::Closing { "正在断开…" } else if connected { "断开" } else { "连接" }.into());
+            ui.set_connect_label(if state.preparing || matches!(phase, Phase::Initializing | Phase::OpeningSession) { "正在连接…" } else if phase == Phase::Closing { "正在断开…" } else if connected { "断开" } else if snapshot.is_app() && (state.record.runtime_created || state.controller.requires_app_restore()) { "恢复原会话" } else { "连接" }.into());
             let other = self.other_session_reason();
             let missing_model = state.record.selected_model_id.as_ref().is_some_and(|id| {
                 !state.catalog.loading
@@ -1294,10 +1880,10 @@ mod desktop {
             let reason = if let Some(error) = history_error {
                 error
             } else if self.store.borrow().is_none() {
-                if snapshot.document.is_some() && snapshot.project_key.is_empty() {
+                if snapshot.document().is_some() && snapshot.project_key.is_empty() {
                     "工程保存后即可开始会话"
                 } else {
-                    "请登录并打开工程"
+                    "请登录并打开支持的页面或工程"
                 }
             } else if !other.is_empty() {
                 other
@@ -1311,8 +1897,8 @@ mod desktop {
                 && !self.components.as_ref().is_some_and(|path| path.is_file())
             {
                 "此应用尚未包含 Agent 运行组件"
-            } else if snapshot.document.is_none() {
-                "请先打开工程"
+            } else if snapshot.scope.is_none() {
+                "当前页面暂不支持读取"
             } else if snapshot.read_token.is_none() {
                 "请先允许读取与预览"
             } else if state.selecting {
@@ -1347,6 +1933,10 @@ mod desktop {
                     "请先允许读取与预览并连接 Agent"
                 } else if !selection_reason.is_empty() {
                     selection_reason
+                } else if task_mode && task_observation_unavailable {
+                    UiError::TaskObservationUnavailable.message()
+                } else if document_observation_unavailable {
+                    UiError::ObservationUnavailable.message()
                 } else if !view.can_send {
                     "请先连接 Agent"
                 } else {
@@ -1355,22 +1945,28 @@ mod desktop {
                 .into(),
             );
             ui.set_read_granted(snapshot.read_token.is_some());
-            ui.set_write_granted(snapshot.write_token.is_some());
+            ui.set_write_granted(
+                snapshot.write_token.is_some() || snapshot.app_control_token.is_some(),
+            );
             ui.set_read_permission_status(snapshot.read_status.as_str().into());
-            ui.set_write_permission_status(snapshot.write_status.as_str().into());
+            ui.set_write_permission_status(
+                if snapshot.is_app()
+                    && state.controller.session_opened()
+                    && !state.controller.supports_app_control()
+                {
+                    "当前 Agent 版本仅支持读取 App 页面".into()
+                } else {
+                    snapshot.write_status.as_str().into()
+                },
+            );
             ui.set_can_grant_read(
-                snapshot.can_grant_read
-                    && !busy
+                (snapshot.can_grant_read || snapshot.can_revoke_write)
                     && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
             );
             ui.set_can_revoke_read(snapshot.can_revoke_read);
             ui.set_can_grant_write(
                 snapshot.can_grant_write
-                    && !busy
-                    && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
-            );
-            ui.set_can_renew_write(
-                snapshot.can_renew_write
+                    && (!snapshot.is_app() || state.controller.supports_app_control())
                     && !busy
                     && (cfg!(feature = "assistant-local-dev") || self.account.signed_in()),
             );
@@ -1414,6 +2010,7 @@ mod desktop {
                     && a.delta_y.is_some_and(f64::is_finite)
             });
             let editor_recovery = state.controller.editor_recovery().cloned();
+            let app_recovery = state.controller.app_recovery().cloned();
             let frozen_approval = approval.map(|a| FrozenApproval {
                 tool: a.tool.clone(),
                 arguments: a.arguments.clone(),
@@ -1462,8 +2059,35 @@ mod desktop {
             state.assistant_row = next_row;
             state.approval = frozen_approval;
             state.editor_recovery = editor_recovery;
+            state.app_recovery = app_recovery;
+        }
+        fn capture_document_observation(
+            app: &App,
+            snapshot: &ScopeSnapshot,
+        ) -> Result<crate::agent_observation::DocumentObservationBinding, UiError> {
+            let (Some(identity), Some(read_token)) =
+                (snapshot.document(), snapshot.read_token.as_deref())
+            else {
+                return Err(UiError::DocumentChanged);
+            };
+            let mut binding = Err(AssistantPermissionError::StaleContext);
+            Shell::with(|shell, _| {
+                let studio = shell.studio.borrow();
+                binding = studio
+                    .editor_mcp
+                    .borrow_mut()
+                    .assistant_document_observation(&studio, app, identity, read_token);
+            });
+            binding.map_err(|error| match error {
+                AssistantPermissionError::NotAllowed => UiError::AuthorizationRequired,
+                _ => UiError::ObservationChanged,
+            })
         }
         fn send(&self, app: &App, text: &str) {
+            if app.global::<Assistant>().get_can_send() {
+                Self::fence_app_control_native(false);
+                self.state.borrow_mut().controller.fence_app_control();
+            }
             self.refresh(app);
             if !app.global::<Assistant>().get_open()
                 || !app.global::<Assistant>().get_can_send()
@@ -1477,6 +2101,75 @@ mod desktop {
             if state.preparing || state.selecting {
                 return;
             }
+            let Some(snapshot) = Self::snapshot(app) else {
+                return;
+            };
+            if snapshot.scope.is_none()
+                || snapshot.read_token.is_none()
+                || state.lease.as_ref().is_none_or(|lease| {
+                    lease.scope != snapshot.scope || lease.read != snapshot.read_token
+                })
+            {
+                state.notice = "页面或读取权限已变化，请重新核对后发送".into();
+                return;
+            }
+            let Some(context) = snapshot.reference() else {
+                return;
+            };
+            let task_mode = snapshot.write_token.is_some() && state.controller.supports_tasks();
+            let app_input = if snapshot.is_app() {
+                let mut binding = Err(AssistantPermissionError::NotAllowed);
+                Shell::with(|shell, _| {
+                    let studio = shell.studio.borrow();
+                    binding = studio.editor_mcp.borrow_mut().assistant_app_view(
+                        &studio,
+                        app,
+                        &shell.models,
+                    );
+                });
+                match binding {
+                    Ok(view) => Some((
+                        format!("input-{}", uuid::Uuid::new_v4()),
+                        crate::agent_app_control_input::InputBinding::new(
+                            snapshot.scope.as_ref().unwrap().app().unwrap(),
+                            crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                            &view,
+                        ),
+                    )),
+                    Err(error) => {
+                        state.notice = error.message().into();
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            let document_input = if !snapshot.is_app() {
+                if task_mode && !state.controller.supports_task_observation() {
+                    state.notice = UiError::TaskObservationUnavailable.message().into();
+                    return;
+                }
+                if !task_mode && !state.controller.supports_document_observation() {
+                    state.notice = UiError::ObservationUnavailable.message().into();
+                    return;
+                }
+                match Self::capture_document_observation(app, &snapshot) {
+                    Ok(binding) => Some((
+                        format!(
+                            "{}-{}",
+                            if task_mode { "task-request" } else { "input" },
+                            uuid::Uuid::new_v4()
+                        ),
+                        binding,
+                    )),
+                    Err(error) => {
+                        state.notice = error.message().into();
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
             let previous = state.record.clone();
             let references = state.record.draft_references.clone();
             let include_images = state.catalog.current().is_some_and(|choice| choice.images);
@@ -1502,9 +2195,6 @@ mod desktop {
             if let Some(account) = self.account.snapshot() {
                 visible = visible.replace(&account.token, "[已隐藏]");
             }
-            let Some(snapshot) = Self::snapshot(app) else {
-                return;
-            };
             let choice = state.catalog.current();
             let effort = state.selected_effort();
             let selection = if !cfg!(feature = "assistant-local-dev")
@@ -1519,7 +2209,44 @@ mod desktop {
             } else {
                 None
             };
+            let task_intent = if task_mode {
+                let max_task_credits = match state.task_budget() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        state.notice = error.into();
+                        drop(state);
+                        self.refresh(app);
+                        return;
+                    }
+                };
+                let Some((client_request_id, binding)) = document_input.as_ref() else {
+                    state.notice = UiError::ObservationInvalid.message().into();
+                    return;
+                };
+                Some(crate::agent_tasks::TaskIntent {
+                    task_id: crate::agent_tasks::task_id_for(client_request_id),
+                    client_request_id: client_request_id.clone(),
+                    goal: visible.clone(),
+                    max_task_credits,
+                    initial_observation_binding: Some(binding.clone()),
+                })
+            } else {
+                None
+            };
             let request = RequestSnapshot {
+                input_id: app_input.as_ref().map(|(id, _)| id.clone()).or_else(|| {
+                    document_input
+                        .as_ref()
+                        .filter(|_| !task_mode)
+                        .map(|(id, _)| id.clone())
+                }),
+                app_view_binding: app_input.as_ref().map(|(_, view)| view.page()),
+                app_input_binding: app_input.as_ref().map(|(_, view)| view.clone()),
+                observation_binding: document_input
+                    .as_ref()
+                    .filter(|_| !task_mode)
+                    .map(|(_, binding)| binding.clone()),
+                task: task_intent.clone(),
                 references: state.record.draft_references.clone(),
                 session_id: state.record.id.clone(),
                 model_id: choice
@@ -1538,11 +2265,12 @@ mod desktop {
                     })
                     .or_else(|| choice.map(|choice| choice.policy.clone()))
                     .unwrap_or_else(|| json!({})),
-                context: ContextReference {
-                    project_key: snapshot.project_key,
-                    project_name: snapshot.project_name,
-                },
+                context,
             };
+            if let Some(task) = &task_intent {
+                state.record.current_task_id = Some(task.task_id.clone());
+                state.task_display_turn = None;
+            }
             state.record.request_snapshots.push(request);
             state.record.name_first_input(&visible);
             state.messages.push(AssistantMessage {
@@ -1577,16 +2305,24 @@ mod desktop {
             let saved = self.persist(true);
             let mut state = self.state.borrow_mut();
             let result = match saved {
-                Ok(()) => (if references.is_empty() {
-                    if selection.is_some() {
-                        state.controller.send_text_with_selection(text, selection)
-                    } else {
-                        state.controller.send_text(text)
-                    }
-                } else {
+                Ok(()) => (if let Some(task) = &task_intent {
+                    state.controller.create_task(
+                        task,
+                        content,
+                        selection
+                            .clone()
+                            .unwrap_or_else(|| json!({"modelId":"default"})),
+                    )
+                } else if let Some((id, view)) = app_input {
                     state
                         .controller
-                        .send_content_with_selection(content, selection)
+                        .send_app_content(&id, content, selection, view)
+                } else if let Some((id, binding)) = document_input {
+                    state
+                        .controller
+                        .send_document_content(&id, content, selection, binding)
+                } else {
+                    Err(UiError::Configuration)
                 })
                 .map_err(|error| error.message()),
                 Err(error) => Err(error),
@@ -1594,6 +2330,15 @@ mod desktop {
             state.submitting = false;
             match result {
                 Ok(()) => {
+                    if task_intent.is_some()
+                        && let Some(snapshot) = Self::snapshot(app)
+                        && let Some(scope) = self.grant_scope(&state, &snapshot)
+                    {
+                        state.task_grant = crate::agent_task_grant::TaskGrant::from_human(scope, 1);
+                        state.update_grant = None;
+                        state.auto_attempted = None;
+                        state.grant_seen_turn = None;
+                    }
                     state.notice.clear();
                     let ui = app.global::<Assistant>();
                     ui.set_draft("".into());
@@ -1634,6 +2379,241 @@ mod desktop {
             let _ = self.persist(true);
             self.refresh(app);
         }
+        fn task_action(&self, app: &App, action: TaskCommand) {
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            if matches!(action, TaskCommand::Pause | TaskCommand::Stop) {
+                crate::clip_export_fence::revoke_client(
+                    crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                    concat_host::export_publication::PublishRevocation::Stopped,
+                );
+                crate::clip_save_fence::invalidate(
+                    concat_host::projects::SaveInvalidation::Stopped,
+                );
+                let mut state = self.state.borrow_mut();
+                state.task_grant = None;
+                state.update_grant = None;
+                state.controller.withdraw_task_approvals();
+                revoke_task_permits(&mut state);
+            }
+            self.refresh(app);
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            if !state.controller.can_task_command(action) {
+                return;
+            }
+            let resume_epoch = state
+                .controller
+                .current_task()
+                .and_then(|v| v.control_epoch.checked_add(1));
+            if matches!(action, TaskCommand::Pause | TaskCommand::Stop) {
+                state.update_grant = None;
+                state.task_grant = None;
+                revoke_task_permits(&mut state);
+            }
+            match state.controller.task_command(action) {
+                Err(error) => state.notice = error.message().into(),
+                Ok(()) if action == TaskCommand::Resume => {
+                    if let Some(snapshot) = Self::snapshot(app)
+                        && let Some(scope) = self.grant_scope(&state, &snapshot)
+                        && let Some(epoch) = resume_epoch
+                    {
+                        state.task_grant =
+                            crate::agent_task_grant::TaskGrant::from_human(scope, epoch);
+                        state.auto_attempted = None;
+                    }
+                }
+                _ => {}
+            }
+            drop(state);
+            let _ = self.persist(true);
+            self.refresh(app);
+        }
+        fn task_update(&self, app: &App, text: &str) {
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            // Withdraw before refresh can drain a pending card or auto-approve
+            // it. Keep only the prior scope for the one-shot update candidate.
+            let human_grant = {
+                let mut state = self.state.borrow_mut();
+                if !state.controller.supports_task_observation() {
+                    state.notice = UiError::TaskObservationUnavailable.message().into();
+                    return;
+                }
+                if state.record.task_updates.iter().any(|intent| {
+                    !intent.confirmed
+                        && Some(intent.task_id.as_str()) == state.controller.current_task_id()
+                        && intent.observation_binding.is_none()
+                }) {
+                    state.notice = UiError::TaskObservationMissing.message().into();
+                    return;
+                }
+                if state.record.task_updates.iter().all(|v| {
+                    v.confirmed || Some(v.task_id.as_str()) != state.controller.current_task_id()
+                }) && (text.trim().is_empty()
+                    || text.len() > 32000
+                    || !state.record.draft_references.is_empty())
+                {
+                    state.notice = "补充要求需为文字；当前输入与附件已保留".into();
+                    return;
+                }
+                crate::clip_save_fence::invalidate(
+                    concat_host::projects::SaveInvalidation::Stopped,
+                );
+                let grant = state.task_grant.take();
+                state.controller.withdraw_task_approvals();
+                revoke_task_permits(&mut state);
+                grant
+            };
+            self.refresh(app);
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            if !state.controller.can_task_command(TaskCommand::Update) {
+                return;
+            }
+            let Some(task) = state.controller.current_task().cloned() else {
+                return;
+            };
+            let pending = state
+                .record
+                .task_updates
+                .iter()
+                .position(|v| !v.confirmed && v.task_id == task.id);
+            let new_input = pending.is_none();
+            let intent = if let Some(index) = pending {
+                let mut intent = state.record.task_updates[index].clone();
+                // Only this explicit zero-mutation rejection permits a new CAS
+                // precondition. Network uncertainty retains the original one.
+                if state.controller.rejected_task_update()
+                    == Some(intent.client_request_id.as_str())
+                {
+                    if intent.retries >= 2 {
+                        state.notice = "任务修订持续变化，原补充已保留，请先查询任务状态".into();
+                        return;
+                    }
+                    intent.expected_revision = task.task_revision;
+                    intent.retries += 1;
+                }
+                state.record.task_updates[index] = intent.clone();
+                intent
+            } else {
+                if !state.record.draft_references.is_empty() {
+                    state.notice = "补充要求目前支持文字；附件已保留，可用于新任务".into();
+                    return;
+                }
+                if state.record.task_updates.len() >= 64
+                    || state
+                        .record
+                        .task_updates
+                        .iter()
+                        .filter(|v| v.task_id == task.id)
+                        .count()
+                        >= 16
+                {
+                    state.notice = "本会话补充要求已达保存上限，请创建新会话".into();
+                    return;
+                }
+                let Some(snapshot) = Self::snapshot(app) else {
+                    state.notice = UiError::DocumentChanged.message().into();
+                    return;
+                };
+                if snapshot.is_app()
+                    || snapshot.read_token.is_none()
+                    || state.lease.as_ref().is_none_or(|lease| {
+                        lease.scope != snapshot.scope || lease.read != snapshot.read_token
+                    })
+                {
+                    state.notice = UiError::DocumentChanged.message().into();
+                    return;
+                }
+                let binding = match Self::capture_document_observation(app, &snapshot) {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        state.notice = error.message().into();
+                        return;
+                    }
+                };
+                let mut message = text.to_owned();
+                if let Some(lease) = &state.lease {
+                    for token in [lease.read.as_ref(), lease.write.as_ref()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        message = message.replace(token, "[已隐藏]");
+                    }
+                }
+                if let Some(account) = self.account.snapshot() {
+                    message = message.replace(&account.token, "[已隐藏]");
+                }
+                let intent = crate::agent_tasks::TaskUpdateIntent {
+                    client_request_id: format!("update-{}", uuid::Uuid::new_v4()),
+                    task_id: task.id,
+                    message,
+                    expected_revision: task.task_revision,
+                    retries: 0,
+                    confirmed: false,
+                    observation_binding: Some(binding),
+                };
+                if !intent.valid() {
+                    state.notice = "补充要求需为不超过32000字节的文字".into();
+                    return;
+                }
+                state.record.task_updates.push(intent.clone());
+                intent
+            };
+            state.record.updated_at_ms = now_ms();
+            drop(state);
+            // Persist the exact original update before any command is queued.
+            if let Err(error) = self.persist(true) {
+                self.state.borrow_mut().notice = error.into();
+                self.refresh(app);
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            let candidate = if new_input {
+                let previous = state
+                    .controller
+                    .current_turn_id()
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        state
+                            .controller
+                            .current_task()
+                            .and_then(|v| v.active_turn_id.clone())
+                    });
+                human_grant.and_then(|g| g.for_update(intent.client_request_id.clone(), previous))
+            } else {
+                state.update_grant.take()
+            };
+            revoke_task_permits(&mut state);
+            state.update_grant = candidate;
+            match state.controller.retry_task_update(&intent) {
+                Ok(()) => {
+                    if new_input {
+                        state.messages.push(AssistantMessage {
+                            references: Default::default(),
+                            role: "你".into(),
+                            text: intent.message.as_str().into(),
+                            state: "补充要求".into(),
+                            progress: "".into(),
+                        });
+                        state.record.draft.clear();
+                        app.global::<Assistant>().set_draft("".into());
+                    }
+                    state.notice = "补充要求已发送，等待原请求确认".into();
+                }
+                Err(error) => state.notice = error.message().into(),
+            }
+            drop(state);
+            let _ = self.persist(true);
+            self.refresh(app);
+        }
         fn close(&self, app: &App) {
             let ui = app.global::<Assistant>();
             ui.set_open(false);
@@ -1641,6 +2621,13 @@ mod desktop {
             // The conversation, draft, active request and pending approval survive hiding.
         }
         fn disconnect(&self, app: &App) {
+            crate::clip_export_fence::revoke_client(
+                crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
+            crate::clip_save_fence::invalidate(
+                concat_host::projects::SaveInvalidation::ConversationChanged,
+            );
             {
                 let mut state = self.state.borrow_mut();
                 if !app.global::<Assistant>().get_can_disconnect() {
@@ -1655,13 +2642,23 @@ mod desktop {
             self.refresh(app);
         }
         fn permission(&self, app: &App, action: AssistantPermission) {
+            if matches!(
+                action,
+                AssistantPermission::GrantRead
+                    | AssistantPermission::RevokeRead
+                    | AssistantPermission::RevokeWrite
+            ) {
+                crate::clip_export_fence::revoke_client(
+                    crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                    concat_host::export_publication::PublishRevocation::Revoked,
+                );
+            }
             self.refresh(app);
             let ui = app.global::<Assistant>();
             let allowed = match action {
-                AssistantPermission::GrantRead => ui.get_can_grant_read() && !ui.get_busy(),
+                AssistantPermission::GrantRead => ui.get_can_grant_read(),
                 AssistantPermission::RevokeRead => ui.get_can_revoke_read(),
                 AssistantPermission::GrantWrite => ui.get_can_grant_write() && !ui.get_busy(),
-                AssistantPermission::RenewWrite => ui.get_can_renew_write() && !ui.get_busy(),
                 AssistantPermission::RevokeWrite => ui.get_can_revoke_write(),
             };
             if !ui.get_open() {
@@ -1676,10 +2673,33 @@ mod desktop {
             let mut result = Err(AssistantPermissionError::NotAllowed);
             Shell::with(|shell, _| {
                 let studio = shell.studio.borrow();
-                result = studio
-                    .editor_mcp
-                    .borrow_mut()
-                    .assistant_permission(&studio, app, action);
+                let mut bridge = studio.editor_mcp.borrow_mut();
+                let app_snapshot = bridge.assistant_app_snapshot(&studio, app);
+                result = if let Some(identity) = app_snapshot.identity {
+                    match action {
+                        AssistantPermission::GrantRead => {
+                            if app_snapshot.read_token.is_some() {
+                                bridge.revoke_app_control();
+                                Ok(())
+                            } else {
+                                bridge.grant_app_read(&studio, app, &identity, true)
+                            }
+                        }
+                        AssistantPermission::RevokeRead => {
+                            bridge.revoke_app_read();
+                            Ok(())
+                        }
+                        AssistantPermission::GrantWrite => {
+                            bridge.grant_app_control(&studio, app, &shell.models, &identity)
+                        }
+                        AssistantPermission::RevokeWrite => {
+                            bridge.revoke_app_control();
+                            Ok(())
+                        }
+                    }
+                } else {
+                    bridge.assistant_permission(&studio, app, action)
+                };
             });
             self.state.borrow_mut().notice = result
                 .err()
@@ -1689,11 +2709,15 @@ mod desktop {
             self.refresh(app);
         }
         fn approve(&self, app: &App, allowed: bool) {
+            self.approve_checked(app, allowed, true);
+        }
+        fn approve_checked(&self, app: &App, allowed: bool, require_open: bool) {
             // Freeze the target the user actually saw before draining new IPC.
             let frozen = self.state.borrow().approval.clone();
             self.refresh(app);
             let ui = app.global::<Assistant>();
-            if !ui.get_open()
+            if (require_open && !ui.get_open())
+                || (!require_open && !self.auto_allowed(app))
                 || !(if allowed {
                     ui.get_can_allow()
                 } else {
@@ -1707,7 +2731,7 @@ mod desktop {
                 state.notice = "待确认操作已变化，请重新核对当前动作、对象和参数".into();
             } else if let Some(approval) = frozen {
                 let mut permit = None;
-                let authorization = if allowed && approval.tool != "move_selected_image" {
+                let authorization = if allowed {
                     let mut result = Err("当前工程无法授权此操作");
                     Shell::with(|shell, _| {
                         let studio = shell.studio.borrow();
@@ -1733,6 +2757,14 @@ mod desktop {
                 match authorization {
                     Err(error) => state.notice = error.into(),
                     Ok(()) => {
+                        if let Some(id) = permit
+                            && state.controller.is_task_turn()
+                        {
+                            state
+                                .task_permits
+                                .retain(|(_, at)| at.elapsed() < Duration::from_secs(300));
+                            state.task_permits.push((id, Instant::now()));
+                        }
                         if let Err(error) = state.controller.approve(&approval.id, allowed) {
                             if let Some(id) = permit {
                                 Shell::with(|shell, _| {
@@ -1760,6 +2792,7 @@ mod desktop {
             {
                 return;
             }
+            let dialog = crate::clip_save_fence::NativeDialog::enter();
             let epoch = {
                 let mut state = self.state.borrow_mut();
                 state.selecting = true;
@@ -1769,6 +2802,7 @@ mod desktop {
             let sender = self.sender.clone();
             let session_id = self.state.borrow().record.id.clone();
             spawn_detached(move || {
+                let _dialog = dialog;
                 let title = match kind {
                     FileKind::Runtime => "选择 Node 运行环境文件",
                     FileKind::Entrypoint => "选择 Agent 入口文件",
@@ -1793,11 +2827,28 @@ mod desktop {
         }
         fn reconcile(&self, app: &App) {
             let frozen = self.state.borrow().editor_recovery.clone();
+            let app_frozen = self.state.borrow().app_recovery.clone();
             self.refresh(app);
             if !app.global::<Assistant>().get_open() {
                 return;
             }
             let mut state = self.state.borrow_mut();
+            if let Some(recovery) = app_frozen {
+                state.notice = if state.app_recovery.as_ref() != Some(&recovery) {
+                    "待核实的原页面操作已变化".into()
+                } else {
+                    state
+                        .controller
+                        .reconcile_app(&recovery)
+                        .err()
+                        .map(|error| error.message())
+                        .unwrap_or_default()
+                        .into()
+                };
+                drop(state);
+                self.refresh(app);
+                return;
+            }
             if frozen != state.editor_recovery {
                 state.notice = "待核对原操作已变化，请检查当前任务".into();
             } else if let Some(operation) = frozen {
@@ -1814,6 +2865,8 @@ mod desktop {
                                 app,
                                 if operation.retry_registration {
                                     "retry_canvas_registration"
+                                } else if operation.is_clip {
+                                    "clip_operation"
                                 } else {
                                     "canvas_operation"
                                 },
@@ -1849,6 +2902,38 @@ mod desktop {
                     .err()
                     .map(|e| e.message())
                     .unwrap_or_default()
+                    .into();
+            }
+            drop(state);
+            self.refresh(app);
+        }
+        fn app_read_recovery_action(&self, app: &App, abandon: bool) {
+            let (session_id, recovery) = {
+                let state = self.state.borrow();
+                (
+                    state.record.id.clone(),
+                    state.controller.app_read_recovery().cloned(),
+                )
+            };
+            self.refresh(app);
+            if !app.global::<Assistant>().get_open() {
+                return;
+            }
+            let mut state = self.state.borrow_mut();
+            if state.record.id != session_id
+                || state.controller.app_read_recovery() != recovery.as_ref()
+            {
+                state.notice = "旧问题状态已变化，请检查当前会话".into();
+            } else {
+                let result = if abandon {
+                    state.controller.abandon_app_reads()
+                } else {
+                    state.controller.query_app_reads()
+                };
+                state.notice = result
+                    .err()
+                    .map(|e| scope_error_message(e, true))
+                    .unwrap_or("")
                     .into();
             }
             drop(state);
@@ -1960,11 +3045,9 @@ mod desktop {
             let Some(snapshot) = Self::snapshot(app) else {
                 return;
             };
-            let (Some(document), Some(read_token), Some(manifest)) = (
-                snapshot.document,
-                snapshot.read_token,
-                self.components.clone(),
-            ) else {
+            let (Some(scope), Some(read_token), Some(manifest)) =
+                (snapshot.scope, snapshot.read_token, self.components.clone())
+            else {
                 return;
             };
             let mut data = None;
@@ -2004,7 +3087,8 @@ mod desktop {
             let sender = self.sender.clone();
             let environment = app_environment();
             let session_id = self.state.borrow().record.id.clone();
-            let restore = self.state.borrow().record.runtime_created;
+            let restore = self.state.borrow().record.runtime_created
+                || self.state.borrow().controller.requires_app_restore();
             spawn_detached(move || {
                 let config = (|| {
                     let files = crate::agent_components::load(&manifest)?;
@@ -2026,7 +3110,7 @@ mod desktop {
                             entrypoint: files.entrypoint,
                             environment,
                         },
-                        document,
+                        scope,
                         client_id: ASSISTANT_CLIENT_ID.into(),
                         mcp_client_path: files.mcp_client,
                         mcp_environment,
@@ -2034,6 +3118,7 @@ mod desktop {
                         provider,
                         read_token,
                         write_token: snapshot.write_token,
+                        app_control_token: snapshot.app_control_token,
                     })
                 })();
                 let _ = sender.send(WorkerResult::Prepared {
@@ -2078,7 +3163,7 @@ mod desktop {
                     return;
                 }
             };
-            let Some(document) = snapshot.document else {
+            let Some(scope) = snapshot.scope else {
                 return;
             };
             let Some(read_token) = snapshot.read_token else {
@@ -2107,7 +3192,8 @@ mod desktop {
             let sender = self.sender.clone();
             let account_epoch = self.account.epoch();
             let session_id = self.state.borrow().record.id.clone();
-            let restore = self.state.borrow().record.runtime_created;
+            let restore = self.state.borrow().record.runtime_created
+                || self.state.borrow().controller.requires_app_restore();
             spawn_detached(move || {
                 let config = (|| {
                     ordinary_file(&runtime)?;
@@ -2128,7 +3214,7 @@ mod desktop {
                             entrypoint,
                             environment,
                         },
-                        document,
+                        scope,
                         client_id: ASSISTANT_CLIENT_ID.into(),
                         mcp_client_path: mcp_client,
                         mcp_environment,
@@ -2136,6 +3222,7 @@ mod desktop {
                         provider,
                         read_token,
                         write_token: snapshot.write_token,
+                        app_control_token: snapshot.app_control_token,
                     })
                 })();
                 let _ = sender.send(WorkerResult::Prepared {
@@ -2196,6 +3283,8 @@ mod desktop {
             generation_model_ids: HashMap::new(),
             selection_initialized: false,
             runtime_created: false,
+            current_task_id: None,
+            task_updates: Vec::new(),
             request_snapshots: Vec::new(),
             pending: String::new(),
             updated_at_ms: now_ms(),
@@ -2223,12 +3312,14 @@ mod desktop {
                 })
                 .collect::<Vec<_>>(),
         ));
+        let mut controller = Controller::default();
+        controller.restore_task(record.current_task_id.clone());
         State {
             record,
             generation: next_epoch(),
             messages,
             submitting: false,
-            controller: Controller::default(),
+            controller,
             lease: None,
             runtime: None,
             entrypoint: None,
@@ -2245,6 +3336,17 @@ mod desktop {
             assistant_row: None,
             approval: None,
             editor_recovery: None,
+            app_recovery: None,
+            task_budget_text: String::new(),
+            task_budget_policy: None,
+            task_permits: Vec::new(),
+            task_display_turn: None,
+            task_grant: None,
+            update_grant: None,
+            grant_seen_turn: None,
+            auto_approving: false,
+            auto_attempted: None,
+            task_permit_revision: 0,
         }
     }
     fn history_full(state: &State) -> bool {
@@ -2263,7 +3365,10 @@ mod desktop {
                     | Phase::AwaitingApproval
                     | Phase::Stopping
             )
-            || (view.phase == Phase::Ready && !view.can_send && view.error.is_none())
+            || (view.phase == Phase::Ready
+                && !view.can_send
+                && view.error.is_none()
+                && !state.controller.task_idle())
     }
     fn session_uncertain(state: &State) -> bool {
         let view = state.controller.view();
@@ -2271,7 +3376,39 @@ mod desktop {
             || view.phase == Phase::OutcomeUnknown
             || view.outcome == Some(TaskOutcome::OutcomeUnknown)
     }
+    fn revoke_task_permits(state: &mut State) {
+        let permits = std::mem::take(&mut state.task_permits);
+        state.approval = None;
+        Shell::with(|shell, _| {
+            let studio = shell.studio.borrow();
+            let mut bridge = studio.editor_mcp.borrow_mut();
+            for (id, _) in permits {
+                bridge.forget_tool_permit(id);
+            }
+        });
+    }
     fn capture(state: &mut State) {
+        if state.controller.is_task_turn()
+            && let Some(turn) = state.controller.current_turn_id().map(str::to_owned)
+            && state.task_display_turn.as_deref() != Some(turn.as_str())
+        {
+            let reuse = state.task_display_turn.is_none()
+                && state
+                    .assistant_row
+                    .and_then(|i| state.messages.row_data(i))
+                    .is_some_and(|r| r.text.is_empty() && r.state.is_empty());
+            if !reuse {
+                state.messages.push(AssistantMessage {
+                    references: Default::default(),
+                    role: "Agent".into(),
+                    text: "".into(),
+                    state: "".into(),
+                    progress: "".into(),
+                });
+                state.assistant_row = Some(state.messages.row_count() - 1);
+            }
+            state.task_display_turn = Some(turn);
+        }
         let view = state.controller.view();
         if !state.submitting {
             state.assistant_row = update_streaming_reply(
@@ -2283,6 +3420,18 @@ mod desktop {
                 view.progress,
             );
         }
+        if !state.submitting {
+            state.record.current_task_id = state.controller.current_task_id().map(str::to_owned);
+            if let Some(id) = state.controller.acknowledged_task_update()
+                && let Some(update) = state
+                    .record
+                    .task_updates
+                    .iter_mut()
+                    .find(|v| v.client_request_id == id)
+            {
+                update.confirmed = true;
+            }
+        }
         let previous_pending = state.record.pending.clone();
         if view.phase == Phase::OutcomeUnknown || view.outcome == Some(TaskOutcome::OutcomeUnknown)
         {
@@ -2292,7 +3441,10 @@ mod desktop {
                 view.phase,
                 Phase::Running | Phase::AwaitingApproval | Phase::Stopping
             )
-            || (view.phase == Phase::Ready && !view.can_send && view.error.is_none())
+            || (view.phase == Phase::Ready
+                && !view.can_send
+                && view.error.is_none()
+                && !state.controller.task_idle())
         {
             state.record.pending = "running".into();
         } else if state.controller.session_opened()
@@ -2314,7 +3466,9 @@ mod desktop {
             && (row.state.is_empty()
                 || (previous_pending == "unknown" && row.state == "操作结果待核实"))
         {
-            row.state = if previous_pending == "unknown" {
+            row.state = if state.controller.app_scope() {
+                "旧问题已结束"
+            } else if previous_pending == "unknown" {
                 "已核实"
             } else {
                 "旧请求已结束"
@@ -2441,6 +3595,33 @@ mod desktop {
             }
         });
         callback!(on_disconnect, disconnect);
+        callback!(on_task_pause, task_action, TaskCommand::Pause);
+        callback!(on_task_stop, task_action, TaskCommand::Stop);
+        callback!(on_task_resume, task_action, TaskCommand::Resume);
+        callback!(on_task_status_requested, task_action, TaskCommand::Status);
+        ui.on_task_budget_edited({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |text| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    if app.global::<Assistant>().get_can_edit_task_budget() {
+                        binding.state.borrow_mut().task_budget_text = text.to_string();
+                    }
+                    binding.refresh(&app);
+                    binding.schedule(&app);
+                }
+            }
+        });
+        ui.on_task_update({
+            let binding = Rc::downgrade(&binding);
+            let app = app.as_weak();
+            move |text| {
+                if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
+                    binding.task_update(&app, &text);
+                    binding.schedule(&app);
+                }
+            }
+        });
         callback!(on_connect_managed, connect_managed);
         callback!(on_refresh_models, refresh_models);
         ui.on_select_effort({
@@ -2464,10 +3645,11 @@ mod desktop {
             }
         });
         callback!(on_reconcile, reconcile);
+        callback!(on_abandon_app_reads, app_read_recovery_action, true);
+        callback!(on_query_app_reads, app_read_recovery_action, false);
         callback!(on_grant_read, permission, AssistantPermission::GrantRead);
         callback!(on_revoke_read, permission, AssistantPermission::RevokeRead);
         callback!(on_grant_write, permission, AssistantPermission::GrantWrite);
-        callback!(on_renew_write, permission, AssistantPermission::RenewWrite);
         callback!(
             on_revoke_write,
             permission,
@@ -2507,14 +3689,40 @@ mod desktop {
             let app = app.as_weak();
             move || {
                 if let (Some(binding), Some(app)) = (binding.upgrade(), app.upgrade()) {
-                    binding.refresh(&app);
-                    if app.global::<Assistant>().get_open() {
-                        let mut state = binding.state.borrow_mut();
-                        if let Err(error) = state.controller.stop() {
-                            state.notice = error.message().into();
-                        }
-                        drop(state);
+                    crate::clip_export_fence::revoke_client(
+                        crate::editor_mcp::ASSISTANT_CLIENT_ID,
+                        concat_host::export_publication::PublishRevocation::Stopped,
+                    );
+                    crate::clip_save_fence::invalidate(
+                        concat_host::projects::SaveInvalidation::Stopped,
+                    );
+                    let (task_turn, frozen_turn) = {
+                        let state = binding.state.borrow();
+                        (
+                            state.controller.is_task_turn(),
+                            state.controller.current_turn_id().map(str::to_owned),
+                        )
+                    };
+                    if task_turn {
+                        // This human action withdraws task permits before IPC is drained.
+                        binding.task_action(&app, TaskCommand::Stop);
+                    } else {
+                        Binding::fence_app_control_native(false);
+                        binding.state.borrow_mut().controller.fence_app_control();
                         binding.refresh(&app);
+                        if app.global::<Assistant>().get_open() {
+                            let mut state = binding.state.borrow_mut();
+                            // A late result or new task must not redirect the old chat stop.
+                            if frozen_turn.is_some()
+                                && state.controller.current_turn_id() == frozen_turn.as_deref()
+                                && !state.controller.is_task_turn()
+                                && let Err(error) = state.controller.stop()
+                            {
+                                state.notice = error.message().into();
+                            }
+                            drop(state);
+                            binding.refresh(&app);
+                        }
                     }
                     binding.schedule(&app);
                 }
@@ -2525,8 +3733,21 @@ mod desktop {
         binding
     }
 
+    fn scope_error_message(
+        error: crate::agent_controller::UiError,
+        app_scope: bool,
+    ) -> &'static str {
+        use crate::agent_controller::UiError;
+        match (app_scope, error) {
+            (true, UiError::AuthorizationRequired) => "请允许读取当前页面文字和媒体预览",
+            (true, UiError::DocumentChanged) => "账户或 App 会话已变化，请重新授权并恢复原会话",
+            (true, UiError::SessionRecoveryRequired) => "旧问题需要结束或核实，请查看会话状态",
+            (true, UiError::VerifyRequired) => "旧问题的读取状态待核实，已暂停后续问题",
+            _ => error.message(),
+        }
+    }
     fn stopped_hint() -> &'static str {
-        "本轮已停止；单轮上限 120 秒，编辑授权 5 分钟另计。重新发起需新输入，编辑动作需新确认"
+        "本轮已停止；单轮上限 120 秒。重新发起需新输入，编辑动作需新确认"
     }
 
     fn outcome_label(outcome: Option<TaskOutcome>) -> &'static str {
@@ -2732,6 +3953,26 @@ mod desktop {
             state.restore_catalog_selection()
         }
         #[test]
+        fn task_budget_preserves_same_policy_input_and_reconfirms_changed_model_cap() {
+            let mut state = new_state(new_record(), Some(1));
+            assert!(apply_catalog(&mut state, effort_catalog(true)));
+            state.sync_task_budget();
+            assert_eq!(state.task_budget_text, "80");
+            state.task_budget_text = "60".into();
+            state.sync_task_budget();
+            assert_eq!(state.task_budget().unwrap(), 60);
+            state.record.selected_effort_id = None;
+            state.catalog.choices[0].policy = json!({"max_turn_credits":30});
+            state.sync_task_budget();
+            assert_eq!(state.task_budget_text, "120");
+            assert!(state.notice.contains("模型或强度已变化"));
+            state.task_budget_text = "29".into();
+            assert!(state.task_budget().is_err());
+            assert_eq!(state.task_budget_text, "29");
+            state.task_budget_text = "9007199254740992".into();
+            assert!(state.task_budget().is_err());
+        }
+        #[test]
         fn approval_refresh_compares_every_frozen_field_not_display_text() {
             let original = FrozenApproval {
                 tool: "flow_update_node".into(),
@@ -2757,25 +3998,20 @@ mod desktop {
             }
         }
         #[test]
-        fn lease_expiry_renewal_and_document_change_explain_new_confirmation() {
+        fn permission_change_preserves_read_connection_notice() {
             let old = Lease {
-                document: None,
+                scope: None,
                 read: Some("synthetic-read".into()),
                 write: Some("synthetic-write".into()),
+                app_control: None,
             };
             let mut next = old.clone();
             next.write = None;
-            assert!(lease_change_notice(&old, &next, true).contains("到期"));
-            assert!(lease_change_notice(&old, &next, true).contains("重新连接"));
-            assert!(lease_change_notice(&old, &next, false).contains("撤销"));
-            next.write = Some("synthetic-renewed".into());
-            assert!(lease_change_notice(&old, &next, true).contains("新操作"));
-            next = old.clone();
+            assert!(lease_change_notice(&old, &next).contains("撤销"));
+            assert!(!lease_change_notice(&old, &next).contains("重新连接"));
             next.read = None;
-            assert!(lease_change_notice(&old, &next, false).contains("读取权限"));
-            assert!(!lease_change_notice(&old, &next, false).contains("synthetic"));
+            assert!(lease_change_notice(&old, &next).contains("重新连接"));
             assert!(stopped_hint().contains("120 秒"));
-            assert_eq!(outcome_label(Some(TaskOutcome::Stopped)), "已停止");
         }
 
         #[test]
@@ -2843,15 +4079,20 @@ mod desktop {
                 state.record.pending = pending.into();
                 state.record.runtime_created = true;
                 let original = RequestSnapshot {
+                    input_id: None,
+                    app_view_binding: None,
+                    app_input_binding: None,
+                    observation_binding: None,
+                    task: None,
                     references: Vec::new(),
                     session_id: state.record.id.clone(),
                     model_id: "model-one".into(),
                     effort_id: Some("balanced".into()),
                     policy: state.selected_effort().unwrap().policy(),
-                    context: ContextReference {
+                    context: ContextReference::Document(DocumentReference {
                         project_key: "project".into(),
                         project_name: "测试工程".into(),
-                    },
+                    }),
                 };
                 state.record.request_snapshots.push(original.clone());
                 let mut second = state.catalog.efforts[0].clone();

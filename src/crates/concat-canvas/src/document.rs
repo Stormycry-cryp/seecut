@@ -225,15 +225,14 @@ impl ImageDocument {
     /// which is where a dangling link can appear.
     pub fn validate(&self) -> Result<(), DocumentError> {
         for (id, mask) in self.masks() {
-            if let Some(b) = mask.bitmap_bounds {
-                if mask.vector.is_some()
+            if let Some(b) = mask.bitmap_bounds
+                && (mask.vector.is_some()
                     || b.left.unsigned_abs() > 2_000_000
                     || b.top.unsigned_abs() > 2_000_000
                     || !matches!(b.outside, 0 | 255)
-                    || mask.anchor.is_some_and(|a| !a.is_invertible())
-                {
-                    return Err(DocumentError::InvalidMask(id));
-                }
+                    || mask.anchor.is_some_and(|a| !a.is_invertible()))
+            {
+                return Err(DocumentError::InvalidMask(id));
             }
             if let Some(vector) = &mask.vector {
                 if !vector.validate() || mask.anchor.is_some_and(|a| !a.is_invertible()) {

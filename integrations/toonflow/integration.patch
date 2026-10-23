@@ -836,12 +836,12 @@ index 0000000..b5f74d2
 +}
 diff --git a/apps/server/src/seecutFlowOperations.ts b/apps/server/src/seecutFlowOperations.ts
 new file mode 100644
-index 0000000..7bcc6c9
+index 0000000..d1094aa
 --- /dev/null
 +++ b/apps/server/src/seecutFlowOperations.ts
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,68 @@
 +import express from 'express';
-+import { createHash } from 'node:crypto';
++import { createHash, randomUUID } from 'node:crypto';
 +import { mkdir, readFile, lstat } from 'node:fs/promises';
 +import { join } from 'node:path';
 +import { writeAtomic } from '@toonflow/file';
@@ -881,7 +881,21 @@ index 0000000..7bcc6c9
 +      if (action === 'begin' && old) return old;
 +      if (action === 'finish' && (!old || old.status !== 'accepted')) throw new Error('FLOW_OPERATION_CONFLICT');
 +      if (action === 'finish' && (!result || !['completed','outcomeUnknown','notExecuted'].includes(result.status))) throw new Error('FLOW_INVALID_RECEIPT');
-+      const receipt = action === 'begin' ? { operationId: call.operationId, fingerprint, status: 'accepted', binding: {projectId: call.projectId, canvasId: call.canvasId, sessionId: call.sessionId} } : {...old, ...result};
++      let generation = old?.generation;
++      if (action === 'begin' && call.name === 'flow_execute_node') {
++        const args = call.args;
++        if (!args || Object.keys(args).some(k => !['nodeId','name','args'].includes(k)) || typeof args.nodeId !== 'string' || !args.nodeId || args.nodeId.length > 128
++          || !['node:generateImage','node:generateVideo'].includes(args.name) || !args.args || typeof args.args !== 'object' || Array.isArray(args.args) || Object.keys(args.args).length) throw new Error('FLOW_INVALID_GENERATION');
++        generation = { version:1, projectId:call.projectId, canvasId:call.canvasId, sessionId:call.sessionId, accountScope:call.accountScope,
++          operationId:call.operationId, nodeId:args.nodeId, clientRequestId:randomUUID(), mediaType:args.name === 'node:generateImage' ? 'image' : 'video', stage:'reserved' };
++      }
++      if (action === 'finish' && generation) {
++        const proof = result.result?.generation;
++        if (proof && (Object.keys(generation).filter(k => k !== 'stage').some(k => proof[k] !== generation[k]) || !['recorded','notSubmitted','unknown'].includes(proof.stage))) throw new Error('FLOW_GENERATION_CONFLICT');
++        if (result.status === 'completed' && (result.saved !== true || proof?.stage !== 'recorded')) throw new Error('FLOW_GENERATION_NOT_RECORDED');
++        generation = {...generation, stage:proof?.stage ?? generation.stage};
++      }
++      const receipt = action === 'begin' ? { operationId: call.operationId, fingerprint, status: 'accepted', binding: {projectId: call.projectId, canvasId: call.canvasId, sessionId: call.sessionId}, ...(generation ? {generation} : {}) } : {...old, ...result, operationId:old.operationId, fingerprint:old.fingerprint, ...(generation ? {generation} : {})};
 +      if (Buffer.byteLength(JSON.stringify(receipt)) > 256*1024) throw new Error('FLOW_RESULT_TOO_LARGE');
 +      await mkdir(root, {recursive:true, mode:0o700});
 +      await account(call.accountScope);
@@ -2701,10 +2715,16 @@ index 3615205..db1e404 100644
  }
  
 diff --git a/apps/web/src/lib/mcpControl.ts b/apps/web/src/lib/mcpControl.ts
-index 729aa59..a4c5ef0 100644
+index 729aa59..f10436c 100644
 --- a/apps/web/src/lib/mcpControl.ts
 +++ b/apps/web/src/lib/mcpControl.ts
-@@ -6,14 +6,19 @@ import { invalidateNodeModels } from "@toonflow/nodes-scaffold/nodeAi";
+@@ -1,19 +1,24 @@
+ import { locale } from "@toonflow/i18n/vue";
+ import { onScopeDispose, shallowRef, watch, type WatchSource } from "vue";
+ import { useRouter } from "vue-router";
+-import type { NodeToolInfo } from "@toonflow/tools-scaffold/runtime";
++import type { NodeToolInfo, NodeExecutionContext } from "@toonflow/tools-scaffold/runtime";
+ import { invalidateNodeModels } from "@toonflow/nodes-scaffold/nodeAi";
  import { saveSettings, settings } from "@/stores/settings";
  import { useWorkspaceStore } from "@/stores/workspace";
  
@@ -2712,8 +2732,9 @@ index 729aa59..a4c5ef0 100644
 +type ControlCall = { type: "call"; callId: string; name: string; args: Record<string, unknown>; directory?: string; expectedCanvasId?: string; expectedRevision?: number };
  type WorkspaceControl = {
 -  getState(): { directory: string | null; canvasId: string | null; panel: string; tools: NodeToolInfo[]; document?: unknown };
+-  call(request: ControlCall, signal: AbortSignal): Promise<unknown>;
 +  getState(): { directory: string | null; canvasId: string | null; panel: string; canvasReady?: boolean; canvasListReady?: boolean; canvasLoadError?: string; tools: NodeToolInfo[]; document?: unknown; flowRevision?: number; flowSelectionRevision?: number; selectedNodeIds?: string[]; projectName?: string; flowBusy?: boolean };
-   call(request: ControlCall, signal: AbortSignal): Promise<unknown>;
++  call(request: ControlCall, signal: AbortSignal, execution?: NodeExecutionContext): Promise<unknown>;
    flushSave(): Promise<void>;
 +  assertCanLeave(): void;
  };
@@ -2932,7 +2953,7 @@ index 0000000..40be100
 +}
 diff --git a/apps/web/src/lib/seecutFlowControl.ts b/apps/web/src/lib/seecutFlowControl.ts
 new file mode 100644
-index 0000000..73d5412
+index 0000000..da822d6
 --- /dev/null
 +++ b/apps/web/src/lib/seecutFlowControl.ts
 @@ -0,0 +1,72 @@
@@ -2987,9 +3008,9 @@ index 0000000..73d5412
 +      const call = (name: string, args: Record<string,unknown>) => control.call({type:'call',callId:crypto.randomUUID(), name,args}, lifetime.signal);
 +      return {...binding(), selectedNodeIds:control.getState().selectedNodeIds ?? [], canvas:await call('getCanvas',{include:['canvases','nodeTypes']}), selected:await call('findCanvasNodes',{selectedOnly:true}), edges:await call('getCanvasEdges',{limit:100})};
 +    },
-+    execute:async (command, signal, call) => {
++    execute:async (command, signal, call, execution) => {
 +      const control = getWorkspaceControl(); if (!control) throw new Error('FLOW_UNAVAILABLE');
-+      return control.call({type:'call',callId:crypto.randomUUID(), ...command, expectedCanvasId:call.canvasId, expectedRevision:call.revision}, signal);
++      return control.call({type:'call',callId:crypto.randomUUID(), ...command, expectedCanvasId:call.canvasId, expectedRevision:call.revision}, signal, execution);
 +    },
 +    flush:async () => { await getWorkspaceControl()?.flushSave(); publish(); },
 +  });
@@ -3010,10 +3031,11 @@ index 0000000..73d5412
 +}
 diff --git a/apps/web/src/lib/seecutFlowGate.ts b/apps/web/src/lib/seecutFlowGate.ts
 new file mode 100644
-index 0000000..9585d7e
+index 0000000..6182ccc
 --- /dev/null
 +++ b/apps/web/src/lib/seecutFlowGate.ts
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,133 @@
++import type { NodeExecutionContext, SeecutFlowGeneration } from "@toonflow/tools-scaffold/runtime";
 +/** One current-workspace gate for native Agent and MCP. Never edits JSON files. */
 +export type FlowBinding = { projectId: string; canvasId: string; sessionId: string; accountScope: string; revision: number };
 +export type FlowCall = FlowBinding & { name: string; args: Record<string, unknown>; operationId?: string };
@@ -3028,16 +3050,27 @@ index 0000000..9585d7e
 +  if (!actual || ['projectId', 'canvasId', 'sessionId', 'accountScope'].some(key => actual[key as keyof FlowBinding] !== expected[key as keyof FlowBinding])) throw new Error('FLOW_BINDING_CHANGED');
 +  if (revision && actual.revision !== expected.revision) throw new Error('FLOW_STALE_REVISION');
 +}
++function generationRef(receipt: any, call: FlowCall): SeecutFlowGeneration {
++  const value = receipt?.generation;
++  if (!value || value.version !== 1 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.clientRequestId ?? '')
++    || ['projectId','canvasId','accountScope'].some(key => value[key] !== (call as any)[key])
++    || value.operationId !== call.operationId || value.nodeId !== call.args.nodeId || !['image','video'].includes(value.mediaType)) throw new Error('FLOW_GENERATION_UNBOUND');
++  return Object.fromEntries(['version','projectId','canvasId','sessionId','accountScope','operationId','nodeId','clientRequestId','mediaType'].map(key => [key,value[key]])) as SeecutFlowGeneration;
++}
 +export function flowCommand(call: FlowCall) {
 +  const name = flowCommands[call.name];
 +  if (!name) throw new Error('FLOW_TOOL_UNAVAILABLE');
 +  const args = structuredClone(call.args);
++  if (call.name === 'flow_get_task' && (typeof args.nodeId !== 'string' || !args.nodeId || Object.keys(args).some(key => key !== 'nodeId'))) throw new Error('FLOW_GENERATION_QUERY_INVALID');
 +  if (call.name === 'flow_get_node_config' || call.name === 'flow_get_task') return {name, args:{nodeId:args.nodeId, name:call.name === 'flow_get_node_config' ? 'node:getConfig' : 'node:getRecordedGeneration', args:{}}};
 +  if (call.name === 'flow_update_node' && (args.args as any)?.providerId !== undefined && (args.args as any)?.providerId !== 'seecut') throw new Error('FLOW_MANAGED_PROVIDER_REQUIRED');
 +  if ('canvasId' in args && args.canvasId !== call.canvasId && call.name !== 'flow_switch_canvas') throw new Error('FLOW_BINDING_CHANGED');
 +  if (call.name === 'flow_list_node_types') return { name, args: { include: ['nodeTypes', 'canvases'], ...args, canvasId: call.canvasId } };
 +  if (call.name === 'flow_update_node' && !['node:setConfig', 'node:setPrompt', 'node:setText'].includes(String(args.name))) throw new Error('FLOW_TOOL_UNAVAILABLE');
-+  if (call.name === 'flow_execute_node' && !['node:generateImage', 'node:generateVideo'].includes(String(args.name))) throw new Error('FLOW_TOOL_UNAVAILABLE');
++  if (call.name === 'flow_execute_node') {
++    if (!['node:generateImage', 'node:generateVideo'].includes(String(args.name))) throw new Error('FLOW_TOOL_UNAVAILABLE');
++    if (Object.keys(args).some(key => !['nodeId','name','args'].includes(key)) || !args.args || typeof args.args !== 'object' || Array.isArray(args.args) || Object.keys(args.args).length) throw new Error('FLOW_GENERATION_ID_INJECTION');
++  }
 +  return { name, args };
 +}
 +export function createFlowGate(deps: {
@@ -3045,7 +3078,7 @@ index 0000000..9585d7e
 +  account(expected: string): Promise<void>;
 +  receipt(call: FlowCall, action: 'begin' | 'get' | 'finish', result?: unknown): Promise<any>;
 +  workspace(): Promise<unknown>;
-+  execute(command: {name: string; args: Record<string, unknown>}, signal: AbortSignal, call: FlowCall): Promise<unknown>;
++  execute(command: {name: string; args: Record<string, unknown>}, signal: AbortSignal, call: FlowCall, execution?: NodeExecutionContext): Promise<unknown>;
 +  flush(): Promise<void>;
 +}) {
 +  let busy = false;
@@ -3058,9 +3091,19 @@ index 0000000..9585d7e
 +    assertFlowBinding(deps.binding(), call, false);
 +    if (call.name === 'flow_get_workspace') return deps.workspace();
 +    const command = flowCommand(call);
++    const assertCurrent = async () => { await deps.account(call.accountScope); assertFlowBinding(deps.binding(),call,false); };
++    let execution: NodeExecutionContext | undefined;
++    if (call.name === 'flow_get_task' && call.operationId !== undefined) {
++      if (!call.operationId || call.operationId.length > 192 || Object.keys(call.args).some(key => key !== 'nodeId')) throw new Error('FLOW_GENERATION_QUERY_INVALID');
++      const original = await deps.receipt({...call,name:'flow_get_operation'},'get');
++      const generation = generationRef(original,call);
++      // A reopened canvas has a new opening ID. Only this read context uses it;
++      // the original immutable generation reference keeps its original opening.
++      execution = {generation,assertCurrent};
++    }
 +    if (flowReads.has(call.name)) {
 +      assertFlowBinding(deps.binding(), call);
-+      const result = await deps.execute(command, signal, call);
++      const result = await deps.execute(command, signal, call, execution);
 +      if (call.name === 'flow_get_task') {
 +        signal.throwIfAborted();
 +        assertFlowBinding(deps.binding(), call, false);
@@ -3089,11 +3132,21 @@ index 0000000..9585d7e
 +      const receipt = await deps.receipt(call, 'begin');
 +      if (receipt.status !== 'accepted') return receipt;
 +      started = true;
++      if (call.name === 'flow_execute_node') {
++        const generation = generationRef(receipt,call);
++        if (generation.sessionId !== call.sessionId || generation.mediaType !== (call.args.name === 'node:generateImage' ? 'image' : 'video')) throw new Error('FLOW_GENERATION_UNBOUND');
++        execution = {generation,assertCurrent};
++      }
 +      await deps.account(call.accountScope);
 +      assertFlowBinding(deps.binding(), call);
 +      signal.throwIfAborted();
 +      dispatched = true;
-+      const result = await deps.execute(command, signal, call);
++      const result = await deps.execute(command, signal, call, execution) as any;
++      if (execution?.generation && call.name === 'flow_execute_node') {
++        const proof = result?.generation;
++        if (!proof || Object.entries(execution.generation).some(([key,value]) => proof[key] !== value) || !['recorded','notSubmitted','unknown'].includes(proof.stage)) throw new Error('FLOW_GENERATION_RESULT_MISMATCH');
++        if (proof.stage !== 'recorded') return await deps.receipt(call,'finish',{status:proof.stage === 'notSubmitted' ? 'notExecuted' : 'outcomeUnknown',result,error:result.error});
++      }
 +      // A switch has intentionally changed canvas/session. The real canvas tool saves the old one first.
 +      if (call.name !== 'flow_switch_canvas') assertFlowBinding(deps.binding(), call, false);
 +      await deps.account(call.accountScope);
@@ -3682,7 +3735,7 @@ index 0000000..12db544
 +}
 +</style>
 diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
-index 61cddd7..3f196fa 100644
+index 61cddd7..628df3f 100644
 --- a/apps/web/src/pages/workspace/index.vue
 +++ b/apps/web/src/pages/workspace/index.vue
 @@ -1,17 +1,37 @@
@@ -3825,8 +3878,9 @@ index 61cddd7..3f196fa 100644
      document: documentPanelRef.value?.getDocument(false),
    }),
    flushSave,
+-  async call(request, signal) {
 +  assertCanLeave,
-   async call(request, signal) {
++  async call(request, signal, execution) {
 +    if (seecutResolvingConflict.value) throw new Error("云端冲突处理中，请稍后操作");
      const directory = workspaceStore.project?.directory;
      if (!directory) throw new Error("请先打开工作区");
@@ -3838,7 +3892,12 @@ index 61cddd7..3f196fa 100644
        if (directory !== workspaceStore.project?.directory) throw new Error("工作区已切换，本次调用已停止");
      };
      checkDirectory();
-@@ -237,12 +272,94 @@ registerWorkspaceControl({
+@@ -233,16 +268,98 @@ registerWorkspaceControl({
+       callSignal
+     );
+     checkDirectory();
+-    return context.call({ name: request.name, args: request.args }, callSignal);
++    return context.call({ name: request.name, args: request.args }, callSignal, execution);
    },
  });
  
@@ -4759,6 +4818,53 @@ index 649c61b..5564b95 100644
  
    &.compositingEnabled :deep(.vue-flow__transformationpane) {
      will-change: transform;
+diff --git a/apps/web/src/pages/workspace/panels/canvas/useCanvasTools.ts b/apps/web/src/pages/workspace/panels/canvas/useCanvasTools.ts
+index 8527342..473ccbb 100644
+--- a/apps/web/src/pages/workspace/panels/canvas/useCanvasTools.ts
++++ b/apps/web/src/pages/workspace/panels/canvas/useCanvasTools.ts
+@@ -1,3 +1,4 @@
++import type { NodeExecutionContext } from "@toonflow/tools-scaffold/runtime";
+ import { nextTick, watch, type Ref } from "vue";
+ import { useVueFlow, type XYPosition } from "@vue-flow/core";
+ import { useNodeEvent, useNodeToolsContext, validateConnection } from "@toonflow/nodes-scaffold/runtime";
+@@ -67,8 +68,8 @@ export function useCanvasTools(options: {
+         const label = node?.data.label ?? node?.label;
+         return typeof label === "string" && label.trim() ? label : undefined;
+       },
+-      async call(request, signal) {
+-        if (redirected) return redirected.call(request, signal);
++      async call(request, signal, execution) {
++        if (redirected) return redirected.call(request, signal, execution);
+         canvasSignal.throwIfAborted();
+         id = options.getCanvasBinding().id;
+         const changesCanvas = request.name === "addCanvas" || request.name === "switchCanvas" || request.name === "renameCanvas";
+@@ -79,7 +80,7 @@ export function useCanvasTools(options: {
+           return await Promise.race([
+             Promise.resolve().then(async () => {
+               canvasSignal.throwIfAborted();
+-              let result = await execute(request, callSignal, id);
++              let result = await execute(request, callSignal, id, execution);
+               callSignal.throwIfAborted();
+               if (changesCanvas) {
+                 const nextContext = options.resolveCanvasContext?.(String(result));
+@@ -111,7 +112,7 @@ export function useCanvasTools(options: {
+       };
+   };
+ 
+-  async function execute(request: CanvasToolCall, signal: AbortSignal, canvasId: string): Promise<unknown> {
++  async function execute(request: CanvasToolCall, signal: AbortSignal, canvasId: string, execution?: NodeExecutionContext): Promise<unknown> {
+     signal.throwIfAborted();
+     if (!canvasId && !["getCanvas", "addCanvas", "switchCanvas"].includes(request.name)) throw new Error("请先选择画布");
+     if (isCanvasRead(request.name)) {
+@@ -252,7 +253,7 @@ export function useCanvasTools(options: {
+       }
+       case "nodeTools": {
+         const args = canvasSchemas.nodeTools.parse(request.args);
+-        return getNodeTools().call(args, signal);
++        return getNodeTools().call(args, signal, execution);
+       }
+       default: throw new Error(`未知画布操作：${request.name}`);
+     }
 diff --git a/apps/web/src/pages/workspace/panels/document/index.vue b/apps/web/src/pages/workspace/panels/document/index.vue
 index b9f4130..b5f44f2 100644
 --- a/apps/web/src/pages/workspace/panels/document/index.vue
@@ -5089,17 +5195,20 @@ index 0000000..250f27e
 + return {top,bottom};
 +}
 diff --git a/packages/nodeScaffold/src/nodeAi.ts b/packages/nodeScaffold/src/nodeAi.ts
-index 63e67ee..4184bb3 100644
+index 63e67ee..56d0440 100644
 --- a/packages/nodeScaffold/src/nodeAi.ts
 +++ b/packages/nodeScaffold/src/nodeAi.ts
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,8 @@
 -import { onScopeDispose } from "vue";
++import type { GenerationExecution } from "./nodeGeneration";
++export { createGenerationHandoff, waitForGenerationPreparation } from "./nodeGeneration";
++export type { GenerationExecution } from "./nodeGeneration";
 +import { nextTick, onScopeDispose } from "vue";
 +import { useVueFlow } from "@vue-flow/core";
  import { runAgentLoop, type AgentTool, type AgentToolResult } from "@earendil-works/pi-agent-core";
  import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Message, type Model } from "@earendil-works/pi-ai";
  import { EventSourceParserStream } from "eventsource-parser/stream";
-@@ -16,6 +17,9 @@ export type NodeAiModel = {
+@@ -16,6 +20,9 @@ export type NodeAiModel = {
  };
  export type NodeMediaModel = Omit<MediaModel, "mode"> & {
    mode?: (string | string[])[];
@@ -5109,7 +5218,7 @@ index 63e67ee..4184bb3 100644
  };
  export type NodeImageRequest = {
    directory: string;
-@@ -26,10 +30,31 @@ export type NodeImageRequest = {
+@@ -26,10 +33,32 @@ export type NodeImageRequest = {
    images?: { path: string; mimeType: string }[];
    ratio?: string;
    size?: string;
@@ -5128,6 +5237,7 @@ index 63e67ee..4184bb3 100644
 +  prompt: string;
 +  params: Record<string, unknown>;
 +  context?: Record<string, unknown>;
++  flowOperation?: import("@toonflow/tools-scaffold/runtime").SeecutFlowGeneration;
 +  status: "prepared" | "submitting" | "running" | "completed" | "failed" | "unknown";
 +  createdAt: string;
 +  updatedAt: string;
@@ -5141,7 +5251,7 @@ index 63e67ee..4184bb3 100644
  export type NodeMediaPriceRequest = (NodeImageRequest & { mediaType: "image" }) | (NodeVideoRequest & { mediaType: "video" }) | (NodeAudioRequest & { mediaType: "audio" });
  export type NodeMediaPrice = { price: string; tips: string };
  export type NodeAudioRequest = Pick<MediaGenerationRequest, "providerId" | "modelId" | "prompt" | "images" | "audios" | "voice" | "speed" | "volume" | "pitch" | "language" | "format" | "sampleRate"> & { directory: string; outputDirectory: string };
-@@ -61,7 +86,11 @@ export type NodeAiTool = {
+@@ -61,7 +90,11 @@ export type NodeAiTool = {
  
  async function readResult<T>(response: Response): Promise<T> {
    const result = await response.json();
@@ -5154,7 +5264,7 @@ index 63e67ee..4184bb3 100644
    return result.data;
  }
  
-@@ -69,6 +98,9 @@ async function readResult<T>(response: Response): Promise<T> {
+@@ -69,6 +102,9 @@ async function readResult<T>(response: Response): Promise<T> {
  const modelCacheKey = Symbol.for("toonflow.nodeModels");
  const modelCacheHost = globalThis as typeof globalThis & { [modelCacheKey]?: Map<string, Promise<unknown[]>> };
  const modelCache = modelCacheHost[modelCacheKey] ??= new Map<string, Promise<unknown[]>>();
@@ -5164,7 +5274,7 @@ index 63e67ee..4184bb3 100644
  
  type MediaPriceCache = {
    prices: Map<string, { expires: number; value: Promise<NodeMediaPrice | null> }>;
-@@ -90,16 +122,24 @@ const mediaPriceCache = mediaPriceCacheHost[mediaPriceCacheKey] ??= (() => {
+@@ -90,16 +126,24 @@ const mediaPriceCache = mediaPriceCacheHost[mediaPriceCacheKey] ??= (() => {
  })();
  
  export function invalidateNodeModels(type: "language" | "media") {
@@ -5191,7 +5301,7 @@ index 63e67ee..4184bb3 100644
        throw error;
      });
      pending = request;
-@@ -168,6 +208,7 @@ async function requestModel(input: NodeAiRequest, context: Context, model: Model
+@@ -168,6 +212,7 @@ async function requestModel(input: NodeAiRequest, context: Context, model: Model
  }
  
  export function useNodeAi() {
@@ -5199,7 +5309,7 @@ index 63e67ee..4184bb3 100644
    const controller = new AbortController();
    onScopeDispose(() => controller.abort());
    const requestSignal = (signal?: AbortSignal) => signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-@@ -176,8 +217,15 @@ export function useNodeAi() {
+@@ -176,8 +221,15 @@ export function useNodeAi() {
      return readModels<NodeAiModel>("/api/ai/models", requestSignal(signal));
    }
  
@@ -5217,31 +5327,47 @@ index 63e67ee..4184bb3 100644
    }
  
    async function getMediaPrice(input: NodeMediaPriceRequest, signal?: AbortSignal): Promise<NodeMediaPrice | null> {
-@@ -247,13 +295,143 @@ export function useNodeAi() {
+@@ -247,21 +299,178 @@ export function useNodeAi() {
      }
    }
  
+-  async function generateMedia<T extends "image" | "video" | "audio">(mediaType: T, input: NodeImageRequest | NodeVideoRequest | NodeAudioRequest, signal?: AbortSignal) {
+-    return readResult<{ path: string; mimeType: string; mediaType: T }[]>(await fetch("/api/ai/media/generate", {
+-      method: "POST",
+-      headers: { "Content-Type": "application/json", "x-toonflow-workspace": "1" },
+-      body: JSON.stringify({ ...input, mediaType }),
+-      signal: requestSignal(signal),
+-    }));
 +  function recordData(outputDirectory: string, nodeId?: string) {
 +    const match = /^assets\/([a-zA-Z0-9_-]{1,128})$/.exec(outputDirectory);
 +    const node = flow.findNode(nodeId ?? match?.[1] ?? "")
 +      ?? flow.getNodes.value.find(item => (item.data?.seecutGeneration as NodeGenerationRecord | undefined)?.outputDirectory === outputDirectory);
 +    return node?.data as { seecutGeneration?: NodeGenerationRecord; seecutGenerationHistory?: NodeGenerationRecord[] } | undefined;
 +  }
-+  function getMediaGeneration(outputDirectory: string) { return recordData(outputDirectory)?.seecutGeneration; }
++  function getMediaGeneration(outputDirectory: string, clientRequestId?: string) {
++    const data=recordData(outputDirectory);
++    if(!clientRequestId)return data?.seecutGeneration;
++    const history=(data?.seecutGenerationHistory??[]).filter(record=>record.clientRequestId===clientRequestId);
++    if(history.length>1)throw Error("原任务记录身份重复");
++    return data?.seecutGeneration?.clientRequestId===clientRequestId?data.seecutGeneration:history[0];
++  }
 +  function getMediaGenerationHistory(outputDirectory: string) { return recordData(outputDirectory)?.seecutGenerationHistory ?? []; }
-+  function updateMediaGeneration(outputDirectory: string, patch: Partial<NodeGenerationRecord>) {
-+    const current = getMediaGeneration(outputDirectory);
++  function updateMediaGeneration(outputDirectory: string, patch: Partial<NodeGenerationRecord>, clientRequestId?:string, expectedData?:ReturnType<typeof recordData>) {
++    if(expectedData&&recordData(outputDirectory)!==expectedData)throw Error("原任务所属节点已变化，未回写旧记录");
++    const current = getMediaGeneration(outputDirectory,clientRequestId);
 +    if (!current) return;
 +    Object.assign(current, patch, { updatedAt: patch.updatedAt ?? new Date().toISOString() });
 +    for (const historical of getMediaGenerationHistory(outputDirectory)) {
 +      if (historical.clientRequestId === current.clientRequestId && historical !== current) Object.assign(historical, current);
 +    }
 +  }
-+  async function persistCanvas() {
++  async function persistCanvas(assertCurrent?:()=>Promise<void>) {
 +    await nextTick();
++    await assertCurrent?.();
 +    const flush = (flow as unknown as Record<symbol, unknown>)[Symbol.for("toonflow.canvas.flush")];
 +    if (typeof flush !== "function") throw new Error("画布尚未提供可靠保存能力，本次生成未提交");
 +    await (flush as () => Promise<void>)();
++    await assertCurrent?.();
 +  }
 +  function validateGenerationResults(results: unknown, mediaType: "image" | "video"): (NodeImageResult | NodeVideoResult)[] {
 +    if (!Array.isArray(results) || !results.length || results.some(item => !item || item.mediaType !== mediaType || typeof item.path !== "string" || !item.path.trim() || typeof item.mimeType !== "string" || !item.mimeType.startsWith(`${mediaType}/`))) {
@@ -5249,8 +5375,11 @@ index 63e67ee..4184bb3 100644
 +    }
 +    return results;
 +  }
-+  async function recoverRecordedMedia(mediaType: "image" | "video", directory: string, outputDirectory: string, signal?: AbortSignal, once = false) {
-+    const current = getMediaGeneration(outputDirectory);
++  async function recoverRecordedMedia(mediaType: "image" | "video", directory: string, outputDirectory: string, signal?: AbortSignal, once = false, clientRequestId?:string, execution?:GenerationExecution) {
++    const data=recordData(outputDirectory),current = getMediaGeneration(outputDirectory,clientRequestId);
++    if(execution?.generation&&(current?.clientRequestId!==execution.generation.clientRequestId||Object.entries(execution.generation).some(([key,value])=>(current?.flowOperation as any)?.[key]!==value)))throw Error("原任务与冻结操作不匹配");
++    const assertCurrent=async()=>{await execution?.assertCurrent?.();if(recordData(outputDirectory)!==data||getMediaGeneration(outputDirectory,clientRequestId)!==current)throw Error("原任务所属节点已变化，未回写旧结果");};
++    await assertCurrent();
 +    if (!current || current.providerId !== "seecut" || current.mediaType !== mediaType || typeof current.clientRequestId !== "string" || !current.clientRequestId) throw new Error("未找到此节点的 SeeCut 生成记录");
 +    const waitingSignal = requestSignal(signal);
 +    while (true) {
@@ -5260,16 +5389,17 @@ index 63e67ee..4184bb3 100644
 +      if (saved.clientRequestId !== current.clientRequestId || saved.outputDirectory !== current.outputDirectory || saved.mediaType !== mediaType
 +        || !["prepared", "submitting", "running", "completed", "failed", "unknown"].includes(saved.status)) throw new Error("原任务记录与当前节点不匹配");
 +      waitingSignal.throwIfAborted();
-+      if (getMediaGeneration(outputDirectory) !== current) throw new Error("原任务所属节点已变化，未回写旧结果");
-+      updateMediaGeneration(outputDirectory, { status: saved.status, updatedAt: saved.updatedAt, error: saved.error, capturedCredits: saved.capturedCredits ?? current.capturedCredits ?? 0, results: saved.results, dispatched: saved.dispatched, readyToSubmit: saved.readyToSubmit });
++      await execution?.assertCurrent?.();
++      if(recordData(outputDirectory)!==data||getMediaGeneration(outputDirectory,clientRequestId)?.clientRequestId!==current.clientRequestId)throw new Error("原任务所属节点已变化，未回写旧结果");
++      updateMediaGeneration(outputDirectory, { status: saved.status, updatedAt: saved.updatedAt, error: saved.error, capturedCredits: saved.capturedCredits ?? current.capturedCredits ?? 0, results: saved.results, dispatched: saved.dispatched, readyToSubmit: saved.readyToSubmit },current.clientRequestId,data);
 +      if (saved.status === "completed") {
 +        try {
 +          const results = validateGenerationResults(saved.results, mediaType);
-+          await persistCanvas();
++          await persistCanvas(assertCurrent);
 +          return results;
-+        } catch (error) { updateMediaGeneration(outputDirectory, { status: "unknown", error: error instanceof Error ? error.message : "原任务结果保存失败" }); throw error; }
++        } catch (error) { updateMediaGeneration(outputDirectory, { status: "unknown", error: error instanceof Error ? error.message : "原任务结果保存失败" },current.clientRequestId,data); throw error; }
 +      }
-+      await persistCanvas();
++      await persistCanvas(assertCurrent);
 +      if (once) return [];
 +      if (saved.status === "prepared") throw new Error(saved.readyToSubmit === true && saved.dispatched === false
 +        ? "原任务已按原报价准备，尚未提交；可明确选择继续提交原任务"
@@ -5308,19 +5438,18 @@ index 63e67ee..4184bb3 100644
 +    }
 +    return recoverRecordedMedia(mediaType, directory, outputDirectory, signal);
 +  }
-   async function generateMedia<T extends "image" | "video" | "audio">(mediaType: T, input: NodeImageRequest | NodeVideoRequest | NodeAudioRequest, signal?: AbortSignal) {
--    return readResult<{ path: string; mimeType: string; mediaType: T }[]>(await fetch("/api/ai/media/generate", {
--      method: "POST",
--      headers: { "Content-Type": "application/json", "x-toonflow-workspace": "1" },
--      body: JSON.stringify({ ...input, mediaType }),
--      signal: requestSignal(signal),
--    }));
++  async function generateMedia<T extends "image" | "video" | "audio">(mediaType: T, input: NodeImageRequest | NodeVideoRequest | NodeAudioRequest, signal?: AbortSignal, execution?:GenerationExecution) {
 +    const waitingSignal = requestSignal(signal);
 +    waitingSignal.throwIfAborted();
 +    const { generationNodeId, generationContext, ...request } = input as typeof input & { generationNodeId?: string; generationContext?: Record<string, unknown> };
 +    let recorded: NodeGenerationRecord | undefined;
++    let data: ReturnType<typeof recordData>;
++    const ensureCurrent=async(checkSignal=true)=>{if(checkSignal)waitingSignal.throwIfAborted();else controller.signal.throwIfAborted();await execution?.assertCurrent?.();if(data&&recordData(input.outputDirectory,generationNodeId)!==data)throw Error("原任务所属节点已变化");};
++    const update=async(patch:Partial<NodeGenerationRecord>)=>{await ensureCurrent(false);updateMediaGeneration(input.outputDirectory,patch,recorded?.clientRequestId,data);};
++    await ensureCurrent();
++    if(execution?.generation&&(execution.generation.mediaType!==mediaType||execution.generation.nodeId!==(generationNodeId??/^assets\/([a-zA-Z0-9_-]{1,128})$/.exec(input.outputDirectory)?.[1])||input.providerId!=="seecut"))throw Error("FLOW_GENERATION_CONTEXT_MISMATCH");
 +    if (input.providerId === "seecut" && mediaType !== "audio") {
-+      const data = recordData(input.outputDirectory, generationNodeId);
++      data = recordData(input.outputDirectory, generationNodeId);
 +      if (!data) throw new Error("找不到当前节点，本次生成未提交");
 +      const previous = data.seecutGeneration;
 +      if (previous && !["completed", "failed"].includes(previous.status)) throw new Error("此节点已有未确认任务，请先查询原任务，避免重复生成");
@@ -5329,29 +5458,38 @@ index 63e67ee..4184bb3 100644
 +        if (key in request) params[key] = (request as unknown as Record<string, unknown>)[key];
 +      }
 +      const now = new Date().toISOString();
-+      recorded = { clientRequestId: crypto.randomUUID(), mediaType: mediaType as "image" | "video", outputDirectory: input.outputDirectory,
++      recorded = { clientRequestId: execution?.generation?.clientRequestId ?? crypto.randomUUID(), mediaType: mediaType as "image" | "video", outputDirectory: input.outputDirectory,
 +        providerId: input.providerId, modelId: input.modelId, prompt: input.prompt, params,
++        ...(execution?.generation ? {flowOperation:{...execution.generation}} : {}),
 +        ...(generationContext ? { context: JSON.parse(JSON.stringify(generationContext)) } : {}), status: "prepared", capturedCredits: 0, createdAt: now, updatedAt: now };
 +      data.seecutGeneration = recorded;
 +      data.seecutGenerationHistory = [...(data.seecutGenerationHistory ?? []), recorded];
-+      try { await persistCanvas(); waitingSignal.throwIfAborted(); }
-+      catch (error) { updateMediaGeneration(input.outputDirectory, { status: "failed", error: "生成前保存未完成，本次生成未提交" }); throw error; }
-+      updateMediaGeneration(input.outputDirectory, { status: "submitting", error: undefined });
++      try { await persistCanvas(()=>ensureCurrent(false));await ensureCurrent();await execution?.onRecorded?.(recorded);waitingSignal.throwIfAborted(); }
++      catch (error) {
++        // This boundary is before the only POST. Keep an explicit failed record
++        // when its original node/scope still exists; never modify a replacement.
++        try{await update({status:"failed",error:"生成准备未完成，本次生成未提交"});await persistCanvas(()=>ensureCurrent(false));}catch{/* original identity remains reserved for recovery */}
++        throw error;
++      }
 +    }
++    let postStarted=false;
 +    let results: { path: string; mimeType: string; mediaType: T }[];
 +    try {
++      waitingSignal.throwIfAborted();
++      if(recorded)await update({ status: "submitting", error: undefined });
++      waitingSignal.throwIfAborted();postStarted=true;
 +      results = await readResult<typeof results>(await fetch("/api/ai/media/generate", {
 +        method: "POST", headers: { "Content-Type": "application/json", "x-toonflow-workspace": "1" },
-+        body: JSON.stringify({ ...request, mediaType, ...(recorded ? { clientRequestId: recorded.clientRequestId } : {}) }), signal: waitingSignal,
++        body: JSON.stringify({ ...request, ...(execution?.generation?{graphId:execution.generation.canvasId,nodeId:execution.generation.nodeId}:{}),mediaType, ...(recorded ? { clientRequestId: recorded.clientRequestId } : {}) }), signal: waitingSignal,
 +      }));
 +      if (recorded) validateGenerationResults(results, recorded.mediaType);
 +    } catch (error) {
 +      if (recorded) {
-+        const confirmed = !waitingSignal.aborted && (error as { notSubmitted?: boolean }).notSubmitted === true
++        const confirmed = !postStarted || !waitingSignal.aborted && (error as { notSubmitted?: boolean }).notSubmitted === true
 +          && (error as { clientRequestId?: string }).clientRequestId === recorded.clientRequestId;
 +        const message = confirmed && error instanceof Error ? error.message : "已停止等待或请求结果未确认，请查询原任务；不会自动重新提交";
-+        updateMediaGeneration(input.outputDirectory, { status: confirmed ? "failed" : "unknown", error: message });
-+        try { await persistCanvas(); }
++        await update({ status: confirmed ? "failed" : "unknown", error: message });
++        try { await persistCanvas(()=>ensureCurrent(false)); }
 +        catch (saveError) { throw new Error(`${message}。本地记录保存失败：${saveError instanceof Error ? saveError.message : "保存失败"}`); }
 +        if (waitingSignal.aborted) throw new Error(message);
 +      }
@@ -5359,21 +5497,73 @@ index 63e67ee..4184bb3 100644
 +    }
 +    if (recorded) {
 +      const total = (results[0] as unknown as { capturedCredits?: number })?.capturedCredits;
-+      updateMediaGeneration(input.outputDirectory, { capturedCredits: Number.isSafeInteger(total) && Number(total) >= 0 ? total : recorded.capturedCredits ?? 0, status: "completed", results: results as (NodeImageResult | NodeVideoResult)[], error: undefined });
-+      try { await persistCanvas(); }
-+      catch (error) { updateMediaGeneration(input.outputDirectory, { status: "unknown", error: "原任务已完成，本地记录保存失败，请查询原任务" }); throw error; }
++      await update({ capturedCredits: Number.isSafeInteger(total) && Number(total) >= 0 ? total : recorded.capturedCredits ?? 0, status: "completed", results: results as (NodeImageResult | NodeVideoResult)[], error: undefined });
++      try { await persistCanvas(()=>ensureCurrent(false)); }
++      catch (error) { await update({ status: "unknown", error: "原任务已完成，本地记录保存失败，请查询原任务" }); throw error; }
 +    }
 +    return results;
    }
  
-   function generateImage(input: NodeImageRequest, signal?: AbortSignal) {
-@@ -318,5 +496,5 @@ export function useNodeAi() {
+-  function generateImage(input: NodeImageRequest, signal?: AbortSignal) {
+-    return generateMedia("image", input, signal);
++  function generateImage(input: NodeImageRequest, signal?: AbortSignal, execution?:GenerationExecution) {
++    return generateMedia("image", input, signal, execution);
+   }
+ 
+-  function generateVideo(input: NodeVideoRequest, signal?: AbortSignal) {
+-    return generateMedia("video", input, signal);
++  function generateVideo(input: NodeVideoRequest, signal?: AbortSignal, execution?:GenerationExecution) {
++    return generateMedia("video", input, signal, execution);
+   }
+ 
+   function generateAudio(input: NodeAudioRequest, signal?: AbortSignal) {
+@@ -318,5 +527,5 @@ export function useNodeAi() {
      return { text, ...(reasoning ? { reasoning } : {}) };
    }
  
 -  return { getModels, getMediaModels, getMediaPrice, generateImage, generateVideo, generateAudio, generate };
 +  return { getModels, getMediaModels, getMediaPrice, generateImage, generateVideo, generateAudio, generate, getMediaGeneration, getMediaGenerationHistory, recoverRecordedMedia, resumeRecordedMedia };
  }
+diff --git a/packages/nodeScaffold/src/nodeGeneration.ts b/packages/nodeScaffold/src/nodeGeneration.ts
+new file mode 100644
+index 0000000..528b669
+--- /dev/null
++++ b/packages/nodeScaffold/src/nodeGeneration.ts
+@@ -0,0 +1,34 @@
++import type { NodeExecutionContext, SeecutFlowGeneration } from '@toonflow/tools-scaffold/runtime';
++
++export type GenerationExecution = NodeExecutionContext & {
++  onRecorded?(record: {clientRequestId:string;mediaType:string;outputDirectory:string}): Promise<void>;
++};
++export type GenerationAcknowledgement = {status:'recorded'|'notSubmitted';generation:SeecutFlowGeneration & {stage:'recorded'|'notSubmitted'};error?:string};
++
++// A stalled workspace read must not keep the node busy after its preparation
++// was cancelled. A late read result cannot enter the generation continuation.
++export function waitForGenerationPreparation<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
++  signal.throwIfAborted();
++  return new Promise((resolve,reject)=>{
++    const cancel=()=>{signal.removeEventListener('abort',cancel);reject(signal.reason);};
++    signal.addEventListener('abort',cancel,{once:true});
++    promise.then(value=>{signal.removeEventListener('abort',cancel);signal.aborted?reject(signal.reason):resolve(value);},error=>{signal.removeEventListener('abort',cancel);reject(error);});
++  });
++}
++
++export function createGenerationHandoff(context: NodeExecutionContext | undefined,nodeId:string,mediaType:'image'|'video',signal?:AbortSignal) {
++  const ref=context?.generation;
++  if(ref&&(ref.version!==1||ref.nodeId!==nodeId||ref.mediaType!==mediaType||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ref.clientRequestId)))throw Error('FLOW_GENERATION_CONTEXT_MISMATCH');
++  let state:'waiting'|'recorded'|'notSubmitted'='waiting';
++  let settle:(value:GenerationAcknowledgement)=>void=()=>{};
++  const acknowledgement=ref?new Promise<GenerationAcknowledgement>(resolve=>{settle=resolve;}):undefined;
++  const execution:GenerationExecution|undefined=ref?{...context,generation:{...ref},async onRecorded(record){
++    if(state!=='waiting')throw Error('FLOW_GENERATION_PREPARATION_CLOSED');
++    signal?.throwIfAborted();await context?.assertCurrent?.();signal?.throwIfAborted();
++    if(record.clientRequestId!==ref.clientRequestId||record.mediaType!==ref.mediaType||!record.outputDirectory)throw Error('FLOW_GENERATION_CONTEXT_MISMATCH');
++    state='recorded';settle({status:'recorded',generation:{...ref,stage:'recorded'}});
++  }}:undefined;
++  return {execution,acknowledgement,fail(error:unknown){
++    if(ref&&state==='waiting'){state='notSubmitted';settle({status:'notSubmitted',generation:{...ref,stage:'notSubmitted'},error:error instanceof Error?error.message:String(error)});}
++  }};
++}
 diff --git a/packages/nodeScaffold/src/nodeSkeleton.vue b/packages/nodeScaffold/src/nodeSkeleton.vue
 index 3bb727f..bade74a 100644
 --- a/packages/nodeScaffold/src/nodeSkeleton.vue
@@ -5546,6 +5736,48 @@ index 3bb727f..bade74a 100644
 +.seecutMoreActions>div{display:flex;flex-wrap:wrap;gap:4px;padding:6px;max-height:170px;overflow:auto;}
 +.seecutMoreActions :deep(.el-button:disabled){display:none;}
 +</style>
+diff --git a/packages/nodeScaffold/src/nodeTools.ts b/packages/nodeScaffold/src/nodeTools.ts
+index 35684b9..331a6cd 100644
+--- a/packages/nodeScaffold/src/nodeTools.ts
++++ b/packages/nodeScaffold/src/nodeTools.ts
+@@ -1,16 +1,16 @@
+ import { getCurrentScope, onScopeDispose } from "vue";
+ import { z } from "zod";
+ import { useNodeId, useVueFlow } from "@vue-flow/core";
+-import type { NodeToolInfo, NodeToolsContext } from "@toonflow/tools-scaffold/runtime";
++import type { NodeToolInfo, NodeToolsContext, NodeExecutionContext } from "@toonflow/tools-scaffold/runtime";
+ 
+ export { z };
+-export type { NodeToolCall, NodeToolInfo, NodeToolsContext } from "@toonflow/tools-scaffold/runtime";
++export type { NodeToolCall, NodeToolInfo, NodeToolsContext, NodeExecutionContext } from "@toonflow/tools-scaffold/runtime";
+ 
+ export interface NodeToolDefinition<Schema extends z.ZodType = z.ZodType> {
+   name: string;
+   description: string;
+   parameters: Schema;
+-  execute(args: z.output<Schema>, context: { signal?: AbortSignal }): unknown | Promise<unknown>;
++  execute(args: z.output<Schema>, context: { signal?: AbortSignal; execution?: NodeExecutionContext }): unknown | Promise<unknown>;
+ }
+ 
+ type RegisteredNodeTool = NodeToolInfo & Pick<NodeToolDefinition, "execute">;
+@@ -125,7 +125,7 @@ export function useNodeToolsContext() {
+     get tools() { return [...list([...index.nodes.keys()])]; },
+     get version() { return index.version; },
+     list,
+-    async call({ nodeId, name, args }, signal) {
++    async call({ nodeId, name, args }, signal, execution) {
+       const timeout = AbortSignal.timeout(120000);
+       const callSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+       callSignal.throwIfAborted();
+@@ -139,7 +139,7 @@ export function useNodeToolsContext() {
+           Promise.resolve().then(() => {
+             callSignal.throwIfAborted();
+             if (registry.get(key) !== entry || !flow.findNode(nodeId)) throw new Error("节点函数已卸载或不属于本轮画布");
+-            return entry.execute(args, { signal: callSignal });
++            return entry.execute(args, { signal: callSignal, execution });
+           }),
+           new Promise<never>((_resolve, reject) => {
+             cancel = () => reject(callSignal.reason);
 diff --git a/packages/nodeShared/src/components/promptInput.vue b/packages/nodeShared/src/components/promptInput.vue
 index 03a5b56..b66c941 100644
 --- a/packages/nodeShared/src/components/promptInput.vue
@@ -5774,7 +6006,7 @@ index c45117f..4b5792c 100644
      if (busy.value) {
        modelsRefreshPending = true;
 diff --git a/packages/nodes/imageGenerationNode/src/index.vue b/packages/nodes/imageGenerationNode/src/index.vue
-index 88a4df3..b10b623 100644
+index 88a4df3..d07e9dd 100644
 --- a/packages/nodes/imageGenerationNode/src/index.vue
 +++ b/packages/nodes/imageGenerationNode/src/index.vue
 @@ -46,26 +46,37 @@
@@ -5871,7 +6103,7 @@ index 88a4df3..b10b623 100644
  import { ElButton, ElCard, ElSelect, ElOption, ElOptionGroup, ElLoading, ElImageViewer } from "element-plus";
  import { IconCheck, IconPhotoAi, IconSparkles, IconArrowUp, IconPlayerStop, IconTransfer, IconLayoutGrid, IconBrush, IconPencil, IconSun, IconCameraRotate, IconPanoramaHorizontal, IconChevronDown } from "@tabler/icons-vue";
 -import { nodeSkeleton, nodeTools, useNode, z, type NodeMediaModel, type NodeImageRequest, type NodeHandle } from "@toonflow/nodes-scaffold/runtime";
-+import { nodeSkeleton, nodeTools, useNode, z, generationStatusText, type NodeMediaModel, type NodeImageRequest, type NodeHandle } from "@toonflow/nodes-scaffold/runtime";
++import { nodeSkeleton, nodeTools, useNode, z, generationStatusText, createGenerationHandoff, waitForGenerationPreparation, type NodeExecutionContext, type NodeMediaModel, type NodeImageRequest, type NodeHandle } from "@toonflow/nodes-scaffold/runtime";
  import { groupNodeModels } from "@toonflow/node-shared/groupNodeModels";
  import { showNodeError } from "@toonflow/node-shared/showNodeError";
  import { useNodeGeneration } from "@toonflow/node-shared/useNodeGeneration";
@@ -5990,25 +6222,52 @@ index 88a4df3..b10b623 100644
      if (disposed || generating.value || deleting.value) return;
      models.value = items.filter((item) => item.type === "image");
      // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
-@@ -317,6 +407,8 @@ async function confirmInpaint() {
+@@ -316,7 +406,9 @@ async function confirmInpaint() {
+   await inpaintEditor.createInpaint({ prompt, images }, new AbortController().signal);
  }
  
- async function startGeneration() {
+-async function startGeneration() {
++async function startGeneration(context?:NodeExecutionContext,handoff=createGenerationHandoff(context,id,"image"),preparationSignal?:AbortSignal) {
 +  if (promptRewriting.value) throw new Error("请等待提示词应用完成");
 +  if (generationBlocked.value) throw new Error("此节点已有未确认任务，请先查询原任务，避免重复生成");
    const input = generationInput.value;
    if (generating.value) throw new Error("图片正在生成，请等待完成");
    if (panorama.value?.visible) throw new Error("请先关闭全景图，再启动图片生成");
-@@ -334,7 +426,7 @@ async function startGeneration() {
+@@ -334,24 +426,26 @@ async function startGeneration() {
    const controller = new AbortController();
    const inpaintData = data.value.inpaint;
    generationController = controller;
 -  // ACT: 工具立即返回，任务由节点持有，停止或卸载时取消。
-+  // ACT: 工具立即返回；SeeCut 节点停止或卸载只结束等待，原任务通过持久 requestId 查询。
-   generation = generationState.run(() => workspace.list()
+-  generation = generationState.run(() => workspace.list()
++  // Manual UI returns immediately; Flow waits until its original UUID record is saved.
++  generation = generationState.run(() => waitForGenerationPreparation(workspace.list(),context ? AbortSignal.any([controller.signal,...(preparationSignal?[preparationSignal]:[])]) : controller.signal)
      .then(({ directory }) => {
        controller.signal.throwIfAborted();
-@@ -404,11 +496,21 @@ function startEditor(mode: "inpaint" | "mark") {
+       return inpaintData
+-        ? generateInpaint({ ...input, directory }, inpaintData, controller.signal)
+-        : ai.generateImage({ ...input, directory }, controller.signal);
++        ? generateInpaint({ ...input, directory }, inpaintData, controller.signal,undefined,handoff.execution)
++        : ai.generateImage({ ...input, directory }, controller.signal,handoff.execution);
+     })
+-    .then(([result]) => {
++    .then(async ([result]) => {
+       controller.signal.throwIfAborted();
++      await handoff.execution?.assertCurrent?.();
++      if (handoff.execution?.generation && ai.getMediaGeneration(`assets/${id}`)?.clientRequestId !== handoff.execution.generation.clientRequestId) throw Error("原任务所属节点已变化，未回写旧输出");
+       if (!result) throw new Error("供应商未返回图片");
+       outputs.value.image = { dataType: "IMAGE", value: { url: result.path, mimeType: result.mimeType } };
+     }))
+-    .catch((error) => showNodeError(error, "图片生成失败"))
++    .catch((error) => {handoff.fail(error);showNodeError(error, "图片生成失败");})
+     .finally(() => {
+       generationController = undefined;
+     });
+-  return { status: "generating" };
++  return handoff.acknowledgement ?? { status: "generating" };
+ }
+ 
+ nodeEvent.on("save", (reason) => {
+@@ -404,11 +498,32 @@ function startEditor(mode: "inpaint" | "mark") {
    editor.value?.start(mode);
  }
  
@@ -6016,7 +6275,18 @@ index 88a4df3..b10b623 100644
 +  name: "getRecordedGeneration",
 +  description: "读取此节点持久化的原生成任务、状态、实际积分、结果和历史。按原请求查询并保存最新状态与结果，不提交或继续任务；生成中请稍后查询，不能重试生成。",
 +  parameters: z.strictObject({}),
-+  async execute() {
++  async execute(_args,{signal,execution}) {
++    if(execution?.generation){
++      const ref=execution.generation;
++      if(ref.nodeId!==id||ref.mediaType!=="image")throw Error("FLOW_GENERATION_CONTEXT_MISMATCH");
++      await execution.assertCurrent?.();
++      const record=ai.getMediaGeneration(`assets/${id}`,ref.clientRequestId);
++      if(!record)return {generation:{...ref,stage:"reserved"},found:false,record:null};
++      const {directory}=await files.getWorkspaceFiles().list();signal?.throwIfAborted();
++      await ai.recoverRecordedMedia("image",directory,`assets/${id}`,signal,true,ref.clientRequestId,execution);
++      await execution.assertCurrent?.();signal?.throwIfAborted();
++      return {generation:{...ref,stage:"recorded"},found:true,record:ai.getMediaGeneration(`assets/${id}`,ref.clientRequestId)};
++    }
 +    if (savedGeneration.value?.providerId === "seecut") await recoverSavedGeneration(false, true);
 +    return { running: generating.value, record: savedGeneration.value ?? null, history: generationRecords.value, outputs: outputs.value };
 +  },
@@ -6031,7 +6301,7 @@ index 88a4df3..b10b623 100644
        size: data.value.size,
        ratio: data.value.ratio,
      },
-@@ -444,13 +546,13 @@ nodeTools.register({
+@@ -444,13 +559,13 @@ nodeTools.register({
      signal?.throwIfAborted();
      if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
      const choice = args.modelId === undefined ? selectedModel.value
@@ -6048,7 +6318,21 @@ index 88a4df3..b10b623 100644
      if (args.size !== undefined) data.value.size = args.size;
      if (args.ratio !== undefined) data.value.ratio = args.ratio;
      return getConfig();
-@@ -556,4 +658,13 @@ nodeTools.register({
+@@ -473,9 +588,11 @@ nodeTools.register({
+   name: "generateImage",
+   description: "启动此节点的后台普通图片生成，使用普通生成提示词、模型、分辨率、比例和参考图片；局部重绘模式下须先退出；立即返回已开始，用 getGenerationStatus 查询完成结果，cancelGeneration 停止生成",
+   parameters: z.strictObject({}),
+-  execute(_args, { signal }) {
++  async execute(_args, { signal,execution }) {
+     signal?.throwIfAborted();
+-    return startGeneration();
++    const handoff=createGenerationHandoff(execution,id,"image",signal);
++    try{return await startGeneration(execution,handoff,signal);}
++    catch(error){if(!handoff.acknowledgement)throw error;handoff.fail(error);return handoff.acknowledgement;}
+   },
+ });
+ </script>
+@@ -556,4 +673,13 @@ nodeTools.register({
      }
    }
  }
@@ -6139,20 +6423,50 @@ index 3a3d741..fbcc036 100644
  
  async function generate() {
 diff --git a/packages/nodes/imageNode/src/imageInpaint.ts b/packages/nodes/imageNode/src/imageInpaint.ts
-index 511e06b..22073d6 100644
+index 511e06b..831221e 100644
 --- a/packages/nodes/imageNode/src/imageInpaint.ts
 +++ b/packages/nodes/imageNode/src/imageInpaint.ts
-@@ -25,7 +25,7 @@ export function useImageInpaint() {
+@@ -1,5 +1,5 @@
+ import { useNode, useVueFlow } from "@vue-flow/core";
+-import { uploadNodeFile, useNodeAi, useNodeFiles, type NodeImageRequest, type NodeImageResult } from "@toonflow/nodes-scaffold/runtime";
++import { uploadNodeFile, useNodeAi, useNodeFiles, type NodeImageRequest, type NodeImageResult, type GenerationExecution } from "@toonflow/nodes-scaffold/runtime";
+ import { showNodeError } from "@toonflow/node-shared/showNodeError";
+ 
+ export type ImageInpaint = { source: string; original: string; guide: string; mask: string; images: NonNullable<NodeImageRequest["images"]> };
+@@ -25,8 +25,9 @@ export function useImageInpaint() {
    const files = useNodeFiles();
    const ai = useNodeAi();
  
 -  return async function generateInpaint(input: NodeImageRequest, inpaint: ImageInpaint, signal: AbortSignal): Promise<NodeImageResult[]> {
-+  return async function generateInpaint(input: NodeImageRequest, inpaint: ImageInpaint, signal: AbortSignal, recoveredResult?: NodeImageResult): Promise<NodeImageResult[]> {
-     signal.throwIfAborted();
+-    signal.throwIfAborted();
++  return async function generateInpaint(input: NodeImageRequest, inpaint: ImageInpaint, signal: AbortSignal, recoveredResult?: NodeImageResult, execution?:GenerationExecution): Promise<NodeImageResult[]> {
++    const assertCurrent=async()=>{signal.throwIfAborted();await execution?.assertCurrent?.();if(findNode(id)!==node)throw Error("重绘节点已移除");};
++    await assertCurrent();
      if (!inpaint || ![inpaint.original, inpaint.guide, inpaint.mask].every(path => typeof path === "string" && path.trim())
        || !Array.isArray(inpaint.images) || inpaint.images.some(image => !image || typeof image.path !== "string" || !image.path.trim() || typeof image.mimeType !== "string" || !image.mimeType.startsWith("image/"))) {
-@@ -68,11 +68,12 @@ export function useImageInpaint() {
-       signal.throwIfAborted();
+       throw new Error("局部重绘素材无效，请重新创建重绘节点");
+@@ -41,13 +42,13 @@ export function useImageInpaint() {
+ 
+     async function readImage(path: string, mimeType = "image/png") {
+       const content = await workspace.read(path);
+-      signal.throwIfAborted();
++      await assertCurrent();
+       const image = new Image();
+       const url = URL.createObjectURL(new Blob([content], { type: mimeType }));
+       urls.push(url);
+       image.src = url;
+       await image.decode();
+-      signal.throwIfAborted();
++      await assertCurrent();
+       return image;
+     }
+ 
+@@ -65,15 +66,16 @@ export function useImageInpaint() {
+       context.drawImage(mask, 0, 0);
+       if (!context.getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 === 3 && value)) throw new Error("局部重绘蒙版为空，请重新涂抹区域");
+       const { directory } = await workspace.list();
+-      signal.throwIfAborted();
++      await assertCurrent();
        requested = true;
        // ACT: 供应商尚未统一支持原生 mask；使用涂色参考引导，再按本地蒙版合成，严格保留区域外像素。
 -      const [result] = await ai.generateImage(buildInpaintRequest({
@@ -6161,21 +6475,34 @@ index 511e06b..22073d6 100644
          directory,
          outputDirectory: `assets/${temporaryId}`,
 -      }, inpaint), signal);
+-      signal.throwIfAborted();
 +        ...(input.providerId === "seecut" ? { generationNodeId: id, generationContext: { inpaint } } : {}),
-+      }, inpaint), signal))[0];
-       signal.throwIfAborted();
++      }, inpaint), signal,execution))[0];
++      await assertCurrent();
        if (!result) throw new Error("供应商未返回图片");
        const generated = await readImage(result.path, result.mimeType);
-@@ -87,7 +88,7 @@ export function useImageInpaint() {
+       context.clearRect(0, 0, canvas.width, canvas.height);
+@@ -83,22 +85,23 @@ export function useImageInpaint() {
+       context.globalCompositeOperation = "destination-over";
+       context.drawImage(original, 0, 0);
+       const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error("图片编码失败")), "image/png"));
+-      signal.throwIfAborted();
++      await assertCurrent();
++      await assertCurrent();
        outputPath = await uploadNodeFile(workspace, id, new File([blob], "image.png", { type: "image/png" }));
-       signal.throwIfAborted();
+-      signal.throwIfAborted();
++      await assertCurrent();
        if (findNode(id) !== node) throw new Error("重绘节点已移除");
 -      await workspace.remove(`assets/${temporaryId}`, true).catch(error => {
 +      if (input.providerId !== "seecut") await workspace.remove(`assets/${temporaryId}`, true).catch(error => {
          if (error?.response?.data?.data?.code !== "ENOENT") showNodeError(error, "重绘临时文件清理失败");
        });
        requested = false;
-@@ -98,7 +99,7 @@ export function useImageInpaint() {
+-      signal.throwIfAborted();
++      await assertCurrent();
+       committed = true;
+       return [{ path: outputPath, mimeType: "image/png", mediaType: "image" }];
+     } finally {
        urls.forEach(url => URL.revokeObjectURL(url));
        canvas.width = canvas.height = 0;
        if (outputPath && !committed) await workspace.remove(outputPath).catch(error => showNodeError(error, "重绘临时文件清理失败"));
@@ -6185,7 +6512,7 @@ index 511e06b..22073d6 100644
        });
      }
 diff --git a/packages/nodes/videoGenerationNode/src/index.vue b/packages/nodes/videoGenerationNode/src/index.vue
-index 77a0535..71d8cf6 100644
+index 77a0535..e0972c2 100644
 --- a/packages/nodes/videoGenerationNode/src/index.vue
 +++ b/packages/nodes/videoGenerationNode/src/index.vue
 @@ -42,7 +42,18 @@
@@ -6269,7 +6596,7 @@ index 77a0535..71d8cf6 100644
  import { ElButton, ElCard, ElSelect, ElOption, ElOptionGroup, ElLoading, ElDropdown, ElDropdownMenu, ElDropdownItem } from "element-plus";
  import { IconCameraAi, IconSparkles, IconArrowUp, IconPlayerStop, IconTransfer, IconMusic, IconLayersSubtract, IconScissors, IconPhotoScan, IconPlayerSkipBack, IconPlayerSkipForward } from "@tabler/icons-vue";
 -import { nodeSkeleton, nodeTools, useNode, z, type NodeMediaModel, type NodeVideoRequest, type NodeHandle } from "@toonflow/nodes-scaffold/runtime";
-+import { nodeSkeleton, nodeTools, useNode, z, generationStatusText, type NodeMediaModel, type NodeVideoRequest, type NodeHandle } from "@toonflow/nodes-scaffold/runtime";
++import { nodeSkeleton, nodeTools, useNode, z, generationStatusText, createGenerationHandoff, waitForGenerationPreparation, type NodeExecutionContext, type NodeMediaModel, type NodeVideoRequest, type NodeHandle } from "@toonflow/nodes-scaffold/runtime";
  import { groupNodeModels } from "@toonflow/node-shared/groupNodeModels";
  import { showNodeError } from "@toonflow/node-shared/showNodeError";
  import { useNodeGeneration } from "@toonflow/node-shared/useNodeGeneration";
@@ -6368,25 +6695,50 @@ index 77a0535..71d8cf6 100644
      if (disposed || generating.value || deleting.value) return;
      models.value = items.filter((item) => item.type === "video");
      // ACT: 只给空配置选默认模型，保留暂时不可用的旧选择及其参数。
-@@ -306,6 +366,8 @@ function loadModels() {
+@@ -305,7 +365,9 @@ function loadModels() {
+   return modelsRequest;
  }
  
- async function startGeneration() {
+-async function startGeneration() {
++async function startGeneration(context?:NodeExecutionContext,handoff=createGenerationHandoff(context,id,"video"),preparationSignal?:AbortSignal) {
 +  if (promptRewriting.value) throw new Error("请等待提示词应用完成");
 +  if (generationBlocked.value) throw new Error("此节点已有未确认任务，请先查询原任务，避免重复生成");
    const choice = selectedModel.value;
    const input = generationInput.value;
    if (generating.value) throw new Error("视频正在生成，请等待完成");
-@@ -318,7 +380,7 @@ async function startGeneration() {
+@@ -318,23 +380,24 @@ async function startGeneration() {
    const workspace = files.getWorkspaceFiles();
    const controller = new AbortController();
    generationController = controller;
 -  // ACT: 工具立即返回，任务由节点持有，停止或卸载时取消。
-+  // ACT: 工具立即返回；SeeCut 节点停止或卸载只结束等待，原任务通过持久 requestId 查询。
-   generation = generationState.run(() => workspace
-     .list()
+-  generation = generationState.run(() => workspace
+-    .list()
++  // Manual UI returns immediately; Flow waits until its original UUID record is saved.
++  generation = generationState.run(() => waitForGenerationPreparation(workspace.list(),context ? AbortSignal.any([controller.signal,...(preparationSignal?[preparationSignal]:[])]) : controller.signal)
      .then(({ directory }) => {
-@@ -360,11 +422,21 @@ async function resizeVideo(event: Event) {
+       controller.signal.throwIfAborted();
+-      return ai.generateVideo({ ...input, directory }, controller.signal);
++      return ai.generateVideo({ ...input, directory }, controller.signal,handoff.execution);
+     })
+-    .then(([result]) => {
++    .then(async ([result]) => {
+       controller.signal.throwIfAborted();
++      await handoff.execution?.assertCurrent?.();
++      if (handoff.execution?.generation && ai.getMediaGeneration(`assets/${id}`)?.clientRequestId !== handoff.execution.generation.clientRequestId) throw Error("原任务所属节点已变化，未回写旧输出");
+       if (!result) throw new Error("供应商未返回视频");
+       outputs.value.video = { dataType: "VIDEO", value: { url: result.path, mimeType: result.mimeType } };
+     }))
+-    .catch((error) => showNodeError(error, "视频生成失败"))
++    .catch((error) => {handoff.fail(error);showNodeError(error, "视频生成失败");})
+     .finally(() => {
+       generationController = undefined;
+     });
+-  return { status: "generating" };
++  return handoff.acknowledgement ?? { status: "generating" };
+ }
+ 
+ nodeEvent.on("save", (reason) => {
+@@ -360,11 +423,32 @@ async function resizeVideo(event: Event) {
    updateNodeInternals();
  }
  
@@ -6394,7 +6746,18 @@ index 77a0535..71d8cf6 100644
 +  name: "getRecordedGeneration",
 +  description: "读取此节点持久化的原生成任务、状态、实际积分、结果和历史。按原请求查询并保存最新状态与结果，不提交或继续任务；生成中请稍后查询，不能重试生成。",
 +  parameters: z.strictObject({}),
-+  async execute() {
++  async execute(_args,{signal,execution}) {
++    if(execution?.generation){
++      const ref=execution.generation;
++      if(ref.nodeId!==id||ref.mediaType!=="video")throw Error("FLOW_GENERATION_CONTEXT_MISMATCH");
++      await execution.assertCurrent?.();
++      const record=ai.getMediaGeneration(`assets/${id}`,ref.clientRequestId);
++      if(!record)return {generation:{...ref,stage:"reserved"},found:false,record:null};
++      const {directory}=await files.getWorkspaceFiles().list();signal?.throwIfAborted();
++      await ai.recoverRecordedMedia("video",directory,`assets/${id}`,signal,true,ref.clientRequestId,execution);
++      await execution.assertCurrent?.();signal?.throwIfAborted();
++      return {generation:{...ref,stage:"recorded"},found:true,record:ai.getMediaGeneration(`assets/${id}`,ref.clientRequestId)};
++    }
 +    if (savedGeneration.value?.providerId === "seecut") await recoverSavedGeneration(false, true);
 +    return { running: generating.value, record: savedGeneration.value ?? null, history: generationRecords.value, outputs: outputs.value };
 +  },
@@ -6409,7 +6772,7 @@ index 77a0535..71d8cf6 100644
        duration: data.value.duration,
        resolution: data.value.resolution,
        ratio: data.value.ratio,
-@@ -372,7 +444,7 @@ function getConfig() {
+@@ -372,7 +456,7 @@ function getConfig() {
        generateAudio: data.value.generateAudio,
      },
      models: models.value,
@@ -6418,7 +6781,7 @@ index 77a0535..71d8cf6 100644
      matchingModes: matchingModes.value,
    };
  }
-@@ -397,7 +469,7 @@ nodeTools.register({
+@@ -397,7 +481,7 @@ nodeTools.register({
      modelId: z.string().min(1).optional(),
      duration: z.number().positive().optional(),
      resolution: z.string().min(1).optional(),
@@ -6427,7 +6790,7 @@ index 77a0535..71d8cf6 100644
      mode: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
      generateAudio: z.boolean().optional(),
    }).refine((args) => (args.providerId === undefined) === (args.modelId === undefined), "providerId 与 modelId 必须同时提供"),
-@@ -408,17 +480,18 @@ nodeTools.register({
+@@ -408,17 +492,18 @@ nodeTools.register({
      signal?.throwIfAborted();
      if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
      const choice = args.modelId === undefined ? selectedModel.value
@@ -6448,7 +6811,21 @@ index 77a0535..71d8cf6 100644
      data.value.duration = duration;
      data.value.resolution = resolution;
      if (args.ratio !== undefined) data.value.ratio = args.ratio;
-@@ -519,4 +592,12 @@ nodeTools.register({
+@@ -444,9 +529,11 @@ nodeTools.register({
+   name: "generateVideo",
+   description: "启动此节点的后台视频生成，使用当前提示词、模型、模式、时长、分辨率、比例和参考素材；立即返回已开始，用 getGenerationStatus 查询完成结果，cancelGeneration 停止生成",
+   parameters: z.strictObject({}),
+-  execute(_args, { signal }) {
++  async execute(_args, { signal,execution }) {
+     signal?.throwIfAborted();
+-    return startGeneration();
++    const handoff=createGenerationHandoff(execution,id,"video",signal);
++    try{return await startGeneration(execution,handoff,signal);}
++    catch(error){if(!handoff.acknowledgement)throw error;handoff.fail(error);return handoff.acknowledgement;}
+   },
+ });
+ </script>
+@@ -519,4 +606,12 @@ nodeTools.register({
      }
    }
  }
@@ -6461,3 +6838,41 @@ index 77a0535..71d8cf6 100644
 +  small { display: block; overflow-wrap: anywhere; }
 +}
  </style>
+diff --git a/packages/toolScaffold/src/runtime.ts b/packages/toolScaffold/src/runtime.ts
+index df844a0..ad79e73 100644
+--- a/packages/toolScaffold/src/runtime.ts
++++ b/packages/toolScaffold/src/runtime.ts
+@@ -43,6 +43,15 @@ export interface NodeToolInfo {
+   parameters: Record<string, unknown>;
+ }
+ 
++// Native Flow creates this context after reserving the original operation.
++// It is passed as a function argument, never parsed from model/tool JSON.
++export type SeecutFlowGeneration = {
++  version: 1;
++  projectId: string; canvasId: string; sessionId: string; accountScope: string;
++  operationId: string; nodeId: string; clientRequestId: string; mediaType: "image" | "video";
++};
++export type NodeExecutionContext = { generation?: SeecutFlowGeneration; assertCurrent?(): Promise<void> };
++
+ export interface NodeToolCall {
+   nodeId: string;
+   name: `node:${string}`;
+@@ -53,7 +62,7 @@ export interface NodeToolsContext {
+   readonly tools: NodeToolInfo[];
+   readonly version: number;
+   list(nodeIds: string[], names?: string[]): IterableIterator<NodeToolInfo>;
+-  call(request: NodeToolCall, signal?: AbortSignal): Promise<unknown>;
++  call(request: NodeToolCall, signal?: AbortSignal, execution?: NodeExecutionContext): Promise<unknown>;
+ }
+ 
+ export interface CanvasToolCall {
+@@ -68,7 +77,7 @@ export interface CanvasInfo {
+ 
+ export interface CanvasContext extends CanvasInfo {
+   getNodeLabel?(nodeId: string): string | undefined;
+-  call(request: CanvasToolCall, signal?: AbortSignal): Promise<unknown>;
++  call(request: CanvasToolCall, signal?: AbortSignal, execution?: NodeExecutionContext): Promise<unknown>;
+ }
+ 
+ export interface MediaModel {

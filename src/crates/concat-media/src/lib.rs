@@ -19,19 +19,26 @@ pub mod encode;
 pub mod error;
 mod ffi;
 pub mod hardware;
+mod input;
 pub mod peaks;
 pub mod pool;
 pub mod probe;
 pub mod samples;
 pub mod treat;
 
-pub use decode::{ColorSignal, DecodeOptions, Decoder, FrameSource, SeekableSource};
+pub use decode::{
+    ColorSignal, DecodeOptions, Decoder, FrameSource, SeekableSource, SourceFrameLimits,
+};
 pub use encode::{EncodeOptions, Encoder, FrameSink, VideoCodec, jpeg};
 pub use error::{Error, Result};
 pub use ffi::{init, linked_version};
 pub use hardware::{HwDevice, HwPolicy, hardware_decode, set_hardware_decode};
+pub use input::InputPolicy;
 pub use peaks::Peaks;
 pub use pool::{FrameCache, ReaderPool};
-pub use probe::{AudioStream, MediaInfo, VideoStream, probe};
+pub use probe::{AudioStream, MediaInfo, VideoStream, probe, probe_with_policy};
 pub use samples::{AudioDecoder, AudioOptions, SampleFormat};
 pub use treat::{treat, treat_to};
+
+#[cfg(test)]
+mod input_policy_tests;

@@ -3,6 +3,12 @@
 use super::*;
 use concat_canvas::vector::{Knot, ShapeKind, VectorShape};
 
+type ShapeSpace = (
+    Option<concat_canvas::LayerTransform>,
+    (f32, f32),
+    (f32, f32),
+);
+
 #[derive(Clone, Copy)]
 pub(super) struct ShapeDrag {
     start: [f32; 2],
@@ -38,13 +44,7 @@ impl CanvasPane {
         layer.vector.as_mut()
     }
 
-    fn shape_space(
-        &self,
-    ) -> Option<(
-        Option<concat_canvas::LayerTransform>,
-        (f32, f32),
-        (f32, f32),
-    )> {
+    fn shape_space(&self) -> Option<ShapeSpace> {
         let doc = self.document.as_ref()?;
         let canvas = (doc.width as f32, doc.height as f32);
         let node = doc.find(self.active?)?;

@@ -1,0 +1,9 @@
+test_command_failure_is_not_hidden_by_log_capture (test_ci_engine_step.EngineStepTests.test_command_failure_is_not_hidden_by_log_capture) ... ok
+test_runner_term_retains_cancellation_diagnostics (test_ci_engine_step.EngineStepTests.test_runner_term_retains_cancellation_diagnostics) ... ok
+test_success_retains_both_streams_and_resource_result (test_ci_engine_step.EngineStepTests.test_success_retains_both_streams_and_resource_result) ... ok
+test_timeout_kills_a_child_that_ignores_term (test_ci_engine_step.EngineStepTests.test_timeout_kills_a_child_that_ignores_term) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 2.529s
+
+OK

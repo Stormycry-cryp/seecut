@@ -7,12 +7,52 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod app_control;
+pub use app_control::{
+    AppCurrentObservation, AppNavigateParameters, AppNavigationCompletion, AppNavigationHumanGate,
+    AppNavigationReceipt, AppOperationDurability, AppOperationOrigin, AppOperationQuery,
+    AppOperationStatus, app_control_environment, app_operation_id,
+};
+pub mod app_read;
+pub use app_read::{
+    AppContextQuery, AppItemsQuery, AppPageId, AppPageQuery, AppPreviewQuery, AppReadScope,
+    AppViewBinding,
+};
+mod library_assets;
+pub use library_assets::{LibraryAssetKind, LibraryAssetsQuery, validate_library_asset};
 mod canvas;
+mod clip;
+pub mod clip_edit;
+pub mod clip_export;
+pub mod clip_preview;
+pub mod clip_save;
+pub use clip::{ClipAction, ClipParameters, validate_clip_parameters};
+pub use clip_edit::ClipEdit;
+pub use clip_export::{
+    CLIP_EXPORT_CONTROL_PROTOCOL_VERSION, CLIP_EXPORT_OUTPUT_PROTOCOL_VERSION,
+    CLIP_EXPORT_PROTOCOL_VERSION, ClipExportAsset, ClipExportAudioStream, ClipExportCodec,
+    ClipExportControlAction, ClipExportControlData, ClipExportControlResult, ClipExportData,
+    ClipExportDurability, ClipExportExpected, ClipExportOutputData, ClipExportOutputSource,
+    ClipExportPhase, ClipExportProof, ClipExportPublication, ClipExportQuality, ClipExportReason,
+    ClipExportStage, ClipExportSummary,
+};
+pub use clip_preview::{
+    CLIP_PREVIEW_PROTOCOL_VERSION, ClipAdoptedFrame, ClipPreviewData, ClipPreviewFrame,
+    ClipPreviewQuery, ClipPreviewUnavailable, ClipPreviewUnavailableReason,
+    clip_preview_dimensions,
+};
+pub use clip_save::{
+    ClipManifestName, ClipPersistedState, ClipSaveData, ClipSaveProof, ProjectReadSource,
+};
 mod flow;
 mod flow_workspace;
 pub use canvas::{
     AssetVersion, CanvasAction, CanvasParameters, LibraryQuery, OperationQuery,
     validate_canvas_parameters,
+};
+mod canvas_edit;
+pub use canvas_edit::{
+    CanvasAdjustment, CanvasEdit, CanvasPaintTarget, CanvasPoint, CurveChannel, LayerDirection,
 };
 pub use flow::FlowParameters;
 pub use flow_workspace::FlowWorkspace;
@@ -34,6 +74,21 @@ pub struct Request {
     pub client_token: String,
     /// One named method.
     pub method: Method,
+    /// Independent signed-in App read scope; forbidden on Doc methods.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_scope: Option<AppReadScope>,
+    /// Closed current App page query, matched exactly to its method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_page: Option<AppPageQuery>,
+    /// Internal independent App control credential; never a Doc write credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_control_token: Option<String>,
+    /// Closed navigation parameters, only for AppNavigate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_navigate: Option<AppNavigateParameters>,
+    /// Original navigation query, only for AppOperation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_operation_query: Option<AppOperationQuery>,
     #[serde(default)]
     /// Opaque project identity.
     pub project_id: Option<String>,
@@ -62,14 +117,36 @@ pub struct Request {
     /// Exact typed canvas write parameters.
     pub canvas_parameters: Option<CanvasParameters>,
     #[serde(default)]
+    /// Exact typed current-timeline edit.
+    pub clip_parameters: Option<ClipParameters>,
+    #[serde(default)]
     /// Optional exact canvas-layer lookup instead of project pagination.
     pub object_id: Option<String>,
+    #[serde(default)]
+    /// One atomic bounded clip object readback; mutually exclusive with pagination.
+    pub object_ids: Option<Vec<String>>,
+    /// Fixed fresh-manifest read mode; mutually exclusive with object/paging reads.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "clip_save::deserialize_read_source"
+    )]
+    pub read_source: Option<ProjectReadSource>,
     #[serde(default)]
     /// Bounded global-library image query.
     pub library_query: Option<LibraryQuery>,
     #[serde(default)]
+    /// Bounded metadata-only personal-library query across the three media kinds.
+    pub library_assets_query: Option<LibraryAssetsQuery>,
+    #[serde(default)]
     /// Owner-only original-operation query.
     pub operation_query: Option<OperationQuery>,
+    /// Closed owner-bound export control action, only on ClipExportControl.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_export_control_action: Option<ClipExportControlAction>,
+    /// Exact observed frame read query, only for ClipPreview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_preview_query: Option<ClipPreviewQuery>,
     #[serde(default)]
     /// Typed current-Flow identity and bounded action.
     pub flow: Option<FlowParameters>,
@@ -103,20 +180,44 @@ pub struct MoveParameters {
 pub enum Method {
     /// Read supported tools and limits.
     Capabilities,
+    /// Read the current ordinary App page under its independent grant.
+    AppContext,
+    /// Navigate one ordinary page under independently granted App control.
+    AppNavigate,
+    /// Read the original App navigation without replay or a current page binding.
+    AppOperation,
+    /// Read one bounded filtered App item page.
+    PageItems,
+    /// Read original cached image pixels with two UI checks.
+    PagePreview,
     /// Read the active workspace and document context.
     Context,
     /// Read a bounded project structure page.
     Project,
     /// Read a stable image frame.
     Preview,
+    /// Read the latest adopted paused Clip Monitor frame without editing.
+    ClipPreview,
     /// Move the current single selected image layer under a trusted UI write lease.
     MoveSelectedImage,
     /// Read versioned images in the existing global library.
     LibraryImages,
+    /// Read bounded local image, video and audio metadata without hashing content.
+    LibraryAssets,
     /// Insert one explicitly approved library image version.
     InsertLibraryImage,
     /// Set bounded position and scale of the selected canvas layer.
     TransformCanvasLayer,
+    /// Execute one explicitly approved, typed local canvas edit.
+    CanvasEdit,
+    /// Execute one approved edit on the active native timeline.
+    ClipEdit,
+    /// Query the original timeline operation without replay.
+    ClipOperation,
+    /// Cancel or resume registration of the original owner-bound export.
+    ClipExportControl,
+    /// Independently re-open the original verified video and exact asset/version.
+    ClipExportOutput,
     /// Save the existing canvas binding asynchronously.
     SaveCanvasProject,
     /// Formally export PNG and register it in the existing library.
@@ -138,9 +239,13 @@ impl Method {
     pub fn is_write(self) -> bool {
         matches!(
             self,
-            Self::MoveSelectedImage
+            Self::AppNavigate
+                | Self::MoveSelectedImage
                 | Self::InsertLibraryImage
                 | Self::TransformCanvasLayer
+                | Self::CanvasEdit
+                | Self::ClipEdit
+                | Self::ClipExportControl
                 | Self::SaveCanvasProject
                 | Self::ExportCanvasPng
                 | Self::RetryCanvasRegistration
@@ -151,13 +256,25 @@ impl Method {
     pub fn tool_name(self) -> &'static str {
         match self {
             Self::Capabilities => "capabilities",
+            Self::AppContext => "app_context",
+            Self::AppNavigate => "app_navigate",
+            Self::AppOperation => "app_operation",
+            Self::PageItems => "page_items",
+            Self::PagePreview => "page_preview",
             Self::Context => "context",
             Self::Project => "project",
             Self::Preview => "preview",
+            Self::ClipPreview => "clip_preview",
             Self::MoveSelectedImage => "move_selected_image",
             Self::LibraryImages => "library_images",
+            Self::LibraryAssets => "library_assets",
             Self::InsertLibraryImage => "insert_library_image",
             Self::TransformCanvasLayer => "transform_canvas_layer",
+            Self::CanvasEdit => "canvas_edit",
+            Self::ClipEdit => "clip_edit",
+            Self::ClipOperation => "clip_operation",
+            Self::ClipExportControl => "clip_export_control",
+            Self::ClipExportOutput => "clip_export_output",
             Self::SaveCanvasProject => "save_canvas_project",
             Self::ExportCanvasPng => "export_canvas_png",
             Self::CanvasOperation => "canvas_operation",
@@ -226,6 +343,118 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if request.clip_preview_query.is_some() || request.method == Method::ClipPreview {
+        return clip_preview::validate_request(request);
+    }
+    if request.clip_export_control_action.is_some()
+        || matches!(
+            request.method,
+            Method::ClipExportControl | Method::ClipExportOutput
+        )
+    {
+        return clip_export::validate_request(request);
+    }
+    if request.read_source.is_some() {
+        return clip_save::validate_persisted_request(request);
+    }
+    if request.app_scope.is_some()
+        || request.app_page.is_some()
+        || request.app_control_token.is_some()
+        || request.app_navigate.is_some()
+        || request.app_operation_query.is_some()
+        || matches!(
+            request.method,
+            Method::AppContext
+                | Method::PageItems
+                | Method::PagePreview
+                | Method::AppNavigate
+                | Method::AppOperation
+        )
+    {
+        return app_read::validate_app_request(request);
+    }
+    if request.library_assets_query.is_some() || request.method == Method::LibraryAssets {
+        return library_assets::validate_request(request);
+    }
+    if request.clip_parameters.is_some()
+        || matches!(request.method, Method::ClipEdit | Method::ClipOperation)
+    {
+        let session = request
+            .document_session_id
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .ok_or("invalidInput")?;
+        if request.project_id.as_deref().is_none_or(str::is_empty)
+            || request.canvas_parameters.is_some()
+            || request.move_parameters.is_some()
+            || request.library_query.is_some()
+            || request.flow.is_some()
+            || request.flow_workspace.is_some()
+            || request.object_id.is_some()
+            || request.object_ids.is_some()
+            || request.context_revision.is_some()
+            || request.offset.is_some()
+            || request.limit.is_some()
+            || request.max_edge.is_some()
+        {
+            return Err("invalidInput".into());
+        }
+        return match request.method {
+            Method::ClipEdit if request.operation_query.is_none() && request.revision.is_some() => {
+                if request.clip_parameters.as_ref().is_some_and(|p| {
+                    matches!(
+                        p.action.edit,
+                        ClipEdit::Save {} | ClipEdit::ExportVideo { .. }
+                    )
+                }) && request
+                    .revision
+                    .is_some_and(|revision| revision > 9_007_199_254_740_991)
+                {
+                    return Err("invalidInput: unsafe save revision".into());
+                }
+                validate_clip_parameters(
+                    &request.client_id,
+                    session,
+                    request.clip_parameters.as_ref().ok_or("invalidInput")?,
+                )
+            }
+            Method::ClipOperation
+                if request.clip_parameters.is_none() && request.revision.is_none() =>
+            {
+                let q = request.operation_query.as_ref().ok_or("invalidInput")?;
+                if q.operation_id == operation_id(&request.client_id, session, q.client_sequence)? {
+                    Ok(())
+                } else {
+                    Err("invalidInput".into())
+                }
+            }
+            _ => Err("invalidInput".into()),
+        };
+    }
+    if let Some(ids) = &request.object_ids {
+        if request.method != Method::Project
+            || request.object_id.is_some()
+            || request.offset.is_some()
+            || request.limit.is_some()
+            || ids.is_empty()
+            || ids.len() > 512
+        {
+            return Err("invalidInput".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            if !seen.insert(id)
+                || !["media", "track", "clip", "timeline"]
+                    .iter()
+                    .any(|kind| clip_edit::clip_native_id(id, kind).is_ok())
+            {
+                return Err("invalidInput".into());
+            }
+        }
+    }
+    if request.method != Method::Project && request.object_ids.is_some() {
+        return Err("invalidInput".into());
+    }
     if request.method == Method::FlowWorkspace || request.flow_workspace.is_some() {
         return if request.method == Method::FlowWorkspace
             && request
@@ -259,7 +488,13 @@ pub fn validate_request_shape(request: &Request) -> Result<(), String> {
         {
             return Err("invalidInput: targeted project fields".into());
         }
-        parse_layer_id(object_id)?;
+        if parse_layer_id(object_id).is_err()
+            && !["media", "track", "clip", "timeline"]
+                .iter()
+                .any(|kind| clip_edit::clip_native_id(object_id, kind).is_ok())
+        {
+            return Err("invalidInput".into());
+        }
     }
     let canvas = request.canvas_parameters.as_ref();
     let library = request.library_query.as_ref();
@@ -272,6 +507,7 @@ pub fn validate_request_shape(request: &Request) -> Result<(), String> {
             Method::LibraryImages
                 | Method::InsertLibraryImage
                 | Method::TransformCanvasLayer
+                | Method::CanvasEdit
                 | Method::SaveCanvasProject
                 | Method::ExportCanvasPng
                 | Method::CanvasOperation
@@ -594,10 +830,21 @@ mod tests {
         Request {
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
+            clip_preview_query: None,
+            clip_parameters: None,
+            object_ids: None,
+            read_source: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: "app".into(),
             client_id: "client".into(),
             client_token: "write-credential".into(),
@@ -801,6 +1048,40 @@ mod tests {
     }
 
     #[test]
+    fn app_navigation_transport_preserves_ambiguity_and_query_read_semantics() {
+        let navigate = Method::AppNavigate;
+        let mut partial = transport();
+        partial.write_limit = Some(1);
+        assert_eq!(
+            exchange(&mut partial, &[1, 2], navigate.is_write()).status,
+            "outcomeUnknown"
+        );
+        let mut timeout = transport();
+        timeout.read_error = Some(std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            exchange(&mut timeout, &[1, 2], navigate.is_write()).status,
+            "outcomeUnknown"
+        );
+        let mut closed = transport();
+        assert_eq!(
+            exchange(&mut closed, &[1, 2], navigate.is_write()).status,
+            "outcomeUnknown"
+        );
+        let mut unsent = transport();
+        unsent.write_limit = Some(0);
+        assert_eq!(
+            exchange(&mut unsent, &[1, 2], navigate.is_write()).status,
+            "appUnavailable"
+        );
+        let mut query = transport();
+        query.read_error = Some(std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            exchange(&mut query, &[1, 2], Method::AppOperation.is_write()).status,
+            "busy"
+        );
+    }
+
+    #[test]
     fn sent_move_timeout_disconnect_and_invalid_reply_are_unknown() {
         let mut frame = Vec::new();
         write_message(&mut frame, &move_request()).unwrap();
@@ -882,10 +1163,21 @@ mod tests {
         let mut request = Request {
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
+            clip_preview_query: None,
+            clip_parameters: None,
+            object_ids: None,
+            read_source: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: "app".into(),
             client_id: "c".into(),
             client_token: "t".into(),
@@ -916,10 +1208,21 @@ mod tests {
         let first = Request {
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
+            clip_preview_query: None,
+            clip_parameters: None,
+            object_ids: None,
+            read_source: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: "first".into(),
             client_id: "c".into(),
             client_token: "t".into(),

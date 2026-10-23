@@ -30,12 +30,56 @@ pub(crate) struct Message {
     pub(crate) progress: String,
 }
 
-/// A reference to a project, never an editor permission or account token.
+/// Frozen display context. The document variant retains the original JSON.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ContextReference {
+    Document(DocumentReference),
+    App(AppReference),
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ContextReference {
+pub(crate) struct DocumentReference {
     pub(crate) project_key: String,
     pub(crate) project_name: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AppReference {
+    pub(crate) app_scope: AppReferenceScope,
+    pub(crate) page_name: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AppReferenceScope {
+    pub(crate) instance_id: String,
+    pub(crate) account_scope: String,
+    pub(crate) app_session_id: String,
+}
+/// A history domain, independent of short-lived runtime and App session IDs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryScope {
+    Document(String),
+    App(String),
+}
+impl HistoryScope {
+    fn valid(&self) -> bool {
+        valid_key(match self {
+            Self::Document(key) | Self::App(key) => key,
+        })
+    }
+    fn accepts(&self, context: &ContextReference) -> bool {
+        match (self, context) {
+            (Self::Document(key), ContextReference::Document(doc)) => &doc.project_key == key,
+            (Self::App(key), ContextReference::App(app)) => {
+                &app.app_scope.account_scope == key
+                    && valid_key(&app.app_scope.instance_id)
+                    && valid_id(&app.app_scope.app_session_id)
+                    && app.page_name.len() <= 512
+            }
+            _ => false,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +102,20 @@ impl Reference {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RequestSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) input_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app_view_binding: Option<concat_editor_mcp::app_read::AppViewBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app_input_binding: Option<crate::agent_app_control_input::InputBinding>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_observation"
+    )]
+    pub(crate) observation_binding: Option<crate::agent_observation::DocumentObservationBinding>,
+    #[serde(default)]
+    pub(crate) task: Option<crate::agent_tasks::TaskIntent>,
     pub(crate) session_id: String,
     pub(crate) model_id: String,
     pub(crate) effort_id: Option<String>,
@@ -65,6 +123,12 @@ pub(crate) struct RequestSnapshot {
     pub(crate) context: ContextReference,
     #[serde(default)]
     pub(crate) references: Vec<Reference>,
+}
+
+fn present_observation<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::agent_observation::DocumentObservationBinding>, D::Error> {
+    crate::agent_observation::DocumentObservationBinding::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -93,6 +157,10 @@ pub(crate) struct Record {
     #[serde(default = "selection_initialized")]
     pub(crate) selection_initialized: bool,
     pub(crate) runtime_created: bool,
+    #[serde(default)]
+    pub(crate) current_task_id: Option<String>,
+    #[serde(default)]
+    pub(crate) task_updates: Vec<crate::agent_tasks::TaskUpdateIntent>,
     pub(crate) request_snapshots: Vec<RequestSnapshot>,
     pub(crate) pending: String,
     pub(crate) updated_at_ms: u64,
@@ -138,7 +206,7 @@ pub(crate) struct Store {
     root: PathBuf,
     directory: PathBuf,
     path: PathBuf,
-    project_key: String,
+    scope: HistoryScope,
     root_identity: (u64, u64),
     directory_identity: (u64, u64),
     loaded: Cell<bool>,
@@ -147,12 +215,24 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    #[cfg(test)]
     pub(crate) fn open(
         root: &Path,
         account_key: &str,
         project_key: &str,
     ) -> Result<Self, &'static str> {
-        if !valid_key(account_key) || !valid_key(project_key) {
+        Self::open_scope(
+            root,
+            account_key,
+            HistoryScope::Document(project_key.into()),
+        )
+    }
+    pub(crate) fn open_scope(
+        root: &Path,
+        account_key: &str,
+        scope: HistoryScope,
+    ) -> Result<Self, &'static str> {
+        if !valid_key(account_key) || !scope.valid() {
             return Err(INVALID);
         }
         validate_path(root)?;
@@ -173,7 +253,14 @@ impl Store {
         let directory_identity = private_directory(&directory)?;
         // Length framing keeps ("ab", "c") separate from ("a", "bc").
         let mut hash = Sha256::new();
-        for key in [account_key, project_key] {
+        let keys: Vec<&str> = match &scope {
+            // Preserve the existing document hash and on-disk location exactly.
+            HistoryScope::Document(project) => vec![account_key, project],
+            HistoryScope::App(account) => {
+                vec!["seecut-native-app-history-v1", account_key, account]
+            }
+        };
+        for key in keys {
             hash.update((key.len() as u64).to_be_bytes());
             hash.update(key.as_bytes());
         }
@@ -182,7 +269,7 @@ impl Store {
             root: root.into(),
             directory,
             path,
-            project_key: project_key.into(),
+            scope,
             root_identity,
             directory_identity,
             loaded: Cell::new(false),
@@ -360,11 +447,67 @@ impl Store {
             if !matches!(session.pending.as_str(), "" | "running" | "unknown") {
                 return Err(INVALID);
             }
+            if session.task_updates.len() > 64
+                || session.task_updates.iter().any(|v| !v.valid())
+                || session
+                    .task_updates
+                    .iter()
+                    .map(|v| &v.client_request_id)
+                    .collect::<HashSet<_>>()
+                    .len()
+                    != session.task_updates.len()
+            {
+                return Err(INVALID);
+            }
+            if session
+                .current_task_id
+                .as_deref()
+                .is_some_and(|id| !crate::agent_tasks::valid_task_id(id))
+            {
+                return Err(INVALID);
+            }
+            if matches!(self.scope, HistoryScope::App(_))
+                && (session.current_task_id.is_some()
+                    || !session.task_updates.is_empty()
+                    || session
+                        .request_snapshots
+                        .iter()
+                        .any(|request| request.task.is_some()))
+            {
+                return Err(INVALID);
+            }
             for request in &session.request_snapshots {
-                if request.session_id != session.id
+                if request.task.as_ref().is_some_and(|task| !task.valid())
+                    || request.session_id != session.id
                     || !valid_model(&request.model_id)
                     || request.effort_id.as_deref().is_some_and(|id| !valid_id(id))
-                    || request.context.project_key != self.project_key
+                    || !self.scope.accepts(&request.context)
+                    || request.input_id.as_deref().is_some_and(|id| !valid_id(id))
+                    || match &request.context {
+                        ContextReference::Document(_) => {
+                            request.app_view_binding.is_some()
+                                || request.app_input_binding.is_some()
+                                || request.observation_binding.as_ref().is_some_and(|binding| {
+                                    request.input_id.is_none()
+                                        || request.task.is_some()
+                                        || !binding.valid()
+                                })
+                        }
+                        ContextReference::App(app) => {
+                            request.app_input_binding.as_ref().is_some_and(|binding| {
+                                !binding.valid()
+                                    || binding.app_instance_id != app.app_scope.instance_id
+                                    || binding.account_scope != app.app_scope.account_scope
+                                    || binding.app_session_id != app.app_scope.app_session_id
+                                    || request.app_view_binding.as_ref() != Some(&binding.page())
+                            }) || request.observation_binding.is_some()
+                                || request.input_id.is_none()
+                                || request
+                                    .app_view_binding
+                                    .as_ref()
+                                    .is_none_or(|view| !view.valid())
+                        }
+                    }
                 {
                     return Err(INVALID);
                 }
@@ -470,9 +613,153 @@ fn validate_file(metadata: &Metadata) -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
+    fn document_reference_mut(context: &mut ContextReference) -> &mut DocumentReference {
+        match context {
+            ContextReference::Document(document) => document,
+            ContextReference::App(_) => panic!("document fixture"),
+        }
+    }
     use super::*;
     use serde_json::json;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn app_history_is_separate_and_document_wire_and_path_are_unchanged() {
+        let fixture = fixture();
+        let doc = Store::open(fixture.path(), "account", "project").unwrap();
+        let explicit = Store::open_scope(
+            fixture.path(),
+            "account",
+            HistoryScope::Document("project".into()),
+        )
+        .unwrap();
+        let app = Store::open_scope(
+            fixture.path(),
+            "account",
+            HistoryScope::App("project".into()),
+        )
+        .unwrap();
+        assert_eq!(doc.path, explicit.path);
+        assert_ne!(doc.path, app.path);
+        let context: ContextReference =
+            serde_json::from_value(json!({"project_key":"project","project_name":"测试工程"}))
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(context).unwrap(),
+            json!({"project_key":"project","project_name":"测试工程"})
+        );
+        assert!(serde_json::from_value::<ContextReference>(json!({"project_key":"project","project_name":"test","app_scope":{"instance_id":"instance","account_scope":"account","app_session_id":"app-session"},"page_name":"素材"})).is_err());
+    }
+
+    #[test]
+    fn app_history_requires_original_input_view_and_rejects_document_tasks() {
+        let fixture = fixture();
+        let store = Store::open_scope(
+            fixture.path(),
+            "account",
+            HistoryScope::App("account-scope".into()),
+        )
+        .unwrap();
+        store.load().unwrap();
+        let mut saved = archive("project");
+        let request = &mut saved.sessions[0].request_snapshots[0];
+        request.context = ContextReference::App(AppReference {
+            app_scope: AppReferenceScope {
+                instance_id: "instance".into(),
+                account_scope: "account-scope".into(),
+                app_session_id: "app-session".into(),
+            },
+            page_name: "个人素材".into(),
+        });
+        assert!(store.save(&saved).is_err());
+        let request = &mut saved.sessions[0].request_snapshots[0];
+        request.input_id = Some("input-original".into());
+        request.app_view_binding = Some(serde_json::from_value(json!({"pageId":"personalLibrary","pageEpoch":3,"pageStateId":format!("app-page-v1-{}", "a".repeat(64))})).unwrap());
+        store.save(&saved).unwrap();
+        assert_eq!(store.load().unwrap(), Some(saved.clone()));
+        saved.sessions[0].request_snapshots[0].observation_binding =
+            Some(saved_document_observation());
+        assert!(store.save(&saved).is_err());
+        saved.sessions[0].request_snapshots[0].observation_binding = None;
+        saved.sessions[0].current_task_id =
+            Some(crate::agent_tasks::task_id_for("not-an-app-task"));
+        assert!(store.save(&saved).is_err());
+    }
+
+    fn saved_document_observation() -> crate::agent_observation::DocumentObservationBinding {
+        serde_json::from_value(json!({
+            "appInstanceId":"original-instance","clientId":"seecut-assistant","kind":"clip",
+            "projectId":"original-project","documentSessionId":"original-document",
+            "revision":7,"contextRevision":9,"selectionRevision":11,
+            "selectedObjectIds":(0..300).map(|index|format!("clip:{index}")).collect::<Vec<_>>(),
+            "viewStateId":null
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn document_history_preserves_complete_original_observation_and_legacy_absence() {
+        let fixture = fixture();
+        let store = Store::open(fixture.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let mut saved = archive("project");
+        let legacy = serde_json::to_value(&saved).unwrap();
+        assert!(
+            legacy["sessions"][0]["request_snapshots"][0]
+                .get("observation_binding")
+                .is_none()
+        );
+        store.save(&saved).unwrap();
+        let binding = saved_document_observation();
+        let request = &mut saved.sessions[0].request_snapshots[0];
+        request.input_id = Some("original-human-input".into());
+        request.observation_binding = Some(binding.clone());
+        store.save(&saved).unwrap();
+        let restored = store.load().unwrap().unwrap();
+        let original = &restored.sessions[0].request_snapshots[0];
+        assert_eq!(original.input_id.as_deref(), Some("original-human-input"));
+        assert_eq!(original.observation_binding.as_ref(), Some(&binding));
+        assert_eq!(binding.selected_object_ids.len(), 300);
+        let mut explicit_null = legacy;
+        explicit_null["sessions"][0]["request_snapshots"][0]["observation_binding"] =
+            serde_json::Value::Null;
+        assert!(serde_json::from_value::<Archive>(explicit_null).is_err());
+        let mut missing_view = serde_json::to_value(&restored).unwrap();
+        missing_view["sessions"][0]["request_snapshots"][0]["observation_binding"]
+            .as_object_mut()
+            .unwrap()
+            .remove("viewStateId");
+        assert!(serde_json::from_value::<Archive>(missing_view).is_err());
+    }
+    #[test]
+    fn document_history_observation_requires_input_id_and_rejects_task_or_app_binding() {
+        let fixture = fixture();
+        let store = Store::open(fixture.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let mut saved = archive("project");
+        saved.sessions[0].request_snapshots[0].observation_binding =
+            Some(saved_document_observation());
+        assert!(store.save(&saved).is_err());
+        saved.sessions[0].request_snapshots[0].input_id = Some("original-human-input".into());
+        store.save(&saved).unwrap();
+        let original = saved.clone();
+        saved.sessions[0].request_snapshots[0].task = Some(crate::agent_tasks::TaskIntent {
+            task_id: crate::agent_tasks::task_id_for("original-task"),
+            client_request_id: "original-task".into(),
+            goal: "当前任务".into(),
+            max_task_credits: 100,
+            initial_observation_binding: None,
+        });
+        assert!(store.save(&saved).is_err());
+        saved = original;
+        saved.sessions[0].request_snapshots[0].app_view_binding = Some(
+            serde_json::from_value(json!({
+                "pageId":"personalLibrary","pageEpoch":3,
+                "pageStateId":format!("app-page-v1-{}", "a".repeat(64))
+            }))
+            .unwrap(),
+        );
+        assert!(store.save(&saved).is_err());
+    }
 
     #[test]
     fn manual_title_survives_first_input_after_archive_round_trip() {
@@ -490,6 +777,61 @@ mod tests {
         assert_eq!(automatic.sessions[0].title, "整理 素材");
         automatic.sessions[0].name_first_input("");
         assert_eq!(automatic.sessions[0].title, "素材讨论");
+    }
+
+    #[test]
+    fn task_original_request_and_update_survive_archive_without_live_authority() {
+        let fixture = fixture();
+        let store = Store::open(fixture.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let mut saved = archive("project");
+        let task_id = crate::agent_tasks::task_id_for("original-create");
+        let record = &mut saved.sessions[0];
+        record.current_task_id = Some(task_id.clone());
+        record.request_snapshots[0].task = Some(crate::agent_tasks::TaskIntent {
+            client_request_id: "original-create".into(),
+            task_id: task_id.clone(),
+            goal: "完整目标".into(),
+            max_task_credits: 100,
+            initial_observation_binding: None,
+        });
+        record
+            .task_updates
+            .push(crate::agent_tasks::TaskUpdateIntent {
+                client_request_id: "original-update".into(),
+                task_id: task_id.clone(),
+                message: "原补充内容".into(),
+                expected_revision: 5,
+                retries: 0,
+                confirmed: false,
+                observation_binding: None,
+            });
+        store.save(&saved).unwrap();
+        assert_eq!(store.load().unwrap(), Some(saved.clone()));
+        let mut old = serde_json::to_value(archive("project")).unwrap();
+        old["sessions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("current_task_id");
+        old["sessions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("task_updates");
+        old["sessions"][0]["request_snapshots"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("task");
+        let old: Archive = serde_json::from_value(old).unwrap();
+        assert!(old.sessions[0].current_task_id.is_none());
+        assert!(old.sessions[0].task_updates.is_empty());
+        let mut invalid = saved.clone();
+        invalid.sessions[0].request_snapshots[0]
+            .task
+            .as_mut()
+            .unwrap()
+            .client_request_id = "different-id".into();
+        assert!(store.save(&invalid).is_err());
+        assert_eq!(store.load().unwrap(), Some(saved));
     }
 
     fn fixture() -> tempfile::TempDir {
@@ -524,16 +866,23 @@ mod tests {
                 generation_model_ids: HashMap::new(),
                 selection_initialized: true,
                 runtime_created: true,
+                current_task_id: None,
+                task_updates: Vec::new(),
                 request_snapshots: vec![RequestSnapshot {
+                    input_id: None,
+                    app_view_binding: None,
+                    app_input_binding: None,
+                    observation_binding: None,
+                    task: None,
                     references: Vec::new(),
                     session_id: "session-one".into(),
                     model_id: "managed-model".into(),
                     effort_id: None,
                     policy: json!({"protocol_version": 1, "policy_revision": "fixture-1"}),
-                    context: ContextReference {
+                    context: ContextReference::Document(DocumentReference {
                         project_key: project.into(),
                         project_name: "测试工程".into(),
-                    },
+                    }),
                 }],
                 pending: "unknown".into(),
                 updated_at_ms: 1234,
@@ -674,7 +1023,7 @@ mod tests {
         next.model_id = "second-model".into();
         next.effort_id = Some("high".into());
         next.policy = json!({"protocol_version": 1, "policy_revision": "fixture-2"});
-        next.context.project_name = "重新命名的工程".into();
+        document_reference_mut(&mut next.context).project_name = "重新命名的工程".into();
         original.sessions[0].request_snapshots.push(next);
         store.save(&original).unwrap();
         assert_eq!(original.sessions[0].request_snapshots[0], frozen);
@@ -769,7 +1118,7 @@ mod tests {
         candidates.push(candidate);
         let mut candidate = original.clone();
         let mut wrong_context = candidate.sessions[0].request_snapshots[0].clone();
-        wrong_context.context.project_key = "other".into();
+        document_reference_mut(&mut wrong_context.context).project_key = "other".into();
         candidate.sessions[0].request_snapshots.push(wrong_context);
         candidates.push(candidate);
         let mut candidate = original.clone();
@@ -780,7 +1129,7 @@ mod tests {
         candidates.push(candidate);
         let mut candidate = original.clone();
         let mut large_request = candidate.sessions[0].request_snapshots[0].clone();
-        large_request.context.project_name = "x".repeat(32 * 1024);
+        document_reference_mut(&mut large_request.context).project_name = "x".repeat(32 * 1024);
         candidate.sessions[0].request_snapshots = vec![large_request; 8];
         candidates.push(candidate);
         let mut candidate = original.clone();
@@ -884,12 +1233,153 @@ mod tests {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        assert_eq!(keys.len(), 6);
+        assert_eq!(keys.len(), 7);
         assert!(keys.iter().all(|key| matches!(
             key.as_str(),
-            "session_id" | "model_id" | "effort_id" | "policy" | "context" | "references"
+            "session_id" | "model_id" | "effort_id" | "policy" | "context" | "references" | "task"
         )));
         request["read_token"] = json!("owned-fixture-token");
         assert!(serde_json::from_value::<Archive>(value).is_err());
+    }
+}
+
+#[cfg(test)]
+mod task_observation_history_tests {
+    use super::*;
+    use crate::agent_tasks::*;
+    use serde_json::{Value, json};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn observation() -> Value {
+        json!({"appInstanceId":"original-instance", "clientId":"original-client",
+            "kind":"flow", "projectId":"project", "documentSessionId":"original-doc",
+            "revision":11, "contextRevision":12, "selectionRevision":3,
+            "selectedObjectIds":["node-1", "node-2"], "viewStateId":null,
+            "flow":{"canvasId":"original-canvas", "accountScope":"original-account", "sessionId":"original-doc"}})
+    }
+    fn archive() -> Archive {
+        let task = task_id_for("original-human-create");
+        serde_json::from_value(json!({"version":1, "active_id":"session-one", "sessions":[{
+            "id":"session-one", "title":"测试任务", "draft":"", "messages":[],
+            "selected_model_id":"managed-model", "runtime_created":true,
+            "current_task_id":task, "pending":"", "updated_at_ms":1234,
+            "task_updates":[{"client_request_id":"original-human-update", "task_id":task,
+                "message":"原补充", "expected_revision":4, "retries":0, "confirmed":false}],
+            "request_snapshots":[{"task":{"client_request_id":"original-human-create", "task_id":task,
+                "goal":"原目标", "max_task_credits":100}, "session_id":"session-one", "model_id":"managed-model",
+                "effort_id":null, "policy":{}, "context":{"project_key":"project", "project_name":"测试工程"}}]
+        }]})).unwrap()
+    }
+    fn fixture() -> tempfile::TempDir {
+        let temporary = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let directory = tempfile::tempdir_in(temporary).unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        directory
+    }
+
+    #[test]
+    fn original_create_and_update_bindings_survive_real_store_save_and_load() {
+        let directory = fixture();
+        let store = Store::open(directory.path(), "account", "project").unwrap();
+        assert_eq!(store.load().unwrap(), None);
+        let mut saved = archive();
+        let binding = observation();
+        let task = saved.sessions[0].request_snapshots[0]
+            .task
+            .as_mut()
+            .unwrap();
+        task.initial_observation_binding = Some(serde_json::from_value(binding.clone()).unwrap());
+        saved.sessions[0].task_updates[0].observation_binding =
+            Some(serde_json::from_value(binding.clone()).unwrap());
+        store.save(&saved).unwrap();
+        let restored = store.load().unwrap().unwrap();
+        assert_eq!(restored, saved);
+        let request = &restored.sessions[0].request_snapshots[0];
+        assert!(request.observation_binding.is_none());
+        assert!(request.input_id.is_none());
+        let task = request.task.as_ref().unwrap();
+        assert_eq!(task.client_request_id, "original-human-create");
+        assert_eq!(
+            serde_json::to_value(task.initial_observation_binding.as_ref().unwrap()).unwrap(),
+            binding
+        );
+        let update = &restored.sessions[0].task_updates[0];
+        assert_eq!(update.client_request_id, "original-human-update");
+        assert_eq!(
+            serde_json::to_value(update.observation_binding.as_ref().unwrap()).unwrap(),
+            binding
+        );
+    }
+
+    #[test]
+    fn old_task_history_stays_unbound_and_explicit_nulls_are_rejected() {
+        let directory = fixture();
+        let store = Store::open(directory.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let old = archive();
+        store.save(&old).unwrap();
+        let restored = store.load().unwrap().unwrap();
+        let raw = serde_json::to_value(&restored).unwrap();
+        assert_eq!(restored, old);
+        assert!(
+            raw["sessions"][0]["request_snapshots"][0]["task"]
+                .get("initial_observation_binding")
+                .is_none()
+        );
+        assert!(
+            raw["sessions"][0]["task_updates"][0]
+                .get("observation_binding")
+                .is_none()
+        );
+        let mut invalid_create = raw.clone();
+        invalid_create["sessions"][0]["request_snapshots"][0]["task"]["initial_observation_binding"] =
+            Value::Null;
+        assert!(serde_json::from_value::<Archive>(invalid_create).is_err());
+        let mut invalid_update = raw;
+        invalid_update["sessions"][0]["task_updates"][0]["observation_binding"] = Value::Null;
+        assert!(serde_json::from_value::<Archive>(invalid_update).is_err());
+    }
+
+    #[test]
+    fn save_rejects_invalid_in_memory_task_binding_and_preserves_last_archive() {
+        let directory = fixture();
+        let store = Store::open(directory.path(), "account", "project").unwrap();
+        store.load().unwrap();
+        let saved = archive();
+        store.save(&saved).unwrap();
+        let binding = serde_json::from_value(observation()).unwrap();
+        let mut invalid = saved.clone();
+        invalid.sessions[0].request_snapshots[0]
+            .task
+            .as_mut()
+            .unwrap()
+            .initial_observation_binding = Some(binding);
+        invalid.sessions[0].request_snapshots[0]
+            .task
+            .as_mut()
+            .unwrap()
+            .initial_observation_binding
+            .as_mut()
+            .unwrap()
+            .flow
+            .as_mut()
+            .unwrap()
+            .session_id = "mixed-doc".into();
+        assert!(store.save(&invalid).is_err());
+        assert_eq!(store.load().unwrap(), Some(saved.clone()));
+        invalid = saved.clone();
+        invalid.sessions[0].task_updates[0].observation_binding =
+            Some(serde_json::from_value(observation()).unwrap());
+        invalid.sessions[0].task_updates[0]
+            .observation_binding
+            .as_mut()
+            .unwrap()
+            .flow
+            .as_mut()
+            .unwrap()
+            .session_id = "mixed-doc".into();
+        assert!(store.save(&invalid).is_err());
+        assert_eq!(store.load().unwrap(), Some(saved));
     }
 }

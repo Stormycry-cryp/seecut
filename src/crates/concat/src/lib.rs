@@ -34,6 +34,16 @@ mod ui {
 }
 
 mod account_ledger;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_core;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_host;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_input;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_journal;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_app_control_worker;
 mod agent_billing;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_components;
@@ -44,20 +54,32 @@ mod agent_identity;
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
 mod agent_models;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod agent_observation;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_process;
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
 mod agent_references;
 #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
 mod agent_sessions;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod agent_task_grant;
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+mod agent_tasks;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod agent_ui;
 mod asset_version;
 mod chips;
+mod clip_export_fence;
+mod clip_save_fence;
 mod cloud;
 mod cloud_files;
 mod dock;
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 mod editor_mcp;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod editor_mcp_app_page;
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+mod editor_mcp_app_preview;
 mod format;
 mod generation_outputs;
 mod generation_templates;
@@ -509,6 +531,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     });
     app.on_titlebar_close(|| {
+        crate::clip_export_fence::document_will_change();
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
             if toonflow_webview::defer_close(&app) {
@@ -527,6 +550,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     });
     // System-driven close (Alt+F4, taskbar close): the same road out.
     app.window().on_close_requested(|| {
+        crate::clip_export_fence::document_will_change();
         log::info!("close: system close request (Alt+F4 / taskbar)");
         let mut should_close = false;
         Shell::with(|shell, app| {
@@ -572,6 +596,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             move |$($arg : $ty),*| {
                 Shell::with(|shell, app| {
                     {
+                        crate::clip_save_fence::before_change();
                         let mut $state = shell.studio.borrow_mut();
                         $body
                     }
@@ -583,6 +608,15 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
     macro_rules! on_window {
         ($($handler:tt)*) => { handler!(publish, $($handler)*) };
+    }
+    macro_rules! on_document_window {
+        (|$state:ident $(, $arg:ident : $ty:ty)*| $body:block) => {{
+            let handler = on_window!(|$state $(, $arg : $ty)*| $body);
+            move |$($arg : $ty),*| {
+                crate::clip_export_fence::document_will_change();
+                handler($($arg),*);
+            }
+        }};
     }
     macro_rules! on_lanes {
         ($($handler:tt)*) => { handler!(publish_lanes, $($handler)*) };
@@ -687,13 +721,13 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_start_browse(on_window!(|state| {
         state.handle(Msg::Start(StartMsg::Browse));
     }));
-    app.on_start_create(on_window!(|state| {
+    app.on_start_create(on_document_window!(|state| {
         state.handle(Msg::Start(StartMsg::Create));
     }));
     app.on_project_open_cancel(on_window!(|state| {
         state.cancel_project_open(&i18n::t("Project opening cancelled"));
     }));
-    app.on_start_open_recent(on_window!(|state, path: SharedString| {
+    app.on_start_open_recent(on_document_window!(|state, path: SharedString| {
         state.handle(Msg::Start(StartMsg::OpenRecent(path.to_string())));
     }));
     app.on_start_forget_recent(on_window!(|state, path: SharedString| {
@@ -1054,7 +1088,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         if state.locked(&clip.track_id) {
             return;
         }
-        state.selection = vec![id.to_string()];
+        state.selection.replace(vec![id.to_string()]);
         state.split_at(seconds, true);
     }));
     editor.on_band_selected(on_lanes!(
@@ -1081,7 +1115,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                     }
                 }
             } else {
-                state.selection = caught;
+                state.selection.replace(caught);
             }
         }
     ));
@@ -1259,7 +1293,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             }
         }
     ));
-    app.on_close_clip_project(on_window!(|state| {
+    app.on_close_clip_project(on_document_window!(|state| {
         if let Err(error) = state.close_project() {
             state.notify(&error, true);
         }
@@ -1751,7 +1785,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             return;
         }
         if !state.selection.iter().any(|held| held == id.as_str()) {
-            state.selection = vec![id.to_string()];
+            state.selection.replace(vec![id.to_string()]);
         }
         state.menu_target = Some(id.to_string());
     }));
@@ -1857,7 +1891,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_export_clicked(|| {
         Shell::with(|shell, app| {
             if shell.studio.borrow().session.is_some() {
-                app.global::<SeeCut>().set_clip_export_open(true);
+                app.global::<SeeCut>().invoke_change_clip_export_open(true);
             }
         });
     });
@@ -1973,6 +2007,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
         });
         app.on_settings_mcp_grant_r(|| {
             Shell::with(|shell, app| {
+                crate::clip_export_fence::revoke_client(
+                    app.get_settings().mcp_client.as_str(),
+                    concat_host::export_publication::PublishRevocation::Revoked,
+                );
                 let studio = shell.studio.borrow();
                 studio.editor_mcp.borrow_mut().grant(&studio, &app, false);
                 studio.publish(&app, &shell.models);
@@ -1980,6 +2018,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
         });
         app.on_settings_mcp_grant_m(|| {
             Shell::with(|shell, app| {
+                crate::clip_export_fence::revoke_client(
+                    app.get_settings().mcp_client.as_str(),
+                    concat_host::export_publication::PublishRevocation::Revoked,
+                );
                 let studio = shell.studio.borrow();
                 studio.editor_mcp.borrow_mut().grant(&studio, &app, true);
                 studio.publish(&app, &shell.models);
@@ -1987,6 +2029,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
         });
         app.on_settings_mcp_revoke(|| {
             Shell::with(|shell, app| {
+                crate::clip_export_fence::revoke_client(
+                    app.get_settings().mcp_client.as_str(),
+                    concat_host::export_publication::PublishRevocation::Revoked,
+                );
                 let studio = shell.studio.borrow();
                 studio.editor_mcp.borrow_mut().revoke();
                 studio.publish(&app, &shell.models);
@@ -2011,6 +2057,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
             });
         });
         app.on_settings_mcp_revoke_move(|| {
+            crate::clip_export_fence::invalidate(
+                concat_host::export_publication::PublishRevocation::Revoked,
+            );
             Shell::with(|shell, app| {
                 let studio = shell.studio.borrow();
                 {
@@ -2028,7 +2077,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
         app.on_settings_mcp_revoke(|| {});
         app.on_settings_mcp_grant_move(|| {});
         app.on_settings_mcp_renew_move(|| {});
-        app.on_settings_mcp_revoke_move(|| {});
+        app.on_settings_mcp_revoke_move(|| {
+            crate::clip_export_fence::invalidate(
+                concat_host::export_publication::PublishRevocation::Revoked,
+            );
+        });
     }
     app.on_model_activated(on_window!(|state, id: SharedString| {
         state.handle(Msg::Settings(SettingsMsg::ModelActivated(id.to_string())));
@@ -2100,7 +2153,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
         state.menu_bar_token += 1;
     }));
     app.on_app_menu_selected({
-        move |action| {
+        move |action: SharedString| {
+            if matches!(action.as_str(), "open" | "new" | "close-window") {
+                crate::clip_export_fence::document_will_change();
+            }
             Shell::with(|shell, app| {
                 {
                     let mut state = shell.studio.borrow_mut();
@@ -2124,7 +2180,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                         }
                         "export" => {
                             if state.session.is_some() {
-                                app.global::<SeeCut>().set_clip_export_open(true);
+                                app.global::<SeeCut>().invoke_change_clip_export_open(true);
                             }
                         }
                         "template" => state.save_template(),

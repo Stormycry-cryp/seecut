@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "stdio", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// Immutable identity of the exact managed image bytes.
+/// Immutable identity of the exact managed media bytes.
 pub struct AssetVersion {
     /// Lowercase SHA256 of the managed content.
     pub sha256: String,
@@ -31,6 +31,13 @@ pub struct AssetVersion {
 )]
 /// Explicit actions; parameters never contain arbitrary filesystem paths.
 pub enum CanvasAction {
+    /// One closed, bounded local edit through the existing native helpers.
+    Edit {
+        /// Exact edit context captured before approval, from project.canvasState.
+        expected_edit_state_id: String,
+        /// Frozen local action with exact bounded semantic parameters.
+        edit: crate::CanvasEdit,
+    },
     /// Insert the exact existing global-library image version.
     Insert {
         /// Existing asset identity.
@@ -107,6 +114,7 @@ impl CanvasAction {
     /// Exact protocol method corresponding to this action.
     pub fn method(&self) -> Method {
         match self {
+            Self::Edit { .. } => Method::CanvasEdit,
             Self::Insert { .. } => Method::InsertLibraryImage,
             Self::Transform { .. } => Method::TransformCanvasLayer,
             Self::Save => Method::SaveCanvasProject,
@@ -125,6 +133,22 @@ pub fn validate_canvas_parameters(
         return Err("invalidInput: operation ID mismatch".into());
     }
     match &parameters.action {
+        CanvasAction::Edit {
+            edit,
+            expected_edit_state_id,
+        } => {
+            let hash = expected_edit_state_id
+                .strip_prefix("edit-v1-")
+                .ok_or("invalidInput: edit state identity")?;
+            if hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                return Err("invalidInput: edit state identity".into());
+            }
+            edit.validate()?;
+        }
         CanvasAction::Insert { asset_id, version } => {
             if asset_id.is_empty()
                 || asset_id.len() > 128
@@ -202,6 +226,10 @@ mod tests {
     #[test]
     fn typed_writes_bind_method_and_original_identity() {
         for action in [
+            CanvasAction::Edit {
+                expected_edit_state_id: format!("edit-v1-{}", "a".repeat(64)),
+                edit: crate::CanvasEdit::LayerAdd,
+            },
             CanvasAction::Insert {
                 asset_id: "asset-1".into(),
                 version: version(),
@@ -269,6 +297,27 @@ mod tests {
         );
     }
     #[test]
+    fn canvas_edit_requires_canonical_frozen_edit_state_identity() {
+        for state in [
+            String::new(),
+            "view-v1-xxx".into(),
+            format!("edit-v1-{}", "A".repeat(64)),
+            format!("edit-v1-{}", "a".repeat(63)),
+        ] {
+            let p = parameters(CanvasAction::Edit {
+                edit: crate::CanvasEdit::LayerAdd,
+                expected_edit_state_id: state,
+            });
+            assert!(validate_canvas_parameters("a", "s", &p).is_err());
+        }
+        assert!(
+            serde_json::from_value::<CanvasAction>(
+                json!({"kind":"edit","edit":{"kind":"layerAdd"}})
+            )
+            .is_err()
+        );
+    }
+    #[test]
     fn reads_cannot_become_writes_or_accept_unbounded_pages() {
         let mut r = request(Method::LibraryImages);
         r.library_query = Some(LibraryQuery {
@@ -309,7 +358,7 @@ mod tests {
         r.offset = Some(0);
         assert!(validate_request_shape(&r).is_err());
         r.offset = None;
-        for id in ["layer:0", "layer:03", "clip:3", "layer:-1"] {
+        for id in ["layer:0", "layer:03", "clip:../3", "layer:-1"] {
             r.object_id = Some(id.into());
             assert!(validate_request_shape(&r).is_err());
         }

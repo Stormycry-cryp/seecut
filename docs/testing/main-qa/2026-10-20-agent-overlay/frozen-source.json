@@ -1,0 +1,20 @@
+{
+  "parent": "e0136fb072ab1f9fe9980687d5d178d63fd6d434",
+  "files": {
+    "src/crates/concat-editor-mcp/src/main.rs": "470ca3128a62ffcd4e9b393f5bb0136aa3e5fe9858069e52b981c9dc05a81df3",
+    "src/crates/concat/src/agent_controller.rs": "c7b6e77f5425229e58a3da4d560d6d75e1c5c06290c8733a7e347e583066c03a",
+    "src/crates/concat/src/agent_ui.rs": "3db6e89a0692e2f90b501538795758d965c3c780fff47c559724d24d6d0f805d",
+    "src/crates/concat/src/cloud.rs": "0605c7a2b2854f2bfc01aa1c2cc77e10082c7591f8afed7a94fdd2e6de810304",
+    "src/crates/concat/src/editor_mcp.rs": "a695c8a7c2fda79d1937fefd349f6fc85791c184bc23d55d3558c256dedf48c7",
+    "src/crates/concat/src/editor_mcp_write_registry.rs": "34242f0a2dba5fc7e64cfd0cf962c30e4b264138292bfaaf71be1b7984d8eae3",
+    "src/crates/concat/src/toonflow_agent.rs": "cca7e4d1990d25e28c17318eaeb6a1c3d09e00fdd1b88c1e608fcd2255500aab",
+    "src/crates/concat/src/toonflow_overlay_macos.rs": "d73b724d0849b54f0867d2be5faf89aae8bc3ebd8d907ddf945dda257c3be9a8",
+    "src/crates/concat/src/toonflow_webview.rs": "b48455c565f55ae02fd5ea6ab096bc7e3f15140d86f2a3f3c76a4eb4f62ee7e0",
+    "src/crates/concat/ui/app.slint": "358eba214f74852c8b75dd1b72531c91c87b03869de50dd2f24640384adb9556",
+    "src/crates/concat/ui/seecut/assistant-floating.slint": "af4729a5ee2f074460bda532268faa7831c3515b3eab7f1e83058f37bd9c2460",
+    "src/crates/concat/ui/seecut/assistant.slint": "41aaa977167cfde53d89099c5dc62479777a0941189de1639a2124b98c3b8a08",
+    "src/crates/concat/ui/seecut/assistant_dock.slint": "3fac7eb976895af9175f2f4a20f382decb9cd16b9ce32f091e2c56de47376dc8",
+    "src/crates/concat/ui/seecut/assistant_state.slint": "31985e54d046f65b3d79995742e21face4f7876fd45cc3903ee89ae1698c9400",
+    "src/crates/concat/src/agent_process.rs": "159179b7e2875470debb5e2990a56cb3beb02f2179ee629dff395fbbbb0fccf8"
+  }
+}

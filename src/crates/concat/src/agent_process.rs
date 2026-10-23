@@ -47,6 +47,7 @@ pub enum Event {
     Response(Value),
     Runtime(Value),
     Managed(Value),
+    Task(Value),
     Result(Value),
     RuntimeDiagnostic {
         code: String,
@@ -104,12 +105,22 @@ impl Handle {
                     | "status"
                     | "session.create"
                     | "session.restore"
+                    | "session.permissions"
                     | "session.close"
                     | "send"
                     | "stop"
                     | "approve"
                     | "reconcile"
                     | "editor.reconcile"
+                    | "app.abandonReads"
+                    | "app.control.authorize"
+                    | "app.reconcileOperation"
+                    | "task.create"
+                    | "task.update"
+                    | "task.pause"
+                    | "task.resume"
+                    | "task.stop"
+                    | "task.status"
                     | "shutdown"
             )
         {
@@ -417,6 +428,20 @@ fn protocol_frame(line: &[u8]) -> Result<Event, BridgeError> {
                 return Err(BridgeError::ProtocolFailed);
             }
             Event::Managed(value)
+        }
+        Some("task.state") => {
+            if line.len() > 64 * 1024
+                || !value.get("sessionId").is_some_and(valid_id)
+                || !value.get("task").is_some_and(Value::is_object)
+                || value
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .any(|k| !matches!(k.as_str(), "version" | "type" | "sessionId" | "task"))
+            {
+                return Err(BridgeError::ProtocolFailed);
+            }
+            Event::Task(value)
         }
         Some("diagnostic") => {
             let code = value
@@ -818,6 +843,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn task_frames_require_closed_bounded_envelope_and_preserve_real_not_sent_shape() {
+        let valid = json!({"version":1,"type":"task.state","sessionId":"session-1","task":{}});
+        assert!(matches!(
+            protocol_frame(&serde_json::to_vec(&valid).unwrap()),
+            Ok(Event::Task(_))
+        ));
+        for (key, value) in [
+            ("sessionId", json!("")),
+            ("task", Value::Null),
+            ("unexpected", json!(true)),
+            ("task", json!({"large":"x".repeat(65536)})),
+        ] {
+            let mut bad = valid.clone();
+            bad[key] = value;
+            assert!(matches!(
+                protocol_frame(&serde_json::to_vec(&bad).unwrap()),
+                Err(BridgeError::ProtocolFailed)
+            ));
+        }
+        let event = json!({"version":1,"type":"event","event":{"schemaVersion":1,"seq":1,"sessionId":"session-1","turnId":"real-turn","type":"tool.failed","data":{"invocationId":"real-turn_allocated-task-write","message":{"role":"tool","toolName":"canvas_edit","isError":true},"metadata":{"appStatus":"not_sent","postVerification":"verified","reasonCode":"task_execution_blocked"}}}});
+        assert!(
+            matches!(protocol_frame(&serde_json::to_vec(&event).unwrap()),Ok(Event::Runtime(parsed)) if parsed==event)
+        );
+    }
     #[test]
     fn managed_frames_require_a_bounded_session_and_object() {
         let valid =

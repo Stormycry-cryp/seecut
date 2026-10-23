@@ -1,0 +1,16 @@
+{
+  "base": "ef95528a623986a85fd8d40aa953cabcc2f9df8d",
+  "changedFile": "src/crates/concat-editor-mcp/src/flow_workspace.rs",
+  "sourceFileSha256": "056f961c05c3a8c3a713f0d8db83babba9cc4df7f274d4d1e3d19acca9ae8a5c",
+  "change": "Move unchanged test module after unchanged impl",
+  "fmtPassed": true,
+  "macClippyDefaultPassed": true,
+  "macClippyAllFeaturesPassed": true,
+  "linuxCrossTargetClippyAllFeaturesPassed": true,
+  "moduleTestsPassed": 2,
+  "testsRepeatedAfterReconnect": false,
+  "fullProductTestsRerun": false,
+  "appBuildStarted": false,
+  "uiVerified": false,
+  "deployed": false
+}

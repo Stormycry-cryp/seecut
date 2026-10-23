@@ -6,6 +6,7 @@ export { AssistantMessage }
 export global Assistant {
     in-out property <bool> open;
     in-out property <bool> enabled;
+    in-out property <bool> app-scope;
     in-out property <bool> developer-tools;
     in-out property <bool> window-visible: true;
     in-out property <bool> window-focused: true;
@@ -41,8 +42,26 @@ export global Assistant {
     in-out property <bool> can-send;
     in-out property <bool> can-stop;
     in-out property <bool> can-reconcile;
+    in-out property <bool> app-recovery-visible;
+    in-out property <bool> can-abandon-app-reads;
+    in-out property <bool> can-query-app-reads;
     in-out property <string> reconcile-label: "核实原请求";
     in-out property <string> budget-label;
+    in-out property <bool> task-mode;
+    in-out property <bool> task-visible;
+    in-out property <string> task-status;
+    in-out property <string> task-reason;
+    in-out property <string> task-limit-label;
+    in-out property <string> task-compatibility;
+    in-out property <string> task-budget-text;
+    in-out property <string> task-budget-reason;
+    in-out property <string> task-update-label;
+    in-out property <bool> can-edit-task-budget;
+    in-out property <bool> can-task-pause;
+    in-out property <bool> can-task-stop;
+    in-out property <bool> can-task-resume;
+    in-out property <bool> can-task-status;
+    in-out property <bool> can-task-update;
     in-out property <bool> can-connect;
     in-out property <bool> connected;
     in-out property <bool> can-disconnect;
@@ -58,7 +77,6 @@ export global Assistant {
     in-out property <bool> can-grant-read;
     in-out property <bool> can-revoke-read;
     in-out property <bool> can-grant-write;
-    in-out property <bool> can-renew-write;
     in-out property <bool> can-revoke-write;
     in-out property <string> read-permission-status;
     in-out property <string> write-permission-status;
@@ -84,6 +102,12 @@ export global Assistant {
     in-out property <int> secret-clear-token;
     callback send(string);
     callback stop();
+    callback task-pause();
+    callback task-stop();
+    callback task-resume();
+    callback task-status-requested();
+    callback task-update(string);
+    callback task-budget-edited(string);
     callback connect(string, string, string, bool);
     callback disconnect();
     callback connect-managed();
@@ -99,10 +123,11 @@ export global Assistant {
     callback select-effort(int);
     callback refresh-models();
     callback reconcile();
+    callback abandon-app-reads();
+    callback query-app-reads();
     callback grant-read();
     callback revoke-read();
     callback grant-write();
-    callback renew-write();
     callback revoke-write();
     callback allow();
     callback reject();

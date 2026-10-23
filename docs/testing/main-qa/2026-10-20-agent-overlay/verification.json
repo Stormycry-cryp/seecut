@@ -1,0 +1,175 @@
+{
+  "checkedAtUTC": "2026-10-20T02:27:09.863845+00:00",
+  "publicSource": "73d8782ded7c1ce87088782ceeeaa763c83d5ae9",
+  "privateRuntimeSource": "6f07373198043ff69c9ee8d9d3ecd0d0b850f3bc",
+  "sourceManifest": "frozen-source.json",
+  "builds": [
+    {
+      "kind": "application",
+      "log": "logs/session-permissions-final-build.log",
+      "sha256": "a9423f539937ea0fab911cd4da7b087bf3bf9f2e3368776861dbfb0fc5029593",
+      "result": "passed"
+    },
+    {
+      "kind": "nativeTestBinary",
+      "log": "logs/session-permissions-test-build-final.log",
+      "sha256": "03eaf87b5de7cbe7476538ebc4273394a8388e168914d651fa86073f24576fbb",
+      "result": "passed"
+    },
+    {
+      "kind": "mcp",
+      "log": "logs/session-permissions-mcp-build.log",
+      "sha256": "bef0300b8fedf564d98d8f856211a7aebada034df5d2161a07b3ae41d591e409",
+      "result": "passed"
+    }
+  ],
+  "native": {
+    "passed": 121,
+    "ignored": 1,
+    "failed": 0,
+    "binary": {
+      "path": "/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/.toonflow/native-target/debug/deps/concat-6e5e5b3d2a17522d",
+      "sha256": "f7a9fb4748c5849d216ede5e1bba5380139a5449881cc54485363ee065436f43",
+      "passed": 121
+    },
+    "groups": [
+      {
+        "filter": "editor_mcp::approval_view::tests",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.77,
+        "log": "logs/native-1.log"
+      },
+      {
+        "filter": "agent_ui::desktop::tests",
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04,
+        "log": "logs/native-2.log"
+      },
+      {
+        "filter": "editor_mcp::assistant_permission_tests",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04,
+        "log": "logs/native-3.log"
+      },
+      {
+        "filter": "editor_mcp::write_registry::tests",
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04,
+        "log": "logs/native-4.log"
+      },
+      {
+        "filter": "editor_mcp::canvas_policy::tests",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04,
+        "log": "logs/native-5.log"
+      },
+      {
+        "filter": "agent_controller::tests",
+        "passed": 63,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 20.15,
+        "log": "logs/native-6.log"
+      },
+      {
+        "filter": "editor_mcp::tests::assistant_conversation_lifecycle_revokes_without_inheritance",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04,
+        "log": "logs/native-7.log"
+      },
+      {
+        "filter": "cloud::failure_feedback::tests",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04,
+        "log": "logs/native-8.log"
+      },
+      {
+        "filter": "cloud::reference_tests::failed_task_exposes_safe_failure_state_and_a_fallback_reason",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04,
+        "log": "logs/native-9.log"
+      },
+      {
+        "filter": "agent_process::tests",
+        "passed": 14,
+        "failed": 0,
+        "ignored": 1,
+        "seconds": 22.83,
+        "log": "logs/native-10.log"
+      }
+    ]
+  },
+  "private": [
+    {
+      "layer": "existingRuntimeSafety",
+      "passed": 59,
+      "failed": 0,
+      "log": "logs/private-targeted-tests.log",
+      "sha256": "f5aec06091a853e79c970dec84d260ae50cfc08c3019148deeee8a237d287145"
+    },
+    {
+      "layer": "sessionPermissions",
+      "passed": 8,
+      "failed": 0,
+      "log": "logs/session-permissions-runtime-tests.log",
+      "sha256": "e63d4527db15512ce9f4139ba811e42bacddf7f943ffe9e65c02e6af87488dee"
+    },
+    {
+      "layer": "simulatedConfirmationChain",
+      "passed": 2,
+      "failed": 0,
+      "log": "logs/agent-chain-tests.log",
+      "sha256": "b2a4f6f7c5876ae67a82b9884bdd19252b3a37ef2f8a887051794b7003879a6d"
+    },
+    {
+      "layer": "managedLoopback",
+      "passed": 3,
+      "failed": 0,
+      "log": "logs/managed-targeted-tests.log",
+      "sha256": "4f9421c1f1033be5ceb6ce5b8eccdf41be74ed97b84d61dda8cf6fb6cd54975b"
+    }
+  ],
+  "headlessWeb": {
+    "evidence": "headless-web/verification.json",
+    "checks": 6,
+    "pageErrors": 0,
+    "scope": "Actual bundled project-list assets with synthetic read-only API; no canvas/Agent/native boundary coverage"
+  },
+  "resolvedTestFailure": "Host process method allowlist originally omitted session.permissions. Both new Controller tests failed before dispatch. Added the exact method and reran final targeted tests.",
+  "desktopInputUsed": false,
+  "paidModelCalls": false,
+  "remoteCIRerun": false,
+  "deployment": false,
+  "pending": [
+    "Final native Slint/Wry rounded boundary and resize gesture",
+    "Final two-mode permission menu clicks and connection state in actual app",
+    "Final native narrow-window/page variants",
+    "Complete Agent to native Flow generation and default asset-library persistence chain"
+  ],
+  "quota": {
+    "checkedAtUTC": "2026-10-20T02:26:26Z",
+    "windowMinutes": 10080,
+    "remainingPercent": 38,
+    "resetsAtUTC": "2026-10-25T01:02:41Z",
+    "stopAtOrBelowPercent": 30
+  },
+  "runtimeManifest": "runtime-manifest.json",
+  "candidateUpdated": true,
+  "candidateLaunched": false
+}

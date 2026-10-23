@@ -1281,10 +1281,10 @@ impl CanvasGpu {
     }
 
     fn lookup_texture(&mut self, lut: &crate::lookup::CubeLut) -> wgpu::Texture {
-        if let Some((key, texture)) = &self.lookup {
-            if key == lut.digest() {
-                return texture.clone();
-            }
+        if let Some((key, texture)) = &self.lookup
+            && key == lut.digest()
+        {
+            return texture.clone();
         }
         let count = lut.values().len() as u32;
         let width = count.min(256);

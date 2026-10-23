@@ -197,7 +197,7 @@ export component StartScreen inherits Rectangle {
                         background: Theme.panel; border-radius: Theme.r-lg;
                         border-width: 1px; border-color: Theme.line-strong;
                         Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; glyph: Glyph.plus; size: 24px; tint: Theme.fg-muted; }
-                        TouchArea { mouse-cursor: pointer; clicked => { root.create-open = true; } }
+                        TouchArea { mouse-cursor: pointer; clicked => { SeeCut.clip-source-will-change(); root.create-open = true; } }
                     }
                     Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 18px : grid.media-height + 10px; text: "新建项目"; font-size: 14px; color: Theme.fg; }
                 }
@@ -230,6 +230,6 @@ export component StartScreen inherits Rectangle {
         rate-changed(index) => { root.rate-changed(index); }
         create => { root.create(); }
         dismiss-error => { root.dismiss-error(); }
-        closed => { root.create-open = false; root.create-cancelled(); }
+        closed => { SeeCut.clip-source-will-change(); root.create-open = false; root.create-cancelled(); }
     }
 }

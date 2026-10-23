@@ -1,3 +1,4 @@
+import { SeeCut } from "../seecut/state.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
@@ -871,7 +872,7 @@ export component ColourField inherits HorizontalLayout {
 
             touch := TouchArea {
                 mouse-cursor: pointer;
-                clicked => { shelf.show(); }
+                clicked => { SeeCut.clip-source-will-change(); shelf.show(); }
             }
 
             shelf := PopupWindow {

@@ -1209,6 +1209,154 @@ fn now_millis() -> Result<u64, String> {
     u64::try_from(value).map_err(|_| "系统时间超出支持范围".to_owned())
 }
 
+/// Metadata classification only; neither case claims content verification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ManagedVersionMetadataError {
+    Missing,
+    Unavailable,
+}
+impl ManagedVersionMetadataError {
+    fn from_io(error: std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Self::Missing
+        } else {
+            Self::Unavailable
+        }
+    }
+}
+
+/// Validate the existing managed path without reading/hash-scanning media content.
+/// The bounded MCP import calls this before its SHA check.
+pub(crate) fn checked_managed_version_metadata(
+    root: &Path,
+    asset: &Asset,
+) -> Result<(PathBuf, fs::Metadata), ManagedVersionMetadataError> {
+    use ManagedVersionMetadataError as Error;
+    if asset.id.is_empty() || asset.trashed {
+        return Err(Error::Unavailable);
+    }
+    let version = asset.version.as_ref().ok_or(Error::Unavailable)?;
+    if version.sha256.len() != 64
+        || !version
+            .sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || version.registration_id.is_empty()
+    {
+        return Err(Error::Unavailable);
+    }
+    let root = root.canonicalize().map_err(Error::from_io)?;
+    let folder = ["imported", "generated"]
+        .into_iter()
+        .map(|name| root.join(name))
+        .find(|folder| asset.path.parent() == Some(folder.as_path()))
+        .ok_or(Error::Unavailable)?;
+    let folder_metadata = fs::symlink_metadata(&folder).map_err(Error::from_io)?;
+    let metadata = fs::symlink_metadata(&asset.path).map_err(Error::from_io)?;
+    if folder_metadata.file_type().is_symlink()
+        || !folder_metadata.is_dir()
+        || !metadata.is_file()
+        || asset.path.canonicalize().map_err(Error::from_io)? != asset.path
+    {
+        return Err(Error::Unavailable);
+    }
+    Ok((asset.path.clone(), metadata))
+}
+
+impl Library {
+    /// Read the existing relink manifest with explicit IO and collection limits.
+    /// Unlike Library::load this never migrates, registers assets or creates files.
+    pub(crate) fn load_for_relink_bounded(
+        root: impl AsRef<Path>,
+        max_bytes: usize,
+        max_items: usize,
+    ) -> Result<Self, String> {
+        let root = root.as_ref().to_path_buf();
+        if !root.is_dir() {
+            return Err("个人资产库目录不存在".into());
+        }
+        let path = root.join(MANIFEST_NAME);
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() {
+            return Err("个人资产库索引不是普通文件".into());
+        }
+        let read_limit = max_bytes.checked_add(1).ok_or("resourceLimit")?;
+        if metadata.len() > max_bytes as u64 {
+            return Err("resourceLimit".into());
+        }
+        let mut bytes = Vec::new();
+        File::open(&path)
+            .map_err(|e| e.to_string())?
+            .take(read_limit as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > max_bytes {
+            return Err("resourceLimit".into());
+        }
+        let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        if manifest.items.len() > max_items || manifest.folders.len() > max_items {
+            return Err("resourceLimit".into());
+        }
+        Ok(Self {
+            root,
+            items: manifest.items,
+            folders: manifest.folders,
+        })
+    }
+}
+
+/// Existing managed path checks with a bounded content digest for one MCP import.
+/// A file growing during the read cannot make the digest scan exceed max+1 bytes.
+pub(crate) fn checked_managed_version_path_bounded(
+    root: &Path,
+    asset: &Asset,
+    max_bytes: u64,
+) -> Result<PathBuf, String> {
+    let (path, metadata) = checked_managed_version_metadata(root, asset)
+        .map_err(|_| "库内版本不是可读取的普通受管文件")?;
+    if metadata.len() > max_bytes {
+        return Err("resourceLimit".into());
+    }
+    let version = asset.version.as_ref().ok_or("库内资产没有固定内容版本")?;
+    if file_digest_bounded(&path, max_bytes)? != version.sha256 {
+        return Err("库内受管版本内容校验失败".into());
+    }
+    Ok(path)
+}
+
+/// The GUI's before/after fixed-reference check, with an explicit read limit.
+pub(crate) fn verify_asset_reference_bounded(
+    path: &Path,
+    reference: Option<&AssetReference>,
+    max_bytes: u64,
+) -> Result<(), String> {
+    if let Some(version) = reference.and_then(|r| r.version.as_ref())
+        && file_digest_bounded(path, max_bytes)? != version.sha256
+    {
+        return Err("库内素材版本已变化，请重新选择".into());
+    }
+    Ok(())
+}
+fn file_digest_bounded(path: &Path, max_bytes: u64) -> Result<String, String> {
+    let limit = max_bytes.checked_add(1).ok_or("resourceLimit")?;
+    let mut file = File::open(path).map_err(|e| e.to_string())?.take(limit);
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut bytes = 0u64;
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        bytes = bytes
+            .checked_add(count as u64)
+            .filter(|n| *n <= max_bytes)
+            .ok_or("resourceLimit")?;
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1896,5 +2044,21 @@ mod f1_library_tests {
         let manifest = fs::read(root.join(MANIFEST_NAME)).unwrap();
         crate::registration_retry::retry(&root).unwrap();
         assert_eq!(fs::read(root.join(MANIFEST_NAME)).unwrap(), manifest);
+    }
+}
+
+#[cfg(test)]
+mod bounded_digest_tests {
+    use super::*;
+    #[test]
+    fn digest_read_limit_rejects_real_extra_bytes_without_an_unbounded_read() {
+        let path = std::env::temp_dir().join(format!("seecut-bounded-digest-{}", Uuid::new_v4()));
+        fs::write(&path, b"12345").unwrap();
+        assert_eq!(file_digest_bounded(&path, 4).unwrap_err(), "resourceLimit");
+        assert_eq!(
+            file_digest_bounded(&path, 5).unwrap(),
+            format!("{:x}", Sha256::digest(b"12345"))
+        );
+        fs::remove_file(path).unwrap();
     }
 }

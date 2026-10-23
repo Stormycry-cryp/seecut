@@ -1,0 +1,20 @@
+{
+  "commit": "7a05ee22bc6889e3ac16e9e6b8a414ae823be53c",
+  "files": {
+    "LICENSE": "2c6559ff15f9a84719badc29ead7788125aa3526a421e7a7b88671cc4711e5f1",
+    "package.json": "1fbefa48496dac78a3ee9669fda34fae07e4928eb1ae0a8c0fcbbe0bca7e1590",
+    "src/canvas-tools.mjs": "61a420c7dbc3d9f8f760abed974760e6daf60fcaa6d98a58812fedfc2d08201e",
+    "src/cli.mjs": "a5d9abb114fe4de4f8d9edf6f3c220c462797e86e44be93796782ab7304a1255",
+    "src/editor.mjs": "315b2517248e7a9a90fc7ec12fe9787ae42ad6651b1abb23981c156e3ccddbb4",
+    "src/embedded-flow-tools.mjs": "f0398844ff3a9f640210b4da6928f4cf5a5689b594809a1dde9679d209efd8df",
+    "src/ipc.mjs": "4474a865125d79473f281619eb242bda523c3d700be896f96a1f0e9e41f1d138",
+    "src/managed-billing.mjs": "2ca5a2666f8a56e0f4111b0affb0f7556b74ad420a2bebb2cbe803c124a4abbc",
+    "src/managed-operation-store.mjs": "02647185c953daebef4c51d3db22453a1f4d5e88af2bb8a15f802e8086b2647d",
+    "src/managed-policy.mjs": "efc390c79aa6fa14e551c1cff9dcb45150f58205abd66f13d2a5cdff2fcffeac",
+    "src/managed-provider.mjs": "09bcd4f7f17f3010abe8290bc480025a72dd81defd38ad713bd144d326906a90",
+    "src/media-store.mjs": "e81c9cb068c0a00b9b0fa0ec4aeb2ec03f04a97eb17b3c320c189a81322984fb",
+    "src/providers.mjs": "9649ca0444a76f8ab5bd44c8a846e6fd39a43ecc609f9d2032509a04c29b30e5",
+    "src/runtime.mjs": "7b0cecf5e95505ea1df1ebbfe596d65d0118ffa7564d2ccb1bc75cd09c75043e",
+    "src/security.mjs": "97ba948b3b5464541627b1e5c6eee92bada926ba004b087f3e4bdbe71b6d7d84"
+  }
+}

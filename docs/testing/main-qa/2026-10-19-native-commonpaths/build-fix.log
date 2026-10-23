@@ -1,0 +1,5 @@
+   Compiling concat v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat)
+   Compiling concat-canvas v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-canvas)
+   Compiling concat-editor-mcp v0.2.2 (/Users/chenyunzhe/Documents/Codex_Project/SeeCut/Seecut-grsai-r1/src/crates/concat-editor-mcp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 16s
+Full local log SHA256: 2a9df39fa739cc3ba2acbc73c0da5bd498bdbc897aa7842dc054bb3a41dc4cc4

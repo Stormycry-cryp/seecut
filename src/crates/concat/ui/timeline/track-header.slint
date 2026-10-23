@@ -1,3 +1,4 @@
+import { SeeCut } from "../seecut/state.slint";
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
@@ -63,7 +64,7 @@ component SizeMenu inherits Rectangle {
         // Lit only when the lane has been sized by hand: auto is the resting
         // state, and a button lit on every row would say nothing.
         checked: root.current != TrackSize.auto;
-        clicked => { list.show(); }
+        clicked => { SeeCut.clip-source-will-change(); list.show(); }
     }
 
     list := PopupWindow {

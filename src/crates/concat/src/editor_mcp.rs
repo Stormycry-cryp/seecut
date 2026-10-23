@@ -28,6 +28,32 @@ mod write_registry;
 #[path = "editor_mcp_write_request.rs"]
 mod write_request;
 
+#[path = "editor_mcp_clip_preview.rs"]
+mod clip_preview;
+#[path = "editor_mcp_view_context.rs"]
+mod view_context;
+
+#[path = "editor_mcp_app_control.rs"]
+mod app_control;
+#[path = "editor_mcp_app_read.rs"]
+mod app_read;
+#[path = "editor_mcp_canvas_edit.rs"]
+mod canvas_edit;
+#[path = "editor_mcp_clip_edit.rs"]
+mod clip_edit;
+#[path = "editor_mcp_clip_execute.rs"]
+mod clip_execute;
+#[path = "editor_mcp_clip_export.rs"]
+mod clip_export;
+#[path = "editor_mcp_clip_import.rs"]
+mod clip_import;
+#[path = "editor_mcp_clip_save.rs"]
+mod clip_save;
+#[path = "editor_mcp_library_assets.rs"]
+mod library_assets;
+pub(crate) use app_read::AssistantAppSnapshot;
+use library_assets::LibraryAuthority;
+
 use write_registry::{Begin, LeaseStatus, OperationKey, RegistryError, Scope, WriteRegistry};
 use write_request::{WriteRequest, WriteRequestOutcome};
 
@@ -80,20 +106,21 @@ pub enum AssistantPermission {
     GrantRead,
     RevokeRead,
     GrantWrite,
-    RenewWrite,
     RevokeWrite,
 }
 
 pub(crate) enum AssistantPermissionError {
     NotAllowed,
     WriterUnavailable,
+    StaleContext,
 }
 
 impl AssistantPermissionError {
     pub(crate) fn message(&self) -> &'static str {
         match self {
             Self::NotAllowed => "权限状态已变化，请重新检查",
-            Self::WriterUnavailable => "当前画布无法授权移动，请检查工程状态",
+            Self::WriterUnavailable => "当前工程无法授权编辑，请检查工程状态",
+            Self::StaleContext => "编辑状态已变化，请重新核对操作",
         }
     }
 }
@@ -112,7 +139,6 @@ pub struct AssistantSnapshot {
     pub can_grant_read: bool,
     pub can_revoke_read: bool,
     pub can_grant_write: bool,
-    pub can_renew_write: bool,
     pub can_revoke_write: bool,
 }
 
@@ -149,16 +175,14 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
     let mut active = false;
     let mut expired = false;
     let mut conflict = false;
-    let mut minutes = 0;
     match writes.lease_status(now) {
         LeaseStatus::Active {
             scope: lease_scope,
             client,
-            remaining_minutes,
+            ..
         } if Some(lease_scope) == scope => {
             active = client == ASSISTANT_CLIENT_ID;
             conflict = !active;
-            minutes = remaining_minutes;
         }
         LeaseStatus::Expired {
             scope: lease_scope,
@@ -169,7 +193,7 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
         }
         _ => {}
     }
-    let writable = scope.is_some() && canvas && read_ready && write_ready;
+    let writable = scope.is_some() && canvas && write_ready;
     AssistantSnapshot {
         document: scope.map(|scope| crate::agent_identity::DocumentIdentity {
             instance_id: scope.instance.clone(),
@@ -207,18 +231,17 @@ fn assistant_registry_snapshot<P: PartialEq + Clone, R: Clone>(
         } else if !read_ready {
             "请先允许读取与预览".into()
         } else if active {
-            format!("已允许编辑 · 剩余{minutes}分钟")
+            "允许页面操作 · 当前会话有效".into()
         } else if expired {
-            "编辑权限已到期，请续期后重新连接".into()
+            "请重新选择页面操作权限".into()
         } else if !write_ready {
-            "当前画布暂不可编辑".into()
+            "当前工程暂不可编辑".into()
         } else {
             "未允许编辑".into()
         },
         can_grant_read: scope.is_some(),
         can_revoke_read: grant.is_some(),
-        can_grant_write: writable && !active && !expired && !conflict,
-        can_renew_write: writable && (active || expired),
+        can_grant_write: writable && !active && !conflict,
         can_revoke_write: canvas && (active || expired),
     }
 }
@@ -238,7 +261,7 @@ fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
     writes: &mut WriteRegistry<P, R>,
     write_token: &mut String,
     action: AssistantPermission,
-    fresh_token: impl FnOnce() -> String,
+    mut fresh_token: impl FnMut() -> String,
 ) -> Option<AssistantWriteChange> {
     let AssistantPermissionContext {
         scope,
@@ -262,24 +285,48 @@ fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
         AssistantPermission::GrantRead => snapshot.can_grant_read,
         AssistantPermission::RevokeRead => snapshot.can_revoke_read,
         AssistantPermission::GrantWrite => snapshot.can_grant_write,
-        AssistantPermission::RenewWrite => snapshot.can_renew_write,
         AssistantPermission::RevokeWrite => snapshot.can_revoke_write,
     };
     if !allowed {
         return None;
     }
     let scope = scope?;
+    if matches!(
+        action,
+        AssistantPermission::GrantRead
+            | AssistantPermission::RevokeRead
+            | AssistantPermission::RevokeWrite
+    ) {
+        crate::clip_export_fence::revoke_client(
+            ASSISTANT_CLIENT_ID,
+            concat_host::export_publication::PublishRevocation::Revoked,
+        );
+    }
+    crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
     match action {
         AssistantPermission::GrantRead => {
-            grants.insert(
-                ASSISTANT_CLIENT_ID.into(),
-                Grant {
-                    token: fresh_token(),
-                    project: scope.project.clone(),
-                    media: true,
-                },
-            );
-            Some(AssistantWriteChange::None)
+            if !grants
+                .get(ASSISTANT_CLIENT_ID)
+                .is_some_and(|g| g.project == scope.project && g.media)
+            {
+                grants.insert(
+                    ASSISTANT_CLIENT_ID.into(),
+                    Grant {
+                        token: fresh_token(),
+                        project: scope.project.clone(),
+                        media: true,
+                    },
+                );
+            }
+            // Switching to read retains its credential and live connection, but
+            // immediately withdraws write authority and invalidates old tokens.
+            if snapshot.can_revoke_write {
+                writes.revoke();
+                write_token.clear();
+                Some(AssistantWriteChange::Revoked)
+            } else {
+                Some(AssistantWriteChange::None)
+            }
         }
         AssistantPermission::RevokeRead => {
             grants.remove(ASSISTANT_CLIENT_ID);
@@ -291,15 +338,24 @@ fn assistant_registry_permission<P: PartialEq + Clone, R: Clone>(
                 Some(AssistantWriteChange::None)
             }
         }
-        AssistantPermission::GrantWrite | AssistantPermission::RenewWrite => {
+        AssistantPermission::GrantWrite => {
             let token = fresh_token();
-            let result = match action {
-                AssistantPermission::GrantWrite => {
-                    writes.trusted_grant(scope, ASSISTANT_CLIENT_ID, token.clone(), now)
-                }
-                _ => writes.trusted_renew(scope, ASSISTANT_CLIENT_ID, token.clone(), now),
-            };
-            result.ok()?;
+            writes
+                .trusted_grant_session(scope, ASSISTANT_CLIENT_ID, token.clone(), now)
+                .ok()?;
+            if !grants
+                .get(ASSISTANT_CLIENT_ID)
+                .is_some_and(|g| g.project == scope.project && g.media)
+            {
+                grants.insert(
+                    ASSISTANT_CLIENT_ID.into(),
+                    Grant {
+                        token: fresh_token(),
+                        project: scope.project.clone(),
+                        media: true,
+                    },
+                );
+            }
             *write_token = token;
             Some(AssistantWriteChange::Issued)
         }
@@ -439,7 +495,8 @@ impl ClipObject<'_> {
     fn into_value(self) -> Value {
         match self {
             Self::Media(item) => json!({
-                "kind":"media", "id":format!("media:{}", item.id),
+                "kind":"media", "mediaKind":item.kind, "id":format!("media:{}", item.id),
+                "libraryReference":clip_edit::library_reference(item),
                 "name":bounded_name(&item.name), "duration":item.duration,
             }),
             Self::Timeline(timeline) => json!({
@@ -512,6 +569,10 @@ fn clip_objects(
 #[derive(Clone, Debug, PartialEq)]
 enum EditFingerprint {
     Move(MoveFingerprint),
+    Clip {
+        revision: u64,
+        parameters: concat_editor_mcp::ClipParameters,
+    },
     Canvas {
         revision: u64,
         parameters: CanvasParameters,
@@ -545,6 +606,32 @@ pub(crate) fn canvas_approval_view(tool: &str, args: Value) -> Option<(String, S
         return approval_view::flow_summary(&call);
     }
     let intent = Intent::parse(tool, args)?;
+    if let Some(query) = &intent.library_assets {
+        return Some((
+            "查找资产".into(),
+            format!(
+                "{:?} · {}",
+                query.kind,
+                query.asset_id.as_deref().unwrap_or(&query.query)
+            ),
+        ));
+    }
+    if let Some(action) = intent.clip_action {
+        return Some((
+            "编辑剪辑".into(),
+            format!(
+                "时间线：{}\n{}",
+                action.timeline_id,
+                approval_view::details(&serde_json::to_value(action.edit).ok()?)
+            ),
+        ));
+    }
+    if intent.clip_query {
+        return Some((
+            "核对原剪辑操作".into(),
+            format!("操作：{}", intent.operation?.operation_id),
+        ));
+    }
     Some(match intent.action {
         Some(CanvasAction::Insert { asset_id, .. }) => {
             ("放入画布".into(), format!("图片：{asset_id}"))
@@ -560,6 +647,7 @@ pub(crate) fn canvas_approval_view(tool: &str, args: Value) -> Option<(String, S
         ),
         Some(CanvasAction::Save) => ("保存画布".into(), "保存当前工程".into()),
         Some(CanvasAction::Export) => ("导出 PNG".into(), "导出并加入资产库".into()),
+        Some(CanvasAction::Edit { edit, .. }) => approval_view::canvas_edit_summary(&edit),
         None if intent.library.is_some() => ("查找图片".into(), intent.library?.query),
         None if intent.retry_registration => ("重试入库".into(), "登记原 PNG".into()),
         None => ("核对操作".into(), "读取原操作结果".into()),
@@ -584,6 +672,8 @@ pub(crate) struct BridgeUi {
     pub socket_status: String,
     pub client_draft: String,
     grants: HashMap<String, Grant>,
+    app_reads: app_read::AppReadState,
+    app_controls: app_control::AppControlState,
     canvas_ids: Option<(String, DocumentIds)>,
     clip_ids: Option<(String, DocumentIds)>,
     active_canvas: bool,
@@ -598,16 +688,57 @@ pub(crate) struct BridgeUi {
     write_token: String,
     write_message: String,
     write_revoked: bool,
+    assistant_session: Option<String>,
     write_timer: slint::Timer,
 }
 
 impl BridgeUi {
+    /// Capture the real Context at the human send action. The expected identity
+    /// and token come from the active native lease, never a display summary.
+    pub(crate) fn assistant_document_observation(
+        &mut self,
+        studio: &Studio,
+        app: &App,
+        identity: &crate::agent_identity::DocumentIdentity,
+        read_token: &str,
+    ) -> Result<crate::agent_observation::DocumentObservationBinding, AssistantPermissionError>
+    {
+        if identity.instance_id != self.instance_id {
+            return Err(AssistantPermissionError::StaleContext);
+        }
+        let request: Request = serde_json::from_value(json!({
+            "instanceId": self.instance_id,
+            "clientId": ASSISTANT_CLIENT_ID,
+            "clientToken": read_token,
+            "method": "context"
+        }))
+        .map_err(|_| AssistantPermissionError::NotAllowed)?;
+        let UiReply::Response(response) = self.handle(&request, studio, app) else {
+            return Err(AssistantPermissionError::StaleContext);
+        };
+        if response.status == "notAuthorized" {
+            return Err(AssistantPermissionError::NotAllowed);
+        }
+        if response.status != "ok" {
+            return Err(AssistantPermissionError::StaleContext);
+        }
+        let data = response
+            .data
+            .ok_or(AssistantPermissionError::StaleContext)?;
+        crate::agent_observation::DocumentObservationBinding::from_native_context(
+            &data,
+            identity,
+            ASSISTANT_CLIENT_ID,
+        )
+        .map_err(|_| AssistantPermissionError::StaleContext)
+    }
+
     pub(crate) fn assistant_snapshot(&mut self, studio: &Studio, app: &App) -> AssistantSnapshot {
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
         let canvas = active
             .as_ref()
-            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
+            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "clip" | "flow"));
         let project_name = match active.as_ref().map(|(kind, _)| kind.as_str()) {
             Some("canvas") => studio.canvas.name.clone(),
             Some("clip") => studio.project_name.clone(),
@@ -620,7 +751,10 @@ impl BridgeUi {
         // enables an explicit request; permission and writes recheck ownership.
         let ready = canvas
             && !modal_busy(studio, app, false)
-            && (self.active_flow || studio.canvas.mcp_move_permission_request_ready().is_ok());
+            && (self.active_flow
+                || (self.active_clip && studio.mcp_clip_permission_ready().is_ok())
+                || (self.active_canvas
+                    && studio.canvas.mcp_move_permission_request_ready().is_ok()));
         let mut snapshot = assistant_registry_snapshot(
             AssistantPermissionContext {
                 scope: scope.as_ref(),
@@ -633,7 +767,7 @@ impl BridgeUi {
             &self.writes,
             &self.write_token,
         );
-        let path = if canvas {
+        let path = if self.active_canvas {
             studio
                 .canvas
                 .mcp_project_path()
@@ -672,17 +806,17 @@ impl BridgeUi {
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
         let canvas = active
             .as_ref()
-            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "flow"));
+            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "clip" | "flow"));
         if matches!(
             action,
-            AssistantPermission::RevokeRead | AssistantPermission::RevokeWrite
+            AssistantPermission::GrantRead
+                | AssistantPermission::RevokeRead
+                | AssistantPermission::RevokeWrite
         ) {
             self.canvas_permits.clear();
+            crate::toonflow_agent::revoke_all();
         }
-        let ready = if matches!(
-            action,
-            AssistantPermission::GrantWrite | AssistantPermission::RenewWrite
-        ) {
+        let ready = if matches!(action, AssistantPermission::GrantWrite) {
             self.grant_ready(studio, app)
                 .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
             true
@@ -706,7 +840,7 @@ impl BridgeUi {
             Some(AssistantWriteChange::Issued) => {
                 self.write_revoked = false;
                 self.write_message.clear();
-                self.refresh_write_minutes();
+                self.write_timer.stop();
             }
             Some(AssistantWriteChange::Revoked) => {
                 self.write_revoked = true;
@@ -763,7 +897,13 @@ impl BridgeUi {
             return Err(AssistantPermissionError::NotAllowed);
         };
         let current = self.scope(&ids);
-        if kind != "canvas"
+        let is_clip = intent.clip_action.is_some()
+            || intent.clip_query
+            || intent.clip_export_control_action.is_some()
+            || intent.clip_export_output;
+        let is_library_assets = intent.library_assets.is_some();
+        if (!is_library_assets && kind != if is_clip { "clip" } else { "canvas" })
+            || (is_library_assets && !matches!(kind.as_str(), "canvas" | "clip" | "flow"))
             || modal_busy(studio, app, true)
             || self
                 .grants
@@ -778,7 +918,40 @@ impl BridgeUi {
             session: intent.session.clone(),
         };
         let now = Instant::now();
+        let mut clip_save_origin = None;
+        let mut clip_export_origin = None;
         if let Some(query) = &intent.operation {
+            if intent.clip_export_control_action.is_some() || intent.clip_export_output {
+                if claimed != current
+                    || self
+                        .canvas_receipts
+                        .clip_export(&claimed, ASSISTANT_CLIENT_ID, query, now)
+                        .is_none_or(|attachment| !attachment.origin_matches(self))
+                {
+                    return Err(AssistantPermissionError::NotAllowed);
+                }
+            } else if intent.clip_query
+                && self
+                    .canvas_receipts
+                    .clip_export(&claimed, ASSISTANT_CLIENT_ID, query, now)
+                    .is_some_and(|attachment| !attachment.origin_matches(self))
+            {
+                return Err(AssistantPermissionError::NotAllowed);
+            }
+            if intent.clip_export_control_action.is_some() {
+                studio
+                    .mcp_clip_permission_ready()
+                    .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
+                self.writes
+                    .authorize(
+                        &current,
+                        &claimed,
+                        ASSISTANT_CLIENT_ID,
+                        &self.write_token,
+                        now,
+                    )
+                    .map_err(|_| AssistantPermissionError::NotAllowed)?;
+            }
             if intent.retry_registration {
                 studio
                     .canvas
@@ -794,17 +967,71 @@ impl BridgeUi {
                     )
                     .map_err(|_| AssistantPermissionError::NotAllowed)?;
             }
-            if !self
-                .canvas_receipts
-                .contains(&claimed, ASSISTANT_CLIENT_ID, query, now)
-            {
+            if !self.canvas_receipts.contains_family(
+                &claimed,
+                ASSISTANT_CLIENT_ID,
+                query,
+                now,
+                is_clip,
+            ) {
                 return Err(AssistantPermissionError::NotAllowed);
             }
         } else {
             if claimed != current {
                 return Err(AssistantPermissionError::NotAllowed);
             }
-            if intent.action.is_some() {
+            if let Some(action) = &intent.clip_action {
+                let is_save = matches!(action.edit, concat_editor_mcp::ClipEdit::Save {});
+                let is_export =
+                    matches!(action.edit, concat_editor_mcp::ClipEdit::ExportVideo { .. });
+                if is_save || is_export {
+                    studio.mcp_clip_permission_ready()
+                } else {
+                    studio.mcp_clip_writer_ready()
+                }
+                .map_err(|_| AssistantPermissionError::WriterUnavailable)?;
+                self.writes
+                    .authorize(
+                        &current,
+                        &claimed,
+                        ASSISTANT_CLIENT_ID,
+                        &self.write_token,
+                        now,
+                    )
+                    .map_err(|_| AssistantPermissionError::NotAllowed)?;
+                if intent.revision != Some(studio.mcp_clip_state().1)
+                    || intent.selection_revision != Some(studio.mcp_selection_epoch())
+                {
+                    return Err(AssistantPermissionError::NotAllowed);
+                }
+                clip_edit::approval_preflight(studio, action).map_err(|error| {
+                    if error == clip_edit::ClipEditError::StaleContext {
+                        AssistantPermissionError::StaleContext
+                    } else {
+                        AssistantPermissionError::NotAllowed
+                    }
+                })?;
+                if is_export {
+                    clip_export_origin = Some(
+                        clip_export::ApprovedSource::capture(
+                            studio.project(),
+                            studio.mcp_clip_state().0,
+                            action,
+                        )
+                        .map_err(|_| AssistantPermissionError::NotAllowed)?,
+                    );
+                }
+                if is_save {
+                    clip_save_origin = Some(
+                        clip_save::ApprovedSource::capture(
+                            studio.project(),
+                            studio.mcp_clip_state().0,
+                        )
+                        .map_err(|_| AssistantPermissionError::NotAllowed)?,
+                    );
+                }
+            }
+            if intent.action.is_some() || intent.move_action.is_some() {
                 studio
                     .canvas
                     .mcp_writer_ready()
@@ -823,6 +1050,16 @@ impl BridgeUi {
                 {
                     return Err(AssistantPermissionError::NotAllowed);
                 }
+                if let Some(action) = &intent.move_action
+                    && studio
+                        .canvas
+                        .active
+                        .map(|id| format!("layer:{}", id.as_u64()))
+                        .as_deref()
+                        != Some(action.object_id.as_str())
+                {
+                    return Err(AssistantPermissionError::NotAllowed);
+                }
                 if let Some(CanvasAction::Transform { object_id, .. }) = &intent.action
                     && studio
                         .canvas
@@ -833,11 +1070,50 @@ impl BridgeUi {
                 {
                     return Err(AssistantPermissionError::NotAllowed);
                 }
+                if let Some(CanvasAction::Edit {
+                    edit,
+                    expected_edit_state_id,
+                }) = &intent.action
+                {
+                    canvas_edit::preflight(&studio.canvas, edit, expected_edit_state_id).map_err(
+                        |status| {
+                            if status == "staleContext" {
+                                AssistantPermissionError::StaleContext
+                            } else {
+                                AssistantPermissionError::NotAllowed
+                            }
+                        },
+                    )?;
+                }
             }
         }
-        self.canvas_permits
-            .grant(claimed, ASSISTANT_CLIENT_ID.into(), intent, now)
-            .ok_or(AssistantPermissionError::NotAllowed)
+        let permit = if clip_export_origin.is_some() {
+            self.canvas_permits.grant_with_clip_origins(
+                claimed,
+                ASSISTANT_CLIENT_ID.into(),
+                intent,
+                now,
+                clip_save_origin,
+                clip_export_origin,
+            )
+        } else if clip_save_origin.is_some() {
+            self.canvas_permits.grant_with_clip_save_origin(
+                claimed,
+                ASSISTANT_CLIENT_ID.into(),
+                intent,
+                now,
+                clip_save_origin,
+            )
+        } else {
+            self.canvas_permits
+                .grant(claimed, ASSISTANT_CLIENT_ID.into(), intent, now)
+        };
+        permit.ok_or(AssistantPermissionError::NotAllowed)
+    }
+
+    pub(crate) fn forget_tool_permit(&mut self, id: u64) {
+        self.canvas_permits.forget(id);
+        crate::toonflow_agent::revoke(id);
     }
 
     pub(crate) fn revoke_tool_permit(&mut self, id: u64) {
@@ -851,6 +1127,8 @@ impl BridgeUi {
             socket_status: "Starting".into(),
             client_draft: String::new(),
             grants: HashMap::new(),
+            app_reads: app_read::AppReadState::default(),
+            app_controls: app_control::AppControlState::default(),
             canvas_ids: None,
             clip_ids: None,
             active_canvas: false,
@@ -864,6 +1142,7 @@ impl BridgeUi {
             write_token: String::new(),
             write_message: String::new(),
             write_revoked: false,
+            assistant_session: None,
             write_timer: slint::Timer::default(),
         }
     }
@@ -923,10 +1202,9 @@ impl BridgeUi {
                 .flow_ids
                 .as_ref()
                 .is_none_or(|old| old.session != ids.session)
+                && let Some(old) = self.flow_ids.take()
             {
-                if let Some(old) = self.flow_ids.take() {
-                    self.grants.retain(|_, g| g.project != old.project);
-                }
+                self.grants.retain(|_, g| g.project != old.project);
             }
             self.sync_workspace(Some("flow"));
             self.flow_ids = Some(ids.clone());
@@ -967,6 +1245,7 @@ impl BridgeUi {
     fn sync_workspace(&mut self, kind: Option<&str>) {
         if (self.active_canvas && kind != Some("canvas"))
             || (self.active_flow && kind != Some("flow"))
+            || (self.active_clip && kind != Some("clip"))
         {
             // Leaving the granted workspace withdraws E, but preserves this
             // document session's sequence/results so returning cannot replay an edit.
@@ -1002,6 +1281,8 @@ impl BridgeUi {
         }
         (if self.active_canvas {
             self.canvas_ids.as_ref()
+        } else if self.active_clip {
+            self.clip_ids.as_ref()
         } else {
             None
         })
@@ -1025,6 +1306,17 @@ impl BridgeUi {
             return self
                 .current_scope()
                 .ok_or_else(|| "Flow unavailable".into());
+        }
+        if self.active_clip {
+            if modal_busy(studio, app, false) {
+                return Err("剪辑正在处理".into());
+            }
+            studio
+                .mcp_clip_writer_ready()
+                .map_err(|e| canvas_ui_reason(&e))?;
+            return self
+                .current_scope()
+                .ok_or_else(|| "没有打开剪辑工程".into());
         }
         if !self.active_canvas {
             return Err(t("No canvas project"));
@@ -1059,7 +1351,7 @@ impl BridgeUi {
         let result = (|| {
             let scope = self.grant_ready(studio, app)?;
             let client = self.client_draft.trim();
-            if client.is_empty() || client.len() > 64 {
+            if client.is_empty() || client.len() > 64 || client == ASSISTANT_CLIENT_ID {
                 return Err(t("Enter a client ID (up to 64 bytes)"));
             }
             let token = uuid::Uuid::new_v4().to_string();
@@ -1085,6 +1377,9 @@ impl BridgeUi {
                 }
                 LeaseStatus::Unauthorized => return Err(t("No edit grant")),
             };
+            if client == ASSISTANT_CLIENT_ID {
+                return Err("请在 Agent 中选择权限".into());
+            }
             let token = uuid::Uuid::new_v4().to_string();
             self.writes
                 .trusted_renew(&scope, &client, token.clone(), Instant::now())
@@ -1097,7 +1392,27 @@ impl BridgeUi {
         self.write_message = result.err().unwrap_or_default();
     }
 
+    pub(crate) fn bind_assistant_session(&mut self, session: Option<String>) {
+        if self.assistant_session != session {
+            crate::clip_export_fence::revoke_client(
+                ASSISTANT_CLIENT_ID,
+                concat_host::export_publication::PublishRevocation::SessionChanged,
+            );
+            self.revoke_assistant_for_account_change();
+            self.assistant_session = session;
+        }
+    }
+
     pub(crate) fn revoke_assistant_for_account_change(&mut self) {
+        crate::clip_export_fence::revoke_client(
+            ASSISTANT_CLIENT_ID,
+            concat_host::export_publication::PublishRevocation::AccountChanged,
+        );
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::AccountChanged);
+        self.app_controls.revoke();
+        self.assistant_session = None;
+        self.canvas_permits.clear();
+        crate::toonflow_agent::revoke_all();
         self.grants.remove(ASSISTANT_CLIENT_ID);
         let owned = matches!(self.writes.lease_status(Instant::now()),
             LeaseStatus::Active { client, .. } | LeaseStatus::Expired { client, .. }
@@ -1108,6 +1423,10 @@ impl BridgeUi {
     }
 
     pub(crate) fn revoke_move(&mut self) {
+        crate::clip_export_fence::invalidate(
+            concat_host::export_publication::PublishRevocation::Revoked,
+        );
+        crate::toonflow_agent::revoke_all();
         self.canvas_permits.clear();
         self.writes.revoke();
         self.write_token.clear();
@@ -1132,7 +1451,12 @@ impl BridgeUi {
     }
 
     pub(crate) fn write_view(&self, studio: &Studio) -> WriteView {
-        let ready_reason = if !self.active_canvas {
+        let ready_reason = if self.active_clip {
+            studio
+                .mcp_clip_permission_ready()
+                .err()
+                .map(|e| canvas_ui_reason(&e))
+        } else if !self.active_canvas {
             Some(t("No canvas project"))
         } else if studio.settings.open && studio.settings.tab == 4 {
             studio
@@ -1144,7 +1468,7 @@ impl BridgeUi {
             None
         };
         let draft = self.client_draft.trim();
-        let draft_valid = !draft.is_empty() && draft.len() <= 64;
+        let draft_valid = !draft.is_empty() && draft.len() <= 64 && draft != ASSISTANT_CLIENT_ID;
         let (client, status, can_grant, can_renew, can_revoke, token) =
             match self.current_lease_status(Instant::now()) {
                 LeaseStatus::Unauthorized => (
@@ -1165,7 +1489,9 @@ impl BridgeUi {
                     ..
                 } => (
                     client.to_owned(),
-                    tf("Granted · {0} min remaining", &[&remaining_minutes]),
+                    remaining_minutes
+                        .map(|minutes| tf("Granted · {0} min remaining", &[&minutes]))
+                        .unwrap_or_else(|| "允许页面操作 · 当前会话有效".into()),
                     false,
                     true,
                     true,
@@ -1217,12 +1543,12 @@ impl BridgeUi {
             } else {
                 String::new()
             },
-            client,
+            client: client.clone(),
             status,
             reason,
             token,
             can_grant: can_grant && ready_reason.is_none(),
-            can_renew: can_renew && ready_reason.is_none(),
+            can_renew: can_renew && client != ASSISTANT_CLIENT_ID && ready_reason.is_none(),
             can_revoke,
         }
     }
@@ -1231,13 +1557,18 @@ impl BridgeUi {
     /// active project. Regranting rotates its token; revoke deletes it.
     pub fn grant(&mut self, studio: &Studio, app: &App, media: bool) {
         let client = self.client_draft.trim();
-        if client.is_empty() || client.len() > 64 {
+        if client.is_empty() || client.len() > 64 || client == ASSISTANT_CLIENT_ID {
             return;
         }
         let client = client.to_owned();
+        crate::clip_export_fence::revoke_client(
+            &client,
+            concat_host::export_publication::PublishRevocation::Revoked,
+        );
         let Some((_, ids)) = self.active_ids(studio, app) else {
             return;
         };
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.grants.insert(
             client,
             Grant {
@@ -1249,6 +1580,11 @@ impl BridgeUi {
     }
 
     pub fn revoke(&mut self) {
+        crate::clip_export_fence::revoke_client(
+            self.client_draft.trim(),
+            concat_host::export_publication::PublishRevocation::Revoked,
+        );
+        crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::Revoked);
         self.grants.remove(self.client_draft.trim());
         self.canvas_permits.clear();
     }
@@ -1313,28 +1649,73 @@ impl BridgeUi {
                     client,
                     remaining_minutes,
                     scope,
-                } if (kind == "canvas" || kind == "flow")
+                } if (kind == "canvas" || kind == "clip" || kind == "flow")
                     && client == request.client_id
                     && scope.project == ids.project =>
                 {
                     granted.push("E");
-                    Some(remaining_minutes)
+                    remaining_minutes
                 }
                 _ => None,
             };
-            return UiReply::Response(Response::ok(json!({
+            let tools: &[&str] = &[
+                "capabilities",
+                "context",
+                "project",
+                "preview",
+                "clip_preview",
+                "move_selected_image",
+                "library_images",
+                "library_assets",
+                "insert_library_image",
+                "transform_canvas_layer",
+                "canvas_edit",
+                "clip_edit",
+                "clip_operation",
+                "clip_export_control",
+                "clip_export_output",
+                "save_canvas_project",
+                "export_canvas_png",
+                "canvas_operation",
+                "retry_canvas_registration",
+                "flow_get_workspace",
+                "flow_read_canvas",
+                "flow_list_node_types",
+                "flow_get_node_tools",
+                "flow_get_node_config",
+                "flow_get_task",
+                "flow_get_operation",
+                "flow_add_node",
+                "flow_update_node",
+                "flow_connect_nodes",
+                "flow_delete_nodes",
+                "flow_switch_canvas",
+                "flow_execute_node",
+            ];
+            let mut capabilities = json!({
                 "appInstanceId": self.instance_id,
-                "tools": ["capabilities", "context", "project", "preview", "move_selected_image", "library_images", "insert_library_image", "transform_canvas_layer", "save_canvas_project", "export_canvas_png", "canvas_operation","retry_canvas_registration", "flow_get_workspace", "flow_read_canvas", "flow_list_node_types", "flow_get_node_tools", "flow_get_node_config", "flow_get_task", "flow_get_operation", "flow_add_node", "flow_update_node", "flow_connect_nodes", "flow_delete_nodes", "flow_switch_canvas", "flow_execute_node"],
-                "namedToolApprovalRequired":["library_images","insert_library_image","transform_canvas_layer","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
+                "tools": tools,
+                "namedToolApprovalRequired":["library_images","library_assets","insert_library_image","transform_canvas_layer","canvas_edit","clip_edit","clip_operation","clip_export_control","save_canvas_project","export_canvas_png","canvas_operation","retry_canvas_registration"],
+                "clipSaveProtocolVersion": if kind == "clip" { Some(1) } else { None },
+                "clipExportProtocolVersion": if kind == "clip" { Some(1) } else { None },
+                "clipExportOutputProtocolVersion": if kind == "clip" { Some(1) } else { None },
+                "clipPersistedReadProtocolVersion": if kind == "clip" { Some(1) } else { None },
+                "clipEditVersion":1,"clipEditMaxParametersBytes":16384,"clipEditMaxTargets":128,"clipEditMaxReceiptBytes":57344,"clipEditMaxStateBytes":16777216,"clipEditMaxPreviewWork":16777216,"clipEditMaxDetachedAudioClips":128,"clipEditVideoFreeze":false,
+                "canvasEditVersion":1,"canvasEditMaxStrokePoints":2048,"canvasEditMaxNewPixels":16777216,"canvasEditMaxReferencedPixels":67108864,"canvasEditMaxBrushWork":16777216,
+                "canvasEditMaxParametersBytes":16384,"canvasEditMaxDeleteNodes":512,"canvasEditMaxReceiptBytes":49152,
                 "permissions": ["R", "M", "E"], "readOnly": false,
-                "writeAction": "moveSelectedImage", "writeLeaseSeconds": 300,
+                "writeAction": if kind=="clip" {"clipEdit"} else {"moveSelectedImage"}, "writeLeaseSeconds": if request.client_id == ASSISTANT_CLIENT_ID {None} else {Some(300)},
+                "writeLifetime": if request.client_id == ASSISTANT_CLIENT_ID {"agentSession"} else {"deadline"},
                 "writeWorkspace": kind, "maxMoveDelta": 32768, "maxMovePosition": 1_000_000,
                 "writeAuthorization": "trustedUI", "writeTokenEnvironment": "SEECUT_MCP_WRITE_TOKEN",
                 "writeGrantRequired": true, "grantedPermissions": granted, "editLeaseRemainingMinutes": edit_minutes,
                 "maxPageSize": 100, "maxProjectObjects": MAX_PROJECT_OBJECTS,
                 "previewWorkspace": "canvas", "maxPreviewEdge": 256,
                 "maxPreviewSourcePixels": 4194304,
-            })));
+            });
+            capabilities["clipPreviewProtocolVersion"] =
+                json!(if kind == "clip" { Some(1) } else { None });
+            return UiReply::Response(Response::ok(capabilities));
         }
         if kind == "flow" {
             let Some(flow) = crate::toonflow_agent::context() else {
@@ -1365,6 +1746,18 @@ impl BridgeUi {
             studio.mcp_clip_state().2
         };
         if matches!(request.method, Method::Context) {
+            let view = view_context::snapshot(
+                studio,
+                &kind,
+                &view_context::Binding {
+                    instance: &self.instance_id,
+                    project: &ids.project,
+                    session: &ids.session,
+                    revision,
+                    context_revision,
+                    selection_revision: studio.mcp_selection_epoch(),
+                },
+            );
             let selected = if kind == "canvas" {
                 studio
                     .canvas
@@ -1385,13 +1778,41 @@ impl BridgeUi {
                     "documentSessionId": ids.session, "revision": revision,
                     "contextRevision": context_revision, "selectionRevision": studio.mcp_selection_epoch(),
                     "selectedObjectIds": selected,
+                    "view": view,
                     "dirty": dirty, "busy": if busy { Some("gesture") } else { None }}]
             })));
         }
         if matches!(
             request.method,
-            Method::LibraryImages | Method::CanvasOperation
+            Method::LibraryImages | Method::LibraryAssets
         ) {
+            if (request.method == Method::LibraryImages && kind != "canvas")
+                || !matches!(kind.as_str(), "canvas" | "clip" | "flow")
+                || !self.authorized(request, &ids.project, true)
+            {
+                return UiReply::Response(Response::error("notAuthorized"));
+            }
+            let Some(claimed) = request_scope(request) else {
+                return UiReply::Response(Response::error("invalidInput"));
+            };
+            if claimed != self.scope(&ids) {
+                return UiReply::Response(Response::error("wrongProject"));
+            }
+            let Some(intent) = Intent::from_request(request) else {
+                return UiReply::Response(Response::error("invalidInput"));
+            };
+            let Some(authority) =
+                library_assets::claim_library_authority(self, request, &claimed, &intent)
+            else {
+                return UiReply::Response(Response::error("notAuthorized"));
+            };
+            return UiReply::Library(Box::new(LibraryJob {
+                request: request.clone(),
+                authority,
+                origin: library_assets::output_origin(self),
+            }));
+        }
+        if request.method == Method::CanvasOperation {
             if kind != "canvas" || !self.authorized(request, &ids.project, true) {
                 return UiReply::Response(Response::error("notAuthorized"));
             }
@@ -1407,29 +1828,87 @@ impl BridgeUi {
             else {
                 return UiReply::Response(Response::error("notAuthorized"));
             };
-            if request.method == Method::CanvasOperation {
-                let response = self.canvas_receipts.query(
-                    &claimed,
-                    &request.client_id,
-                    request.operation_query.as_ref().expect("validated query"),
-                    Instant::now(),
+            let response = self.canvas_receipts.query(
+                &claimed,
+                &request.client_id,
+                request.operation_query.as_ref().expect("validated query"),
+                Instant::now(),
+            );
+            if response.status == "partial" {
+                return UiReply::Registration(Box::new(RegistrationReadJob {
+                    request: request.clone(),
+                    permit,
+                    response,
+                }));
+            }
+            return UiReply::Response(response);
+        }
+        if request.method == Method::ClipExportOutput {
+            return clip_export::prepare_read(self, request, studio, app, &kind, &ids);
+        }
+        if request.method == Method::ClipOperation {
+            if kind != "clip" || !self.authorized(request, &ids.project, true) {
+                return UiReply::Response(Response::error("notAuthorized"));
+            }
+            let Some(scope) = request_scope(request) else {
+                return UiReply::Response(Response::error("invalidInput"));
+            };
+            if let Some(query) = request.operation_query.as_ref()
+                && self
+                    .canvas_receipts
+                    .clip_export(&scope, &request.client_id, query, Instant::now())
+                    .is_some()
+            {
+                return UiReply::Response(
+                    match clip_export::owned_read_attachment(self, request, &self.scope(&ids)) {
+                        Ok(_) => self.canvas_receipts.query_family(
+                            &scope,
+                            &request.client_id,
+                            query,
+                            Instant::now(),
+                            true,
+                        ),
+                        Err(error) => error,
+                    },
                 );
-                if response.status == "partial" {
-                    return UiReply::Registration(Box::new(RegistrationReadJob {
-                        request: request.clone(),
-                        permit,
-                        response,
-                    }));
-                }
-                return UiReply::Response(response);
             }
-            if claimed != self.scope(&ids) {
-                return UiReply::Response(Response::error("wrongProject"));
+            let Some(intent) = Intent::from_request(request) else {
+                return UiReply::Response(Response::error("invalidInput"));
+            };
+            if self
+                .canvas_permits
+                .claim(&scope, &request.client_id, &intent, Instant::now())
+                .is_none()
+            {
+                return UiReply::Response(Response::error("notAuthorized"));
             }
-            return UiReply::Library(Box::new(LibraryJob {
-                request: request.clone(),
-                permit,
-            }));
+            if self
+                .canvas_receipts
+                .clip_export(
+                    &scope,
+                    &request.client_id,
+                    request
+                        .operation_query
+                        .as_ref()
+                        .expect("validated clip query"),
+                    Instant::now(),
+                )
+                .is_some_and(|attachment| !attachment.origin_matches(self))
+            {
+                return UiReply::Response(Response::error("notAuthorized"));
+            }
+            return UiReply::Response(
+                self.canvas_receipts.query_family(
+                    &scope,
+                    &request.client_id,
+                    request
+                        .operation_query
+                        .as_ref()
+                        .expect("validated clip query"),
+                    Instant::now(),
+                    true,
+                ),
+            );
         }
         if request.project_id.as_deref() != Some(&ids.project)
             || request.document_session_id.as_deref() != Some(&ids.session)
@@ -1437,6 +1916,9 @@ impl BridgeUi {
             return UiReply::Response(Response::error("wrongProject"));
         }
         if matches!(request.method, Method::Project) {
+            if request.read_source == Some(concat_editor_mcp::ProjectReadSource::PersistedClip) {
+                return clip_save::prepare_read(self, request, studio, app, &kind, &ids);
+            }
             if busy {
                 return UiReply::Response(Response::error("busy"));
             }
@@ -1446,6 +1928,9 @@ impl BridgeUi {
                 return UiReply::Response(Response::error("invalidInput"));
             }
             let (total, objects, dimensions) = if kind == "canvas" {
+                if request.object_ids.is_some() {
+                    return UiReply::Response(Response::error("unsupportedTarget"));
+                }
                 let document = studio.canvas.document.as_ref().unwrap();
                 let (total, objects) = if let Some(object_id) = &request.object_id {
                     let id = concat_editor_mcp::parse_layer_id(object_id)
@@ -1453,12 +1938,15 @@ impl BridgeUi {
                         .and_then(|id| {
                             serde_json::from_value::<concat_canvas::LayerId>(json!(id)).ok()
                         });
-                    let Some(concat_canvas::LayerNode::Layer(layer)) =
-                        id.and_then(|id| document.find(id))
-                    else {
+                    let Some(node) = id.and_then(|id| document.find(id)) else {
                         return UiReply::Response(Response::error("objectGone"));
                     };
-                    (1, vec![canvas_image_value(layer, None)])
+                    let value = match node {
+                        concat_canvas::LayerNode::Layer(layer) => canvas_image_value(layer, None),
+                        _ => canvas_edit::layer_value(&studio.canvas, node.id())
+                            .expect("document node has parent slot"),
+                    };
+                    (1, vec![value])
                 } else {
                     match canvas_objects(document, offset, limit) {
                         Ok(page) => page,
@@ -1471,11 +1959,28 @@ impl BridgeUi {
                     json!({"width": document.width, "height": document.height}),
                 )
             } else {
-                if request.object_id.is_some() {
-                    return UiReply::Response(Response::error("unsupportedTarget"));
-                }
                 let project = studio.session.as_ref().unwrap().project();
-                let (total, objects) = match clip_objects(project, offset, limit) {
+                if (request.object_id.is_some() || request.object_ids.is_some())
+                    && let Err(error) = clip_edit::validate_identities(project)
+                {
+                    return UiReply::Response(Response::error(error.status()));
+                }
+                let targets = request
+                    .object_ids
+                    .clone()
+                    .unwrap_or_else(|| request.object_id.iter().cloned().collect());
+                let page = if targets.is_empty() {
+                    clip_objects(project, offset, limit)
+                } else {
+                    let values = targets
+                        .iter()
+                        .filter_map(|id| {
+                            clip_edit::object_value(project, id, |lane| studio.locked(lane))
+                        })
+                        .collect::<Vec<_>>();
+                    Ok((values.len(), values))
+                };
+                let (total, objects) = match page {
                     Ok(page) => page,
                     Err(()) => return UiReply::Response(Response::error("resourceLimit")),
                 };
@@ -1486,7 +1991,15 @@ impl BridgeUi {
                 "revision": revision, "contextRevision": context_revision, "selectionRevision":studio.mcp_selection_epoch(),
                 "generation": generation, "total": total, "offset": offset,
                 "objects": objects, "dimensions": dimensions,
+                "clipState": if kind=="clip" { match clip_edit::state(studio,&request.object_ids.clone().unwrap_or_else(||request.object_id.iter().cloned().collect())) {Ok(value)=>Some(value),Err(error)=>Some(json!({"unavailable":error.status()}))} } else {None},
+                "canvasState": if kind == "canvas" {Some(canvas_edit::state(&studio.canvas,&request.object_id.iter().cloned().collect::<Vec<_>>()).unwrap_or_else(|status|json!({"unavailable":status})))} else {None},
             })));
+        }
+        if request.method == Method::ClipPreview {
+            if kind != "clip" {
+                return UiReply::Response(Response::error("unsupportedPreview"));
+            }
+            return clip_preview::prepare(self, request, studio, ids);
         }
         if request.method != Method::Preview {
             return UiReply::Response(Response::error("notAuthorized"));
@@ -1517,11 +2030,27 @@ impl BridgeUi {
         if u64::from(document.width) * u64::from(document.height) > 4_194_304 {
             return UiReply::Response(Response::error("unsupportedPreview"));
         }
+        let view_state_id = view_context::snapshot(
+            studio,
+            &kind,
+            &view_context::Binding {
+                instance: &self.instance_id,
+                project: &ids.project,
+                session: &ids.session,
+                revision,
+                context_revision,
+                selection_revision: studio.mcp_selection_epoch(),
+            },
+        )["viewStateId"]
+            .as_str()
+            .expect("view state identity")
+            .to_owned();
         UiReply::Preview(Box::new(PreviewJob {
             request: request.clone(),
             ids,
             revision,
             context_revision,
+            view_state_id,
             max_edge,
             document: document.clone(),
             store: studio.canvas.store.clone(),
@@ -1534,6 +2063,7 @@ struct PreviewJob {
     ids: DocumentIds,
     revision: u64,
     context_revision: u64,
+    view_state_id: String,
     max_edge: u32,
     document: concat_canvas::ImageDocument,
     store: concat_canvas::PixelStore,
@@ -1547,7 +2077,8 @@ struct RegistrationReadJob {
 
 struct LibraryJob {
     request: Request,
-    permit: Permit,
+    authority: LibraryAuthority,
+    origin: canvas_policy::OutputOriginCapture,
 }
 
 enum UiReply {
@@ -1555,6 +2086,10 @@ enum UiReply {
     Library(Box<LibraryJob>),
     Registration(Box<RegistrationReadJob>),
     Preview(Box<PreviewJob>),
+    ClipPreview(Box<clip_preview::Job>),
+    AppPreview(Box<app_read::AppPreviewJob>),
+    PersistedClip(Box<clip_save::ReadJob>),
+    ClipExport(Box<clip_export::ReadJob>),
 }
 
 fn preview_slot() -> &'static Mutex<()> {
@@ -1635,7 +2170,15 @@ fn canvas_ui_reason(error: &CanvasMoveError) -> String {
 fn modal_busy(studio: &Studio, app: &App, include_settings: bool) -> bool {
     let cloud = app.global::<SeeCut>();
     let editor = app.global::<Editor>();
-    studio.exit_pending
+    // Slint owns popup lifetime, including component teardown. A busy borrow is
+    // conservatively blocked during nested UI delivery.
+    let popup_open = slint::private_unstable_api::re_exports::WindowInner::from_pub(app.window())
+        .active_popups
+        .try_borrow()
+        .map_or(true, |popups| !popups.is_empty());
+    popup_open
+        || crate::clip_save_fence::native_dialog_open()
+        || studio.exit_pending
         || (include_settings && studio.settings.open)
         || studio.export.open
         || studio.project_sheet.open
@@ -1690,7 +2233,7 @@ fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response,
         document_session: claimed.session.clone(),
         client_sequence: parameters.client_sequence,
     };
-    let current = {
+    let (current, permit) = {
         let mut bridge = studio.editor_mcp.borrow_mut();
         if request.instance_id != bridge.instance_id {
             return (Response::error("appUnavailable"), false);
@@ -1721,6 +2264,35 @@ fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response,
         {
             return (Response::error("invalidInput"), false);
         }
+        // Only the fixed native Agent requires a frozen exact named permit;
+        // external clients retain their existing explicitly granted lease path.
+        let permit = if request.client_id == ASSISTANT_CLIENT_ID {
+            match bridge.writes.cached(
+                &current,
+                &claimed,
+                &key,
+                &request.client_token,
+                &fingerprint,
+                Instant::now(),
+            ) {
+                Ok(Some(response)) => return (response, false),
+                Err(error) => return (Response::error(registry_status(error)), false),
+                Ok(None) => {}
+            }
+            let Some(intent) = Intent::from_request(request) else {
+                return (Response::error("invalidInput"), false);
+            };
+            let Some(permit) =
+                bridge
+                    .canvas_permits
+                    .claim(&claimed, &request.client_id, &intent, Instant::now())
+            else {
+                return (Response::error("notAuthorized"), false);
+            };
+            Some(permit)
+        } else {
+            None
+        };
         match bridge.writes.begin(
             &current,
             &claimed,
@@ -1733,7 +2305,7 @@ fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response,
             Err(error) => return (Response::error(registry_status(error)), false),
             Ok(Begin::New) => {}
         }
-        current
+        (current, permit)
     };
     let generation = studio.canvas.mcp_state().0;
     let binding_epoch = studio.canvas.mcp_binding_epoch();
@@ -1763,6 +2335,12 @@ fn execute_move(request: &Request, studio: &mut Studio, app: &App) -> (Response,
                 parameters.delta_y,
                 |canvas| {
                     let bridge = bridge_cell.borrow();
+                    if permit
+                        .as_ref()
+                        .is_some_and(|permit| !bridge.canvas_permits.valid(permit, Instant::now()))
+                    {
+                        return Err(Response::error("notAuthorized"));
+                    }
                     bridge
                         .writes
                         .authorize(
@@ -1855,12 +2433,19 @@ fn dispatch_write(request: Request) -> Response {
                 execute_move(&request, &mut studio, &app)
             } else if request.method == Method::RetryCanvasRegistration {
                 execute_registration_retry(&request, &mut studio, &app)
+            } else if request.method == Method::ClipExportControl {
+                clip_export::execute_control(&request, &mut studio, &app)
+            } else if request.method == Method::ClipEdit {
+                clip_execute::execute_clip(&request, &mut studio, &app)
             } else {
                 execute_canvas(&request, &mut studio, &app)
             };
             queued.complete(response);
             // Store both cache and request result before rendering can publish Settings.
-            if changed {
+            if changed && request.method == Method::ClipEdit {
+                studio.publish(&app, &shell.models);
+            }
+            if changed && request.method != Method::ClipEdit {
                 let mut canvas = std::mem::take(&mut studio.canvas);
                 canvas.mcp_move_committed(&mut studio);
                 studio.canvas = canvas;
@@ -1931,6 +2516,12 @@ fn dispatch(request: Request) -> Response {
             result
         });
     }
+    if request.method == Method::AppNavigate {
+        return app_control::dispatch_navigation(request);
+    }
+    if request.method == Method::AppOperation {
+        return app_control::dispatch_query(request);
+    }
     if request.method.is_write() {
         return dispatch_write(request);
     }
@@ -1943,7 +2534,16 @@ fn dispatch(request: Request) -> Response {
             let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
                 return UiReply::Response(Response::error("busy"));
             };
-            bridge.handle(&request, &studio, &app)
+            if request.app_scope.is_some()
+                || matches!(
+                    request.method,
+                    Method::AppContext | Method::PageItems | Method::PagePreview
+                )
+            {
+                app_read::handle(&mut bridge, &request, &studio, &app, &shell.models)
+            } else {
+                bridge.handle(&request, &studio, &app)
+            }
         }
     });
     let Ok(reply) = reply else {
@@ -1951,8 +2551,18 @@ fn dispatch(request: Request) -> Response {
     };
     match reply {
         UiReply::Response(response) => response,
-        UiReply::Library(job) => dispatch_library(*job),
+        UiReply::ClipPreview(job) => clip_preview::dispatch(*job),
+        UiReply::PersistedClip(job) => clip_save::dispatch_read(*job),
+        UiReply::ClipExport(job) => clip_export::dispatch_read(*job),
+        UiReply::Library(job) => {
+            if job.request.method == Method::LibraryAssets {
+                library_assets::dispatch_library_assets(*job)
+            } else {
+                dispatch_library(*job)
+            }
+        }
         UiReply::Registration(job) => refresh_registration_receipt(*job),
+        UiReply::AppPreview(job) => app_read::dispatch_preview(*job),
         UiReply::Preview(job) => {
             let Ok(_slot) = preview_slot().try_lock() else {
                 return Response::error("busy");
@@ -1971,6 +2581,7 @@ fn dispatch(request: Request) -> Response {
             let stable = on_ui({
                 let request = job.request.clone();
                 let ids = job.ids.clone();
+                let view_state_id = job.view_state_id.clone();
                 move |shell, app| {
                     let Ok(studio) = shell.studio.try_borrow() else {
                         return Err(Response::error("busy"));
@@ -1992,6 +2603,20 @@ fn dispatch(request: Request) -> Response {
                                 studio.mcp_context_epoch(),
                             )
                             && !studio.canvas.mcp_state().2
+                            && view_context::snapshot(
+                                &studio,
+                                &kind,
+                                &view_context::Binding {
+                                    instance: &request.instance_id,
+                                    project: &now.project,
+                                    session: &now.session,
+                                    revision: studio.canvas.mcp_state().1,
+                                    context_revision: studio.mcp_context_epoch(),
+                                    selection_revision: studio.mcp_selection_epoch(),
+                                },
+                            )["viewStateId"]
+                                .as_str()
+                                == Some(view_state_id.as_str())
                     }))
                 }
             });
@@ -2006,6 +2631,7 @@ fn dispatch(request: Request) -> Response {
                 "requestId": uuid::Uuid::new_v4().to_string(), "stable": true,
                 "width": thumb.width(), "height": thumb.height(), "coordinateSystem": "documentPixels",
                 "mimeType": "image/png",
+                "metadata":{"viewStateId":job.view_state_id,"scope":"wholeDocument","viewportCapture":false},
                 "base64": base64::engine::general_purpose::STANDARD.encode(bytes.into_inner()),
             }))
         }
@@ -2152,11 +2778,10 @@ mod assistant_permission_tests {
             let mut token = "external-write".to_owned();
             let view = snapshot(&scope, &grants, &writes, &token, at);
             assert!(view.write_token.is_none());
-            assert!(!view.can_grant_write && !view.can_renew_write && !view.can_revoke_write);
+            assert!(!view.can_grant_write && !view.can_revoke_write);
             assert!(view.write_status == "编辑权限由其他客户端持有");
             for action in [
                 AssistantPermission::GrantWrite,
-                AssistantPermission::RenewWrite,
                 AssistantPermission::RevokeWrite,
             ] {
                 assert!(
@@ -2221,160 +2846,121 @@ mod assistant_permission_tests {
     }
 
     #[test]
-    fn assistant_expiry_withholds_token_and_explicit_renew_rotates_it() {
+    fn assistant_session_grant_survives_old_deadline_and_downgrade_preserves_read() {
         let scope = scope();
         let now = Instant::now();
         let mut writes = Registry::new();
         writes.bind_scope(Some(scope.clone()));
-        writes
-            .trusted_grant(&scope, ASSISTANT_CLIENT_ID, "old-write".into(), now)
-            .unwrap();
         let mut grants = reader(&scope, true);
-        let mut token = "old-write".to_owned();
-        let at = now + LEASE_DURATION;
-        let view = snapshot(&scope, &grants, &writes, &token, at);
-        assert!(view.write_token.is_none());
-        assert!(!view.can_grant_write && view.can_renew_write && view.can_revoke_write);
-        assert!(view.write_status == "编辑权限已到期，请续期后重新连接");
-        assert!(
-            assistant_registry_permission(
-                AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: true,
-                    now: at
-                },
-                &mut grants,
-                &mut writes,
-                &mut token,
-                AssistantPermission::RenewWrite,
-                || "new-write".into()
-            )
-            .is_some()
-        );
-        assert!(
-            writes.authorize(&scope, &scope, ASSISTANT_CLIENT_ID, "old-write", at)
-                == Err(RegistryError::Unauthorized)
-        );
-        assert!(
-            writes
-                .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, &token, at)
-                .is_ok()
-        );
-        assert!(
-            snapshot(&scope, &grants, &writes, &token, at)
-                .write_token
-                .as_deref()
-                == Some("new-write")
-        );
-        assert!(
-            assistant_registry_permission(
-                AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: false,
-                    now: at
-                },
-                &mut grants,
-                &mut writes,
-                &mut token,
-                AssistantPermission::RevokeRead,
-                || panic!("revoke must not issue credentials")
-            )
-            .is_some()
-        );
-        assert!(token.is_empty());
-        assert!(matches!(writes.lease_status(at), LeaseStatus::Unauthorized));
-    }
-
-    #[test]
-    fn read_only_is_not_preview_or_editing_and_grants_are_separate() {
-        let scope = scope();
-        let now = Instant::now();
-        let mut writes = Registry::new();
-        writes.bind_scope(Some(scope.clone()));
-        let mut grants = reader(&scope, false);
         let mut token = String::new();
-        let view = snapshot(&scope, &grants, &writes, &token, now);
-        assert!(view.read_token.is_none() && !view.can_grant_write && view.can_revoke_read);
+        let context = AssistantPermissionContext {
+            scope: Some(&scope),
+            canvas: true,
+            write_ready: true,
+            now,
+        };
         assert!(
             assistant_registry_permission(
-                AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: true,
-                    now
-                },
+                context,
                 &mut grants,
                 &mut writes,
                 &mut token,
                 AssistantPermission::GrantWrite,
-                || panic!("R alone must not obtain E")
+                || "session-write".into()
             )
-            .is_none()
+            .is_some()
+        );
+        let read = grants[ASSISTANT_CLIENT_ID].token.clone();
+        let later = now + Duration::from_secs(12 * 3600);
+        assert!(
+            writes
+                .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, &token, later)
+                .is_ok()
+        );
+        assert_eq!(
+            snapshot(&scope, &grants, &writes, &token, later)
+                .write_token
+                .as_deref(),
+            Some("session-write")
         );
         assert!(
             assistant_registry_permission(
                 AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: true,
-                    now
+                    now: later,
+                    ..context
                 },
                 &mut grants,
                 &mut writes,
                 &mut token,
                 AssistantPermission::GrantRead,
-                || "full-read".into()
+                || panic!("downgrade must preserve read token")
             )
             .is_some()
         );
-        assert!(matches!(
-            writes.lease_status(now),
-            LeaseStatus::Unauthorized
-        ));
+        assert_eq!(grants[ASSISTANT_CLIENT_ID].token, read);
         assert!(token.is_empty());
         assert!(
+            writes
+                .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, "session-write", later)
+                .is_err()
+        );
+        assert!(
+            snapshot(&scope, &grants, &writes, &token, later)
+                .write_token
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn operate_mode_includes_read_but_still_requires_writable_scope() {
+        let scope = scope();
+        let now = Instant::now();
+        let mut writes = Registry::new();
+        writes.bind_scope(Some(scope.clone()));
+        let mut grants = HashMap::new();
+        let mut token = String::new();
+        let context = AssistantPermissionContext {
+            scope: Some(&scope),
+            canvas: true,
+            write_ready: false,
+            now,
+        };
+        assert!(
             assistant_registry_permission(
-                AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
-                    write_ready: false,
-                    now
-                },
+                context,
                 &mut grants,
                 &mut writes,
                 &mut token,
                 AssistantPermission::GrantWrite,
-                || panic!("busy or owner failure must deny E")
+                || panic!("unready must not issue credentials")
             )
             .is_none()
         );
+        let mut issued = 0;
         assert!(
             assistant_registry_permission(
                 AssistantPermissionContext {
-                    scope: Some(&scope),
-                    canvas: true,
                     write_ready: true,
-                    now
+                    ..context
                 },
                 &mut grants,
                 &mut writes,
                 &mut token,
                 AssistantPermission::GrantWrite,
-                || "first-write".into()
+                || {
+                    issued += 1;
+                    format!("token-{issued}")
+                }
             )
             .is_some()
         );
+        assert_eq!(issued, 2);
+        assert!(grants[ASSISTANT_CLIENT_ID].media);
+        assert_ne!(grants[ASSISTANT_CLIENT_ID].token, token);
         assert!(
             writes
                 .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, &token, now)
                 .is_ok()
-        );
-        assert!(
-            grants
-                .get(ASSISTANT_CLIENT_ID)
-                .is_some_and(|grant| grant.token == "full-read")
         );
     }
 
@@ -2406,7 +2992,6 @@ mod assistant_permission_tests {
             !view.can_grant_read
                 && !view.can_revoke_read
                 && !view.can_grant_write
-                && !view.can_renew_write
                 && !view.can_revoke_write
         );
         let next = Scope {
@@ -2437,7 +3022,7 @@ mod assistant_permission_tests {
             "write",
         );
         assert!(clip.read_token.is_some() && clip.write_token.is_none());
-        assert!(!clip.can_grant_write && !clip.can_renew_write && !clip.can_revoke_write);
+        assert!(!clip.can_grant_write && !clip.can_revoke_write);
         assert!(clip.project_name == "剪辑工程" && clip.write_status == "当前工程不支持编辑");
     }
 }
@@ -2446,6 +3031,167 @@ mod assistant_permission_tests {
 mod tests {
     use super::*;
 
+    #[test]
+    fn clip_save_native_account_revoke_and_conversation_rebind_cancel_original() {
+        for rebind in [false, true] {
+            let mut bridge = BridgeUi::new();
+            bridge.bind_assistant_session(Some("original".into()));
+            let pending = crate::clip_save_fence::test_support::PendingSave::new();
+            if rebind {
+                bridge.bind_assistant_session(Some("next".into()));
+            } else {
+                bridge.revoke_assistant_for_account_change();
+            }
+            pending.assert_not_committed();
+        }
+    }
+
+    #[test]
+    fn task_move_exact_permit_revocation_blocks_queued_and_prepared_commit() {
+        let mut pane = crate::panes::canvas::CanvasPane::default();
+        let mut doc = concat_canvas::ImageDocument::new(4, 4);
+        let pixels = pane.store.put(concat_core::frame::Frame::transparent(4, 4));
+        let id = doc.new_layer("test", pixels);
+        pane.active = Some(id);
+        pane.document = Some(doc);
+        pane.layer = Some(pixels);
+        let args = json!({"projectId":"p","documentSessionId":"s","revision":0,"selectionRevision":1,
+            "objectId":format!("layer:{}", id.as_u64()),"deltaX":2,"deltaY":3});
+        let intent = Intent::parse("move_selected_image", args.clone()).unwrap();
+        let mut request:Request=serde_json::from_value(json!({"instanceId":"i","clientId":ASSISTANT_CLIENT_ID,"clientToken":"t","method":"moveSelectedImage","projectId":"p","documentSessionId":"s"})).unwrap();
+        request.revision = Some(0);
+        request.move_parameters = Some(MoveParameters {
+            operation_id: concat_editor_mcp::operation_id(ASSISTANT_CLIENT_ID, "s", 9).unwrap(),
+            client_sequence: 9,
+            selection_revision: 1,
+            object_id: format!("layer:{}", id.as_u64()),
+            delta_x: 2.0,
+            delta_y: 3.0,
+        });
+        assert_eq!(Intent::from_request(&request), Some(intent.clone()));
+        let scope = Scope {
+            instance: "i".into(),
+            project: "p".into(),
+            session: "s".into(),
+        };
+        let now = Instant::now();
+        let mut permits = Permits::default();
+        let permit_id = permits
+            .grant(
+                scope.clone(),
+                ASSISTANT_CLIENT_ID.into(),
+                intent.clone(),
+                now,
+            )
+            .unwrap();
+        for (field, value) in [
+            ("deltaX", json!(4)),
+            ("objectId", json!("layer:999")),
+            ("selectionRevision", json!(2)),
+            ("revision", json!(1)),
+        ] {
+            let mut changed = args.clone();
+            changed[field] = value;
+            let changed = Intent::parse("move_selected_image", changed).unwrap();
+            assert!(
+                permits
+                    .claim(&scope, ASSISTANT_CLIENT_ID, &changed, now)
+                    .is_none()
+            );
+        }
+        // Pausing before the queued native request starts leaves no claimable proof.
+        permits.revoke(permit_id);
+        assert!(
+            permits
+                .claim(&scope, ASSISTANT_CLIENT_ID, &intent, now)
+                .is_none()
+        );
+        let permit_id = permits
+            .grant(
+                scope.clone(),
+                ASSISTANT_CLIENT_ID.into(),
+                intent.clone(),
+                now,
+            )
+            .unwrap();
+        let permit = permits
+            .claim(&scope, ASSISTANT_CLIENT_ID, &intent, now)
+            .unwrap();
+        let before = canvas_edit::state(&pane, &[]).unwrap();
+        let revision = pane.mcp_state();
+        let mut checked = false;
+        let result = pane.mcp_translate_selected_checked(id, 2.0, 3.0, |_| {
+            checked = true;
+            // Revocation after read-only transform preparation also wins.
+            permits.revoke(permit_id);
+            permits
+                .valid(&permit, now)
+                .then_some(())
+                .ok_or("notAuthorized")
+        });
+        assert!(checked);
+        assert!(matches!(
+            result,
+            Err(CanvasMoveCheckedError::Commit("notAuthorized"))
+        ));
+        assert_eq!(canvas_edit::state(&pane, &[]).unwrap(), before);
+        assert_eq!(pane.mcp_state(), revision);
+        assert!(pane.mcp_history_target(false).is_none());
+        assert!(pane.mcp_history_target(true).is_none());
+    }
+
+    #[test]
+    fn assistant_conversation_lifecycle_revokes_without_inheritance() {
+        let mut bridge = BridgeUi::new();
+        let ids = bridge.ids("canvas", "test".into());
+        let scope = bridge.scope(&ids);
+        let now = Instant::now();
+        bridge.writes.bind_scope(Some(scope.clone()));
+        bridge.bind_assistant_session(Some("account:1:conversation-a".into()));
+        bridge.grants.insert(
+            ASSISTANT_CLIENT_ID.into(),
+            Grant {
+                token: "read".into(),
+                project: scope.project.clone(),
+                media: true,
+            },
+        );
+        bridge
+            .writes
+            .trusted_grant_session(&scope, ASSISTANT_CLIENT_ID, "write".into(), now)
+            .unwrap();
+        bridge.write_token = "write".into();
+        // Reconnecting the same conversation does not rotate or revoke it.
+        bridge.bind_assistant_session(Some("account:1:conversation-a".into()));
+        assert!(
+            bridge
+                .writes
+                .authorize(
+                    &scope,
+                    &scope,
+                    ASSISTANT_CLIENT_ID,
+                    "write",
+                    now + Duration::from_secs(301)
+                )
+                .is_ok()
+        );
+        for owner in [
+            Some("account:1:conversation-b"),
+            Some("account:1:conversation-a"),
+            Some("account:2:conversation-a"),
+            None,
+        ] {
+            bridge.bind_assistant_session(owner.map(str::to_owned));
+            assert!(!bridge.grants.contains_key(ASSISTANT_CLIENT_ID));
+            assert!(bridge.write_token.is_empty());
+            assert!(
+                bridge
+                    .writes
+                    .authorize(&scope, &scope, ASSISTANT_CLIENT_ID, "write", now)
+                    .is_err()
+            );
+        }
+    }
     #[test]
     fn retired_flow_requests_are_rejected_before_ui_dispatch() {
         for method in [Method::FlowRead, Method::FlowWrite] {
@@ -2504,12 +3250,22 @@ mod tests {
             },
         );
         let mut request = Request {
+            read_source: None,
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
+            clip_parameters: None,
+            object_ids: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: scope.instance.clone(),
             client_id: "writer".into(),
             client_token: "write-token".into(),
@@ -2521,6 +3277,7 @@ mod tests {
             offset: None,
             limit: None,
             max_edge: None,
+            clip_preview_query: None,
             move_parameters: None,
         };
         assert!(
@@ -2917,12 +3674,22 @@ mod tests {
             },
         );
         let request = Request {
+            read_source: None,
             object_id: None,
             canvas_parameters: None,
+            clip_export_control_action: None,
+            clip_parameters: None,
+            object_ids: None,
             library_query: None,
+            library_assets_query: None,
             operation_query: None,
             flow: None,
             flow_workspace: None,
+            app_scope: None,
+            app_page: None,
+            app_control_token: None,
+            app_navigate: None,
+            app_operation_query: None,
             instance_id: bridge.instance_id.clone(),
             client_id: "reader".into(),
             client_token: "token".into(),
@@ -2934,6 +3701,7 @@ mod tests {
             offset: None,
             limit: None,
             max_edge: None,
+            clip_preview_query: None,
             move_parameters: None,
         };
         assert!(bridge.authorized(&request, &first.project, false));

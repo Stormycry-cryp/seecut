@@ -1,0 +1,10 @@
+{
+  "workflowYaml": "valid",
+  "sixPhaseCommands": "preserve full workspace and gRPC scope including doctests",
+  "globalCargoEnvironment": "debug 0/test debug 0/jobs 1",
+  "concurrencyAndTriggers": "unchanged",
+  "macWasmAndWindowSteps": "unchanged",
+  "outerTimeouts": "larger than inner deadlines plus cleanup",
+  "failureArtifactUpload": "always, provided runner remains available",
+  "pythonSyntax": "passed"
+}
