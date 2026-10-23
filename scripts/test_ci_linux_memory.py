@@ -20,7 +20,7 @@ class LinuxMemoryTests(unittest.TestCase):
 
     def shell(self, body):
         # The default mock is an additional fail-safe against privileged calls.
-        prefix = f"source {shlex.quote(str(SCRIPT))}\ninit\nsudo() {{ echo UNEXPECTED_SUDO >&2; return 99; }}\n"
+        prefix = f"source {shlex.quote(str(SCRIPT))}\ninit\nsudo() {{ echo UNEXPECTED_SUDO >&2; return 99; }}\nswapon() {{ echo UNEXPECTED_SWAPON >&2; return 99; }}\n"
         return subprocess.run(["bash", "-euo", "pipefail", "-c", prefix + body],
                               env=self.environment, capture_output=True, text=True, timeout=10)
 
@@ -130,6 +130,122 @@ sudo() {{
         self.assertEqual(list(self.root.glob("seecut-linux-swap.*")), [])
         self.assertFalse((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
 
+    def test_cleanup_replays_real_multicolumn_output_with_explicit_name_request(self):
+        result = self.shell(self.prepare_mocks() + r'''
+prepare
+swapon() {
+  printf '%s\n' "$*" >> "$RUNNER_TEMP/list-calls"
+  if [[ "$*" == '--show=NAME --noheadings --raw' ]]; then
+    [[ ! -f "$RUNNER_TEMP/active" ]] || cat "$RUNNER_TEMP/active"
+    echo /swapfile
+  else
+    echo '/swapfile file 3G 95.7M -1'
+    [[ ! -f "$RUNNER_TEMP/active" ]] || printf '%s file 8G 95.5M -1 d3b8b201-9e0b-4dc8-bca0-7f9584cff27d \n' "$(cat "$RUNNER_TEMP/active")"
+  fi
+}
+rm() {
+  if [[ "${1:-}" == -- && "${2:-}" == "$RUNNER_TEMP"/seecut-linux-swap.* && -f "$RUNNER_TEMP/active" ]]; then
+    echo "rm: cannot remove '$2': Operation not permitted" >&2
+    return 1
+  fi
+  command rm "$@"
+}
+cleanup
+''')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.root / "list-calls").read_text().splitlines(),
+                         ["--show=NAME --noheadings --raw"] * 2)
+        self.assertIn("swapoff " + str(self.root / "seecut-linux-swap."),
+                      (self.root / "calls").read_text())
+        self.assertFalse((self.root / "active").exists())
+        self.assertFalse((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
+        self.assertEqual(list(self.root.glob("seecut-linux-swap.*")), [])
+
+    def test_cleanup_rejects_unrecognized_listing_before_mutations(self):
+        listings = (
+            "/swapfile file 3G 95.7M -1\n/fixture file 8G 95.5M -1 UUID",
+            "NAME\n/swapfile", "relative/path", r"/bad\xZZ", r"/bad\x0",
+            r"/bad\x00", "/valid\n/bad name", "/valid\n\n/other",
+        )
+        for listing in listings:
+            with self.subTest(listing=listing):
+                result = self.shell(self.prepare_mocks() + f'''
+prepare
+swapon() {{ printf '%s\\n' {shlex.quote(listing)}; }}
+rm() {{ echo UNEXPECTED_RM >&2; return 98; }}
+cleanup
+''')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Cannot verify active swap names", result.stderr)
+                self.assertNotIn("UNEXPECTED_RM", result.stderr)
+                self.assertNotIn("swapoff ", (self.root / "calls").read_text())
+                state = self.root / "seecut-engine-diagnostics/memory/swap.path"
+                self.assertTrue(state.exists())
+                Path(state.read_text().strip()).unlink()
+                state.unlink()
+                (self.root / "active").unlink()
+                (self.root / "calls").unlink()
+
+    def test_cleanup_rejects_invalid_recheck_after_swapoff(self):
+        result = self.shell(self.prepare_mocks() + r'''
+prepare
+swapon() {
+  if [[ -f "$RUNNER_TEMP/active" ]]; then cat "$RUNNER_TEMP/active"; else echo 'unexpected output'; fi
+}
+rm() {
+  if [[ "${1:-}" == "$RUNNER_TEMP/active" ]]; then command rm "$@";
+  else echo UNEXPECTED_RM >&2; return 98; fi
+}
+cleanup
+''')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cannot verify active swap names", result.stderr)
+        self.assertNotIn("UNEXPECTED_RM", result.stderr)
+        self.assertIn("swapoff ", (self.root / "calls").read_text())
+        self.assertFalse((self.root / "active").exists())
+        self.assertTrue((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
+        self.assertEqual(len(list(self.root.glob("seecut-linux-swap.*"))), 1)
+
+    def test_cleanup_decodes_raw_whitespace_and_backslash_through_alias(self):
+        swap_file = self.root / "seecut-linux-swap.fixture space\ttab\nline\\slash"
+        swap_file.write_text("mock swap")
+        alias = self.root / "runner alias\ttab\\slash"
+        alias.symlink_to(self.root, target_is_directory=True)
+        active_name = str(alias / swap_file.name)
+        raw_name = "".join(chr(value) if 33 <= value <= 126 and value != 92
+                           else f"\\x{value:02x}" for value in active_name.encode())
+        state = self.root / "seecut-engine-diagnostics/memory/swap.path"
+        state.parent.mkdir(parents=True)
+        state.write_text(str(swap_file) + "\n")
+        (self.root / "active").write_text("mock active")
+        result = self.shell(f'''
+swapon() {{
+  [[ ! -f "$RUNNER_TEMP/active" ]] || printf '%s\\n' {shlex.quote(raw_name)}
+  echo /existing-swap
+}}
+sudo() {{
+  [[ $# == 2 && $1 == swapoff && $2 == {shlex.quote(str(swap_file))} ]] || return 99
+  echo mocked-swapoff >> "$RUNNER_TEMP/calls"
+  command rm "$RUNNER_TEMP/active"
+}}
+cleanup
+''')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.root / "calls").read_text(), "mocked-swapoff\n")
+        self.assertFalse(swap_file.exists())
+        self.assertFalse(state.exists())
+
+    def test_cleanup_empty_verified_listing_removes_inactive_file(self):
+        result = self.shell(self.prepare_mocks() + r'''
+prepare
+swapon() { :; }
+sudo() { echo UNEXPECTED_SUDO >&2; return 99; }
+cleanup
+''')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
+        self.assertEqual(list(self.root.glob("seecut-linux-swap.*")), [])
+
     def test_cleanup_recognizes_same_file_through_directory_alias(self):
         alias = self.root / "runner-alias"
         alias.symlink_to(self.root, target_is_directory=True)
@@ -187,6 +303,21 @@ swapon() { return 1; }
 cleanup
 ''')
         self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
+        self.assertEqual(len(list(self.root.glob("seecut-linux-swap.*"))), 1)
+
+    def test_cleanup_failed_recheck_keeps_file_and_path(self):
+        result = self.shell(self.prepare_mocks() + r'''
+prepare
+swapon() {
+  [[ -f "$RUNNER_TEMP/active" ]] || return 1
+  cat "$RUNNER_TEMP/active"
+}
+cleanup
+''')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("swapoff ", (self.root / "calls").read_text())
+        self.assertFalse((self.root / "active").exists())
         self.assertTrue((self.root / "seecut-engine-diagnostics/memory/swap.path").exists())
         self.assertEqual(len(list(self.root.glob("seecut-linux-swap.*"))), 1)
 
