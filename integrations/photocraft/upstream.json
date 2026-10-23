@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/storytold/photocraft.git",
+  "commit": "ff4738810134d7f7e68b49f2e4f231b686282ff3",
+  "version": "0.14.0",
+  "minimumRust": "1.95",
+  "toolchain": "1.95.0",
+  "patches": [
+    {
+      "path": "patches/seecut-theme.patch",
+      "sha256": "c8706c00aa0dd2cdf4eee31f89d578db9b882f4b288a8388513a5910b1aa96c2"
+    }
+  ],
+  "desktopPackage": "photocraft",
+  "cliPackage": "photocraft-cli",
+  "features": ["photocraft/heif", "photocraft-cli/heif"]
+}

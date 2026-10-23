@@ -1,3 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 integrations/toonflow/integration.patch -text -whitespace
+integrations/photocraft/patches/seecut-theme.patch -text -whitespace
