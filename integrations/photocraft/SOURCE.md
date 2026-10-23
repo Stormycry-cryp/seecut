@@ -8,7 +8,7 @@
 
 `upstream.json` 是可重建来源与补丁顺序的合同。完整上游源码位于忽略目录 `external/photocraft`，支持独立 Git checkout 或现有 Git worktree。它保留 desktop、CLI、engine、格式、自动化、文档、测试和其他上游内容，不把 headless MCP 当作当前 GUI Session 接入。
 
-当前依次重放 `seecut-theme`、`seecut-theme-polish`、`seecut-agent-control`、`seecut-profile-guard`、`seecut-adopted-snapshot`、`seecut-backing-binding` 和 `seecut-managed-close` 七项补丁，各自完整路径和 SHA-256 以 `upstream.json` 为准。主题补丁包含二进制 PNG，必须保留完整 Git binary patch。后五项分别连接实时 Session 私有控制、子编辑器自身持有的恢复目录锁、实际绘制采用帧读取、保存关联换代及保留未保存提示的封闭关闭。来源脚本核对严格 origin、40 位 HEAD、版本、最低 Rust、补丁哈希与路径；按清单顺序在临时目录重放，然后逐文件核对完整内容和可执行位。已存在的工作区只读核验，拒绝未登记修改、暂存、未知未跟踪或忽略文件、软链接和特殊文件。不会 reset、自动重新应用补丁或删除文件。工具链、缓存和 target 位于主工作区 `.toonflow/`，不放在依赖源码内。
+当前依次重放 `seecut-theme`、`seecut-theme-polish`、`seecut-agent-control`、`seecut-profile-guard`、`seecut-adopted-snapshot`、`seecut-backing-binding`、`seecut-managed-close` 和 `seecut-capture-validation` 八项补丁，各自完整路径和 SHA-256 以 `upstream.json` 为准。主题补丁包含二进制 PNG，必须保留完整 Git binary patch。后六项分别连接实时 Session 私有控制、子编辑器自身持有的恢复目录锁、实际绘制采用帧读取、保存关联换代、保留未保存提示的封闭关闭及原快照的帧末复核。来源脚本核对严格 origin、40 位 HEAD、版本、最低 Rust、补丁哈希与路径；按清单顺序在临时目录重放，然后逐文件核对完整内容和可执行位。已存在的工作区只读核验，拒绝未登记修改、暂存、未知未跟踪或忽略文件、软链接和特殊文件。不会 reset、自动重新应用补丁或删除文件。工具链、缓存和 target 位于主工作区 `.toonflow/`，不放在依赖源码内。
 
 ## 字体与可选格式
 
@@ -28,6 +28,10 @@ Inter、JetBrains Mono 和许可随固定源码保留。官方发行另含 `craf
 
 历史五补丁版本已完成验证，重放后共 2,019 个文件，源码树 SHA-256 `4bcec483a7490740d0a52d27d46542eac212e3c8895c4b9033ec1b42e8c812ac`，Cargo.lock SHA-256 `9ce360951da8005e23e81fd5dd3e7b2dd2b95c7f5056991ca556ed4fa239593e`。原生宿主来源锁同步更新，拒绝旧的四补丁收据。主代理实际运行五补丁 library 回归：引擎 1 项、UI 38 项通过，真实控制套接字的 2 项期限回归通过；所有执行用例 0 失败、0 忽略。快照协议及支持范围见 [adopted-snapshot.md](adopted-snapshot.md)。该五补丁 desktop/CLI 已在本机完整重建，官方 HEIF 保持启用；实际 desktop 为 94,576,448 字节，SHA-256 `a66cf1d8d031f67c172e0241c158c8a4f188aa3063a4c0213998017cebc27693`，CLI SHA-256 仍为 `f51fff613c4543bde35eae1a2d88e06fe87495e811819e831083acba2c8502dc`。主代理独立重验源码与两个实际二进制，并在新私有目录执行 CLI：935 个注册命令、静态候选无缺失，凭证为 `.toonflow/photocraft-build-03/`。隔离 Linux 联测另行记录。
 
-当前七补丁来源共 2,021 个文件，tree `60f3fb47e318d1fc216cf150a83b025b908fb6526e9f9297be1e650bb8711909`，Cargo.lock `f1d8cb5645735284d089b955c368019de783ee7d0c9eeed3ffe0670b7288fafd`。新增保存关联换代和封闭关闭；UI 真实授权回归仅增加已锁定的 automation 测试依赖，没有放宽文件访问策略。主代理在该精确来源实际执行引擎 2 项、UI 47 项、独立打开/解绑 3 项及真实套接字 2 项回归，均通过、0 忽略。包含真实 automation 授权下的退出提示与取消，GPU 采用帧用例显式执行。旧五补丁二进制不能用来启动当前宿主。
+历史七补丁来源共 2,021 个文件，tree `60f3fb47e318d1fc216cf150a83b025b908fb6526e9f9297be1e650bb8711909`，Cargo.lock `f1d8cb5645735284d089b955c368019de783ee7d0c9eeed3ffe0670b7288fafd`。新增保存关联换代和封闭关闭；UI 真实授权回归仅增加已锁定的 automation 测试依赖，没有放宽文件访问策略。主代理在该精确来源实际执行引擎 2 项、UI 47 项、独立打开/解绑 3 项及真实套接字 2 项回归，均通过、0 忽略。包含真实 automation 授权下的退出提示与取消，GPU 采用帧用例显式执行。
 
 该七补丁版本的 desktop/CLI 已在本机单任务完整重建，两者均启用官方 HEIF，耗时 2 分 18 秒。desktop 为 94,542,896 字节、SHA-256 `3fcafdddb820215888cd1259e9ec10df4c3e798ca8de0fcec7a8dda9cb199e86`；CLI 为 62,460,512 字节、SHA-256 `efc2a414c5d761fb0ca15784e5cc0ed04a479543e8bd34fb610c602b19d91dac`。主代理独立重验完整来源和两个实际二进制，再在新私有目录执行 CLI，得到 935 个编译命令、静态候选无缺失；凭证位于 `.toonflow/photocraft-build-04/`。未启动本机前台编辑器；完整 Linux 进程联测另验。
+
+当前八补丁来源共 2,024 个文件，tree `254fbf10b1fb6b00955f038bf36c822562873cae618daafa68018f2c38d2cb3c`，Cargo.lock 保持上述七补丁摘要。引擎 2 项、UI 68 项及真实控制套接字 3 项回归通过，0 失败、0 忽略；包含真实 CPU/GPU 主画布的捕获、下一次实际绘制及帧末确认、平滑滚动拒绝、稳定选择组合和记录失效后不恢复。套接字新增验证请求的跨队列 5 秒期限。
+
+该八补丁 desktop/CLI 已保留官方 HEIF 完整重建，耗时 2 分 5 秒。desktop 为 94,608,480 字节、SHA-256 `44017892f6b46aa00f1772de996f0a4a37379f1bfa059c96c2a29a81e2c319f4`；CLI 与七补丁相同。主代理独立重验完整来源和两个实际二进制、再次执行 935 命令核对，并用真实原生宿主 `VerifiedBuild::from_provenance` 校验本次收据与产物，全部通过，凭证为 `.toonflow/photocraft-build-05/`。旧七补丁收据不能启动当前八补丁宿主。真实完整编辑器回包到封闭快照 API 的联测、父级 MCP/Task 和模型图片交付仍需独立验证。

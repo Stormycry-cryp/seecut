@@ -135,12 +135,14 @@ jobs:
             --provenance "$BUILD_EVIDENCE/provenance.json" \
             --probe-binary "$HOST_TARGET/debug/examples/live_editor_probe" \
             --output "$PROBE_OUTPUT" --timeout 240 --allow-disposable-editor
-      - name: 仅保留允许的报告、三张导出 PNG 和一张采用帧 PNG
+      - name: 仅保留受控编译诊断、报告、三张导出 PNG 和一张采用帧 PNG
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: photocraft-live-probe-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ${{ env.BUILD_EVIDENCE }}/provenance.json
+            ${{ env.BUILD_EVIDENCE }}/cargo-stderr.log
             ${{ env.PROCESS_TEST_OUTPUT }}/process-lifecycle.json
             ${{ env.PROBE_OUTPUT }}/artifacts/live-probe-report.json
             ${{ env.PROBE_OUTPUT }}/artifacts/orange-full.png
@@ -155,4 +157,4 @@ jobs:
       - name: 明确本工作流验收范围
         if: success()
         run: |
-          echo '本次验证完整 desktop 的直接 NativeHost 桥接、真实 Session 语义、三张导出 PNG 及一次 seecut.snapshot 采用帧 PNG 回读；该快照为 documentComposite/uiPaintSubmitted。screen=false，present=false，model=false，parentSeeCutMcp=false。未证明模型观看、SeeCut 整 App、屏幕呈现、交互视觉质量、签名或发布。' >> "$GITHUB_STEP_SUMMARY"
+          echo '本次验证完整 desktop 的直接 NativeHost 桥接、真实 Session 语义、三张导出 PNG、一次封闭快照读取和同一原记录的 postInputFrame 验证，并回读其原 PNG；快照为 documentComposite/uiPaintSubmitted。screen=false，present=false，model=false，parentSeeCutMcp=false。未证明模型观看、SeeCut 整 App、屏幕呈现、交互视觉质量、签名或发布。' >> "$GITHUB_STEP_SUMMARY"

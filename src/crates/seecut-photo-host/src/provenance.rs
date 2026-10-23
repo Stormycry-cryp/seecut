@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 const REPOSITORY: &str = "https://github.com/storytold/photocraft.git";
 const COMMIT: &str = "ff4738810134d7f7e68b49f2e4f231b686282ff3";
-const TREE_SHA: &str = "60f3fb47e318d1fc216cf150a83b025b908fb6526e9f9297be1e650bb8711909";
+const TREE_SHA: &str = "254fbf10b1fb6b00955f038bf36c822562873cae618daafa68018f2c38d2cb3c";
 const LOCK_SHA: &str = "f1d8cb5645735284d089b955c368019de783ee7d0c9eeed3ffe0670b7288fafd";
 
 /// Verified complete-build artifact. The provenance is a trusted local build receipt,
@@ -66,7 +66,7 @@ impl VerifiedBuild {
             || source["version"] != "0.14.0"
             || source["sourceTreeSha256"] != TREE_SHA
             || source["cargoLockSha256"] != LOCK_SHA
-            || source["fileCount"] != 2021
+            || source["fileCount"] != 2024
             || source["patches"]
                 != json!([
                     {"path":"patches/seecut-theme.patch", "sha256":"c8706c00aa0dd2cdf4eee31f89d578db9b882f4b288a8388513a5910b1aa96c2"},
@@ -75,7 +75,8 @@ impl VerifiedBuild {
                     {"path":"patches/seecut-profile-guard.patch", "sha256":"b97baea37a929cecb8959f7480ab328fc1eaedb942ab17654115aa065e724d6e"},
                     {"path":"patches/seecut-adopted-snapshot.patch","sha256":"91558f45fbe7ae508aeefd1cd1f738dfb7368039a4d5a2c424a43a0d35991236"},
                     {"path":"patches/seecut-backing-binding.patch","sha256":"8fa82a7f113942e5f2da47be513efc311a8918e9051d44b4c424a5bb455fc9ef"},
-                    {"path":"patches/seecut-managed-close.patch","sha256":"434a6706c1b00b00cd044a2fa5748bd8d0337558377825a4f7735392650006d4"}
+                    {"path":"patches/seecut-managed-close.patch","sha256":"434a6706c1b00b00cd044a2fa5748bd8d0337558377825a4f7735392650006d4"},
+                    {"path":"patches/seecut-capture-validation.patch","sha256":"619f42bcf454e6c19f1f1fe82f7f629103b07d74bef8cbc95a2d9839111dad1c"}
                 ])
             || p["features"] != json!(["photocraft/heif", "photocraft-cli/heif"])
             || p["processOwnership"] != "isolated-posix-session"

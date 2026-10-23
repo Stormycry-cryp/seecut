@@ -31,7 +31,7 @@ let current = host.current()?;
 
 - `LaunchOptions` 包含 `provenance_path`、`state_dir`、可选 `read_root` / `write_root`、`startup_timeout` 和 `request_timeout`。目录必须由可信应用配置提供。状态目录须为绝对路径，私有权限为 0700；默认恢复数据位于其 `photocraft-profile` 子目录，不能作为临时缓存清理。
 - `InstanceInfo` 包含新生成的 `Uuid`、自有 Child PID、构建 attempt ID、`ready` 和 `InstanceStatus`。`current(&mut self)` 实际 `try_wait` 并回收退出状态；退出后仍返回 `Some(status=Exited)` 便于展示，随后可 `start` 新实例。请求必须携带该实例 ID；新实例不复用旧连接或旧身份。
-- `start` 仅支持 Unix。先校验完整 build provenance 的固定源提交、七项补丁顺序与摘要、源树、Cargo.lock、文件数和完整 desktop / CLI heif 特性，再逐个核验两个二进制字节数和 SHA-256。当前仅接受 theme、theme-polish、agent-control、profile-guard、adopted-snapshot、backing-binding、managed-close 七项补丁的 2021 文件来源，源树摘要为 `60f3fb47e318d1fc216cf150a83b025b908fb6526e9f9297be1e650bb8711909`；旧的单补丁、四补丁、五补丁及六补丁收据均被拒绝。启动前再次核验 desktop。provenance 是可信本机构建收据，不能当作远程发布签名或抵抗有权改写收据与二进制的攻击者。
+- `start` 仅支持 Unix。先校验完整 build provenance 的固定源提交、八项补丁顺序与摘要、源树、Cargo.lock、文件数和完整 desktop / CLI heif 特性，再逐个核验两个二进制字节数和 SHA-256。当前仅接受 theme、theme-polish、agent-control、profile-guard、adopted-snapshot、backing-binding、managed-close、capture-validation 八项补丁的 2024 文件来源，源树摘要为 `254fbf10b1fb6b00955f038bf36c822562873cae618daafa68018f2c38d2cb3c`；旧收据均被拒绝。启动前再次核验 desktop。provenance 是可信本机构建收据，不能当作远程发布签名或抵抗有权改写收据与二进制的攻击者。
 - 启动命令先移除继承的 `SEECUT_PHOTO_HOST_INSTANCE_ID`，再用本次 `InstanceInfo.id.to_string()` 设置该 env，启用 desktop 自己持有的 profile 锁。实例值不来自请求参数，旧父程序中的 marker 不会被带入新编辑器。
 - 只解析自己 ChildStderr 中有界就绪行。单行上限 8 KiB，就绪前总量上限 1 MiB；后续标准错误以有界块持续丢弃，不转发日志。仅接受精确 `127.0.0.1` 非零端口；认证和实际 `ui.inspect` 验证通过才进入 Ready。
 - token 从系统随机源生成 32 字节，存于实例私有 0700 目录下的 0600 新文件；argv 仅传文件路径，移除继承的控制 token / 自动化目录环境变量。token 不出现在返回类型、调试输出或原始日志中。返回 JSON 的同值字符串会被替换。文件在退出或宿主释放时移除；活编辑器不会因为 Drop 被终止。
@@ -63,3 +63,23 @@ profile guard 自身另由主代理使用 rustc 1.95、`-D warnings` 独立编�
 七补丁来源锁更新后，主代理使用 Rust 1.93.0 实际执行 18 项宿主测试、all-targets 严格 Clippy、真实 `live_editor_probe` 编译及 workspace fmt，全部通过。新增测试覆盖闭合状态解析、u64 上限、真实文件/路径核验、同路径原子更换、双读变化拒绝和封闭退出方法。macOS 的非 UTF-8 文件名夹具被本机 APFS 以 EILSEQ 拒绝，记录为该夹具不可建立；没有声称对应 helper 分支已在 macOS 实际执行，Linux 用例仍要求真实创建并拒绝该别名。
 
 Linux 联测例子已改用现有目录权限约束下的 `app.save` 保存及导出，真实调用三次 backing 封闭 API；最后另做一次独立可撤销修改，使退出确实触发 dirty 提示。例子编译不代表完整编辑器联测通过，先前因保存/退出路由问题取消的旧运行不能复用为该版本证据。
+
+## 封闭快照与原记录复核
+
+`photo_snapshot_after_gate(id, request_id, expected, max_edge)` 只调用一次真实 `seecut.snapshot`，返回字段私有的 `PhotoSnapshot`，不实现 Serialize，也不提供 raw JSON。原生 u64、实际几何、选择及时间保留 typed Rust；PNG 通过显式 `png_bytes()` 读取，Debug 不输出图片、路径、文档名或图层名。调用前后及交付前的原读取许可、账户和 Task 检查仍由父级负责。
+
+`validate_photo_snapshot_after_gate(id, request_id, &snapshot)` 只复核同一原快照，不另抓图片。要求新真实绘制的 `postInputFrame` 回执、相同完整身份和原 snapshot/view/selection ID，帧号大于原 capture；原 capture 年龄小于 5 秒并符合已记录的父进程单调时间上界。父收到原图片后已超过 5 秒时，直接在连接和发送前拒绝。成功只证明本次帧末检查点，后续变化或撤权仍可使其失效。
+
+解析严格限制结果、标准 base64、512 KiB PNG、尺寸、chunk/CRC 及完整 PNG SHA-256，并按真实 native typed 字段顺序复算 view/selection/snapshot ID。宿主显式启用既有 serde_json 的 `float_roundtrip` 特性以保留原几何精度；不依赖外层 JSON 对象键序。没有独立解压像素或 ICC，pixelHash/profileHash 仍是源声明，不把容器核验当作独立像素证明。
+
+主代理在八补丁来源锁下实际执行 27 项宿主测试、all-targets 严格 Clippy、联测例子编译及 workspace fmt，均通过。新增用例包含真实认证 loopback 的两项封闭读取、u64 最大值、完整小 PNG 容器、过期无回退和本地过期零连接。metadata 是合成数据；真实完整编辑器回包到该 parser、父级交图和模型接收仍待验。
+
+## 封闭编辑与原操作查询
+
+`photo_execute_after_gate(id, original_child_operation_id, expected, action)` 只允许普通图层透明度和独立撤销，真实写请求只发送一次。ID 由父级原操作冻结，宿主不分配新序号、签发批准或创建账本。`photo_receipt_after_gate(id, original_child_operation_id)` 是独立只读查询，返回 Known 或 Unknown；缓存缺失、实例重启或结果不明均不得再次 execute。
+
+解析严格核对原操作 ID、完整 u64 身份、状态及实际 before/after；透明度必须对应原图层目标，撤销不接受伪造目标。写后无效回包仍为 Unknown，不假设错误意味着没有副作用，也不假设每个有效操作必然使历史加一。返回类型不对模型序列化，Debug 隐藏操作 ID、名字和错误明文。
+
+当前八补丁来源的宿主验证已扩展为 35 项测试，并通过 all-targets 严格 Clippy、联测例子编译及 workspace fmt。实际覆盖封闭执行与查询、原生 u64 上限、错误目标、真实认证 loopback 和 Unknown 零重发。合成回包证明解析及控制合同，真实编辑器到这些新封闭 API 的联测另行验收。
+
+七补丁实际 Linux 完整编辑器运行已通过保存换代、透明度修改/去重、撤销、切文档拒绝及 dirty 退出取消；最后测试确认 file.exit 被原自动化授权规则拒绝，通用写错误随后归为 Unknown，不能称为已证实回包丢失。本次整个探针失败且 PNG 像素回读未执行。新探针保留 dirty 提示和 Cancel，之后只关闭自有合成文档，再验证空会话的干净退出；不放宽生产授权。

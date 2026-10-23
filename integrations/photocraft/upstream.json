@@ -33,6 +33,10 @@
     {
       "path": "patches/seecut-managed-close.patch",
       "sha256": "434a6706c1b00b00cd044a2fa5748bd8d0337558377825a4f7735392650006d4"
+    },
+    {
+      "path": "patches/seecut-capture-validation.patch",
+      "sha256": "619f42bcf454e6c19f1f1fe82f7f629103b07d74bef8cbc95a2d9839111dad1c"
     }
   ],
   "desktopPackage": "photocraft",

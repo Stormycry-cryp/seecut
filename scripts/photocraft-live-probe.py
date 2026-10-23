@@ -6,7 +6,6 @@ so editor children with separate process groups remain attributable to this run.
 No existing DISPLAY, user profile, outside PID or raw editor stderr is consumed.
 """
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -40,11 +39,11 @@ def private_new(path):
     require(stat.S_IMODE(path.stat().st_mode) == 0o700, 'new directory is not private')
 
 
-def validate_generated_png(path, expected_alpha, adopted=None):
+def validate_generated_png(path, expected_alpha, adopted=None, exact_data=None):
     """Bounded RGB/RGBA 8-bit PNG decoding with all five PNG row filters, stdlib only."""
     require(path.is_file() and not path.is_symlink(), 'PNG must be a regular generated file')
     require(0 < path.stat().st_size <= 1 << 20, 'PNG file budget exceeded')
-    data = path.read_bytes()
+    data = path.read_bytes() if exact_data is None else exact_data
     if adopted is not None:
         require(len(data) <= 512 * 1024, 'adopted PNG byte budget exceeded')
     require(data.startswith(b'\x89PNG\r\n\x1a\n'), 'not a PNG')
@@ -124,7 +123,7 @@ def validate_generated_png(path, expected_alpha, adopted=None):
             pixels.append(rgba)
         previous = row
         cursor += width * channels + 1
-    evidence = {'file': path.name, 'sha256': digest(path), 'bytes': len(data), 'size': [width, height],
+    evidence = {'file': path.name, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data), 'size': [width, height],
                 'pixelsChecked': len(pixels), 'expectedRgba': [255, 128, 0, expected_alpha], 'tolerance': 2}
     if adopted is not None:
         require(profile is not None, 'adopted PNG must embed the declared RGB ICC profile')
@@ -142,8 +141,8 @@ def validate_generated_png(path, expected_alpha, adopted=None):
 
 
 def take_private_snapshot_base64(report):
-    # Remove before any success/failure report is published. The raw Rust report
-    # stays private and is absent from the workflow artifact whitelist.
+    # Defensive stripping on success/failure. The typed probe no longer emits
+    # base64; reject it on the success path rather than using an alternate source.
     snapshot = report.get('snapshot')
     response = snapshot.get('response') if isinstance(snapshot, dict) else None
     pixels = response.get('pixels') if isinstance(response, dict) else None
@@ -163,12 +162,33 @@ def take_private_snapshot_base64(report):
 def validate_adopted_snapshot(report, encoded, probe_root, artifact):
     snapshot = report['snapshot']
     require(snapshot['status'] == 'pendingPythonPngReadback' and snapshot['requestCount'] == 1
-            and snapshot['retried'] is False and snapshot['sessionUnchanged'] is True, 'one-shot snapshot check missing')
+            and snapshot['validationRequestCount'] == 1 and snapshot['retried'] is False
+            and snapshot['sessionUnchanged'] is True, 'one-shot snapshot and validation checks missing')
+    require(snapshot['captureMethod'] == 'photo_snapshot_after_gate'
+            and snapshot['validationMethod'] == 'validate_photo_snapshot_after_gate'
+            and snapshot['typedSnapshotParserPassed'] is True and snapshot['typedValidationParserPassed'] is True
+            and snapshot['responseProjection'] == 'typedSnapshotAllowlist'
+            and snapshot['validationProjection'] == 'typedValidationAllowlist', 'closed typed method evidence missing')
     adopted = snapshot['response']
     require(adopted['kind'] == 'adoptedDocumentComposite' and adopted['adoptionStage'] == 'uiPaintSubmitted'
             and adopted['returnedHistoricalFrame'] is True, 'adopted snapshot stage mismatch')
     require(adopted['requestId'] == snapshot['request']['requestId']
             and adopted['identity'] == snapshot['request']['expected'] == snapshot['beforeIdentity'] == snapshot['afterIdentity'], 'snapshot identity mismatch')
+    validation = snapshot['validation']
+    require(validation['kind'] == 'adoptedSnapshotValidation' and validation['adoptionStage'] == 'uiPaintSubmitted'
+            and validation['validationStage'] == 'postInputFrame'
+            and validation['requestId'] == snapshot['validationRequest']['requestId'] != adopted['requestId']
+            and validation['snapshotId'] == snapshot['validationRequest']['snapshotId'] == adopted['snapshotId']
+            and validation['identity'] == adopted['identity']
+            and validation['viewStateId'] == adopted['view']['viewStateId']
+            and validation['selectionStateId'] == adopted['selection']['selectionStateId']
+            and snapshot['sameFrozenIds'] is True, 'original typed snapshot validation binding mismatch')
+    require(snapshot['beforeFrame'] <= adopted['capturedFrame'] < validation['validatedFrame'] <= snapshot['afterFrame']
+            and snapshot['newPaint'] is True and adopted['captureAgeAtReplyMs'] <= validation['captureAgeMs'] < 5000
+            and validation['captureAgeMs'] <= snapshot['validationCaptureAgeUpperBoundMs']
+            and snapshot['beforeHistoryEntries'] == snapshot['afterHistoryEntries'], 'new paint, age or unchanged history evidence mismatch')
+    require(adopted['view']['geometry']['displayCamera'] == adopted['view']['geometry']['targetCamera'], 'original camera mismatch')
+    require('name' not in adopted['document'] and 'layers' not in adopted['document'], 'unnecessary document content in typed projection')
     require(adopted['pixels']['kind'] == 'documentComposite' and adopted['pixels']['mime'] == 'image/png'
             and adopted['pixels']['transparent'] is True and (adopted['pixels']['width'], adopted['pixels']['height']) == (16,16), 'snapshot PNG envelope mismatch')
     # Recompute this fixture's actual None-selection coverage/state domains.
@@ -188,19 +208,24 @@ def validate_adopted_snapshot(report, encoded, probe_root, artifact):
             max(point[0] for point in polygon), max(point[1] for point in polygon)]
     require(all(abs(a-b) < 0.000001 for a,b in zip(aabb, adopted['view']['visibleDocumentAabb']))
             and all(abs(min(16,max(0,a))-b) < 0.000001 for a,b in zip(aabb, adopted['view']['clippedVisibleDocumentAabb'])), 'snapshot polygon and AABB mismatch')
-    require(isinstance(encoded, str) and 0 < len(encoded) <= 699052, 'snapshot base64 bound or missing')
-    data = base64.b64decode(encoded, validate=True)
-    require(0 < len(data) <= 512 * 1024, 'snapshot decoded PNG bound')
+    require(encoded is None and snapshot['pngSource'] == 'typedOriginalPngBytes'
+            and snapshot['pngFile'] == 'orange-adopted-opacity-040.png', 'unexpected PNG source or alternate encoded payload')
     name = 'orange-adopted-opacity-040.png'
     private_png = probe_root / name
-    with private_png.open('xb') as output:
-        output.write(data)
-    evidence = validate_generated_png(private_png, 102, adopted=adopted)
+    descriptor = os.open(private_png, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as stream:
+        metadata = os.fstat(stream.fileno())
+        require(stat.S_ISREG(metadata.st_mode) and 0 < metadata.st_size <= 512 * 1024, 'typed PNG regular-file or byte bound')
+        data = stream.read(512 * 1024 + 1)
+        require(len(data) == metadata.st_size == snapshot['pngBytes'], 'typed PNG exact byte count mismatch')
+    require(hashlib.sha256(data).hexdigest() == adopted['pixels']['pngHash'], 'typed original PNG exact-byte SHA mismatch')
+    evidence = validate_generated_png(private_png, 102, adopted=adopted, exact_data=data)
     with (artifact / name).open('xb') as output:
         output.write(data)
-    snapshot.update({'status': 'actualAdoptedPngReadbackPassed', 'pixelEvidence': evidence, 'privateBase64Removed': True,
-                     'selectionHashVerified': True, 'geometryAabbVerified': True,
-                     'scope': 'documentComposite/uiPaintSubmitted; no screen, present or model proof'})
+    snapshot.update({'status': 'actualAdoptedPngReadbackPassed', 'pixelEvidence': evidence, 'base64Absent': True,
+                     'selectionHashVerified': True, 'geometryAabbVerified': True, 'typedOriginalPngBytesVerified': True,
+                     'sameSnapshotPostInputFrameValidated': True,
+                     'scope': 'historical documentComposite/uiPaintSubmitted + postInputFrame validation; no screen, present, current-state lease or model proof'})
 
 
 def session_groups(session_id, deadline):

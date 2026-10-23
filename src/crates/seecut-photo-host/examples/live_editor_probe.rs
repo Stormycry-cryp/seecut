@@ -1,16 +1,22 @@
 //! Candidate for an explicitly isolated Linux Xvfb run. This is a direct host probe,
 //! not a model invocation or the parent SeeCut MCP/Task integration acceptance.
 use seecut_photo_host::{
-    CloseOutcome, HostError, InstanceStatus, LaunchOptions, NativeHost, PhotoBackingBinding, Uuid,
-    VerifiedBuild,
+    CloseOutcome, HostError, InstanceStatus, LaunchOptions, NativeHost, PhotoBackingBinding,
+    PhotoEditAction, PhotoEditStatus, PhotoIdentity, PhotoReceiptLookup, PhotoSnapshot,
+    PhotoSnapshotLayerKind, PhotoSnapshotRenderer, Uuid, VerifiedBuild,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const SYNTHETIC_BACKING_NAME: &str = "SeeCut disposable orange A.pcraft";
+// Non-binary fractions intentionally exercise native f32 JSON round trips.
+const FRACTIONAL_ZOOM: f32 = 1.3;
+const FRACTIONAL_CENTER: [f32; 2] = [8.1, 7.7];
+const FRACTIONAL_ROTATION: f32 = 13.1;
 
 #[derive(Debug)]
 struct Failure {
@@ -122,24 +128,86 @@ fn near(a: f64, b: f64) -> bool {
     (a - b).abs() < 0.000_001
 }
 
-fn finite_array(value: &Value, length: usize) -> bool {
-    value.as_array().is_some_and(|items| {
-        items.len() == length
-            && items
-                .iter()
-                .all(|item| item.as_f64().is_some_and(f64::is_finite))
+fn fractional_target_matches(state: &Value) -> bool {
+    let exact_f32 = |pointer: &str, expected: f32| {
+        state
+            .pointer(pointer)
+            .and_then(Value::as_f64)
+            .is_some_and(|value| value.is_finite() && value as f32 == expected)
+    };
+    exact_f32("/view/zoom", FRACTIONAL_ZOOM)
+        && exact_f32("/view/center/0", FRACTIONAL_CENTER[0])
+        && exact_f32("/view/center/1", FRACTIONAL_CENTER[1])
+        && exact_f32("/view/rotation", FRACTIONAL_ROTATION)
+        && state["view"]["fit_pending"] == false
+        && state["view"]["fill_pending"] == false
+}
+
+// Deliberate evidence allowlist from already checked typed getters. This is not
+// a raw wire reply, a general serialization API or model-delivery permission.
+fn snapshot_evidence(snapshot: &PhotoSnapshot) -> Value {
+    let identity = snapshot.identity();
+    let document = snapshot.document();
+    let selection = snapshot.selection();
+    let view = snapshot.view();
+    let geometry = &view.geometry;
+    let presentation = snapshot.presentation();
+    let pixels = snapshot.pixels();
+    json!({
+        "kind":"adoptedDocumentComposite","adoptionStage":"uiPaintSubmitted",
+        "requestId":snapshot.request_id(),"snapshotId":snapshot.snapshot_id(),
+        "identity":{"hostInstanceId":identity.host_instance_id.to_string(),"docId":identity.doc_id,
+            "documentGeneration":identity.document_generation,"revision":identity.revision},
+        "capturedFrame":snapshot.captured_frame(),"viewportId":snapshot.viewport_id(),"canvasId":snapshot.canvas_id(),
+        "capturedAfterUiEnqueueMs":snapshot.timing().captured_after_ui_enqueue_ms,
+        "captureAgeAtReplyMs":snapshot.timing().capture_age_at_reply_ms,
+        "timeBasis":{"captureDelay":"uiEnqueue","captureAge":"adoptedFrameCapture"},
+        "returnedHistoricalFrame":true,
+        "document":{"size":document.size,"activeLayer":document.active_layer,
+            "selectedLayers":document.selected_layers,"dirty":document.dirty,
+            "canUndo":document.can_undo,"canRedo":document.can_redo},
+        "selection":{"present":selection.present,"domain":selection.domain,"bounds":selection.bounds,
+            "boundsFormat":"xyxyExclusive","coverageHash":selection.coverage_hash,
+            "selectionStateId":selection.selection_state_id},
+        "view":{"geometry":{"rectPoints":geometry.rect_points,"pixelsPerPoint":geometry.pixels_per_point,
+            "zoom":geometry.zoom,"center":geometry.center,"flip":geometry.flip,"rotation":geometry.rotation,
+            "aspect":geometry.aspect,"displayCamera":geometry.display_camera,"targetCamera":geometry.target_camera,
+            "visibleDocumentPolygon":geometry.visible_document_polygon},
+            "visibleDocumentAabb":view.visible_document_aabb,"clippedVisibleDocumentAabb":view.clipped_visible_document_aabb,
+            "aabbFormat":"xyxyExclusive","viewStateId":view.view_state_id},
+        "presentation":{"source":{"renderer":match presentation.renderer {
+            PhotoSnapshotRenderer::Cpu => "cpu", PhotoSnapshotRenderer::Gpu => "gpu"},
+            "displayKey":presentation.display_key,"displayIdentity":presentation.display_identity},
+            "colorSpace":"sRGB IEC61966-2.1","profileHash":presentation.profile_hash,
+            "pixelSemantics":"documentCompositeNotMonitorPixels"},
+        "pixels":{"kind":"documentComposite","mime":"image/png","transparent":true,
+            "width":pixels.size[0],"height":pixels.size[1],"documentRect":pixels.document_rect,
+            "documentPixelsPerOutputPixel":pixels.document_pixels_per_output_pixel,
+            "pngHash":pixels.png_hash,"pixelHash":pixels.pixel_hash}
     })
 }
-fn sha256_text(value: &Value, prefix: &str) -> bool {
-    value
-        .as_str()
-        .and_then(|text| text.strip_prefix(prefix))
-        .is_some_and(|hash| {
-            hash.len() == 64
-                && hash
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
+fn save_private_adopted_png(root: &Path, bytes: &[u8]) -> ProbeResult<()> {
+    let temporary = root.join("orange-adopted-opacity-040.png.part");
+    let final_path = root.join("orange-adopted-opacity-040.png");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = io(options.open(&temporary), "createPrivateAdoptedPng")?;
+    io(file.write_all(bytes), "writeExactAdoptedPngBytes")?;
+    io(file.sync_all(), "syncPrivateAdoptedPng")?;
+    drop(file);
+    // Publish a complete inode without replacing an existing destination. Both
+    // fixed paths belong to this newly created disposable private directory.
+    io(
+        fs::hard_link(&temporary, &final_path),
+        "publishPrivateAdoptedPng",
+    )?;
+    io(fs::remove_file(&temporary), "removePrivatePngTemporaryLink")?;
+    Ok(())
 }
 
 struct Probe {
@@ -392,15 +460,85 @@ impl Probe {
                 && near(opacity(&before, layer_id)?, 1.0),
             "finalDirtyEditTargetsRestoredOwnedSynthetic",
         )?;
-        let receipt = self.call("seecut.execute", json!({"operationId":"probe-final-synthetic-dirty-for-close",
-            "expected":identity(&before)?,"action":{"kind":"layerSetOpacity","layerId":layer_id,"opacity":0.6}}),
-            "applyIndependentSyntheticDirtyEditForClose")?;
-        let after = self.state()?;
+        let operation_id = "probe-final-synthetic-dirty-for-close";
+        let id = self.instance.ok_or(Failure {
+            stage: "applyIndependentSyntheticDirtyEditForClose",
+            class: "noInstance",
+        })?;
+        let before_identity = identity(&before)?;
         require(
-            receipt["status"] == "applied"
-                && receipt["safeToResend"] == false
-                && receipt["before"]["identity"] == before["document"]["identity"]
-                && receipt["after"]["identity"] == after["document"]["identity"]
+            before_identity["hostInstanceId"] == id.to_string(),
+            "finalDirtyOwnedHostIdentity",
+        )?;
+        let expected = PhotoIdentity {
+            host_instance_id: id,
+            doc_id: number(&before_identity, "/docId")?,
+            document_generation: number(&before_identity, "/documentGeneration")?,
+            revision: number(&before_identity, "/revision")?,
+        };
+        self.check_time()?;
+        // One original write through the closed action API; no retry on Unknown.
+        let receipt = self
+            .primary
+            .photo_execute_after_gate(
+                id,
+                operation_id,
+                &expected,
+                PhotoEditAction::LayerSetOpacity {
+                    layer_id,
+                    opacity: 0.6,
+                },
+            )
+            .map_err(|error| Failure {
+                stage: "applyIndependentSyntheticDirtyEditForClose",
+                class: host_class(&error),
+            })?;
+        self.check_time()?;
+        // Query the original fixed ID once. Unknown/mismatch fails; never execute again.
+        let lookup = self
+            .primary
+            .photo_receipt_after_gate(id, operation_id)
+            .map_err(|error| Failure {
+                stage: "queryOriginalFinalSyntheticDirtyReceipt",
+                class: host_class(&error),
+            })?;
+        let PhotoReceiptLookup::Known(queried) = lookup else {
+            return Err(Failure {
+                stage: "queryOriginalFinalSyntheticDirtyReceipt",
+                class: "receiptNotKnownNeverResend",
+            });
+        };
+        require(
+            queried.as_ref() == &receipt
+                && queried.operation_id() == operation_id
+                && receipt.operation_id() == operation_id
+                && !queried.safe_to_resend()
+                && !receipt.safe_to_resend(),
+            "sameOriginalTypedFinalReceiptWithoutResend",
+        )?;
+        let after = self.state()?;
+        let after_identity = identity(&after)?;
+        require(
+            after_identity["hostInstanceId"] == id.to_string(),
+            "finalDirtyAfterOwnedHostIdentity",
+        )?;
+        let actual_after = PhotoIdentity {
+            host_instance_id: id,
+            doc_id: number(&after_identity, "/docId")?,
+            document_generation: number(&after_identity, "/documentGeneration")?,
+            revision: number(&after_identity, "/revision")?,
+        };
+        require(
+            receipt.status == PhotoEditStatus::Applied
+                && !receipt.safe_to_resend()
+                && receipt
+                    .before
+                    .as_ref()
+                    .is_some_and(|state| state.identity == expected)
+                && receipt
+                    .after
+                    .as_ref()
+                    .is_some_and(|state| state.identity == actual_after)
                 && number(&after, "/document/identity/docId")? == expected_doc
                 && number(&after, "/document/identity/documentGeneration")?
                     == number(&before, "/document/identity/documentGeneration")?
@@ -411,13 +549,70 @@ impl Probe {
             "finalSyntheticEditIsOneReversibleDirtyHistoryStep",
         )?;
         // Earlier 3+1 PNG evidence remains tied to its original capture/export.
-        // This separate final reversible edit exists only to exercise dirty close.
+        // This separate final reversible edit and original receipt exercise the
+        // closed APIs and dirty close; they do not reuse earlier pixel evidence.
         self.note("independentSyntheticDirtyEditForClose", json!({"status":"applied","freshExpected":true,
             "oneHistoryStep":true,"opacityReadbackMatched":true,"dirtyReadback":true,"canUndo":true,
-            "sameOwnedDocument":true,"saveRetried":false,"reexported":false,"priorPixelEvidenceReusedForThisEdit":false}));
+            "sameOwnedDocument":true,"saveRetried":false,"reexported":false,"priorPixelEvidenceReusedForThisEdit":false,
+            "executeMethod":"photo_execute_after_gate","receiptMethod":"photo_receipt_after_gate",
+            "executeRequestCount":1,"receiptRequestCount":1,"knownOriginalReceipt":true,
+            "sameTypedReceipt":true,"sameOperationId":true,"safeToResend":false,"reexecuted":false,
+            "typedReceiptPublished":false,"model":false,"parentSeeCutMcp":false}));
         Ok(())
     }
-    fn adopted_orange_snapshot(&mut self, layer_id: u64) -> ProbeResult<()> {
+    fn prepare_fractional_snapshot_view(&mut self, layer_id: u64) -> ProbeResult<()> {
+        let before = self.idle_state()?;
+        require(
+            near(opacity(&before, layer_id)?, 0.4),
+            "fractionalViewOnlyOwnedOrangeDocument",
+        )?;
+        // actual control.rs: a view write turns zoom_animating off and clears its
+        // anchor; zoom/center also clear fit/fill. canvas::animated_view then uses
+        // the direct target, clearing any prior transition in its nonanimated branch.
+        self.call(
+            "ui.set",
+            json!({"zoom":f64::from(FRACTIONAL_ZOOM),
+            "center":FRACTIONAL_CENTER.map(f64::from),"rotation":f64::from(FRACTIONAL_ROTATION)}),
+            "setNonIntegerViewDirectlyOnce",
+        )?;
+        let applied = self.state()?;
+        let first_frame = number(&applied, "/frame")?;
+        let after_two_frames = first_frame.checked_add(2).ok_or(Failure {
+            stage: "waitDirectViewFrames",
+            class: "frameCounterOverflow",
+        })?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let settled_frame = loop {
+            self.check_time()?;
+            require(Instant::now() < deadline, "waitDirectViewFrames")?;
+            let current = self.state()?;
+            require(
+                same_document(&before, &current)
+                    && before["receiptCache"] == current["receiptCache"]
+                    && current["busy"].is_null()
+                    && fractional_target_matches(&current),
+                "nonIntegerViewHasStableTargetAndNoDocumentSideEffects",
+            )?;
+            let frame = number(&current, "/frame")?;
+            if frame >= after_two_frames {
+                break frame;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        // These reads observe target and frame progression, not display_camera:
+        // transient presentation fields are serde(skip). The sole following typed
+        // snapshot must prove actual geometry, then same-ID postInputFrame validation.
+        self.note("directNonIntegerViewBeforeOnlySnapshot", json!({"status":"targetAndFrameWaitPassed",
+            "method":"ui.set","requestCount":1,"retried":false,
+            "zoom":f64::from(FRACTIONAL_ZOOM),"center":FRACTIONAL_CENTER.map(f64::from),
+            "rotation":f64::from(FRACTIONAL_ROTATION),"animationMode":"directNonAnimatedControlSource",
+            "firstReadFrame":first_frame,"settledReadFrame":settled_frame,"minimumFrameAdvance":2,
+            "documentHistoryUnchanged":true,"readback":"targetOnlyUntilTypedSnapshot",
+            "actualDisplayCameraClaimedByTheseReads":false}));
+        Ok(())
+    }
+    fn adopted_orange_snapshot(&mut self, layer_id: u64, root: &Path) -> ProbeResult<()> {
+        self.prepare_fractional_snapshot_view(layer_id)?;
         let session_before = self.inspect()?["session"].clone();
         let before = self.idle_state()?;
         require(
@@ -425,17 +620,49 @@ impl Probe {
             "snapshotAtOpacity040",
         )?;
         let expected = identity(&before)?;
-        let request_id = "probe-adopted-orange-opacity-040-once";
-        let request = json!({"requestId":request_id,"expected":expected,"maxEdge":16});
-        self.snapshot =
-            json!({"status":"requested","request":request,"requestCount":1,"retried":false});
-        // Exactly one request. Unknown completion, unavailable frame and timeout all fail;
-        // never retry, change renderer or fall back to ui.screenshot/exported pixels.
-        let response = self.call(
-            "seecut.snapshot",
-            request.clone(),
-            "requestAdoptedSnapshotOnce",
+        let id = self.instance.ok_or(Failure {
+            stage: "requestAdoptedSnapshotOnce",
+            class: "noInstance",
+        })?;
+        require(
+            expected["hostInstanceId"] == id.to_string(),
+            "snapshotOwnedHostIdentity",
         )?;
+        let typed_expected = PhotoIdentity {
+            host_instance_id: id,
+            doc_id: number(&expected, "/docId")?,
+            document_generation: number(&expected, "/documentGeneration")?,
+            revision: number(&expected, "/revision")?,
+        };
+        let request_id = "probe-adopted-orange-opacity-040-once";
+        let validation_request_id = "probe-validate-same-orange-opacity-040-once";
+        let request = json!({"requestId":request_id,"expected":expected,"maxEdge":16});
+        self.snapshot = json!({"status":"captureRequested","request":request,
+            "requestCount":1,"validationRequestCount":0,"retried":false,
+            "captureMethod":"photo_snapshot_after_gate","validationMethod":"validate_photo_snapshot_after_gate"});
+        self.check_time()?;
+        // Exactly one closed read-only capture, followed immediately by validation
+        // of that same object. Any error/expiry fails; no second capture or resend.
+        let snapshot = self
+            .primary
+            .photo_snapshot_after_gate(id, request_id, typed_expected.clone(), 16)
+            .map_err(|error| Failure {
+                stage: "typedAdoptedSnapshotOnce",
+                class: host_class(&error),
+            })?;
+        self.snapshot["status"] = json!("validationRequested");
+        self.snapshot["typedSnapshotParserPassed"] = json!(true);
+        self.snapshot["validationRequestCount"] = json!(1);
+        self.snapshot["validationRequest"] =
+            json!({"requestId":validation_request_id,"snapshotId":snapshot.snapshot_id()});
+        self.check_time()?;
+        let validation = self
+            .primary
+            .validate_photo_snapshot_after_gate(id, validation_request_id, &snapshot)
+            .map_err(|error| Failure {
+                stage: "validateSameTypedSnapshotOnce",
+                class: host_class(&error),
+            })?;
         let after = self.state()?;
         let session_after = self.inspect()?["session"].clone();
         require(
@@ -443,147 +670,96 @@ impl Probe {
                 && before["receiptCache"] == after["receiptCache"]
                 && after["busy"].is_null()
                 && session_before == session_after,
-            "snapshotLeavesSessionDocumentSelectionAndHistoryUnchanged",
+            "snapshotAndValidationLeaveSessionDocumentSelectionAndHistoryUnchanged",
         )?;
         require(
-            response["kind"] == "adoptedDocumentComposite"
-                && response["adoptionStage"] == "uiPaintSubmitted"
-                && response["requestId"] == request_id
-                && response["identity"] == expected
-                && response["identity"] == after["document"]["identity"]
-                && response["returnedHistoricalFrame"] == true
-                && sha256_text(&response["snapshotId"], "snapshot-v1-"),
-            "actualAdoptedSnapshotIdentityAndStage",
+            snapshot.identity() == &typed_expected
+                && identity(&after)? == expected
+                && validation.identity() == snapshot.identity()
+                && validation.snapshot_id() == snapshot.snapshot_id()
+                && validation.view_state_id() == snapshot.view().view_state_id
+                && validation.selection_state_id() == snapshot.selection().selection_state_id,
+            "sameOriginalTypedIdentityViewAndSelectionValidated",
         )?;
-        let captured_frame = number(&response, "/capturedFrame")?;
-        let delay_ms = number(&response, "/capturedAfterUiEnqueueMs")?;
-        let age_ms = number(&response, "/captureAgeAtReplyMs")?;
         require(
-            captured_frame >= number(&before, "/frame")?
-                && captured_frame <= number(&after, "/frame")?
-                && delay_ms < 2_000
-                && age_ms < 5_000
-                && delay_ms + age_ms <= 5_000
-                && response["timeBasis"]["captureDelay"] == "uiEnqueue"
-                && response["timeBasis"]["captureAge"] == "adoptedFrameCapture",
-            "adoptedSnapshotRelativeTimeFields",
+            snapshot.captured_frame() >= number(&before, "/frame")?
+                && snapshot.captured_frame() < validation.validated_frame()
+                && validation.validated_frame() <= number(&after, "/frame")?
+                && snapshot.timing().captured_after_ui_enqueue_ms < 2_000
+                && snapshot.timing().capture_age_at_reply_ms < 5_000
+                && snapshot.timing().captured_after_ui_enqueue_ms
+                    + snapshot.timing().capture_age_at_reply_ms
+                    <= 5_000
+                && validation.capture_age_ms() >= snapshot.timing().capture_age_at_reply_ms
+                && validation.capture_age_ms() < 5_000
+                && validation.capture_age_ms() <= validation.capture_age_upper_bound_ms(),
+            "actualNewPostInputFrameAndCaptureAgeBounds",
         )?;
-        number(&response, "/viewportId")?;
-        number(&response, "/canvasId")?;
-        let document = &response["document"];
+        let document = snapshot.document();
         require(
-            document["size"] == json!([16, 16])
-                && document["name"] == before["document"]["name"]
-                && document["activeLayer"] == layer_id
-                && document["selectedLayers"] == before["document"]["selectedLayers"]
-                && document["layersOrder"] == "documentBottomToTop"
-                && document["selectedLayersOrder"] == "documentBottomToTop"
-                && ["dirty", "canUndo", "canRedo"]
-                    .iter()
-                    .all(|field| document[*field] == before["document"][*field])
-                && document["layers"].as_array().is_some_and(|layers| {
-                    layers.len() == before["document"]["layers"].as_array().map_or(0, Vec::len)
-                        && layers.iter().any(|layer| {
-                            layer["id"] == layer_id
-                                && layer["kind"] == "raster"
-                                && layer["opacity"]
-                                    .as_f64()
-                                    .is_some_and(|value| near(value, 0.4))
-                        })
+            document.size == [16, 16]
+                && before["document"]["name"].as_str() == Some(document.name.as_str())
+                && document.active_layer == Some(layer_id)
+                && json!(document.selected_layers) == before["document"]["selectedLayers"]
+                && document.dirty == before["document"]["dirty"]
+                && document.can_undo == before["document"]["canUndo"]
+                && document.can_redo == before["document"]["canRedo"]
+                && document.layers.len()
+                    == before["document"]["layers"].as_array().map_or(0, Vec::len)
+                && document.layers.iter().any(|layer| {
+                    layer.id == layer_id
+                        && layer.kind == PhotoSnapshotLayerKind::Raster
+                        && near(layer.opacity, 0.4)
                 }),
-            "adoptedSnapshotDocumentAndLayerSelection",
+            "typedAdoptedDocumentAndLayerSelection",
         )?;
-        let selection = &response["selection"];
         require(
             before["document"]["hasPixelSelection"] == false
-                && selection["present"] == false
-                && selection["bounds"].is_null()
-                && selection["domain"] == json!([0, 0, 16, 16])
-                && selection["boundsFormat"] == "xyxyExclusive"
-                && sha256_text(&selection["coverageHash"], "")
-                && sha256_text(&selection["selectionStateId"], "selection-v1-"),
-            "adoptedSnapshotNoPixelSelectionDomain",
+                && !snapshot.selection().present
+                && snapshot.selection().bounds.is_none()
+                && snapshot.selection().domain == [0, 0, 16, 16]
+                && snapshot.view().geometry.display_camera
+                    == snapshot.view().geometry.target_camera
+                && snapshot.pixels().size == [16, 16]
+                && snapshot.pixels().document_rect == [0, 0, 16, 16]
+                && snapshot.pixels().document_pixels_per_output_pixel == [1.0, 1.0],
+            "typedOriginalSelectionCameraAndPngEnvelope",
         )?;
-        let view = &response["view"];
-        let geometry = &view["geometry"];
+        let geometry = &snapshot.view().geometry;
         require(
-            [
-                ("rectPoints", 4),
-                ("center", 2),
-                ("displayCamera", 3),
-                ("targetCamera", 3),
-            ]
-            .iter()
-            .all(|(field, length)| finite_array(&geometry[*field], *length))
-                && ["pixelsPerPoint", "zoom", "aspect"].iter().all(|field| {
-                    geometry[*field]
-                        .as_f64()
-                        .is_some_and(|number| number.is_finite() && number > 0.0)
-                })
-                && geometry["rotation"].as_f64().is_some_and(f64::is_finite)
-                && geometry["flip"].is_boolean()
-                && geometry["rectPoints"][2]
-                    .as_f64()
-                    .is_some_and(|number| number > 0.0)
-                && geometry["rectPoints"][3]
-                    .as_f64()
-                    .is_some_and(|number| number > 0.0)
-                && geometry["displayCamera"] == geometry["targetCamera"]
-                && geometry["displayCamera"][0]
-                    .as_f64()
-                    .is_some_and(|number| number > 0.0)
-                && geometry["visibleDocumentPolygon"]
-                    .as_array()
-                    .is_some_and(|points| {
-                        points.len() == 4 && points.iter().all(|point| finite_array(point, 2))
-                    })
-                && finite_array(&view["visibleDocumentAabb"], 4)
-                && finite_array(&view["clippedVisibleDocumentAabb"], 4)
-                && view["aabbFormat"] == "xyxyExclusive"
-                && sha256_text(&view["viewStateId"], "view-v1-"),
-            "adoptedSnapshotActualFrozenGeometry",
+            fractional_target_matches(&before)
+                && fractional_target_matches(&after)
+                && geometry.center == FRACTIONAL_CENTER
+                && geometry.rotation == FRACTIONAL_ROTATION
+                && geometry.display_camera
+                    == [FRACTIONAL_ZOOM, FRACTIONAL_CENTER[0], FRACTIONAL_CENTER[1]]
+                && geometry.target_camera == geometry.display_camera
+                && geometry.zoom == FRACTIONAL_ZOOM / geometry.pixels_per_point,
+            "actualTypedNonIntegerGeometryMatchesDirectView",
         )?;
-        let presentation = &response["presentation"];
-        let source = &presentation["source"];
-        require(
-            matches!(source["renderer"].as_str(), Some("cpu" | "gpu"))
-                && source["displayKey"].as_u64().is_some()
-                && source["rawPreviewKey"] == 0
-                && source["complete"] == true
-                && source["displayIdentity"].is_boolean()
-                && source["sourceIsSrgb"] == true
-                && source["proof"] == false
-                && source["hdr"] == false
-                && source["channelComposite"] == true
-                && presentation["colorSpace"] == "sRGB IEC61966-2.1"
-                && presentation["pixelSemantics"] == "documentCompositeNotMonitorPixels"
-                && sha256_text(&presentation["profileHash"], ""),
-            "adoptedSnapshotSrgbPresentation",
-        )?;
-        let pixels = &response["pixels"];
-        require(
-            pixels["kind"] == "documentComposite"
-                && pixels["transparent"] == true
-                && pixels["mime"] == "image/png"
-                && pixels["width"] == 16
-                && pixels["height"] == 16
-                && pixels["documentRect"] == json!([0, 0, 16, 16])
-                && pixels["documentPixelsPerOutputPixel"] == json!([1.0, 1.0])
-                && sha256_text(&pixels["pixelHash"], "")
-                && sha256_text(&pixels["pngHash"], "")
-                && pixels["base64"].as_str().is_some_and(|encoded| {
-                    !encoded.is_empty() && encoded.len() <= 699_052 && encoded.is_ascii()
-                }),
-            "adoptedSnapshotPngEnvelope",
-        )?;
-        require(
-            serde_json::to_vec(&response).is_ok_and(|bytes| bytes.len() <= 1 << 20),
-            "snapshotReplyBound",
-        )?;
+        // Save only this parser-accepted original PNG; Python independently decodes
+        // these exact bytes for all pixels, embedded ICC and native pixel hash.
+        save_private_adopted_png(root, snapshot.png_bytes())?;
+        let response = snapshot_evidence(&snapshot);
+        let validation_evidence = json!({"kind":"adoptedSnapshotValidation",
+            "adoptionStage":"uiPaintSubmitted","validationStage":"postInputFrame",
+            "requestId":validation.request_id(),"snapshotId":validation.snapshot_id(),
+            "identity":response["identity"],"viewStateId":validation.view_state_id(),
+            "selectionStateId":validation.selection_state_id(),"validatedFrame":validation.validated_frame(),
+            "captureAgeMs":validation.capture_age_ms()});
         self.snapshot = json!({"status":"pendingPythonPngReadback","request":request,"response":response,
-            "requestCount":1,"retried":false,"sessionUnchanged":true,
-            "beforeIdentity":before["document"]["identity"],"afterIdentity":after["document"]["identity"],
+            "responseProjection":"typedSnapshotAllowlist","typedSnapshotParserPassed":true,
+            "validationRequest":{"requestId":validation_request_id,"snapshotId":snapshot.snapshot_id()},
+            "validation":validation_evidence,"validationProjection":"typedValidationAllowlist",
+            "typedValidationParserPassed":true,"validationCaptureAgeUpperBoundMs":validation.capture_age_upper_bound_ms(),
+            "requestCount":1,"validationRequestCount":1,"retried":false,"sameFrozenIds":true,"newPaint":true,
+            "actualNonIntegerGeometryVerified":true,"viewSetup":"ui.setDirectNonAnimated",
+            "captureMethod":"photo_snapshot_after_gate","validationMethod":"validate_photo_snapshot_after_gate",
+            "sessionUnchanged":true,"beforeIdentity":before["document"]["identity"],"afterIdentity":after["document"]["identity"],
+            "beforeFrame":number(&before,"/frame")?,"afterFrame":number(&after,"/frame")?,
             "beforeHistoryEntries":history(&before)?,"afterHistoryEntries":history(&after)?,
+            "pngSource":"typedOriginalPngBytes","pngFile":"orange-adopted-opacity-040.png",
+            "pngBytes":snapshot.png_bytes().len(),
             "screenCapture":false,"presentVerified":false,"model":false,"parentSeeCutMcp":false});
         Ok(())
     }
@@ -791,7 +967,7 @@ impl Probe {
             json!({"request":original,"receipt":receipt,"sameReceipt":true,"oneHistoryStep":true}),
         );
 
-        self.adopted_orange_snapshot(layer_id)?;
+        self.adopted_orange_snapshot(layer_id, root)?;
 
         let stale_before = self.state()?;
         let stale = self.call(
@@ -924,38 +1100,85 @@ impl Probe {
             json!({"needsUser":true,"cancelKeptEditorAlive":true,"docId":doc_a}),
         );
 
+        let before_discard = self.state()?;
         let inspected = self.inspect()?;
         require(
-            inspected["session"]["documents"]
-                .as_array()
-                .is_some_and(|docs| docs.len() == 1 && docs[0]["name"] == SYNTHETIC_BACKING_NAME),
-            "onlyOwnedSyntheticAExistsBeforeDiscard",
+            number(&before_discard, "/document/identity/docId")? == doc_a
+                && before_discard["document"]["dirty"] == true
+                && inspected["session"]["active"] == 0
+                && inspected["session"]["documents"]
+                    .as_array()
+                    .is_some_and(|docs| {
+                        docs.len() == 1
+                            && docs[0]["name"] == SYNTHETIC_BACKING_NAME
+                            && docs[0]["revision"]
+                                == before_discard["document"]["identity"]["revision"]
+                    })
+                && inspected["dialogs"]
+                    .as_array()
+                    .is_some_and(|dialogs| dialogs.iter().all(|dialog| dialog["id"] != "discard")),
+            "onlyOwnedSyntheticAExistsAfterCancelBeforeSingleDocumentDiscard",
         )?;
-        let closed = self
-            .primary
-            .close(id, Duration::from_millis(100))
-            .map_err(|error| Failure {
-                stage: "requestFinalSyntheticExit",
-                class: host_class(&error),
-            })?;
+        // Do not reopen file.exit after Cancel. file.close is allowed by the
+        // existing automation policy and uses the real single-document prompt.
+        self.call(
+            "ui.menu.invoke",
+            json!({"command":"file.close","params":{}}),
+            "normalCloseFinalOwnedSyntheticDocument",
+        )?;
+        self.discard_active_synthetic(doc_a, "file.close")?;
+        let empty = self.inspect()?;
         require(
-            matches!(closed, CloseOutcome::NeedsUser { .. }),
-            "finalDirtyPromptStillRequiresChoice",
+            empty["session"]["documents"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+                && empty["session"]["active"].is_null()
+                && empty["dialogs"]
+                    .as_array()
+                    .is_some_and(|dialogs| dialogs.iter().all(|dialog| dialog["id"] != "discard")),
+            "singleDocumentDiscardLeavesEmptySessionBeforeCleanExit",
         )?;
-        if let Err(error) = self.discard_active_synthetic(doc_a, "file.exit") {
-            // A closing process may finish before its last socket reply is delivered.
-            // Do not resend the write: actual child exit below is the reconciliation.
-            if error.class != "unknownCompletionNeverResend" {
-                return Err(error);
+        self.note(
+            "ownedSyntheticSingleDocumentDiscard",
+            json!({"command":"file.close",
+            "choice":"dontSave","onlyOwnedSyntheticDocument":true,"sessionEmptyReadback":true,
+            "discardPromptCleared":true,"fileExitDontSaveAutomaticallyConfirmed":false,
+            "writeNotResent":true}),
+        );
+        self.check_time()?;
+        // Request clean exit once. Unknown does not identify a lost reply or
+        // absence of effects: reconcile only by actual owned Child exit below.
+        let clean_close_outcome = match self.primary.close(id, Duration::from_millis(300)) {
+            Ok(CloseOutcome::Exited) => "exitedDuringCloseWait",
+            Ok(CloseOutcome::NeedsUser { .. }) => "pendingActualChildExitObservation",
+            Err(HostError::Unknown(_)) => {
+                self.note(
+                    "cleanExitCompletionUnknownNeverResent",
+                    json!({
+                    "completion":"unknown","writeNotResent":true,
+                    "requiresActualChildExitObservation":true}),
+                );
+                "completionUnknownNeverResent"
             }
-            self.note(
-                "finalDiscardReplyLost",
-                json!({"writeNotResent":true,"requiresActualExitObservation":true}),
-            );
-        }
+            Err(error) => {
+                return Err(Failure {
+                    stage: "requestCleanApplicationExitOnce",
+                    class: host_class(&error),
+                });
+            }
+        };
         Self::await_exit(&mut self.primary, Duration::from_secs(5))?;
         require(lock.try_lock().is_ok(), "osLockReleasedAfterEditorExit")?;
-        self.note("explicitSyntheticDiscardAndExit", json!({"onlySyntheticDocsDiscarded":true,"actualChildExit":true,"profileLockReleased":true}));
+        self.note(
+            "singleDocumentDiscardAndCleanApplicationExit",
+            json!({
+            "dirtyExitProtectionAndCancelVerified":true,"onlySyntheticDocsDiscarded":true,
+            "discardCommand":"file.close","sessionEmptyBeforeCleanExit":true,
+            "cleanCloseMethod":"seecut.close","cleanCloseRequestCount":1,
+            "cleanCloseOutcome":clean_close_outcome,"writeNotResent":true,
+            "actualChildExit":true,"profileLockReleased":true,
+            "fileExitDontSaveAutomaticallyConfirmed":false,"model":false,"parentSeeCutMcp":false}),
+        );
         Ok(())
     }
 }

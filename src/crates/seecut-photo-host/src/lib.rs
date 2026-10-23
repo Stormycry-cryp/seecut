@@ -2,14 +2,25 @@
 //! SeeCut MCP/Task permission and budget gates must run before any internal call.
 //! Blocking methods belong on a host worker, never on the GUI event thread.
 
+mod edit;
 mod photo;
 mod provenance;
+mod snapshot;
 mod transport;
+pub use edit::{
+    PhotoEditAction, PhotoEditStatus, PhotoReceipt, PhotoReceiptLookup, PhotoReceiptState,
+    UnknownReceipt,
+};
 pub use photo::{
     PhotoBacking, PhotoBackingBinding, PhotoDocument, PhotoFileIdentity, PhotoIdentity, PhotoLayer,
     PhotoPathStatus, PhotoState,
 };
 pub use provenance::VerifiedBuild;
+pub use snapshot::{
+    PhotoSnapshot, PhotoSnapshotDocument, PhotoSnapshotGeometry, PhotoSnapshotLayer,
+    PhotoSnapshotLayerKind, PhotoSnapshotPixels, PhotoSnapshotPresentation, PhotoSnapshotRenderer,
+    PhotoSnapshotSelection, PhotoSnapshotTiming, PhotoSnapshotValidation, PhotoSnapshotView,
+};
 
 use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions};

@@ -132,7 +132,7 @@ jobs:
           fi
 
   native-host:
-    name: Rust 1.93 宿主 9 项合成进程测试与严格 Clippy
+    name: Rust 1.93 宿主合同测试与严格 Clippy
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
