@@ -1,6 +1,6 @@
 # PhotoCraft 完整工作区依赖
 
-先看 [SOURCE.md](SOURCE.md) 的来源、许可和验证边界。主计划为 `docs/plans/2026-10-23-photocraft-workspace.md`。需要 Python 3.12+、Git，以及已显式安装的 Rust 1.95.0；脚本不自动安装工具链、不修改全局默认 Rust、不启动应用。
+先看 [SOURCE.md](SOURCE.md) 的来源、许可和验证边界；开发入口见 [workspace-entry.md](workspace-entry.md)，内部宿主见 [native-host.md](native-host.md)，实时文档控制见 [live-session-control.md](live-session-control.md)。主计划为 `docs/plans/2026-10-23-photocraft-workspace.md`。需要 Python 3.12+、Git，以及已显式安装的 Rust 1.95.0；脚本不自动安装工具链、不修改全局默认 Rust、不启动应用。
 
 ## 恢复与校验
 

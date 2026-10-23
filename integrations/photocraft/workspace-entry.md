@@ -10,4 +10,4 @@
 
 已覆盖 SeeCut 源码中六处显式 `quit_event_loop` 对应的关闭路径。若编辑器仍受管理，父窗口保留并提示先完成保存关闭，随后用户再次退出 SeeCut。macOS Cmd+Q 的 Cocoa 原生终止通路还在调查，不能据此声称所有系统退出路径均已保护。
 
-本批通过实际 Slint 编译，新增 callback 已更新来源清单；完整 SeeCut Rust 类型检查、真实窗口生命周期、输入法、焦点与键盘行为仍待验。宿主测试及严格 Clippy 结果见 [native-host.md](native-host.md)。前端及原生入口由实际 Astra medium 实施，后台宿主由实际 Sol high 实施，主代理串行审查集成。
+本批通过实际 Slint 编译，新增 callback 已更新来源清单；当前入口提交 `cb7aa23e` 的远端 workspace all-targets 严格 Clippy 已通过，覆盖实际 Rust 接线类型检查；完整 CI 尚在执行。真实窗口生命周期、输入法、焦点与键盘行为仍待验。宿主测试及严格 Clippy 结果见 [native-host.md](native-host.md)。前端及原生入口由实际 Astra medium 实施，后台宿主由实际 Sol high 实施，主代理串行审查集成。

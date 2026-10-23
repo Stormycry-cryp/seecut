@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 
 const REPOSITORY: &str = "https://github.com/storytold/photocraft.git";
 const COMMIT: &str = "ff4738810134d7f7e68b49f2e4f231b686282ff3";
-const PATCH_SHA: &str = "c8706c00aa0dd2cdf4eee31f89d578db9b882f4b288a8388513a5910b1aa96c2";
-const TREE_SHA: &str = "398c2fca006b44f3c1a241c123d3fad882f472ae9f72a7c1c27ef28b6b39cdfa";
+const TREE_SHA: &str = "d93a309a979058e1a9449b97ee666a32988b79f1cee38631646989397a7f10bd";
 const LOCK_SHA: &str = "36a1de83fea16781dc7186d33d8064cb5dfa878a2a0847228737640b1e64e2d0";
 
 /// Verified complete-build artifact. The provenance is a trusted local build receipt,
@@ -67,9 +66,14 @@ impl VerifiedBuild {
             || source["version"] != "0.14.0"
             || source["sourceTreeSha256"] != TREE_SHA
             || source["cargoLockSha256"] != LOCK_SHA
-            || source["fileCount"] != 2011
+            || source["fileCount"] != 2014
             || source["patches"]
-                != json!([{"path":"patches/seecut-theme.patch", "sha256":PATCH_SHA}])
+                != json!([
+                    {"path":"patches/seecut-theme.patch", "sha256":"c8706c00aa0dd2cdf4eee31f89d578db9b882f4b288a8388513a5910b1aa96c2"},
+                    {"path":"patches/seecut-theme-polish.patch", "sha256":"f2e80dc4b8bcf7b669f3ce53a4ea0d637504009cf0d3635aa42c447a8eaa61ca"},
+                    {"path":"patches/seecut-agent-control.patch", "sha256":"ea9894916e80c239cd3c535638f3ef403a26102321cf30b35f98417d65ab6ce9"},
+                    {"path":"patches/seecut-profile-guard.patch", "sha256":"b97baea37a929cecb8959f7480ab328fc1eaedb942ab17654115aa065e724d6e"}
+                ])
             || p["features"] != json!(["photocraft/heif", "photocraft-cli/heif"])
             || p["processOwnership"] != "isolated-posix-session"
         {

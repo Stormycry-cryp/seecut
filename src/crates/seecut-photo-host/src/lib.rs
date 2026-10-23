@@ -219,6 +219,8 @@ impl NativeHost {
         cmd.args(["--control", "0", "--control-token-file"])
             .arg(&token_path)
             .env("PHOTOCRAFT_CONFIG_DIR", &profile)
+            .env_remove("SEECUT_PHOTO_HOST_INSTANCE_ID")
+            .env("SEECUT_PHOTO_HOST_INSTANCE_ID", id.to_string())
             .env_remove("PHOTOCRAFT_CONTROL_TOKEN")
             .env_remove("PHOTOCRAFT_CONTROL_TOKEN_FILE")
             .env_remove("PHOTOCRAFT_CONTROL_PORT")

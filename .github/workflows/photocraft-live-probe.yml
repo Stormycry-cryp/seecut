@@ -1,0 +1,136 @@
+name: PhotoCraft 完整编辑器隔离桥接烟测候选
+
+# Candidate only. Integrate the example and runner before installing this workflow.
+# Manual execution authorizes only this run's empty profile and synthetic documents.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: 本次审阅通过的功能分支完整 40 位提交
+        required: true
+        type: string
+      disposable_synthetic_editor:
+        description: 仅在独立 Linux Xvfb 创建并丢弃本次合成文档，允许清理自有测试进程
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: photocraft-live-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  isolated-live-editor:
+    name: 完整 HEIF 编辑器、直接宿主桥接、仅合成文档
+    if: inputs.disposable_synthetic_editor == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PHOTOCRAFT_NO_PRINT: '1'
+      LPDEST: photocraft-no-such-printer
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      BUILD_EVIDENCE: ${{ github.workspace }}/.toonflow/photocraft-live-build-${{ github.run_id }}-${{ github.run_attempt }}
+      PROBE_OUTPUT: ${{ github.workspace }}/.toonflow/photocraft-live-run-${{ github.run_id }}-${{ github.run_attempt }}
+      HOST_TARGET: ${{ github.workspace }}/.toonflow/photocraft-live-host-target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 核对审阅提交与候选已集成文件
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          test -f src/crates/seecut-photo-host/examples/live_editor_probe.rs
+          test -f scripts/photocraft-live-probe.py
+          test ! -e "$BUILD_EVIDENCE"
+          test ! -e "$PROBE_OUTPUT"
+          mkdir -p .toonflow
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: 安装固定完整编辑器与宿主工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - name: 安装现有 SeeCut 宿主工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.93.0'
+      - name: Linux 图形与软件 Vulkan 依赖，不下载字体
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libgtk-3-dev libxkbcommon-x11-0 \
+            pkg-config cmake xvfb xauth mesa-vulkan-drivers vulkan-tools
+      - name: 复用受控 CI 内存预检与临时 swap
+        run: bash scripts/ci-linux-memory.sh prepare
+      - name: 恢复并严格核验完整固定上游
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          python3 -B scripts/prepare-photocraft.py
+          python3 -B scripts/prepare-photocraft.py --verify-only
+          python3 -B scripts/photocraft-baseline.py --check
+      - name: 单任务构建完整 desktop 和 CLI，保留 HEIF
+        timeout-minutes: 75
+        run: |
+          set -euo pipefail
+          toolchain_bin=$(dirname "$(rustup which --toolchain 1.95.0 rustc)")
+          python3 -B scripts/build-photocraft.py \
+            --toolchain-bin "$toolchain_bin" \
+            --rustup-home "$PWD/.toonflow/photocraft-live-rustup" \
+            --cargo-home "$PWD/.toonflow/photocraft-live-cargo" \
+            --target-dir "$PWD/.toonflow/photocraft-live-target" \
+            --evidence-dir "$BUILD_EVIDENCE" \
+            --jobs 1 --timeout 4200 --allow-network
+      - name: 只构建内部宿主烟测例子，不构建 SeeCut 全工作区
+        timeout-minutes: 10
+        env:
+          RUSTUP_TOOLCHAIN: '1.93.0'
+        run: |
+          set -euo pipefail
+          cargo +1.93.0 build --manifest-path src/Cargo.toml --locked \
+            -p seecut-photo-host --example live_editor_probe --jobs 1 \
+            --target-dir "$HOST_TARGET"
+      - name: 新 session 与私有 Xvfb 下执行真实完整编辑器
+        timeout-minutes: 7
+        run: |
+          set -euo pipefail
+          python3 -B scripts/photocraft-live-probe.py \
+            --workspace "$PWD" \
+            --provenance "$BUILD_EVIDENCE/provenance.json" \
+            --probe-binary "$HOST_TARGET/debug/examples/live_editor_probe" \
+            --output "$PROBE_OUTPUT" --timeout 240 --allow-disposable-editor
+      - name: 仅保留明确允许的烟测报告与三张合成 PNG
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: photocraft-live-probe-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROBE_OUTPUT }}/artifacts/live-probe-report.json
+            ${{ env.PROBE_OUTPUT }}/artifacts/orange-full.png
+            ${{ env.PROBE_OUTPUT }}/artifacts/orange-opacity-040.png
+            ${{ env.PROBE_OUTPUT }}/artifacts/orange-after-undo.png
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: 清理本任务 CI 临时 swap
+        if: always()
+        run: bash scripts/ci-linux-memory.sh cleanup
+      - name: 明确本工作流验收范围
+        if: success()
+        run: |
+          echo '本次只验证完整 desktop 的直接 NativeHost 桥接、真实 Session 语义与合成 PNG 像素回读；model=false，parentSeeCutMcp=false。未证明模型观看、SeeCut 整 App、原子截图、交互视觉质量、签名或发布。' >> "$GITHUB_STEP_SUMMARY"

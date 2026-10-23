@@ -1,0 +1,791 @@
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -193,9 +193,19 @@
+     d.active_layer.and_then(|id| d.doc.layer(id)).ok_or_else(|| "no active layer".into())
+ }
+ 
++// Runtime admission generations are never persisted or reused after close/reopen.
++static NEXT_DOCUMENT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
++
++fn allocate_document_generation(counter: &std::sync::atomic::AtomicU64) -> Option<u64> {
++    counter.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_add(1)).ok()
++}
++
+ /// Per-document editing state.
+ #[derive(Clone, Debug)]
+ pub struct DocState {
++    /// This in-memory admission only. Zero means generation allocation exhausted;
++    /// private SeeCut methods then refuse the document rather than reusing an id.
++    pub document_generation: u64,
+     pub doc: Arc<Document>,
+     pub history: History,
+     /// The primary ("key") layer: what single-layer commands act on. Always a member of
+@@ -270,6 +280,7 @@
+         let mut history = History::default();
+         history.set_current_layers(LayerTarget { active: active_layer, selected: active_layer.into_iter().collect() });
+         Self {
++            document_generation: allocate_document_generation(&NEXT_DOCUMENT_GENERATION).unwrap_or(0),
+             doc: Arc::new(doc),
+             history,
+             active_layer,
+@@ -1105,3 +1116,16 @@
+ 
+ #[cfg(test)]
+ mod fx_mode_tests;
++
++#[cfg(test)]
++mod seecut_generation_tests {
++    use super::*;
++    #[test]
++    fn admission_generation_does_not_wrap() {
++        let counter = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
++        assert_eq!(allocate_document_generation(&counter), Some(u64::MAX - 1));
++        assert_eq!(allocate_document_generation(&counter), None);
++        assert_eq!(allocate_document_generation(&counter), None);
++        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), u64::MAX);
++    }
++}
+--- a/crates/ui-egui/src/control.rs
++++ b/crates/ui-egui/src/control.rs
+@@ -407,6 +407,7 @@
+     let u = |k: &str| p.get(k).and_then(Value::as_u64);
+     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(true);
+     match req.method.as_str() {
++        "seecut.state" | "seecut.execute" | "seecut.receipt" => Outcome::Done(crate::seecut_agent::handle(app, ctx, &req.method, &req.params)),
+         "ui.context.choose" => {
+             let Some(id) = s("id") else { return err("missing `id`") };
+             let Some(menu) = app.ui.canvas_tool_menu.as_ref() else { return err("no canvas context menu is open") };
+--- a/crates/ui-egui/src/gradient_ui.rs
++++ b/crates/ui-egui/src/gradient_ui.rs
+@@ -75,6 +75,14 @@
+     preset_stop: Option<Value>,
+     /// Cached preview document by key.
+     preview: Option<(u64, Arc<Document>)>,
++}
++
++impl LiveGradient {
++    /// A pending edit/gesture, as consumed by display_doc and the gradient editor.
++    /// This query neither commits nor builds a preview document.
++    pub(crate) fn has_pending_edit(&self) -> bool {
++        self.drag.is_some() || self.panel.is_some() || self.preset_stop.is_some()
++    }
+ }
+ 
+ /// Whether the Gradient tool is in its live (Gradient Fill layer) mode.
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -194,6 +194,7 @@
+ pub mod screen_picker;
+ pub mod scrollbars;
+ mod scrub_wrap;
++mod seecut_agent;
+ pub mod select_mask_view;
+ pub mod served_fonts;
+ pub mod shape_dialog;
+@@ -684,6 +685,8 @@
+ 
+ pub struct PhotocraftApp {
+     pub session: Session,
++    // Private host bridge: no independent document/session, no pixel capture.
++    seecut_agent: seecut_agent::ControlState,
+     pub ui: UiState,
+     pub services: Services,
+     /// Canvas caches per (document, display): CPU textures hold monitor values; the GPU
+@@ -1009,6 +1012,7 @@
+     pub fn new(session: Session, services: Services) -> Self {
+         let mut app = Self {
+             session,
++            seecut_agent: seecut_agent::ControlState::from_environment(),
+             ui: UiState::default(),
+             services,
+             canvases: HashMap::new(),
+--- /dev/null
++++ b/crates/ui-egui/src/seecut_agent/tests.rs
+@@ -0,0 +1,267 @@
++use super::*;
++use crate::control::{ControlRequest, Outcome};
++
++const HOST: &str = "8e88a522-e405-40cd-9ef0-56b530ec0c21";
++fn fixture(extra_layer: bool) -> (PhotocraftApp, egui::Context, u64) {
++    let mut session = photocraft_engine::Session::new();
++    session.execute("file.new", json!({"width":8,"height":8})).unwrap();
++    if extra_layer {
++        session.execute("layer.new.layer", json!({"name":"Agent target"})).unwrap();
++    }
++    let layer = session.active().unwrap().active_layer.unwrap().0;
++    let mut app = PhotocraftApp::new(session, crate::Services::default());
++    // No process-global env mutation; exercise the exact production binding parser.
++    app.seecut_agent = ControlState::from_binding(Some(HOST.into()));
++    (app, egui::Context::default(), layer)
++}
++fn call(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: Value) -> Value {
++    let (request, _rx) = ControlRequest::new(method, params);
++    match crate::control::handle(app, ctx, &request) {
++        Outcome::Done(reply) => reply,
++        _ => panic!("private methods must settle synchronously"),
++    }
++}
++fn request(app: &PhotocraftApp, id: &str, action: Value) -> Value {
++    let st = app.session.active().unwrap();
++    json!({"operationId":id,"expected":{"hostInstanceId":HOST,"docId":st.doc.id.0,
++        "documentGeneration":st.document_generation,"revision":st.revision},"action":action})
++}
++fn opacity(app: &PhotocraftApp, layer: u64) -> f32 {
++    app.session.active().unwrap().doc.layer(LayerId(layer)).unwrap().opacity
++}
++fn change(app: &PhotocraftApp, id: &str, layer: u64) -> Value {
++    request(app, id, json!({"kind":"layerSetOpacity","layerId":layer,"opacity":0.4}))
++}
++#[test]
++fn state_is_metadata_and_strictly_bound_without_pixels() {
++    let (mut app, ctx, _) = fixture(true);
++    let state = call(&mut app, &ctx, "seecut.state", json!({}));
++    assert_eq!(state["result"]["kind"], "uiCallbackMetadata");
++    assert_eq!(state["result"]["atomicPixels"], false);
++    assert!(state["result"]["document"]["identity"]["documentGeneration"].as_u64().unwrap() > 0);
++    assert_eq!(state["result"]["receiptCache"]["restartRecovery"], false);
++    assert!(state["result"].get("pixels").is_none());
++    assert_eq!(state["result"]["document"]["hasPixelSelection"], false);
++    assert!(state["result"]["document"]["selectionBounds"].is_null());
++    assert_eq!(state["result"]["document"]["selectionBoundsMeasurement"], "notSampled");
++    app.session.execute("select.all", json!({})).unwrap();
++    let selected = call(&mut app, &ctx, "seecut.state", json!({}));
++    assert_eq!(selected["result"]["document"]["hasPixelSelection"], true);
++    assert!(selected["result"]["document"]["selectionBounds"].is_null());
++    assert_eq!(selected["result"]["document"]["selectionBoundsMeasurement"], "notSampled");
++    assert_eq!(call(&mut app, &ctx, "seecut.state", json!({"extra":1}))["ok"], false);
++}
++#[test]
++fn stale_revision_has_before_after_and_changes_nothing() {
++    let (mut app, ctx, layer) = fixture(true);
++    let old = change(&app, "stale", layer);
++    app.session.execute("layer.setProps", json!({"layer":layer,"opacity":0.8})).unwrap();
++    let revision = app.session.active().unwrap().revision;
++    let result = call(&mut app, &ctx, "seecut.execute", old);
++    assert_eq!(result["result"]["errorCode"], "staleRevision");
++    assert_eq!(result["result"]["before"], result["result"]["after"]);
++    assert_eq!(app.session.active().unwrap().revision, revision);
++    assert_eq!(opacity(&app, layer), 0.8);
++}
++#[test]
++fn close_reopen_preserves_doc_id_but_renews_generation() {
++    let (mut app, ctx, layer) = fixture(true);
++    let old = change(&app, "reopen", layer);
++    let closed = app.session.close(0).unwrap();
++    let old_generation = closed.document_generation;
++    let doc_id = closed.doc.id;
++    app.session.add_document((*closed.doc).clone(), None);
++    let current = app.session.active().unwrap();
++    assert_eq!(current.doc.id, doc_id);
++    assert_ne!(current.document_generation, old_generation);
++    let result = call(&mut app, &ctx, "seecut.execute", old);
++    assert_eq!(result["result"]["errorCode"], "wrongDocument");
++    assert_eq!(result["result"]["before"], result["result"]["after"]);
++}
++#[test]
++fn tab_switch_cannot_write_another_document() {
++    let (mut app, ctx, layer) = fixture(true);
++    let old = change(&app, "other-tab", layer);
++    app.session.execute("file.new", json!({"width":4,"height":4})).unwrap();
++    let result = call(&mut app, &ctx, "seecut.execute", old);
++    assert_eq!(result["result"]["errorCode"], "wrongDocument");
++    assert_eq!(result["result"]["before"], result["result"]["after"]);
++}
++#[test]
++fn opacity_duplicate_receipt_and_separate_undo_use_real_history() {
++    let (mut app, ctx, layer) = fixture(true);
++    let before = app.session.active().unwrap().history.entries().len();
++    let original = change(&app, "opacity", layer);
++    let first = call(&mut app, &ctx, "seecut.execute", original.clone());
++    assert_eq!(first["result"]["status"], "applied");
++    assert_eq!(opacity(&app, layer), 0.4);
++    assert_eq!(app.session.active().unwrap().history.entries().len(), before + 1);
++    let duplicate = call(&mut app, &ctx, "seecut.execute", original.clone());
++    assert_eq!(duplicate, first);
++    assert_eq!(app.session.active().unwrap().history.entries().len(), before + 1);
++    assert_eq!(call(&mut app, &ctx, "seecut.receipt", json!({"operationId":"opacity"})), first);
++    let undo = request(&app, "separate-undo-permit", json!({"kind":"undo"}));
++    let undone = call(&mut app, &ctx, "seecut.execute", undo);
++    assert_eq!(undone["result"]["status"], "applied");
++    assert_eq!(opacity(&app, layer), 1.0);
++    assert!(app.session.active().unwrap().history.can_redo());
++    assert_eq!(app.session.active().unwrap().history.entries().len(), before);
++    // A matched retry remains the original receipt after later manual/history changes.
++    assert_eq!(call(&mut app, &ctx, "seecut.execute", original), first);
++    assert_eq!(opacity(&app, layer), 1.0);
++    assert!(app.session.active().unwrap().history.can_redo());
++}
++
++#[test]
++fn operation_id_parameter_conflict_is_refused() {
++    let (mut app, ctx, layer) = fixture(true);
++    let original = change(&app, "conflict", layer);
++    let first = call(&mut app, &ctx, "seecut.execute", original.clone());
++    let mut changed = original;
++    changed["action"]["opacity"] = json!(0.6);
++    let result = call(&mut app, &ctx, "seecut.execute", changed);
++    assert_eq!(result["error"], "operationIdConflict");
++    assert_eq!(opacity(&app, layer), 0.4);
++    assert_eq!(call(&mut app, &ctx, "seecut.receipt", json!({"operationId":"conflict"})), first);
++}
++#[test]
++fn ordinary_engine_error_returns_before_after_without_retry_permission() {
++    let (mut app, ctx, _) = fixture(false);
++    let undo = request(&app, "no-undo", json!({"kind":"undo"}));
++    let result = call(&mut app, &ctx, "seecut.execute", undo);
++    assert_eq!(result["ok"], true);
++    assert_eq!(result["result"]["status"], "failed");
++    assert_eq!(result["result"]["errorCode"], "engineError");
++    assert_eq!(result["result"]["before"], result["result"]["after"]);
++    assert_eq!(result["result"]["safeToResend"], false);
++}
++#[test]
++fn missing_host_binding_refuses_all_private_methods() {
++    let (mut app, ctx, layer) = fixture(true);
++    let op = change(&app, "no-host", layer);
++    app.seecut_agent = ControlState::from_binding(None);
++    for (method, params) in [("seecut.state", json!({})), ("seecut.execute", op), ("seecut.receipt", json!({"operationId":"no-host"}))] {
++        assert_eq!(call(&mut app, &ctx, method, params)["error"], "hostBindingUnavailable");
++    }
++    assert_eq!(opacity(&app, layer), 1.0);
++    assert!(ControlState::from_binding(Some("arbitrary".into())).host_instance.is_none());
++}
++#[test]
++fn unknown_fields_limits_and_opacity_bounds_are_rejected_before_reservation() {
++    let (mut app, ctx, layer) = fixture(true);
++    let original = change(&app, "strict", layer);
++    let mut cases = Vec::new();
++    let mut p = original.clone();
++    p["extra"] = json!(true);
++    cases.push(p);
++    let mut p = original.clone();
++    p["expected"]["path"] = json!("/tmp/a");
++    cases.push(p);
++    let mut p = original.clone();
++    p["action"]["command"] = json!("file.close");
++    cases.push(p);
++    let mut p = original.clone();
++    p["action"]["opacity"] = json!(1.01);
++    cases.push(p);
++    let mut p = original.clone();
++    p["action"]["opacity"] = json!(-0.1);
++    cases.push(p);
++    let mut p = original.clone();
++    p["operationId"] = json!("x".repeat(129));
++    cases.push(p);
++    let mut p = original;
++    p["action"] = json!({"kind":"undo","layerId":layer});
++    cases.push(p);
++    for params in cases {
++        assert_eq!(call(&mut app, &ctx, "seecut.execute", params)["ok"], false);
++    }
++    assert!(app.seecut_agent.receipts.is_empty());
++    assert_eq!(opacity(&app, layer), 1.0);
++    assert!(!Action::LayerSetOpacity { layer_id: layer, opacity: f64::INFINITY }.valid());
++    assert!(!Action::LayerSetOpacity { layer_id: layer, opacity: f64::NAN }.valid());
++}
++#[test]
++fn receipt_miss_never_executes_and_in_progress_never_reexecutes() {
++    let (mut app, ctx, layer) = fixture(true);
++    let miss = call(&mut app, &ctx, "seecut.receipt", json!({"operationId":"lost"}));
++    assert_eq!(miss["result"]["status"], "unknown");
++    assert_eq!(miss["result"]["safeToResend"], false);
++    let value = change(&app, "in-progress", layer);
++    let request = serde_json::from_value::<Execute>(value.clone()).unwrap();
++    app.seecut_agent.receipts.insert("in-progress".into(), Entry { request, receipt: None });
++    assert_eq!(call(&mut app, &ctx, "seecut.execute", value)["result"]["status"], "unknown");
++    assert_eq!(opacity(&app, layer), 1.0);
++}
++#[test]
++fn capacity_never_evicts_an_old_operation() {
++    let (mut app, ctx, layer) = fixture(true);
++    for n in 0..RECEIPT_LIMIT {
++        let value = change(&app, &format!("reserved-{n}"), layer);
++        let request = serde_json::from_value::<Execute>(value).unwrap();
++        app.seecut_agent.receipts.insert(request.operation_id.clone(), Entry { request, receipt: None });
++    }
++    let op = change(&app, "capacity", layer);
++    assert_eq!(call(&mut app, &ctx, "seecut.execute", op)["error"], "receiptCapacityReached");
++    assert_eq!(app.seecut_agent.receipts.len(), RECEIPT_LIMIT);
++    assert!(app.seecut_agent.receipts.contains_key("reserved-0"));
++    assert_eq!(opacity(&app, layer), 1.0);
++}
++#[test]
++fn actual_pending_preview_and_modal_refuse_writes() {
++    let (mut app, ctx, layer) = fixture(true);
++    app.live_adjust = Some((LayerId(layer), json!({})));
++    let op = change(&app, "preview", layer);
++    assert_eq!(call(&mut app, &ctx, "seecut.execute", op)["result"]["errorCode"], "previewBusy");
++    app.live_adjust = None;
++    app.ui.open_dialog(crate::state::DialogKind::About, serde_json::Map::new());
++    let op = change(&app, "modal", layer);
++    assert_eq!(call(&mut app, &ctx, "seecut.execute", op)["result"]["errorCode"], "modalBusy");
++    assert_eq!(opacity(&app, layer), 1.0);
++}
++#[test]
++#[cfg(not(target_arch = "wasm32"))]
++fn actual_engine_job_refuses_writes_without_applying_the_job() {
++    let (mut app, ctx, layer) = fixture(true);
++    let (tx, rx) = std::sync::mpsc::channel::<()>();
++    app.session
++        .start_job(
++            "private-test",
++            json!({}),
++            "Held job",
++            true,
++            move |_| {
++                let _ = rx.recv();
++                Ok(())
++            },
++            |_, ()| Ok(Value::Null),
++        )
++        .unwrap();
++    let op = change(&app, "job", layer);
++    let result = call(&mut app, &ctx, "seecut.execute", op);
++    tx.send(()).unwrap();
++    assert_eq!(result["result"]["errorCode"], "jobBusy");
++    assert_eq!(opacity(&app, layer), 1.0);
++}
++
++#[test]
++fn generation_exhaustion_is_explicitly_unavailable() {
++    let (mut app, ctx, layer) = fixture(true);
++    let op = change(&app, "exhausted", layer);
++    app.session.active_mut().unwrap().document_generation = 0;
++    assert_eq!(call(&mut app, &ctx, "seecut.state", json!({}))["error"], "generationUnavailable");
++    let result = call(&mut app, &ctx, "seecut.execute", op);
++    assert_eq!(result["result"]["errorCode"], "generationUnavailable");
++    assert_eq!(result["result"]["before"], result["result"]["after"]);
++    assert_eq!(opacity(&app, layer), 1.0);
++}
++
++#[test]
++fn existing_automation_policy_is_preserved_for_closed_commands() {
++    let (mut app, ctx, layer) = fixture(true);
++    app.services.automation_command = Some(Box::new(|_, _| Err("policy test".into())));
++    let op = change(&app, "policy", layer);
++    let result = call(&mut app, &ctx, "seecut.execute", op);
++    assert_eq!(result["result"]["errorCode"], "automationPolicyRejected");
++    assert_eq!(result["result"]["before"], result["result"]["after"]);
++    assert_eq!(opacity(&app, layer), 1.0);
++}
+--- /dev/null
++++ b/crates/ui-egui/src/seecut_agent.rs
+@@ -0,0 +1,417 @@
++//! Private SeeCut host endpoints. Metadata only: no screenshot or atomic pixel claim.
++//! The owning SeeCut host must pass its existing exact-call and Task gates before
++//! calling. This module is deliberately not a new authorization authority.
++use std::collections::HashMap;
++
++use photocraft_doc::{Layer, LayerId};
++use serde::{Deserialize, Serialize};
++use serde_json::{Value, json};
++
++use crate::PhotocraftApp;
++
++const HOST_ENV: &str = "SEECUT_PHOTO_HOST_INSTANCE_ID";
++const RECEIPT_LIMIT: usize = 1024;
++const LIST_LIMIT: usize = 256;
++
++#[derive(Default)]
++pub(crate) struct ControlState {
++    host_instance: Option<String>,
++    // No eviction: an old id must never become executable again. Memory only.
++    receipts: HashMap<String, Entry>,
++}
++impl ControlState {
++    pub(crate) fn from_environment() -> Self {
++        Self::from_binding(std::env::var(HOST_ENV).ok())
++    }
++    fn from_binding(binding: Option<String>) -> Self {
++        Self { host_instance: binding.filter(|s| valid_host_id(s)), receipts: HashMap::new() }
++    }
++}
++fn valid_host_id(s: &str) -> bool {
++    s.len() == 36 && s.bytes().enumerate().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == b'-' } else { c.is_ascii_hexdigit() })
++}
++fn valid_operation_id(s: &str) -> bool {
++    !s.is_empty() && s.len() <= 128 && s.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.:".contains(&c))
++}
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct Expected {
++    host_instance_id: String,
++    doc_id: u64,
++    document_generation: u64,
++    revision: u64,
++}
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
++enum Action {
++    #[serde(rename_all = "camelCase")]
++    LayerSetOpacity {
++        layer_id: u64,
++        opacity: f64,
++    },
++    // A separate exact-call permit is required by the owning host for this action.
++    Undo {},
++}
++impl Action {
++    fn command(&self) -> &'static str {
++        match self {
++            Self::LayerSetOpacity { .. } => "layer.setProps",
++            Self::Undo {} => "edit.undo",
++        }
++    }
++    fn params(&self) -> Value {
++        match self {
++            Self::LayerSetOpacity { layer_id, opacity } => {
++                json!({"layer": layer_id, "opacity": opacity})
++            }
++            Self::Undo {} => json!({}),
++        }
++    }
++    fn layer(&self) -> Option<LayerId> {
++        match self {
++            Self::LayerSetOpacity { layer_id, .. } => Some(LayerId(*layer_id)),
++            Self::Undo {} => None,
++        }
++    }
++    fn valid(&self) -> bool {
++        match self {
++            Self::LayerSetOpacity { layer_id, opacity } => *layer_id > 0 && opacity.is_finite() && (0.0..=1.0).contains(opacity),
++            Self::Undo {} => true,
++        }
++    }
++}
++#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct Execute {
++    operation_id: String,
++    expected: Expected,
++    action: Action,
++}
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct ReceiptQuery {
++    operation_id: String,
++}
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct StateQuery {}
++#[derive(Clone, Debug, PartialEq, Serialize)]
++#[serde(rename_all = "camelCase")]
++struct LayerState {
++    id: u64,
++    name: String,
++    opacity: f32,
++    visible: bool,
++}
++fn layer_state(l: &Layer) -> LayerState {
++    LayerState { id: l.id.0, name: l.name.chars().take(256).collect(), opacity: l.opacity, visible: l.visible }
++}
++fn layers_bounded(layers: &[Layer], out: &mut Vec<LayerState>) {
++    for l in layers.iter().rev() {
++        if out.len() == LIST_LIMIT {
++            return;
++        }
++        out.push(layer_state(l));
++        if let Some(children) = l.children() {
++            layers_bounded(children, out);
++        }
++    }
++}
++#[derive(Clone, Debug, PartialEq, Serialize)]
++#[serde(rename_all = "camelCase")]
++struct DocumentState {
++    identity: Expected,
++    name: String,
++    size: [u32; 2],
++    active_layer: Option<u64>,
++    selected_layers: Vec<u64>,
++    selection_list_truncated: bool,
++    has_pixel_selection: bool,
++    selection_bounds: Option<[i32; 4]>,
++    selection_bounds_measurement: &'static str,
++    layers: Vec<LayerState>,
++    layer_list_may_be_truncated: bool,
++    target: Option<LayerState>,
++    dirty: bool,
++    can_undo: bool,
++    can_redo: bool,
++    history_entries: usize,
++}
++fn observe(app: &PhotocraftApp, host: &str, target: Option<LayerId>) -> Option<DocumentState> {
++    let st = app.session.active()?;
++    let mut layers = Vec::new();
++    layers_bounded(&st.doc.layers, &mut layers);
++    let selected = st.selected_layers();
++    Some(DocumentState {
++        identity: Expected { host_instance_id: host.into(), doc_id: st.doc.id.0, document_generation: st.document_generation, revision: st.revision },
++        name: st.doc.name.chars().take(256).collect(),
++        size: [st.doc.size.width, st.doc.size.height],
++        active_layer: st.active_layer.map(|l| l.0),
++        selected_layers: selected.iter().take(LIST_LIMIT).map(|l| l.0).collect(),
++        selection_list_truncated: selected.len() > LIST_LIMIT,
++        has_pixel_selection: st.doc.selection.is_some(),
++        // Metadata reads must not scan selection tiles/pixels on the UI thread.
++        selection_bounds: None,
++        selection_bounds_measurement: "notSampled",
++        layer_list_may_be_truncated: layers.len() == LIST_LIMIT,
++        layers,
++        target: target.and_then(|l| st.doc.layer(l)).map(layer_state),
++        dirty: st.is_dirty(),
++        can_undo: st.history.can_undo(),
++        can_redo: st.history.can_redo(),
++        history_entries: st.history.entries().len(),
++    })
++}
++#[derive(Clone, Debug, PartialEq, Serialize)]
++#[serde(rename_all = "camelCase")]
++struct ReceiptState {
++    identity: Expected,
++    active_layer: Option<u64>,
++    target: Option<LayerState>,
++    can_undo: bool,
++    can_redo: bool,
++    history_entries: usize,
++}
++fn receipt_state(app: &PhotocraftApp, host: &str, target: Option<LayerId>) -> Option<ReceiptState> {
++    let st = app.session.active()?;
++    Some(ReceiptState {
++        identity: Expected { host_instance_id: host.into(), doc_id: st.doc.id.0, document_generation: st.document_generation, revision: st.revision },
++        active_layer: st.active_layer.map(|l| l.0),
++        target: target.and_then(|l| st.doc.layer(l)).map(layer_state),
++        can_undo: st.history.can_undo(),
++        can_redo: st.history.can_redo(),
++        history_entries: st.history.entries().len(),
++    })
++}
++#[derive(Clone, Debug, PartialEq, Serialize)]
++#[serde(rename_all = "camelCase")]
++struct Receipt {
++    operation_id: String,
++    status: &'static str,
++    error_code: Option<&'static str>,
++    before: Option<ReceiptState>,
++    after: Option<ReceiptState>,
++    // This remains false even on rejected/failed results; callers query receipts,
++    // never turn an engine error into permission to resend a write.
++    safe_to_resend: bool,
++}
++struct Entry {
++    // Exact canonical typed request equality is the parameter fingerprint. No
++    // lossy/defaulted fields, string hashing or collision-prone short digest.
++    request: Execute,
++    receipt: Option<Receipt>,
++}
++fn ok(result: impl Serialize) -> Value {
++    json!({"ok":true,"result":result})
++}
++fn invalid(code: &'static str) -> Value {
++    json!({"ok":false,"error":code})
++}
++fn unknown(id: &str) -> Value {
++    ok(json!({"operationId":id,"status":"unknown","safeToResend":false,"cache":"memoryOnlyRestartDoesNotRecover"}))
++}
++
++/// No changes, commits or synthetic UI events are performed by this predicate.
++fn busy(app: &PhotocraftApp, ctx: &egui::Context, command: &str) -> Option<&'static str> {
++    if !crate::menus::modal_allows(app, command)
++        || app.ui.shell.dialog.is_some()
++        || app.distort.active()
++        || app.wide_angle.is_some()
++        || app.pending_raw_open.is_some()
++        || app.raw_redevelop.is_some()
++        || app.pending_after_prompt.is_some()
++    {
++        return Some("modalBusy");
++    }
++    if app.session.has_jobs() {
++        return Some("jobBusy");
++    }
++    if ctx.input(|i| i.pointer.any_down() || !i.keys_down.is_empty())
++        || ctx.egui_wants_keyboard_input()
++        || app.drag.is_some()
++        || app.live_stroke.is_some()
++        || app.press_stroke
++        || app.ui.text_edit.is_some()
++        || app.ui.transform.is_some()
++        || app.ui.type_transform.is_some()
++        || app.ui.cam_transform.is_some()
++        || app.ui.symmetry_transform.is_some()
++        || app.ui.pen.is_some()
++        || app.ui.stroke_editor.is_some()
++        || app.ui.corner_radius.is_some()
++        || !app.ui.polygon.is_empty()
++        || app.ui.magnetic.active()
++        || app.crop.drag.is_some()
++        || app.crop.editing
++        || app.ui.crop_rect.is_some()
++        || crate::perspective_crop_ui::pending(app)
++        || app.gradient.has_pending_edit()
++        || app.guide_drag.is_some()
++        || app.layer_box.is_some()
++        || app.brush_resize.is_some()
++        || app.quick_pick
++        || !app.remove_pending.is_empty()
++        || !app.synthetic.is_empty()
++        || !app.drop_places.is_empty()
++        || !app.held_opens.is_empty()
++    {
++        return Some("activeEditBusy");
++    }
++    if app.live_adjust.is_some()
++        || app.move_preview.is_some()
++        || app.blend_preview.is_some()
++        || app.reorder_preview.is_some()
++        || app.patch_preview.is_some()
++        || app.cam_preview.is_some()
++        || app.filter_preview.is_some()
++        || app.color_range.is_some()
++        || app.adjust_preview.is_some()
++        || app.live_adjust_preview.is_some()
++        || app.transform_preview.is_some()
++        || app.text_style_preview.is_some()
++        || app.style_preview.is_some()
++        || app.solid_fill_preview.is_some()
++        || app.pattern_fill_preview.is_some()
++        || app.shape_fill_preview.is_some()
++        || app.type_transform_preview.is_some()
++        || app.type_font_preview.is_some()
++    {
++        return Some("previewBusy");
++    }
++    // Executing a closed command must not trigger user-configured script hooks.
++    if app.session.prefs().script_events.enabled {
++        return Some("scriptEventsEnabled");
++    }
++    None
++}
++fn preflight(app: &PhotocraftApp, ctx: &egui::Context, host: &str, request: &Execute) -> Result<(), &'static str> {
++    let st = app.session.active().ok_or("noDocument")?;
++    if request.expected.host_instance_id != host {
++        return Err("wrongHostInstance");
++    }
++    if st.document_generation == 0 {
++        return Err("generationUnavailable");
++    }
++    if st.doc.id.0 != request.expected.doc_id || st.document_generation != request.expected.document_generation {
++        return Err("wrongDocument");
++    }
++    if st.revision != request.expected.revision {
++        return Err("staleRevision");
++    }
++    if let Some(why) = busy(app, ctx, request.action.command()) {
++        return Err(why);
++    }
++    if let Some(layer) = request.action.layer() {
++        st.doc.layer(layer).ok_or("noLayer")?;
++        // layer.setProps converts Background to a regular layer for opacity < 1.
++        // That implicit conversion is outside this endpoint's opacity-only scope.
++        if st.doc.is_background(layer) {
++            return Err("backgroundConversionUnsupported");
++        }
++    }
++    Ok(())
++}
++
++pub(crate) fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: &Value) -> Value {
++    let Some(host) = app.seecut_agent.host_instance.clone() else {
++        return invalid("hostBindingUnavailable");
++    };
++    match method {
++        "seecut.state" => {
++            if serde_json::from_value::<StateQuery>(params.clone()).is_err() {
++                return invalid("invalidParams");
++            }
++            if app.session.active().is_some_and(|st| st.document_generation == 0) {
++                return invalid("generationUnavailable");
++            }
++            ok(json!({
++                "kind":"uiCallbackMetadata","atomicPixels":false,"frame":app.frame,
++                "hostInstanceId":host,"document":observe(app,&host,None),
++                "view":app.session.active_index().and_then(|i|app.ui.views.get(i)),
++                "geometrySource":"lastLaidOutFrame","lastLaidOutCanvasRect":{
++                    "min":[app.last_canvas_rect.min.x,app.last_canvas_rect.min.y],
++                    "max":[app.last_canvas_rect.max.x,app.last_canvas_rect.max.y]},
++                "busy":busy(app,ctx,"layer.setProps"),
++                "receiptCache":{"storage":"memoryOnly","restartRecovery":false,"capacity":RECEIPT_LIMIT,
++                    "entries":app.seecut_agent.receipts.len(),"eviction":false}
++            }))
++        }
++        "seecut.receipt" => {
++            let Ok(query) = serde_json::from_value::<ReceiptQuery>(params.clone()) else {
++                return invalid("invalidParams");
++            };
++            if !valid_operation_id(&query.operation_id) {
++                return invalid("invalidOperationId");
++            }
++            match app.seecut_agent.receipts.get(&query.operation_id).and_then(|e| e.receipt.as_ref()) {
++                Some(receipt) => ok(receipt),
++                None => unknown(&query.operation_id),
++            }
++        }
++        "seecut.execute" => execute(app, ctx, &host, params),
++        _ => invalid("unknownPrivateMethod"),
++    }
++}
++fn execute(app: &mut PhotocraftApp, ctx: &egui::Context, host: &str, params: &Value) -> Value {
++    let Ok(request) = serde_json::from_value::<Execute>(params.clone()) else {
++        return invalid("invalidParams");
++    };
++    if !valid_operation_id(&request.operation_id)
++        || !request.action.valid()
++        || request.expected.doc_id == 0
++        || request.expected.document_generation == 0
++        || request.expected.revision == 0
++    {
++        return invalid("invalidParams");
++    }
++    if request.expected.host_instance_id != host {
++        return invalid("wrongHostInstance");
++    }
++    if let Some(entry) = app.seecut_agent.receipts.get(&request.operation_id) {
++        if entry.request != request {
++            return invalid("operationIdConflict");
++        }
++        return entry.receipt.as_ref().map(ok).unwrap_or_else(|| unknown(&request.operation_id));
++    }
++    if app.seecut_agent.receipts.len() >= RECEIPT_LIMIT {
++        return invalid("receiptCapacityReached");
++    }
++    let before = receipt_state(app, host, request.action.layer());
++    app.seecut_agent.receipts.insert(request.operation_id.clone(), Entry { request: request.clone(), receipt: None });
++    let rejection = preflight(app, ctx, host, &request).err();
++    let (status, error_code) = if let Some(why) = rejection {
++        ("rejected", Some(why))
++    } else {
++        let command = request.action.command();
++        let engine_params = request.action.params();
++        // Match control.rs's automation_command gate and keep control::handle's
++        // temporary Session::authorize installed for the real engine dispatch.
++        let allowed = app.services.automation_command.as_ref().is_none_or(|gate| gate(command, &engine_params).is_ok());
++        if !allowed {
++            ("rejected", Some("automationPolicyRejected"))
++        } else {
++            match app.session.execute(command, engine_params) {
++                Ok(_) => {
++                    ctx.request_repaint();
++                    ("applied", None)
++                }
++                Err(_) => ("failed", Some("engineError")),
++            }
++        }
++    };
++    let receipt = Receipt {
++        operation_id: request.operation_id.clone(),
++        status,
++        error_code,
++        before,
++        after: receipt_state(app, host, request.action.layer()),
++        safe_to_resend: false,
++    };
++    if let Some(entry) = app.seecut_agent.receipts.get_mut(&request.operation_id) {
++        entry.receipt = Some(receipt.clone());
++    }
++    ok(receipt)
++}
++
++#[cfg(test)]
++mod tests;

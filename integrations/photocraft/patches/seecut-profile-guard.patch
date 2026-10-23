@@ -1,0 +1,355 @@
+--- a/apps/photocraft/src/main.rs
++++ b/apps/photocraft/src/main.rs
+@@ -67,6 +67,7 @@
+ #[cfg(any(target_os = "linux", test))]
+ mod print_portal;
+ mod screen_color;
++mod seecut_profile_guard;
+ mod services;
+ // macOS gets one instance from LaunchServices (open-documents Apple events).
+ #[cfg(any(not(target_os = "macos"), test))]
+@@ -444,6 +445,15 @@
+ }
+ 
+ fn main() -> eframe::Result {
++    // The desktop owns the profile lease even if its SeeCut launcher disappears.
++    // Keep this first: no log file, preferences, recovery data or window may precede it.
++    let _seecut_profile_guard = match seecut_profile_guard::claim_from_env() {
++        Ok(guard) => guard,
++        Err(error) => {
++            eprintln!("photocraft: cannot claim SeeCut profile: {error}");
++            std::process::exit(2);
++        }
++    };
+     // First, so the panic hook and every start-up warning are recorded (`logging`).
+     let logger = logging::install();
+     crash_guard::install_hook();
+--- /dev/null
++++ b/apps/photocraft/src/seecut_profile_guard.rs
+@@ -0,0 +1,326 @@
++//! Optional SeeCut-owned profile lease. The desktop, not its launcher, owns this OS lock.
++//! Ordinary upstream starts leave the filesystem untouched when the host marker is absent.
++
++use std::ffi::OsString;
++use std::fs::File;
++
++const INSTANCE_ENV: &str = "SEECUT_PHOTO_HOST_INSTANCE_ID";
++const PROFILE_ENV: &str = "PHOTOCRAFT_CONFIG_DIR";
++#[cfg(any(target_os = "macos", target_os = "linux"))]
++const LOCK_FILE: &str = "seecut-owned-editor.lock";
++
++/// Keep the open file alive until the desktop's entire main scope returns.
++pub(crate) struct ProfileGuard {
++    _lock: File,
++}
++
++/// Claim an explicitly configured SeeCut profile before logging, recovery or UI startup.
++pub(crate) fn claim_from_env() -> Result<Option<ProfileGuard>, String> {
++    claim(std::env::var_os(INSTANCE_ENV), std::env::var_os(PROFILE_ENV))
++}
++
++fn claim(instance: Option<OsString>, profile: Option<OsString>) -> Result<Option<ProfileGuard>, String> {
++    let Some(instance) = instance else { return Ok(None) };
++    if !instance.to_str().is_some_and(valid_uuid) {
++        return Err("SeeCut host instance must be a canonical UUID".into());
++    }
++    // Validation binds activation to the trusted host marker; it is never a PID or a lock owner record.
++    #[cfg(any(target_os = "macos", target_os = "linux"))]
++    {
++        claim_supported(profile).map(Some)
++    }
++    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
++    {
++        let _ = profile;
++        Err("SeeCut profile locking is only implemented on macOS and Linux".into())
++    }
++}
++
++fn valid_uuid(value: &str) -> bool {
++    value.len() == 36 && value.bytes().enumerate().all(|(index, byte)| if matches!(index, 8 | 13 | 18 | 23) { byte == b'-' } else { byte.is_ascii_hexdigit() })
++}
++
++#[cfg(any(target_os = "macos", target_os = "linux"))]
++fn claim_supported(profile: Option<OsString>) -> Result<ProfileGuard, String> {
++    use std::fs::{self, OpenOptions, TryLockError};
++    use std::io::ErrorKind;
++    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
++    use std::path::{Component, PathBuf};
++
++    let profile = profile.filter(|path| !path.is_empty()).map(PathBuf::from).ok_or("SeeCut profile requires an explicit PHOTOCRAFT_CONFIG_DIR")?;
++    if !profile.is_absolute() || profile.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir)) {
++        return Err("SeeCut profile must be an absolute path without traversal".into());
++    }
++    for ancestor in profile.ancestors() {
++        let metadata = fs::symlink_metadata(ancestor).map_err(|error| format!("cannot validate SeeCut profile directory: {error}"))?;
++        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
++            return Err("SeeCut profile path must contain only ordinary directories".into());
++        }
++    }
++    let profile_before = fs::symlink_metadata(&profile).map_err(|error| format!("cannot inspect SeeCut profile: {error}"))?;
++    if profile_before.mode() & 0o7777 != 0o700 {
++        return Err("SeeCut profile directory must already be private mode 0700".into());
++    }
++    let lock_path = profile.join(LOCK_FILE);
++    // create_new never follows a pre-existing symlink, and avoids truncating an existing inode.
++    let lock = match OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&lock_path) {
++        Ok(file) => file,
++        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
++            let before = fs::symlink_metadata(&lock_path).map_err(|error| format!("cannot inspect SeeCut profile lock: {error}"))?;
++            validate_lock_file(&before)?;
++            let file = OpenOptions::new()
++                .read(true)
++                .write(true)
++                .truncate(false)
++                .open(&lock_path)
++                .map_err(|error| format!("cannot open SeeCut profile lock: {error}"))?;
++            let opened = file.metadata().map_err(|error| format!("cannot inspect opened SeeCut profile lock: {error}"))?;
++            validate_lock_file(&opened)?;
++            if before.dev() != opened.dev() || before.ino() != opened.ino() {
++                return Err("SeeCut profile lock changed while opening".into());
++            }
++            file
++        }
++        Err(error) => return Err(format!("cannot create SeeCut profile lock: {error}")),
++    };
++    let opened = lock.metadata().map_err(|error| format!("cannot inspect SeeCut profile lock: {error}"))?;
++    validate_lock_file(&opened)?;
++    match lock.try_lock() {
++        Ok(()) => {}
++        Err(TryLockError::WouldBlock) => return Err("SeeCut profile is already in use by a live editor".into()),
++        Err(TryLockError::Error(error)) => return Err(format!("cannot acquire SeeCut profile OS lock: {error}")),
++    }
++    // The profile is private and launch-configured. Refuse any observed path replacement
++    // before later desktop code is allowed to read configuration or recovery data.
++    let named = fs::symlink_metadata(&lock_path).map_err(|error| format!("cannot recheck SeeCut profile lock: {error}"))?;
++    validate_lock_file(&named)?;
++    let profile_after = fs::symlink_metadata(&profile).map_err(|error| format!("cannot recheck SeeCut profile: {error}"))?;
++    if !profile_after.file_type().is_dir()
++        || profile_after.mode() & 0o7777 != 0o700
++        || profile_before.dev() != profile_after.dev()
++        || profile_before.ino() != profile_after.ino()
++        || opened.dev() != named.dev()
++        || opened.ino() != named.ino()
++    {
++        return Err("SeeCut profile or lock path changed during acquisition".into());
++    }
++    // Never unlink this file. Every start must contend on the same inode, and the OS
++    // releases the lock even when the desktop exits without running Rust destructors.
++    Ok(ProfileGuard { _lock: lock })
++}
++
++#[cfg(any(target_os = "macos", target_os = "linux"))]
++fn validate_lock_file(metadata: &std::fs::Metadata) -> Result<(), String> {
++    use std::os::unix::fs::MetadataExt;
++    if !metadata.file_type().is_file() || metadata.mode() & 0o7777 != 0o600 || metadata.nlink() != 1 {
++        return Err("SeeCut profile lock must be a single-link regular file with mode 0600".into());
++    }
++    Ok(())
++}
++
++#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
++mod tests {
++    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
++
++    use super::*;
++    use std::fs;
++    use std::io::{Read, Write};
++    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
++    use std::path::{Path, PathBuf};
++    use std::process::{Command, Stdio};
++    use std::sync::atomic::{AtomicU64, Ordering};
++    use std::time::{Duration, Instant};
++
++    const ID: &str = "18d27ceb-05f1-4483-a27b-bad5f3ca9131";
++    static NEXT: AtomicU64 = AtomicU64::new(1);
++
++    fn root() -> PathBuf {
++        let cwd = std::env::current_dir().unwrap();
++        let repository = cwd
++            .ancestors()
++            .find(|path| path.join("integrations/photocraft/upstream.json").is_file())
++            .expect("run candidate tests from within the SeeCut checkout");
++        let path = repository.join(".toonflow/photocraft-profile-guard-candidate/test-runs").join(format!(
++            "{}-{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        fs::create_dir_all(&path).unwrap();
++        path.canonicalize().unwrap()
++    }
++
++    fn profile(root: &Path) -> PathBuf {
++        let path = root.join("profile");
++        fs::create_dir(&path).unwrap();
++        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
++        path
++    }
++
++    fn acquire(profile: &Path) -> Result<Option<ProfileGuard>, String> {
++        claim(Some(ID.into()), Some(profile.as_os_str().to_owned()))
++    }
++
++    fn wait_for(path: &Path) {
++        let deadline = Instant::now() + Duration::from_secs(10);
++        while !path.is_file() {
++            assert!(Instant::now() < deadline, "fixture deadline: {}", path.display());
++            std::thread::sleep(Duration::from_millis(10));
++        }
++    }
++
++    #[test]
++    fn disabled_marker_has_no_filesystem_side_effects() {
++        let root = root();
++        let absent = root.join("not-created");
++        assert!(claim(None, Some(absent.as_os_str().to_owned())).unwrap().is_none());
++        assert!(!absent.exists());
++        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
++    }
++
++    #[test]
++    fn invalid_instance_and_missing_or_public_profile_are_rejected() {
++        let root = root();
++        let profile = profile(&root);
++        for invalid in ["", "no-uuid", "18d27ceb05f14483a27bbad5f3ca9131", "18d27ceb-05f1-4483-a27b-bad5f3ca913z"] {
++            assert!(claim(Some(invalid.into()), Some(profile.as_os_str().to_owned())).is_err());
++        }
++        assert!(claim(Some(ID.into()), None).is_err());
++        assert!(claim(Some(ID.into()), Some(OsString::new())).is_err());
++        assert!(claim(Some(ID.into()), Some("relative/profile".into())).is_err());
++        assert!(acquire(&root.join("absent")).is_err());
++        let file_profile = root.join("not-a-directory");
++        fs::write(&file_profile, b"preserved").unwrap();
++        assert!(acquire(&file_profile).is_err());
++        fs::set_permissions(&profile, fs::Permissions::from_mode(0o755)).unwrap();
++        assert!(acquire(&profile).is_err());
++        assert!(!profile.join(LOCK_FILE).exists());
++    }
++
++    #[test]
++    fn symlink_profile_and_nonregular_or_public_lock_are_rejected() {
++        let root = root();
++        let profile = profile(&root);
++        let alias = root.join("profile-link");
++        std::os::unix::fs::symlink(&profile, &alias).unwrap();
++        assert!(acquire(&alias).is_err());
++        let lock = profile.join(LOCK_FILE);
++        let target = root.join("untouched");
++        fs::write(&target, b"unchanged").unwrap();
++        std::os::unix::fs::symlink(&target, &lock).unwrap();
++        assert!(acquire(&profile).is_err());
++        assert_eq!(fs::read(&target).unwrap(), b"unchanged");
++        fs::remove_file(&lock).unwrap();
++        fs::create_dir(&lock).unwrap();
++        assert!(acquire(&profile).is_err());
++        fs::remove_dir(&lock).unwrap();
++        let status =
++            Command::new("/usr/bin/mkfifo").args(["-m", "600"]).arg(&lock).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
++        assert!(status.success(), "create the exact FIFO fixture inside this candidate's profile");
++        assert!(fs::symlink_metadata(&lock).unwrap().file_type().is_fifo());
++        let started = Instant::now();
++        assert!(acquire(&profile).is_err());
++        assert!(started.elapsed() < Duration::from_secs(1), "guard must reject metadata before opening a FIFO");
++        fs::remove_file(&lock).unwrap();
++        fs::write(&lock, b"preserved").unwrap();
++        fs::set_permissions(&lock, fs::Permissions::from_mode(0o644)).unwrap();
++        assert!(acquire(&profile).is_err());
++        assert_eq!(fs::read(&lock).unwrap(), b"preserved");
++    }
++
++    #[test]
++    fn independent_opens_conflict_and_release_reuses_the_same_inode() {
++        let root = root();
++        let profile = profile(&root);
++        let first = acquire(&profile).unwrap().unwrap();
++        let lock = profile.join(LOCK_FILE);
++        let inode = fs::metadata(&lock).unwrap().ino();
++        assert_eq!(fs::metadata(&lock).unwrap().mode() & 0o7777, 0o600);
++        let error = acquire(&profile).err().expect("second independent open must conflict");
++        assert!(error.contains("already in use"));
++        drop(first);
++        assert!(lock.is_file(), "release must not unlink the shared lock inode");
++        let second = acquire(&profile).unwrap().unwrap();
++        assert_eq!(fs::metadata(&lock).unwrap().ino(), inode);
++        drop(second);
++    }
++
++    fn fixture_command(role: &str, root: &Path) -> Command {
++        let (_, test_module) = module_path!().split_once("::").unwrap();
++        let mut command = Command::new(std::env::current_exe().unwrap());
++        command
++            .args(["--exact", &format!("{test_module}::fixture_process"), "--nocapture", "--test-threads=1"])
++            .env("SEECUT_PROFILE_GUARD_FIXTURE_ROLE", role)
++            .env("SEECUT_PROFILE_GUARD_FIXTURE_ROOT", root)
++            .env(INSTANCE_ENV, ID)
++            .env(PROFILE_ENV, root.join("profile"))
++            .stdin(Stdio::null())
++            .stdout(Stdio::null())
++            .stderr(Stdio::null());
++        command
++    }
++
++    #[test]
++    fn fixture_process() {
++        let Some(role) = std::env::var_os("SEECUT_PROFILE_GUARD_FIXTURE_ROLE") else { return };
++        let root = PathBuf::from(std::env::var_os("SEECUT_PROFILE_GUARD_FIXTURE_ROOT").unwrap());
++        if role == "parent" || role == "abrupt-parent" {
++            let _child = fixture_command("owner", &root).spawn().unwrap();
++            wait_for(&root.join("owner-ready"));
++            fs::write(root.join("parent-exited"), b"dropping only the launcher").unwrap();
++            if role == "abrupt-parent" {
++                // Simulate the launcher disappearing without running Rust destructors.
++                std::process::exit(23);
++            }
++            // Child::drop does not terminate this independent child; the test runner exits.
++            return;
++        }
++        assert_eq!(role, "owner");
++        let _guard = claim_from_env().unwrap().unwrap();
++        fs::write(root.join("owner-ready"), b"locked").unwrap();
++        wait_for(&root.join("release-owner"));
++        // No Rust destructor runs: this tests that real process exit releases the OS lock.
++        std::process::exit(0);
++    }
++
++    #[test]
++    fn lock_outlives_launcher_process_and_os_exit_releases_it() {
++        assert_launcher_independence("parent", 0);
++    }
++
++    #[test]
++    fn lock_outlives_abrupt_launcher_exit_without_parent_destructors() {
++        assert_launcher_independence("abrupt-parent", 23);
++    }
++
++    fn assert_launcher_independence(role: &str, exit_code: i32) {
++        let root = root();
++        let profile = profile(&root);
++        let mut parent = fixture_command(role, &root).spawn().unwrap();
++        let deadline = Instant::now() + Duration::from_secs(10);
++        let status = loop {
++            if let Some(status) = parent.try_wait().unwrap() {
++                break status;
++            }
++            assert!(Instant::now() < deadline, "launcher fixture did not exit");
++            std::thread::sleep(Duration::from_millis(10));
++        };
++        assert_eq!(status.code(), Some(exit_code));
++        assert!(root.join("parent-exited").is_file());
++        let inode = fs::metadata(profile.join(LOCK_FILE)).unwrap().ino();
++        let busy = acquire(&profile).err().expect("editor must retain its own lock after launcher exit");
++        assert!(busy.contains("already in use"));
++        File::create(root.join("release-owner")).unwrap().write_all(b"exit").unwrap();
++        let deadline = Instant::now() + Duration::from_secs(10);
++        let _next = loop {
++            match acquire(&profile) {
++                Ok(Some(guard)) => break guard,
++                Err(error) if error.contains("already in use") && Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
++                _ => panic!("OS did not release the child's lock after its actual process exit"),
++            }
++        };
++        assert_eq!(fs::metadata(profile.join(LOCK_FILE)).unwrap().ino(), inode);
++        let mut bytes = Vec::new();
++        File::open(profile.join(LOCK_FILE)).unwrap().read_to_end(&mut bytes).unwrap();
++        assert!(bytes.is_empty(), "the lock contains no PID, token or instance credential");
++    }
++}

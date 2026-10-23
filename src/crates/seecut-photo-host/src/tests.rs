@@ -24,10 +24,15 @@ impl Fixture {
             "source":{
                 "repository":"https://github.com/storytold/photocraft.git",
                 "commit":"ff4738810134d7f7e68b49f2e4f231b686282ff3","version":"0.14.0",
-                "sourceTreeSha256":"398c2fca006b44f3c1a241c123d3fad882f472ae9f72a7c1c27ef28b6b39cdfa",
+                "sourceTreeSha256":"d93a309a979058e1a9449b97ee666a32988b79f1cee38631646989397a7f10bd",
                 "cargoLockSha256":"36a1de83fea16781dc7186d33d8064cb5dfa878a2a0847228737640b1e64e2d0",
-                "fileCount":2011,
-                "patches":[{"path":"patches/seecut-theme.patch","sha256":"c8706c00aa0dd2cdf4eee31f89d578db9b882f4b288a8388513a5910b1aa96c2"}]
+                "fileCount":2014,
+                "patches":[
+                    {"path":"patches/seecut-theme.patch","sha256":"c8706c00aa0dd2cdf4eee31f89d578db9b882f4b288a8388513a5910b1aa96c2"},
+                    {"path":"patches/seecut-theme-polish.patch","sha256":"f2e80dc4b8bcf7b669f3ce53a4ea0d637504009cf0d3635aa42c447a8eaa61ca"},
+                    {"path":"patches/seecut-agent-control.patch","sha256":"ea9894916e80c239cd3c535638f3ef403a26102321cf30b35f98417d65ab6ce9"},
+                    {"path":"patches/seecut-profile-guard.patch","sha256":"b97baea37a929cecb8959f7480ab328fc1eaedb942ab17654115aa065e724d6e"}
+                ]
             },
             "binaries":{
                 "photocraft":{"path":executable,"bytes":size,"sha256":hash},
@@ -72,7 +77,12 @@ fn provenance_rejects_source_patch_feature_and_binary_changes() {
     for pointer in [
         "/source/commit",
         "/source/sourceTreeSha256",
+        "/source/fileCount",
+        "/source/cargoLockSha256",
         "/source/patches/0/sha256",
+        "/source/patches/1/sha256",
+        "/source/patches/2/sha256",
+        "/source/patches/3/sha256",
         "/features/0",
         "/status",
     ] {
@@ -80,6 +90,30 @@ fn provenance_rejects_source_patch_feature_and_binary_changes() {
         let mut receipt: Value =
             serde_json::from_slice(&fs::read(&f.options.provenance_path).unwrap()).unwrap();
         *receipt.pointer_mut(pointer).unwrap() = json!("wrong");
+        fs::write(&f.options.provenance_path, receipt.to_string()).unwrap();
+        assert!(matches!(
+            VerifiedBuild::from_provenance(&f.options.provenance_path),
+            Err(HostError::InvalidBuild(_))
+        ));
+    }
+    for outdated in [true, false] {
+        let f = Fixture::new("clean");
+        let mut receipt: Value =
+            serde_json::from_slice(&fs::read(&f.options.provenance_path).unwrap()).unwrap();
+        if outdated {
+            receipt["source"]["sourceTreeSha256"] =
+                json!("398c2fca006b44f3c1a241c123d3fad882f472ae9f72a7c1c27ef28b6b39cdfa");
+            receipt["source"]["fileCount"] = json!(2011);
+            receipt["source"]["patches"]
+                .as_array_mut()
+                .unwrap()
+                .truncate(1);
+        } else {
+            receipt["source"]["patches"]
+                .as_array_mut()
+                .unwrap()
+                .swap(2, 3);
+        }
         fs::write(&f.options.provenance_path, receipt.to_string()).unwrap();
         assert!(matches!(
             VerifiedBuild::from_provenance(&f.options.provenance_path),
@@ -101,9 +135,23 @@ fn provenance_rejects_source_patch_feature_and_binary_changes() {
 
 #[test]
 fn token_is_private_and_not_in_arguments_or_results() {
+    const CHILD_TEST_ENV: &str = "SEECUT_PHOTO_HOST_INHERITED_ENV_TEST";
+    const INHERITED_VALUE: &str = "inherited-not-a-host-instance";
+    let inherited_fixture = std::env::var_os(CHILD_TEST_ENV).is_some();
+    if inherited_fixture {
+        assert_eq!(
+            std::env::var("SEECUT_PHOTO_HOST_INSTANCE_ID").unwrap(),
+            INHERITED_VALUE
+        );
+    }
     let f = Fixture::new("clean");
     let mut h = TestHost::new();
     let info = h.0.start(f.options.clone()).unwrap();
+    let child_instance =
+        h.0.call_internal_after_gate(info.id, "test.instance_id", json!({}))
+            .unwrap();
+    assert_eq!(child_instance, json!(info.id.to_string()));
+    assert_ne!(child_instance, json!(INHERITED_VALUE));
     let r = h.0.running.as_ref().unwrap();
     assert_eq!(
         fs::metadata(&r.token_path).unwrap().permissions().mode() & 0o777,
@@ -121,6 +169,26 @@ fn token_is_private_and_not_in_arguments_or_results() {
     assert_eq!(value, "[redacted]");
     assert!(!format!("{info:?}").contains(&token));
     assert!(h.0.start(f.options.clone()).is_err());
+    if !inherited_fixture {
+        let (_, test_module) = module_path!().split_once("::").unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("{test_module}::token_is_private_and_not_in_arguments_or_results"),
+                "--test-threads=1",
+            ])
+            .env(CHILD_TEST_ENV, "1")
+            .env("SEECUT_PHOTO_HOST_INSTANCE_ID", INHERITED_VALUE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "isolated inherited-marker test process must pass"
+        );
+    }
 }
 
 #[test]
@@ -278,12 +346,21 @@ fn normal_close_waits_for_exit_dirty_close_keeps_documents_and_drop_does_not_kil
     let f = Fixture::new("clean");
     let mut h = TestHost::new();
     let first = h.0.start(f.options.clone()).unwrap();
+    let first_instance =
+        h.0.call_internal_after_gate(first.id, "test.instance_id", json!({}))
+            .unwrap();
+    assert_eq!(first_instance, json!(first.id.to_string()));
     assert!(matches!(
         h.0.close(first.id, Duration::from_secs(1)).unwrap(),
         CloseOutcome::Exited
     ));
     let second = h.0.start(f.options.clone()).unwrap();
     assert_ne!(first.id, second.id);
+    let second_instance =
+        h.0.call_internal_after_gate(second.id, "test.instance_id", json!({}))
+            .unwrap();
+    assert_eq!(second_instance, json!(second.id.to_string()));
+    assert_ne!(first_instance, second_instance);
     assert!(matches!(
         h.0.inspect(first.id),
         Err(HostError::StaleInstance)
@@ -341,7 +418,7 @@ fn ready_parser_requires_exact_owned_log_loopback_and_nonzero_port() {
 }
 
 const SCRIPT: &str = r#"#!/usr/bin/env python3
-import json, os, pathlib, socket, stat, sys, time
+import json, os, pathlib, socket, stat, sys, time, uuid
 MODE = 'FIXTURE_MODE'
 args = sys.argv[1:]
 assert args[args.index('--control') + 1] == '0'
@@ -352,6 +429,8 @@ assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
 TOKEN = token_path.read_text().strip()
 assert TOKEN not in args
 assert pathlib.Path(os.environ['PHOTOCRAFT_CONFIG_DIR']).name == 'photocraft-profile'
+HOST_INSTANCE = os.environ['SEECUT_PHOTO_HOST_INSTANCE_ID']
+assert str(uuid.UUID(HOST_INSTANCE)) == HOST_INSTANCE
 ROOT = pathlib.Path(__file__).parent
 listener = socket.socket()
 listener.bind(('127.0.0.1', 0))
@@ -400,6 +479,7 @@ while True:
                 send(writer, {'id':ident,'ok':True,'result':None})
                 if not prompt: sys.exit(0)
             elif method == 'test.echo_secret': send(writer, {'id':ident,'ok':True,'result':TOKEN})
+            elif method == 'test.instance_id': send(writer, {'id':ident,'ok':True,'result':HOST_INSTANCE})
             elif method == 'ui.screenshot':
                 assert params['focus'] is False
                 send(writer, {'id':ident,'ok':True,'result':None})

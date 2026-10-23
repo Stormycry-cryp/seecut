@@ -1,0 +1,166 @@
+name: PhotoCraft 轻量合同验证
+
+# Only committed integration contracts and the private host are checked here.
+# Full upstream builds, actual editor interaction and release acceptance remain separate.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - integrations/photocraft/**
+      - scripts/prepare-photocraft.py
+      - scripts/photocraft_source.py
+      - scripts/build-photocraft.py
+      - scripts/photocraft-baseline.py
+      - scripts/test_photocraft_integration.py
+      - src/crates/seecut-photo-host/**
+      - src/Cargo.toml
+      - src/Cargo.lock
+      - .github/workflows/photocraft-contracts.yml
+  pull_request:
+    paths:
+      - integrations/photocraft/**
+      - scripts/prepare-photocraft.py
+      - scripts/photocraft_source.py
+      - scripts/build-photocraft.py
+      - scripts/photocraft-baseline.py
+      - scripts/test_photocraft_integration.py
+      - src/crates/seecut-photo-host/**
+      - src/Cargo.toml
+      - src/Cargo.lock
+      - .github/workflows/photocraft-contracts.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: photocraft-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  source-contracts:
+    name: 来源合同、补丁摘要与 20 项脚本回归
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: 校验已提交来源与静态基线格式，不依赖 external
+        env:
+          PYTHONPATH: scripts
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import json
+          import re
+          from photocraft_source import INTEGRATION, load_pin, safe_relative
+
+          # Existing loader checks the fixed source, feature contract, patch SHA-256
+          # and safe Git patch paths without requiring an upstream checkout.
+          pin = load_pin()
+          assert pin['patches'], '当前集成必须保留已登记的主题补丁'
+          baseline = json.loads((INTEGRATION / 'feature-baseline.json').read_text())
+          assert isinstance(baseline, dict) and baseline['schemaVersion'] == 1
+          assert baseline['upstream'] == {
+              key: pin[key] for key in ('repository', 'commit', 'version', 'minimumRust')
+          }
+          assert baseline['evidenceLevel'] == 'static-source-only'
+          assert isinstance(baseline['upstreamFileCount'], int) and baseline['upstreamFileCount'] > 0
+          assert re.fullmatch(r'[0-9a-f]{64}', baseline['upstreamTreeSha256'])
+          assert baseline['buildRequirements']['packages'] == [pin['desktopPackage'], pin['cliPackage']]
+          assert baseline['buildRequirements']['features'] == pin['features']
+
+          for key in ('tools', 'uiControlMethods', 'engineRegistryModules',
+                      'codecCapabilityTableMarkdown', 'extractionLimits'):
+              entries = baseline[key]
+              assert isinstance(entries, list) and entries
+              assert all(isinstance(entry, str) and entry for entry in entries), key
+          assert len(baseline['tools']) == 67 and len(set(baseline['tools'])) == 67
+          assert baseline['uiControlMethods'] == sorted(set(baseline['uiControlMethods']))
+          for key in ('menus', 'shellCommands', 'panels'):
+              entries = baseline[key]
+              assert isinstance(entries, list) and entries
+              for entry in entries:
+                  assert isinstance(entry, dict)
+                  assert isinstance(entry['id'], str) and entry['id']
+                  assert isinstance(entry['label'], str)
+                  assert isinstance(entry['path'], list) and all(isinstance(p, str) for p in entry['path'])
+                  assert entry['shortcut'] is None or isinstance(entry['shortcut'], str)
+          assert baseline['panels'] == [
+              item for item in baseline['shellCommands'] if item['id'].startswith('window.toggle.')
+          ]
+          hashes = baseline['sourceFileSha256']
+          assert isinstance(hashes, dict) and hashes
+          for path, digest in hashes.items():
+              safe_relative(path)
+              assert isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest)
+          candidates = baseline['engineLiteralCandidates']
+          assert isinstance(candidates, list) and candidates
+          ids = []
+          for candidate in candidates:
+              assert isinstance(candidate, dict) and isinstance(candidate['id'], str) and candidate['id']
+              assert isinstance(candidate['sources'], list) and candidate['sources']
+              assert all(path in hashes for path in candidate['sources'])
+              ids.append(candidate['id'])
+          assert ids == sorted(set(ids))
+          assert isinstance(baseline['runtimeEvidence'], dict)
+          print('来源、补丁 SHA-256 与已提交静态基线格式通过；未核对缺失的上游源码或运行 GUI')
+          PY
+      - name: 执行 20 项脚本防护回归，使用合成进程
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s scripts -p test_photocraft_integration.py -v
+      - name: 仅在已有完整上游时核验真实源码
+        run: |
+          set -euo pipefail
+          if [[ -e external/photocraft || -L external/photocraft ]]; then
+            python3 -B scripts/prepare-photocraft.py --verify-only
+            python3 -B scripts/photocraft-baseline.py --check
+            echo '已有上游源码的来源与静态基线核验通过；未运行完整编辑器。' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'external/photocraft 未随仓库提交：跳过依赖上游检出的 prepare --verify-only 和 baseline --check；没有下载上游、字体或启动 GUI。' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  native-host:
+    name: Rust 1.93 宿主 9 项合成进程测试与严格 Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: '1'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.toonflow/photocraft-contracts/target
+      RUSTUP_TOOLCHAIN: '1.93.0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: 安装固定 Rust 1.93.0 最小工具链与 Clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.93.0'
+          components: clippy
+      - name: 仅执行宿主合同测试，固定锁文件与单线程
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path src/Cargo.toml --locked -p seecut-photo-host --jobs 1 -- --test-threads=1
+      - name: 仅检查宿主及其测试，所有警告均失败
+        run: |
+          set -euo pipefail
+          cargo clippy --manifest-path src/Cargo.toml --locked -p seecut-photo-host --all-targets --jobs 1 -- -D warnings
+      - name: 记录本次验证层级
+        run: |
+          echo '已验证内部宿主的合成小进程、真实 loopback socket 合同及严格 Clippy；本工作流未编译或启动完整 PhotoCraft，未证明 GUI、文件保真、Agent 同 Session 或分发验收。' >> "$GITHUB_STEP_SUMMARY"

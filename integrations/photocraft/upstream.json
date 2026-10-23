@@ -9,9 +9,24 @@
     {
       "path": "patches/seecut-theme.patch",
       "sha256": "c8706c00aa0dd2cdf4eee31f89d578db9b882f4b288a8388513a5910b1aa96c2"
+    },
+    {
+      "path": "patches/seecut-theme-polish.patch",
+      "sha256": "f2e80dc4b8bcf7b669f3ce53a4ea0d637504009cf0d3635aa42c447a8eaa61ca"
+    },
+    {
+      "path": "patches/seecut-agent-control.patch",
+      "sha256": "ea9894916e80c239cd3c535638f3ef403a26102321cf30b35f98417d65ab6ce9"
+    },
+    {
+      "path": "patches/seecut-profile-guard.patch",
+      "sha256": "b97baea37a929cecb8959f7480ab328fc1eaedb942ab17654115aa065e724d6e"
     }
   ],
   "desktopPackage": "photocraft",
   "cliPackage": "photocraft-cli",
-  "features": ["photocraft/heif", "photocraft-cli/heif"]
+  "features": [
+    "photocraft/heif",
+    "photocraft-cli/heif"
+  ]
 }
