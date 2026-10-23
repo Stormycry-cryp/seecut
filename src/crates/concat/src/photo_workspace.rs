@@ -5,8 +5,95 @@
 use crate::ui::{App, PhotoWorkspace, SeeCut};
 use seecut_photo_host::{CloseOutcome, InstanceStatus, LaunchOptions, NativeHost};
 use slint::ComponentHandle;
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+mod owned_metadata;
+mod target;
+pub(crate) use owned_metadata::{
+    OwnedMetadata, OwnedOrigin, OwnedSource, PendingOwnedMetadata, PhotoWorkerClient,
+};
+pub(crate) use target::PhotoTarget;
+type SourceHook = (uuid::Uuid, std::rc::Rc<dyn Fn()>);
+thread_local! {
+    static TARGET: RefCell<target::TargetState> = RefCell::new(target::TargetState::default());
+    static SOURCE_FENCE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(Some(0)) };
+    static SOURCE_HOOK: RefCell<Option<SourceHook>> = const { RefCell::new(None) };
+}
+pub(crate) fn is_photo_target() -> bool {
+    TARGET.with(|t| t.borrow().is_photo())
+}
+pub(crate) fn current_photo_target() -> Option<PhotoTarget> {
+    let source = read_client().and_then(|c| c.managed_source());
+    TARGET.with(|t| t.borrow().current(source))
+}
+pub(crate) fn set_source_hook(id: uuid::Uuid, hook: std::rc::Rc<dyn Fn()>) {
+    SOURCE_HOOK.with(|s| *s.borrow_mut() = Some((id, hook)));
+}
+pub(crate) fn current_ui_id() -> Option<uuid::Uuid> {
+    SOURCE_HOOK.with(|s| s.borrow().as_ref().map(|(id, _)| *id))
+}
+pub(crate) fn remove_source_hook(id: uuid::Uuid) {
+    if current_ui_id() == Some(id) {
+        invalidate_photo_target();
+    }
+
+    SOURCE_HOOK.with(|s| {
+        if s.borrow().as_ref().is_some_and(|(old, _)| *old == id) {
+            s.borrow_mut().take();
+        }
+    });
+}
+pub(crate) fn source_fence() -> Option<u64> {
+    SOURCE_FENCE.with(|f| f.get())
+}
+fn source_changed() {
+    // Original admission/publication gates revoke without Studio, Bridge, Cloud,
+    // or controller borrows, including reentrant native-dialog callbacks.
+    crate::cloud::app_page_navigation_changed();
+    crate::clip_save_fence::invalidate(concat_host::projects::SaveInvalidation::DocumentChanged);
+    crate::clip_export_fence::invalidate(
+        concat_host::export_publication::PublishRevocation::DocumentChanged,
+    );
+    SOURCE_FENCE.with(|f| f.set(f.get().and_then(|value| value.checked_add(1))));
+    let hook = SOURCE_HOOK.with(|s| s.borrow().as_ref().map(|(_, h)| h.clone()));
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+pub(crate) fn select_parent_target() {
+    let was_photo = is_photo_target();
+    TARGET.with(|t| {
+        t.borrow_mut().parent();
+    });
+    if was_photo {
+        source_changed();
+    }
+}
+pub(crate) fn invalidate_photo_target() {
+    TARGET.with(|t| t.borrow_mut().invalidate());
+    source_changed();
+}
+
+thread_local! { static READ_CLIENT: RefCell<Option<PhotoWorkerClient>> = const { RefCell::new(None) }; }
+
+/// Current bind only. Clone on the UI thread before passing to another worker.
+/// This client prepares parent history metadata only; it grants no Agent access.
+pub(crate) fn read_client() -> Option<PhotoWorkerClient> {
+    READ_CLIENT.with(|slot| slot.borrow().as_ref().filter(|c| c.available()).cloned())
+}
+
+struct ConnectionGuard(Arc<AtomicBool>);
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 use std::time::Duration;
 
 const UNAVAILABLE: i32 = 0;
@@ -19,8 +106,9 @@ const FAILED: i32 = 6;
 const MANUAL_RECOVERY: i32 = 7;
 
 enum Command {
-    Open,
-    Close,
+    Open(u64),
+    Close(u64),
+    PrepareOwnedMetadata(owned_metadata::OwnedJob),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -82,6 +170,12 @@ pub(crate) fn defer_close(app: &App) -> bool {
 /// Hold the returned timer for the lifetime of the application event loop.
 pub(crate) fn bind(app: &App) -> slint::Timer {
     let timer = slint::Timer::default();
+    READ_CLIENT.with(|slot| {
+        slot.borrow_mut().take();
+    });
+    TARGET.with(|t| *t.borrow_mut() = target::TargetState::default());
+    app.global::<SeeCut>()
+        .on_photo_source_will_change(select_parent_target);
     // Development is opt-in. Packaged Helpers resolution awaits verified packaging.
     let manifest = std::env::var_os("SEECUT_PHOTO_BUILD_MANIFEST")
         .filter(|value| !value.is_empty())
@@ -94,7 +188,12 @@ pub(crate) fn bind(app: &App) -> slint::Timer {
         app.global::<PhotoWorkspace>().set_phase(UNAVAILABLE);
         return timer;
     }
-    let (commands, receiver) = mpsc::channel();
+    let (commands, receiver) = mpsc::sync_channel(8);
+    let connected = Arc::new(AtomicBool::new(true));
+    let client = PhotoWorkerClient::new(commands.clone(), connected.clone());
+    let owned = client.owned.clone();
+    let worker_owned = owned.clone();
+    let connection_guard = ConnectionGuard(connected);
     let (updates, incoming) = mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("seecut-photo-workspace".into())
@@ -103,6 +202,8 @@ pub(crate) fn bind(app: &App) -> slint::Timer {
                 manifest.expect("checked development manifest"),
                 receiver,
                 updates,
+                connection_guard,
+                worker_owned,
             )
         });
     if spawned.is_err() {
@@ -114,8 +215,31 @@ pub(crate) fn bind(app: &App) -> slint::Timer {
         .publish(app);
         return timer;
     }
+    READ_CLIENT.with(|slot| *slot.borrow_mut() = Some(client));
     Snapshot::idle().publish(app);
+    app.global::<PhotoWorkspace>().on_return_to_photo({
+        let weak = app.as_weak();
+        move || {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let Some(source) = read_client().and_then(|c| c.managed_source()) else {
+                return;
+            };
+            let previous = current_photo_target();
+            TARGET.with(|t| {
+                t.borrow_mut()
+                    .photo(source.bind_id, source.epoch, Some(source.instance));
+            });
+            if previous != current_photo_target() {
+                source_changed();
+            }
+            app.global::<PhotoWorkspace>()
+                .invoke_owned_metadata_requested();
+        }
+    });
     app.global::<PhotoWorkspace>().on_open_editor({
+        let owned = owned.clone();
         let weak = app.as_weak();
         let commands = commands.clone();
         move || {
@@ -126,6 +250,13 @@ pub(crate) fn bind(app: &App) -> slint::Timer {
             if !matches!(ui.get_phase(), IDLE | FAILED) {
                 return;
             }
+            let Some(epoch) = owned.invalidate() else {
+                return;
+            };
+            TARGET.with(|t| {
+                t.borrow_mut().photo(owned.bind_id, epoch, None);
+            });
+            source_changed();
             // Set the ownership fence before enqueueing: duplicate clicks and Agent
             // calls in this event-loop turn cannot observe the previous document.
             Snapshot {
@@ -134,17 +265,18 @@ pub(crate) fn bind(app: &App) -> slint::Timer {
                 detail: "正在打开图像编辑器…",
             }
             .publish(&app);
-            if commands.send(Command::Open).is_err() {
+            if commands.try_send(Command::Open(epoch)).is_err() {
                 Snapshot {
                     phase: FAILED,
                     instance: String::new(),
-                    detail: "图像编辑服务已停止，请重新打开 SeeCut。",
+                    detail: "图像编辑请求未能排队，请稍后重试或重新打开 SeeCut。",
                 }
                 .publish(&app);
             }
         }
     });
     app.global::<PhotoWorkspace>().on_close_editor({
+        let owned = owned.clone();
         let weak = app.as_weak();
         move || {
             let Some(app) = weak.upgrade() else {
@@ -154,17 +286,21 @@ pub(crate) fn bind(app: &App) -> slint::Timer {
             if !matches!(ui.get_phase(), RUNNING | NEEDS_USER) {
                 return;
             }
+            let Some(epoch) = owned.invalidate() else {
+                return;
+            };
+            source_changed();
             Snapshot {
                 phase: CLOSING,
                 instance: instance_id(&app),
                 detail: "正在请求关闭，请留意编辑窗口中的保存提示。",
             }
             .publish(&app);
-            if commands.send(Command::Close).is_err() {
+            if commands.try_send(Command::Close(epoch)).is_err() {
                 Snapshot {
                     phase: MANUAL_RECOVERY,
                     instance: instance_id(&app),
-                    detail: "暂时无法连接编辑窗口，请在该窗口中保存并关闭。",
+                    detail: "关闭请求未能排队，请在编辑窗口中保存并关闭。",
                 }
                 .publish(&app);
             }
@@ -180,24 +316,44 @@ pub(crate) fn bind(app: &App) -> slint::Timer {
             };
             // Drain in order so a completion cannot be replaced by an older update.
             while let Ok(snapshot) = incoming.try_recv() {
+                if snapshot.phase == RUNNING && owned.current().is_none() {
+                    continue;
+                }
                 snapshot.publish(&app);
+                if snapshot.phase == RUNNING
+                    && let Some(source) = owned.current()
+                {
+                    let selected = TARGET.with(|t| t.borrow_mut().ready(source));
+                    if selected {
+                        app.global::<PhotoWorkspace>()
+                            .invoke_owned_metadata_requested();
+                    }
+                }
             }
         },
     );
     timer
 }
 
-fn worker(manifest: PathBuf, commands: Receiver<Command>, updates: Sender<Snapshot>) {
+fn worker(
+    manifest: PathBuf,
+    commands: Receiver<Command>,
+    updates: Sender<Snapshot>,
+    _connection: ConnectionGuard,
+    owned: Arc<owned_metadata::OwnedControl>,
+) {
     let mut host = NativeHost::new();
     let mut snapshot = Snapshot::idle();
+    let mut metadata = owned_metadata::OwnedStore::default();
     loop {
         let previous = snapshot.clone();
         let mut requested = false;
         match commands.recv_timeout(Duration::from_millis(500)) {
-            Ok(Command::Open) => {
+            Ok(Command::Open(epoch)) => {
                 requested = true;
                 // NativeHost also enforces single-process ownership.
                 if !snapshot.managed() {
+                    metadata.clear();
                     let options = concat_host::AppDirs::locate().map(|dirs| {
                         let mut options =
                             LaunchOptions::new(manifest.clone(), dirs.data.join("photo-workspace"));
@@ -207,6 +363,7 @@ fn worker(manifest: PathBuf, commands: Receiver<Command>, updates: Sender<Snapsh
                     match options {
                         Ok(options) => match host.start(options) {
                             Ok(info) => {
+                                owned.ready(epoch, info.id);
                                 snapshot = Snapshot {
                                     phase: RUNNING,
                                     instance: info.id.to_string(),
@@ -231,19 +388,31 @@ fn worker(manifest: PathBuf, commands: Receiver<Command>, updates: Sender<Snapsh
                     }
                 }
             }
-            Ok(Command::Close) => {
+            Ok(Command::Close(epoch)) => {
                 requested = true;
+                metadata.clear();
                 if let Ok(Some(info)) = host.current() {
                     if info.status == InstanceStatus::Exited {
                         snapshot = Snapshot::idle();
                     } else if matches!(snapshot.phase, RUNNING | NEEDS_USER) {
                         snapshot = match host.close(info.id, Duration::from_secs(1)) {
                             Ok(CloseOutcome::Exited) => Snapshot::idle(),
-                            Ok(CloseOutcome::NeedsUser { .. }) => Snapshot {
-                                phase: NEEDS_USER,
-                                instance: info.id.to_string(),
-                                detail: "编辑窗口尚未关闭。请在该窗口中完成保存或取消关闭。",
-                            },
+                            Ok(CloseOutcome::NeedsUser { .. }) => {
+                                // A live owned child can retain historical file identity
+                                // while its dialog is open. This confers no read/edit grant.
+                                if let Ok(Some(current)) = host.current()
+                                    && current.id == info.id
+                                    && current.ready
+                                    && current.status == InstanceStatus::Ready
+                                {
+                                    owned.ready(epoch, current.id);
+                                }
+                                Snapshot {
+                                    phase: NEEDS_USER,
+                                    instance: info.id.to_string(),
+                                    detail: "编辑窗口尚未关闭。请在该窗口中完成保存或取消关闭。",
+                                }
+                            }
                             Err(_) => Snapshot {
                                 phase: MANUAL_RECOVERY,
                                 instance: info.id.to_string(),
@@ -255,6 +424,9 @@ fn worker(manifest: PathBuf, commands: Receiver<Command>, updates: Sender<Snapsh
                     snapshot.phase = MANUAL_RECOVERY;
                     snapshot.detail = "无法确认编辑窗口状态，请在该窗口中保存并关闭。";
                 }
+            }
+            Ok(Command::PrepareOwnedMetadata(job)) => {
+                metadata.run(&mut host, &owned, job);
             }
             Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
@@ -280,6 +452,10 @@ fn worker(manifest: PathBuf, commands: Receiver<Command>, updates: Sender<Snapsh
             }
             Ok(None) => {}
         }
+        if !matches!(snapshot.phase, RUNNING | NEEDS_USER) && owned.current().is_some() {
+            owned.invalidate();
+        }
+        metadata.prune(&owned);
         if (requested || snapshot != previous) && updates.send(snapshot.clone()).is_err() {
             break;
         }

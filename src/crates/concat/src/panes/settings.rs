@@ -172,6 +172,7 @@ impl SettingsPane {
             }
             SettingsMsg::Open => {
                 if !self.open {
+                    crate::photo_workspace::select_parent_target();
                     crate::cloud::app_page_navigation_changed();
                 }
                 self.refresh(studio);
@@ -180,6 +181,7 @@ impl SettingsPane {
             }
             SettingsMsg::Close => {
                 if self.open {
+                    crate::photo_workspace::select_parent_target();
                     crate::cloud::app_page_navigation_changed();
                 }
                 self.open = false;

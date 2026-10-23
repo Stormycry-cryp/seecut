@@ -107,3 +107,11 @@ SeeCut 管理独立编辑进程和窗口的开发入口已提交至 Draft PR #24
 父级基础协议新增 4 个 Photo 方法、canonical opaque handles，以及仅供可信通道复核原快照的只读内部方法。本地 all-features 111 项协议/stdio 测试、严格 Clippy 与 fmt 通过；尚未注册为模型工具。内部复核只能提交原 expected 与 snapshot handle，不接受路径、原生数字身份、PNG、新 capture 参数或 Agent 令牌。读取 worker 的 5 项队列/取消测试、6 项真实宿主 loopback/文件生命周期测试通过，11 项原操作冻结/并发派发测试及独立 Clippy 通过；这些候选尚未全部接入父 UI，不能宣称整链可用。
 
 当前实施应用内部 owned-metadata 准备、保存关联缓存和显式 Agent 工作目标。managed child 只表示生命周期；打开/返回图像工作区选 Photo，父页面真实导航切回 Parent 并撤旧 Photo 权限。该元数据目的不伪造 ReadContext、不采图或自动授予 Agent。原 Store/账户/Doc permission 继续使用；首次图片交 provider 前复核同一原见证，provider 已真实受理后按原操作证据视为历史 HumanSource，后续执行另读当前内容。
+
+## 10 月 23 日父级工作目标与历史关联
+
+已接入显式 Parent / Photo 工作目标，独立于编辑进程生命周期和窗口焦点。打开或明确返回图像编辑器选择 Photo；实际父导航、同页确认导航或设置切换回 Parent，取消离开确认保留原目标。应用内部专用准备任务只建立已保存文件的历史关联，不采图、不伪造 Agent 读取上下文、不授予权限；文件和 TCP 留在唯一后台宿主。
+
+原 request、child、账户、UI/target epoch 与安装期限一致才接受结果。同来源、文档和路径的保存刷新保留私有 DocumentIds；另存为、切源或重绑建立新权限会话。刷新期间暂不提供 Photo scope，不能据此宣称未来长程 Agent 不断线。来源变化先推进原 App 导航和 Clip 保存/导出撤销门槛；无法即时借用 Bridge/controller 时，在原读取、写预检及结果处理前完成延迟清理。NeedsUser 后可重新关联同一仍存活的自有 child，界面仍保留未保存提示，不推断用户已 Cancel。
+
+主代理独立执行 61 项隔离回归通过，其中 40 项宿主、10 项本次目标/元数据与真实 loopback、11 项旧读取夹具；它们不代替实际界面验收。完整 concat/Slint 的 cargo check、all-targets 严格 Clippy 与 workspace fmt 均通过。父级 Photo 模型连接、发送和读写授权仍关闭，工具尚未注册。真实重入对话框、导航、切账号、历史展示及 Agent 发图/编辑仍需独立验收。

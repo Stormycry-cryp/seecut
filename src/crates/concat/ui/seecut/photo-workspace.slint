@@ -12,6 +12,8 @@ export global PhotoWorkspace {
     in-out property <string> detail: "当前版本未提供图像编辑组件。";
     callback open-editor();
     callback close-editor();
+    callback return-to-photo();
+    callback owned-metadata-requested();
 }
 
 export component PhotoWorkspaceEntry inherits Rectangle {
@@ -42,13 +44,17 @@ export component PhotoWorkspaceEntry inherits Rectangle {
                 clicked => { PhotoWorkspace.open-editor(); }
             }
             if PhotoWorkspace.phase == 3 || PhotoWorkspace.phase == 5: AppButton {
+                label: "使用图像编辑器作为 Agent 来源";
+                clicked => { PhotoWorkspace.return-to-photo(); }
+            }
+            if PhotoWorkspace.phase == 3 || PhotoWorkspace.phase == 5: AppButton {
                 label: "关闭编辑窗口";
                 clicked => { PhotoWorkspace.close-editor(); }
             }
             Rectangle { horizontal-stretch: 1; }
         }
         Text {
-            text: "此编辑器暂未接入 Agent。下方仍可打开原有画布项目。";
+            text: "可关联已保存图像的会话历史；Agent 图像读取与编辑能力尚未接入。";
             font-size: 12px; color: Theme.fg-muted; wrap: word-wrap;
         }
     }

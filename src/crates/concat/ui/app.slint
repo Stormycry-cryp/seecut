@@ -192,7 +192,7 @@ export component App inherits Window {
     }
     function toggle-assistant() {
         if Assistant.open { Assistant.close-requested(); }
-        else if Assistant.enabled && !root.assistant-ui-blocked { Assistant.open = true; }
+        else if Assistant.enabled && !root.assistant-ui-blocked { Assistant.open = true; PhotoWorkspace.owned-metadata-requested(); }
     }
     property <bool> sheet-open: root.export.open || root.settings.open
         || root.project-sheet.open || root.captions.open || root.speech.open;

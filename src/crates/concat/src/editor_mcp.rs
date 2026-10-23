@@ -674,6 +674,9 @@ pub(crate) struct BridgeUi {
     grants: HashMap<String, Grant>,
     app_reads: app_read::AppReadState,
     app_controls: app_control::AppControlState,
+    photo_binding: Option<(crate::photo_workspace::OwnedMetadata, DocumentIds)>,
+    active_photo: bool,
+    photo_source_fence: Option<u64>,
     canvas_ids: Option<(String, DocumentIds)>,
     clip_ids: Option<(String, DocumentIds)>,
     active_canvas: bool,
@@ -693,6 +696,81 @@ pub(crate) struct BridgeUi {
 }
 
 impl BridgeUi {
+    pub(crate) fn sync_photo_source_fence(&mut self) {
+        let current = crate::photo_workspace::source_fence();
+        if current.is_none() || self.photo_source_fence != current {
+            self.photo_source_fence = current;
+            self.clear_photo_binding();
+            self.grants.clear();
+            self.revoke_move();
+            self.writes.bind_scope(None);
+            self.revoke_assistant_for_account_change();
+            self.revoke_all_app_reads();
+        }
+    }
+
+    pub(crate) fn clear_photo_binding(&mut self) {
+        if let Some((_, ids)) = self.photo_binding.take() {
+            self.grants.retain(|_, grant| grant.project != ids.project);
+        }
+        if self.active_photo {
+            self.revoke_move();
+            self.writes.bind_scope(None);
+        }
+        self.active_photo = false;
+    }
+    pub(crate) fn install_photo_binding(
+        &mut self,
+        metadata: crate::photo_workspace::OwnedMetadata,
+    ) {
+        self.sync_photo_source_fence();
+        let same = self
+            .photo_binding
+            .as_ref()
+            .is_some_and(|(old, _)| old.same_scope(&metadata));
+        let ids = if same {
+            self.photo_binding.as_ref().unwrap().1.clone()
+        } else {
+            self.clear_photo_binding();
+            DocumentIds {
+                project: uuid::Uuid::new_v4().to_string(),
+                session: uuid::Uuid::new_v4().to_string(),
+            }
+        };
+        self.photo_binding = Some((metadata, ids));
+    }
+    fn photo_ids(&mut self) -> Option<DocumentIds> {
+        let source_matches = self.photo_binding.as_ref().is_some_and(|(metadata, _)| {
+            crate::photo_workspace::current_photo_target().is_some_and(|target| {
+                let source = metadata.origin().source;
+                crate::photo_workspace::current_ui_id() == Some(source.ui_id)
+                    && target.managed == source.managed
+                    && target.epoch == source.target_epoch
+            })
+        });
+        if !source_matches {
+            self.clear_photo_binding();
+            return None;
+        }
+        let Some(client) = crate::photo_workspace::read_client() else {
+            self.clear_photo_binding();
+            return None;
+        };
+        let valid = self
+            .photo_binding
+            .as_ref()
+            .is_some_and(|(metadata, _)| metadata.current(metadata.origin().source, &client));
+        if !valid {
+            // Retain only the private identity comparison during its bounded refresh.
+            // No active scope or grant is returned until fresh metadata is installed.
+            if !client.preparing_owned_metadata() {
+                self.clear_photo_binding();
+            }
+            return None;
+        }
+        self.photo_binding.as_ref().map(|(_, ids)| ids.clone())
+    }
+
     /// Capture the real Context at the human send action. The expected identity
     /// and token come from the active native lease, never a display summary.
     pub(crate) fn assistant_document_observation(
@@ -738,8 +816,10 @@ impl BridgeUi {
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
         let canvas = active
             .as_ref()
-            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "clip" | "flow"));
+            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "clip" | "flow" | "photo"));
         let project_name = match active.as_ref().map(|(kind, _)| kind.as_str()) {
+            Some("photo") => "图像编辑器".into(),
+            None if crate::photo_workspace::is_photo_target() => "图像编辑器".into(),
             Some("canvas") => studio.canvas.name.clone(),
             Some("clip") => studio.project_name.clone(),
             Some("flow") => crate::toonflow_agent::context()
@@ -767,7 +847,9 @@ impl BridgeUi {
             &self.writes,
             &self.write_token,
         );
-        let path = if self.active_canvas {
+        let path = if self.active_photo {
+            None
+        } else if self.active_canvas {
             studio
                 .canvas
                 .mcp_project_path()
@@ -784,6 +866,15 @@ impl BridgeUi {
             // Until then, the host keeps session creation and draft editing disabled.
             _ => String::new(),
         };
+        if self.active_photo {
+            snapshot.project_key = self
+                .photo_binding
+                .as_ref()
+                .map(|(m, _)| m.history_key().to_owned())
+                .unwrap_or_default();
+            snapshot.can_grant_read = false;
+            snapshot.can_grant_write = false;
+        }
         if self.active_flow {
             snapshot.project_key = active
                 .as_ref()
@@ -802,11 +893,19 @@ impl BridgeUi {
         app: &App,
         action: AssistantPermission,
     ) -> Result<(), AssistantPermissionError> {
+        if crate::photo_workspace::is_photo_target()
+            && matches!(
+                action,
+                AssistantPermission::GrantRead | AssistantPermission::GrantWrite
+            )
+        {
+            return Err(AssistantPermissionError::NotAllowed);
+        }
         let active = self.active_ids(studio, app);
         let scope = active.as_ref().map(|(_, ids)| self.scope(ids));
         let canvas = active
             .as_ref()
-            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "clip" | "flow"));
+            .is_some_and(|(kind, _)| matches!(kind.as_str(), "canvas" | "clip" | "flow" | "photo"));
         if matches!(
             action,
             AssistantPermission::GrantRead
@@ -903,7 +1002,7 @@ impl BridgeUi {
             || intent.clip_export_output;
         let is_library_assets = intent.library_assets.is_some();
         if (!is_library_assets && kind != if is_clip { "clip" } else { "canvas" })
-            || (is_library_assets && !matches!(kind.as_str(), "canvas" | "clip" | "flow"))
+            || (is_library_assets && !matches!(kind.as_str(), "canvas" | "clip" | "flow" | "photo"))
             || modal_busy(studio, app, true)
             || self
                 .grants
@@ -1129,6 +1228,9 @@ impl BridgeUi {
             grants: HashMap::new(),
             app_reads: app_read::AppReadState::default(),
             app_controls: app_control::AppControlState::default(),
+            photo_binding: None,
+            active_photo: false,
+            photo_source_fence: crate::photo_workspace::source_fence(),
             canvas_ids: None,
             clip_ids: None,
             active_canvas: false,
@@ -1170,13 +1272,17 @@ impl BridgeUi {
     }
 
     fn active_ids(&mut self, studio: &Studio, app: &App) -> Option<(String, DocumentIds)> {
-        if crate::photo_workspace::has_instance(app) {
-            self.sync_workspace(None);
-            self.writes.bind_scope(None);
+        self.sync_photo_source_fence();
+        if crate::photo_workspace::is_photo_target() {
+            let ids = self.photo_ids();
+            self.sync_workspace(ids.as_ref().map(|_| "photo"));
+            self.writes
+                .bind_scope(ids.as_ref().map(|ids| self.scope(ids)));
             self.write_token.clear();
             self.canvas_permits.clear();
-            return None;
+            return ids.map(|ids| ("photo".into(), ids));
         }
+        self.clear_photo_binding();
         if studio.canvas.document.is_some() {
             self.ids(
                 "canvas",
@@ -1250,7 +1356,8 @@ impl BridgeUi {
     }
 
     fn sync_workspace(&mut self, kind: Option<&str>) {
-        if (self.active_canvas && kind != Some("canvas"))
+        if (self.active_photo && kind != Some("photo"))
+            || (self.active_canvas && kind != Some("canvas"))
             || (self.active_flow && kind != Some("flow"))
             || (self.active_clip && kind != Some("clip"))
         {
@@ -1258,6 +1365,7 @@ impl BridgeUi {
             // document session's sequence/results so returning cannot replay an edit.
             self.revoke_move();
         }
+        self.active_photo = kind == Some("photo");
         self.active_canvas = kind == Some("canvas");
         self.active_flow = kind == Some("flow");
         self.active_clip = kind == Some("clip");
@@ -1283,6 +1391,9 @@ impl BridgeUi {
     }
 
     fn current_scope(&self) -> Option<Scope> {
+        if self.active_photo {
+            return self.photo_binding.as_ref().map(|(_, ids)| self.scope(ids));
+        }
         if self.active_flow {
             return self.flow_ids.as_ref().map(|ids| self.scope(ids));
         }
@@ -1563,6 +1674,9 @@ impl BridgeUi {
     /// The user enters a client name in Settings and grants only the currently
     /// active project. Regranting rotates its token; revoke deletes it.
     pub fn grant(&mut self, studio: &Studio, app: &App, media: bool) {
+        if crate::photo_workspace::is_photo_target() {
+            return;
+        }
         let client = self.client_draft.trim();
         if client.is_empty() || client.len() > 64 || client == ASSISTANT_CLIENT_ID {
             return;
@@ -1619,7 +1733,8 @@ impl BridgeUi {
     }
 
     fn handle(&mut self, request: &Request, studio: &Studio, app: &App) -> UiReply {
-        if crate::photo_workspace::has_instance(app) {
+        self.sync_photo_source_fence();
+        if crate::photo_workspace::is_photo_target() {
             self.active_ids(studio, app);
             return UiReply::Response(Response::error("unsupportedWorkspace"));
         }
@@ -1798,7 +1913,7 @@ impl BridgeUi {
             Method::LibraryImages | Method::LibraryAssets
         ) {
             if (request.method == Method::LibraryImages && kind != "canvas")
-                || !matches!(kind.as_str(), "canvas" | "clip" | "flow")
+                || !matches!(kind.as_str(), "canvas" | "clip" | "flow" | "photo")
                 || !self.authorized(request, &ids.project, true)
             {
                 return UiReply::Response(Response::error("notAuthorized"));
@@ -2436,7 +2551,7 @@ fn dispatch_write(request: Request) -> Response {
             if !queued.claim() {
                 return;
             }
-            if crate::photo_workspace::has_instance(&app) {
+            if crate::photo_workspace::is_photo_target() {
                 queued.complete(Response::error("unsupportedWorkspace"));
                 return;
             }
@@ -2484,7 +2599,7 @@ fn dispatch(request: Request) -> Response {
     if concat_editor_mcp::validate_request_shape(&request).is_err() {
         return Response::error("invalidInput");
     }
-    match on_ui(|_, app| crate::photo_workspace::has_instance(&app)) {
+    match on_ui(|_, _| crate::photo_workspace::is_photo_target()) {
         Ok(true) => return Response::error("unsupportedWorkspace"),
         Ok(false) => {}
         Err(error) => return error,
@@ -2548,7 +2663,7 @@ fn dispatch(request: Request) -> Response {
     let reply = on_ui({
         let request = request.clone();
         move |shell, app| {
-            if crate::photo_workspace::has_instance(&app) {
+            if crate::photo_workspace::is_photo_target() {
                 return UiReply::Response(Response::error("unsupportedWorkspace"));
             }
             let Ok(studio) = shell.studio.try_borrow() else {

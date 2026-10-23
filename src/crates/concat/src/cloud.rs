@@ -297,6 +297,12 @@ impl AccountAccess {
     ) {
         ACCOUNT_EDITOR_BRIDGE.with(|slot| *slot.borrow_mut() = bridge);
     }
+    pub(crate) fn try_epoch(&self) -> Result<Option<u64>, ()> {
+        self.state
+            .upgrade()
+            .map(|state| state.try_borrow().map(|s| s.epoch).map_err(|_| ()))
+            .transpose()
+    }
     pub(crate) fn epoch(&self) -> Option<u64> {
         self.state.upgrade().map(|state| state.borrow().epoch)
     }
@@ -3402,6 +3408,8 @@ fn navigate(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
 }
 
 fn navigate_unchecked(app: &App, state: &Rc<RefCell<Cloud>>, target: i32) {
+    // The dirty-navigation guard has already committed, including same-page clicks.
+    crate::photo_workspace::select_parent_target();
     let ui = app.global::<SeeCut>();
     if target == 6 {
         ui.invoke_change_canvas_gallery_open(true);
@@ -8365,6 +8373,7 @@ fn clear_session(app: &App, state: &Rc<RefCell<Cloud>>, preserve_auth_intent: bo
             // Native dialogs may hold Studio while pumping this account callback.
             // Bridge ownership is independent so revocation remains synchronous.
             let mut bridge = bridge.borrow_mut();
+            bridge.clear_photo_binding();
             bridge.revoke_assistant_for_account_change();
             bridge.revoke_all_app_reads();
         }

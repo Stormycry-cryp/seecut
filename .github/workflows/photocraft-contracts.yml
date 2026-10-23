@@ -1,6 +1,6 @@
 name: PhotoCraft 轻量合同验证
 
-# Only committed integration contracts and the private host are checked here.
+# Only committed integration contracts, the native host and parent protocol are checked here.
 # Full upstream builds, actual editor interaction and release acceptance remain separate.
 on:
   push:
@@ -13,6 +13,7 @@ on:
       - scripts/photocraft-baseline.py
       - scripts/test_photocraft_integration.py
       - src/crates/seecut-photo-host/**
+      - src/crates/concat-editor-mcp/**
       - src/Cargo.toml
       - src/Cargo.lock
       - .github/workflows/photocraft-contracts.yml
@@ -25,6 +26,7 @@ on:
       - scripts/photocraft-baseline.py
       - scripts/test_photocraft_integration.py
       - src/crates/seecut-photo-host/**
+      - src/crates/concat-editor-mcp/**
       - src/Cargo.toml
       - src/Cargo.lock
       - .github/workflows/photocraft-contracts.yml
@@ -132,7 +134,7 @@ jobs:
           fi
 
   native-host:
-    name: Rust 1.93 宿主合同测试与严格 Clippy
+    name: Rust 1.93 宿主和父级协议测试与严格 Clippy
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -161,6 +163,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo clippy --manifest-path src/Cargo.toml --locked -p seecut-photo-host --all-targets --jobs 1 -- -D warnings
+      - name: 执行父级协议和 stdio 测试，不启动编辑器或模型
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path src/Cargo.toml --locked -p concat-editor-mcp --all-features --jobs 1 -- --test-threads=1
+      - name: 检查父级协议所有目标，所有警告均失败
+        run: |
+          set -euo pipefail
+          cargo clippy --manifest-path src/Cargo.toml --locked -p concat-editor-mcp --all-features --all-targets --jobs 1 -- -D warnings
       - name: 记录本次验证层级
         run: |
-          echo '已验证内部宿主的合成小进程、真实 loopback socket 合同及严格 Clippy；本工作流未编译或启动完整 PhotoCraft，未证明 GUI、文件保真、Agent 同 Session 或分发验收。' >> "$GITHUB_STEP_SUMMARY"
+          echo '已验证内部宿主的合成小进程、真实 loopback socket、父级协议/stdio 合同及严格 Clippy；本工作流未编译或启动完整 PhotoCraft，未证明 GUI、文件保真、Agent 同 Session 或分发验收。' >> "$GITHUB_STEP_SUMMARY"
