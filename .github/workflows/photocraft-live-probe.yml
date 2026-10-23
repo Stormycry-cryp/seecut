@@ -42,6 +42,7 @@ jobs:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       BUILD_EVIDENCE: ${{ github.workspace }}/.toonflow/photocraft-live-build-${{ github.run_id }}-${{ github.run_attempt }}
       PROBE_OUTPUT: ${{ github.workspace }}/.toonflow/photocraft-live-run-${{ github.run_id }}-${{ github.run_attempt }}
+      PROCESS_TEST_OUTPUT: ${{ github.workspace }}/.toonflow/photocraft-live-controller-${{ github.run_id }}-${{ github.run_attempt }}
       HOST_TARGET: ${{ github.workspace }}/.toonflow/photocraft-live-host-target
     steps:
       - uses: actions/checkout@v7
@@ -54,12 +55,19 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
           test -f src/crates/seecut-photo-host/examples/live_editor_probe.rs
           test -f scripts/photocraft-live-probe.py
+          test -f scripts/test-photocraft-live-controller.py
           test ! -e "$BUILD_EVIDENCE"
           test ! -e "$PROBE_OUTPUT"
           mkdir -p .toonflow
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: 先验证自有 Linux session 的 TERM、KILL 与隔离清理
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          python3 -B scripts/test-photocraft-live-controller.py \
+            --workspace "$PWD" --output "$PROCESS_TEST_OUTPUT"
       - name: 安装固定完整编辑器与宿主工具链
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -121,6 +129,7 @@ jobs:
         with:
           name: photocraft-live-probe-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            ${{ env.PROCESS_TEST_OUTPUT }}/process-lifecycle.json
             ${{ env.PROBE_OUTPUT }}/artifacts/live-probe-report.json
             ${{ env.PROBE_OUTPUT }}/artifacts/orange-full.png
             ${{ env.PROBE_OUTPUT }}/artifacts/orange-opacity-040.png
