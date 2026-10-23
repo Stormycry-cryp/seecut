@@ -119,12 +119,33 @@ fn near(a: f64, b: f64) -> bool {
     (a - b).abs() < 0.000_001
 }
 
+fn finite_array(value: &Value, length: usize) -> bool {
+    value.as_array().is_some_and(|items| {
+        items.len() == length
+            && items
+                .iter()
+                .all(|item| item.as_f64().is_some_and(f64::is_finite))
+    })
+}
+fn sha256_text(value: &Value, prefix: &str) -> bool {
+    value
+        .as_str()
+        .and_then(|text| text.strip_prefix(prefix))
+        .is_some_and(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
 struct Probe {
     primary: NativeHost,
     contender: NativeHost,
     instance: Option<Uuid>,
     deadline: Instant,
     observations: Vec<Value>,
+    snapshot: Value,
 }
 impl Probe {
     fn new() -> Self {
@@ -134,6 +155,7 @@ impl Probe {
             instance: None,
             deadline: Instant::now() + Duration::from_secs(180),
             observations: Vec::new(),
+            snapshot: json!({"status":"notRequested"}),
         }
     }
     fn check_time(&self) -> ProbeResult<()> {
@@ -212,6 +234,176 @@ impl Probe {
             io(fs::metadata(target), "exportExists")?.is_file(),
             "exportRegularFile",
         )
+    }
+    fn adopted_orange_snapshot(&mut self, layer_id: u64) -> ProbeResult<()> {
+        let session_before = self.inspect()?["session"].clone();
+        let before = self.idle_state()?;
+        require(
+            near(opacity(&before, layer_id)?, 0.4),
+            "snapshotAtOpacity040",
+        )?;
+        let expected = identity(&before)?;
+        let request_id = "probe-adopted-orange-opacity-040-once";
+        let request = json!({"requestId":request_id,"expected":expected,"maxEdge":16});
+        self.snapshot =
+            json!({"status":"requested","request":request,"requestCount":1,"retried":false});
+        // Exactly one request. Unknown completion, unavailable frame and timeout all fail;
+        // never retry, change renderer or fall back to ui.screenshot/exported pixels.
+        let response = self.call(
+            "seecut.snapshot",
+            request.clone(),
+            "requestAdoptedSnapshotOnce",
+        )?;
+        let after = self.state()?;
+        let session_after = self.inspect()?["session"].clone();
+        require(
+            same_document(&before, &after)
+                && before["receiptCache"] == after["receiptCache"]
+                && after["busy"].is_null()
+                && session_before == session_after,
+            "snapshotLeavesSessionDocumentSelectionAndHistoryUnchanged",
+        )?;
+        require(
+            response["kind"] == "adoptedDocumentComposite"
+                && response["adoptionStage"] == "uiPaintSubmitted"
+                && response["requestId"] == request_id
+                && response["identity"] == expected
+                && response["identity"] == after["document"]["identity"]
+                && response["returnedHistoricalFrame"] == true
+                && sha256_text(&response["snapshotId"], "snapshot-v1-"),
+            "actualAdoptedSnapshotIdentityAndStage",
+        )?;
+        let captured_frame = number(&response, "/capturedFrame")?;
+        let delay_ms = number(&response, "/capturedAfterUiEnqueueMs")?;
+        let age_ms = number(&response, "/captureAgeAtReplyMs")?;
+        require(
+            captured_frame >= number(&before, "/frame")?
+                && captured_frame <= number(&after, "/frame")?
+                && delay_ms < 2_000
+                && age_ms < 5_000
+                && delay_ms + age_ms <= 5_000
+                && response["timeBasis"]["captureDelay"] == "uiEnqueue"
+                && response["timeBasis"]["captureAge"] == "adoptedFrameCapture",
+            "adoptedSnapshotRelativeTimeFields",
+        )?;
+        number(&response, "/viewportId")?;
+        number(&response, "/canvasId")?;
+        let document = &response["document"];
+        require(
+            document["size"] == json!([16, 16])
+                && document["name"] == before["document"]["name"]
+                && document["activeLayer"] == layer_id
+                && document["selectedLayers"] == before["document"]["selectedLayers"]
+                && document["layersOrder"] == "documentBottomToTop"
+                && document["selectedLayersOrder"] == "documentBottomToTop"
+                && ["dirty", "canUndo", "canRedo"]
+                    .iter()
+                    .all(|field| document[*field] == before["document"][*field])
+                && document["layers"].as_array().is_some_and(|layers| {
+                    layers.len() == before["document"]["layers"].as_array().map_or(0, Vec::len)
+                        && layers.iter().any(|layer| {
+                            layer["id"] == layer_id
+                                && layer["kind"] == "raster"
+                                && layer["opacity"]
+                                    .as_f64()
+                                    .is_some_and(|value| near(value, 0.4))
+                        })
+                }),
+            "adoptedSnapshotDocumentAndLayerSelection",
+        )?;
+        let selection = &response["selection"];
+        require(
+            before["document"]["hasPixelSelection"] == false
+                && selection["present"] == false
+                && selection["bounds"].is_null()
+                && selection["domain"] == json!([0, 0, 16, 16])
+                && selection["boundsFormat"] == "xyxyExclusive"
+                && sha256_text(&selection["coverageHash"], "")
+                && sha256_text(&selection["selectionStateId"], "selection-v1-"),
+            "adoptedSnapshotNoPixelSelectionDomain",
+        )?;
+        let view = &response["view"];
+        let geometry = &view["geometry"];
+        require(
+            [
+                ("rectPoints", 4),
+                ("center", 2),
+                ("displayCamera", 3),
+                ("targetCamera", 3),
+            ]
+            .iter()
+            .all(|(field, length)| finite_array(&geometry[*field], *length))
+                && ["pixelsPerPoint", "zoom", "aspect"].iter().all(|field| {
+                    geometry[*field]
+                        .as_f64()
+                        .is_some_and(|number| number.is_finite() && number > 0.0)
+                })
+                && geometry["rotation"].as_f64().is_some_and(f64::is_finite)
+                && geometry["flip"].is_boolean()
+                && geometry["rectPoints"][2]
+                    .as_f64()
+                    .is_some_and(|number| number > 0.0)
+                && geometry["rectPoints"][3]
+                    .as_f64()
+                    .is_some_and(|number| number > 0.0)
+                && geometry["displayCamera"] == geometry["targetCamera"]
+                && geometry["displayCamera"][0]
+                    .as_f64()
+                    .is_some_and(|number| number > 0.0)
+                && geometry["visibleDocumentPolygon"]
+                    .as_array()
+                    .is_some_and(|points| {
+                        points.len() == 4 && points.iter().all(|point| finite_array(point, 2))
+                    })
+                && finite_array(&view["visibleDocumentAabb"], 4)
+                && finite_array(&view["clippedVisibleDocumentAabb"], 4)
+                && view["aabbFormat"] == "xyxyExclusive"
+                && sha256_text(&view["viewStateId"], "view-v1-"),
+            "adoptedSnapshotActualFrozenGeometry",
+        )?;
+        let presentation = &response["presentation"];
+        let source = &presentation["source"];
+        require(
+            matches!(source["renderer"].as_str(), Some("cpu" | "gpu"))
+                && source["displayKey"].as_u64().is_some()
+                && source["rawPreviewKey"] == 0
+                && source["complete"] == true
+                && source["displayIdentity"].is_boolean()
+                && source["sourceIsSrgb"] == true
+                && source["proof"] == false
+                && source["hdr"] == false
+                && source["channelComposite"] == true
+                && presentation["colorSpace"] == "sRGB IEC61966-2.1"
+                && presentation["pixelSemantics"] == "documentCompositeNotMonitorPixels"
+                && sha256_text(&presentation["profileHash"], ""),
+            "adoptedSnapshotSrgbPresentation",
+        )?;
+        let pixels = &response["pixels"];
+        require(
+            pixels["kind"] == "documentComposite"
+                && pixels["transparent"] == true
+                && pixels["mime"] == "image/png"
+                && pixels["width"] == 16
+                && pixels["height"] == 16
+                && pixels["documentRect"] == json!([0, 0, 16, 16])
+                && pixels["documentPixelsPerOutputPixel"] == json!([1.0, 1.0])
+                && sha256_text(&pixels["pixelHash"], "")
+                && sha256_text(&pixels["pngHash"], "")
+                && pixels["base64"].as_str().is_some_and(|encoded| {
+                    !encoded.is_empty() && encoded.len() <= 699_052 && encoded.is_ascii()
+                }),
+            "adoptedSnapshotPngEnvelope",
+        )?;
+        require(
+            serde_json::to_vec(&response).is_ok_and(|bytes| bytes.len() <= 1 << 20),
+            "snapshotReplyBound",
+        )?;
+        self.snapshot = json!({"status":"pendingPythonPngReadback","request":request,"response":response,
+            "requestCount":1,"retried":false,"sessionUnchanged":true,
+            "beforeIdentity":before["document"]["identity"],"afterIdentity":after["document"]["identity"],
+            "beforeHistoryEntries":history(&before)?,"afterHistoryEntries":history(&after)?,
+            "screenCapture":false,"presentVerified":false,"model":false,"parentSeeCutMcp":false});
+        Ok(())
     }
     fn discard_active_synthetic(
         &mut self,
@@ -416,6 +608,8 @@ impl Probe {
             json!({"request":original,"receipt":receipt,"sameReceipt":true,"oneHistoryStep":true}),
         );
 
+        self.adopted_orange_snapshot(layer_id)?;
+
         let stale_before = self.state()?;
         let stale = self.call(
             "seecut.execute",
@@ -618,7 +812,7 @@ fn main() -> std::process::ExitCode {
     let cleanup = probe.cleanup_disposable_owned_children();
     let mut report = json!({"schemaVersion":1,"status":if result.is_ok() && cleanup {"passed"} else {"failed"},
         "model":false,"parentSeeCutMcp":false,"scope":"actual complete desktop; direct NativeHost; synthetic disposable documents",
-        "cleanupOwnedChildren":cleanup,"snapshot":{"status":"notRequested","reason":"new protocol pending; no guessed fields"},
+        "cleanupOwnedChildren":cleanup,"snapshot":probe.snapshot,
         "pixelEvidence":{"status":"pendingPythonPngReadback","files":["orange-full.png","orange-opacity-040.png","orange-after-undo.png"]},
         "checks":probe.observations});
     if let Err(error) = &result {

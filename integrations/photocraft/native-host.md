@@ -31,7 +31,7 @@ let current = host.current()?;
 
 - `LaunchOptions` 包含 `provenance_path`、`state_dir`、可选 `read_root` / `write_root`、`startup_timeout` 和 `request_timeout`。目录必须由可信应用配置提供。状态目录须为绝对路径，私有权限为 0700；默认恢复数据位于其 `photocraft-profile` 子目录，不能作为临时缓存清理。
 - `InstanceInfo` 包含新生成的 `Uuid`、自有 Child PID、构建 attempt ID、`ready` 和 `InstanceStatus`。`current(&mut self)` 实际 `try_wait` 并回收退出状态；退出后仍返回 `Some(status=Exited)` 便于展示，随后可 `start` 新实例。请求必须携带该实例 ID；新实例不复用旧连接或旧身份。
-- `start` 仅支持 Unix。先校验完整 build provenance 的固定源提交、四项补丁顺序与摘要、源树、Cargo.lock、文件数和完整 desktop / CLI heif 特性，再逐个核验两个二进制字节数和 SHA-256。当前仅接受 theme、theme-polish、agent-control、profile-guard 四项补丁的 2014 文件来源，源树摘要为 `d93a309a979058e1a9449b97ee666a32988b79f1cee38631646989397a7f10bd`；旧的 2011 文件单补丁收据被拒绝。启动前再次核验 desktop。provenance 是可信本机构建收据，不能当作远程发布签名或抵抗有权改写收据与二进制的攻击者。
+- `start` 仅支持 Unix。先校验完整 build provenance 的固定源提交、五项补丁顺序与摘要、源树、Cargo.lock、文件数和完整 desktop / CLI heif 特性，再逐个核验两个二进制字节数和 SHA-256。当前仅接受 theme、theme-polish、agent-control、profile-guard、adopted-snapshot 五项补丁的 2019 文件来源，源树摘要为 `4bcec483a7490740d0a52d27d46542eac212e3c8895c4b9033ec1b42e8c812ac`；旧的单补丁与四补丁收据均被拒绝。启动前再次核验 desktop。provenance 是可信本机构建收据，不能当作远程发布签名或抵抗有权改写收据与二进制的攻击者。
 - 启动命令先移除继承的 `SEECUT_PHOTO_HOST_INSTANCE_ID`，再用本次 `InstanceInfo.id.to_string()` 设置该 env，启用 desktop 自己持有的 profile 锁。实例值不来自请求参数，旧父程序中的 marker 不会被带入新编辑器。
 - 只解析自己 ChildStderr 中有界就绪行。单行上限 8 KiB，就绪前总量上限 1 MiB；后续标准错误以有界块持续丢弃，不转发日志。仅接受精确 `127.0.0.1` 非零端口；认证和实际 `ui.inspect` 验证通过才进入 Ready。
 - token 从系统随机源生成 32 字节，存于实例私有 0700 目录下的 0600 新文件；argv 仅传文件路径，移除继承的控制 token / 自动化目录环境变量。token 不出现在返回类型、调试输出或原始日志中。返回 JSON 的同值字符串会被替换。文件在退出或宿主释放时移除；活编辑器不会因为 Drop 被终止。
@@ -44,7 +44,7 @@ let current = host.current()?;
 
 当前已写合成小进程与真实 loopback socket 测试，覆盖来源/补丁/二进制拒绝、token 权限、错误认证/ID、请求和回复超限、绝对超时、断连、写结果 Unknown 且零重发、就绪来源、关闭回执、dirty 保留、Drop 不杀进程和新实例使旧身份失效。测试目录统一在主工作区忽略路径 `.toonflow/photocraft-native-host`。
 
-主代理在此前宿主版本使用 SeeCut 原 Rust 1.93.0 工具链，实际执行 `cargo test --manifest-path src/Cargo.toml -p seecut-photo-host -- --test-threads=1`：9 项通过、0 失败、0 忽略；随后含测试的 `cargo clippy -p seecut-photo-host --all-targets -- -D warnings` 通过。本轮保持 9 个测试入口，在原有真实合成子进程测试中增加实例 env 的实际子进程回读、新实例变化、独立父进程继承伪 marker 后被覆盖，以及旧来源收据和补丁乱序拒绝；本轮扩展由主代理再次串行执行：9 项测试、含测试及新例子的 all-targets 严格 Clippy、真实 `live_editor_probe` 例子编译和完整 workspace fmt 均通过。例子仅完成编译，未在 macOS 执行；完整 Linux 编辑器桥接仍待独立 Xvfb 验证。测试不修改进程全局 env，不输出 token 或完整环境。
+主代理在此前宿主版本使用 SeeCut 原 Rust 1.93.0 工具链，实际执行 `cargo test --manifest-path src/Cargo.toml -p seecut-photo-host -- --test-threads=1`：9 项通过、0 失败、0 忽略；随后含测试的 `cargo clippy -p seecut-photo-host --all-targets -- -D warnings` 通过。本轮保持 9 个测试入口，在原有真实合成子进程测试中增加实例 env 的实际子进程回读、新实例变化、独立父进程继承伪 marker 后被覆盖，以及旧来源收据和补丁乱序拒绝；本轮扩展由主代理再次串行执行：9 项测试、含测试及新例子的 all-targets 严格 Clippy、真实 `live_editor_probe` 例子编译和完整 workspace fmt 均通过。更新为五补丁来源及一次采用帧快照的联测例子后，主代理再次运行 9 项宿主测试、all-targets 严格 Clippy、例子编译及完整 workspace fmt，全部通过。例子仅完成编译，未在 macOS 执行；完整 Linux 编辑器桥接仍待独立 Xvfb 验证。测试不修改进程全局 env，不输出 token 或完整环境。
 
 profile guard 自身另由主代理使用 rustc 1.95、`-D warnings` 独立编译，7 个真实文件锁与子进程测试入口通过，其中一个为子进程夹具；覆盖父程序正常退出、直接 exit(23) 后子编辑器持续持锁，以及子进程真正退出后操作系统释放锁。这些结果只验证相应生命周期合同；宿主合成测试与 helper 测试均不证明真实 PhotoCraft GUI、文件保真、输入法、Agent 同 Session、原子截图或正式分发已验收。
 

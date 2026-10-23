@@ -15,6 +15,18 @@ on:
         default: false
         type: boolean
 
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: 本次审阅通过的功能分支完整 40 位提交
+        required: true
+        type: string
+      disposable_synthetic_editor:
+        description: 仅在独立 Linux Xvfb 创建并丢弃本次合成文档，允许清理自有测试进程
+        required: true
+        default: false
+        type: boolean
+
 permissions:
   contents: read
 
@@ -123,7 +135,7 @@ jobs:
             --provenance "$BUILD_EVIDENCE/provenance.json" \
             --probe-binary "$HOST_TARGET/debug/examples/live_editor_probe" \
             --output "$PROBE_OUTPUT" --timeout 240 --allow-disposable-editor
-      - name: 仅保留明确允许的烟测报告与三张合成 PNG
+      - name: 仅保留允许的报告、三张导出 PNG 和一张采用帧 PNG
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -134,6 +146,7 @@ jobs:
             ${{ env.PROBE_OUTPUT }}/artifacts/orange-full.png
             ${{ env.PROBE_OUTPUT }}/artifacts/orange-opacity-040.png
             ${{ env.PROBE_OUTPUT }}/artifacts/orange-after-undo.png
+            ${{ env.PROBE_OUTPUT }}/artifacts/orange-adopted-opacity-040.png
           if-no-files-found: ignore
           retention-days: 7
       - name: 清理本任务 CI 临时 swap
@@ -142,4 +155,4 @@ jobs:
       - name: 明确本工作流验收范围
         if: success()
         run: |
-          echo '本次只验证完整 desktop 的直接 NativeHost 桥接、真实 Session 语义与合成 PNG 像素回读；model=false，parentSeeCutMcp=false。未证明模型观看、SeeCut 整 App、原子截图、交互视觉质量、签名或发布。' >> "$GITHUB_STEP_SUMMARY"
+          echo '本次验证完整 desktop 的直接 NativeHost 桥接、真实 Session 语义、三张导出 PNG 及一次 seecut.snapshot 采用帧 PNG 回读；该快照为 documentComposite/uiPaintSubmitted。screen=false，present=false，model=false，parentSeeCutMcp=false。未证明模型观看、SeeCut 整 App、屏幕呈现、交互视觉质量、签名或发布。' >> "$GITHUB_STEP_SUMMARY"

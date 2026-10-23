@@ -1,0 +1,1887 @@
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5075,6 +5075,7 @@
+  "rayon",
+  "serde",
+  "serde_json",
++ "sha2",
+  "sys-locale",
+  "tempfile",
+  "toml",
+--- a/apps/photocraft/src/control_server.rs
++++ b/apps/photocraft/src/control_server.rs
+@@ -13,6 +13,8 @@
+     read_bounded_line, repeat_auth_reply,
+ };
+ use photocraft_ui_egui::ControlRequest;
++
++const SNAPSHOT_REPLY_DEADLINE: Duration = Duration::from_secs(5);
+ use photocraft_ui_egui::control::REPLY_DEADLINE;
+ use serde_json::{Value, json};
+ 
+@@ -105,12 +107,16 @@
+             }
+             continue;
+         }
++        // Start after the complete bounded line is available, before JSON parsing.
++        // This includes the entire UI queue wait; it is not a first-wire-byte clock.
++        let request_started = Instant::now();
+         let reply = match serde_json::from_str::<Value>(&line) {
+             Ok(msg) => {
+                 let id = msg.get("id").cloned().unwrap_or(Value::Null);
+                 let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
+                 let params = msg.get("params").cloned().unwrap_or(json!({}));
+-                let deadline = Instant::now() + REPLY_DEADLINE;
++                let snapshot = method == "seecut.snapshot";
++                let deadline = if snapshot { request_started + SNAPSHOT_REPLY_DEADLINE } else { Instant::now() + REPLY_DEADLINE };
+                 let (mut req, rrx) = ControlRequest::new(method, params);
+                 req.deadline = Some(deadline);
+                 let dispatch = req.dispatch.clone();
+@@ -118,8 +124,26 @@
+                     break;
+                 }
+                 ctx.request_repaint();
+-                let mut r =
+-                    rrx.recv_timeout(deadline.saturating_duration_since(Instant::now())).unwrap_or_else(|_| json!({"ok": false, "error": dispatch.give_up()}));
++                let received = rrx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
++                let mut r = match received {
++                    Ok(value) if !snapshot || Instant::now() < deadline => value,
++                    other => {
++                        // Settle queued requests as abandoned before replying. An eventual
++                        // UI drain must not revive this request. Snapshot is a read and has
++                        // its own error contract, without the generic 60s write wording.
++                        let error = dispatch.give_up();
++                        if snapshot {
++                            let code = if matches!(other, Err(std::sync::mpsc::RecvTimeoutError::Disconnected)) && Instant::now() < deadline {
++                                "snapshotUnavailable"
++                            } else {
++                                "snapshotTimeout"
++                            };
++                            json!({"ok": false, "error": code})
++                        } else {
++                            json!({"ok": false, "error": error})
++                        }
++                    }
++                };
+                 if let Some(o) = r.as_object_mut() {
+                     o.insert("id".into(), id);
+                 }
+@@ -140,6 +164,88 @@
+ mod tests {
+     use super::*;
+     use std::io::BufRead;
++
++    /// Exercise the actual socket entry with no UI frames or queue draining at all.
++    #[test]
++    fn snapshot_queued_without_ui_times_out_at_five_seconds_and_keeps_framing() {
++        const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
++        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++        let addr = listener.local_addr().unwrap();
++        let (tx, rx) = channel::<ControlRequest>();
++        let server = std::thread::spawn(move || {
++            let (stream, _) = listener.accept().unwrap();
++            serve(stream, TOKEN, tx, egui::Context::default());
++        });
++        let mut stream = TcpStream::connect(addr).unwrap();
++        stream.set_read_timeout(Some(Duration::from_secs(7))).unwrap();
++        let mut reader = BufReader::new(stream.try_clone().unwrap());
++        writeln!(stream, "{}", json!({"id": 1, "method": "auth", "params": {"token": TOKEN}})).unwrap();
++        let mut line = String::new();
++        reader.read_line(&mut line).unwrap();
++        assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["ok"], true);
++
++        let started = Instant::now();
++        writeln!(stream, "{}", json!({"id":"snapshot:no-ui", "method":"seecut.snapshot", "params":{}})).unwrap();
++        line.clear();
++        reader.read_line(&mut line).unwrap();
++        let elapsed = started.elapsed();
++        let reply: Value = serde_json::from_str(&line).unwrap();
++        assert_eq!(reply, json!({"id":"snapshot:no-ui", "ok":false, "error":"snapshotTimeout"}));
++        assert!(elapsed >= Duration::from_millis(4800), "the real server deadline elapsed: {elapsed:?}");
++        assert!(elapsed < Duration::from_secs(6), "a snapshot must not inherit the 60s wait: {elapsed:?}");
++        let abandoned = rx.try_recv().unwrap();
++        assert_eq!(abandoned.method, "seecut.snapshot");
++        assert!(abandoned.deadline.unwrap() <= Instant::now());
++        assert!(abandoned.reply.send(json!({"ok":true,"result":"late"})).is_err(), "a late UI reply cannot replace the timeout");
++        drop(abandoned);
++
++        // A timeout consumes exactly this reply; the authenticated connection and
++        // following normal request retain their original framing and 60s budget.
++        writeln!(stream, "{}", json!({"id":3,"method":"test.after"})).unwrap();
++        let next = rx.recv_timeout(Duration::from_secs(1)).unwrap();
++        let remaining = next.deadline.unwrap().saturating_duration_since(Instant::now());
++        assert!(remaining > Duration::from_secs(55) && remaining <= Duration::from_secs(60));
++        next.reply.send(json!({"ok":true,"result":"still serving"})).unwrap();
++        line.clear();
++        reader.read_line(&mut line).unwrap();
++        assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), json!({"id":3,"ok":true,"result":"still serving"}));
++        drop(reader);
++        drop(stream);
++        server.join().unwrap();
++    }
++
++    /// Losing the queued UI responder uses the snapshot read error as well.
++    #[test]
++    fn snapshot_disconnected_ui_responder_is_unavailable_without_write_timeout_text() {
++        const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
++        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++        let addr = listener.local_addr().unwrap();
++        let (tx, rx) = channel::<ControlRequest>();
++        let server = std::thread::spawn(move || {
++            let (stream, _) = listener.accept().unwrap();
++            serve(stream, TOKEN, tx, egui::Context::default());
++        });
++        let handler = std::thread::spawn(move || {
++            let queued = rx.recv_timeout(Duration::from_secs(2)).unwrap();
++            assert_eq!(queued.method, "seecut.snapshot");
++            drop(queued);
++        });
++        let mut stream = TcpStream::connect(addr).unwrap();
++        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
++        let mut reader = BufReader::new(stream.try_clone().unwrap());
++        writeln!(stream, "{}", json!({"id":1,"method":"auth","params":{"token":TOKEN}})).unwrap();
++        let mut line = String::new();
++        reader.read_line(&mut line).unwrap();
++        assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["ok"], true);
++        writeln!(stream, "{}", json!({"id":2,"method":"seecut.snapshot"})).unwrap();
++        line.clear();
++        reader.read_line(&mut line).unwrap();
++        assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), json!({"id":2,"ok":false,"error":"snapshotUnavailable"}));
++        drop(reader);
++        drop(stream);
++        handler.join().unwrap();
++        server.join().unwrap();
++    }
+ 
+     /// #6427: with port 0 the log names the port the OS bound, which a client can connect to.
+     #[test]
+--- a/crates/ui-egui/Cargo.toml
++++ b/crates/ui-egui/Cargo.toml
+@@ -43,6 +43,8 @@
+ 
+ [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ rayon = { workspace = true }
++# Private native adopted-frame snapshot hashes; version already present in Cargo.lock.
++sha2 = "=0.10.9"
+ # Safe native UI-language APIs (Windows/macOS); no subprocess or web dependency.
+ sys-locale = "=0.3.2"
+ 
+--- a/crates/ui-egui/src/canvas.rs
++++ b/crates/ui-egui/src/canvas.rs
+@@ -224,10 +224,37 @@
+ 
+ /// The CPU canvas textures to draw: the whole document, and over it the sharper part in view.
+ pub(crate) struct CpuTextures {
++    adopted: Option<AdoptedComposite>,
+     pub texture: egui::TextureId,
+     pub scale: f32,
+     /// The detail texture and the document area it covers (x0, y0, x1, y1 in document pixels).
+     pub detail: Option<(egui::TextureId, [f32; 4])>,
++}
++
++// Material returned by the texture preparation that actually supplied this paint.
++struct AdoptedComposite {
++    ticket: crate::seecut_snapshot::CaptureTicket,
++    identity: crate::seecut_snapshot::ExpectedIdentity,
++    doc: std::sync::Arc<Document>,
++    presentation: crate::seecut_snapshot::FrozenPresentation,
++}
++fn adopted_composite(app: &PhotocraftApp, idx: usize, doc: &std::sync::Arc<Document>, revision: u64,
++    raw_key: u64, display: Option<&photocraft_engine::display_color::CanvasDisplay>,
++    renderer: crate::seecut_snapshot::Renderer) -> Option<AdoptedComposite> {
++    let ticket = app.seecut_agent.snapshot.as_ref()?.pending_ticket()?;
++    let st = app.session.documents().get(idx)?;
++    let d = display?;
++    if raw_key != 0 || revision != st.revision || !std::sync::Arc::ptr_eq(doc, &st.doc)
++        || app.redraws.contains_key(&doc.id) { return None; }
++    let source_is_srgb = !d.encode_srgb && d.source.content_hash() == photocraft_cms::Builtin::Srgb.profile().content_hash();
++    if !source_is_srgb { return None; }
++    Some(AdoptedComposite {
++        ticket, identity: crate::seecut_agent::snapshot_identity(app, idx)?, doc: doc.clone(),
++        presentation: crate::seecut_snapshot::FrozenPresentation {
++            renderer, display_key: d.key, raw_preview_key: raw_key, complete: true,
++            display_identity: d.is_identity(), source_is_srgb, proof: false, hdr: false, channel_composite: true,
++        },
++    })
+ }
+ 
+ /// The part of a CPU canvas view in sight: its document area and zoom (physical pixels per
+@@ -1647,6 +1674,7 @@
+         Some(s) => damage_since(app, idx, s, (revision, preview_key), display_key, last_damage),
+         None => None,
+     };
++    let adopted = adopted_composite(app, idx, &doc, revision, preview_key, display.as_deref(), crate::seecut_snapshot::Renderer::Cpu);
+     let preview_key = preview_key ^ display_key;
+     let cache = app.canvases.entry(cache_key(id, output)).or_insert(CanvasCache {
+         revision: 0,
+@@ -1693,10 +1721,10 @@
+     let texture = cache.texture.as_ref()?.id();
+     let scale = cache.scale;
+     // Without a view (the Navigator's call) the views' detail textures stay as they are.
+-    let Some(view) = view else { return Some(CpuTextures { texture, scale, detail: None }) };
++    let Some(view) = view else { return Some(CpuTextures { adopted, texture, scale, detail: None }) };
+     let old = cache.detail.iter().position(|(k, _)| *k == view.key).map(|i| cache.detail.remove(i).1);
+     let Some(plan) = detail_plan([doc.size.width, doc.size.height], texture_side(ctx), view.zoom, view.visible) else {
+-        return Some(CpuTextures { texture, scale, detail: None });
++        return Some(CpuTextures { adopted, texture, scale, detail: None });
+     };
+     let t0 = crate::gpu_canvas::now_ms();
+     let name = format!("canvas-detail-{}-{}", id.0, cache_key(id, output).1);
+@@ -1704,7 +1732,7 @@
+     if detail.as_ref().is_some_and(|d| d.rendered) {
+         app.perf.span("canvas detail", crate::gpu_canvas::now_ms() - t0);
+     }
+-    let Some(mut detail) = detail else { return Some(CpuTextures { texture, scale, detail: None }) };
++    let Some(mut detail) = detail else { return Some(CpuTextures { adopted, texture, scale, detail: None }) };
+     detail.rendered = false;
+     // Where its texels lie in the document: reduced texel t covers [t·W/w, (t+1)·W/w).
+     let (w, h) = ((doc.size.width / plan.factor).max(1), (doc.size.height / plan.factor).max(1));
+@@ -1716,7 +1744,7 @@
+     if cache.detail.len() > MAX_DETAIL_VIEWS {
+         cache.detail.remove(0);
+     }
+-    Some(CpuTextures { texture, scale, detail: Some(shown) })
++    Some(CpuTextures { adopted, texture, scale, detail: Some(shown) })
+ }
+ 
+ /// Most CPU canvas views of one document on one display that keep a detail texture.
+@@ -1916,10 +1944,17 @@
+         .unwrap_or(0)
+ }
+ 
++// Preserve upstream renderer tests: they exercise the same preparation path without
++// consuming snapshot adoption material. Production canvas paint uses the typed output.
++#[cfg(test)]
++fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, visible: DRect) -> bool {
++    ensure_gpu_with_adoption(app, ctx, idx, visible, &mut None)
++}
++
+ /// GPU path: make sure document `idx` is current in the GPU canvas. Edits draw their damage;
+ /// unchanged lower-stack composites can be reused by the compositor inside that region.
+ /// Returns false if there is no GPU canvas.
+-fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, visible: DRect) -> bool {
++fn ensure_gpu_with_adoption(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, visible: DRect, adopted: &mut Option<AdoptedComposite>) -> bool {
+     let Some(gpu) = app.gpu.clone() else { return false };
+     let Some((revision, last_damage, id)) = app
+         .session
+@@ -2005,6 +2040,7 @@
+         // Use the normal refresh path so CPU fallback and pending redraws stay synchronized.
+         damage = crate::blend_preview::uncovered(app, id, revision, raw_key, blend_visible);
+         if damage.is_none() {
++            *adopted = adopted_composite(app, idx, &doc, revision, raw_key, display.as_deref(), crate::seecut_snapshot::Renderer::Gpu);
+             return true;
+         }
+     }
+@@ -2060,6 +2096,7 @@
+     cache.preview_key = preview_key;
+     cache.on_gpu = true;
+     cache.texture = None;
++    *adopted = adopted_composite(app, idx, &doc, revision, raw_key, display.as_deref(), crate::seecut_snapshot::Renderer::Gpu);
+     true
+ }
+ 
+@@ -3391,6 +3428,8 @@
+ /// Draw one canvas view and handle its input. `primary` = main window (tools active).
+ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect: Rect, mut view: View, primary: bool) -> View {
+     let ctx = ui.ctx().clone();
++    let snapshot_transition = view.fit_pending || view.fill_pending || view.zoom_animating || view.zoom_transition.is_some()
++        || app.session.documents().get(idx).is_none_or(|st| view.doc_size != [st.doc.size.width, st.doc.size.height]);
+     // The camera as the app holds it before this frame's input. The canvas works on its own copy
+     // (`view`) and writes it back at the end; a tool that moves the camera itself meanwhile (the
+     // Crop tool's default mode pans and turns the view with the image, `crop_mode`) must not be
+@@ -3511,6 +3550,8 @@
+         // Live adjustment previews on big documents use a downsampled proxy (see proxy.rs), unless
+         // Preferences › Performance › Low Resolution Previews is off.
+         let mut on_gpu = false;
++        let mut adopted = None;
++        let mut adopted_gpu_display_mode = None;
+         // A flipped or pixel-aspect-corrected view draws through the CPU path (the GPU canvas shader
+         // has no mirroring or non-square pixels). Rotation stays on the GPU: it is a view uniform.
+         let gpu_ok = crate::gpu_canvas::gpu_view_ok(flip, view.rotation, aspect);
+@@ -3546,7 +3587,7 @@
+                 offset: [0.0, 0.0],
+             };
+             paint_gpu_view(&painter, rect, params, &pattern);
+-        } else if gpu_ok && ensure_gpu(app, &ctx, idx, redraw_focus(&target_xf, &xf)) {
++        } else if gpu_ok && ensure_gpu_with_adoption(app, &ctx, idx, redraw_focus(&target_xf, &xf), &mut adopted) {
+             on_gpu = true;
+             app.perf.gpu = true;
+             // Shadow, checkerboard, document and pixel grid in one custom shader (gpu_canvas.rs).
+@@ -3567,6 +3608,7 @@
+                 hdr: hdr_preview(app, &doc),
+                 offset: [0.0, 0.0],
+             };
++            adopted_gpu_display_mode = Some(params.display);
+             if app.navigator_plain.contains(&doc.id) {
+                 app.navigator_gpu.insert(doc.id, params);
+             } else {
+@@ -3584,7 +3626,8 @@
+             // the screen's resolution, drawn over the reduced whole (#7568).
+             let in_view =
+                 InView { visible: visible_doc_rect(&xf), zoom: view.zoom, key: egui::Id::new(("pc-canvas-detail", ctx.viewport_id(), idx, primary)).value() };
+-            let textures = ensure_texture_in_view(app, &ctx, idx, output, Some(in_view));
++            let mut textures = ensure_texture_in_view(app, &ctx, idx, output, Some(in_view));
++            adopted = textures.as_mut().and_then(|t| t.adopted.take());
+             let tex = textures.as_ref().map(|t| t.texture);
+             paint_cpu_document(&painter, &xf, doc.bounds(), rotated, checkerboard, tex);
+             if let Some((detail, area)) = textures.and_then(|t| t.detail) {
+@@ -3592,6 +3635,64 @@
+             }
+             for &c in &pattern {
+                 paint_cpu_document(&painter, &pattern_xf(&xf, c, size), doc.bounds(), rotated, checkerboard, tex);
++            }
++        }
++        // Snapshot is frozen immediately after this image branch submits its paint commands.
++        // This is UI paint submission, not a GPU present fence or a screen capture.
++        if primary && ctx.viewport_id() == egui::ViewportId::ROOT && app.session.active_index() == Some(idx) {
++            if let Some(coordinator) = app.seecut_agent.snapshot.as_ref().filter(|c| c.wants_capture()) {
++                let st = &app.session.documents()[idx];
++                let proof = app.session.color.proof(st.doc.id);
++                let unsupported = crop_camera || beyond || snapshot_transition || view.zoom_animating || view.zoom_transition.is_some()
++                    || app.ui.view.pattern_preview || st.doc.layers.len() > 256 || st.doc.has_artboards()
++                    || st.channel_view.target != photocraft_engine::channel_cmds::ChannelTarget::Composite
++                    || st.doc.quick_mask.is_some() || st.channel_view.layer_mask.is_some()
++                    || st.channel_view.color_hidden.len() > 256 || st.channel_view.alpha_visible.len() > 256
++                    || st.channel_view.color_hidden.iter().any(|v| *v) || st.channel_view.alpha_visible.iter().any(|v| *v)
++                    || app.ui.mask_target || app.ui.vector_mask_target || proof.enabled || proof.gamut_warning
++                    || app.session.color.hdr_preview(&st.doc).is_some();
++                let current_camera = [view.zoom, view.center[0], view.center[1]];
++                let target_camera = [render_zoom, target_xf.center[0], target_xf.center[1]];
++                let rect_values = [rect.min.x, rect.min.y, rect.width(), rect.height()];
++                let finite = rect_values.into_iter().chain(current_camera).chain(target_camera)
++                    .chain([ppp, xf.zoom, xf.rotation, xf.aspect]).all(f32::is_finite)
++                    && rect.width() > 0.0 && rect.height() > 0.0 && ppp > 0.0 && xf.zoom > 0.0 && xf.aspect > 0.0;
++                if let Some(code) = crate::seecut_agent::snapshot_busy(app, &ctx) { coordinator.reject_pending(code); }
++                else if unsupported || !finite || current_camera != target_camera { coordinator.reject_pending("viewUnsupported"); }
++                else if st.selected_layers.len() > 256 { coordinator.reject_pending("selectionLimitExceeded"); }
++                else if let Some(mut material) = adopted {
++                    // GPU texture and output display may differ. Validate the display used by this view.
++                    let (actual_display, _) = canvas_display(app, &material.doc, output);
++                    let actual_display = actual_display.filter(|d| !d.encode_srgb
++                        && d.source.content_hash() == photocraft_cms::Builtin::Srgb.profile().content_hash()
++                        // sync_display_lut caches 0 on error too. A nonidentity display must
++                        // actually have submitted the successful LUT or matrix/shaper mode.
++                        && adopted_gpu_display_mode.is_none_or(|mode| if d.is_identity() { mode == 0 } else { mode == 1 || mode == 3 }));
++                    if !std::sync::Arc::ptr_eq(&material.doc, &st.doc)
++                        || crate::seecut_agent::snapshot_identity(app, idx).as_ref() != Some(&material.identity) {
++                        coordinator.reject_pending("staleCapture");
++                    } else if let Some(d) = actual_display {
++                        material.presentation.display_key = d.key;
++                        material.presentation.display_identity = d.is_identity();
++                        let selected_layers = match st.active_layer {
++                            Some(active) if st.selected_layers.contains(&active) => st.selected_layers.iter().map(|id| id.0).collect(),
++                            Some(active) => vec![active.0], None => Vec::new(),
++                        };
++                        let _ = coordinator.adopt(crate::seecut_snapshot::FrozenMaterial {
++                            request_id: material.ticket.request_id, expected: material.identity, doc: material.doc,
++                            frame: app.frame, captured_at: std::time::Instant::now(),
++                            viewport_id: ctx.viewport_id().0.value(), canvas_id: ui.id().with(("seecut-main-canvas", idx)).value(),
++                            active_layer: st.active_layer.map(|id| id.0), selected_layers, dirty: st.is_dirty(),
++                            can_undo: st.history.can_undo(), can_redo: st.history.can_redo(),
++                            geometry: crate::seecut_snapshot::FrozenGeometry {
++                                rect_points: rect_values, pixels_per_point: ppp, zoom: xf.zoom, center: xf.center,
++                                flip: xf.flip, rotation: xf.rotation, aspect: xf.aspect,
++                                display_camera: current_camera, target_camera,
++                                visible_document_polygon: [rect.min, pos2(rect.max.x, rect.min.y), rect.max, pos2(rect.min.x, rect.max.y)].map(|p| xf.to_doc(p)),
++                            }, presentation: material.presentation,
++                        });
++                    } else { coordinator.reject_pending("colorUnsupported"); }
++                } else { coordinator.reject_pending("frameUnavailable"); }
+             }
+         }
+         // Channels panel: alpha / Quick Mask overlays and single-channel views (channel_view.rs).
+--- a/crates/ui-egui/src/control.rs
++++ b/crates/ui-egui/src/control.rs
+@@ -117,6 +117,9 @@
+ 
+ pub enum Outcome {
+     Done(Value),
++    // Private SeeCut transport extension; the typed payload is intentionally crate-internal.
++    #[allow(private_interfaces)]
++    AfterAdoptedSnapshot(crate::seecut_snapshot::SnapshotRequest),
+     Screenshot {
+         token: u64,
+         path: Option<String>,
+@@ -407,6 +410,10 @@
+     let u = |k: &str| p.get(k).and_then(Value::as_u64);
+     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(true);
+     match req.method.as_str() {
++        "seecut.snapshot" => match crate::seecut_snapshot::SnapshotRequest::parse(p) {
++            Ok(request) => Outcome::AfterAdoptedSnapshot(request),
++            Err(value) => Outcome::Done(value),
++        },
+         "seecut.state" | "seecut.execute" | "seecut.receipt" => Outcome::Done(crate::seecut_agent::handle(app, ctx, &req.method, &req.params)),
+         "ui.context.choose" => {
+             let Some(id) = s("id") else { return err("missing `id`") };
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -195,6 +195,7 @@
+ pub mod scrollbars;
+ mod scrub_wrap;
+ mod seecut_agent;
++mod seecut_snapshot;
+ pub mod select_mask_view;
+ pub mod served_fonts;
+ pub mod shape_dialog;
+@@ -2162,12 +2163,23 @@
+         while let Ok(req) = rx.try_recv() {
+             let reply = req.reply.clone();
+             if req.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) || !req.dispatch.start() {
+-                let _ = reply.send(serde_json::json!({"ok": false, "error": control::expired_error()}));
++                let value = if req.method == "seecut.snapshot" {
++                    // Snapshot's transport deadline is five seconds, unlike ordinary commands.
++                    seecut_snapshot::error("snapshotTimeout")
++                } else {
++                    serde_json::json!({"ok": false, "error": control::expired_error()})
++                };
++                let _ = reply.send(value);
+                 continue;
+             }
+             match control::handle(self, ctx, &req) {
+                 control::Outcome::Done(v) => {
+                     let _ = reply.send(v);
++                }
++                control::Outcome::AfterAdoptedSnapshot(request) => {
++                    if let Err(value) = seecut_agent::enqueue_snapshot(self, ctx, request, reply.clone(), req.deadline) {
++                        let _ = reply.send(value);
++                    }
+                 }
+                 control::Outcome::AfterInput => self.input_waiters.push(reply),
+                 control::Outcome::AfterJob(job) => self.jobs.waiters.push((job, reply)),
+--- a/crates/ui-egui/src/seecut_agent.rs
++++ b/crates/ui-egui/src/seecut_agent.rs
+@@ -16,6 +16,7 @@
+ #[derive(Default)]
+ pub(crate) struct ControlState {
+     host_instance: Option<String>,
++    pub(crate) snapshot: Option<crate::seecut_snapshot::Coordinator>,
+     // No eviction: an old id must never become executable again. Memory only.
+     receipts: HashMap<String, Entry>,
+ }
+@@ -24,7 +25,9 @@
+         Self::from_binding(std::env::var(HOST_ENV).ok())
+     }
+     fn from_binding(binding: Option<String>) -> Self {
+-        Self { host_instance: binding.filter(|s| valid_host_id(s)), receipts: HashMap::new() }
++        let host_instance = binding.filter(|s| valid_host_id(s));
++        let snapshot = None;
++        Self { host_instance, snapshot, receipts: HashMap::new() }
+     }
+ }
+ fn valid_host_id(s: &str) -> bool {
+@@ -415,3 +418,47 @@
+ 
+ #[cfg(test)]
+ mod tests;
++#[cfg(all(test, not(target_arch = "wasm32")))]
++mod snapshot_tests;
++
++
++pub(crate) fn enqueue_snapshot(app: &mut PhotocraftApp, ctx: &egui::Context, request: crate::seecut_snapshot::SnapshotRequest,
++    reply: std::sync::mpsc::Sender<Value>, deadline: Option<std::time::Instant>) -> Result<(), Value> {
++    use crate::seecut_snapshot::error;
++    let host = app.seecut_agent.host_instance.as_ref().ok_or_else(|| error("hostBindingUnavailable"))?;
++    let st = app.session.active().ok_or_else(|| error("noDocument"))?;
++    if &request.expected.host_instance_id != host { return Err(error("wrongHostInstance")); }
++    if st.document_generation == 0 { return Err(error("generationUnavailable")); }
++    if st.doc.id.0 != request.expected.doc_id || st.document_generation != request.expected.document_generation { return Err(error("wrongDocument")); }
++    if st.revision != request.expected.revision { return Err(error("staleRevision")); }
++    if let Some(code) = snapshot_busy(app, ctx) { return Err(error(code)); }
++    if app.seecut_agent.snapshot.is_none() { app.seecut_agent.snapshot = Some(crate::seecut_snapshot::Coordinator::new()?); }
++    app.seecut_agent.snapshot.as_ref().unwrap().enqueue(request, reply, deadline)?;
++    ctx.request_repaint();
++    Ok(())
++}
++
++pub(crate) fn snapshot_busy(app: &PhotocraftApp, ctx: &egui::Context) -> Option<&'static str> {
++    if !app.ui.dialogs.is_empty() { return Some("modalBusy"); }
++    if let Some(code) = busy(app, ctx, "seecut.snapshot") { return Some(code); }
++    // Preserve release/wheel/key frames too; ordinary pointer hover alone is safe.
++    if ctx.input(|i| i.raw.events.iter().any(|e| !matches!(e,
++        egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_) | egui::Event::PointerGone))) {
++        return Some("inputFrameBusy");
++    }
++    if app.ui.view.arrange != "tabs" { return Some("viewUnsupported"); }
++    if !app.jobs.opens.is_empty() || app.jobs.focus.is_some() { return Some("jobBusy"); }
++    if !app.redraws.is_empty() { return Some("redrawBusy"); }
++    None
++}
++
++pub(crate) fn snapshot_identity(app: &PhotocraftApp, idx: usize) -> Option<crate::seecut_snapshot::ExpectedIdentity> {
++    let st = app.session.documents().get(idx)?;
++    Some(crate::seecut_snapshot::ExpectedIdentity {
++        host_instance_id: app.seecut_agent.host_instance.clone()?, doc_id: st.doc.id.0,
++        document_generation: st.document_generation, revision: st.revision,
++    })
++}
++
++#[cfg(all(test, not(target_arch = "wasm32")))]
++mod deadline_tests;
+--- /dev/null
++++ b/crates/ui-egui/src/seecut_agent/deadline_tests.rs
+@@ -0,0 +1,79 @@
++//! Queued transport expiry must not become a fresh five-second task on UI resume.
++use super::*;
++use crate::control::ControlRequest;
++use std::sync::mpsc;
++use std::time::{Duration, Instant};
++
++fn fixture() -> (PhotocraftApp, egui::Context, mpsc::Sender<ControlRequest>) {
++    let mut session = photocraft_engine::Session::new();
++    session.execute("file.new", json!({"width":8,"height":8})).unwrap();
++    let mut app = PhotocraftApp::new(session, crate::Services::default());
++    app.seecut_agent = ControlState::from_binding(Some("8e88a522-e405-40cd-9ef0-56b530ec0c21".into()));
++    let (tx, rx) = mpsc::channel();
++    app = app.with_control(rx);
++    assert!(app.seecut_agent.snapshot.is_none(), "worker creation is lazy");
++    (app, egui::Context::default(), tx)
++}
++fn snapshot(app: &PhotocraftApp, id: &str) -> (ControlRequest, mpsc::Receiver<Value>) {
++    let st = app.session.active().unwrap();
++    ControlRequest::new("seecut.snapshot", json!({"requestId":id,"maxEdge":8,
++        "expected":{"hostInstanceId":"8e88a522-e405-40cd-9ef0-56b530ec0c21",
++            "docId":st.doc.id.0,"documentGeneration":st.document_generation,"revision":st.revision}}))
++}
++
++#[test]
++fn snapshot_expired_before_ui_resume_never_creates_coordinator() {
++    let (mut app, ctx, tx) = fixture();
++    let revision = app.session.active().unwrap().revision;
++    let (mut req, reply) = snapshot(&app, "expired-before-drain");
++    req.deadline = Some(Instant::now() - Duration::from_millis(1));
++    let dispatch = req.dispatch.clone();
++    tx.send(req).unwrap();
++    app.drain_control(&ctx);
++    assert_eq!(reply.try_recv().unwrap(), json!({"ok":false,"error":"snapshotTimeout"}));
++    assert!(matches!(reply.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
++    assert!(app.seecut_agent.snapshot.is_none(), "expired request must not allocate a pool or enqueue work");
++    assert_eq!(app.session.active().unwrap().revision, revision);
++    assert_eq!(dispatch.give_up(), crate::control::expired_error(), "UI did not claim the expired request");
++}
++
++#[test]
++fn snapshot_abandoned_by_transport_cannot_restart_when_ui_resumes() {
++    let (mut app, ctx, tx) = fixture();
++    let revision = app.session.active().unwrap().revision;
++    let (mut req, reply) = snapshot(&app, "abandoned-before-drain");
++    // Deliberately still in the future: only Dispatch abandonment can prevent execution.
++    req.deadline = Some(Instant::now() + Duration::from_secs(5));
++    let dispatch = req.dispatch.clone();
++    tx.send(req).unwrap();
++    assert_eq!(dispatch.give_up(), crate::control::expired_error());
++    app.drain_control(&ctx);
++    assert_eq!(reply.try_recv().unwrap(), json!({"ok":false,"error":"snapshotTimeout"}));
++    assert!(app.seecut_agent.snapshot.is_none(), "transport abandonment must not become a newly enqueued snapshot");
++    assert_eq!(app.session.active().unwrap().revision, revision);
++    app.drain_control(&ctx);
++    assert!(matches!(reply.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
++    assert!(app.seecut_agent.snapshot.is_none());
++}
++
++#[test]
++fn snapshot_expiry_does_not_change_generic_control_errors_or_block_next_live_command() {
++    let (mut app, ctx, tx) = fixture();
++    let layers = app.session.active().unwrap().doc.layers.len();
++    let (mut snap, snap_reply) = snapshot(&app, "expired-then-generic");
++    snap.deadline = Some(Instant::now() - Duration::from_millis(1));
++    tx.send(snap).unwrap();
++    let (mut expired, expired_reply) = ControlRequest::new("engine.execute", json!({"command":"layer.new.layer"}));
++    expired.deadline = Some(Instant::now() - Duration::from_millis(1));
++    tx.send(expired).unwrap();
++    let (mut live, live_reply) = ControlRequest::new("engine.execute", json!({"command":"layer.new.layer"}));
++    live.deadline = Some(Instant::now() + crate::control::REPLY_DEADLINE);
++    tx.send(live).unwrap();
++    app.drain_control(&ctx);
++    assert_eq!(snap_reply.try_recv().unwrap(), json!({"ok":false,"error":"snapshotTimeout"}));
++    assert_eq!(expired_reply.try_recv().unwrap(), json!({"ok":false,"error":crate::control::expired_error()}));
++    assert_eq!(crate::control::REPLY_DEADLINE, Duration::from_secs(60));
++    assert_eq!(live_reply.try_recv().unwrap()["ok"], true);
++    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "only the final live command executes");
++    assert!(app.seecut_agent.snapshot.is_none());
++}
+--- /dev/null
++++ b/crates/ui-egui/src/seecut_agent/snapshot_tests.rs
+@@ -0,0 +1,200 @@
++//! Native, offscreen integration: real control drain, canvas branch, worker and PNG codec.
++//! No native window, input injection, mock canvas, or manually constructed FrozenMaterial.
++use super::*;
++use base64::Engine as _;
++use photocraft_color::PixelFormat;
++use photocraft_doc::{ColorMode, Document, LayerContent, SampleType};
++use photocraft_geom::{Rect as DocRect, Size};
++use photocraft_raster::Surface;
++use std::sync::{Arc, Mutex, mpsc};
++use std::time::Duration;
++
++const HOST: &str = "8e88a522-e405-40cd-9ef0-56b530ec0c21";
++
++fn fixture() -> (PhotocraftApp, egui::Context) {
++    let mut surface = Surface::new(PixelFormat::RGBA8);
++    surface.write_region(DocRect::new(0, 0, 1, 1), &[1.0, 0.0, 0.0, 0.5]);
++    let mut doc = Document::new("Canvas snapshot fixture", Size { width: 8, height: 8 }, ColorMode::Rgb, SampleType::U8);
++    doc.layers.push(Layer::new("Half transparent red", LayerContent::Raster(surface)));
++    let mut session = photocraft_engine::Session::new();
++    session.add_document(doc, None);
++    let mut app = PhotocraftApp::new(session, crate::Services::default());
++    app.seecut_agent = ControlState::from_binding(Some(HOST.into()));
++    app.sync_views();
++    app.ui.views[0] = crate::state::View { zoom: 20.0, center: [4.0, 4.0], doc_size: [8, 8], fit_pending: false, ..Default::default() };
++    app.frame = 71;
++    // A stale last layout must never supply the adopted geometry.
++    app.last_canvas_rect = egui::Rect::from_min_size(egui::pos2(9000.0, 9000.0), egui::vec2(1.0, 1.0));
++    assert!(app.gpu.is_none(), "this suite exercises the real CPU branch");
++    (app, egui::Context::default())
++}
++
++fn enqueue(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str) -> (Value, mpsc::Receiver<Value>) {
++    let st = app.session.active().unwrap();
++    let expected = json!({"hostInstanceId":HOST,"docId":st.doc.id.0,
++        "documentGeneration":st.document_generation,"revision":st.revision});
++    let (request, reply) = crate::control::ControlRequest::new("seecut.snapshot", json!({"requestId":id,"expected":expected,"maxEdge":8}));
++    let (tx, rx) = mpsc::channel();
++    app.control_rx = Some(rx);
++    tx.send(request).unwrap();
++    app.drain_control(ctx);
++    assert!(matches!(reply.try_recv(), Err(mpsc::TryRecvError::Empty)), "drain must defer until actual canvas adoption");
++    assert!(app.seecut_agent.snapshot.as_ref().unwrap().wants_capture());
++    (expected, reply)
++}
++
++fn paint(app: &mut PhotocraftApp, ctx: &egui::Context, primary: bool, events: Vec<egui::Event>) -> (egui::Rect, f32) {
++    let rect = egui::Rect::from_min_size(egui::pos2(20.0, 30.0), egui::vec2(320.0, 240.0));
++    let view = app.ui.views[0].clone();
++    let mut geometry = (egui::Rect::NOTHING, 0.0);
++    let mut output = ctx.run_ui(egui::RawInput {
++        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 320.0))),
++        time: Some(1.0), events, ..Default::default()
++    }, |ui| {
++        geometry = (crate::rulers::content_rect(app, rect), ctx.pixels_per_point());
++        app.ui.views[0] = crate::canvas::canvas_view(app, ui, 0, rect, view.clone(), primary);
++    });
++    // This fixture checks paint submission and the separate document-composite PNG;
++    // it intentionally has no egui screen renderer to upload these UI texture deltas.
++    output.textures_delta.clear();
++    assert!(!output.shapes.is_empty(), "the test must actually submit canvas painting commands");
++    geometry
++}
++
++fn receive(reply: &mpsc::Receiver<Value>) -> Value {
++    reply.recv_timeout(Duration::from_secs(4)).expect("snapshot worker/deadline must reply without another UI frame")
++}
++fn decoded(reply: &Value) -> Vec<u8> {
++    let png = base64::engine::general_purpose::STANDARD.decode(reply["result"]["pixels"]["base64"].as_str().unwrap()).unwrap();
++    photocraft_codecs::decode(&png).unwrap().data().to_vec()
++}
++// Ensure an assertion failure cannot leave the physical worker waiting forever.
++struct ReleaseOnDrop(Option<mpsc::Sender<()>>);
++impl Drop for ReleaseOnDrop {
++    fn drop(&mut self) { if let Some(tx) = self.0.take() { let _ = tx.send(()); } }
++}
++
++#[test]
++fn snapshot_actual_cpu_canvas_freezes_identity_geometry_and_pixels_before_live_edit() {
++    let (mut app, ctx) = fixture();
++    let (entered_tx, entered_rx) = mpsc::channel();
++    let (release_tx, release_rx) = mpsc::channel();
++    let release_rx = Mutex::new(release_rx);
++    let release = ReleaseOnDrop(Some(release_tx));
++    app.seecut_agent.snapshot = Some(crate::seecut_snapshot::Coordinator::with_before_work_hook(Arc::new(move || {
++        entered_tx.send(()).unwrap();
++        release_rx.lock().unwrap().recv_timeout(Duration::from_secs(3)).expect("test must release worker after the live edit");
++    })).unwrap());
++    let frozen_doc = app.session.active().unwrap().doc.clone();
++    let active_layer = app.session.active().unwrap().active_layer.unwrap();
++    let (expected, reply) = enqueue(&mut app, &ctx, "canvas-freeze");
++    let (rect, ppp) = paint(&mut app, &ctx, true, Vec::new());
++    entered_rx.recv_timeout(Duration::from_secs(2)).expect("real canvas adoption must schedule the worker");
++    assert!(!app.seecut_agent.snapshot.as_ref().unwrap().wants_capture());
++    assert!(matches!(reply.try_recv(), Err(mpsc::TryRecvError::Empty)), "the worker is deliberately held before composition");
++    // This is a real history edit after adoption but before the worker reads any pixels.
++    app.session.execute("layer.setProps", json!({"layer":active_layer.0,"opacity":0.25})).unwrap();
++    assert!(!Arc::ptr_eq(&frozen_doc, &app.session.active().unwrap().doc));
++    assert_ne!(app.session.active().unwrap().revision, expected["revision"].as_u64().unwrap());
++    drop(release);
++    let result = receive(&reply);
++    assert_eq!(result["ok"], true, "{result}");
++    let r = &result["result"];
++    assert_eq!(r["identity"], expected);
++    assert_eq!(r["capturedFrame"], 71);
++    assert_eq!(r["adoptionStage"], "uiPaintSubmitted");
++    assert_eq!(r["presentation"]["source"]["renderer"], "cpu");
++    assert_eq!(r["document"]["layers"][0]["opacity"].as_f64(), Some(1.0));
++    let g = &r["view"]["geometry"];
++    assert_eq!(g["rectPoints"], json!([rect.min.x, rect.min.y, rect.width(), rect.height()]));
++    assert_eq!(g["pixelsPerPoint"], json!(ppp));
++    assert_eq!(g["zoom"], json!(20.0 / ppp));
++    assert_eq!(g["displayCamera"], json!([20.0, 4.0, 4.0]));
++    assert_eq!(g["targetCamera"], g["displayCamera"]);
++    // A distinct first corner proves this was the current canvas rectangle, not last_canvas_rect.
++    let half_width = f64::from(rect.width() * ppp / 40.0);
++    let half_height = f64::from(rect.height() * ppp / 40.0);
++    let corner = &g["visibleDocumentPolygon"][0];
++    assert!((corner[0].as_f64().unwrap() - (4.0 - half_width)).abs() < 1e-5);
++    assert!((corner[1].as_f64().unwrap() - (4.0 - half_height)).abs() < 1e-5);
++    let pixels = decoded(&result);
++    assert_eq!(&pixels[..4], &[255, 0, 0, 128], "live opacity edit must not alter the frozen alpha");
++    assert_eq!(&pixels[4..8], &[0, 0, 0, 0], "the output excludes the canvas checkerboard");
++}
++
++#[test]
++fn snapshot_secondary_canvas_cannot_consume_main_request_and_deadline_needs_no_more_frames() {
++    let (mut app, ctx) = fixture();
++    let (_, reply) = enqueue(&mut app, &ctx, "no-main-frame");
++    paint(&mut app, &ctx, false, Vec::new());
++    assert!(app.seecut_agent.snapshot.as_ref().unwrap().wants_capture());
++    assert!(matches!(reply.try_recv(), Err(mpsc::TryRecvError::Empty)));
++    // No more frame ticks or fake screenshot fallback. Independent supervisor must settle it.
++    let result = receive(&reply);
++    assert_eq!(result["error"], "snapshotCaptureTimeout", "{result}");
++    assert!(result.get("result").is_none());
++    assert!(matches!(reply.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
++}
++
++#[test]
++fn snapshot_edit_between_control_drain_and_canvas_adoption_rejects_identity_mix() {
++    let (mut app, ctx) = fixture();
++    let (_, reply) = enqueue(&mut app, &ctx, "changed-before-paint");
++    let layer = app.session.active().unwrap().active_layer.unwrap();
++    app.session.execute("layer.setProps", json!({"layer":layer.0,"opacity":0.25})).unwrap();
++    paint(&mut app, &ctx, true, Vec::new());
++    let result = receive(&reply);
++    assert_eq!(result["error"], "wrongDocument", "revision must match the queued identity: {result}");
++    assert!(result.get("result").is_none());
++}
++
++#[test]
++fn snapshot_release_and_fit_frames_are_rechecked_at_actual_canvas_adoption() {
++    for fit in [false, true] {
++        let (mut app, ctx) = fixture();
++        let (_, reply) = enqueue(&mut app, &ctx, if fit { "fit-frame" } else { "release-frame" });
++        let events = if fit {
++            app.ui.views[0].fit_pending = true;
++            Vec::new()
++        } else {
++            vec![egui::Event::PointerButton { pos: egui::pos2(380.0, 300.0), button: egui::PointerButton::Primary,
++                pressed: false, modifiers: egui::Modifiers::NONE }]
++        };
++        paint(&mut app, &ctx, true, events);
++        let result = receive(&reply);
++        assert_eq!(result["error"], if fit { "viewUnsupported" } else { "inputFrameBusy" }, "{result}");
++        assert!(result.get("result").is_none());
++    }
++}
++
++#[test]
++#[ignore = "requires an actual offscreen GPU adapter; run explicitly, adapter failure is a failure"]
++fn snapshot_actual_gpu_deferred_frame_returns_no_image() {
++    let _gpu_lock = photocraft_testkit::gpu_lock();
++    let rs = egui_kittest::wgpu::create_render_state(crate::gpu_canvas::wgpu_setup(), Default::default());
++    let (mut app, ctx) = fixture();
++    let doc = {
++        let st = app.session.active_mut().unwrap();
++        let doc = Arc::make_mut(&mut st.doc);
++        doc.size = Size { width: 2048, height: 2048 };
++        // Real supported CPU content that the GPU planner explicitly declines.
++        doc.layers[0].advanced.knockout = photocraft_doc::Knockout::Shallow;
++        st.doc.clone()
++    };
++    assert_eq!(u64::from(doc.size.width) * u64::from(doc.size.height), crate::gpu_canvas::DEFER_PX);
++    app.ui.views[0] = crate::state::View { zoom: 0.1, center: [1024.0, 1024.0], doc_size: [2048, 2048], fit_pending: false, ..Default::default() };
++    app.background_jobs = true;
++    app.set_wgpu(rs);
++    let gpu = app.gpu.as_ref().expect("adapter setup must create the real GPU canvas");
++    let refresh = gpu.refresh_with(doc.id.0, &doc, None, None, true);
++    assert_eq!(refresh.kind, crate::gpu_canvas::REFRESH_DEFERRED, "fixture must actually exercise deferred GPU fallback");
++    let (_, reply) = enqueue(&mut app, &ctx, "gpu-deferred");
++    paint(&mut app, &ctx, true, Vec::new());
++    // The worker can finish CPU blocks quickly, but only a later UI poll removes this entry.
++    // This frame has just started it, so the assertion does not depend on worker speed.
++    assert!(app.redraws.contains_key(&doc.id), "actual canvas preparation must leave the deferred redraw pending");
++    let result = receive(&reply);
++    crate::background_redraw::cancel(&mut app, doc.id);
++    assert_eq!(result["error"], "redrawBusy", "{result}");
++    assert!(result.get("result").is_none());
++}
+--- /dev/null
++++ b/crates/ui-egui/src/seecut_snapshot.rs
+@@ -0,0 +1,138 @@
++//! Private native adopted-frame snapshots; no UI capture or current-state reread.
++// All string fields are bounded by the backend; geometry is from the same paint branch.
++#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++pub(crate) struct ExpectedIdentity {
++    pub host_instance_id: String,
++    pub doc_id: u64,
++    pub document_generation: u64,
++    pub revision: u64,
++}
++#[derive(Clone, Debug, serde::Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++pub(crate) struct SnapshotRequest {
++    pub request_id: String,
++    pub expected: ExpectedIdentity,
++    pub max_edge: u32,
++}
++#[derive(Clone, Debug)]
++pub(crate) struct CaptureTicket {
++    pub request_id: String,
++    pub expected: ExpectedIdentity,
++}
++#[derive(Clone, Copy, Debug, serde::Serialize)]
++#[serde(rename_all = "lowercase")]
++pub(crate) enum Renderer {
++    Cpu,
++    Gpu,
++}
++#[derive(Clone, Debug, serde::Serialize)]
++#[serde(rename_all = "camelCase")]
++pub(crate) struct FrozenGeometry {
++    pub rect_points: [f32; 4], // x,y,width,height inside rulers
++    pub pixels_per_point: f32,
++    pub zoom: f32, // actual xf.zoom, egui points / document pixel
++    pub center: [f32; 2],
++    pub flip: bool,
++    pub rotation: f32,
++    pub aspect: f32,
++    pub display_camera: [f32; 3], // actual device-pixel zoom, center.x, center.y
++    pub target_camera: [f32; 3],
++    pub visible_document_polygon: [[f64; 2]; 4], // xf.to_doc(rect corners), no padded AABB
++}
++#[derive(Clone, Debug, serde::Serialize)]
++#[serde(rename_all = "camelCase")]
++pub(crate) struct FrozenPresentation {
++    pub renderer: Renderer,
++    pub display_key: u64,
++    pub raw_preview_key: u64,
++    pub complete: bool,
++    pub display_identity: bool, // actual successful CanvasDisplay, no fallback None
++    pub source_is_srgb: bool,   // successful adopted display source is builtin sRGB, !encode_srgb
++    pub proof: bool,
++    pub hdr: bool,
++    pub channel_composite: bool,
++}
++pub(crate) struct FrozenMaterial {
++    pub request_id: String,         // copy exact CaptureTicket, so an expired request cannot steal a successor
++    pub expected: ExpectedIdentity, // actual adopted DocState identity, not copied expected blindly
++    pub doc: std::sync::Arc<photocraft_doc::Document>,
++    pub frame: u64,
++    pub captured_at: std::time::Instant,
++    pub viewport_id: u64,
++    pub canvas_id: u64,
++    pub active_layer: Option<u64>,
++    pub selected_layers: Vec<u64>,
++    pub dirty: bool,
++    pub can_undo: bool,
++    pub can_redo: bool,
++    pub geometry: FrozenGeometry,
++    pub presentation: FrozenPresentation,
++}
++use serde_json::{Value, json};
++const MAX_EDGE: u32 = 256;
++
++pub(crate) fn error(code: &'static str) -> Value {
++    let code = if code.len() <= 64 && code.bytes().all(|b| b.is_ascii_alphanumeric()) { code } else { "snapshotUnavailable" };
++    json!({"ok":false,"error":code})
++}
++fn valid_id(s: &str) -> bool {
++    !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
++}
++impl SnapshotRequest {
++    pub(crate) fn parse(value: &Value) -> Result<Self, Value> {
++        let request: Self = serde_json::from_value(value.clone()).map_err(|_| error("invalidSnapshotParams"))?;
++        request.validate()?;
++        Ok(request)
++    }
++    fn validate(&self) -> Result<(), Value> {
++        if !valid_id(&self.request_id)
++            || self.expected.host_instance_id.len() != 36
++            || !self.expected.host_instance_id.bytes().enumerate().all(|(i, b)| if [8, 13, 18, 23].contains(&i) { b == b'-' } else { b.is_ascii_hexdigit() })
++            || self.expected.doc_id == 0
++            || self.expected.document_generation == 0
++            || self.expected.revision == 0
++            || !(1..=MAX_EDGE).contains(&self.max_edge)
++        {
++            return Err(error("invalidSnapshotParams"));
++        }
++        Ok(())
++    }
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[path = "seecut_snapshot/native.rs"]
++mod native;
++#[cfg(not(target_arch = "wasm32"))]
++pub(crate) use native::Coordinator;
++
++// The private snapshot feature is desktop-only. Preserve upstream web builds
++// without importing the native-only Rayon dependency or creating any threads.
++#[cfg(target_arch = "wasm32")]
++pub(crate) struct Coordinator;
++#[cfg(target_arch = "wasm32")]
++#[allow(dead_code)]
++impl Coordinator {
++    pub(crate) fn new() -> Result<Self, Value> {
++        Err(error("snapshotWorkerUnavailable"))
++    }
++    pub(crate) fn enqueue(&self, _: SnapshotRequest, _: std::sync::mpsc::Sender<Value>, _: Option<std::time::Instant>) -> Result<(), Value> {
++        Err(error("snapshotWorkerUnavailable"))
++    }
++    pub(crate) fn wants_capture(&self) -> bool {
++        false
++    }
++    pub(crate) fn pending_ticket(&self) -> Option<CaptureTicket> {
++        None
++    }
++    pub(crate) fn pending_expected(&self) -> Option<ExpectedIdentity> {
++        None
++    }
++    pub(crate) fn reject_pending(&self, _: &'static str) {}
++    pub(crate) fn adopt(&self, _: FrozenMaterial) -> Result<(), Value> {
++        Err(error("snapshotWorkerUnavailable"))
++    }
++    pub(crate) fn cancel(&self, _: &str) -> bool {
++        false
++    }
++}
+--- /dev/null
++++ b/crates/ui-egui/src/seecut_snapshot/native.rs
+@@ -0,0 +1,558 @@
++use super::*;
++use base64::Engine as _;
++use photocraft_color::{ColorMode, SampleType};
++use photocraft_doc::{Layer, LayerContent};
++use photocraft_geom::Rect;
++use serde_json::{Value, json};
++use sha2::{Digest, Sha256};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Arc, Condvar, Mutex, mpsc::Sender};
++use std::time::{Duration, Instant};
++
++const CAPTURE_TTL: Duration = Duration::from_secs(2);
++const TOTAL_TTL: Duration = Duration::from_secs(5);
++const MAX_SOURCE_PIXELS: u64 = 4_194_304;
++const MAX_DIMENSION: u32 = 4096;
++const MAX_PNG: usize = 512 * 1024;
++const MAX_REPLY: usize = 1024 * 1024;
++const MAX_LAYERS: usize = 64;
++const MAX_DEPTH: usize = 8;
++const MAX_SURFACES: usize = 32;
++const MAX_REFERENCE_BYTES: usize = 32 * 1024 * 1024;
++const MAX_COMPOSITE_WORK: u64 = 8_388_608;
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum Phase {
++    Waiting,
++    Running,
++}
++struct Slot {
++    request: SnapshotRequest,
++    started: Instant,
++    capture_deadline: Instant,
++    total_deadline: Instant,
++    reply: Option<Sender<Value>>,
++    cancelled: Arc<AtomicBool>,
++    phase: Phase,
++}
++struct Inner {
++    slot: Option<Slot>,
++    stopped: bool,
++    jobs_started: usize,
++}
++struct Shared {
++    inner: Mutex<Inner>,
++    wake: Condvar,
++}
++impl Shared {
++    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
++        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
++    }
++}
++/// Exactly one physical CPU worker in its own one-thread Rayon pool. This also
++/// confines compose/codec nested Rayon calls; they never use the global pool.
++/// The separate single deadline thread performs no image work.
++pub(crate) struct Coordinator {
++    shared: Arc<Shared>,
++    worker: rayon::ThreadPool,
++    capture_ttl: Duration,
++    total_ttl: Duration,
++    #[cfg(test)]
++    before_work: Option<Arc<dyn Fn() + Send + Sync>>,
++}
++impl Coordinator {
++    pub(crate) fn new() -> Result<Self, Value> {
++        Self::with_timing(CAPTURE_TTL, TOTAL_TTL)
++    }
++    #[cfg(test)]
++    #[allow(dead_code)] // Available to the separate actual-canvas integration test.
++    pub(crate) fn with_before_work_hook(hook: Arc<dyn Fn() + Send + Sync>) -> Result<Self, Value> {
++        let mut coordinator = Self::new()?;
++        coordinator.before_work = Some(hook);
++        Ok(coordinator)
++    }
++    fn with_timing(capture_ttl: Duration, total_ttl: Duration) -> Result<Self, Value> {
++        let shared = Arc::new(Shared { inner: Mutex::new(Inner { slot: None, stopped: false, jobs_started: 0 }), wake: Condvar::new() });
++        let worker = rayon::ThreadPoolBuilder::new()
++            .num_threads(1)
++            .thread_name(|_| "seecut-photo-snapshot-cpu".into())
++            .build()
++            .map_err(|_| error("snapshotWorkerUnavailable"))?;
++        let deadline_shared = shared.clone();
++        std::thread::Builder::new()
++            .name("seecut-photo-snapshot-deadline".into())
++            .spawn(move || deadline_loop(deadline_shared))
++            .map_err(|_| error("snapshotDeadlineUnavailable"))?;
++        Ok(Self {
++            shared,
++            worker,
++            capture_ttl,
++            total_ttl,
++            #[cfg(test)]
++            before_work: None,
++        })
++    }
++    pub(crate) fn enqueue(&self, request: SnapshotRequest, reply: Sender<Value>, request_deadline: Option<Instant>) -> Result<(), Value> {
++        request.validate()?;
++        let now = Instant::now();
++        let total_deadline = request_deadline.map_or(now + self.total_ttl, |d| d.min(now + self.total_ttl));
++        let capture_deadline = total_deadline.min(now + self.capture_ttl);
++        if now >= total_deadline {
++            return Err(error("snapshotDeadlineElapsed"));
++        }
++        let mut inner = self.shared.lock();
++        if inner.stopped {
++            return Err(error("snapshotUnavailable"));
++        }
++        if let Some(slot) = &inner.slot {
++            return Err(error(if slot.request.request_id == request.request_id { "snapshotDuplicate" } else { "snapshotBusy" }));
++        }
++        inner.slot = Some(Slot {
++            request,
++            started: now,
++            capture_deadline,
++            total_deadline,
++            reply: Some(reply),
++            cancelled: Arc::new(AtomicBool::new(false)),
++            phase: Phase::Waiting,
++        });
++        drop(inner);
++        self.shared.wake.notify_all();
++        Ok(())
++    }
++    pub(crate) fn pending_ticket(&self) -> Option<CaptureTicket> {
++        let inner = self.shared.lock();
++        let slot = inner.slot.as_ref()?;
++        if slot.phase != Phase::Waiting || slot.reply.is_none() || Instant::now() >= slot.capture_deadline {
++            return None;
++        }
++        Some(CaptureTicket { request_id: slot.request.request_id.clone(), expected: slot.request.expected.clone() })
++    }
++    #[allow(dead_code)] // Optional identity-only query; UI normally uses the request-bound ticket.
++    pub(crate) fn pending_expected(&self) -> Option<ExpectedIdentity> {
++        self.pending_ticket().map(|t| t.expected)
++    }
++    pub(crate) fn wants_capture(&self) -> bool {
++        self.pending_ticket().is_some()
++    }
++    pub(crate) fn reject_pending(&self, code: &'static str) {
++        let mut inner = self.shared.lock();
++        if inner.slot.as_ref().is_some_and(|s| s.phase == Phase::Waiting) {
++            if let Some(mut slot) = inner.slot.take() {
++                slot.cancelled.store(true, Ordering::Release);
++                send_once(&mut slot, error(code));
++            }
++        }
++        drop(inner);
++        self.shared.wake.notify_all();
++    }
++    #[allow(dead_code)] // Reserved explicit cancellation hook, also exercised by lifecycle tests.
++    pub(crate) fn cancel(&self, request_id: &str) -> bool {
++        let mut inner = self.shared.lock();
++        let Some(slot) = inner.slot.as_mut().filter(|s| s.request.request_id == request_id) else {
++            return false;
++        };
++        slot.cancelled.store(true, Ordering::Release);
++        send_once(slot, error("snapshotCancelled"));
++        if slot.phase == Phase::Waiting {
++            inner.slot = None;
++        }
++        // Running slot is held until the actual CPU job finishes, including after timeout.
++        drop(inner);
++        self.shared.wake.notify_all();
++        true
++    }
++    pub(crate) fn adopt(&self, material: FrozenMaterial) -> Result<(), Value> {
++        let mut inner = self.shared.lock();
++        let Some(slot) = inner.slot.as_mut() else {
++            return Err(error("snapshotNoPending"));
++        };
++        if slot.phase != Phase::Waiting || slot.request.request_id != material.request_id {
++            return Err(error("staleCapture"));
++        }
++        let why = if Instant::now() >= slot.capture_deadline {
++            Some("snapshotCaptureTimeout")
++        } else if slot.request.expected != material.expected || material.doc.id.0 != material.expected.doc_id {
++            Some("wrongDocument")
++        } else if material.captured_at < slot.started || material.captured_at > Instant::now() {
++            Some("invalidCaptureTime")
++        } else {
++            None
++        };
++        if let Some(why) = why {
++            send_once(slot, error(why));
++            inner.slot = None;
++            drop(inner);
++            self.shared.wake.notify_all();
++            return Err(error(why));
++        }
++        slot.phase = Phase::Running;
++        let request = slot.request.clone();
++        let cancelled = slot.cancelled.clone();
++        let deadline = slot.total_deadline;
++        let started = slot.started;
++        inner.jobs_started += 1;
++        drop(inner);
++        self.shared.wake.notify_all();
++        let shared = self.shared.clone();
++        #[cfg(test)]
++        let before_work = self.before_work.clone();
++        self.worker.spawn(move || {
++            #[cfg(test)]
++            if let Some(hook) = before_work {
++                hook();
++            }
++            // Preserve slot release after a worker panic; never put the panic text in a reply.
++            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render_frozen(&request, &material, &cancelled, deadline, started)))
++                .unwrap_or_else(|_| Err(error("snapshotWorkerFailed")));
++            let mut inner = shared.lock();
++            if let Some(slot) = inner.slot.as_mut().filter(|s| s.request.request_id == request.request_id && s.phase == Phase::Running) {
++                if !slot.cancelled.load(Ordering::Acquire) && Instant::now() < slot.total_deadline {
++                    send_once(slot, result.unwrap_or_else(|v| v));
++                } else {
++                    send_once(slot, error("snapshotTimeout"));
++                }
++                inner.slot = None;
++            }
++            drop(inner);
++            shared.wake.notify_all();
++        });
++        Ok(())
++    }
++}
++impl Drop for Coordinator {
++    fn drop(&mut self) {
++        let mut inner = self.shared.lock();
++        inner.stopped = true;
++        if let Some(slot) = inner.slot.as_mut() {
++            slot.cancelled.store(true, Ordering::Release);
++            send_once(slot, error("snapshotCancelled"));
++        }
++        // Do not join or kill a non-cooperatively running compose call on the UI thread.
++        drop(inner);
++        self.shared.wake.notify_all();
++    }
++}
++fn send_once(slot: &mut Slot, value: Value) {
++    if let Some(reply) = slot.reply.take() {
++        let _ = reply.send(value);
++    }
++}
++fn deadline_loop(shared: Arc<Shared>) {
++    let mut inner = shared.lock();
++    loop {
++        if inner.stopped {
++            break;
++        }
++        let next = inner.slot.as_ref().filter(|s| s.reply.is_some()).map(|s| if s.phase == Phase::Waiting { s.capture_deadline } else { s.total_deadline });
++        if let Some(deadline) = next {
++            let now = Instant::now();
++            if now >= deadline {
++                if let Some(slot) = inner.slot.as_mut() {
++                    slot.cancelled.store(true, Ordering::Release);
++                    let code = if slot.phase == Phase::Waiting { "snapshotCaptureTimeout" } else { "snapshotTimeout" };
++                    send_once(slot, error(code));
++                    if slot.phase == Phase::Waiting {
++                        inner.slot = None;
++                    }
++                }
++                continue;
++            }
++            inner = shared.wake.wait_timeout(inner, deadline.saturating_duration_since(now)).unwrap_or_else(std::sync::PoisonError::into_inner).0;
++        } else {
++            inner = shared.wake.wait(inner).unwrap_or_else(std::sync::PoisonError::into_inner);
++        }
++    }
++}
++fn check(cancelled: &AtomicBool, deadline: Instant) -> Result<(), Value> {
++    if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline { Err(error("snapshotTimeout")) } else { Ok(()) }
++}
++fn digest(parts: &[&[u8]]) -> String {
++    let mut hash = Sha256::new();
++    for part in parts {
++        hash.update(part);
++    }
++    format!("{:x}", hash.finalize())
++}
++fn bound_name(name: &str) -> Result<(), Value> {
++    if name.len() > 256 { Err(error("snapshotNameLimit")) } else { Ok(()) }
++}
++struct Cost {
++    layers: usize,
++    surfaces: usize,
++    bytes: usize,
++    raster_count: u64,
++    ids: std::collections::HashSet<u64>,
++}
++fn count_surface(surface: &photocraft_raster::Surface, cost: &mut Cost) -> Result<(), Value> {
++    cost.surfaces = cost.surfaces.checked_add(1).ok_or_else(|| error("snapshotCostLimit"))?;
++    if cost.surfaces > MAX_SURFACES || surface.tile_count() > 128 {
++        return Err(error("snapshotCostLimit"));
++    }
++    for (_, tile) in surface.tiles() {
++        cost.bytes = cost.bytes.checked_add(tile.bytes().len()).ok_or_else(|| error("snapshotCostLimit"))?;
++        if cost.bytes > MAX_REFERENCE_BYTES {
++            return Err(error("snapshotCostLimit"));
++        }
++    }
++    Ok(())
++}
++fn visit_layers(layers: &[Layer], depth: usize, cost: &mut Cost, out: &mut Vec<Value>, cancelled: &AtomicBool, deadline: Instant) -> Result<(), Value> {
++    if depth > MAX_DEPTH {
++        return Err(error("snapshotDepthLimit"));
++    }
++    for layer in layers {
++        check(cancelled, deadline)?;
++        cost.layers += 1;
++        if cost.layers > MAX_LAYERS || !cost.ids.insert(layer.id.0) {
++            return Err(error("snapshotLayerLimit"));
++        }
++        bound_name(&layer.name)?;
++        if layer.mask.is_some() || layer.vector_mask.is_some() {
++            return Err(error("snapshotMaskUnsupported"));
++        }
++        if !layer.effects.items.is_empty()
++            || layer.effects.psd_raw.is_some()
++            || layer.video.is_some()
++            || layer.fill_cache.is_some()
++            || layer.excluded_channels != 0
++            || !layer.blend_if.is_default()
++            || layer.advanced != Default::default()
++            || layer.clipped
++        {
++            return Err(error("snapshotLayerStyleUnsupported"));
++        }
++        if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) || !layer.fill_opacity.is_finite() || !(0.0..=1.0).contains(&layer.fill_opacity)
++        {
++            return Err(error("snapshotLayerUnsupported"));
++        }
++        let kind = match &layer.content {
++            LayerContent::Raster(surface) => {
++                if surface.format() != photocraft_color::PixelFormat::RGBA8 {
++                    return Err(error("snapshotSurfaceUnsupported"));
++                }
++                if layer.blend != photocraft_color::blend::BlendMode::Normal {
++                    return Err(error("snapshotBlendUnsupported"));
++                }
++                count_surface(surface, cost)?;
++                cost.raster_count += 1;
++                "raster"
++            }
++            LayerContent::Group(group) => {
++                if group.artboard.is_some() {
++                    return Err(error("snapshotArtboardUnsupported"));
++                }
++                if !matches!(layer.blend, photocraft_color::blend::BlendMode::Normal | photocraft_color::blend::BlendMode::PassThrough) {
++                    return Err(error("snapshotBlendUnsupported"));
++                }
++                "group"
++            }
++            // Even cached text is refused: compose has type-specific gamma and rendering paths.
++            LayerContent::Text(_) => return Err(error("snapshotTextUnsupported")),
++            _ => return Err(error("snapshotContentUnsupported")),
++        };
++        out.push(json!({"id":layer.id.0,"name":layer.name,"kind":kind,"depth":depth,
++            "visible":layer.visible,"opacity":layer.opacity,"fillOpacity":layer.fill_opacity,"mask":false}));
++        if let LayerContent::Group(group) = &layer.content {
++            visit_layers(&group.children, depth + 1, cost, out, cancelled, deadline)?;
++        }
++    }
++    Ok(())
++}
++fn validate_geometry(g: &FrozenGeometry) -> Result<(), Value> {
++    let mut all = g
++        .rect_points
++        .iter()
++        .chain(std::iter::once(&g.pixels_per_point))
++        .chain(std::iter::once(&g.zoom))
++        .chain(g.center.iter())
++        .chain(std::iter::once(&g.rotation))
++        .chain(std::iter::once(&g.aspect))
++        .chain(g.display_camera.iter())
++        .chain(g.target_camera.iter());
++    if all.any(|v| !v.is_finite())
++        || g.visible_document_polygon.iter().flatten().any(|v| !v.is_finite())
++        || g.rect_points[2] <= 0.0
++        || g.rect_points[3] <= 0.0
++        || g.pixels_per_point <= 0.0
++        || g.zoom <= 0.0
++        || g.aspect <= 0.0
++        || g.display_camera != g.target_camera
++        || g.display_camera[0] <= 0.0
++    {
++        return Err(error("snapshotViewUnsupported"));
++    }
++    Ok(())
++}
++fn selection(material: &FrozenMaterial, selected_layers: &[u64], cost: &mut Cost, cancelled: &AtomicBool, deadline: Instant) -> Result<Value, Value> {
++    let [w, h] = [material.doc.size.width, material.doc.size.height];
++    let mut coverage = Sha256::new();
++    coverage.update(b"seecut-coverage-v1\0");
++    coverage.update(w.to_le_bytes());
++    coverage.update(h.to_le_bytes());
++    coverage.update([u8::from(material.doc.selection.is_some())]);
++    let mut bounds: Option<[i32; 4]> = None;
++    if let Some(surface) = &material.doc.selection {
++        if surface.format().mode != ColorMode::Grayscale || surface.format().alpha {
++            return Err(error("snapshotSelectionUnsupported"));
++        }
++        count_surface(surface, cost)?;
++        let raw_bounds = surface.content_bounds();
++        if !raw_bounds.is_empty() && (raw_bounds.x0 < 0 || raw_bounds.y0 < 0 || raw_bounds.x1 > w as i32 || raw_bounds.y1 > h as i32) {
++            return Err(error("selectionBoundsUnsupported"));
++        }
++        let mut row = Vec::with_capacity(w as usize);
++        for y in 0..h {
++            check(cancelled, deadline)?;
++            surface.read_region_into(Rect::new(0, y as i32, w as i32, y as i32 + 1), &mut row);
++            if row.len() != w as usize {
++                return Err(error("snapshotSelectionUnsupported"));
++            }
++            for (x, v) in row.iter().enumerate() {
++                if !v.is_finite() || !(0.0..=1.0).contains(v) {
++                    return Err(error("snapshotSelectionUnsupported"));
++                }
++                let canonical = if *v == 0.0 { 0.0f32 } else { *v };
++                coverage.update(canonical.to_bits().to_le_bytes());
++                if *v > 0.0 {
++                    bounds = Some(match bounds {
++                        None => [x as i32, y as i32, x as i32 + 1, y as i32 + 1],
++                        Some([x0, y0, x1, y1]) => [x0.min(x as i32), y0.min(y as i32), x1.max(x as i32 + 1), y1.max(y as i32 + 1)],
++                    });
++                }
++            }
++        }
++    }
++    let coverage_hash = format!("{:x}", coverage.finalize());
++    let mut state = Sha256::new();
++    state.update(b"seecut-selection-state-v1\0");
++    state.update(coverage_hash.as_bytes());
++    state.update([u8::from(material.active_layer.is_some())]);
++    state.update(material.active_layer.unwrap_or(0).to_le_bytes());
++    state.update((selected_layers.len() as u32).to_le_bytes());
++    for id in selected_layers {
++        state.update(id.to_le_bytes());
++    }
++    Ok(json!({"present":material.doc.selection.is_some(),"domain":[0,0,w,h],"bounds":bounds,"boundsFormat":"xyxyExclusive",
++        "coverageHash":coverage_hash,"selectionStateId":format!("selection-v1-{:x}",state.finalize())}))
++}
++fn render_frozen(request: &SnapshotRequest, material: &FrozenMaterial, cancelled: &AtomicBool, deadline: Instant, started: Instant) -> Result<Value, Value> {
++    check(cancelled, deadline)?;
++    let doc = &material.doc;
++    let area = u64::from(doc.size.width).checked_mul(u64::from(doc.size.height)).ok_or_else(|| error("snapshotSourceLimit"))?;
++    if area == 0 || area > MAX_SOURCE_PIXELS || doc.size.width > MAX_DIMENSION || doc.size.height > MAX_DIMENSION {
++        return Err(error("snapshotSourceLimit"));
++    }
++    if request.request_id != material.request_id || request.expected != material.expected || doc.id.0 != material.expected.doc_id {
++        return Err(error("wrongDocument"));
++    }
++    if doc.mode != ColorMode::Rgb || doc.depth != SampleType::U8 || doc.icc_profile.is_some() {
++        return Err(error("snapshotColorUnsupported"));
++    }
++    let p = &material.presentation;
++    if p.raw_preview_key != 0 || !p.complete || !p.source_is_srgb || p.proof || p.hdr || !p.channel_composite {
++        return Err(error("snapshotPresentationUnsupported"));
++    }
++    if !doc.patterns.is_empty() || !doc.channels.is_empty() || doc.quick_mask.is_some() || doc.timeline.is_some() {
++        return Err(error("snapshotContentUnsupported"));
++    }
++    bound_name(&doc.name)?;
++    validate_geometry(&material.geometry)?;
++    if material.selected_layers.len() > 256 {
++        return Err(error("snapshotLayerLimit"));
++    }
++    let mut cost = Cost { layers: 0, surfaces: 0, bytes: 0, raster_count: 0, ids: std::collections::HashSet::new() };
++    let mut layers = Vec::new();
++    visit_layers(&doc.layers, 0, &mut cost, &mut layers, cancelled, deadline)?;
++    if area.checked_mul(cost.raster_count.max(1)).is_none_or(|v| v > MAX_COMPOSITE_WORK) {
++        return Err(error("snapshotCostLimit"));
++    }
++    // Match DocState::selected_layers exactly for valid active ids: document
++    // bottom-to-top walk order; raw ids are a set, stale/duplicate ids disappear.
++    // An active layer missing from raw selection falls back to that layer alone.
++    let selected_set: std::collections::HashSet<u64> = match material.active_layer {
++        None => std::collections::HashSet::new(),
++        Some(active) if !cost.ids.contains(&active) => {
++            return Err(error("snapshotSelectionUnsupported"));
++        }
++        Some(active) if material.selected_layers.contains(&active) => material.selected_layers.iter().copied().collect(),
++        Some(active) => std::iter::once(active).collect(),
++    };
++    let selected_layers: Vec<u64> = layers.iter().filter_map(|l| l["id"].as_u64()).filter(|id| selected_set.contains(id)).collect();
++    let selection = selection(material, &selected_layers, &mut cost, cancelled, deadline)?;
++    check(cancelled, deadline)?;
++    let image = photocraft_compose::thumbnail_buffer(doc, request.max_edge).to_rgba8();
++    check(cancelled, deadline)?;
++    if image.width == 0
++        || image.height == 0
++        || image.width > MAX_EDGE
++        || image.height > MAX_EDGE
++        || image.pixels.len() != image.width as usize * image.height as usize * 4
++    {
++        return Err(error("snapshotImageInvalid"));
++    }
++    let pixel_hash = digest(&[b"seecut-rgba8-srgb-v1\0", &image.width.to_le_bytes(), &image.height.to_le_bytes(), &image.pixels]);
++    let (width, height) = (image.width, image.height);
++    let mut encoded =
++        photocraft_codecs::Image::from_u8(width, height, photocraft_codecs::ChannelLayout::Rgba, image.pixels).map_err(|_| error("snapshotEncodingFailed"))?;
++    let profile = photocraft_cms::Builtin::Srgb.profile().to_bytes();
++    if profile.len() > 64 * 1024 {
++        return Err(error("snapshotProfileLimit"));
++    }
++    let profile_hash = digest(&[&profile]);
++    encoded.icc = Some((*profile).clone());
++    let opts = photocraft_codecs::EncodeOptions { png_compression: photocraft_codecs::PngCompression::None, embed_metadata: false, ..Default::default() };
++    let png = photocraft_codecs::encode(&encoded, photocraft_codecs::Format::Png, &opts).map_err(|_| error("snapshotEncodingFailed"))?;
++    check(cancelled, deadline)?;
++    if png.len() > MAX_PNG {
++        return Err(error("snapshotPngLimit"));
++    }
++    let png_hash = digest(&[&png]);
++    let geometry_bytes = serde_json::to_vec(&material.geometry).map_err(|_| error("snapshotSerializationFailed"))?;
++    let identity_bytes = serde_json::to_vec(&material.expected).map_err(|_| error("snapshotSerializationFailed"))?;
++    let view_hash = digest(&[b"seecut-view-v1\0", &identity_bytes, &material.viewport_id.to_le_bytes(), &material.canvas_id.to_le_bytes(), &geometry_bytes]);
++    let snapshot_hash = digest(&[
++        b"seecut-snapshot-v1\0",
++        request.request_id.as_bytes(),
++        &identity_bytes,
++        &material.frame.to_le_bytes(),
++        pixel_hash.as_bytes(),
++        selection["selectionStateId"].as_str().unwrap_or("").as_bytes(),
++        view_hash.as_bytes(),
++    ]);
++    let polygon = &material.geometry.visible_document_polygon;
++    let aabb = [
++        polygon.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min),
++        polygon.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
++        polygon.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max),
++        polygon.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max),
++    ];
++    let clipped = [
++        aabb[0].clamp(0.0, f64::from(doc.size.width)),
++        aabb[1].clamp(0.0, f64::from(doc.size.height)),
++        aabb[2].clamp(0.0, f64::from(doc.size.width)),
++        aabb[3].clamp(0.0, f64::from(doc.size.height)),
++    ];
++    let reply = json!({"ok":true,"result":{
++        "kind":"adoptedDocumentComposite","adoptionStage":"uiPaintSubmitted","snapshotId":format!("snapshot-v1-{snapshot_hash}"),
++        "requestId":request.request_id,"capturedFrame":material.frame,"capturedAfterUiEnqueueMs":material.captured_at.saturating_duration_since(started).as_millis(),
++        "timeBasis":{"captureDelay":"uiEnqueue","captureAge":"adoptedFrameCapture"},
++        "returnedHistoricalFrame":true,"captureAgeAtReplyMs":material.captured_at.elapsed().as_millis(),"viewportId":material.viewport_id,"canvasId":material.canvas_id,"identity":material.expected,
++        "document":{"name":doc.name,"size":[doc.size.width,doc.size.height],"layers":layers,"layersOrder":"documentBottomToTop","activeLayer":material.active_layer,
++            "selectedLayers":selected_layers,"selectedLayersOrder":"documentBottomToTop","dirty":material.dirty,"canUndo":material.can_undo,"canRedo":material.can_redo},
++        "selection":selection,"view":{"geometry":material.geometry,"visibleDocumentAabb":aabb,"clippedVisibleDocumentAabb":clipped,"aabbFormat":"xyxyExclusive","viewStateId":format!("view-v1-{view_hash}")},
++        "presentation":{"source":p,"colorSpace":"sRGB IEC61966-2.1","profileHash":profile_hash,"pixelSemantics":"documentCompositeNotMonitorPixels"},
++        "pixels":{"kind":"documentComposite","transparent":true,"mime":"image/png","width":width,"height":height,
++            "documentRect":[0,0,doc.size.width,doc.size.height],"documentPixelsPerOutputPixel":[f64::from(doc.size.width)/f64::from(width),f64::from(doc.size.height)/f64::from(height)],
++            "pixelHash":pixel_hash,"pngHash":png_hash,"base64":base64::engine::general_purpose::STANDARD.encode(png)}
++    }});
++    let bytes = serde_json::to_vec(&reply).map_err(|_| error("snapshotSerializationFailed"))?;
++    if bytes.len() > MAX_REPLY - 1024 {
++        return Err(error("snapshotReplyLimit"));
++    }
++    check(cancelled, deadline)?;
++    Ok(reply)
++}
++#[cfg(test)]
++#[path = "tests.rs"]
++mod tests;
+--- /dev/null
++++ b/crates/ui-egui/src/seecut_snapshot/tests.rs
+@@ -0,0 +1,378 @@
++use super::*;
++use photocraft_color::PixelFormat;
++use photocraft_doc::{Document, LayerId};
++use photocraft_engine::Session;
++use photocraft_geom::Size;
++use photocraft_raster::Surface;
++
++const HOST: &str = "8e88a522-e405-40cd-9ef0-56b530ec0c21";
++fn fixture() -> Session {
++    let mut surface = Surface::new(PixelFormat::RGBA8);
++    surface.write_region(Rect::new(0, 0, 1, 1), &[1.0, 0.0, 0.0, 0.5]);
++    let mut doc = Document::new("Frozen source", Size { width: 8, height: 8 }, ColorMode::Rgb, SampleType::U8);
++    doc.layers.push(Layer::new("Raster", LayerContent::Raster(surface)));
++    let mut session = Session::new();
++    session.add_document(doc, Some("/private/not-for-snapshot/source.pcraft".into()));
++    session
++}
++fn frozen(session: &Session, id: &str) -> FrozenMaterial {
++    let st = session.active().unwrap();
++    FrozenMaterial {
++        request_id: id.into(),
++        expected: ExpectedIdentity { host_instance_id: HOST.into(), doc_id: st.doc.id.0, document_generation: st.document_generation, revision: st.revision },
++        doc: st.doc.clone(),
++        frame: 17,
++        captured_at: Instant::now(),
++        viewport_id: 1,
++        canvas_id: 3,
++        active_layer: st.active_layer.map(|l| l.0),
++        selected_layers: st.selected_layers.iter().map(|l| l.0).collect(),
++        dirty: st.is_dirty(),
++        can_undo: st.history.can_undo(),
++        can_redo: st.history.can_redo(),
++        geometry: FrozenGeometry {
++            rect_points: [0.0, 0.0, 80.0, 80.0],
++            pixels_per_point: 1.0,
++            zoom: 10.0,
++            center: [4.0, 4.0],
++            flip: false,
++            rotation: 0.0,
++            aspect: 1.0,
++            display_camera: [10.0, 4.0, 4.0],
++            target_camera: [10.0, 4.0, 4.0],
++            visible_document_polygon: [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]],
++        },
++        presentation: FrozenPresentation {
++            renderer: Renderer::Cpu,
++            display_key: 9,
++            raw_preview_key: 0,
++            complete: true,
++            display_identity: true,
++            source_is_srgb: true,
++            proof: false,
++            hdr: false,
++            channel_composite: true,
++        },
++    }
++}
++fn request(m: &FrozenMaterial) -> SnapshotRequest {
++    SnapshotRequest { request_id: m.request_id.clone(), expected: m.expected.clone(), max_edge: 256 }
++}
++fn run(mut material: FrozenMaterial) -> Value {
++    let coordinator = Coordinator::new().unwrap();
++    let (tx, rx) = std::sync::mpsc::channel();
++    coordinator.enqueue(request(&material), tx, None).unwrap();
++    material.captured_at = Instant::now();
++    coordinator.adopt(material).unwrap();
++    rx.recv_timeout(Duration::from_secs(3)).unwrap()
++}
++fn pixels(reply: &Value) -> Vec<u8> {
++    let png = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, reply["result"]["pixels"]["base64"].as_str().unwrap()).unwrap();
++    photocraft_codecs::decode(&png).unwrap().data().to_vec()
++}
++fn await_slot_release(c: &Coordinator) {
++    let limit = Instant::now() + Duration::from_secs(2);
++    let mut inner = c.shared.lock();
++    while inner.slot.is_some() {
++        let remaining = limit.saturating_duration_since(Instant::now());
++        assert!(!remaining.is_zero());
++        inner = c.shared.wake.wait_timeout(inner, remaining).unwrap().0;
++    }
++}
++#[test]
++fn real_compose_png_has_straight_alpha_size_and_sha256() {
++    let session = fixture();
++    let reply = run(frozen(&session, "pixels"));
++    assert_eq!(reply["ok"], true);
++    let p = &reply["result"]["pixels"];
++    assert_eq!(p["width"], 8);
++    assert_eq!(p["height"], 8);
++    let data = pixels(&reply);
++    assert_eq!(&data[..4], &[255, 0, 0, 128]);
++    assert_eq!(&data[4..8], &[0, 0, 0, 0]);
++    let want = digest(&[b"seecut-rgba8-srgb-v1\0", &8u32.to_le_bytes(), &8u32.to_le_bytes(), &data]);
++    assert_eq!(p["pixelHash"], want);
++    let png = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, p["base64"].as_str().unwrap()).unwrap();
++    assert_eq!(p["pngHash"], digest(&[&png]));
++    assert!(png.len() <= MAX_PNG);
++    let decoded = photocraft_codecs::decode(&png).unwrap();
++    assert_eq!(decoded.icc.as_deref(), Some(photocraft_cms::Builtin::Srgb.profile().to_bytes().as_slice()));
++    assert_eq!(reply["result"]["adoptionStage"], "uiPaintSubmitted");
++    let serialized = serde_json::to_string(&reply).unwrap();
++    assert!(serialized.len() < MAX_REPLY);
++    assert!(!serialized.contains("/private/not-for-snapshot"));
++    assert!(!serialized.contains("source.pcraft"));
++    assert!(!serialized.contains("control.token"));
++    assert!(!serialized.contains("presented"));
++}
++#[test]
++fn strict_request_limits_and_unknown_fields() {
++    let session = fixture();
++    let m = frozen(&session, "valid");
++    let base = json!({"requestId":"valid","expected":m.expected,"maxEdge":256});
++    assert!(SnapshotRequest::parse(&base).is_ok());
++    let mut unknown = base.clone();
++    unknown["extra"] = json!(true);
++    assert!(SnapshotRequest::parse(&unknown).is_err());
++    for edge in [0, 257, u32::MAX] {
++        let mut p = base.clone();
++        p["maxEdge"] = json!(edge);
++        assert!(SnapshotRequest::parse(&p).is_err());
++    }
++    let mut p = base.clone();
++    p["expected"]["path"] = json!("not-allowed");
++    assert!(SnapshotRequest::parse(&p).is_err());
++    let mut p = base;
++    p["requestId"] = json!("x".repeat(129));
++    assert!(SnapshotRequest::parse(&p).is_err());
++}
++#[test]
++fn same_bounds_different_selection_coverage_and_none_some_hashes() {
++    let mut session = fixture();
++    let none = run(frozen(&session, "none"));
++    let mut mask = Surface::new(PixelFormat::GRAY8);
++    mask.write_region(Rect::new(0, 0, 2, 2), &[1.0, 0.0, 0.0, 1.0]);
++    session
++        .edit("Selection A", |doc, _| {
++            doc.selection = Some(mask);
++            Ok(())
++        })
++        .unwrap();
++    let a = run(frozen(&session, "select-a"));
++    session
++        .edit("Selection B", |doc, _| {
++            doc.selection.as_mut().unwrap().write_region(Rect::new(0, 0, 2, 2), &[1.0, 0.5, 0.0, 1.0]);
++            Ok(())
++        })
++        .unwrap();
++    let b = run(frozen(&session, "select-b"));
++    assert_eq!(a["result"]["selection"]["bounds"], b["result"]["selection"]["bounds"]);
++    assert_ne!(a["result"]["selection"]["coverageHash"], b["result"]["selection"]["coverageHash"]);
++    assert_ne!(a["result"]["selection"]["selectionStateId"], b["result"]["selection"]["selectionStateId"]);
++    session
++        .edit("Empty selection", |doc, _| {
++            doc.selection = Some(Surface::new(PixelFormat::GRAY8));
++            Ok(())
++        })
++        .unwrap();
++    let empty = run(frozen(&session, "empty"));
++    assert_ne!(none["result"]["selection"]["coverageHash"], empty["result"]["selection"]["coverageHash"]);
++}
++#[test]
++fn selected_layers_are_validated_and_hashed_in_frozen_document_order() {
++    let mut session = fixture();
++    session.execute("layer.new.layer", json!({"name":"Second"})).unwrap();
++    let ids: Vec<u64> = session.active().unwrap().doc.layers.iter().map(|l| l.id.0).collect();
++    let mut a = frozen(&session, "layers-a");
++    a.selected_layers = ids.clone();
++    let a = run(a);
++    let mut b = frozen(&session, "layers-b");
++    b.selected_layers = ids.iter().copied().rev().collect();
++    let b = run(b);
++    assert_eq!(a["result"]["selection"]["selectionStateId"], b["result"]["selection"]["selectionStateId"]);
++    let mut c = frozen(&session, "layers-c");
++    c.selected_layers = vec![c.active_layer.unwrap()];
++    let c = run(c);
++    assert_ne!(a["result"]["selection"]["selectionStateId"], c["result"]["selection"]["selectionStateId"]);
++    let mut stale = frozen(&session, "missing-layer");
++    stale.selected_layers.push(u64::MAX);
++    stale.selected_layers.push(stale.active_layer.unwrap());
++    let stale = run(stale);
++    assert_eq!(stale["result"]["document"]["selectedLayers"], c["result"]["document"]["selectedLayers"]);
++    session.active_mut().unwrap().selected_layers = vec![LayerId(ids[0]), LayerId(u64::MAX)];
++    let expected: Vec<u64> = session.active().unwrap().selected_layers().iter().map(|l| l.0).collect();
++    let fallback = run(frozen(&session, "fallback-active"));
++    assert_eq!(fallback["result"]["document"]["selectedLayers"], json!(expected));
++    session.active_mut().unwrap().active_layer = None;
++    let none = run(frozen(&session, "no-active"));
++    assert_eq!(none["result"]["document"]["selectedLayers"], json!([]));
++}
++#[test]
++fn real_frozen_session_arc_does_not_mix_later_document_metadata_or_pixels() {
++    let mut session = fixture();
++    let material = frozen(&session, "historical");
++    let identity = material.expected.clone();
++    let layer = material.active_layer.unwrap();
++    session.execute("layer.setProps", json!({"layer":layer,"opacity":0.0})).unwrap();
++    assert_ne!(session.active().unwrap().revision, identity.revision);
++    let reply = run(material);
++    assert_eq!(reply["result"]["identity"]["revision"], identity.revision);
++    assert_eq!(reply["result"]["capturedFrame"], 17);
++    assert_eq!(reply["result"]["timeBasis"], json!({"captureDelay":"uiEnqueue","captureAge":"adoptedFrameCapture"}));
++    assert!(reply["result"]["capturedAfterUiEnqueueMs"].is_u64());
++    assert!(reply["result"].get("capturedAfterRequestMs").is_none());
++    assert_eq!(pixels(&reply)[3], 128);
++    assert_eq!(reply["result"]["returnedHistoricalFrame"], true);
++}
++#[test]
++fn view_hash_covers_actual_frozen_transform_and_monitor_transform_is_allowed() {
++    let session = fixture();
++    let a = run(frozen(&session, "view-a"));
++    let mut b = frozen(&session, "view-b");
++    b.geometry.flip = true;
++    b.geometry.rotation = 30.0;
++    b.presentation.display_identity = false;
++    b.presentation.display_key = 777;
++    let b = run(b);
++    assert_eq!(b["ok"], true);
++    assert_eq!(a["result"]["pixels"]["pixelHash"], b["result"]["pixels"]["pixelHash"]);
++    assert_ne!(a["result"]["view"]["viewStateId"], b["result"]["view"]["viewStateId"]);
++}
++#[test]
++fn source_content_and_color_limits_refuse_without_silent_layer_removal() {
++    let session = fixture();
++    let mut large = frozen(&session, "large");
++    Arc::make_mut(&mut large.doc).size = Size { width: 4096, height: 4096 };
++    assert_eq!(run(large)["error"], "snapshotSourceLimit");
++    let mut tagged = frozen(&session, "tagged");
++    Arc::make_mut(&mut tagged.doc).icc_profile = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes());
++    assert_eq!(run(tagged)["error"], "snapshotColorUnsupported");
++    let mut proof = frozen(&session, "proof");
++    proof.presentation.proof = true;
++    assert_eq!(run(proof)["error"], "snapshotPresentationUnsupported");
++    let mut text = frozen(&session, "text");
++    Arc::make_mut(&mut text.doc).layers[0].content = LayerContent::Text(Default::default());
++    assert_eq!(run(text)["error"], "snapshotTextUnsupported");
++    let mut mask = frozen(&session, "mask");
++    Arc::make_mut(&mut mask.doc).layers[0].mask = Some(photocraft_doc::LayerMask::reveal_all());
++    assert_eq!(run(mask)["error"], "snapshotMaskUnsupported");
++    let mut names = frozen(&session, "names");
++    Arc::make_mut(&mut names.doc).name = "x".repeat(257);
++    assert_eq!(run(names)["error"], "snapshotNameLimit");
++    let mut layers = frozen(&session, "layers-limit");
++    let doc = Arc::make_mut(&mut layers.doc);
++    for _ in 0..64 {
++        doc.layers.push(Layer::group("Extra", Vec::new()));
++    }
++    assert_eq!(run(layers)["error"], "snapshotLayerLimit");
++}
++#[test]
++fn waiting_capture_expires_without_any_ui_tick_or_worker_job() {
++    let session = fixture();
++    let m = frozen(&session, "no-ui");
++    let c = Coordinator::with_timing(Duration::from_millis(15), Duration::from_millis(100)).unwrap();
++    let (tx, rx) = std::sync::mpsc::channel();
++    c.enqueue(request(&m), tx, None).unwrap();
++    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap()["error"], "snapshotCaptureTimeout");
++    assert!(!c.wants_capture());
++    assert_eq!(c.shared.lock().jobs_started, 0);
++    assert_eq!(c.worker.current_num_threads(), 1);
++}
++#[test]
++fn original_transport_absolute_deadline_wins_over_local_ttl() {
++    let session = fixture();
++    let m = frozen(&session, "transport-deadline");
++    let c = Coordinator::new().unwrap();
++    let (tx, rx) = std::sync::mpsc::channel();
++    c.enqueue(request(&m), tx, Some(Instant::now() + Duration::from_millis(15))).unwrap();
++    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap()["error"], "snapshotCaptureTimeout");
++    assert_eq!(c.shared.lock().jobs_started, 0);
++}
++struct Gate {
++    entered: Sender<()>,
++    release: Mutex<bool>,
++    wake: Condvar,
++}
++impl Gate {
++    fn wait(&self) {
++        let _ = self.entered.send(());
++        let mut open = self.release.lock().unwrap();
++        while !*open {
++            open = self.wake.wait(open).unwrap();
++        }
++    }
++    fn open(&self) {
++        *self.release.lock().unwrap() = true;
++        self.wake.notify_all();
++    }
++}
++fn delayed(c: &mut Coordinator) -> (Arc<Gate>, std::sync::mpsc::Receiver<()>) {
++    let (tx, rx) = std::sync::mpsc::channel();
++    let gate = Arc::new(Gate { entered: tx, release: Mutex::new(false), wake: Condvar::new() });
++    let worker_gate = gate.clone();
++    c.before_work = Some(Arc::new(move || worker_gate.wait()));
++    (gate, rx)
++}
++#[test]
++fn running_timeout_holds_the_physical_worker_slot_until_actual_exit() {
++    let session = fixture();
++    let mut m = frozen(&session, "slow");
++    let mut c = Coordinator::with_timing(Duration::from_millis(400), Duration::from_millis(200)).unwrap();
++    let (gate, entered) = delayed(&mut c);
++    let (tx, rx) = std::sync::mpsc::channel();
++    c.enqueue(request(&m), tx, None).unwrap();
++    m.captured_at = Instant::now();
++    c.adopt(m).unwrap();
++    entered.recv_timeout(Duration::from_secs(1)).unwrap();
++    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap()["error"], "snapshotTimeout");
++    for n in 0..8 {
++        let fresh = frozen(&session, &format!("blocked-{n}"));
++        let (tx, _) = std::sync::mpsc::channel();
++        assert_eq!(c.enqueue(request(&fresh), tx, None).unwrap_err()["error"], "snapshotBusy");
++    }
++    assert_eq!(c.shared.lock().jobs_started, 1);
++    assert_eq!(c.worker.current_num_threads(), 1);
++    gate.open();
++    await_slot_release(&c);
++    assert!(rx.recv_timeout(Duration::from_millis(10)).is_err());
++}
++#[test]
++fn duplicate_waiting_cancel_and_running_cancel_do_not_create_more_workers() {
++    let session = fixture();
++    let mut c = Coordinator::new().unwrap();
++    let m = frozen(&session, "duplicate");
++    let (tx, rx) = std::sync::mpsc::channel();
++    c.enqueue(request(&m), tx, None).unwrap();
++    let (tx, _) = std::sync::mpsc::channel();
++    assert_eq!(c.enqueue(request(&m), tx, None).unwrap_err()["error"], "snapshotDuplicate");
++    assert!(c.cancel("duplicate"));
++    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap()["error"], "snapshotCancelled");
++    assert_eq!(c.shared.lock().jobs_started, 0);
++    let (gate, entered) = delayed(&mut c);
++    let mut m = frozen(&session, "running-cancel");
++    let (tx, rx) = std::sync::mpsc::channel();
++    c.enqueue(request(&m), tx, None).unwrap();
++    m.captured_at = Instant::now();
++    c.adopt(m).unwrap();
++    entered.recv_timeout(Duration::from_secs(1)).unwrap();
++    assert!(c.cancel("running-cancel"));
++    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap()["error"], "snapshotCancelled");
++    assert_eq!(c.shared.lock().jobs_started, 1);
++    assert_eq!(c.worker.current_num_threads(), 1);
++    gate.open();
++    await_slot_release(&c);
++    assert!(rx.recv_timeout(Duration::from_millis(10)).is_err());
++}
++#[test]
++fn stale_capture_cannot_steal_successor_even_with_identical_document_identity() {
++    let session = fixture();
++    let mut old = frozen(&session, "old");
++    let c = Coordinator::new().unwrap();
++    let (tx, rx) = std::sync::mpsc::channel();
++    c.enqueue(request(&old), tx, None).unwrap();
++    old.captured_at = Instant::now();
++    assert!(c.cancel("old"));
++    assert_eq!(rx.recv().unwrap()["error"], "snapshotCancelled");
++    let mut new = frozen(&session, "new");
++    let (tx, rx) = std::sync::mpsc::channel();
++    c.enqueue(request(&new), tx, None).unwrap();
++    assert_eq!(c.adopt(old).unwrap_err()["error"], "staleCapture");
++    assert_eq!(c.pending_ticket().unwrap().request_id, "new");
++    new.captured_at = Instant::now();
++    c.adopt(new).unwrap();
++    assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap()["result"]["requestId"], "new");
++}
++#[test]
++fn captured_identity_mismatch_settles_only_its_own_request() {
++    let session = fixture();
++    let mut m = frozen(&session, "identity");
++    let c = Coordinator::new().unwrap();
++    let (tx, rx) = std::sync::mpsc::channel();
++    c.enqueue(request(&m), tx, None).unwrap();
++    m.expected.revision += 1;
++    m.captured_at = Instant::now();
++    assert_eq!(c.adopt(m).unwrap_err()["error"], "wrongDocument");
++    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap()["error"], "wrongDocument");
++    assert_eq!(c.shared.lock().jobs_started, 0);
++    assert!(!c.wants_capture());
++}

@@ -21,6 +21,10 @@
     {
       "path": "patches/seecut-profile-guard.patch",
       "sha256": "b97baea37a929cecb8959f7480ab328fc1eaedb942ab17654115aa065e724d6e"
+    },
+    {
+      "path": "patches/seecut-adopted-snapshot.patch",
+      "sha256": "91558f45fbe7ae508aeefd1cd1f738dfb7368039a4d5a2c424a43a0d35991236"
     }
   ],
   "desktopPackage": "photocraft",

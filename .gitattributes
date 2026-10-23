@@ -5,3 +5,4 @@ integrations/photocraft/patches/seecut-theme.patch -text -whitespace
 integrations/photocraft/patches/seecut-theme-polish.patch -text -whitespace
 integrations/photocraft/patches/seecut-agent-control.patch -text -whitespace
 integrations/photocraft/patches/seecut-profile-guard.patch -text -whitespace
+integrations/photocraft/patches/seecut-adopted-snapshot.patch -text -whitespace

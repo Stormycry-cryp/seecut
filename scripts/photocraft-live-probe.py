@@ -6,6 +6,7 @@ so editor children with separate process groups remain attributable to this run.
 No existing DISPLAY, user profile, outside PID or raw editor stderr is consumed.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -39,14 +40,16 @@ def private_new(path):
     require(stat.S_IMODE(path.stat().st_mode) == 0o700, 'new directory is not private')
 
 
-def validate_generated_png(path, expected_alpha):
+def validate_generated_png(path, expected_alpha, adopted=None):
     """Bounded RGB/RGBA 8-bit PNG decoding with all five PNG row filters, stdlib only."""
     require(path.is_file() and not path.is_symlink(), 'PNG must be a regular generated file')
     require(0 < path.stat().st_size <= 1 << 20, 'PNG file budget exceeded')
     data = path.read_bytes()
+    if adopted is not None:
+        require(len(data) <= 512 * 1024, 'adopted PNG byte budget exceeded')
     require(data.startswith(b'\x89PNG\r\n\x1a\n'), 'not a PNG')
     offset, compressed, dimensions = 8, bytearray(), None
-    ended = False
+    ended, profile = False, None
     while offset < len(data):
         require(offset + 12 <= len(data), 'truncated PNG chunk')
         length = struct.unpack('>I', data[offset:offset + 4])[0]
@@ -60,7 +63,19 @@ def validate_generated_png(path, expected_alpha):
             width, height, depth, color, compression, filtering, interlace = struct.unpack('>IIBBBBB', payload)
             require((width, height, depth) == (16, 16, 8) and color in (2, 6), 'unexpected PNG shape')
             require((compression, filtering, interlace) == (0, 0, 0), 'unsupported PNG coding')
+            if adopted is not None:
+                require(color == 6, 'adopted PNG must contain explicit RGBA pixels')
             dimensions = width, height, 3 if color == 2 else 4
+        elif kind == b'iCCP' and adopted is not None:
+            require(dimensions is not None and not compressed and profile is None, 'adopted PNG ICC chunk order or duplicate')
+            name, separator, coded = payload.partition(b'\0')
+            require(separator and 1 <= len(name) <= 79 and len(coded) > 1 and coded[0] == 0, 'invalid PNG ICC envelope')
+            profile_decoder = zlib.decompressobj()
+            profile = profile_decoder.decompress(coded[1:], 64 * 1024 + 1)
+            require(128 <= len(profile) <= 64 * 1024 and profile_decoder.eof
+                    and not profile_decoder.unused_data and not profile_decoder.unconsumed_tail, 'PNG ICC inflate bound or framing')
+            require(struct.unpack('>I', profile[:4])[0] == len(profile)
+                    and profile[16:20] == b'RGB ' and profile[36:40] == b'acsp', 'invalid RGB ICC header')
         elif kind == b'IDAT':
             require(dimensions is not None, 'PNG data precedes header')
             compressed.extend(payload)
@@ -104,11 +119,88 @@ def validate_generated_png(path, expected_alpha):
         for i in range(0, len(row), channels):
             rgba = list(row[i:i + channels]) + ([255] if channels == 3 else [])
             require(all(abs(a - b) <= 2 for a, b in zip(rgba, [255, 128, 0, expected_alpha])), 'generated orange pixel readback mismatch')
+            if adopted is not None:
+                require(rgba[3] == 102, 'adopted PNG alpha must be exactly 102 for every pixel')
             pixels.append(rgba)
         previous = row
         cursor += width * channels + 1
-    return {'file': path.name, 'sha256': digest(path), 'bytes': len(data), 'size': [width, height],
-            'pixelsChecked': len(pixels), 'expectedRgba': [255, 128, 0, expected_alpha], 'tolerance': 2}
+    evidence = {'file': path.name, 'sha256': digest(path), 'bytes': len(data), 'size': [width, height],
+                'pixelsChecked': len(pixels), 'expectedRgba': [255, 128, 0, expected_alpha], 'tolerance': 2}
+    if adopted is not None:
+        require(profile is not None, 'adopted PNG must embed the declared RGB ICC profile')
+        pixel_bytes = bytes(channel for pixel in pixels for channel in pixel)
+        pixel_hash = hashlib.sha256(b'seecut-rgba8-srgb-v1\0' + struct.pack('<II', width, height) + pixel_bytes).hexdigest()
+        profile_hash = hashlib.sha256(profile).hexdigest()
+        require(evidence['sha256'] == adopted['pixels']['pngHash'], 'adopted PNG SHA mismatch')
+        require(pixel_hash == adopted['pixels']['pixelHash'], 'adopted RGBA pixel SHA mismatch')
+        require(profile_hash == adopted['presentation']['profileHash'], 'adopted ICC profile SHA mismatch')
+        require(adopted['presentation']['colorSpace'] == 'sRGB IEC61966-2.1', 'adopted sRGB declaration mismatch')
+        evidence.update({'pixelHash': pixel_hash, 'profileHash': profile_hash, 'embeddedIccBytes': len(profile),
+                         'alphaTolerance': 0, 'iccDeclaration': 'sRGB IEC61966-2.1', 'kind': 'documentComposite',
+                         'adoptionStage': 'uiPaintSubmitted', 'screenCapture': False, 'presentVerified': False})
+    return evidence
+
+
+def take_private_snapshot_base64(report):
+    # Remove before any success/failure report is published. The raw Rust report
+    # stays private and is absent from the workflow artifact whitelist.
+    snapshot = report.get('snapshot')
+    response = snapshot.get('response') if isinstance(snapshot, dict) else None
+    pixels = response.get('pixels') if isinstance(response, dict) else None
+    encoded = pixels.pop('base64', None) if isinstance(pixels, dict) else None
+    def strip(value):
+        if isinstance(value, dict):
+            value.pop('base64', None)
+            for item in value.values():
+                strip(item)
+        elif isinstance(value, list):
+            for item in value:
+                strip(item)
+    strip(report)
+    return encoded
+
+
+def validate_adopted_snapshot(report, encoded, probe_root, artifact):
+    snapshot = report['snapshot']
+    require(snapshot['status'] == 'pendingPythonPngReadback' and snapshot['requestCount'] == 1
+            and snapshot['retried'] is False and snapshot['sessionUnchanged'] is True, 'one-shot snapshot check missing')
+    adopted = snapshot['response']
+    require(adopted['kind'] == 'adoptedDocumentComposite' and adopted['adoptionStage'] == 'uiPaintSubmitted'
+            and adopted['returnedHistoricalFrame'] is True, 'adopted snapshot stage mismatch')
+    require(adopted['requestId'] == snapshot['request']['requestId']
+            and adopted['identity'] == snapshot['request']['expected'] == snapshot['beforeIdentity'] == snapshot['afterIdentity'], 'snapshot identity mismatch')
+    require(adopted['pixels']['kind'] == 'documentComposite' and adopted['pixels']['mime'] == 'image/png'
+            and adopted['pixels']['transparent'] is True and (adopted['pixels']['width'], adopted['pixels']['height']) == (16,16), 'snapshot PNG envelope mismatch')
+    # Recompute this fixture's actual None-selection coverage/state domains.
+    selection = adopted['selection']
+    require(selection['present'] is False and selection['bounds'] is None
+            and selection['domain'] == [0,0,16,16], 'snapshot selection domain mismatch')
+    coverage_hash = hashlib.sha256(b'seecut-coverage-v1\0' + struct.pack('<II', 16,16) + b'\0').hexdigest()
+    active = adopted['document']['activeLayer']
+    selected = adopted['document']['selectedLayers']
+    state_bytes = (b'seecut-selection-state-v1\0' + coverage_hash.encode('ascii')
+                   + bytes([int(active is not None)]) + struct.pack('<Q', active if active is not None else 0)
+                   + struct.pack('<I', len(selected)) + b''.join(struct.pack('<Q', item) for item in selected))
+    require(selection['coverageHash'] == coverage_hash
+            and selection['selectionStateId'] == 'selection-v1-' + hashlib.sha256(state_bytes).hexdigest(), 'snapshot selection hash mismatch')
+    polygon = adopted['view']['geometry']['visibleDocumentPolygon']
+    aabb = [min(point[0] for point in polygon), min(point[1] for point in polygon),
+            max(point[0] for point in polygon), max(point[1] for point in polygon)]
+    require(all(abs(a-b) < 0.000001 for a,b in zip(aabb, adopted['view']['visibleDocumentAabb']))
+            and all(abs(min(16,max(0,a))-b) < 0.000001 for a,b in zip(aabb, adopted['view']['clippedVisibleDocumentAabb'])), 'snapshot polygon and AABB mismatch')
+    require(isinstance(encoded, str) and 0 < len(encoded) <= 699052, 'snapshot base64 bound or missing')
+    data = base64.b64decode(encoded, validate=True)
+    require(0 < len(data) <= 512 * 1024, 'snapshot decoded PNG bound')
+    name = 'orange-adopted-opacity-040.png'
+    private_png = probe_root / name
+    with private_png.open('xb') as output:
+        output.write(data)
+    evidence = validate_generated_png(private_png, 102, adopted=adopted)
+    with (artifact / name).open('xb') as output:
+        output.write(data)
+    snapshot.update({'status': 'actualAdoptedPngReadbackPassed', 'pixelEvidence': evidence, 'privateBase64Removed': True,
+                     'selectionHashVerified': True, 'geometryAabbVerified': True,
+                     'scope': 'documentComposite/uiPaintSubmitted; no screen, present or model proof'})
 
 
 def session_groups(session_id, deadline):
@@ -228,7 +320,13 @@ def run(args):
             cleanup_ok = False
             controller_error = 'cleanup' + type(error).__name__
     report_path = probe_root / 'report.json'
-    report = json.loads(report_path.read_text()) if report_path.is_file() and not report_path.is_symlink() else {'status': 'missingProbeReport'}
+    if report_path.is_file() and not report_path.is_symlink():
+        require(report_path.stat().st_size <= 2 << 20, 'private Rust report byte budget')
+        report = json.loads(report_path.read_text())
+    else:
+        report = {'status': 'missingProbeReport'}
+    require(isinstance(report, dict), 'private Rust report shape')
+    snapshot_base64 = take_private_snapshot_base64(report)
     require(not report.get('model', False) and not report.get('parentSeeCutMcp', False), 'probe scope mismatch')
     report.update({'model': False, 'parentSeeCutMcp': False, 'probeExecutableSha256': probe_hash,
                    'controller': {'exitCode': exit_code, 'failureClass': controller_error, 'ownedSessionCleaned': cleanup_ok,
@@ -241,11 +339,14 @@ def run(args):
                 path = probe_root / 'write' / filename
                 images.append(validate_generated_png(path, alpha))
                 (artifact / filename).write_bytes(path.read_bytes())
-            report['pixelEvidence'] = {'status': 'actualPngReadbackPassed', 'images': images,
+            validate_adopted_snapshot(report, snapshot_base64, probe_root, artifact)
+            report['pixelEvidence'] = {'status': 'actualPngReadbackPassed', 'source': 'file.saveACopy', 'images': images,
                                        'uiScreenshotOrAtomicSnapshot': False}
         except BaseException as error:
             report['status'] = 'failed'
             report['pixelEvidence'] = {'status': 'pngReadbackFailed', 'failureClass': type(error).__name__}
+            if isinstance(report.get('snapshot'), dict) and report['snapshot'].get('status') != 'actualAdoptedPngReadbackPassed':
+                report['snapshot']['status'] = 'adoptedReadbackFailed'
     else:
         report['status'] = 'failed'
     (artifact / 'live-probe-report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')

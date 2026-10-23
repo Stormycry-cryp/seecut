@@ -9,6 +9,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      photocraft_live_probe:
+        description: 仅运行 Photo 完整编辑器隔离烟测；只创建本次合成文档并清理自有进程
+        type: boolean
+        default: false
       desktop_package_candidate:
         description: Build one artifact-only Seecut macOS arm64 candidate on a feature branch; no App launch/install/publish
         type: boolean
@@ -57,14 +61,24 @@ on:
         default: ''
 
 concurrency:
-  # A manual window capture must not cancel the feature's ordinary CI.
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop_package_candidate && format('ci-macos-package-{0}-{1}', github.ref, github.run_id) || (github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && format('ci-window-{0}', github.ref) || format('ci-{0}', github.ref)) }}
+  # Manual Photo, window capture and package lanes do not cancel ordinary CI.
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.photocraft_live_probe && format('ci-photocraft-live-{0}', github.ref) || (github.event_name == 'workflow_dispatch' && inputs.desktop_package_candidate && format('ci-macos-package-{0}-{1}', github.ref, github.run_id) || (github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && format('ci-window-{0}', github.ref) || format('ci-{0}', github.ref))) }}
   cancel-in-progress: true
 
 jobs:
+  photocraft-live-probe:
+    name: Photo 完整编辑器隔离桥接烟测
+    if: github.event_name == 'workflow_dispatch' && inputs.photocraft_live_probe == true
+    permissions:
+      contents: read
+    uses: ./.github/workflows/photocraft-live-probe.yml
+    with:
+      expected_sha: ${{ github.event.inputs.expected_sha }}
+      disposable_synthetic_editor: true
+
   agent-coverage:
     name: Agent source inventory
-    if: github.event_name != 'workflow_dispatch' || (inputs.desktop_package_candidate != true && inputs.linux_window_diagnostic != true)
+    if: (github.event_name != 'workflow_dispatch' || inputs.photocraft_live_probe != true) && (github.event_name != 'workflow_dispatch' || (inputs.desktop_package_candidate != true && inputs.linux_window_diagnostic != true))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -77,7 +91,7 @@ jobs:
         run: python3 scripts/test_ci_linux_memory.py -v
 
   engine:
-    if: github.event_name != 'workflow_dispatch' || inputs.desktop_package_candidate != true
+    if: (github.event_name != 'workflow_dispatch' || inputs.photocraft_live_probe != true) && (github.event_name != 'workflow_dispatch' || inputs.desktop_package_candidate != true)
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_window_diagnostic && (inputs.linux_blackbox_qa && 'Linux independent black-box QA' || 'Linux actual window diagnostic') || 'Engine tests and lints' }}
     runs-on: ubuntu-latest
     permissions:
@@ -653,7 +667,7 @@ jobs:
   # creeps into concat-core or concat-project fails here, not when someone
   # next tries the target. See src/README.md for the list.
   web:
-    if: (github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true) && (github.event_name != 'workflow_dispatch' || inputs.desktop_package_candidate != true)
+    if: (github.event_name != 'workflow_dispatch' || inputs.photocraft_live_probe != true) && ((github.event_name != 'workflow_dispatch' || inputs.linux_window_diagnostic != true) && (github.event_name != 'workflow_dispatch' || inputs.desktop_package_candidate != true))
     name: Engine on wasm32
     runs-on: ubuntu-latest
     steps:
@@ -675,7 +689,7 @@ jobs:
 
   macos_package_candidate:
     name: Seecut macOS arm64 package candidate
-    if: github.event_name == 'workflow_dispatch' && inputs.desktop_package_candidate == true
+    if: (github.event_name != 'workflow_dispatch' || inputs.photocraft_live_probe != true) && (github.event_name == 'workflow_dispatch' && inputs.desktop_package_candidate == true)
     runs-on: macos-15
     permissions:
       contents: read
