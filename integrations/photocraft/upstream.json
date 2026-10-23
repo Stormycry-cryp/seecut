@@ -25,6 +25,14 @@
     {
       "path": "patches/seecut-adopted-snapshot.patch",
       "sha256": "91558f45fbe7ae508aeefd1cd1f738dfb7368039a4d5a2c424a43a0d35991236"
+    },
+    {
+      "path": "patches/seecut-backing-binding.patch",
+      "sha256": "8fa82a7f113942e5f2da47be513efc311a8918e9051d44b4c424a5bb455fc9ef"
+    },
+    {
+      "path": "patches/seecut-managed-close.patch",
+      "sha256": "434a6706c1b00b00cd044a2fa5748bd8d0337558377825a4f7735392650006d4"
     }
   ],
   "desktopPackage": "photocraft",

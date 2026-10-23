@@ -81,3 +81,15 @@ SeeCut 管理独立编辑进程和窗口的开发入口已提交至 Draft PR #24
 原 stable 工具链缺少 macOS 标准库导致的失败记录保留。后续构建显式使用任务内工具链，不以跳过版本检查代替兼容性验证。
 
 同窗宿主、完整 `.comp` 转换、采用帧的父级交付与最终分发均待验证。每阶段保留原画布与可关闭的新入口；回退仅撤销新入口/适配，不删除用户工程或任务记录。
+
+## 已保存 Photo 工程的 Agent 绑定决策
+
+首个上层切片沿用工程保存后才能建立文档会话的现有规则，未保存 Photo 不生成临时 project_key。父级后台只从 child 的真实 backing 事实解析规范路径；标题、旧 Canvas 或模型提供路径均不能代替文档身份。历史继续按真实规范路径关联，同路径原子保存更换 inode 不重建 history key。
+
+另存为、backing 关联重绑或丢失已接入 checked document_generation；同路径正常原子保存保留 generation。同一 UI 回调拒绝旧 expected，避免父级检查后另存为的竞态。真实 backing 四字段、恢复 sentinel 与后台双读文件核验已实现，保留原有账户、权限、精确批准、Task 与原操作回执链路，不增加独立账本。这些内部能力尚未接入父级 MCP/Task。
+
+当前七补丁候选的引擎 2 项、UI 47 项、打开/解绑 3 项、真实套接字 2 项，以及原生宿主 18 项测试均实际通过；宿主 all-targets 严格 Clippy、联测例子编译和 workspace fmt 通过。macOS 非 UTF-8 文件名夹具被 APFS 拒绝，未覆盖对应 helper 路径；Linux 保留实际用例。此前 Linux 联测在完整编辑器编译阶段因已发现的保存/退出路由问题主动取消，已验证的 TERM/KILL 两项进程隔离回归保留。新例子使用 app.save 与封闭 seecut.close，实际进程和像素结果需新运行验证。
+
+当前七补丁 desktop/CLI 已完整重建并独立核对真实产物，官方 HEIF 保留；实际 CLI 仍注册 935 个命令且静态候选无缺失。该来源的本机凭证为 `.toonflow/photocraft-build-04/`，不能替代真实窗口、完整功能或模型任务验收。
+
+父级图片接入还需原 capture 的新鲜度验证：复用实际绘制的文档/选择/几何，在本帧相关输入完成后结算，不能仅用 seecut.state、frame 或目标相机判断。原 inputId 与人类来源在异步期间保持；父级 MCP 和 runtime 在各自交图前复核，过期图片不进入模型。实现与验收见[采用帧合同](../../integrations/photocraft/adopted-snapshot.md)。

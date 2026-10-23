@@ -14,7 +14,7 @@
 - `crates/automation/src/workspace.rs`：读写目录是启动时可信配置；缺失的目录权限会拒绝对应自动化文件访问。用户在完整编辑器内手动操作的文件对话框仍属上游原有 UI。
 - SeeCut 的 `seecut-profile-guard` 补丁：desktop 在读取配置、恢复或创建窗口之前，按可信 `SEECUT_PHOTO_HOST_INSTANCE_ID` 和 `PHOTOCRAFT_CONFIG_DIR` 自己持有 profile 排他 OS 锁。marker 缺失时普通上游行为不变；启用后仅支持 macOS / Linux，非法 marker 或非私有 profile 明确拒绝。锁 inode 保留，父程序消失不会释放子编辑器的锁。
 
-`app.quit` 在当前源码直接设置 `allow_close=true`，会绕过未保存拦截，因此普通内部调用禁止此原语。正常关闭发送 `ui.menu.invoke`，参数为 `{"command":"file.exit","params":{}}`。`menus::invoke` 先经过 `discard_ui::intercept`；有未保存文档时列出原生 discard 对话框，宿主不代答 Save、Don't Save 或 Cancel。`ui.focus` 也禁止调用。
+`app.quit` 在当前源码直接设置 `allow_close=true`，会绕过未保存拦截，因此普通内部调用禁止此原语。正常关闭发送封闭的 `seecut.close {}`。该入口要求实际 host 绑定和严格空对象，经过原 modal gate，再调用真实 `menus::invoke(file.exit)`；通用菜单的 file.* 授权白名单保持不变。`menus::invoke` 先经过 `discard_ui::intercept`；有未保存文档时列出原生 discard 对话框，宿主不代答 Save、Don't Save 或 Cancel。`ui.focus` 也禁止调用。
 
 ## 最小 API
 
@@ -31,7 +31,7 @@ let current = host.current()?;
 
 - `LaunchOptions` 包含 `provenance_path`、`state_dir`、可选 `read_root` / `write_root`、`startup_timeout` 和 `request_timeout`。目录必须由可信应用配置提供。状态目录须为绝对路径，私有权限为 0700；默认恢复数据位于其 `photocraft-profile` 子目录，不能作为临时缓存清理。
 - `InstanceInfo` 包含新生成的 `Uuid`、自有 Child PID、构建 attempt ID、`ready` 和 `InstanceStatus`。`current(&mut self)` 实际 `try_wait` 并回收退出状态；退出后仍返回 `Some(status=Exited)` 便于展示，随后可 `start` 新实例。请求必须携带该实例 ID；新实例不复用旧连接或旧身份。
-- `start` 仅支持 Unix。先校验完整 build provenance 的固定源提交、五项补丁顺序与摘要、源树、Cargo.lock、文件数和完整 desktop / CLI heif 特性，再逐个核验两个二进制字节数和 SHA-256。当前仅接受 theme、theme-polish、agent-control、profile-guard、adopted-snapshot 五项补丁的 2019 文件来源，源树摘要为 `4bcec483a7490740d0a52d27d46542eac212e3c8895c4b9033ec1b42e8c812ac`；旧的单补丁与四补丁收据均被拒绝。启动前再次核验 desktop。provenance 是可信本机构建收据，不能当作远程发布签名或抵抗有权改写收据与二进制的攻击者。
+- `start` 仅支持 Unix。先校验完整 build provenance 的固定源提交、七项补丁顺序与摘要、源树、Cargo.lock、文件数和完整 desktop / CLI heif 特性，再逐个核验两个二进制字节数和 SHA-256。当前仅接受 theme、theme-polish、agent-control、profile-guard、adopted-snapshot、backing-binding、managed-close 七项补丁的 2021 文件来源，源树摘要为 `60f3fb47e318d1fc216cf150a83b025b908fb6526e9f9297be1e650bb8711909`；旧的单补丁、四补丁、五补丁及六补丁收据均被拒绝。启动前再次核验 desktop。provenance 是可信本机构建收据，不能当作远程发布签名或抵抗有权改写收据与二进制的攻击者。
 - 启动命令先移除继承的 `SEECUT_PHOTO_HOST_INSTANCE_ID`，再用本次 `InstanceInfo.id.to_string()` 设置该 env，启用 desktop 自己持有的 profile 锁。实例值不来自请求参数，旧父程序中的 marker 不会被带入新编辑器。
 - 只解析自己 ChildStderr 中有界就绪行。单行上限 8 KiB，就绪前总量上限 1 MiB；后续标准错误以有界块持续丢弃，不转发日志。仅接受精确 `127.0.0.1` 非零端口；认证和实际 `ui.inspect` 验证通过才进入 Ready。
 - token 从系统随机源生成 32 字节，存于实例私有 0700 目录下的 0600 新文件；argv 仅传文件路径，移除继承的控制 token / 自动化目录环境变量。token 不出现在返回类型、调试输出或原始日志中。返回 JSON 的同值字符串会被替换。文件在退出或宿主释放时移除；活编辑器不会因为 Drop 被终止。
@@ -49,3 +49,17 @@ let current = host.current()?;
 profile guard 自身另由主代理使用 rustc 1.95、`-D warnings` 独立编译，7 个真实文件锁与子进程测试入口通过，其中一个为子进程夹具；覆盖父程序正常退出、直接 exit(23) 后子编辑器持续持锁，以及子进程真正退出后操作系统释放锁。这些结果只验证相应生命周期合同；宿主合成测试与 helper 测试均不证明真实 PhotoCraft GUI、文件保真、输入法、Agent 同 Session、原子截图或正式分发已验收。
 
 上游 inspect 的文档索引不能当作 SeeCut 持久文档身份；本 crate 保留原始值供后续适配，不虚构稳定 ID、原子快照、幂等键或权限系统。
+
+## 封闭状态读取与已保存文件绑定
+
+`photo_state_after_gate(id)` 只读真实 `seecut.state`，校验自有 ready child、闭合协议结构与 512 KiB 状态上限，返回 typed Rust 数据。原生 doc/layer/generation/revision/frame 保持 u64；不把原始路径或文档名写入 Debug，不对模型序列化。
+
+`photo_backing_after_gate(id)` 在父级后台执行两次真实状态读取，中间打开并核验当前文件。首版仅接受已记录绝对路径的 `.pcraft` 普通文件；未保存、恢复 sentinel 0、只读源、目录 bundle、丢失或核验失败均不能建立历史作用域。路径通过严格 UTF-8 规范化，持有 File 并比较 raw alias、规范路径和句柄的 dev/inode、长度及时间观察；第二次要求完整原生身份和原 backing 事实相同，最后再次检查当前路径与持有对象。
+
+返回对象保持 File 句柄，`history_key()` 仅供原 Store 使用，格式为 `photo:<规范路径>`，最多 4096 字节。文件标识不进入历史键，同路径原子保存后可重新核验新对象并沿用原历史。该结果只证明当前 Session 关联与当前文件对象，不能证明此前读写的精确字节、永久文件 UUID 或外部不再变化。
+
+文件核验仅支持 macOS/Linux；末端使用 `O_NONBLOCK|O_NOFOLLOW` 防止竞态换成 FIFO 后等待打开，并拒绝末端 symlink，原记录的 symlink 可先规范化。此选项不保证网络文件系统的硬 I/O 期限。两个方法都不能在 UI tick 调用；调用方仍须在调用前后复核原读取许可、账号与 Task。方法名称不创建授权，父级 MCP/Task 接线尚待实现。
+
+七补丁来源锁更新后，主代理使用 Rust 1.93.0 实际执行 18 项宿主测试、all-targets 严格 Clippy、真实 `live_editor_probe` 编译及 workspace fmt，全部通过。新增测试覆盖闭合状态解析、u64 上限、真实文件/路径核验、同路径原子更换、双读变化拒绝和封闭退出方法。macOS 的非 UTF-8 文件名夹具被本机 APFS 以 EILSEQ 拒绝，记录为该夹具不可建立；没有声称对应 helper 分支已在 macOS 实际执行，Linux 用例仍要求真实创建并拒绝该别名。
+
+Linux 联测例子已改用现有目录权限约束下的 `app.save` 保存及导出，真实调用三次 backing 封闭 API；最后另做一次独立可撤销修改，使退出确实触发 dirty 提示。例子编译不代表完整编辑器联测通过，先前因保存/退出路由问题取消的旧运行不能复用为该版本证据。

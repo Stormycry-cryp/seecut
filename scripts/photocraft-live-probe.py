@@ -340,7 +340,7 @@ def run(args):
                 images.append(validate_generated_png(path, alpha))
                 (artifact / filename).write_bytes(path.read_bytes())
             validate_adopted_snapshot(report, snapshot_base64, probe_root, artifact)
-            report['pixelEvidence'] = {'status': 'actualPngReadbackPassed', 'source': 'file.saveACopy', 'images': images,
+            report['pixelEvidence'] = {'status': 'actualPngReadbackPassed', 'source': 'app.save', 'images': images,
                                        'uiScreenshotOrAtomicSnapshot': False}
         except BaseException as error:
             report['status'] = 'failed'

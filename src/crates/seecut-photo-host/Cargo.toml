@@ -11,5 +11,8 @@ serde_json.workspace = true
 sha2 = "0.10.9"
 uuid = { version = "1.26.0", features = ["v4"] }
 
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

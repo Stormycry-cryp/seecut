@@ -24,15 +24,17 @@ impl Fixture {
             "source":{
                 "repository":"https://github.com/storytold/photocraft.git",
                 "commit":"ff4738810134d7f7e68b49f2e4f231b686282ff3","version":"0.14.0",
-                "sourceTreeSha256":"4bcec483a7490740d0a52d27d46542eac212e3c8895c4b9033ec1b42e8c812ac",
-                "cargoLockSha256":"9ce360951da8005e23e81fd5dd3e7b2dd2b95c7f5056991ca556ed4fa239593e",
-                "fileCount":2019,
+                "sourceTreeSha256":"60f3fb47e318d1fc216cf150a83b025b908fb6526e9f9297be1e650bb8711909",
+                "cargoLockSha256":"f1d8cb5645735284d089b955c368019de783ee7d0c9eeed3ffe0670b7288fafd",
+                "fileCount":2021,
                 "patches":[
                     {"path":"patches/seecut-theme.patch","sha256":"c8706c00aa0dd2cdf4eee31f89d578db9b882f4b288a8388513a5910b1aa96c2"},
                     {"path":"patches/seecut-theme-polish.patch","sha256":"f2e80dc4b8bcf7b669f3ce53a4ea0d637504009cf0d3635aa42c447a8eaa61ca"},
                     {"path":"patches/seecut-agent-control.patch","sha256":"ea9894916e80c239cd3c535638f3ef403a26102321cf30b35f98417d65ab6ce9"},
                     {"path":"patches/seecut-profile-guard.patch","sha256":"b97baea37a929cecb8959f7480ab328fc1eaedb942ab17654115aa065e724d6e"},
-                    {"path":"patches/seecut-adopted-snapshot.patch","sha256":"91558f45fbe7ae508aeefd1cd1f738dfb7368039a4d5a2c424a43a0d35991236"}
+                    {"path":"patches/seecut-adopted-snapshot.patch","sha256":"91558f45fbe7ae508aeefd1cd1f738dfb7368039a4d5a2c424a43a0d35991236"},
+                    {"path":"patches/seecut-backing-binding.patch","sha256":"8fa82a7f113942e5f2da47be513efc311a8918e9051d44b4c424a5bb455fc9ef"},
+                    {"path":"patches/seecut-managed-close.patch","sha256":"434a6706c1b00b00cd044a2fa5748bd8d0337558377825a4f7735392650006d4"}
                 ]
             },
             "binaries":{
@@ -85,6 +87,8 @@ fn provenance_rejects_source_patch_feature_and_binary_changes() {
         "/source/patches/2/sha256",
         "/source/patches/3/sha256",
         "/source/patches/4/sha256",
+        "/source/patches/5/sha256",
+        "/source/patches/6/sha256",
         "/features/0",
         "/status",
     ] {
@@ -368,6 +372,30 @@ fn normal_close_waits_for_exit_dirty_close_keeps_documents_and_drop_does_not_kil
         Err(HostError::StaleInstance)
     ));
     h.0.close(second.id, Duration::from_secs(1)).unwrap();
+    let clean_commands: Vec<Value> = f
+        .commands()
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let clean_closes: Vec<&Value> = clean_commands
+        .iter()
+        .filter(|request| request["method"] == "seecut.close")
+        .collect();
+    assert_eq!(
+        clean_closes.len(),
+        2,
+        "each owned synthetic lifetime sends one close"
+    );
+    assert!(
+        clean_closes
+            .iter()
+            .all(|request| request["params"] == json!({}))
+    );
+    assert!(
+        clean_commands
+            .iter()
+            .all(|request| request["method"] != "ui.menu.invoke")
+    );
 
     let f = Fixture::new("dirty");
     let mut h = NativeHost::new();
@@ -386,6 +414,26 @@ fn normal_close_waits_for_exit_dirty_close_keeps_documents_and_drop_does_not_kil
         !f.commands()
             .iter()
             .any(|line| line.contains("dontSave") || line.contains("app.quit"))
+    );
+    let dirty_commands: Vec<Value> = f
+        .commands()
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let dirty_closes: Vec<&Value> = dirty_commands
+        .iter()
+        .filter(|request| request["method"] == "seecut.close")
+        .collect();
+    assert_eq!(
+        dirty_closes.len(),
+        1,
+        "NeedsUser must not automatically resend close"
+    );
+    assert_eq!(dirty_closes[0]["params"], json!({}));
+    assert!(
+        dirty_commands
+            .iter()
+            .all(|request| request["method"] != "ui.menu.invoke")
     );
     // Retain the actual Child only in this test so Drop can be checked and then reaped safely.
     let mut child = h.running.take().unwrap();
@@ -475,11 +523,13 @@ while True:
                 result = {'window':{},'session':{'documents':[{'dirty':True}] if MODE == 'dirty' else []},'dialogs':[{'id':'discard'}] if prompt else []}
                 if MODE == 'inspect-bad-shape': result = {'missing':'session'}
                 send(writer, {'id':ident,'ok':True,'result':result})
-            elif method == 'ui.menu.invoke':
-                assert params['command'] == 'file.exit'
+            elif method == 'seecut.close':
+                assert params == {}
                 prompt = MODE == 'dirty'
                 send(writer, {'id':ident,'ok':True,'result':None})
                 if not prompt: sys.exit(0)
+            elif method == 'ui.menu.invoke':
+                send(writer, {'id':ident,'ok':False,'error':'generic menu is not a managed close'})
             elif method == 'test.echo_secret': send(writer, {'id':ident,'ok':True,'result':TOKEN})
             elif method == 'test.instance_id': send(writer, {'id':ident,'ok':True,'result':HOST_INSTANCE})
             elif method == 'ui.screenshot':

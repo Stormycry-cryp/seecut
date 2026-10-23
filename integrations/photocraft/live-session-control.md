@@ -8,7 +8,9 @@
 
 `seecut.state {}` 返回有界文档和图层元数据、选区是否存在、历史状态、繁忙原因与回执缓存状态。返回明确标记 `atomicPixels:false`；视口几何来自上一轮布局，不能和另一次截图拼成原子观察。选区边界返回 null 与 `selectionBoundsMeasurement:notSampled`，不会在 UI 线程扫描选区像素，也不将未采样当成空选区。最多列出 256 个图层及 256 个已选图层，名称最多 256 个字符，并报告截断。
 
-文档身份包括 host、原生 DocId、每次进入 Session 的 `documentGeneration` 及 revision。关闭重开保留 DocId 时，generation 仍会改变；generation 耗尽时明确拒绝使用，不回绕。原生 u64 身份在 Rust 内核对；未来经过 JavaScript/MCP 时必须转换为无损的字符串或不透明标识，不能用 JavaScript Number 传递。
+文档身份包括 host、原生 DocId、`documentGeneration` 及 revision。进入 Session、另存为到不同原始路径或解除文件关联时，generation 会改变；同路径普通保存保留 generation。关闭重开保留 DocId 时也会换代。generation 耗尽时保留已经发生的保存事实并置 0，私有方法明确拒绝使用，不回绕。原生 u64 身份在 Rust 内核对；未来经过 JavaScript/MCP 时必须转换为无损的字符串或不透明标识，不能用 JavaScript Number 传递。
+
+`document.backing` 只报告真实 Session 的四项事实：`nativePath`、`pathStatus`、`sourceReadOnly`、`savedRevision`。路径最多 4096 字节，空串、NUL 或超限时返回 null 与明确状态，不截断、不猜标题。`recorded` 不代表文件已核验，`savedRevision` 不代表独立保存代次；UI 回调不访问文件系统。父级后台的封闭读取和文件核验见 [native-host.md](native-host.md)。
 
 ## 封闭写操作
 

@@ -1,13 +1,16 @@
 //! Candidate for an explicitly isolated Linux Xvfb run. This is a direct host probe,
 //! not a model invocation or the parent SeeCut MCP/Task integration acceptance.
 use seecut_photo_host::{
-    CloseOutcome, HostError, InstanceStatus, LaunchOptions, NativeHost, Uuid, VerifiedBuild,
+    CloseOutcome, HostError, InstanceStatus, LaunchOptions, NativeHost, PhotoBackingBinding, Uuid,
+    VerifiedBuild,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
+
+const SYNTHETIC_BACKING_NAME: &str = "SeeCut disposable orange A.pcraft";
 
 #[derive(Debug)]
 struct Failure {
@@ -220,9 +223,11 @@ impl Probe {
         let before = self.state()?;
         let target = write_root.join(filename);
         require(!target.exists(), "newExportDestination")?;
-        self.engine(
-            "file.saveACopy",
-            json!({"path":target,"layers":false,"overwrite":false}),
+        // app.save uses the existing directory capability. A flat PNG does not
+        // become this layered document's own file or mark its edits saved.
+        self.call(
+            "app.save",
+            json!({"path":target,"layers":false,"wait":true}),
             "exportSyntheticPngCopy",
         )?;
         let after = self.state()?;
@@ -234,6 +239,183 @@ impl Probe {
             io(fs::metadata(target), "exportExists")?.is_file(),
             "exportRegularFile",
         )
+    }
+    fn checked_backing(
+        &mut self,
+        state: &Value,
+        stage: &'static str,
+    ) -> ProbeResult<PhotoBackingBinding> {
+        self.check_time()?;
+        let instance = self.instance.ok_or(Failure {
+            stage,
+            class: "noInstance",
+        })?;
+        // This real closed API performs its own two state reads around filesystem
+        // verification. Binding/key/file observations remain local to this probe.
+        let binding = self
+            .primary
+            .photo_backing_after_gate(instance)
+            .map_err(|error| Failure {
+                stage,
+                class: host_class(&error),
+            })?;
+        let native = binding.identity();
+        require(
+            native.host_instance_id == instance
+                && native.doc_id == number(state, "/document/identity/docId")?
+                && native.document_generation
+                    == number(state, "/document/identity/documentGeneration")?
+                && native.revision == number(state, "/document/identity/revision")?,
+            stage,
+        )?;
+        self.check_time()?;
+        Ok(binding)
+    }
+    fn saved_backing_contract(&mut self, write_root: &Path, layer_id: u64) -> ProbeResult<()> {
+        let first_dir = write_root.join("backing-a");
+        let second_dir = write_root.join("backing-b");
+        private_new_dir(&first_dir)?;
+        private_new_dir(&second_dir)?;
+        let first_path = first_dir.join(SYNTHETIC_BACKING_NAME);
+        let second_path = second_dir.join(SYNTHETIC_BACKING_NAME);
+        require(
+            !first_path.exists() && !second_path.exists(),
+            "freshSyntheticBackingTargets",
+        )?;
+        let initial = self.idle_state()?;
+        // Explicit target is the existing capability-scoped Save As semantic,
+        // writing a genuine native .pcraft through the desktop's actual saver.
+        self.call(
+            "app.save",
+            json!({"path":first_path,"wait":true}),
+            "saveFirstSyntheticNativeBacking",
+        )?;
+        let first = self.idle_state()?;
+        require(
+            first["document"]["backing"]["nativePath"] == json!(first_path)
+                && first["document"]["backing"]["pathStatus"] == "recorded"
+                && first["document"]["backing"]["sourceReadOnly"] == false
+                && number(&first, "/document/backing/savedRevision")?
+                    == number(&first, "/document/identity/revision")?
+                && first["document"]["dirty"] == false
+                && number(&first, "/document/identity/docId")?
+                    == number(&initial, "/document/identity/docId")?
+                && number(&first, "/document/identity/revision")?
+                    == number(&initial, "/document/identity/revision")?
+                && number(&first, "/document/identity/documentGeneration")?
+                    != number(&initial, "/document/identity/documentGeneration")?
+                && history(&first)? == history(&initial)?
+                && near(opacity(&first, layer_id)?, 1.0),
+            "realFirstSaveOwnsBackingWithoutEditStep",
+        )?;
+        let first_binding = self.checked_backing(&first, "firstClosedBackingRead")?;
+        // No target: actual normal Save of this document's existing own file.
+        self.call(
+            "app.save",
+            json!({"wait":true}),
+            "normalSaveSameSyntheticBacking",
+        )?;
+        let same = self.idle_state()?;
+        require(
+            same_document(&first, &same),
+            "normalSaveKeepsNativeGenerationAndHistory",
+        )?;
+        let same_binding = self.checked_backing(&same, "samePathClosedBackingRead")?;
+        require(
+            first_binding.identity() == same_binding.identity()
+                && first_binding.history_key() == same_binding.history_key(),
+            "normalSaveKeepsTrustedHistoryKey",
+        )?;
+        let file_observation_changed =
+            first_binding.file_identity() != same_binding.file_identity();
+        let stale_expected = identity(&same)?;
+        self.call(
+            "app.save",
+            json!({"path":second_path,"wait":true}),
+            "saveSameNameAtDifferentSyntheticDirectory",
+        )?;
+        let moved = self.idle_state()?;
+        require(
+            moved["document"]["backing"]["nativePath"] == json!(second_path)
+                && moved["document"]["name"] == same["document"]["name"]
+                && moved["document"]["name"] == SYNTHETIC_BACKING_NAME
+                && number(&moved, "/document/identity/docId")?
+                    == number(&same, "/document/identity/docId")?
+                && number(&moved, "/document/identity/revision")?
+                    == number(&same, "/document/identity/revision")?
+                && number(&moved, "/document/identity/documentGeneration")?
+                    != number(&same, "/document/identity/documentGeneration")?
+                && history(&moved)? == history(&same)?
+                && moved["document"]["dirty"] == false,
+            "sameNameSaveAsRebindsWithoutHistoryStep",
+        )?;
+        let moved_binding = self.checked_backing(&moved, "freshRetargetedClosedBackingRead")?;
+        require(
+            moved_binding.history_key() != same_binding.history_key(),
+            "sameNameDifferentDirectoryChangesHistoryKey",
+        )?;
+        let rejected = self.call(
+            "seecut.execute",
+            json!({"operationId":"probe-pre-save-as-refusal","expected":stale_expected,
+            "action":{"kind":"layerSetOpacity","layerId":layer_id,"opacity":0.9}}),
+            "rejectExpectedFromPreviousBacking",
+        )?;
+        let unchanged = self.state()?;
+        require(
+            rejected["status"] == "rejected"
+                && rejected["errorCode"] == "wrongDocument"
+                && rejected["before"] == rejected["after"]
+                && rejected["safeToResend"] == false
+                && same_document(&moved, &unchanged)
+                && history(&unchanged)? == history(&moved)?
+                && near(opacity(&unchanged, layer_id)?, 1.0),
+            "oldBackingExpectedRefusedWithoutEditOrHistory",
+        )?;
+        // Deliberately publish no path, history key, file identity, raw state or
+        // binding Debug. These are observations, never new Agent authorization.
+        self.note("savedNativeBackingContract", json!({"firstSaveConfirmed":true,"closedApiBindingMatched":true,
+            "normalSaveSameGeneration":true,"normalSaveSameHistoryKey":true,"normalSaveFileObservationChanged":file_observation_changed,
+            "sameNameSaveAsChangedGeneration":true,"sameNameSaveAsChangedHistoryKey":true,
+            "sameDocIdRevisionAndHistory":true,"oldExpectedStatus":"rejected","oldExpectedError":"wrongDocument",
+            "oldExpectedBeforeAfterEqual":true,"oldExpectedNoHistoryOrOpacityEffect":true,
+            "threeFreshClosedBindings":true,"pathsKeysAndFileIdsPublished":false,"saveRetried":false}));
+        Ok(())
+    }
+    fn dirty_owned_synthetic_for_close(
+        &mut self,
+        expected_doc: u64,
+        layer_id: u64,
+    ) -> ProbeResult<()> {
+        let before = self.idle_state()?;
+        require(
+            number(&before, "/document/identity/docId")? == expected_doc
+                && near(opacity(&before, layer_id)?, 1.0),
+            "finalDirtyEditTargetsRestoredOwnedSynthetic",
+        )?;
+        let receipt = self.call("seecut.execute", json!({"operationId":"probe-final-synthetic-dirty-for-close",
+            "expected":identity(&before)?,"action":{"kind":"layerSetOpacity","layerId":layer_id,"opacity":0.6}}),
+            "applyIndependentSyntheticDirtyEditForClose")?;
+        let after = self.state()?;
+        require(
+            receipt["status"] == "applied"
+                && receipt["safeToResend"] == false
+                && receipt["before"]["identity"] == before["document"]["identity"]
+                && receipt["after"]["identity"] == after["document"]["identity"]
+                && number(&after, "/document/identity/docId")? == expected_doc
+                && number(&after, "/document/identity/documentGeneration")?
+                    == number(&before, "/document/identity/documentGeneration")?
+                && history(&after)? == history(&before)? + 1
+                && near(opacity(&after, layer_id)?, 0.6)
+                && after["document"]["dirty"] == true
+                && after["document"]["canUndo"] == true,
+            "finalSyntheticEditIsOneReversibleDirtyHistoryStep",
+        )?;
+        // Earlier 3+1 PNG evidence remains tied to its original capture/export.
+        // This separate final reversible edit exists only to exercise dirty close.
+        self.note("independentSyntheticDirtyEditForClose", json!({"status":"applied","freshExpected":true,
+            "oneHistoryStep":true,"opacityReadbackMatched":true,"dirtyReadback":true,"canUndo":true,
+            "sameOwnedDocument":true,"saveRetried":false,"reexported":false,"priorPixelEvidenceReusedForThisEdit":false}));
+        Ok(())
     }
     fn adopted_orange_snapshot(&mut self, layer_id: u64) -> ProbeResult<()> {
         let session_before = self.inspect()?["session"].clone();
@@ -563,6 +745,7 @@ impl Probe {
                 }),
             "realPixelLayerInspect",
         )?;
+        self.saved_backing_contract(&root.join("write"), layer_id)?;
         self.export_copy(&root.join("write"), "orange-full.png")?;
         let before = self.idle_state()?;
         let expected = identity(&before)?;
@@ -640,9 +823,15 @@ impl Probe {
             "undoRestoresOpacityAndHistory",
         )?;
         self.export_copy(&root.join("write"), "orange-after-undo.png")?;
+        // Metadata now includes a raw native backing path. Keep full-state
+        // assertions above, but exclude backing from the public report projection.
+        let mut restored_evidence = restored["document"].clone();
+        if let Some(document) = restored_evidence.as_object_mut() {
+            document.remove("backing");
+        }
         self.note(
             "independentUndo",
-            json!({"receipt":undone,"restored":restored["document"]}),
+            json!({"receipt":undone,"restored":restored_evidence}),
         );
 
         self.engine("file.new", json!({"width":8,"height":8,"mode":"rgb","depth":8,"profile":"none","background":"transparent","name":"SeeCut disposable tab B"}), "createSecondSyntheticTab")?;
@@ -683,6 +872,7 @@ impl Probe {
             "returnsToOriginalSyntheticTab",
         )?;
 
+        self.dirty_owned_synthetic_for_close(doc_a, layer_id)?;
         let id = self.instance.unwrap();
         let closed = self
             .primary
@@ -738,9 +928,7 @@ impl Probe {
         require(
             inspected["session"]["documents"]
                 .as_array()
-                .is_some_and(|docs| {
-                    docs.len() == 1 && docs[0]["name"] == "SeeCut disposable orange A"
-                }),
+                .is_some_and(|docs| docs.len() == 1 && docs[0]["name"] == SYNTHETIC_BACKING_NAME),
             "onlyOwnedSyntheticAExistsBeforeDiscard",
         )?;
         let closed = self

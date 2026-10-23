@@ -2,8 +2,13 @@
 //! SeeCut MCP/Task permission and budget gates must run before any internal call.
 //! Blocking methods belong on a host worker, never on the GUI event thread.
 
+mod photo;
 mod provenance;
 mod transport;
+pub use photo::{
+    PhotoBacking, PhotoBackingBinding, PhotoDocument, PhotoFileIdentity, PhotoIdentity, PhotoLayer,
+    PhotoPathStatus, PhotoState,
+};
 pub use provenance::VerifiedBuild;
 
 use serde_json::{Value, json};
@@ -355,11 +360,7 @@ impl NativeHost {
         if wait > Duration::from_secs(10) {
             return Err(HostError::InvalidOptions("close wait exceeds 10 seconds"));
         }
-        self.call_internal_after_gate(
-            id,
-            "ui.menu.invoke",
-            json!({"command":"file.exit","params":{}}),
-        )?;
+        self.call_internal_after_gate(id, "seecut.close", json!({}))?;
         let deadline = Instant::now() + wait;
         loop {
             let info = self.current()?.ok_or(HostError::StaleInstance)?;

@@ -6726,6 +6726,7 @@ dependencies = [
 name = "seecut-photo-host"
 version = "0.2.2"
 dependencies = [
+ "libc",
  "serde_json",
  "sha2",
  "uuid",
