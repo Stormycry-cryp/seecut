@@ -108,6 +108,7 @@ concat-media.workspace = true
 concat-project.workspace = true
 concat-export.workspace = true
 concat-host = { workspace = true, features = ["gpu"] }
+seecut-photo-host = { path = "../seecut-photo-host" }
 concat-speech.workspace = true
 # The image editor's canvas pane: the ported document model, compositor and
 # viewport. Its `gpu` feature builds the compositor on the window's own

@@ -1950,6 +1950,10 @@
       "refresh",
       "selected"
     ],
+    "src/crates/concat/ui/seecut/photo-workspace.slint": [
+      "close-editor",
+      "open-editor"
+    ],
     "src/crates/concat/ui/seecut/shell.slint": [
       "assets-clicked",
       "cancel-repair-clicked",

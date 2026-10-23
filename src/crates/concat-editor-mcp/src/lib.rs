@@ -22,6 +22,12 @@ mod library_assets;
 pub use library_assets::{LibraryAssetKind, LibraryAssetsQuery, validate_library_asset};
 mod canvas;
 mod clip;
+mod photo;
+pub use photo::{
+    PHOTO_MAX_SAFE_SEQUENCE, PhotoAction, PhotoDocumentId, PhotoExpected, PhotoLayerId,
+    PhotoParameters, PhotoSnapshotId, PhotoSnapshotQuery, PhotoSnapshotValidationQuery,
+    PhotoStateId, validate_photo_parameters,
+};
 pub mod clip_edit;
 pub mod clip_export;
 pub mod clip_preview;
@@ -119,6 +125,15 @@ pub struct Request {
     #[serde(default)]
     /// Exact typed current-timeline edit.
     pub clip_parameters: Option<ClipParameters>,
+    /// Exact opaque Photo write payload; only PhotoEdit may carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo_parameters: Option<PhotoParameters>,
+    /// Closed observed Photo snapshot query; only PhotoSnapshot may carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo_snapshot_query: Option<PhotoSnapshotQuery>,
+    /// Internal original-snapshot validation only; never a new capture or model tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo_snapshot_validation_query: Option<PhotoSnapshotValidationQuery>,
     #[serde(default)]
     /// Optional exact canvas-layer lookup instead of project pagination.
     pub object_id: Option<String>,
@@ -214,6 +229,17 @@ pub enum Method {
     ClipEdit,
     /// Query the original timeline operation without replay.
     ClipOperation,
+    /// Read the current Photo document through its existing Doc read grant.
+    PhotoState,
+    /// Read one original opaque-bound historical Photo composite.
+    PhotoSnapshot,
+    /// Internal read-only original-snapshot check under the existing Doc read grant.
+    /// This protocol helper is not registered as a model-visible tool.
+    PhotoSnapshotValidate,
+    /// Execute one exact approved closed Photo action, using the existing write registry.
+    PhotoEdit,
+    /// Query the original owner-bound Photo operation without replay or a new sequence.
+    PhotoOperation,
     /// Cancel or resume registration of the original owner-bound export.
     ClipExportControl,
     /// Independently re-open the original verified video and exact asset/version.
@@ -245,6 +271,7 @@ impl Method {
                 | Self::TransformCanvasLayer
                 | Self::CanvasEdit
                 | Self::ClipEdit
+                | Self::PhotoEdit
                 | Self::ClipExportControl
                 | Self::SaveCanvasProject
                 | Self::ExportCanvasPng
@@ -273,6 +300,11 @@ impl Method {
             Self::CanvasEdit => "canvas_edit",
             Self::ClipEdit => "clip_edit",
             Self::ClipOperation => "clip_operation",
+            Self::PhotoState => "photo_state",
+            Self::PhotoSnapshot => "photo_snapshot",
+            Self::PhotoSnapshotValidate => "photo_snapshot_validate",
+            Self::PhotoEdit => "photo_edit",
+            Self::PhotoOperation => "photo_operation",
             Self::ClipExportControl => "clip_export_control",
             Self::ClipExportOutput => "clip_export_output",
             Self::SaveCanvasProject => "save_canvas_project",
@@ -343,6 +375,13 @@ pub fn validate_move_parameters(
 /// Reject edit parameters on reads, and missing or unrelated fields on a move.
 /// Existing method-specific read identity and range checks remain App checks.
 pub fn validate_request_shape(request: &Request) -> Result<(), String> {
+    if photo::is_photo_method(request.method)
+        || request.photo_parameters.is_some()
+        || request.photo_snapshot_query.is_some()
+        || request.photo_snapshot_validation_query.is_some()
+    {
+        return photo::validate_request(request);
+    }
     if request.clip_preview_query.is_some() || request.method == Method::ClipPreview {
         return clip_preview::validate_request(request);
     }
@@ -833,6 +872,9 @@ mod tests {
             clip_export_control_action: None,
             clip_preview_query: None,
             clip_parameters: None,
+            photo_parameters: None,
+            photo_snapshot_query: None,
+            photo_snapshot_validation_query: None,
             object_ids: None,
             read_source: None,
             library_query: None,
@@ -1166,6 +1208,9 @@ mod tests {
             clip_export_control_action: None,
             clip_preview_query: None,
             clip_parameters: None,
+            photo_parameters: None,
+            photo_snapshot_query: None,
+            photo_snapshot_validation_query: None,
             object_ids: None,
             read_source: None,
             library_query: None,
@@ -1211,6 +1256,9 @@ mod tests {
             clip_export_control_action: None,
             clip_preview_query: None,
             clip_parameters: None,
+            photo_parameters: None,
+            photo_snapshot_query: None,
+            photo_snapshot_validation_query: None,
             object_ids: None,
             read_source: None,
             library_query: None,

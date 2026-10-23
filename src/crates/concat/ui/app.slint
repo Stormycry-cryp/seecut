@@ -48,6 +48,7 @@ import { Workspace } from "workspace/workspace.slint";
 import { AppRail, CloudWorkbench, SeeCut, PromptRecommendation, CloudItem, CreditPlan, AccountEntry, GenerationTemplate, PersonalAssetGroup, GenerationBatch } from "seecut/workbench.slint";
 import { AuthDialog, EditorBridgeBar, WorkflowFeedback, WorkflowToast } from "seecut/shell.slint";
 import { CanvasProjectsPage } from "seecut/project-gallery.slint";
+import { PhotoWorkspace } from "seecut/photo-workspace.slint";
 import { LauncherSafeArea } from "seecut/launcher-safe-area.slint";
 import { AssetPicker } from "seecut/asset-picker.slint";
 import { MediaPreview } from "seecut/media-preview.slint";
@@ -61,7 +62,7 @@ import {
 
 // Re-exported so main.rs can reach the globals and the struct.
 export {
-    Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, CanvasControls, CanvasThumbs, I18n, Assistant, AssistantMessage,
+    Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, CanvasControls, CanvasThumbs, I18n, Assistant, AssistantMessage, PhotoWorkspace,
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData, ParamFormat,
     DockDivider, DockSide, PaneKind, SeatBox,
     EffectData, MediaFilter, MediaItemData, MediaKind, TextPresetData,
@@ -191,7 +192,7 @@ export component App inherits Window {
     }
     function toggle-assistant() {
         if Assistant.open { Assistant.close-requested(); }
-        else if Assistant.enabled && !root.assistant-ui-blocked { Assistant.open = true; }
+        else if Assistant.enabled && !root.assistant-ui-blocked { Assistant.open = true; PhotoWorkspace.owned-metadata-requested(); }
     }
     property <bool> sheet-open: root.export.open || root.settings.open
         || root.project-sheet.open || root.captions.open || root.speech.open;

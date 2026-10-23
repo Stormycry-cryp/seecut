@@ -87,6 +87,7 @@ mod gpu;
 mod host;
 mod i18n;
 mod personal_library;
+mod photo_workspace;
 mod platform;
 mod purchase_journal;
 mod registration_retry;
@@ -364,6 +365,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }
 
     let app = App::new()?;
+    let _photo_workspace_timer = photo_workspace::bind(&app);
     let account = cloud::bind(&app);
     let toonflow_bridge = toonflow_service::data_root()
         .and_then(|data| toonflow_bridge::start(data, account.clone()));
@@ -534,7 +536,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         crate::clip_export_fence::document_will_change();
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
-            if toonflow_webview::defer_close(&app) {
+            if photo_workspace::defer_close(&app) || toonflow_webview::defer_close(&app) {
                 return;
             }
             let should_close = shell.studio.borrow_mut().request_window_close();
@@ -554,7 +556,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         log::info!("close: system close request (Alt+F4 / taskbar)");
         let mut should_close = false;
         Shell::with(|shell, app| {
-            if toonflow_webview::defer_close(&app) {
+            if photo_workspace::defer_close(&app) || toonflow_webview::defer_close(&app) {
                 return;
             }
             should_close = shell.studio.borrow_mut().request_window_close();
@@ -1559,6 +1561,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
             shell.studio.borrow().publish(&app, &shell.models);
             match follow_up {
                 Some(crate::panes::canvas::CanvasBoundaryAction::WindowClose) => {
+                    if photo_workspace::defer_close(&app) {
+                        return;
+                    }
                     app.window().hide().ok();
                     slint::quit_event_loop().ok();
                 }
@@ -1675,7 +1680,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 let should_close = shell.studio.borrow_mut().resolve_window_close_save();
                 shell.studio.borrow_mut().refresh_art();
                 shell.studio.borrow().publish(&app, &shell.models);
-                if should_close {
+                if should_close && !photo_workspace::defer_close(&app) {
                     app.window().hide().ok();
                     slint::quit_event_loop().ok();
                 }
@@ -1688,7 +1693,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 let should_close = shell.studio.borrow_mut().resolve_window_close_discard();
                 shell.studio.borrow_mut().refresh_art();
                 shell.studio.borrow().publish(&app, &shell.models);
-                if should_close {
+                if should_close && !photo_workspace::defer_close(&app) {
                     app.window().hide().ok();
                     slint::quit_event_loop().ok();
                 }
@@ -2222,7 +2227,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 }
                 if action == "close-window" {
                     log::info!("close: File > Close Window");
-                    if toonflow_webview::defer_close(&app) {
+                    if photo_workspace::defer_close(&app) || toonflow_webview::defer_close(&app) {
                         return;
                     }
                     let should_close = shell.studio.borrow_mut().request_window_close();
