@@ -48,6 +48,10 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 The local signed storage implementation is an interface-compatible first step. Production deployment can replace it with private COS upload/download signatures without changing the client workflow.
 
+## Production read-only MCP
+
+The optional production-data MCP runs as a separate process against an atomically refreshed, read-only SQLite snapshot. It exposes only fixed aggregate tools and one redacted task-status lookup; it never accepts SQL or returns credentials, identity fields, prompts, provider payloads, payment identifiers, object keys, or file paths. See [MCP_READONLY_DESIGN.md](MCP_READONLY_DESIGN.md) for the data contract, threat model, deployment units and audit controls.
+
 ### Tencent Cloud SES
 
 Use `.env.tencent.example` as the production template. It targets Tencent Cloud SES in `ap-guangzhou`, where `mail.stormycry.cloud` is already verified, and uses `seecut@mail.stormycry.cloud` as the SeeCut sender. Create separate approved templates for email verification and password reset; each template must contain the `{{code}}` variable. Configure a dedicated SecretId and SecretKey only in the protected server environment, then verify a real registration and password-reset delivery through the candidate environment. The API sends both messages as trigger emails. Generic SMTP configuration remains available in `.env.example` for compatible providers.

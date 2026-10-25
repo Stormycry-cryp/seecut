@@ -1,0 +1,37 @@
+[Unit]
+Description=SeeCut production read-only MCP
+After=network-online.target seecut-mcp-snapshot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seecut-mcp
+Group=seecut-mcp
+WorkingDirectory=/opt/seecut/server
+Environment=PYTHONPATH=/opt/seecut/server/src
+EnvironmentFile=/etc/seecut/mcp.env
+ExecStart=/usr/bin/python3 -m seecut_server.readonly_mcp
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadOnlyPaths=/var/lib/seecut/mcp
+ReadWritePaths=/var/log/seecut
+MemoryMax=192M
+CPUQuota=20%
+TasksMax=16
+
+[Install]
+WantedBy=multi-user.target
