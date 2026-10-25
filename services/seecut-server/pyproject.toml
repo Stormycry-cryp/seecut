@@ -6,7 +6,8 @@ requires-python = ">=3.12"
 
 [project.scripts]
 seecut-server = "seecut_server.app:main"
+seecut-readonly-mcp = "seecut_server.readonly_mcp:main"
+seecut-mcp-snapshot = "seecut_server.mcp_snapshot:main"
 
 [tool.unittest]
 start-directory = "tests"
-

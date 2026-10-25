@@ -1,0 +1,20 @@
+[Unit]
+Description=Refresh SeeCut read-only MCP database snapshot
+
+[Service]
+Type=oneshot
+User=seecut
+Group=seecut-mcp
+WorkingDirectory=/opt/seecut/server
+Environment=PYTHONPATH=/opt/seecut/server/src
+ExecStart=/usr/bin/python3 -m seecut_server.mcp_snapshot --source /var/lib/seecut/seecut.sqlite3 --destination /var/lib/seecut/mcp/seecut-readonly.sqlite3
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/seecut/mcp
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=8
