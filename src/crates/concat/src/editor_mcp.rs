@@ -66,6 +66,11 @@ use canvas_execute::{
     dispatch_library, execute_canvas, execute_registration_retry, refresh_registration_receipt,
 };
 
+#[path = "editor_mcp_photo_read.rs"]
+mod photo_read;
+#[path = "editor_mcp_photo_state.rs"]
+mod photo_state;
+
 static BOUND_ENDPOINT: OnceLock<endpoint_cleanup::BoundEndpoint> = OnceLock::new();
 
 const MAX_PROJECT_OBJECTS: usize = 10_000;
@@ -674,6 +679,7 @@ pub(crate) struct BridgeUi {
     grants: HashMap<String, Grant>,
     app_reads: app_read::AppReadState,
     app_controls: app_control::AppControlState,
+    photo_reads: photo_read::ReadState,
     photo_binding: Option<(crate::photo_workspace::OwnedMetadata, DocumentIds)>,
     active_photo: bool,
     photo_source_fence: Option<u64>,
@@ -710,6 +716,7 @@ impl BridgeUi {
     }
 
     pub(crate) fn clear_photo_binding(&mut self) {
+        self.photo_reads.invalidate();
         if let Some((_, ids)) = self.photo_binding.take() {
             self.grants.retain(|_, grant| grant.project != ids.project);
         }
@@ -743,7 +750,8 @@ impl BridgeUi {
         let source_matches = self.photo_binding.as_ref().is_some_and(|(metadata, _)| {
             crate::photo_workspace::current_photo_target().is_some_and(|target| {
                 let source = metadata.origin().source;
-                crate::photo_workspace::current_ui_id() == Some(source.ui_id)
+                crate::photo_workspace::current_read_source() == Some(source)
+                    && crate::photo_workspace::current_ui_id() == Some(source.ui_id)
                     && target.managed == source.managed
                     && target.epoch == source.target_epoch
             })
@@ -872,7 +880,19 @@ impl BridgeUi {
                 .as_ref()
                 .map(|(m, _)| m.history_key().to_owned())
                 .unwrap_or_default();
-            snapshot.can_grant_read = false;
+            // Photo's Doc grant is structure-only; media is deliberately false.
+            snapshot.read_token = scope.as_ref().and_then(|scope| {
+                self.grants
+                    .get(ASSISTANT_CLIENT_ID)
+                    .filter(|grant| grant.project == scope.project)
+                    .map(|grant| grant.token.clone())
+            });
+            snapshot.read_status = if snapshot.read_token.is_some() {
+                "已允许读取图像文档结构"
+            } else {
+                "未允许读取图像文档结构"
+            }
+            .into();
             snapshot.can_grant_write = false;
         }
         if self.active_flow {
@@ -894,10 +914,7 @@ impl BridgeUi {
         action: AssistantPermission,
     ) -> Result<(), AssistantPermissionError> {
         if crate::photo_workspace::is_photo_target()
-            && matches!(
-                action,
-                AssistantPermission::GrantRead | AssistantPermission::GrantWrite
-            )
+            && matches!(action, AssistantPermission::GrantWrite)
         {
             return Err(AssistantPermissionError::NotAllowed);
         }
@@ -912,6 +929,7 @@ impl BridgeUi {
                 | AssistantPermission::RevokeRead
                 | AssistantPermission::RevokeWrite
         ) {
+            self.photo_reads.invalidate();
             self.canvas_permits.clear();
             crate::toonflow_agent::revoke_all();
         }
@@ -948,6 +966,12 @@ impl BridgeUi {
             }
             Some(AssistantWriteChange::None) => {}
             None => return Err(AssistantPermissionError::NotAllowed),
+        }
+        if self.active_photo
+            && matches!(action, AssistantPermission::GrantRead)
+            && let Some(grant) = self.grants.get_mut(ASSISTANT_CLIENT_ID)
+        {
+            grant.media = false;
         }
         Ok(())
     }
@@ -1228,6 +1252,7 @@ impl BridgeUi {
             grants: HashMap::new(),
             app_reads: app_read::AppReadState::default(),
             app_controls: app_control::AppControlState::default(),
+            photo_reads: photo_read::ReadState::new(),
             photo_binding: None,
             active_photo: false,
             photo_source_fence: crate::photo_workspace::source_fence(),
@@ -1522,6 +1547,7 @@ impl BridgeUi {
     }
 
     pub(crate) fn revoke_assistant_for_account_change(&mut self) {
+        self.photo_reads.invalidate();
         crate::clip_export_fence::revoke_client(
             ASSISTANT_CLIENT_ID,
             concat_host::export_publication::PublishRevocation::AccountChanged,
@@ -1674,9 +1700,8 @@ impl BridgeUi {
     /// The user enters a client name in Settings and grants only the currently
     /// active project. Regranting rotates its token; revoke deletes it.
     pub fn grant(&mut self, studio: &Studio, app: &App, media: bool) {
-        if crate::photo_workspace::is_photo_target() {
-            return;
-        }
+        let media = media && !crate::photo_workspace::is_photo_target();
+        self.photo_reads.invalidate();
         let client = self.client_draft.trim();
         if client.is_empty() || client.len() > 64 || client == ASSISTANT_CLIENT_ID {
             return;
@@ -1701,6 +1726,7 @@ impl BridgeUi {
     }
 
     pub fn revoke(&mut self) {
+        self.photo_reads.invalidate();
         crate::clip_export_fence::revoke_client(
             self.client_draft.trim(),
             concat_host::export_publication::PublishRevocation::Revoked,
@@ -1735,6 +1761,9 @@ impl BridgeUi {
     fn handle(&mut self, request: &Request, studio: &Studio, app: &App) -> UiReply {
         self.sync_photo_source_fence();
         if crate::photo_workspace::is_photo_target() {
+            if request.method == Method::Capabilities {
+                return UiReply::Response(photo_read::capabilities(self, request, studio, app));
+            }
             self.active_ids(studio, app);
             return UiReply::Response(Response::error("unsupportedWorkspace"));
         }
@@ -2592,6 +2621,11 @@ fn dispatch_write(request: Request) -> Response {
     request_outcome(state.wait(Duration::from_millis(750)))
 }
 
+// Photo discovery must never enter the separate App-scoped permission router.
+fn allows_photo_capabilities(request: &Request) -> bool {
+    request.method == Method::Capabilities && request.app_scope.is_none()
+}
+
 fn dispatch(request: Request) -> Response {
     if matches!(request.method, Method::FlowRead | Method::FlowWrite) {
         return Response::error("unsupportedWorkspace");
@@ -2599,9 +2633,23 @@ fn dispatch(request: Request) -> Response {
     if concat_editor_mcp::validate_request_shape(&request).is_err() {
         return Response::error("invalidInput");
     }
+    if request.method == Method::PhotoState {
+        return photo_read::dispatch(request);
+    }
+    if matches!(
+        request.method,
+        Method::PhotoSnapshot
+            | Method::PhotoSnapshotValidate
+            | Method::PhotoEdit
+            | Method::PhotoOperation
+    ) {
+        return Response::error("unsupportedWorkspace");
+    }
     match on_ui(|_, _| crate::photo_workspace::is_photo_target()) {
-        Ok(true) => return Response::error("unsupportedWorkspace"),
-        Ok(false) => {}
+        Ok(true) if !allows_photo_capabilities(&request) => {
+            return Response::error("unsupportedWorkspace");
+        }
+        Ok(_) => {}
         Err(error) => return error,
     }
     if request.method == Method::FlowWorkspace {
@@ -2663,7 +2711,7 @@ fn dispatch(request: Request) -> Response {
     let reply = on_ui({
         let request = request.clone();
         move |shell, app| {
-            if crate::photo_workspace::is_photo_target() {
+            if crate::photo_workspace::is_photo_target() && !allows_photo_capabilities(&request) {
                 return UiReply::Response(Response::error("unsupportedWorkspace"));
             }
             let Ok(studio) = shell.studio.try_borrow() else {
@@ -3330,6 +3378,31 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn photo_discovery_rejects_app_scope_and_other_legacy_reads() {
+        let mut request: Request = serde_json::from_value(json!({
+            "instanceId": "instance", "clientId": "client", "clientToken": "old-app-token",
+            "method": "capabilities", "appScope": {
+                "accountScope": "old-account", "appSessionId": "old-app-session"
+            }
+        }))
+        .unwrap();
+        assert!(!allows_photo_capabilities(&request));
+        request.app_scope = None;
+        assert!(allows_photo_capabilities(&request));
+        for method in [
+            Method::AppContext,
+            Method::PageItems,
+            Method::PagePreview,
+            Method::Context,
+            Method::Project,
+            Method::Preview,
+        ] {
+            request.method = method;
+            assert!(!allows_photo_capabilities(&request));
+        }
+    }
+
     #[test]
     fn retired_flow_requests_are_rejected_before_ui_dispatch() {
         for method in [Method::FlowRead, Method::FlowWrite] {

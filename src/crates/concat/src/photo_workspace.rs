@@ -13,17 +13,40 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+mod agent_read;
 mod owned_metadata;
+pub(crate) use agent_read::{Cancellation, PendingState, ReadBinding, ReadOrigin};
 mod target;
 pub(crate) use owned_metadata::{
     OwnedMetadata, OwnedOrigin, OwnedSource, PendingOwnedMetadata, PhotoWorkerClient,
 };
 pub(crate) use target::PhotoTarget;
 type SourceHook = (uuid::Uuid, std::rc::Rc<dyn Fn()>);
+type ReadSource = std::rc::Rc<dyn Fn() -> Option<OwnedSource>>;
 thread_local! {
+    static READ_CANCEL: RefCell<Option<Cancellation>> = const { RefCell::new(None) };
+    static READ_SOURCE: RefCell<Option<ReadSource>> = const { RefCell::new(None) };
     static TARGET: RefCell<target::TargetState> = RefCell::new(target::TargetState::default());
     static SOURCE_FENCE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(Some(0)) };
     static SOURCE_HOOK: RefCell<Option<SourceHook>> = const { RefCell::new(None) };
+}
+pub(crate) fn set_read_source(probe: ReadSource) {
+    READ_SOURCE.with(|slot| *slot.borrow_mut() = Some(probe));
+}
+pub(crate) fn current_read_source() -> Option<OwnedSource> {
+    let probe = READ_SOURCE.with(|slot| slot.borrow().clone())?;
+    probe()
+}
+pub(crate) fn cancel_photo_reads() {
+    READ_CANCEL.with(|slot| {
+        if let Some(cancel) = slot.borrow_mut().take() {
+            cancel.cancel();
+        }
+    });
+}
+pub(crate) fn register_read_cancel(cancel: Cancellation) {
+    cancel_photo_reads();
+    READ_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
 }
 pub(crate) fn is_photo_target() -> bool {
     TARGET.with(|t| t.borrow().is_photo())
@@ -53,6 +76,7 @@ pub(crate) fn source_fence() -> Option<u64> {
     SOURCE_FENCE.with(|f| f.get())
 }
 fn source_changed() {
+    cancel_photo_reads();
     // Original admission/publication gates revoke without Studio, Bridge, Cloud,
     // or controller borrows, including reentrant native-dialog callbacks.
     crate::cloud::app_page_navigation_changed();
@@ -109,6 +133,7 @@ enum Command {
     Open(u64),
     Close(u64),
     PrepareOwnedMetadata(owned_metadata::OwnedJob),
+    AgentState(agent_read::StateJob),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -424,6 +449,9 @@ fn worker(
                     snapshot.phase = MANUAL_RECOVERY;
                     snapshot.detail = "无法确认编辑窗口状态，请在该窗口中保存并关闭。";
                 }
+            }
+            Ok(Command::AgentState(job)) => {
+                job.run(&mut host, &owned);
             }
             Ok(Command::PrepareOwnedMetadata(job)) => {
                 metadata.run(&mut host, &owned, job);

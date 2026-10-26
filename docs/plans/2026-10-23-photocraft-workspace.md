@@ -115,3 +115,13 @@ SeeCut 管理独立编辑进程和窗口的开发入口已提交至 Draft PR #24
 原 request、child、账户、UI/target epoch 与安装期限一致才接受结果。同来源、文档和路径的保存刷新保留私有 DocumentIds；另存为、切源或重绑建立新权限会话。刷新期间暂不提供 Photo scope，不能据此宣称未来长程 Agent 不断线。来源变化先推进原 App 导航和 Clip 保存/导出撤销门槛；无法即时借用 Bridge/controller 时，在原读取、写预检及结果处理前完成延迟清理。NeedsUser 后可重新关联同一仍存活的自有 child，界面仍保留未保存提示，不推断用户已 Cancel。
 
 主代理独立执行 61 项隔离回归通过，其中 40 项宿主、10 项本次目标/元数据与真实 loopback、11 项旧读取夹具；它们不代替实际界面验收。完整 concat/Slint 的 cargo check、all-targets 严格 Clippy 与 workspace fmt 均通过。父级 Photo 模型连接、发送和读写授权仍关闭，工具尚未注册。真实重入对话框、导航、切账号、历史展示及 Agent 发图/编辑仍需独立验收。
+
+## 10 月 26 日文档结构读取
+
+父级已注册 `photo_state`，只接受原 `projectId` 与 `documentSessionId`。已保存 Photo 可以通过原 Doc 读取授权及 Settings 客户端授权读取结构；两条授权都没有媒体或编辑权限。Photo 的能力发现只列 `capabilities`、`photo_state`，不把旧 Canvas、Clip、Flow 工具列为 Photo 功能。服务端仅同步工具词表，不开启 Photo 的托管 Agent 连接或发送。
+
+请求先在 UI 核对原实例、文档、账户、来源及读取许可，再进入唯一 Photo 后台 worker。worker 验证原文件历史键与 host/doc/generation，重新读取真实 backing 和完整文档身份，返回后再次核对原许可与来源。单个待处理请求持有原五秒截止时间；取消、切源、另存为、文档换代或过期均不能把旧结果安装到新来源。文件操作不进入 UI 线程，五秒只约束结果有效期，不承诺中止底层文件操作。
+
+返回有界的文档、图层、选择及历史元数据，原生 u64 和规范路径留在 Rust 内；opaque handles 仅引用原读取，不自动替换成新的文档或图层。结果明确 `metadataOnly`、`editAvailable:false`，不构成像素、实际显示或编辑能力的证明。后续写解析器目前仅作为 `cfg(test)` 候选回归保留，没有生产写入口。
+
+主代理已执行 113 项协议/stdio 测试及该包严格 Clippy、36 项服务端合同与工具词表测试、20 项集成脚本测试，均通过。63 项隔离测试通过，包含真实宿主源码与合成认证 TCP、真实临时文件、typed Some 文档进入父级投影；其中写映射回归仍属于未接入的候选，不代表生产编辑验收。最终父应用编译与严格检查的结果单独记录，真实 GUI、模型读图、受控编辑、跨功能任务及统一 macOS 包仍待完成。

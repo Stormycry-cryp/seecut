@@ -284,6 +284,7 @@ pub(super) struct OwnedJob {
 pub(crate) struct PhotoWorkerClient {
     pub(super) sender: SyncSender<Command>,
     connected: Arc<AtomicBool>,
+    pub(super) agent_pending: Arc<AtomicBool>,
     pub(super) owned: Arc<OwnedControl>,
 }
 impl PhotoWorkerClient {
@@ -291,6 +292,7 @@ impl PhotoWorkerClient {
         Self {
             sender,
             connected,
+            agent_pending: Arc::new(AtomicBool::new(false)),
             owned: Arc::new(OwnedControl::new()),
         }
     }

@@ -591,6 +591,7 @@ mod desktop {
             })
         }
         fn cancel_photo_source(&self) {
+            crate::photo_workspace::cancel_photo_reads();
             self.photo_ui_epoch
                 .set(self.photo_ui_epoch.get().saturating_add(1));
             self.photo_pending.borrow_mut().take();
@@ -2019,7 +2020,7 @@ mod desktop {
                     && !state.catalog.choices.iter().any(|choice| &choice.id == id)
             });
             let reason = if crate::photo_workspace::is_photo_target() {
-                "图像来源已选定；Agent 图像读取与编辑能力尚未接入"
+                "Photo 当前仅支持文档结构读取，Agent 图像编辑尚未接入"
             } else if let Some(error) = history_error {
                 error
             } else if self.store.borrow().is_none() {
@@ -2063,7 +2064,7 @@ mod desktop {
             ui.set_connect_disabled_reason(reason.into());
             ui.set_send_disabled_reason(
                 if crate::photo_workspace::is_photo_target() {
-                    "Agent 图像读取与编辑能力尚未接入"
+                    "Photo 当前仅支持文档结构读取，Agent 图像编辑尚未接入"
                 } else if let Some(error) = history_error {
                     error
                 } else if state.preparing {
@@ -3683,6 +3684,10 @@ mod desktop {
         });
         let mut bridge_weak = std::rc::Weak::new();
         Shell::with(|shell, _| bridge_weak = Rc::downgrade(&shell.studio.borrow().editor_mcp));
+        crate::photo_workspace::set_read_source({
+            let binding = Rc::downgrade(&binding);
+            Rc::new(move || binding.upgrade().and_then(|binding| binding.photo_source()))
+        });
         crate::photo_workspace::set_source_hook(binding.photo_ui_id, {
             let binding = Rc::downgrade(&binding);
             Rc::new(move || {
