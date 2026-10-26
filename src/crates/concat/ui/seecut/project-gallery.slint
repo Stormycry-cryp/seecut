@@ -3,6 +3,7 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme, Glyph, Icon } from "../primitives/primitives.slint";
 import { Modal } from "../primitives/modal.slint";
 import { SeeCut } from "state.slint";
+import { PhotoWorkspaceEntry } from "photo-workspace.slint";
 import { AppButton, AssetPreview, CloudField, WorkspaceIcon } from "components.slint";
 
 export component CanvasProjectsPage inherits Rectangle {
@@ -43,6 +44,7 @@ export component CanvasProjectsPage inherits Rectangle {
                 }
             }
         }
+        PhotoWorkspaceEntry {}
         ScrollView {
             viewport-width: self.visible-width; viewport-height: grid.height;
             horizontal-scrollbar-policy: always-off;

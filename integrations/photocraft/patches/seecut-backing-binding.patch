@@ -1,0 +1,431 @@
+--- a/crates/engine/src/file_cmds.rs
++++ b/crates/engine/src/file_cmds.rs
+@@ -151,7 +151,7 @@
+         if self.doc.name != name {
+             Arc::make_mut(&mut self.doc).name = name;
+         }
+-        self.path = Some(path);
++        self.set_backing_path(Some(path));
+         self.saved_revision = self.revision;
+     }
+ }
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -193,7 +193,7 @@
+     d.active_layer.and_then(|id| d.doc.layer(id)).ok_or_else(|| "no active layer".into())
+ }
+ 
+-// Runtime admission generations are never persisted or reused after close/reopen.
++// Runtime document/backing generations are never persisted or reused after admission or path rebinding.
+ static NEXT_DOCUMENT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+ 
+ fn allocate_document_generation(counter: &std::sync::atomic::AtomicU64) -> Option<u64> {
+@@ -203,7 +203,7 @@
+ /// Per-document editing state.
+ #[derive(Clone, Debug)]
+ pub struct DocState {
+-    /// This in-memory admission only. Zero means generation allocation exhausted;
++    /// This in-memory admission or backing-path binding only. Zero means allocation exhausted;
+     /// private SeeCut methods then refuse the document rather than reusing an id.
+     pub document_generation: u64,
+     pub doc: Arc<Document>,
+@@ -306,6 +306,21 @@
+             source_snapshot: None,
+         }
+     }
++    /// Set the actual native backing association. A different path (including losing it)
++    /// invalidates old private expected identities without adding an edit/history step.
++    /// Allocation failure must retain the path of an already completed save: generation 0
++    /// disables private methods instead of pretending the file write did not happen.
++    pub fn set_backing_path(&mut self, path: Option<String>) {
++        self.set_backing_path_with_counter(path, &NEXT_DOCUMENT_GENERATION);
++    }
++
++    fn set_backing_path_with_counter(&mut self, path: Option<String>, counter: &std::sync::atomic::AtomicU64) {
++        if self.path != path {
++            self.path = path;
++            self.document_generation = allocate_document_generation(counter).unwrap_or(0);
++        }
++    }
++
+     /// The selected layers in bottom-to-top document order, always including the active layer.
+     /// Robust against stale state: ids no longer in the document are skipped, and if the active
+     /// layer was changed without updating the set, the selection is just the active layer.
+@@ -1121,6 +1136,26 @@
+ mod seecut_generation_tests {
+     use super::*;
+     #[test]
++    fn backing_rebind_exhaustion_keeps_actual_path_and_does_not_change_history() {
++        let mut session = Session::new();
++        session.execute("file.new", serde_json::json!({"width":4,"height":4})).unwrap();
++        let st = session.active_mut().unwrap();
++        let before = (st.doc.clone(), st.revision, st.saved_revision, st.history.entries().len());
++        let generation = st.document_generation;
++        let counter = std::sync::atomic::AtomicU64::new(u64::MAX);
++        st.set_backing_path_with_counter(None, &counter);
++        assert_eq!(st.document_generation, generation); // No path change needs no allocation.
++        st.set_backing_path_with_counter(Some("actually-written.pcraft".into()), &counter);
++        assert_eq!(st.path.as_deref(), Some("actually-written.pcraft"));
++        assert_eq!(st.document_generation, 0);
++        assert_eq!((st.doc.clone(), st.revision, st.saved_revision, st.history.entries().len()), before);
++        st.set_backing_path_with_counter(None, &counter);
++        assert!(st.path.is_none());
++        assert_eq!(st.document_generation, 0);
++        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), u64::MAX);
++    }
++
++    #[test]
+     fn admission_generation_does_not_wrap() {
+         let counter = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
+         assert_eq!(allocate_document_generation(&counter), Some(u64::MAX - 1));
+--- a/crates/ui-egui/src/file_open.rs
++++ b/crates/ui-egui/src/file_open.rs
+@@ -112,7 +112,7 @@
+             && let Some(st) = self.session.active_mut()
+             && !st.source_read_only
+         {
+-            st.path = Some(path.to_string());
++            st.set_backing_path(Some(path.to_string()));
+             let doc = st.doc.id;
+             self.remember_stamp(doc, path);
+         }
+@@ -438,3 +438,6 @@
+ 
+ #[cfg(test)]
+ mod tests;
++
++#[cfg(test)]
++mod backing_tests;
+--- /dev/null
++++ b/crates/ui-egui/src/file_open/backing_tests.rs
+@@ -0,0 +1,92 @@
++//! Exercise the real UI binding entry points, without saving files or calling the setter directly.
++use super::*;
++use serde_json::json;
++use std::cell::RefCell;
++use std::rc::Rc;
++
++fn fixture() -> (PhotocraftApp, Rc<RefCell<Vec<String>>>) {
++    let stamped = Rc::new(RefCell::new(Vec::new()));
++    let calls = stamped.clone();
++    let services = crate::Services {
++        file_stamp: Some(Box::new(move |path| {
++            calls.borrow_mut().push(path.to_owned());
++            Some(crate::FileStamp { len: 17, modified: None })
++        })),
++        ..Default::default()
++    };
++    let mut session = photocraft_engine::Session::new();
++    session.execute("file.new", json!({"width":8,"height":8})).unwrap();
++    (PhotocraftApp::new(session, services), stamped)
++}
++
++#[test]
++fn opened_from_rebinds_generation_but_same_path_preserves_the_active_identity() {
++    let (mut app, stamps) = fixture();
++    let st = app.session.active().unwrap();
++    let (doc_id, revision, saved_revision, admission) = (st.doc.id, st.revision, st.saved_revision, st.document_generation);
++    assert!(st.path.is_none());
++    app.opened_from("/seecut-backing-test-only/a.pcraft");
++    let st = app.session.active().unwrap();
++    let first = st.document_generation;
++    assert!(first > 0 && first != admission, "a new backing association invalidates the previous generation");
++    assert_eq!(st.path.as_deref(), Some("/seecut-backing-test-only/a.pcraft"));
++    assert_eq!((st.doc.id, st.revision, st.saved_revision), (doc_id, revision, saved_revision));
++    app.opened_from("/seecut-backing-test-only/a.pcraft");
++    assert_eq!(app.session.active().unwrap().document_generation, first, "same raw path must not retire execution identity");
++    app.opened_from("/seecut-backing-test-only/b.pcraft");
++    let st = app.session.active().unwrap();
++    assert!(st.document_generation > 0 && st.document_generation != first, "old expected generation cannot match a rebind");
++    assert_eq!(st.path.as_deref(), Some("/seecut-backing-test-only/b.pcraft"));
++    assert_eq!((st.doc.id, st.revision, st.saved_revision), (doc_id, revision, saved_revision));
++    assert_eq!(stamps.borrow().as_slice(), ["/seecut-backing-test-only/a.pcraft", "/seecut-backing-test-only/a.pcraft", "/seecut-backing-test-only/b.pcraft"]);
++    assert_eq!(app.disk_stamps.get(&doc_id).unwrap().0, "/seecut-backing-test-only/b.pcraft");
++}
++
++#[test]
++fn opened_from_keeps_templates_and_read_only_sources_unbound() {
++    for read_only in [false, true] {
++        let (mut app, stamps) = fixture();
++        app.session.active_mut().unwrap().source_read_only = read_only;
++        let before = app.session.active().unwrap().document_generation;
++        let path = if read_only { "/seecut-backing-test-only/preview.pcraft" } else { "/seecut-backing-test-only/template.psdt" };
++        app.opened_from(path);
++        let st = app.session.active().unwrap();
++        assert!(st.path.is_none());
++        assert_eq!(st.document_generation, before);
++        assert_eq!(st.source_read_only, read_only);
++        assert!(stamps.borrow().is_empty(), "unbound sources must not acquire an own-file stamp");
++        assert!(app.ui.recent_files.iter().any(|p| p == path), "Open Recent behavior stays unchanged");
++    }
++}
++
++#[test]
++fn detach_others_clears_only_the_conflicting_binding_and_retires_its_old_generation() {
++    let (mut app, _) = fixture();
++    let shared = "/seecut-backing-test-only/shared.pcraft";
++    app.opened_from(shared);
++    app.session.execute("file.new", json!({"width":8,"height":8})).unwrap();
++    app.opened_from("/seecut-backing-test-only/other.pcraft");
++    app.session.execute("file.new", json!({"width":8,"height":8})).unwrap();
++    app.opened_from(shared);
++    let before: Vec<_> = app.session.documents().iter().map(|st| (st.doc.id, st.revision, st.document_generation, st.path.clone(), st.saved_revision)).collect();
++    let saver = before[2].0;
++    assert_eq!(app.session.active().unwrap().doc.id, saver);
++    app.detach_others_from_file(shared, saver);
++    let docs = app.session.documents();
++    assert!(docs[0].path.is_none(), "conflicting tab really loses its backing path");
++    assert_eq!(docs[0].saved_revision, u64::MAX);
++    assert!(docs[0].is_dirty());
++    assert_eq!((docs[0].doc.id, docs[0].revision), (before[0].0, before[0].1));
++    let detached_generation = docs[0].document_generation;
++    assert!(detached_generation > 0 && detached_generation != before[0].2, "old execution identity is invalid after path loss");
++    for idx in [1, 2] {
++        let st = &docs[idx];
++        assert_eq!((st.doc.id, st.revision, st.document_generation, st.path.clone(), st.saved_revision), before[idx]);
++    }
++    assert_eq!(app.session.active().unwrap().doc.id, saver, "temporary document switching must restore the active saver");
++    let notices = app.ui.notices.len();
++    assert!(notices > 0, "existing detach notice remains");
++    app.detach_others_from_file(shared, saver);
++    assert_eq!(app.session.documents()[0].document_generation, detached_generation, "already detached is a no-op");
++    assert_eq!(app.ui.notices.len(), notices);
++}
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -1972,7 +1972,7 @@
+         for (id, name) in others {
+             let done = self.with_document(id, |app| {
+                 let st = app.session.active_mut().ok_or("no document")?;
+-                st.path = None;
++                st.set_backing_path(None);
+                 // No revision ever equals this, so the document reads as unsaved until saved again.
+                 st.saved_revision = u64::MAX;
+                 Ok(())
+--- a/crates/ui-egui/src/seecut_agent.rs
++++ b/crates/ui-egui/src/seecut_agent.rs
+@@ -120,10 +120,29 @@
+         }
+     }
+ }
++/// Facts from the real session only. No filesystem check, canonicalization or grant.
++#[derive(Clone, Debug, PartialEq, Serialize)]
++#[serde(rename_all = "camelCase")]
++struct BackingState {
++    native_path: Option<String>,
++    path_status: &'static str,
++    source_read_only: bool,
++    saved_revision: u64,
++}
++fn backing_state(st: &photocraft_engine::DocState) -> BackingState {
++    let (native_path, path_status) = match st.path.as_deref() {
++        None => (None, "missing"),
++        Some(path) if path.len() > 4096 => (None, "tooLong"),
++        Some(path) if path.is_empty() || path.contains('\0') => (None, "invalid"),
++        Some(path) => (Some(path.to_owned()), "recorded"),
++    };
++    BackingState { native_path, path_status, source_read_only: st.source_read_only, saved_revision: st.saved_revision }
++}
+ #[derive(Clone, Debug, PartialEq, Serialize)]
+ #[serde(rename_all = "camelCase")]
+ struct DocumentState {
+     identity: Expected,
++    backing: BackingState,
+     name: String,
+     size: [u32; 2],
+     active_layer: Option<u64>,
+@@ -147,6 +166,7 @@
+     let selected = st.selected_layers();
+     Some(DocumentState {
+         identity: Expected { host_instance_id: host.into(), doc_id: st.doc.id.0, document_generation: st.document_generation, revision: st.revision },
++        backing: backing_state(st),
+         name: st.doc.name.chars().take(256).collect(),
+         size: [st.doc.size.width, st.doc.size.height],
+         active_layer: st.active_layer.map(|l| l.0),
+--- a/crates/ui-egui/src/seecut_agent/tests.rs
++++ b/crates/ui-egui/src/seecut_agent/tests.rs
+@@ -265,3 +265,184 @@
+     assert_eq!(result["result"]["before"], result["result"]["after"]);
+     assert_eq!(opacity(&app, layer), 1.0);
+ }
++
++/// Real native-format bytes and atomic writes, restricted to this test's new directory.
++/// No editor process, global environment changes or permissive fake writer.
++#[cfg(not(target_arch = "wasm32"))]
++struct BackingFiles(std::path::PathBuf);
++#[cfg(not(target_arch = "wasm32"))]
++impl BackingFiles {
++    fn new() -> Self {
++        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
++        for _ in 0..32 {
++            let root = std::env::temp_dir().join(format!("photocraft-backing-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
++            match std::fs::create_dir(&root) {
++                Ok(()) => return Self(root),
++                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
++                Err(error) => panic!("cannot create owned backing fixture: {error}"),
++            }
++        }
++        panic!("owned backing fixture directory budget exhausted");
++    }
++    fn path(&self, relative: &str) -> String {
++        self.0.join(relative).to_str().unwrap().to_owned()
++    }
++    fn enable_real_saves(&self, app: &mut PhotocraftApp) {
++        let root = self.0.clone();
++        app.background_jobs = false;
++        app.services.export = Some(Box::new(|doc, path, settings| {
++            photocraft_io::export(doc, path, &settings.io_options()).map(|result| (result.bytes, result.warnings)).map_err(|error| error.to_string())
++        }));
++        app.services.write = Some(Box::new(move |path, bytes| {
++            let path = std::path::Path::new(path);
++            if !path.starts_with(&root) || path.components().any(|part| part == std::path::Component::ParentDir) {
++                return Err("write outside owned backing fixture".into());
++            }
++            photocraft_format::atomic_write(path, bytes).map_err(|error| error.to_string())
++        }));
++    }
++}
++#[cfg(not(target_arch = "wasm32"))]
++impl Drop for BackingFiles {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_dir_all(&self.0);
++    }
++}
++#[cfg(not(target_arch = "wasm32"))]
++fn save_backing_as(app: &mut PhotocraftApp, ctx: &egui::Context, path: &str) {
++    crate::menus::invoke(app, ctx, "file.saveAs", json!({"path":path})).unwrap();
++    let loaded = photocraft_format::load_path(std::path::Path::new(path)).unwrap();
++    let st = app.session.active().unwrap();
++    assert_eq!(loaded.id, st.doc.id);
++    assert_eq!(loaded.size, st.doc.size);
++    assert_eq!(st.path.as_deref(), Some(path));
++}
++
++#[test]
++#[cfg(not(target_arch = "wasm32"))]
++fn real_save_as_rebind_rejects_old_expected_in_callback_without_history_effect() {
++    let files = BackingFiles::new();
++    let (mut app, ctx, layer) = fixture(true);
++    files.enable_real_saves(&mut app);
++    let first = files.path("a/same.pcraft");
++    let second = files.path("b/same.pcraft"); // Same displayed name; title cannot detect the rebind.
++    save_backing_as(&mut app, &ctx, &first);
++    let old = change(&app, "before-real-save-as", layer);
++    let st = app.session.active().unwrap();
++    let before = (st.doc.id, st.doc.name.clone(), st.revision, st.document_generation, st.history.entries().len());
++    save_backing_as(&mut app, &ctx, &second);
++    let st = app.session.active().unwrap();
++    assert_eq!((st.doc.id, st.doc.name.clone(), st.revision, st.history.entries().len()), (before.0, before.1, before.2, before.4));
++    assert_ne!(st.document_generation, before.3);
++    let rejected = call(&mut app, &ctx, "seecut.execute", old);
++    assert_eq!(rejected["result"]["errorCode"], "wrongDocument");
++    assert_eq!(rejected["result"]["before"], rejected["result"]["after"]);
++    assert_eq!(opacity(&app, layer), 1.0);
++    assert_eq!(app.session.active().unwrap().history.entries().len(), before.4);
++}
++
++#[test]
++#[cfg(not(target_arch = "wasm32"))]
++fn real_same_path_save_keeps_generation_revision_and_history() {
++    let files = BackingFiles::new();
++    let (mut app, ctx, _) = fixture(true);
++    files.enable_real_saves(&mut app);
++    let path = files.path("same.pcraft");
++    save_backing_as(&mut app, &ctx, &path);
++    let st = app.session.active().unwrap();
++    let before = (st.doc.id, st.document_generation, st.revision, st.history.entries().len());
++    crate::menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
++    let loaded = photocraft_format::load_path(std::path::Path::new(&path)).unwrap();
++    let st = app.session.active().unwrap();
++    assert_eq!((st.doc.id, st.document_generation, st.revision, st.history.entries().len()), before);
++    assert_eq!(loaded.id, st.doc.id);
++    assert_eq!(st.saved_revision, st.revision);
++    let state = call(&mut app, &ctx, "seecut.state", json!({}));
++    assert_eq!(state["result"]["document"]["backing"]["nativePath"], path);
++    assert_eq!(state["result"]["document"]["backing"]["pathStatus"], "recorded");
++}
++
++#[test]
++#[cfg(not(target_arch = "wasm32"))]
++fn real_other_tab_overwrite_detaches_path_and_old_expected_is_refused() {
++    // Requires Astra's ui-egui/src/lib.rs detach callsite to use set_backing_path.
++    let files = BackingFiles::new();
++    let (mut app, ctx, layer) = fixture(true);
++    files.enable_real_saves(&mut app);
++    let path = files.path("shared.pcraft");
++    save_backing_as(&mut app, &ctx, &path);
++    let old = change(&app, "before-other-tab-overwrite", layer);
++    let st = app.session.active().unwrap();
++    let before = (st.doc.id, st.document_generation, st.revision, st.history.entries().len());
++    app.run("file.new", json!({"width":8,"height":8})).unwrap();
++    let saver = app.session.active().unwrap().doc.id;
++    assert_ne!(saver, before.0);
++    save_backing_as(&mut app, &ctx, &path);
++    assert!(app.session.set_active(0));
++    let st = app.session.active().unwrap();
++    assert!(st.path.is_none());
++    assert_ne!(st.document_generation, before.1);
++    assert_eq!((st.doc.id, st.revision, st.history.entries().len()), (before.0, before.2, before.3));
++    let rejected = call(&mut app, &ctx, "seecut.execute", old);
++    assert_eq!(rejected["result"]["errorCode"], "wrongDocument");
++    assert_eq!(rejected["result"]["before"], rejected["result"]["after"]);
++    assert_eq!(opacity(&app, layer), 1.0);
++    let state = call(&mut app, &ctx, "seecut.state", json!({}));
++    assert_eq!(state["result"]["document"]["backing"]["pathStatus"], "missing");
++    assert!(state["result"]["document"]["backing"]["nativePath"].is_null());
++}
++
++#[test]
++fn backing_metadata_reports_raw_facts_without_path_guessing_or_truncation() {
++    let (mut app, ctx, _) = fixture(true);
++    let initial = call(&mut app, &ctx, "seecut.state", json!({}));
++    let missing = &initial["result"]["document"]["backing"];
++    assert_eq!(missing["pathStatus"], "missing");
++    assert!(missing["nativePath"].is_null());
++    assert_eq!(missing["sourceReadOnly"], false);
++    assert_eq!(missing["savedRevision"], app.session.active().unwrap().saved_revision);
++    assert!(initial["result"]["document"].get("savedRevision").is_none());
++    let maximum = format!("{}a", "界".repeat(1365));
++    assert_eq!(maximum.len(), 4096);
++    for (path, status) in [(Some("".to_owned()), "invalid"), (Some("a\0b.pcraft".to_owned()), "invalid"),
++        (Some(format!("{maximum}b")), "tooLong"), (Some(maximum.clone()), "recorded"),
++        (Some("relative/作品.pcraft".to_owned()), "recorded"), (None, "missing")] {
++        let st = app.session.active_mut().unwrap();
++        st.set_backing_path(path.clone());
++        st.source_read_only = true;
++        st.saved_revision = 0; // Exact recovery sentinel; metadata must preserve the fact.
++        let state = call(&mut app, &ctx, "seecut.state", json!({}));
++        let backing = &state["result"]["document"]["backing"];
++        assert_eq!(backing["pathStatus"], status);
++        assert_eq!(backing["sourceReadOnly"], true);
++        assert_eq!(backing["savedRevision"], 0);
++        if status == "recorded" {
++            assert_eq!(backing["nativePath"].as_str(), path.as_deref());
++        } else {
++            assert!(backing["nativePath"].is_null());
++        }
++    }
++}
++
++#[test]
++#[cfg(not(target_arch = "wasm32"))]
++fn recovery_saved_revision_zero_and_real_revert_are_reported_as_facts() {
++    let files = BackingFiles::new();
++    let (mut app, ctx, _) = fixture(true);
++    files.enable_real_saves(&mut app);
++    let path = files.path("recoverable.pcraft");
++    save_backing_as(&mut app, &ctx, &path);
++    let generation = app.session.active().unwrap().document_generation;
++    app.session.active_mut().unwrap().saved_revision = 0; // Same sentinel as recovery's real apply branch.
++    let recovered = call(&mut app, &ctx, "seecut.state", json!({}));
++    assert_eq!(recovered["result"]["document"]["backing"]["savedRevision"], 0);
++    assert_eq!(recovered["result"]["document"]["backing"]["nativePath"], path);
++    app.session.execute("file.revert", json!({})).unwrap(); // Actual read/decode of our own saved .pcraft.
++    let st = app.session.active().unwrap();
++    assert_eq!(st.document_generation, generation); // The backing association did not change.
++    assert!(st.saved_revision > 0);
++    assert_eq!(st.saved_revision, st.revision);
++    let saved_revision = st.saved_revision;
++    let reverted = call(&mut app, &ctx, "seecut.state", json!({}));
++    assert_eq!(reverted["result"]["document"]["backing"]["savedRevision"], saved_revision);
++}

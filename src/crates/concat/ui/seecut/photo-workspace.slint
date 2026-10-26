@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme } from "../theme/theme.slint";
+import { AppButton } from "components.slint";
+import { Field } from "../primitives/modal.slint";
+
+// Lifecycle and permissions belong to the native host. External-client tokens
+// appear only in the expanded local setup panel; document JSON never enters it.
+export global PhotoWorkspace {
+    // 0 unavailable, 1 idle, 2 opening, 3 running, 4 closing,
+    // 5 waiting for user, 6 failed without a process, 7 manual recovery.
+    in-out property <int> phase: 0;
+    in-out property <bool> managed: false;
+    in-out property <string> instance-id;
+    in-out property <string> detail: "当前版本未提供图像编辑组件。";
+    in-out property <bool> reader-open: false;
+    in-out property <string> reader-client;
+    in-out property <string> reader-instance;
+    in-out property <string> reader-token;
+    in-out property <string> reader-status: "请先选择图像来源，并关联已保存的图像文档。";
+    in-out property <bool> reader-can-grant: false;
+    in-out property <bool> reader-can-revoke: false;
+    callback reader-toggle();
+    callback reader-client-edited(string);
+    callback reader-grant();
+    callback reader-revoke();
+    callback open-editor();
+    callback close-editor();
+    callback return-to-photo();
+    callback owned-metadata-requested();
+}
+
+export component PhotoWorkspaceEntry inherits Rectangle {
+    height: content.preferred-height;
+    vertical-stretch: 0;
+    background: Theme.panel;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: Theme.line;
+    content := VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+        Text { text: "图像编辑器"; font-size: 18px; color: Theme.fg; }
+        Text {
+            text: "图层、选区、蒙版、文字与滤镜，在独立编辑窗口中使用。";
+            font-size: 13px; color: Theme.fg-muted; wrap: word-wrap;
+        }
+        Text { text: PhotoWorkspace.detail; color: Theme.fg; font-size: 13px; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 12px;
+            AppButton {
+                label: PhotoWorkspace.phase == 2 ? "正在打开…"
+                    : PhotoWorkspace.phase == 4 ? "正在关闭…"
+                    : PhotoWorkspace.phase == 3 || PhotoWorkspace.phase == 5 || PhotoWorkspace.phase == 7 ? "编辑窗口已打开"
+                    : PhotoWorkspace.phase == 6 ? "重试打开" : "打开图像编辑器";
+                primary: true;
+                enabled: PhotoWorkspace.phase == 1 || PhotoWorkspace.phase == 6;
+                clicked => { PhotoWorkspace.open-editor(); }
+            }
+            if PhotoWorkspace.phase == 3 || PhotoWorkspace.phase == 5: AppButton {
+                label: "使用图像编辑器作为 Agent 来源";
+                clicked => { PhotoWorkspace.return-to-photo(); }
+            }
+            if PhotoWorkspace.phase == 3 || PhotoWorkspace.phase == 5: AppButton {
+                label: "关闭编辑窗口";
+                clicked => { PhotoWorkspace.close-editor(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Text {
+            text: "可关联已保存图像的会话历史；当前支持文档结构读取，Agent 图像编辑尚未接入。";
+            font-size: 12px; color: Theme.fg-muted; wrap: word-wrap;
+        }
+        AppButton {
+            label: PhotoWorkspace.reader-open ? "收起外部工具读取设置" : "外部工具读取设置";
+            enabled: PhotoWorkspace.phase == 3 || PhotoWorkspace.phase == 5;
+            subtle: true;
+            clicked => { PhotoWorkspace.reader-toggle(); }
+        }
+        if PhotoWorkspace.reader-open: VerticalLayout {
+            spacing: 8px;
+            Rectangle { height: 1px; background: Theme.line; }
+            Text {
+                text: "仅允许本机外部工具读取当前已保存图像的文档与图层结构，不授予图片预览或编辑权限。";
+                color: Theme.fg-muted; font-size: 12px; wrap: word-wrap; min-width: 0px;
+            }
+            Text { text: "客户端 ID"; color: Theme.fg; font-size: 13px; }
+            Field {
+                value: PhotoWorkspace.reader-client;
+                placeholder: "填写外部工具的客户端 ID";
+                technical: true; min-width: 0px;
+                edited(text) => { PhotoWorkspace.reader-client-edited(text); }
+            }
+            Text { text: PhotoWorkspace.reader-status; color: Theme.fg-muted; font-size: 12px; wrap: word-wrap; min-width: 0px; }
+            VerticalLayout {
+                spacing: 6px;
+                AppButton {
+                    label: PhotoWorkspace.reader-can-revoke ? "重新授予结构读取并更换令牌" : "授予当前图像结构读取";
+                    enabled: PhotoWorkspace.reader-can-grant;
+                    clicked => { PhotoWorkspace.reader-grant(); }
+                }
+                AppButton {
+                    label: "撤销该客户端读取";
+                    enabled: PhotoWorkspace.reader-can-revoke;
+                    clicked => { PhotoWorkspace.reader-revoke(); }
+                }
+            }
+            if PhotoWorkspace.reader-instance != "": VerticalLayout {
+                spacing: 6px;
+                Text { text: "本机 App 实例 ID"; color: Theme.fg; font-size: 12px; }
+                Field { value: PhotoWorkspace.reader-instance; technical: true; read-only: true; min-width: 0px; }
+            }
+            if PhotoWorkspace.reader-token != "": VerticalLayout {
+                spacing: 6px;
+                Text { text: "客户端令牌，仅用于本机 MCP 配置"; color: Theme.fg; font-size: 12px; wrap: word-wrap; min-width: 0px; }
+                Field { value: PhotoWorkspace.reader-token; technical: true; read-only: true; min-width: 0px; }
+            }
+        }
+    }
+}

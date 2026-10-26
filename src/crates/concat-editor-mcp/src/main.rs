@@ -50,6 +50,13 @@ struct ProjectArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PhotoStateArgs {
+    project_id: String,
+    document_session_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ClipPreviewArgs {
     project_id: String,
     document_session_id: String,
@@ -234,6 +241,9 @@ impl Bridge {
             clip_export_control_action: None,
             clip_preview_query: None,
             clip_parameters: None,
+            photo_parameters: None,
+            photo_snapshot_query: None,
+            photo_snapshot_validation_query: None,
             object_ids: None,
             read_source: None,
             library_query: None,
@@ -593,6 +603,17 @@ impl Bridge {
     )]
     fn context(&self) -> String {
         self.dispatch(self.request(Method::Context))
+    }
+
+    #[tool(
+        description = "Read bounded current Photo document and layer metadata under the original Doc read grant. Requires the exact parent projectId and documentSessionId. The owned editor and saved file are freshly checked on the serial host worker; changing source, document, account or permission invalidates the result. Native document/revision/layer integers and file paths are never exposed: preserve returned opaque handles exactly. This does not capture pixels, authorize edits, or prove a rendered image or model-visible observation.",
+        annotations(read_only_hint = true)
+    )]
+    fn photo_state(&self, Parameters(args): Parameters<PhotoStateArgs>) -> String {
+        let mut request = self.request(Method::PhotoState);
+        request.project_id = Some(args.project_id);
+        request.document_session_id = Some(args.document_session_id);
+        self.dispatch(request)
     }
 
     #[tool(
@@ -1005,6 +1026,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     #[test]
+    fn photo_state_schema_only_accepts_original_parent_document_identity() {
+        let tool = Bridge::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|tool| tool.name == "photo_state")
+            .unwrap();
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 2);
+        assert_eq!(tool.annotations.unwrap().read_only_hint, Some(true));
+        for field in ["path", "nativeDocumentId", "revision", "maxEdge", "action"] {
+            let mut value = serde_json::json!({"projectId":"p","documentSessionId":"s"});
+            value[field] = serde_json::json!(1);
+            assert!(serde_json::from_value::<PhotoStateArgs>(value).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn photo_state_stdio_preserves_read_credential_and_exact_scope_over_ipc() {
+        use std::os::unix::net::UnixListener;
+        let path = endpoint(&uuid::Uuid::new_v4().to_string()).unwrap();
+        let listener = UnixListener::bind(&path).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request: Request = concat_editor_mcp::read_message(&mut stream).unwrap();
+            assert_eq!(request.method, Method::PhotoState);
+            assert_eq!(request.client_token, "read-credential");
+            assert_eq!(
+                request.project_id.as_deref(),
+                Some("original-photo-project")
+            );
+            assert_eq!(
+                request.document_session_id.as_deref(),
+                Some("original-photo-session")
+            );
+            assert!(concat_editor_mcp::validate_request_shape(&request).is_ok());
+            concat_editor_mcp::write_message(&mut stream, &Response::error("wrongProject"))
+                .unwrap();
+        });
+        let mut adapter = bridge(Some("never-the-write-credential".into()));
+        adapter.socket = path.clone();
+        let response: Response =
+            serde_json::from_str(&adapter.photo_state(Parameters(PhotoStateArgs {
+                project_id: "original-photo-project".into(),
+                document_session_id: "original-photo-session".into(),
+            })))
+            .unwrap();
+        worker.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(response.status, "wrongProject");
+    }
+
+    #[test]
     fn app_control_candidate_router_gates_new_routes_without_changing_legacy_routes() {
         let mut app = bridge(None);
         let old = app.negotiated_tool_router().list_all();
@@ -1334,11 +1409,7 @@ mod tests {
     #[test]
     fn export_tools_are_two_closed_original_identity_routes_with_separate_credentials() {
         let tools = Bridge::tool_router().list_all();
-        assert_eq!(
-            tools.len(),
-            37,
-            "34 existing tools plus two export routes and Clip preview"
-        );
+        assert_eq!(tools.len(), 38, "37 existing tools plus Photo state");
         for (name, keys) in [
             (
                 "clip_export_control",

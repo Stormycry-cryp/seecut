@@ -1,0 +1,82 @@
+--- a/crates/ui-egui/src/links.rs
++++ b/crates/ui-egui/src/links.rs
+@@ -32,9 +32,10 @@
+     json!({"url": url})
+ }
+ 
+-/// The prominent "Join us on Discord" button.
+-pub fn discord_button(app: &mut PhotocraftApp, ui: &mut egui::Ui, min_width: f32) -> egui::Response {
+-    let r = crate::widgets::primary_button(ui, tl!("Join us on Discord"), min_width).on_hover_text(DISCORD);
++/// A secondary community link. Keep the existing entry point and browser service.
++pub fn discord_button(app: &mut PhotocraftApp, ui: &mut egui::Ui, _min_width: f32) -> egui::Response {
++    let t = crate::theme::Tokens::get(ui.ctx());
++    let r = ui.link(egui::RichText::new(tl!("Join us on Discord")).size(12.5).color(t.text_dim)).on_hover_text(DISCORD);
+     if r.clicked() {
+         open(app, ui.ctx(), DISCORD);
+     }
+@@ -45,7 +46,7 @@
+ /// platform browser service) rather than `ui.hyperlink_to`, which uses the unreliable `ctx.open_url`.
+ pub fn link_row(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+     let t = crate::theme::Tokens::get(ui.ctx());
+-    ui.weak("PhotoCraft upstream resources");
++    ui.weak(crate::i18n::upstream_resources_label());
+     let links = [(tl!("PhotoCraft website"), APP_PAGE), (tl!("GitHub"), GITHUB), (tl!("ArtCraft"), ARTCRAFT_WEBSITE)];
+     let font = egui::FontId::proportional(12.5);
+     let sep = "  ·  ";
+@@ -59,7 +60,7 @@
+             if i > 0 {
+                 ui.label(egui::RichText::new(sep).font(font.clone()).color(t.text_faint));
+             }
+-            if ui.link(egui::RichText::new(*label).font(font.clone()).color(t.accent)).on_hover_text(*url).clicked() {
++            if ui.link(egui::RichText::new(*label).font(font.clone()).color(t.text_dim)).on_hover_text(*url).clicked() {
+                 clicked = Some(url);
+             }
+         }
+--- a/crates/ui-egui/src/dialogs.rs
++++ b/crates/ui-egui/src/dialogs.rs
+@@ -647,7 +647,7 @@
+         "models" => crate::credits::models_ui(ui),
+         _ => {
+             ui.label("SeeCut 图像编辑");
+-            ui.weak("Based on PhotoCraft by the ArtCraft team · MIT OR Apache-2.0");
++            ui.weak(crate::i18n::upstream_attribution());
+             ui.label(crate::i18n::fmt(tl!("Version {version}"), &[("version", &photocraft_engine::build_info::long_version())]));
+             ui.add_space(12.0);
+             ui.vertical_centered(|ui| {
+--- a/crates/ui-egui/src/i18n/mod.rs
++++ b/crates/ui-egui/src/i18n/mod.rs
+@@ -426,6 +426,23 @@
+ /// Translate an English UI string into the current language ([`tr`] with [`current`]).
+ pub fn t(s: &str) -> &str {
+     tr(current(), s)
++}
++
++/// SeeCut-specific attribution follows the active language scope without changing
++/// the upstream translation catalogue or its stable keys.
++pub fn upstream_resources_label() -> &'static str {
++    match current().code() {
++        "zh-hans" => "PhotoCraft 项目资源",
++        _ => "PhotoCraft upstream resources",
++    }
++}
++
++/// Attribute the upstream project and its licence, not the entire SeeCut product.
++pub fn upstream_attribution() -> &'static str {
++    match current().code() {
++        "zh-hans" => "本编辑器基于 ArtCraft 团队的 PhotoCraft，原项目采用 MIT 或 Apache-2.0 许可。",
++        _ => "Based on PhotoCraft by the ArtCraft team · MIT OR Apache-2.0",
++    }
+ }
+ 
+ /// Brand presentation is separate from command IDs, file formats and translation keys.
+--- a/crates/ui-egui/src/i18n/zh-hans.tsv
++++ b/crates/ui-egui/src/i18n/zh-hans.tsv
+@@ -1246,7 +1246,7 @@
+ 	Invert All	全部反相
+ 	Invert has no settings.	反相没有可调整的设置。
+ 	Italic	斜体
+-	Join us on Discord	Upstream community on Discord
++	Join us on Discord	PhotoCraft 社区 · Discord
+ 	Justify all	全部两端对齐
+ 	Justify last centered	两端对齐，末行居中
+ 	Justify last left	两端对齐，末行左对齐

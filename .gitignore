@@ -60,3 +60,5 @@ desktop.ini
 /.toonflow/
 # 固定提交与适配补丁生成的上游依赖，来源见 integrations/toonflow。
 /external/toonflow/
+# 固定来源与适配补丁生成的 PhotoCraft 完整编辑器。
+/external/photocraft/

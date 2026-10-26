@@ -133,7 +133,10 @@ mod desktop {
     }
     impl ScopeSnapshot {
         fn choose(document: AssistantSnapshot, app: AssistantAppSnapshot) -> Self {
-            if let Some(identity) = app.identity {
+            if let Some(identity) = app
+                .identity
+                .filter(|_| !crate::photo_workspace::is_photo_target())
+            {
                 Self {
                     scope: Some(AgentScope::App(identity)),
                     project_name: app.page_label,
@@ -545,9 +548,16 @@ mod desktop {
         last_persist: Cell<Instant>,
         sender: SyncSender<WorkerResult>,
         receiver: Receiver<WorkerResult>,
+        photo_ui_id: uuid::Uuid,
+        photo_ui_epoch: Cell<u64>,
+        photo_revoke_pending: Cell<bool>,
+        photo_account_epoch: Cell<Option<u64>>,
+        photo_pending: RefCell<Option<crate::photo_workspace::PendingOwnedMetadata>>,
+        photo_ready: RefCell<Option<crate::photo_workspace::OwnedMetadata>>,
     }
     impl Drop for Binding {
         fn drop(&mut self) {
+            crate::photo_workspace::remove_source_hook(self.photo_ui_id);
             crate::clip_export_fence::invalidate(
                 concat_host::export_publication::PublishRevocation::DocumentChanged,
             );
@@ -566,6 +576,133 @@ mod desktop {
         }
     }
     impl Binding {
+        fn photo_source(&self) -> Option<crate::photo_workspace::OwnedSource> {
+            let target = crate::photo_workspace::current_photo_target()?;
+            let epoch = self.photo_ui_epoch.get();
+            if epoch == u64::MAX {
+                return None;
+            }
+            Some(crate::photo_workspace::OwnedSource {
+                managed: target.managed,
+                target_epoch: target.epoch,
+                account_epoch: self.account.try_epoch().ok()?,
+                ui_id: self.photo_ui_id,
+                ui_epoch: epoch,
+            })
+        }
+        fn cancel_photo_source(&self) {
+            crate::photo_workspace::cancel_photo_reads();
+            self.photo_ui_epoch
+                .set(self.photo_ui_epoch.get().saturating_add(1));
+            self.photo_pending.borrow_mut().take();
+            self.photo_ready.borrow_mut().take();
+            self.photo_revoke_pending.set(true);
+            self.apply_photo_source_revocation();
+        }
+        fn apply_photo_source_revocation(&self) -> bool {
+            if !self.photo_revoke_pending.get() {
+                return true;
+            }
+            let Ok(mut state) = self.state.try_borrow_mut() else {
+                return false;
+            };
+            let Ok(mut parked) = self.parked.try_borrow_mut() else {
+                return false;
+            };
+            for state in std::iter::once(&mut *state).chain(parked.iter_mut()) {
+                revoke_task_permits(state);
+                state.task_grant = None;
+                state.update_grant = None;
+                state.approval = None;
+                state.controller.disconnect();
+                state.preparing = false;
+                state.selecting = false;
+                state.epoch = next_epoch();
+            }
+            self.photo_revoke_pending.set(false);
+            true
+        }
+        fn prepare_photo_metadata(&self) {
+            self.refresh_photo_metadata();
+            let Some(source) = self.photo_source() else {
+                return;
+            };
+            let Some(client) = crate::photo_workspace::read_client() else {
+                return;
+            };
+            if self
+                .photo_pending
+                .borrow()
+                .as_ref()
+                .is_some_and(|p| p.origin().source == source)
+            {
+                return;
+            }
+            self.photo_pending.borrow_mut().take();
+            self.photo_ready.borrow_mut().take();
+            let origin = crate::photo_workspace::OwnedOrigin {
+                request_id: uuid::Uuid::new_v4(),
+                source,
+                deadline: Instant::now() + std::time::Duration::from_secs(5),
+            };
+            if let Ok(pending) = client.prepare_owned_metadata(origin) {
+                *self.photo_pending.borrow_mut() = Some(pending);
+            }
+        }
+        fn refresh_photo_metadata(&self) {
+            let Ok(account_epoch) = self.account.try_epoch() else {
+                return;
+            };
+            if self.photo_account_epoch.replace(account_epoch) != account_epoch {
+                crate::photo_workspace::invalidate_photo_target();
+                // The source hook revokes synchronously without borrowing Studio.
+            }
+            let Some(source) = self.photo_source() else {
+                self.photo_pending.borrow_mut().take();
+                self.photo_ready.borrow_mut().take();
+                return;
+            };
+            let Some(client) = crate::photo_workspace::read_client() else {
+                return;
+            };
+            let result = {
+                let mut slot = self.photo_pending.borrow_mut();
+                if slot.as_ref().is_some_and(|p| p.origin().source != source) {
+                    slot.take();
+                }
+                let result = slot.as_mut().and_then(|p| p.try_result(&client));
+                if result.is_some() {
+                    slot.take();
+                }
+                result
+            };
+            if let Some(Ok(metadata)) = result {
+                *self.photo_ready.borrow_mut() = Some(metadata);
+            }
+            let mut ready = self.photo_ready.borrow_mut();
+            if ready.as_ref().is_some_and(|m| {
+                m.origin().source != source || Instant::now() >= m.origin().deadline
+            }) {
+                ready.take();
+            }
+            if ready.is_none() {
+                return;
+            }
+            Shell::with(|shell, _| {
+                let Ok(studio) = shell.studio.try_borrow() else {
+                    return;
+                };
+                let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+                    return;
+                };
+                let Some(mut metadata) = ready.take() else {
+                    return;
+                };
+                if metadata.install(metadata.origin(), source, &client).is_ok() {
+                    bridge.install_photo_binding(metadata);
+                }
+            });
+        }
         /// Start bounded process shutdown before the app's exit-only reaping hook.
         pub(crate) fn shutdown(&self, app: &App) {
             crate::clip_export_fence::invalidate(
@@ -1038,6 +1175,10 @@ mod desktop {
             result
         }
         fn refresh(&self, app: &App) {
+            if !self.apply_photo_source_revocation() {
+                return;
+            }
+            self.refresh_photo_metadata();
             let account_epoch = self.account.epoch();
             let Some(snapshot) = Self::snapshot(app) else {
                 return;
@@ -1796,7 +1937,8 @@ mod desktop {
                 .into(),
             );
             ui.set_can_send(
-                view.can_send
+                !crate::photo_workspace::is_photo_target()
+                    && view.can_send
                     && (!task_mode || !state.controller.task_active())
                     && (!task_mode || !task_observation_unavailable)
                     && !document_observation_unavailable
@@ -1877,7 +2019,9 @@ mod desktop {
                     && !state.catalog.choices.is_empty()
                     && !state.catalog.choices.iter().any(|choice| &choice.id == id)
             });
-            let reason = if let Some(error) = history_error {
+            let reason = if crate::photo_workspace::is_photo_target() {
+                "Photo 当前仅支持文档结构读取，Agent 图像编辑尚未接入"
+            } else if let Some(error) = history_error {
                 error
             } else if self.store.borrow().is_none() {
                 if snapshot.document().is_some() && snapshot.project_key.is_empty() {
@@ -1919,7 +2063,9 @@ mod desktop {
             ui.set_can_connect(view.can_connect && reason.is_empty());
             ui.set_connect_disabled_reason(reason.into());
             ui.set_send_disabled_reason(
-                if let Some(error) = history_error {
+                if crate::photo_workspace::is_photo_target() {
+                    "Photo 当前仅支持文档结构读取，Agent 图像编辑尚未接入"
+                } else if let Some(error) = history_error {
                     error
                 } else if state.preparing {
                     "正在准备连接"
@@ -2084,6 +2230,10 @@ mod desktop {
             })
         }
         fn send(&self, app: &App, text: &str) {
+            if crate::photo_workspace::is_photo_target() {
+                self.refresh(app);
+                return;
+            }
             if app.global::<Assistant>().get_can_send() {
                 Self::fence_app_control_native(false);
                 self.state.borrow_mut().controller.fence_app_control();
@@ -2675,7 +2825,10 @@ mod desktop {
                 let studio = shell.studio.borrow();
                 let mut bridge = studio.editor_mcp.borrow_mut();
                 let app_snapshot = bridge.assistant_app_snapshot(&studio, app);
-                result = if let Some(identity) = app_snapshot.identity {
+                result = if let Some(identity) = app_snapshot
+                    .identity
+                    .filter(|_| !crate::photo_workspace::is_photo_target())
+                {
                     match action {
                         AssistantPermission::GrantRead => {
                             if app_snapshot.read_token.is_some() {
@@ -3030,6 +3183,10 @@ mod desktop {
             self.refresh(app);
         }
         fn connect_managed(&self, app: &App) {
+            if crate::photo_workspace::is_photo_target() {
+                self.refresh(app);
+                return;
+            }
             self.refresh(app);
             let ui = app.global::<Assistant>();
             if !ui.get_open() || !ui.get_can_connect() {
@@ -3499,6 +3656,7 @@ mod desktop {
     }
 
     pub(super) fn bind(app: &App, account: crate::cloud::AccountAccess) -> Rc<Binding> {
+        crate::photo_workspace::invalidate_photo_target();
         let (sender, receiver) = sync_channel(4);
         let mut data = None;
         Shell::with(|shell, _| data = Some(shell.studio.borrow().host.dirs.data.clone()));
@@ -3517,7 +3675,41 @@ mod desktop {
             last_persist: Cell::new(Instant::now()),
             sender,
             receiver,
+            photo_ui_id: uuid::Uuid::new_v4(),
+            photo_ui_epoch: Cell::new(0),
+            photo_revoke_pending: Cell::new(false),
+            photo_account_epoch: Cell::new(account.epoch()),
+            photo_pending: RefCell::new(None),
+            photo_ready: RefCell::new(None),
         });
+        let mut bridge_weak = std::rc::Weak::new();
+        Shell::with(|shell, _| bridge_weak = Rc::downgrade(&shell.studio.borrow().editor_mcp));
+        crate::photo_workspace::set_read_source({
+            let binding = Rc::downgrade(&binding);
+            Rc::new(move || binding.upgrade().and_then(|binding| binding.photo_source()))
+        });
+        crate::photo_workspace::set_source_hook(binding.photo_ui_id, {
+            let binding = Rc::downgrade(&binding);
+            Rc::new(move || {
+                if let Some(binding) = binding.upgrade() {
+                    binding.cancel_photo_source();
+                }
+                if let Some(bridge) = bridge_weak.upgrade()
+                    && let Ok(mut bridge) = bridge.try_borrow_mut()
+                {
+                    bridge.sync_photo_source_fence();
+                }
+            })
+        });
+        app.global::<crate::ui::PhotoWorkspace>()
+            .on_owned_metadata_requested({
+                let binding = Rc::downgrade(&binding);
+                move || {
+                    if let Some(binding) = binding.upgrade() {
+                        binding.prepare_photo_metadata();
+                    }
+                }
+            });
         let ui = app.global::<Assistant>();
         ui.set_enabled(true);
         ui.set_developer_tools(cfg!(feature = "assistant-local-dev"));

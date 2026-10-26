@@ -18,6 +18,7 @@ MCP = 'src/crates/concat-editor-mcp/src/main.rs'
 UI = 'src/crates/concat/ui'
 APP_READ_TOOLS = {'capabilities', 'app_context', 'page_items', 'page_preview'}
 APP_CONTROL_TOOLS = {'app_navigate', 'app_operation'}
+PHOTO_TOOLS = {'capabilities', 'photo_state'}
 
 
 def advertised_tool_sets(path):
@@ -45,17 +46,19 @@ def advertised_tool_sets(path):
     return result
 
 
-def scope_capability_errors(tools, document_lists, app_lists):
+def scope_capability_errors(tools, document_lists, app_lists, photo_lists):
     errors = []
-    if any(len(names) != len(set(names)) for names in document_lists + app_lists):
+    if any(len(names) != len(set(names)) for names in document_lists + app_lists + photo_lists):
         errors.append('Duplicate native capability tool advertisement.')
     app_tools = APP_READ_TOOLS | APP_CONTROL_TOOLS
-    document_tools = tools - (app_tools - {'capabilities'})
+    document_tools = tools - ((app_tools | PHOTO_TOOLS) - {'capabilities'})
     if len(document_lists) != 1 or set(document_lists[0]) != document_tools:
         errors.append('Native document capabilities differ from document-only MCP registrations.')
     if len(app_lists) != 2 or [set(names) for names in app_lists] != [APP_READ_TOOLS, app_tools]:
         errors.append('Native App capability advertisements differ from the legacy read and negotiated control tool sets.')
-    if not app_tools <= tools or document_tools & app_tools != {'capabilities'}:
+    if len(photo_lists) != 1 or set(photo_lists[0]) != PHOTO_TOOLS:
+        errors.append('Native Photo capabilities differ from the metadata-only Photo MCP registrations.')
+    if document_tools | app_tools | PHOTO_TOOLS != tools or document_tools & app_tools != {'capabilities'}:
         errors.append('Native scope capability union differs from MCP registrations.')
     return errors
 
@@ -120,7 +123,8 @@ def check():
     tools = {entry['symbol'] for entry in observed.values() if entry['kind'] == 'registeredTool'}
     document_lists = advertised_tool_sets('src/crates/concat/src/editor_mcp.rs')
     app_lists = advertised_tool_sets('src/crates/concat/src/editor_mcp_app_read.rs')
-    errors.extend(scope_capability_errors(tools, document_lists, app_lists))
+    photo_lists = advertised_tool_sets('src/crates/concat/src/editor_mcp_photo_read.rs')
+    errors.extend(scope_capability_errors(tools, document_lists, app_lists, photo_lists))
     server = read('services/seecut-server/src/seecut_server/assistant_contract.py')
     allowed = re.search(r'^TOOLS\s*=\s*frozenset\((\{[^}]+\})\)', server, re.M)
     if not allowed or ast.literal_eval(allowed.group(1)) != tools:
@@ -169,8 +173,9 @@ def check():
     app_control_tools = APP_READ_TOOLS | APP_CONTROL_TOOLS
     scope_counts = {
         'rawRegistrations': len(tools),
-        'legacyRawRegistrations': len(tools - APP_CONTROL_TOOLS),
-        'document': len(tools - (app_control_tools - {'capabilities'})),
+        'legacyRawRegistrations': len(tools - APP_CONTROL_TOOLS - (PHOTO_TOOLS - {'capabilities'})),
+        'document': len(tools - ((app_control_tools | PHOTO_TOOLS) - {'capabilities'})),
+        'photoMetadata': len(PHOTO_TOOLS),
         'legacyAppRead': len(APP_READ_TOOLS),
         'legacyAppReadWithoutImages': len(APP_READ_TOOLS - {'page_preview'}),
         'appControl': len(app_control_tools),

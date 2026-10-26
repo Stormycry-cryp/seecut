@@ -1,0 +1,235 @@
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5054,6 +5054,7 @@
+  "flate2",
+  "log",
+  "photocraft-algo",
++ "photocraft-automation",
+  "photocraft-cms",
+  "photocraft-codecs",
+  "photocraft-color",
+--- a/crates/ui-egui/Cargo.toml
++++ b/crates/ui-egui/Cargo.toml
+@@ -54,6 +54,8 @@
+ winsafe = { version = "=0.0.29", default-features = false, features = ["kernel", "dxgi"] }
+ 
+ [dev-dependencies]
++# Exercise the real desktop workspace command policy in private lifecycle tests.
++photocraft-automation = { path = "../automation" }
+ # egui's own default fonts in tests: the oracle for egui_fonts.rs, and contexts made with
+ # `Context::default()` (no install_fonts) can lay out text.
+ egui = { workspace = true, features = ["default_fonts"] }
+--- a/crates/ui-egui/src/control.rs
++++ b/crates/ui-egui/src/control.rs
+@@ -414,7 +414,7 @@
+             Ok(request) => Outcome::AfterAdoptedSnapshot(request),
+             Err(value) => Outcome::Done(value),
+         },
+-        "seecut.state" | "seecut.execute" | "seecut.receipt" => Outcome::Done(crate::seecut_agent::handle(app, ctx, &req.method, &req.params)),
++        "seecut.state" | "seecut.execute" | "seecut.receipt" | "seecut.close" => Outcome::Done(crate::seecut_agent::handle(app, ctx, &req.method, &req.params)),
+         "ui.context.choose" => {
+             let Some(id) = s("id") else { return err("missing `id`") };
+             let Some(menu) = app.ui.canvas_tool_menu.as_ref() else { return err("no canvas context menu is open") };
+--- a/crates/ui-egui/src/seecut_agent.rs
++++ b/crates/ui-egui/src/seecut_agent.rs
+@@ -340,6 +340,20 @@
+         return invalid("hostBindingUnavailable");
+     };
+     match method {
++        "seecut.close" => {
++            // Private host lifecycle request: no command, target, force flag, or dialog answer.
++            // Keep the same modal and unsaved-document flow as the native File > Exit menu.
++            if !params.as_object().is_some_and(|fields| fields.is_empty()) {
++                return invalid("invalidParams");
++            }
++            if !crate::menus::modal_allows(app, "file.exit") {
++                return invalid("modalBusy");
++            }
++            match crate::menus::invoke(app, ctx, "file.exit", json!({})) {
++                Ok(result) => ok(result),
++                Err(error) => json!({"ok":false,"error":error}),
++            }
++        }
+         "seecut.state" => {
+             if serde_json::from_value::<StateQuery>(params.clone()).is_err() {
+                 return invalid("invalidParams");
+@@ -482,3 +496,6 @@
+ 
+ #[cfg(all(test, not(target_arch = "wasm32")))]
+ mod deadline_tests;
++
++#[cfg(all(test, not(target_arch = "wasm32")))]
++mod managed_close_tests;
+--- /dev/null
++++ b/crates/ui-egui/src/seecut_agent/managed_close_tests.rs
+@@ -0,0 +1,170 @@
++//! Real control drain and discard workflow under the desktop workspace policy; no native window.
++use super::*;
++use std::sync::mpsc;
++
++const HOST: &str = "8e88a522-e405-40cd-9ef0-56b530ec0c21";
++
++fn fixture(dirty: bool) -> (PhotocraftApp, egui::Context) {
++    let mut session = photocraft_engine::Session::new();
++    session
++        .execute("file.new", json!({"width":8,"height":8}))
++        .unwrap();
++    if dirty {
++        session
++            .execute("layer.new.layer", json!({"name":"Keep this work"}))
++            .unwrap();
++    }
++    let services = crate::Services {
++        automation_command: Some(Box::new(|id, params| {
++            photocraft_automation::workspace::authorize_desktop_engine_command(id, params)
++                .map_err(|error| error.to_string())
++        })),
++        automation_authorize: Some(photocraft_automation::workspace::authorize_desktop_engine_step),
++        ..Default::default()
++    };
++    let mut app = PhotocraftApp::new(session, services);
++    app.seecut_agent = ControlState::from_binding(Some(HOST.into()));
++    assert_eq!(app.session.active().unwrap().is_dirty(), dirty);
++    (app, egui::Context::default())
++}
++
++fn call(
++    app: &mut PhotocraftApp,
++    ctx: &egui::Context,
++    method: &str,
++    params: Value,
++) -> (Value, bool) {
++    let (request, reply) = crate::control::ControlRequest::new(method, params);
++    let (tx, rx) = mpsc::channel();
++    app.control_rx = Some(rx);
++    tx.send(request).unwrap();
++    let mut output = ctx.run_ui(egui::RawInput::default(), |_| app.drain_control(ctx));
++    let closes = output.viewport_output.values().any(|viewport| {
++        viewport
++            .commands
++            .iter()
++            .any(|command| matches!(command, egui::ViewportCommand::Close))
++    });
++    output.textures_delta.clear();
++    (
++        reply
++            .try_recv()
++            .expect("control drain must settle synchronously"),
++        closes,
++    )
++}
++
++fn identity(app: &PhotocraftApp) -> (u64, u64, u64, u64, usize) {
++    let st = app.session.active().unwrap();
++    (
++        st.doc.id.0,
++        st.document_generation,
++        st.revision,
++        st.saved_revision,
++        st.doc.layers.len(),
++    )
++}
++
++#[test]
++fn managed_close_reaches_real_dirty_prompt_under_workspace_policy_and_cancel_keeps_work() {
++    let (mut app, ctx) = fixture(true);
++    let before = identity(&app);
++    let expected_denial =
++        photocraft_automation::workspace::authorize_desktop_engine_command("file.exit", &json!({}))
++            .unwrap_err()
++            .to_string();
++    let (legacy, closes) = call(
++        &mut app,
++        &ctx,
++        "ui.menu.invoke",
++        json!({"command":"file.exit","params":{}}),
++    );
++    assert_eq!(legacy, json!({"ok":false,"error":expected_denial}));
++    assert!(!closes && app.discard.is_none());
++    let (managed, closes) = call(&mut app, &ctx, "seecut.close", json!({}));
++    assert_eq!(managed, json!({"ok":true,"result":null}));
++    assert!(!closes && app.discard.is_some() && !app.allow_close);
++    assert_eq!(identity(&app), before);
++    let (inspect, _) = call(&mut app, &ctx, "ui.inspect", json!({}));
++    let prompt = inspect["result"]["dialogs"]
++        .as_array()
++        .unwrap()
++        .iter()
++        .find(|dialog| dialog["id"] == "discard")
++        .unwrap();
++    assert_eq!(prompt["fields"]["command"], "file.exit");
++    assert_eq!(
++        prompt["fields"]["choices"],
++        json!(["save", "dontSave", "cancel"])
++    );
++    let (repeat, closes) = call(&mut app, &ctx, "seecut.close", json!({}));
++    assert_eq!(repeat["error"], "modalBusy");
++    assert!(!closes && app.discard.is_some());
++    let (cancel, closes) = call(
++        &mut app,
++        &ctx,
++        "ui.dialog.cancel",
++        json!({"dialog":"discard"}),
++    );
++    assert_eq!(cancel["ok"], true);
++    assert!(!closes && app.discard.is_none() && !app.allow_close);
++    assert_eq!(app.session.documents().len(), 1);
++    assert_eq!(identity(&app), before);
++    assert!(app.session.active().unwrap().is_dirty());
++}
++
++#[test]
++fn managed_close_clean_document_requests_normal_viewport_close() {
++    let (mut app, ctx) = fixture(false);
++    let before = identity(&app);
++    let (reply, closes) = call(&mut app, &ctx, "seecut.close", json!({}));
++    assert_eq!(reply, json!({"ok":true,"result":null}));
++    assert!(closes);
++    assert!(app.discard.is_none() && !app.allow_close);
++    assert_eq!(identity(&app), before);
++}
++
++#[test]
++fn managed_close_requires_host_binding_and_strict_empty_object() {
++    let (mut app, ctx) = fixture(true);
++    let before = identity(&app);
++    for params in [
++        Value::Null,
++        json!([]),
++        json!([{}]),
++        json!(true),
++        json!(0),
++        json!(""),
++        json!({"force":true}),
++        json!({"command":"app.quit"}),
++        json!({"choice":"dontSave"}),
++        json!({"document":0}),
++        json!({"hostInstanceId":HOST}),
++    ] {
++        let (reply, closes) = call(&mut app, &ctx, "seecut.close", params);
++        assert_eq!(reply["error"], "invalidParams");
++        assert!(!closes && app.discard.is_none() && !app.allow_close);
++        assert_eq!(identity(&app), before);
++    }
++    for binding in [None, Some("invalid-host".into())] {
++        app.seecut_agent = ControlState::from_binding(binding);
++        let (reply, closes) = call(&mut app, &ctx, "seecut.close", json!({}));
++        assert_eq!(reply["error"], "hostBindingUnavailable");
++        assert!(!closes && app.discard.is_none());
++        assert_eq!(identity(&app), before);
++    }
++}
++
++#[test]
++fn managed_close_respects_existing_modal() {
++    let (mut app, ctx) = fixture(true);
++    let before = identity(&app);
++    let (opened, _) = call(&mut app, &ctx, "ui.dialog.open", json!({"kind":"about"}));
++    assert_eq!(opened["ok"], true);
++    assert!(!app.ui.dialogs.is_empty());
++    let (reply, closes) = call(&mut app, &ctx, "seecut.close", json!({}));
++    assert_eq!(reply["error"], "modalBusy");
++    assert!(!closes && app.discard.is_none() && !app.allow_close);
++    assert!(!app.ui.dialogs.is_empty());
++    assert_eq!(identity(&app), before);
++}
