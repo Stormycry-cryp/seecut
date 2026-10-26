@@ -1952,7 +1952,9 @@
     ],
     "src/crates/concat/ui/seecut/photo-workspace.slint": [
       "close-editor",
-      "open-editor"
+      "open-editor",
+      "owned-metadata-requested",
+      "return-to-photo"
     ],
     "src/crates/concat/ui/seecut/shell.slint": [
       "assets-clicked",
@@ -1968,6 +1970,7 @@
       "clip-source-will-change",
       "personal-can-drop",
       "personal-relink-context-changed",
+      "photo-source-will-change",
       "result-focus"
     ],
     "src/crates/concat/ui/start.slint": [
@@ -5589,6 +5592,135 @@
         "当前真实同账户/client App 读取许可",
         "保持原 operationId、原 COTO 会话与序号"
       ]
+    },
+    {
+      "id": "photo.editor-lifecycle",
+      "module": "photo",
+      "label": "打开与关闭受管图像编辑窗口",
+      "source": "src/crates/concat/src/photo_workspace.rs",
+      "actions": [
+        "PhotoWorkspace.open-editor",
+        "PhotoWorkspace.close-editor",
+        "defer_close"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "evidence": [
+        "src/crates/concat/ui/seecut/photo-workspace.slint",
+        "src/crates/concat/src/photo_workspace.rs",
+        "src/crates/seecut-photo-host/src/lib.rs"
+      ],
+      "statePrerequisites": [
+        "非 iOS、非 Android 的 Unix 开发环境",
+        "显式设置 SEECUT_PHOTO_BUILD_MANIFEST 且受管宿主就绪"
+      ],
+      "notes": "open-editor 仅在 idle/failed 时失效旧来源并排队 Open；串行 worker 通过 NativeHost.start 启动独立编辑进程。close-editor 仅在 running/needs-user 时失效旧来源并排队 Close；未关闭或结果未知时保留用户保存及手工恢复提示，父窗口退出经过 defer_close。未配置开发 manifest 时入口不可用；已发布组件定位与统一打包尚未证明。仅核对源码，未启动 App、未验收真实窗口、保存或导出，未注册对应 Agent 工具。"
+    },
+    {
+      "id": "photo.select-source",
+      "module": "photo",
+      "label": "显式选择图像编辑器作为助手历史来源",
+      "source": "src/crates/concat/src/photo_workspace.rs",
+      "actions": [
+        "PhotoWorkspace.return-to-photo",
+        "TargetState.photo",
+        "TargetState.ready",
+        "PhotoWorkspace.owned-metadata-requested"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "evidence": [
+        "src/crates/concat/ui/seecut/photo-workspace.slint",
+        "src/crates/concat/src/photo_workspace.rs",
+        "src/crates/concat/src/photo_workspace/target.rs"
+      ],
+      "statePrerequisites": [
+        "当前 bind 对应的受管编辑进程已就绪",
+        "目标 bind_id、epoch 与 instance 一致"
+      ],
+      "notes": "return-to-photo 从当前 managed_source 选择 PhotoTarget；来源改变时同步失效旧授权与观察，再请求历史元数据。初次 Open 的 Ready 只补齐原待定目标，迟到结果不能将已返回父页面的来源改回 Photo；重复选择同一来源保留目标代次。来源选择独立于窗口焦点，打开助手面板只请求元数据。此选择仅用于历史关联，不授予图像读取或编辑权限；仅核对源码，未做真实 App 或模型验收。"
+    },
+    {
+      "id": "photo.parent-source-change",
+      "module": "photo",
+      "label": "返回父页面时失效图像来源与旧操作权限",
+      "source": "src/crates/concat/src/photo_workspace.rs",
+      "actions": [
+        "SeeCut.photo-source-will-change",
+        "SeeCut.change-page",
+        "SeeCut.change-canvas-gallery-open",
+        "select_parent_target",
+        "source_changed"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "evidence": [
+        "src/crates/concat/ui/seecut/state.slint",
+        "src/crates/concat/src/photo_workspace.rs",
+        "src/crates/concat/src/cloud.rs",
+        "src/crates/concat/src/agent_ui.rs",
+        "src/crates/concat/src/editor_mcp.rs"
+      ],
+      "notes": "bind 将 photo-source-will-change 绑定 select_parent_target；页面或画布列表状态实际改变前回到 Parent，cloud 已通过离开确认的 navigate_unchecked 路径也选择 Parent。source_changed 推进来源代次，并同步失效页面导航、Clip 保存/导出及助手任务许可；来源 hook 撤销旧任务许可并断开控制器，通过来源 fence 清除旧历史绑定。账户变化同样失效 Photo 目标。取消的页面切换不据此声称成功；仅核对源码，未做实窗导航或授权恢复验收。"
+    },
+    {
+      "id": "photo.history-metadata",
+      "module": "photo",
+      "label": "准备已保存图像的父应用会话历史关联",
+      "source": "src/crates/concat/src/agent_ui.rs",
+      "actions": [
+        "PhotoWorkspace.owned-metadata-requested",
+        "Binding.prepare_photo_metadata",
+        "PhotoWorkerClient.prepare_owned_metadata",
+        "OwnedStore.run",
+        "Binding.refresh_photo_metadata",
+        "BridgeUi.install_photo_binding"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "evidence": [
+        "src/crates/concat/ui/app.slint",
+        "src/crates/concat/src/agent_ui.rs",
+        "src/crates/concat/src/photo_workspace/owned_metadata.rs",
+        "src/crates/concat/src/editor_mcp.rs",
+        "src/crates/seecut-photo-host/src/photo.rs"
+      ],
+      "statePrerequisites": [
+        "macOS 或 Linux 宿主",
+        "当前 PhotoTarget、受管进程、账户和 UI 代次一致",
+        "原准备请求未取消且在五秒期限内安装",
+        "宿主验证的已保存图像 backing identity"
+      ],
+      "notes": "助手打开、Photo Ready 或显式返回 Photo 时请求元数据；原请求经过串行 worker 的 owned_photo_workspace_binding，回包及安装均核对来源、期限和实例身份。只有历史 key 和 PhotoIdentity 进入父应用绑定；没有 read lease、PNG 或模型授权。历史关联完成后仍需单独读取许可，当前 Photo 读取许可入口关闭。只核对源码，不把内部绑定或低层宿主能力计为已注册 Agent 能力、运行验收或生产交付。"
+    },
+    {
+      "id": "photo.agent-availability",
+      "module": "photo",
+      "label": "图像来源的 Agent 连接发送与读写限制",
+      "source": "src/crates/concat/src/editor_mcp.rs",
+      "actions": [
+        "Binding.connect_managed",
+        "Binding.send",
+        "BridgeUi.assistant_snapshot",
+        "BridgeUi.assistant_permission",
+        "BridgeUi.grant",
+        "BridgeUi.handle",
+        "dispatch",
+        "dispatch_write"
+      ],
+      "mcpTools": [],
+      "agentStatus": "unmapped",
+      "acceptance": "source",
+      "evidence": [
+        "src/crates/concat/src/agent_ui.rs",
+        "src/crates/concat/src/editor_mcp.rs",
+        "src/crates/concat-editor-mcp/src/main.rs"
+      ],
+      "notes": "当前生产入口对 PhotoTarget 禁止连接和发送；assistant_snapshot 不允许授予读写，assistant_permission 拒绝 GrantRead/GrantWrite，Settings grant 直接返回，原生 MCP 读写分发返回 unsupportedWorkspace。MCP 没有注册 Photo 工具；独立 seecut-photo-host 的读取、快照或编辑实现不代表生产 Agent 路由接通。Photo 历史来源绑定不改变现有 Canvas、Clip、Flow 与普通 App 各自的工具范围；本记录仅证明限制存在于源码，运行、模型联合调用和最终图像产物均未验收。"
     }
   ]
 }
