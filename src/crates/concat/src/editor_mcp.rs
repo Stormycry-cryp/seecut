@@ -716,6 +716,7 @@ impl BridgeUi {
     }
 
     pub(crate) fn clear_photo_binding(&mut self) {
+        crate::photo_workspace::clear_reader_display();
         self.photo_reads.invalidate();
         if let Some((_, ids)) = self.photo_binding.take() {
             self.grants.retain(|_, grant| grant.project != ids.project);

@@ -118,10 +118,12 @@ SeeCut 管理独立编辑进程和窗口的开发入口已提交至 Draft PR #24
 
 ## 10 月 26 日文档结构读取
 
-父级已注册 `photo_state`，只接受原 `projectId` 与 `documentSessionId`。已保存 Photo 可以通过原 Doc 读取授权及 Settings 客户端授权读取结构；两条授权都没有媒体或编辑权限。Photo 的能力发现只列 `capabilities`、`photo_state`，不把旧 Canvas、Clip、Flow 工具列为 Photo 功能。服务端仅同步工具词表，不开启 Photo 的托管 Agent 连接或发送。
+父级已注册 `photo_state`，只接受原 `projectId` 与 `documentSessionId`。已保存 Photo 通过原 Doc 读取授权读取结构，不授予媒体或编辑权限。Photo 的能力发现只列 `capabilities`、`photo_state`，不把旧 Canvas、Clip、Flow 工具列为 Photo 功能。服务端仅同步工具词表，不开启 Photo 的托管 Agent 连接或发送。
 
 请求先在 UI 核对原实例、文档、账户、来源及读取许可，再进入唯一 Photo 后台 worker。worker 验证原文件历史键与 host/doc/generation，重新读取真实 backing 和完整文档身份，返回后再次核对原许可与来源。单个待处理请求持有原五秒截止时间；取消、切源、另存为、文档换代或过期均不能把旧结果安装到新来源。文件操作不进入 UI 线程，五秒只约束结果有效期，不承诺中止底层文件操作。
 
 返回有界的文档、图层、选择及历史元数据，原生 u64 和规范路径留在 Rust 内；opaque handles 仅引用原读取，不自动替换成新的文档或图层。结果明确 `metadataOnly`、`editAvailable:false`，不构成像素、实际显示或编辑能力的证明。后续写解析器目前仅作为 `cfg(test)` 候选回归保留，没有生产写入口。
 
-主代理已执行 113 项协议/stdio 测试及该包严格 Clippy、36 项服务端合同与工具词表测试、20 项集成脚本测试，均通过。63 项隔离测试通过，包含真实宿主源码与合成认证 TCP、真实临时文件、typed Some 文档进入父级投影；其中写映射回归仍属于未接入的候选，不代表生产编辑验收。最终父应用编译与严格检查的结果单独记录，真实 GUI、模型读图、受控编辑、跨功能任务及统一 macOS 包仍待完成。
+主代理已执行 113 项协议/stdio 测试及该包严格 Clippy、36 项服务端合同与工具词表测试、20 项集成脚本测试，均通过。63 项隔离测试通过，包含真实宿主源码与合成认证 TCP、真实临时文件、typed Some 文档进入父级投影；其中写映射回归仍属于未接入的候选，不代表生产编辑验收。提交 `f3f83992` 的父应用编译、all-targets 严格 Clippy 和 workspace fmt 通过，主代理核对 289 份来源哈希；2 项实际能力路由谓词回归也通过。真实 GUI、模型读图、受控编辑、跨功能任务及统一 macOS 包仍待完成。
+
+随后核对实际授权入口发现：打开 Settings 会明确切回 Parent，普通客户端无法在该页面直接授予 Photo 读取。因此在 Photo 卡片补默认折叠的外部工具读取设置，直接复用同一原客户端草稿和 Doc grant 账本。仅对当前有效保存关联授予普通客户端 R；固定 Assistant、错误客户端和其他 scope 的凭据不展示，也不能由该入口撤销。收起、失去来源或无法核对当前绑定时清除凭据展示。前端由 Astra 实现，授权业务由 6.1-sol 实现；本次新增入口的父工程编译与实际界面验收单独核对。

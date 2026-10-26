@@ -58,7 +58,7 @@ profile guard 自身另由主代理使用 rustc 1.95、`-D warnings` 独立编�
 
 返回对象保持 File 句柄，`history_key()` 仅供原 Store 使用，格式为 `photo:<规范路径>`，最多 4096 字节。文件标识不进入历史键，同路径原子保存后可重新核验新对象并沿用原历史。该结果只证明当前 Session 关联与当前文件对象，不能证明此前读写的精确字节、永久文件 UUID 或外部不再变化。
 
-文件核验仅支持 macOS/Linux；末端使用 `O_NONBLOCK|O_NOFOLLOW` 防止竞态换成 FIFO 后等待打开，并拒绝末端 symlink，原记录的 symlink 可先规范化。此选项不保证网络文件系统的硬 I/O 期限。两个方法都不能在 UI tick 调用；调用方仍须在调用前后复核原读取许可、账号与 Task。方法名称不创建授权，父级 MCP/Task 接线尚待实现。
+文件核验仅支持 macOS/Linux；末端使用 `O_NONBLOCK|O_NOFOLLOW` 防止竞态换成 FIFO 后等待打开，并拒绝末端 symlink，原记录的 symlink 可先规范化。此选项不保证网络文件系统的硬 I/O 期限。两个方法都不能在 UI tick 调用；调用方仍须在调用前后复核原读取许可、账号与 Task。方法名称不创建授权；父级 `photo_state` 已接入原 Doc 读取门槛，像素、编辑与 Task 接线另行实现。
 
 七补丁来源锁更新后，主代理使用 Rust 1.93.0 实际执行 18 项宿主测试、all-targets 严格 Clippy、真实 `live_editor_probe` 编译及 workspace fmt，全部通过。新增测试覆盖闭合状态解析、u64 上限、真实文件/路径核验、同路径原子更换、双读变化拒绝和封闭退出方法。macOS 的非 UTF-8 文件名夹具被本机 APFS 以 EILSEQ 拒绝，记录为该夹具不可建立；没有声称对应 helper 分支已在 macOS 实际执行，Linux 用例仍要求真实创建并拒绝该别名。
 
@@ -89,5 +89,17 @@ Linux 联测例子已改用现有目录权限约束下的 `app.save` 保存及�
 精确提交 `6d8dd80504bc6144c089ea420555d89b74567741` 的[完整编辑器隔离联测](https://github.com/Stormycry-cryp/seecut/actions/runs/39918618869)成功：真实保存关联、三次绑定、透明度与去重、撤销、旧版本/错文档拒绝、封闭快照及原记录验证、封闭编辑及原回执、dirty 提示和 Cancel、单合成文档丢弃、空 Session 正常退出、真实 Child 退出及 OS 锁释放均通过。主代理下载 artifact `12487578202` 后重解码 4 张 PNG，共核对 1024 像素。它不证明整个 SeeCut、屏幕 present、父 MCP/Task 或模型看图。
 
 新增 `owned_photo_workspace_binding(id)` 供应用同步自己管理的 Ready 编辑器与历史工程身份。该固定入口无 path/method/Agent token 输入，不采 PNG、不签发权限；与原 gated backing 入口共用完全相同的私有 typed 双读及文件核验。原 Agent after_gate 契约保持。它只可在原唯一后台 worker 执行，安装摘要前复核原 child、账户、目标与 UI 来源；缓存不代表永久当前状态。
+
+## 父级文档结构读取
+
+父级 MCP 目前仅开放 Photo 的 `capabilities` 与 `photo_state`。后者只接受原父 `projectId`、`documentSessionId`，通过唯一 worker 重新核对原保存关联和完整文档身份，回到 UI 后再次验证原账户、来源、许可及请求。响应为文档、图层和选择的有界元数据；原生整数和文件路径不进入模型协议，`editAvailable` 固定为 false。
+
+外部工具的配置入口位于 Photo 卡片内，默认折叠。打开设置页面会选择 Parent，不能在那里保留 Photo 授权目标。开发候选中的使用顺序为：
+
+1. 按上文启动自有编辑器，保存 `.pcraft`，明确选择图像编辑器作为来源并等待关联就绪。
+2. 展开外部工具读取设置，填写普通客户端 ID，显式授予当前文档结构读取；使用显示的本机 App 实例 ID、客户端 ID 和令牌配置本机 stdio MCP 客户端。
+3. 先调用 `capabilities` 获取原父文档身份，再以原样身份调用 `photo_state`。撤销、换账户、切来源或文档重新绑定后，旧令牌和结果不能用于新文档。
+
+该入口复用现有权限账本，仅授予 R；不展示固定 Assistant 或其他 scope 的令牌。授权不连接托管 Agent，不开放图片、编辑、文件写入或任意上游命令。入口源码和纯策略测试不代替实际窗口交互、模型接收图片或统一安装包验收。
 
 主代理在新增入口后实际执行 40 项宿主测试、all-targets 严格 Clippy、联测例子编译及 workspace fmt，全部通过。5 项新测试使用本次自有 Python Child、真实认证 TCP 与真实文件，覆盖双读、错身份/未 Ready 零读、未保存/只读拒绝、错误零重试及最终文件替换拒绝。这些合成子进程证据不代替父级 UI 绑定验收。

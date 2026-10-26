@@ -76,6 +76,7 @@ pub(crate) fn source_fence() -> Option<u64> {
     SOURCE_FENCE.with(|f| f.get())
 }
 fn source_changed() {
+    clear_reader_display();
     cancel_photo_reads();
     // Original admission/publication gates revoke without Studio, Bridge, Cloud,
     // or controller borrows, including reentrant native-dialog callbacks.
@@ -192,6 +193,112 @@ pub(crate) fn defer_close(app: &App) -> bool {
     true
 }
 
+/// Clear local credential projection without borrowing Studio or Bridge.
+/// The grant itself remains owned and revoked by the existing Bridge registry.
+pub(crate) fn clear_reader_display() {
+    crate::host::Shell::with(|_, app| clear_reader_fields(&app));
+}
+fn clear_reader_fields(app: &App) {
+    let ui = app.global::<PhotoWorkspace>();
+    ui.set_reader_token("".into());
+    ui.set_reader_instance("".into());
+    ui.set_reader_can_grant(false);
+    ui.set_reader_can_revoke(false);
+    ui.set_reader_status("请先选择图像来源，并关联已保存的图像文档。".into());
+}
+
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+fn refresh_reader(app: &App) {
+    clear_reader_fields(app);
+    if !app.global::<PhotoWorkspace>().get_reader_open() {
+        return;
+    }
+    crate::host::Shell::with(|shell, _| {
+        let Ok(studio) = shell.studio.try_borrow() else {
+            return;
+        };
+        let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+            return;
+        };
+        let view = bridge.photo_reader_view(&studio, app);
+        let ui = app.global::<PhotoWorkspace>();
+        ui.set_reader_client(view.client.into());
+        ui.set_reader_instance(view.instance.into());
+        ui.set_reader_token(view.token.into());
+        ui.set_reader_can_grant(view.can_grant);
+        ui.set_reader_can_revoke(view.can_revoke);
+        ui.set_reader_status(view.status.into());
+    });
+}
+
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+fn bind_reader(app: &App) {
+    app.global::<PhotoWorkspace>().on_reader_toggle(|| {
+        crate::host::Shell::with(|_, app| {
+            let ui = app.global::<PhotoWorkspace>();
+            ui.set_reader_open(!ui.get_reader_open());
+            refresh_reader(&app);
+        });
+    });
+    app.global::<PhotoWorkspace>()
+        .on_reader_client_edited(|text| {
+            crate::host::Shell::with(|shell, app| {
+                clear_reader_fields(&app);
+                if !app.global::<PhotoWorkspace>().get_reader_open() {
+                    return;
+                }
+                {
+                    let Ok(studio) = shell.studio.try_borrow() else {
+                        return;
+                    };
+                    let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+                        return;
+                    };
+                    bridge.client_draft = text.to_string();
+                }
+                refresh_reader(&app);
+            });
+        });
+    app.global::<PhotoWorkspace>().on_reader_grant(|| {
+        crate::host::Shell::with(|shell, app| {
+            clear_reader_fields(&app);
+            if !app.global::<PhotoWorkspace>().get_reader_open() {
+                return;
+            }
+            {
+                let Ok(studio) = shell.studio.try_borrow() else {
+                    return;
+                };
+                let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+                    return;
+                };
+                let client = app.global::<PhotoWorkspace>().get_reader_client();
+                bridge.grant_photo_reader(&studio, &app, client.as_str());
+            }
+            refresh_reader(&app);
+        });
+    });
+    app.global::<PhotoWorkspace>().on_reader_revoke(|| {
+        crate::host::Shell::with(|shell, app| {
+            clear_reader_fields(&app);
+            if !app.global::<PhotoWorkspace>().get_reader_open() {
+                return;
+            }
+            {
+                let Ok(studio) = shell.studio.try_borrow() else {
+                    return;
+                };
+                let Ok(mut bridge) = studio.editor_mcp.try_borrow_mut() else {
+                    return;
+                };
+                let client = app.global::<PhotoWorkspace>().get_reader_client();
+                bridge.revoke_photo_reader(&studio, &app, client.as_str());
+            }
+            refresh_reader(&app);
+        });
+    });
+}
+
 /// Hold the returned timer for the lifetime of the application event loop.
 pub(crate) fn bind(app: &App) -> slint::Timer {
     let timer = slint::Timer::default();
@@ -242,6 +349,8 @@ pub(crate) fn bind(app: &App) -> slint::Timer {
     }
     READ_CLIENT.with(|slot| *slot.borrow_mut() = Some(client));
     Snapshot::idle().publish(app);
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    bind_reader(app);
     app.global::<PhotoWorkspace>().on_return_to_photo({
         let weak = app.as_weak();
         move || {
@@ -339,6 +448,8 @@ pub(crate) fn bind(app: &App) -> slint::Timer {
             let Some(app) = weak.upgrade() else {
                 return;
             };
+            #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+            refresh_reader(&app);
             // Drain in order so a completion cannot be replaced by an older update.
             while let Ok(snapshot) = incoming.try_recv() {
                 if snapshot.phase == RUNNING && owned.current().is_none() {
