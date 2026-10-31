@@ -246,11 +246,8 @@ pub fn lay_out(node: &Dock, (x, y, w, h): (f32, f32, f32, f32), out: &mut DockLa
     }
 }
 
-/// The arrangement the editor opens with: the library, the monitor and the
-/// inspector across the top, the timeline along the bottom. The same three
-/// shares the fixed layout carried, re-expressed as a tree — 0.31 of the width
-/// to the library and 0.22 to the inspector, which is 0.319 of what is left
-/// once the library has had its share.
+/// The editing workspace keeps its media, preview, inspector and timeline.
+/// Image editing has a dedicated workspace in the application navigation.
 pub fn default_dock() -> Dock {
     Dock::Split {
         columns: false,

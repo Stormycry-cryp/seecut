@@ -35,6 +35,11 @@ pub struct Host {
     pub playback: Arc<Playback>,
     /// The monitor's reader pool.
     pub monitor: Monitor,
+    /// The window's device and queue, kept for the canvas pane's compositor.
+    /// `None` where no adapter was offered, and then the canvas composites
+    /// on the CPU.
+    pub gpu_device: Option<wgpu::Device>,
+    pub gpu_queue: Option<wgpu::Queue>,
     /// The one-export-at-a-time slot.
     pub exporter: Exporter,
     /// whisper.cpp, and its model downloads.
@@ -61,6 +66,13 @@ impl Host {
     pub fn start(gpu: Option<Gpu>) -> Result<Host, String> {
         let dirs = AppDirs::locate()?;
         let _ = std::fs::create_dir_all(&dirs.config);
+        // The device stays reachable for the canvas pane, which composites
+        // on it too - a second compositor over the one device the window
+        // draws with, the same sharing the monitor has.
+        let (device, queue) = match &gpu {
+            Some(gpu) => (Some(gpu.device.clone()), Some(gpu.queue.clone())),
+            None => (None, None),
+        };
         Ok(Host {
             titles: concat_host::Titles::new(&dirs),
             cutouts: Arc::new(concat_host::Cutouts::new(&dirs.data)),
@@ -71,6 +83,8 @@ impl Host {
                 Some(gpu) => Monitor::with_gpu(gpu.device, gpu.queue),
                 None => Monitor::new(),
             },
+            gpu_device: device,
+            gpu_queue: queue,
             exporter: Exporter::new(),
             transcriber: Arc::new(Transcriber::new()),
             speech: Arc::new(Speech::new()),

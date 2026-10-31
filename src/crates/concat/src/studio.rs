@@ -562,6 +562,13 @@ pub struct Studio {
     pub clipboard: Option<Clip>,
     /// The monitor: its frame, and the requests for the next.
     pub monitor: crate::panes::monitor::MonitorPane,
+    /// The image editor's canvas: its document, and the view over it.
+    pub canvas: crate::panes::canvas::CanvasPane,
+    /// A window close waiting for the user to resolve the canvas and clip
+    /// project saves. Kept in Studio so the modal remains visible while the
+    /// user visits any workspace page.
+    pub exit_pending: bool,
+    pub exit_error: String,
 
     // ── the sheets and menus ──
     pub export: crate::panes::export::ExportPane,
@@ -1224,6 +1231,9 @@ impl Studio {
             transport: slint::Timer::default(),
             clipboard: None,
             monitor: crate::panes::monitor::MonitorPane::default(),
+            canvas: crate::panes::canvas::CanvasPane::default(),
+            exit_pending: false,
+            exit_error: String::new(),
             export: Default::default(),
             settings: crate::panes::settings::SettingsPane::default(),
             relink: crate::panes::relink::RelinkPane::default(),
@@ -4562,19 +4572,22 @@ impl Studio {
         self.request_preview();
     }
 
-    /// Saves, then closes the session and returns to the launch screen.
-    pub fn close_project(&mut self) {
+    /// Saves, then closes the clip session and returns to the launch screen.
+    /// The canvas is deliberately independent: closing the clip project must
+    /// not discard an open canvas document.
+    pub fn close_project(&mut self) -> Result<(), String> {
         self.pause();
-        self.host.cutouts.cancel();
-        self.cutout_jobs.clear();
-        self.region_job = None;
         if let Some(session) = self.session.as_mut() {
             let (path, document) = session.prepare_save(None);
             if let Err(error) = projects::save(&path, &document) {
-                self.notify(&tf("Could not save: {0}", &[&error]), true);
-                return;
+                let message = tf("Could not save: {0}", &[&error]);
+                self.notify(&message, true);
+                return Err(message);
             }
         }
+        self.host.cutouts.cancel();
+        self.cutout_jobs.clear();
+        self.region_job = None;
         self.autosave.stop();
         self.session = None;
         self.echo = None;
@@ -4593,6 +4606,81 @@ impl Studio {
             .set_clips(std::path::PathBuf::new(), Vec::new());
         self.on_start = true;
         self.recents = projects::list(&self.host.dirs.config);
+        Ok(())
+    }
+
+    /// Starts the one close flow shared by the title bar, the system close
+    /// request, and File > Close Window. A dirty canvas opens the global
+    /// confirmation sheet; a clean canvas proceeds to the clip save.
+    pub fn request_window_close(&mut self) -> bool {
+        if self.exit_pending {
+            return false;
+        }
+        self.exit_error.clear();
+        if self.canvas.is_modified() {
+            self.exit_pending = true;
+            return false;
+        }
+        self.finish_window_close()
+    }
+
+    /// Cancels the pending window close and leaves both the canvas and the
+    /// clip session where they were.
+    pub fn cancel_window_close(&mut self) {
+        self.exit_pending = false;
+        self.exit_error.clear();
+    }
+
+    /// Saves the canvas when needed, then closes the clip session. A cancelled
+    /// Save As or a failed save leaves the modal open and the window alive.
+    pub fn resolve_window_close_save(&mut self) -> bool {
+        if !self.exit_pending {
+            return false;
+        }
+        self.exit_error.clear();
+        if self.canvas.is_modified() {
+            match self.canvas.save_current() {
+                Ok(true) => {}
+                Ok(false) => return false,
+                Err(error) => {
+                    let message = tf("Canvas failed: {0}", &[&error]);
+                    self.exit_error = message.clone();
+                    self.notify(&message, true);
+                    return false;
+                }
+            }
+        }
+        self.finish_window_close()
+    }
+
+    /// Drops the canvas changes only after the clip session has saved and
+    /// closed successfully. A clip save failure therefore cannot be bypassed
+    /// by choosing to discard the canvas.
+    pub fn resolve_window_close_discard(&mut self) -> bool {
+        if !self.exit_pending {
+            return false;
+        }
+        self.exit_error.clear();
+        if !self.finish_window_close() {
+            return false;
+        }
+        self.canvas.discard_unsaved();
+        true
+    }
+
+    fn finish_window_close(&mut self) -> bool {
+        match self.close_project() {
+            Ok(()) => {
+                self.exit_pending = false;
+                self.exit_error.clear();
+                true
+            }
+            Err(error) => {
+                self.exit_pending = true;
+                self.exit_error = error;
+                false
+            }
+        }
     }
 
     /// Posters for the recents that have none yet, decoded on a worker.
@@ -4673,6 +4761,11 @@ impl Studio {
                 let mut pane = std::mem::take(&mut self.monitor);
                 pane.update(msg, self);
                 self.monitor = pane;
+            }
+            crate::panes::Msg::Canvas(msg) => {
+                let mut pane = std::mem::take(&mut self.canvas);
+                pane.update(msg, self);
+                self.canvas = pane;
             }
         }
     }
@@ -4763,6 +4856,7 @@ impl Studio {
         self.publish_lanes(app, models);
         self.publish_chrome(app, models);
         self.publish_dock(app, models);
+        self.publish_canvas(app);
     }
 
     pub fn publish_dock(&self, _app: &App, models: &Models) {
@@ -5460,6 +5554,164 @@ impl Studio {
                 }
             },
         );
+    }
+
+    /// The canvas pane's readouts: the picture and the view Rust holds.
+    /// Values, not models, so it rides in whichever publish is running.
+    fn publish_canvas(&self, app: &App) {
+        let editor = app.global::<Editor>();
+        editor.set_canvas_frame(self.canvas.image.clone());
+        editor.set_canvas_has_document(self.canvas.document.is_some());
+        editor.set_canvas_can_undo(self.canvas.can_undo());
+        editor.set_canvas_can_redo(self.canvas.can_redo());
+        editor.set_canvas_modified(self.canvas.is_modified());
+        editor.set_canvas_open_confirm(self.canvas.open_confirm);
+        editor.set_canvas_exit_confirm(self.exit_pending);
+        editor.set_canvas_exit_error(self.exit_error.as_str().into());
+        editor.set_canvas_name(self.canvas.name.as_str().into());
+        editor.set_canvas_zoom(self.canvas.zoom as f32);
+        editor.set_canvas_pan_x(self.canvas.pan.0 as f32);
+        editor.set_canvas_pan_y(self.canvas.pan.1 as f32);
+        editor.set_canvas_stage_w(self.canvas.stage.0 as f32);
+        editor.set_canvas_stage_h(self.canvas.stage.1 as f32);
+        editor.set_canvas_tool(self.canvas.tool as i32);
+        editor.set_canvas_brush_diameter(self.canvas.brush.diameter as f32);
+        editor.set_canvas_brush_opacity(self.canvas.brush.opacity as f32);
+        editor.set_canvas_brush_hardness(self.canvas.brush.hardness as f32);
+        editor.set_canvas_brush_color(self.canvas.brush_color_index);
+        let publish_rect = |set_x: &dyn Fn(f32),
+                            set_y: &dyn Fn(f32),
+                            set_w: &dyn Fn(f32),
+                            set_h: &dyn Fn(f32),
+                            rect: Option<(f64, f64, f64, f64)>| {
+            let (x, y, w, h) = rect.unwrap_or((0.0, 0.0, 0.0, 0.0));
+            set_x(x as f32);
+            set_y(y as f32);
+            set_w(w as f32);
+            set_h(h as f32);
+        };
+        publish_rect(
+            &|v| editor.set_canvas_selection_x(v),
+            &|v| editor.set_canvas_selection_y(v),
+            &|v| editor.set_canvas_selection_w(v),
+            &|v| editor.set_canvas_selection_h(v),
+            self.canvas.selection_view,
+        );
+        editor.set_canvas_has_selection(self.canvas.selection.is_some());
+        publish_rect(
+            &|v| editor.set_canvas_marquee_x(v),
+            &|v| editor.set_canvas_marquee_y(v),
+            &|v| editor.set_canvas_marquee_w(v),
+            &|v| editor.set_canvas_marquee_h(v),
+            self.canvas.marquee_view,
+        );
+        // The layers panel: rows front-to-back, and the picked row's index.
+        let rows: Vec<CanvasLayerData> = self
+            .canvas
+            .layers_data()
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    name,
+                    hidden,
+                    opacity,
+                    active,
+                    depth,
+                    expanded,
+                    group,
+                    masked,
+                    mask_paint,
+                    mask_enabled,
+                )| {
+                    CanvasLayerData {
+                        id: id as i32,
+                        name: name.into(),
+                        hidden,
+                        opacity,
+                        active,
+                        depth: depth as i32,
+                        expanded,
+                        group,
+                        masked,
+                        mask_paint,
+                        mask_enabled,
+                    }
+                },
+            )
+            .collect();
+        editor.set_canvas_active_layer(
+            rows.iter()
+                .position(|row| row.active)
+                .map(|index| index as i32)
+                .unwrap_or(-1),
+        );
+        editor.set_canvas_layers(slint::ModelRc::new(slint::VecModel::from(rows)));
+        crate::publish_canvas_aux(self, app);
+        // The checker under the picture, the active row's adjustment and
+        // its knobs - the same publish, one block over.
+        editor.set_canvas_checker(self.canvas.checker.clone());
+        let (kind, parameters) = self.canvas.adjustment_state();
+        editor.set_canvas_adjustment_kind(kind);
+        let params: Vec<CanvasAdjustmentParam> = parameters
+            .into_iter()
+            .map(|(label, value, minimum, maximum)| CanvasAdjustmentParam {
+                label: label.into(),
+                value,
+                minimum,
+                maximum,
+            })
+            .collect();
+        editor.set_canvas_adjustment_params(slint::ModelRc::new(slint::VecModel::from(params)));
+        // The active gradient map's two colours, as the swatches read
+        // them; the defaults stand in when the row is not one.
+        let (low, high) = self
+            .canvas
+            .gradient_colors()
+            .unwrap_or(([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]));
+        let ramp = |rgb: [f32; 3]| {
+            slint::Color::from_rgb_u8(
+                (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            )
+        };
+        editor.set_canvas_gradient_low(ramp(low));
+        editor.set_canvas_gradient_high(ramp(high));
+        // The active row's curves, as the editor draws them: three
+        // channels of sorted (input, output) points, plus the same three
+        // as precomputed strokes, normalized to the editor's square.
+        let mut curve_red = Vec::new();
+        let mut curve_green = Vec::new();
+        let mut curve_blue = Vec::new();
+        let mut seg_red = Vec::new();
+        let mut seg_green = Vec::new();
+        let mut seg_blue = Vec::new();
+        for (channel, points) in self.canvas.curve_channels().into_iter().enumerate() {
+            let (out, segs) = match channel {
+                0 => (&mut curve_red, &mut seg_red),
+                1 => (&mut curve_green, &mut seg_green),
+                _ => (&mut curve_blue, &mut seg_blue),
+            };
+            out.extend(points.iter().map(|&(x, y)| CanvasCurvePoint { x, y }));
+            segs.extend(
+                crate::panes::canvas::curve_segments(&points)
+                    .into_iter()
+                    .map(|segment| CanvasCurveSegment {
+                        x: segment.x,
+                        y: segment.y,
+                        x2: segment.x2,
+                        y2: segment.y2,
+                    }),
+            );
+        }
+        editor.set_canvas_curve_red(slint::ModelRc::new(slint::VecModel::from(curve_red)));
+        editor.set_canvas_curve_green(slint::ModelRc::new(slint::VecModel::from(curve_green)));
+        editor.set_canvas_curve_blue(slint::ModelRc::new(slint::VecModel::from(curve_blue)));
+        editor.set_canvas_curve_segments_red(slint::ModelRc::new(slint::VecModel::from(seg_red)));
+        editor
+            .set_canvas_curve_segments_green(slint::ModelRc::new(slint::VecModel::from(seg_green)));
+        editor.set_canvas_curve_segments_blue(slint::ModelRc::new(slint::VecModel::from(seg_blue)));
     }
 
     /// The menus, the dialogs, the bin and the engine lists.

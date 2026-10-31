@@ -1,0 +1,281 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { Theme, Glyph, Icon, IconButton, FocusRing, Tip, Select } from "../primitives/primitives.slint";
+import { SeeCut } from "state.slint";
+
+export component AppButton inherits Rectangle {
+    in property <string> label;
+    in property <Glyph> glyph;
+    in property <bool> primary;
+    in property <bool> selected;
+    in property <bool> danger;
+    in property <bool> subtle;
+    in property <bool> elide-label;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: Theme.workbench-h;
+    horizontal-stretch: 0;
+    min-width: root.elide-label ? 0px : caption.preferred-width + 24px + (root.glyph == Glyph.none ? 0px : 22px);
+    border-radius: Theme.r;
+    opacity: 1;
+    background: !root.enabled ? Theme.well : root.selected ? Theme.accent-soft : root.subtle ? Colors.transparent : root.primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : touch.has-hover ? Theme.field-hover : Theme.field;
+    border-width: root.subtle ? 0px : 1px;
+    border-color: !root.enabled ? Theme.line : root.primary || root.selected ? Theme.accent : Theme.line;
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
+    property <bool> ring;
+    property <brush> ink: !root.enabled ? Theme.fg-dim : root.selected ? Theme.accent : root.primary ? Theme.on-accent : root.danger ? Theme.danger : root.subtle ? Theme.fg-muted : Theme.fg;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: Theme.workbench-gap;
+        alignment: center;
+        if root.glyph != Glyph.none: VerticalLayout {
+            alignment: center;
+            Icon { glyph: root.glyph; size: Theme.workbench-icon; tint: root.ink; }
+        }
+        caption := Text { min-width: 0px; horizontal-stretch: root.elide-label ? 1 : 0; font-size: Theme.workbench-font; text: root.label; color: root.ink; vertical-alignment: center; overflow: elide; }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { focus.focus(); root.clicked(); }
+    }
+    FocusRing { active: root.ring; radius: Theme.r; }
+}
+
+export component CloudField inherits Rectangle {
+    in-out property <string> value;
+    in property <string> placeholder;
+    in property <bool> password;
+    property <bool> revealed;
+    in property <bool> multiline;
+    in property <bool> enabled: true;
+    callback edited(value: string);
+    in property <bool> auto-focus;
+    init => { if root.auto-focus { input.focus(); } }
+    callback cursor-moved(offset: int);
+    callback key-event(text: string) -> bool;
+    public function focus-at(offset: int) { input.focus(); input.set-selection-offsets(offset, offset); }
+    min-height: root.multiline ? 128px : Theme.workbench-h;
+    max-height: root.multiline ? 180px : Theme.workbench-h;
+    background: Theme.field;
+    border-radius: Theme.r;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.line;
+    clip: true;
+    opacity: root.enabled ? 1 : 0.45;
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: text; clicked => { input.focus(); } }
+    input := TextInput {
+        x: 10px;
+        y: root.multiline ? 10px : (parent.height - self.height) / 2;
+        width: parent.width - (root.password ? 46px : 20px);
+        height: root.multiline ? parent.height - 20px : self.preferred-height;
+        text <=> root.value;
+        enabled: root.enabled;
+        color: Theme.fg;
+        font-size: Theme.workbench-font;
+        single-line: !root.multiline;
+        wrap: root.multiline ? word-wrap : no-wrap;
+        input-type: root.password && !root.revealed ? InputType.password : InputType.text;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.on-accent;
+        edited => { root.edited(self.text); }
+        cursor-position-changed(position) => { root.cursor-moved(self.cursor-position-byte-offset); }
+        key-pressed(event) => { return root.key-event(event.text) ? EventResult.accept : EventResult.reject; }
+    }
+    if root.password: IconButton {
+        x: parent.width - self.width - 3px;
+        y: (parent.height - self.height) / 2;
+        glyph: Glyph.eye;
+        label: root.revealed ? "隐藏密码" : "显示密码";
+        enabled: root.enabled;
+        clicked => { root.revealed = !root.revealed; input.focus(); }
+    }
+    if root.value == "": Text {
+        x: 10px;
+        y: root.multiline ? 10px : (parent.height - self.height) / 2;
+        width: parent.width - 20px;
+        height: self.preferred-height;
+        text: root.placeholder;
+        color: Theme.fg-dim;
+        font-size: Theme.workbench-font;
+        wrap: word-wrap;
+    }
+}
+
+export component Label inherits Text {
+    color: Theme.fg-muted;
+    font-size: Theme.workbench-font;
+    vertical-alignment: center;
+    min-height: 20px;
+}
+
+export component Heading inherits Text {
+    color: Theme.fg;
+    font-size: 18px;
+    font-weight: Theme.weight-title;
+    min-height: 24px;
+    vertical-alignment: center;
+}
+
+export component EmptyState inherits VerticalLayout {
+    in property <Glyph> glyph: Glyph.folder;
+    in property <string> title;
+    in property <string> detail;
+    alignment: center;
+    spacing: 10px;
+    HorizontalLayout { alignment: center; Icon { glyph: root.glyph; size: 28px; tint: Theme.fg-dim; } }
+    Text { text: root.title; color: Theme.fg; font-size: 18px; horizontal-alignment: center; wrap: word-wrap; }
+    if root.detail != "": Text { text: root.detail; color: Theme.fg-dim; horizontal-alignment: center; wrap: word-wrap; }
+}
+
+export component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <Glyph> glyph;
+    in property <int> page;
+    in property <bool> compact;
+    property <bool> selected: SeeCut.page == root.page || (root.page == 5 && (SeeCut.page == 2 || SeeCut.page == 7)) || (root.page == 4 && SeeCut.page == 3);
+    min-height: 62px;
+    max-height: 62px;
+    border-radius: Theme.r;
+    background: root.selected ? Theme.accent-soft : touch.has-hover ? Theme.field-hover : Colors.transparent;
+    border-width: root.selected ? 1px : 0px;
+    border-color: Theme.accent-soft;
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
+    property <bool> ring;
+    accessible-role: button;
+    accessible-label: root.label;
+    function open() { SeeCut.action("navigate", root.page); }
+    focus := FocusScope {
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" { root.open(); return EventResult.accept; }
+            return EventResult.reject;
+        }
+    }
+    VerticalLayout {
+        padding: 8px; spacing: 5px; alignment: center;
+        HorizontalLayout { alignment: center; Icon { glyph: root.glyph; size: 20px; tint: root.selected ? Theme.accent : Theme.fg-muted; } }
+        Text { text: root.label; color: root.selected ? Theme.fg : Theme.fg-muted; font-size: 13px; horizontal-alignment: center; }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.open(); } }
+    FocusRing { active: root.ring; radius: Theme.r; }
+    Tip { text: root.label; active: root.compact && touch.has-hover; }
+}
+
+export component AppRail inherits Rectangle {
+    in property <bool> compact;
+    width: 72px;
+    background: Theme.panel;
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+        Rectangle { height: 6px; }
+        NavItem { label: "生成"; glyph: Glyph.sparkle; page: 1; compact: root.compact; }
+        NavItem { label: "剪辑"; glyph: Glyph.film; page: 0; compact: root.compact; }
+        NavItem { label: "画布"; glyph: Glyph.brush; page: 6; compact: root.compact; }
+        NavItem { label: "资产"; glyph: Glyph.folder; page: 5; compact: root.compact; }
+        Rectangle { vertical-stretch: 1; }
+        NavItem { label: "账号"; glyph: Glyph.lock; page: 4; compact: root.compact; }
+    }
+    Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.line; }
+}
+
+export component WorkspaceIcon inherits IconButton {
+    width: Theme.workbench-h; height: Theme.workbench-h; side: Theme.workbench-h; icon-size: Theme.workbench-icon;
+}
+
+export component MenuAction inherits Rectangle {
+    in property <bool> auto-focus;
+    init => { if root.auto-focus { key.focus(); } }
+    in property <string> label;
+    in property <Glyph> glyph;
+    in property <bool> enabled: true;
+    in property <bool> danger;
+    callback clicked();
+    height: 38px;
+    border-radius: Theme.r;
+    background: touch.has-hover && root.enabled ? Theme.field-hover : transparent;
+    accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    property <bool> ring;
+    key := FocusScope {
+        enabled: root.enabled;
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => { if event.text == " " || event.text == "\n" { root.clicked(); return accept; } return reject; }
+    }
+    Icon { x: 12px; y: 10px; size: 18px; glyph: root.glyph; tint: root.enabled ? (root.danger ? Theme.danger : Theme.fg-muted) : Theme.fg-dim; }
+    Text { x: 40px; width: parent.width - 48px; height: 100%; text: root.label; font-size: Theme.workbench-font; vertical-alignment: center; color: root.enabled ? (root.danger ? Theme.danger : Theme.fg) : Theme.fg-dim; }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { key.focus(); root.clicked(); } }
+    FocusRing { active: root.ring; radius: Theme.r; }
+}
+
+export component WorkspaceSelect inherits Select { text-size: Theme.workbench-font; item-height: Theme.workbench-h; height: Theme.workbench-h; }
+
+/// Shared media well for asset, team, template, and result cards. The caller
+/// chooses the well height (the workbench cards use a 4:3 well); the image is
+/// always contained so the complete composition remains available to review.
+export component AssetPreview inherits Rectangle {
+    in property <image> source;
+    in property <Glyph> fallback-glyph: Glyph.image;
+    in property <length> fallback-size: 28px;
+    in property <bool> interactive;
+    in property <string> accessible-name;
+    callback activated();
+    out property <bool> hovered: touch.has-hover;
+    property <bool> ring;
+    background: Theme.well;
+    clip: true;
+    if root.source.width == 0: Icon {
+        x: (parent.width - root.fallback-size) / 2;
+        y: (parent.height - root.fallback-size) / 2;
+        size: root.fallback-size;
+        glyph: root.fallback-glyph;
+        tint: Theme.fg-muted;
+    }
+    Image { width: 100%; height: 100%; source: root.source; image-fit: contain; }
+    Rectangle {
+        width: 100%; height: 100%; visible: root.interactive;
+        accessible-role: button;
+        accessible-label: root.accessible-name;
+        accessible-enabled: root.interactive;
+        accessible-action-default => { if root.interactive { root.activated(); } }
+        focus := FocusScope {
+            enabled: root.interactive;
+            focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+            focus-lost(reason) => { root.ring = false; }
+            key-pressed(event) => {
+                if event.text == " " || event.text == "\n" {
+                    root.activated();
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+        }
+        touch := TouchArea {
+            enabled: root.interactive;
+            mouse-cursor: pointer;
+            clicked => { focus.focus(); root.activated(); }
+        }
+        FocusRing { active: root.ring; radius: Theme.r; }
+    }
+}

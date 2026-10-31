@@ -1,0 +1,12 @@
+[project]
+name = "seecut-server"
+version = "0.1.0"
+description = "SeeCut account, team assets, wallet and generation gateway"
+requires-python = ">=3.12"
+
+[project.scripts]
+seecut-server = "seecut_server.app:main"
+
+[tool.unittest]
+start-directory = "tests"
+

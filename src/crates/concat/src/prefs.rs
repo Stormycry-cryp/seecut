@@ -15,7 +15,7 @@ const FILE: &str = "settings.json";
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
-    /// The dark theme. `None` is the app's default, which is dark.
+    /// The dark theme. `None` is the app's default, which is light.
     pub dark: Option<bool>,
     /// The chosen transcriber model id, e.g. "base.en".
     pub transcriber_model: Option<String>,

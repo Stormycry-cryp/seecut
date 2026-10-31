@@ -190,13 +190,13 @@ export component Button inherits Rectangle {
     min-width: root.block ? 0px
         : text.preferred-width + root.mark + root.gap + (root.large ? 32px : 24px);
     border-radius: Theme.r;
-    opacity: root.enabled ? 1.0 : 0.45;
+    opacity: 1.0;
     border-width: root.ghost ? 0px : 1px;
-    border-color: root.primary ? (root.lit ? Theme.accent-hover : Theme.accent)
+    border-color: !root.enabled ? Theme.line : root.primary ? (root.lit ? Theme.accent-hover : Theme.accent)
         : (root.danger && root.lit) ? root.danger-edge
         : root.lit ? Theme.line-strong
         : Theme.line;
-    background: root.primary ? (root.lit ? Theme.accent-hover : Theme.accent)
+    background: !root.enabled ? Theme.well : root.primary ? (root.lit ? Theme.accent-hover : Theme.accent)
         : root.ghost ? (root.lit ? Theme.field : Colors.transparent)
         : (root.danger && root.lit) ? root.danger-wash
         : root.lit ? Theme.field-hover
@@ -204,7 +204,7 @@ export component Button inherits Rectangle {
 
     animate background, border-color { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
-    property <brush> ink: root.primary ? Theme.on-accent
+    property <brush> ink: !root.enabled ? Theme.fg-dim : root.primary ? Theme.on-accent
         : root.ghost ? (root.lit ? Theme.fg : Theme.fg-muted)
         : Theme.fg;
 

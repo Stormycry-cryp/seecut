@@ -391,7 +391,7 @@ export component StartScreen inherits Rectangle {
         && root.width >= root.form-w + root.column-gap + root.recents-w + 96px;
     property <length> pad: 48px;
 
-    property <length> overflow: Math.max(0px, sheet.height - root.height);
+    property <length> overflow: Math.max(0px, sheet.height + 48px - root.height);
     property <length> offset;
     property <length> at: Math.max(-root.overflow, Math.min(0px, root.offset));
 
@@ -409,7 +409,7 @@ export component StartScreen inherits Rectangle {
             // which is what `justify-center` in a scroll container gives.
             x: (parent.width - self.width) / 2;
             y: root.overflow > 0px
-                ? root.at
+                ? root.at + 24px
                 : (parent.height - self.height) / 2;
             width: Math.min(parent.width - 2 * root.pad,
                 root.side-by-side
@@ -428,13 +428,8 @@ export component StartScreen inherits Rectangle {
                     Text {
                         text: I18n.t("New project");
                         color: Theme.fg;
-                        // The one display-sized line in the app. The tree
-                        // bundles two faces and no display face, so the
-                        // interface face carries it at its heaviest weight and
-                        // tight tracking — -0.03em, which at 34px is a point.
-                        font-size: Theme.fs-display;
-                        font-weight: Theme.weight-display;
-                        letter-spacing: -1px;
+                        font-size: 24px;
+                        font-weight: Theme.weight-title;
                     }
 
                     Rectangle { height: 6px; }
@@ -446,7 +441,7 @@ export component StartScreen inherits Rectangle {
                         wrap: word-wrap;
                     }
 
-                    Rectangle { height: 40px; }
+                    Rectangle { height: 24px; }
 
                     Field {
                         label: I18n.t("Name");
@@ -594,20 +589,7 @@ export component StartScreen inherits Rectangle {
                         }
                     }
 
-                    Rectangle { height: 40px; }
-
-                    // ── the recents, under the form ──────────────────────
-                    //
-                    // Placed here rather than reflowed: a Slint layout has no
-                    // wrap, so the two arrangements are two shapes and each is
-                    // only built at the width the other cannot fit.
-                    if !root.side-by-side && root.recents.length > 0: RecentsColumn {
-                        recents: root.recents;
-                        enabled: !root.data.busy;
-                        ruled: true;
-                        opened(path) => { root.open-recent(path); }
-                        forgotten(path) => { root.forget-recent(path); }
-                    }
+                    Rectangle { height: 24px; }
 
                     HorizontalLayout {
                         alignment: start;
@@ -665,6 +647,18 @@ export component StartScreen inherits Rectangle {
                                     wrap: word-wrap;
                                 }
                             }
+                        }
+                    }
+                    // Keep the primary action before history in the stacked layout.
+                    if !root.side-by-side && root.recents.length > 0: VerticalLayout {
+                        spacing: 24px;
+                        Rectangle { height: 8px; }
+                        RecentsColumn {
+                            recents: root.recents;
+                            enabled: !root.data.busy;
+                            ruled: true;
+                            opened(path) => { root.open-recent(path); }
+                            forgotten(path) => { root.forget-recent(path); }
                         }
                     }
                 }

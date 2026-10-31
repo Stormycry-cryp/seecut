@@ -3,6 +3,7 @@
 
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
+import { FocusRing } from "../primitives/focus-ring.slint";
 import { Fmt } from "../util.slint";
 import { Glyph, Icon } from "../icons.slint";
 import { NumberField } from "../primitives/number-field.slint";
@@ -529,6 +530,7 @@ export component Check inherits Rectangle {
 export component Switch inherits Rectangle {
     in-out property <bool> checked;
     in property <bool> enabled: true;
+    in property <bool> reduced-motion;
 
     callback toggled(checked: bool);
 
@@ -536,9 +538,24 @@ export component Switch inherits Rectangle {
     height: 17px;
     border-radius: self.height / 2;
     background: root.checked ? Theme.accent : Theme.field-active;
-    opacity: root.enabled ? 1.0 : 0.45;
+    opacity: root.enabled ? 1.0 : 0.65;
+    property <bool> ring;
+    accessible-role: checkbox;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.checked = !root.checked; root.toggled(root.checked); } }
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" { root.checked = !root.checked; root.toggled(root.checked); return accept; }
+            return reject;
+        }
+    }
+    FocusRing { active: root.ring; radius: root.height / 2; }
 
-    animate background { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: root.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     thumb := Rectangle {
         x: root.checked ? parent.width - self.width - 2px : 2px;
@@ -546,15 +563,16 @@ export component Switch inherits Rectangle {
         width: 13px;
         height: 13px;
         border-radius: self.width / 2;
-        background: Theme.on-accent;
+        background: root.checked ? Theme.on-accent : Theme.fg;
 
-        animate x { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        animate x { duration: root.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
     }
 
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => {
+            focus.focus();
             root.checked = !root.checked;
             root.toggled(root.checked);
         }

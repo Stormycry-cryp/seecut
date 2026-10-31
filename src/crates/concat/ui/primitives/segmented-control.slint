@@ -9,6 +9,7 @@ import { FocusRing } from "focus-ring.slint";
 // The segments share the width equally, so the thumb's geometry is computed
 // from the count rather than measured from the buttons.
 export component SegmentedControl inherits Rectangle {
+    in property <length> text-size: Theme.fs;
     in property <[string]> options;
     in-out property <int> current;
     in property <bool> enabled: true;
@@ -67,7 +68,7 @@ export component SegmentedControl inherits Rectangle {
         width: root.seg-w;
         height: root.height - 2 * root.inset;
         border-radius: Theme.r-sm;
-        background: Theme.field-hover;
+        background: Theme.accent-soft;
 
         animate x, width { duration: 180ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
     }
@@ -87,8 +88,8 @@ export component SegmentedControl inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: option;
-            color: (index == root.current || segment.has-hover) ? Theme.fg : Theme.fg-muted;
-            font-size: Theme.fs;
+            color: index == root.current ? Theme.accent : segment.has-hover ? Theme.fg : Theme.fg-muted;
+            font-size: root.text-size;
             horizontal-alignment: center;
             vertical-alignment: center;
             overflow: elide;

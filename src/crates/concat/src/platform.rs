@@ -324,6 +324,24 @@ pub fn pick_files(title: &str, filter: Option<(&str, &[&str])>) -> Option<Vec<Pa
     }
 }
 
+/// Asks where to save one file, seeded with `name`. Returns the chosen
+/// path, or `None` when the dialog was cancelled.
+pub fn save_file(title: &str, name: &str, filter: Option<(&str, &[&str])>) -> Option<PathBuf> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let mut dialog = rfd::FileDialog::new().set_title(title).set_file_name(name);
+        if let Some((family, extensions)) = filter {
+            dialog = dialog.add_filter(family, extensions);
+        }
+        dialog.save_file()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = (title, name, filter);
+        None
+    }
+}
+
 /// Shows a written file in the platform's file manager.
 ///
 /// A phone has no file manager to hand a path to, and says so rather than

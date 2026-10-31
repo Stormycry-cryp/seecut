@@ -1194,7 +1194,9 @@ dependencies = [
 name = "concat"
 version = "0.2.2"
 dependencies = [
+ "chrono",
  "concat-api",
+ "concat-canvas",
  "concat-core",
  "concat-effects",
  "concat-export",
@@ -1215,6 +1217,9 @@ dependencies = [
  "slint",
  "slint-build",
  "toml",
+ "ureq 2.12.1",
+ "url",
+ "uuid",
  "wgpu",
 ]
 
@@ -1244,6 +1249,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "concat-canvas"
+version = "0.2.2"
+dependencies = [
+ "concat-core",
+ "pollster",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "wgpu",
 ]
 
 [[package]]
@@ -7199,6 +7216,8 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]
@@ -7298,6 +7317,7 @@ version = "1.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5772d71c9be8a8a6ac2117d949c5b224c1b72241bb611d9a3012edcf8af7812"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",

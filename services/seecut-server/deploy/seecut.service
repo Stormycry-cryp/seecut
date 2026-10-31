@@ -1,0 +1,26 @@
+[Unit]
+Description=SeeCut API and generation worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seecut
+Group=seecut
+WorkingDirectory=/opt/seecut/server
+Environment=PYTHONPATH=/opt/seecut/server/src
+EnvironmentFile=/etc/seecut/server.env
+ExecStart=/usr/bin/python3 -m seecut_server.app
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/seecut
+MemoryMax=768M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

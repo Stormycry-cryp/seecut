@@ -13,6 +13,7 @@
 //! The panes move here one at a time from the window's controller; the
 //! export sheet is the first, and the shape the rest follow.
 
+pub mod canvas;
 pub mod captions;
 pub mod export;
 pub mod media_bin;
@@ -44,4 +45,6 @@ pub enum Msg {
     Media(media_bin::MediaMsg),
     /// To the monitor.
     Monitor(monitor::MonitorMsg),
+    /// To the image editor's canvas.
+    Canvas(canvas::CanvasMsg),
 }
