@@ -70,14 +70,22 @@ fn artwork(seed: u8) -> Image {
     const H: u32 = 480;
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(W, H);
     let (cx, cy, r) = (320.0_f32, 216.0_f32, 130.0_f32);
-    let disc = [223.0_f32, 178.0 + (seed / 8) as f32, 105.0 + (seed / 5) as f32];
+    let disc = [
+        223.0_f32,
+        178.0 + (seed / 8) as f32,
+        105.0 + (seed / 5) as f32,
+    ];
     for (i, pixel) in buffer.make_mut_slice().iter_mut().enumerate() {
         let x = i as u32 % W;
         let y = i as u32 / W;
         let base = if y > 356 && (x / 48) % 2 == 0 {
             [70.0_f32, 94.0 + (seed / 4) as f32, 112.0]
         } else {
-            [36.0 + (seed / 4) as f32, 55.0 + (y / 16) as f32, 70.0 + (x / 20) as f32]
+            [
+                36.0 + (seed / 4) as f32,
+                55.0 + (y / 16) as f32,
+                70.0 + (x / 20) as f32,
+            ]
         };
         let dx = x as f32 + 0.5 - cx;
         let dy = y as f32 + 0.5 - cy;
