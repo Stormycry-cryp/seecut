@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # GitHub Ubuntu only. Never disable existing swap or change cgroup limits.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/ci-swap-cleanup.sh"
 
 swap_bytes=$((8 * 1024 * 1024 * 1024))
 
@@ -57,21 +58,7 @@ inspect_cgroup() {
 }
 
 cleanup() {
-  require_runner || return 1
-  [[ -f "$memory_dir/swap.path" ]] || return 0
-  local swap_file
-  swap_file=$(cat "$memory_dir/swap.path")
-  if [[ $swap_file != "$RUNNER_TEMP"/seecut-android-swap.* || ! -f $swap_file || -L $swap_file ]]; then
-    echo 'Refusing to clean an unexpected swap path' >&2
-    return 1
-  fi
-  local active_swap
-  active_swap=$(swapon --show --noheadings --raw --output NAME) || return 1
-  if grep -Fxq -- "$swap_file" <<< "$active_swap"; then
-    # On failure retain both the file and path, so a retry remains possible.
-    sudo swapoff "$swap_file" || return 1
-  fi
-  rm -- "$swap_file" "$memory_dir/swap.path"
+  cleanup_ci_swap seecut-android-swap
 }
 
 prepare() (
