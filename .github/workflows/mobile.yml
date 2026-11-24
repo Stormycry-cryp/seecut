@@ -196,7 +196,8 @@ jobs:
   ios:
     name: iOS arm64
     runs-on: macos-15
-    timeout-minutes: 90
+    # A cold release build can take 80 minutes before the final binary link.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
       - name: Read the version
