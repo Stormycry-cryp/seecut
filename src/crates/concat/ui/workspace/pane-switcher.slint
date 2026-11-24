@@ -281,7 +281,7 @@ export component PaneSwitcher inherits Rectangle {
                 : touch.has-hover ? Theme.field-hover
                 : Theme.field;
 
-            animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+            animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
             Icon {
                 x: root.pad;
@@ -403,7 +403,7 @@ export component AddPaneButton inherits Rectangle {
     border-radius: Theme.r-sm;
     background: touch.has-hover ? Theme.field : Colors.transparent;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     Icon {
         x: (parent.width - self.width) / 2;

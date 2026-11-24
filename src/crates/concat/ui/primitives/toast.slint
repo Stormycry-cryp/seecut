@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
 import { Theme } from "../theme/theme.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { Glyph, Icon } from "../icons.slint";
 import { CopyChip } from "modal.slint";
 
@@ -113,7 +114,7 @@ export component ToastLayer inherits Rectangle {
         // Out is slower than in: a notice arriving should catch the eye, and
         // one leaving should not.
         animate y, opacity {
-            duration: root.shown ? 260ms : 420ms;
+            duration: SeeCut.reduced-motion ? 0ms : (root.shown ? 260ms : 420ms);
             easing: ease-out;
         }
 

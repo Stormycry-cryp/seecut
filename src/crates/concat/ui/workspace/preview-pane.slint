@@ -93,7 +93,7 @@ component RatioPicker inherits Rectangle {
     border-radius: Theme.r;
     background: (root.open || trigger.has-hover) ? Theme.field-hover : Theme.field;
 
-    animate background { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     function commit(index: int) {
         if (index >= 0 && index < root.names.length) {

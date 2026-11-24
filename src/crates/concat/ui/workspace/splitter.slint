@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
 import { Theme } from "../theme/theme.slint";
+import { SeeCut } from "../seecut/state.slint";
 
 // The drag handles between panes.
 //
@@ -39,7 +40,7 @@ export component ColSplitter inherits Rectangle {
         background: Theme.accent;
         opacity: (touch.has-hover || touch.pressed) ? 1.0 : 0.0;
 
-        animate opacity { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        animate opacity { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
     }
 
     // A little wider than the gutter it sits in. Two more pixels a side costs
@@ -76,7 +77,7 @@ export component RowSplitter inherits Rectangle {
         background: Theme.accent;
         opacity: (touch.has-hover || touch.pressed) ? 1.0 : 0.0;
 
-        animate opacity { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        animate opacity { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
     }
 
     touch := TouchArea {
@@ -116,7 +117,7 @@ export component HairlineSplitter inherits Rectangle {
     width: 1px;
     background: (touch.has-hover || touch.pressed) ? Theme.accent : Theme.line;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     // Three pixels each side of a one-pixel line: a 1px grab target is the
     // single most common way a docked layout feels bad to use.

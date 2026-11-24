@@ -498,7 +498,7 @@ export component DialogSection inherits VerticalLayout {
             : head.has-hover ? Theme.field
             : Theme.raised;
 
-        animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
         head := TouchArea {
             enabled: root.collapsible;
@@ -640,7 +640,7 @@ export component Field inherits Rectangle {
     border-color: root.input-focused ? Theme.accent : Colors.transparent;
     clip: true;
 
-    animate background, border-color { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background, border-color { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     // The text being edited, held separately from `value`.
     //

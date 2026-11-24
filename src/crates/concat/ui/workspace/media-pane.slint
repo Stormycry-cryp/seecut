@@ -123,14 +123,14 @@ component LibraryTab inherits Rectangle {
     // pointer.
     background: root.current ? Theme.field : Colors.transparent;
 
-    animate background { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     // The mark and the label share one tint, so a chip lights up as one thing
     // under the pointer and not as a glyph that answers and a word that
     // follows.
     property <brush> tint: (root.current || touch.has-hover) ? Theme.fg : Theme.fg-muted;
 
-    animate tint { duration: 140ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate tint { duration: SeeCut.reduced-motion ? 0ms : 140ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     // Explicit geometry keeps compact mode out of layout-info. The 44px
     // header still gives this chip 32px, and the narrow mark sits at its centre.
@@ -195,7 +195,7 @@ component CategoryHeading inherits Rectangle {
     border-radius: Theme.r-sm;
     background: heading.has-hover ? Theme.field : Colors.transparent;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     HorizontalLayout {
         padding-left: 6px;
@@ -245,7 +245,7 @@ component CategoryRow inherits Rectangle {
         : touch.has-hover ? Theme.field
         : Colors.transparent;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     HorizontalLayout {
         // Indented past the group heading's chevron, so the rows read as

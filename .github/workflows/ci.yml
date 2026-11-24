@@ -102,6 +102,7 @@ jobs:
       FFMPEG_LINUX: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-shared-8.1.tar.xz
       # See build-app.yml: the version the ort crate is built against.
       ORT_VERSION: 1.28.0
+      ORT_NUGET_SHA256: 769d1d3ea8ab6cd69f737c9dd4d4462aa4ad0ccfa106eaf506efc40d7bead5db
       # Keep Clippy, test codegen and the later gRPC feature build consistent.
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
@@ -237,15 +238,21 @@ jobs:
       - name: ONNX Runtime
         run: |
           set -euo pipefail
-          stem="onnxruntime-linux-x64-$ORT_VERSION"
-          curl -fsSL --retry 5 --retry-all-errors -o onnxruntime.tgz \
-            "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/$stem.tgz"
-          tar -xzf onnxruntime.tgz
-          ln -sf "libonnxruntime.so.$ORT_VERSION" "$stem/lib/libonnxruntime.so"
+          # Microsoft's NuGet package includes the native Linux CPU libraries.
+          archive=$(mktemp "$RUNNER_TEMP/onnxruntime.XXXXXX")
+          trap 'rm -- "$archive"' EXIT
+          lib="$RUNNER_TEMP/onnxruntime-$ORT_VERSION/lib"
+          curl -fsSL --retry 5 --retry-all-errors -o "$archive" \
+            "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/$ORT_VERSION/microsoft.ml.onnxruntime.$ORT_VERSION.nupkg"
+          echo "$ORT_NUGET_SHA256  $archive" | sha256sum -c -
+          mkdir -p "$lib"
+          unzip -jo "$archive" runtimes/linux-x64/native/{libonnxruntime,libonnxruntime_providers_shared}.so -d "$lib"
+          # NuGet supplies the linker name. The ELF loader uses its SONAME.
+          ln -sfn libonnxruntime.so "$lib/libonnxruntime.so.1"
           {
-            echo "ORT_LIB_LOCATION=$PWD/$stem/lib"
+            echo "ORT_LIB_LOCATION=$lib"
             echo "ORT_PREFER_DYNAMIC_LINK=1"
-            echo "LD_LIBRARY_PATH=$PWD/ffmpeg-dev/lib:$PWD/$stem/lib"
+            echo "LD_LIBRARY_PATH=$PWD/ffmpeg-dev/lib:$lib"
           } >> "$GITHUB_ENV"
 
       - run: cargo fmt --check

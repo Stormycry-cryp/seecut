@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
 import { Theme } from "../theme/theme.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { Focus, Payload } from "../util.slint";
 import { Glyph, Icon } from "../icons.slint";
 import { TimelineTabData } from "model.slint";
@@ -50,7 +51,7 @@ component Tab inherits Rectangle {
         : touch.has-hover ? Theme.field
         : Colors.transparent;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     // squares off the bottom corners the radius above rounded
     Rectangle {
@@ -286,7 +287,7 @@ export component TimelineTabs inherits Rectangle {
                 border-radius: Theme.r-xs;
                 background: plus.has-hover ? Theme.field : Colors.transparent;
 
-                animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+                animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
                 Icon {
                     x: (parent.width - self.width) / 2;

@@ -66,19 +66,32 @@ fn artwork(seed: u8) -> Image {
     if let Some(image) = figma_artwork(seed) {
         return image;
     }
-    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(320, 240);
+    const W: u32 = 640;
+    const H: u32 = 480;
+    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(W, H);
+    let (cx, cy, r) = (320.0_f32, 216.0_f32, 130.0_f32);
+    let disc = [
+        223.0_f32,
+        178.0 + (seed / 8) as f32,
+        105.0 + (seed / 5) as f32,
+    ];
     for (i, pixel) in buffer.make_mut_slice().iter_mut().enumerate() {
-        let x = (i % 320) as i32;
-        let y = (i / 320) as i32;
-        let circle = (x - 160).pow(2) + (y - 108).pow(2) < 65_i32.pow(2);
-        let stripe = y > 178 && (x / 24) % 2 == 0;
-        *pixel = if circle {
-            Rgba8Pixel::new(223, 178 + seed / 8, 105 + seed / 5, 255)
-        } else if stripe {
-            Rgba8Pixel::new(70, 94 + seed / 4, 112, 255)
+        let x = i as u32 % W;
+        let y = i as u32 / W;
+        let base = if y > 356 && (x / 48).is_multiple_of(2) {
+            [70.0_f32, 94.0 + (seed / 4) as f32, 112.0]
         } else {
-            Rgba8Pixel::new(36 + seed / 4, 55 + (y / 8) as u8, 70 + (x / 10) as u8, 255)
+            [
+                36.0 + (seed / 4) as f32,
+                55.0 + (y / 16) as f32,
+                70.0 + (x / 20) as f32,
+            ]
         };
+        let dx = x as f32 + 0.5 - cx;
+        let dy = y as f32 + 0.5 - cy;
+        let cover = (r - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0);
+        let mix = |c: usize| (base[c] + (disc[c] - base[c]) * cover).round() as u8;
+        *pixel = Rgba8Pixel::new(mix(0), mix(1), mix(2), 255);
     }
     Image::from_rgba8(buffer)
 }
@@ -552,6 +565,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         result.status = "1536 × 864".into();
     }
     let first_result_id = pro_results[0].id.to_string();
+    state.set_generation_browse_tab(0);
     state.set_batches(model(vec![GenerationBatch {
         id: "fixture-pro-batch".into(),
         label: "今天 14:32".into(),
@@ -653,7 +667,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
         });
     let pro_prompt = state.get_prompt();
     state.set_prompt("极简建筑立于开阔的沙地，低角度日光，细腻的混凝土与木材质感。\n保留建筑轮廓、入口和地面阴影，用自然光呈现材料肌理。\n镜头从正面缓慢靠近，画面边缘保留天空和远山，色调安静克制。\n请检查末行内容在输入框内清晰可读，光标和操作按钮互不遮挡。".into());
-    click_fixture(&app, 1024, 960, 180.0, 405.0)?;
+    click_fixture(&app, 1024, 960, 180.0, 445.0)?;
     app.window()
         .dispatch_event(slint::platform::WindowEvent::KeyPressed {
             text: slint::platform::Key::Control.into(),
@@ -695,7 +709,7 @@ pub(crate) fn run(directory: &Path) -> Result<(), slint::PlatformError> {
     state.set_prompt(pro_prompt);
     state.set_prompt_cursor(state.get_prompt().len() as i32);
     let mention_count = action_log.borrow().len();
-    click_fixture(&app, 1024, 960, 124.0, 475.0)?;
+    click_fixture(&app, 1024, 960, 124.0, 531.0)?;
     if !state.get_mention_open()
         || !state.get_prompt().as_str().ends_with('@')
         || !action_log.borrow()[mention_count..]

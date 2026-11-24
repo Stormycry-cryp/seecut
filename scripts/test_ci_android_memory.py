@@ -63,6 +63,7 @@ df() {{ printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture
 free() {{ :; }}
 dd() {{ echo mocked-dd >> "$RUNNER_TEMP/calls"; }}
 swapon() {{
+  printf '%s\\n' "$*" >> "$RUNNER_TEMP/list-calls"
   if [[ -f "$RUNNER_TEMP/active" ]]; then
     if [[ "$*" == *SIZE* ]]; then
       printf '%s %s\\n' "$(cat "$RUNNER_TEMP/active")" "$((swap_bytes - 4096))"
@@ -95,6 +96,8 @@ sudo() {{
         calls = (self.root / "calls").read_text()
         self.assertIn("swapoff " + str(self.root / "seecut-android-swap."), calls)
         self.assertNotIn("swapoff /existing-swap", calls)
+        self.assertEqual((self.root / "list-calls").read_text().splitlines()[-2:],
+                         ["--show=NAME --noheadings --raw"] * 2)
         self.assertFalse((self.root / "seecut-android-memory/swap.path").exists())
         self.assertEqual(list(self.root.glob("seecut-android-swap.*")), [])
 

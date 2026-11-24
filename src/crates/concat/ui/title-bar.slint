@@ -3,6 +3,7 @@
 
 import { I18n } from "i18n.slint";
 import { Theme } from "theme/theme.slint";
+import { SeeCut } from "seecut/state.slint";
 import { Glyph, Icon } from "icons.slint";
 import { AddPaneButton, PaneKind } from "workspace/pane-switcher.slint";
 
@@ -33,7 +34,7 @@ component WindowButton inherits Rectangle {
         ? (root.danger ? Theme.danger : Theme.field)
         : Colors.transparent;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     Icon {
         x: (parent.width - self.width) / 2;
@@ -62,7 +63,7 @@ component MenuLabel inherits Rectangle {
     border-radius: Theme.r-sm;
     background: (root.current || touch.has-hover) ? Theme.field : Colors.transparent;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     text := Text {
         x: 8px;
@@ -88,7 +89,7 @@ component HeaderIconButton inherits Rectangle {
     border-radius: Theme.r-sm;
     background: touch.has-hover ? Theme.field : Colors.transparent;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     Icon {
         x: (parent.width - self.width) / 2;
@@ -253,7 +254,7 @@ export component TitleBar inherits Rectangle {
                 border-radius: Theme.r-sm;
                 background: export-touch.has-hover ? Theme.accent-hover : Theme.accent;
 
-                animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+                animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
                 icon := Icon {
                     x: 9px;

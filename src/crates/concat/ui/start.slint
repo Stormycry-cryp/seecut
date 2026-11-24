@@ -87,7 +87,7 @@ export component ProjectCreateDialog inherits Modal {
     callback dismiss-error();
     title: "新建剪辑项目"; glyph: Glyph.plus; trap-focus: true;
     surface-width: Math.min(500px, root.width - 32px);
-    surface-height: Math.min(root.data.error == "" ? 440px : 530px, Math.max(0px, root.height - 32px));
+    surface-height: Math.min(42px + 2px + fields.preferred-height + 56px, Math.max(0px, root.height - 32px));
     VerticalLayout {
         ScrollView {
             vertical-stretch: 1;
@@ -182,39 +182,110 @@ export component StartScreen inherits Rectangle {
             vertical-stretch: 1; horizontal-stretch: 1;
             grid := Rectangle {
                 x: 0px; y: 0px; width: parent.width;
-                property <int> columns: root.list-view ? 1 : Math.max(1, Math.floor((self.width + 24px) / 310px));
-                property <length> gap: root.list-view ? 16px : 24px;
+                property <int> columns: root.list-view ? 1 : Math.max(1, Math.floor((self.width + 20px) / 290px));
+                property <length> gap: root.list-view ? 4px : 20px;
+                property <length> pad: root.list-view ? 8px : 0px;
                 property <length> card-width: root.list-view ? self.width : (self.width - (self.columns - 1) * self.gap) / self.columns;
-                property <length> media-height: root.list-view ? 96px : self.card-width * 0.60;
-                property <length> card-height: root.list-view ? 96px : self.media-height + 64px;
+                property <length> media-width: root.list-view ? 100px : self.card-width;
+                property <length> media-height: root.list-view ? 56px : self.card-width * 9 / 16;
+                property <length> card-height: root.list-view ? 72px : self.media-height + 58px;
+                property <length> text-x: root.list-view ? self.media-width + 24px : 2px;
                 height: Math.ceil((root.recents.length + 1) / self.columns) * (self.card-height + self.gap) - self.gap;
                 Rectangle {
                     x: 0px; y: 0px;
                     width: grid.card-width; height: grid.card-height;
+                    border-radius: Theme.r-lg;
+                    background: root.list-view && new-touch.has-hover ? Theme.field-hover : transparent;
+                    animate background { duration: 140ms; }
                     Rectangle {
-                        x: 0px; y: 0px;
-                        width: root.list-view ? 160px : parent.width; height: grid.media-height;
-                        background: Theme.panel; border-radius: Theme.r-lg;
-                        border-width: 1px; border-color: Theme.line-strong;
-                        Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; glyph: Glyph.plus; size: 24px; tint: Theme.fg-muted; }
-                        TouchArea { mouse-cursor: pointer; clicked => { SeeCut.clip-source-will-change(); root.create-open = true; } }
+                        x: grid.pad; y: grid.pad;
+                        width: grid.media-width; height: grid.media-height;
+                        border-radius: Theme.r-lg;
+                        background: new-touch.has-hover ? Theme.accent-soft : Theme.panel;
+                        border-width: 1px;
+                        border-color: new-touch.has-hover ? Theme.accent : Theme.line;
+                        animate background, border-color { duration: 160ms; easing: ease-out; }
+                        Rectangle {
+                            property <length> d: (root.list-view ? 28px : 44px) * (new-touch.pressed ? 0.9 : 1);
+                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                            width: self.d; height: self.d;
+                            border-radius: self.d / 2;
+                            background: new-touch.has-hover ? Theme.accent : Theme.raised;
+                            animate background { duration: 160ms; easing: ease-out; }
+                            animate width, height { duration: 120ms; easing: ease-out; }
+                            Icon {
+                                size: root.list-view ? 14px : 18px;
+                                x: (parent.width - self.size) / 2; y: (parent.height - self.size) / 2;
+                                glyph: Glyph.plus;
+                                tint: new-touch.has-hover ? Theme.on-accent : Theme.fg;
+                            }
+                        }
                     }
-                    Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 18px : grid.media-height + 10px; text: "新建项目"; font-size: 14px; color: Theme.fg; }
+                    Text {
+                        x: grid.text-x; y: root.list-view ? (parent.height - self.height) / 2 : grid.media-height + 12px;
+                        text: "新建项目"; font-size: 14px; font-weight: 500;
+                        color: new-touch.has-hover ? Theme.fg : Theme.fg-muted;
+                        animate color { duration: 140ms; }
+                    }
+                    new-touch := TouchArea { mouse-cursor: pointer; clicked => { SeeCut.clip-source-will-change(); root.create-open = true; } }
                 }
                 for project[i] in root.recents: Rectangle {
                     x: Math.mod(i + 1, grid.columns) * (grid.card-width + grid.gap);
                     y: Math.floor((i + 1) / grid.columns) * (grid.card-height + grid.gap);
                     width: grid.card-width; height: grid.card-height;
+                    border-radius: Theme.r-lg;
+                    background: root.list-view && touch.has-hover ? Theme.field-hover : transparent;
+                    animate background { duration: 140ms; }
                     Rectangle {
-                        x: 0px; y: 0px;
-                        width: root.list-view ? 160px : parent.width; height: grid.media-height;
-                        background: Theme.well; border-radius: Theme.r-lg; clip: true;
-                        if project.poster.width > 0: Image { width: 100%; height: 100%; source: project.poster; image-fit: cover; }
-                        if project.poster.width == 0: Icon { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; glyph: Glyph.film; size: 24px; tint: Theme.fg-dim; }
-                        TouchArea { mouse-cursor: pointer; clicked => { root.open-recent(project.path); } }
+                        property <bool> lifted: !root.list-view && touch.has-hover;
+                        x: grid.pad; y: grid.pad - (self.lifted ? 3px : 0px);
+                        width: grid.media-width; height: grid.media-height;
+                        border-radius: Theme.r-lg;
+                        background: Theme.well;
+                        drop-shadow-blur: self.lifted ? 22px : 0px;
+                        drop-shadow-offset-y: self.lifted ? 8px : 0px;
+                        drop-shadow-color: #00000073;
+                        animate y, drop-shadow-blur, drop-shadow-offset-y { duration: 200ms; easing: ease-out; }
+                        Rectangle {
+                            border-radius: Theme.r-lg; clip: true;
+                            if project.poster.width > 0: Image {
+                                property <float> zoom: touch.has-hover ? 1.04 : 1;
+                                width: parent.width * self.zoom; height: parent.height * self.zoom;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                source: project.poster; image-fit: cover;
+                                animate width, height { duration: 320ms; easing: ease-out; }
+                            }
+                            if project.poster.width == 0: Icon {
+                                size: root.list-view ? 18px : 26px;
+                                x: (parent.width - self.size) / 2; y: (parent.height - self.size) / 2;
+                                glyph: Glyph.film; tint: Theme.fg-dim;
+                            }
+                            if !root.list-view && project.detail != "": Rectangle {
+                                x: parent.width - self.width - 8px; y: parent.height - self.height - 8px;
+                                width: badge.preferred-width + 12px; height: 20px;
+                                border-radius: Theme.r-sm;
+                                background: #000000a6;
+                                badge := Text { text: project.detail; font-size: 11px; font-weight: 500; color: #ffffff; vertical-alignment: center; horizontal-alignment: center; }
+                            }
+                        }
+                        Rectangle {
+                            border-radius: Theme.r-lg; border-width: 1px;
+                            border-color: touch.has-hover ? Theme.line-strong : Theme.line;
+                            animate border-color { duration: 160ms; }
+                        }
                     }
-                    Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 18px : grid.media-height + 8px; width: root.list-view ? parent.width - 176px : parent.width; text: project.name; color: Theme.fg; font-size: 14px; overflow: elide; }
-                    Text { x: root.list-view ? 176px : 0px; y: root.list-view ? 44px : grid.media-height + 32px; width: root.list-view ? parent.width - 176px : parent.width; text: project.when + " · " + project.detail; color: Theme.fg-muted; font-size: 12px; overflow: elide; }
+                    Text {
+                        x: grid.text-x; y: root.list-view ? 16px : grid.media-height + 12px;
+                        width: parent.width - grid.text-x - 8px;
+                        text: project.name; color: Theme.fg; font-size: 14px; font-weight: 500; overflow: elide;
+                    }
+                    Text {
+                        x: grid.text-x; y: root.list-view ? 38px : grid.media-height + 34px;
+                        width: parent.width - grid.text-x - 8px;
+                        text: root.list-view && project.detail != "" ? project.when + "  ·  " + project.detail : project.when;
+                        color: Theme.fg-dim; font-size: 12px; overflow: elide;
+                    }
+                    touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-recent(project.path); } }
                 }
             }
         }

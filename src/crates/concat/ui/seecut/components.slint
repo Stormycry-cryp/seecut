@@ -18,14 +18,14 @@ export component AppButton inherits Rectangle {
     public function take-focus() { focus.focus(); }
     height: Theme.workbench-h;
     horizontal-stretch: 0;
-    min-width: root.elide-label ? 0px : caption.preferred-width + 24px + (root.glyph == Glyph.none ? 0px : 22px);
-    border-radius: 8px;
+    min-width: root.elide-label ? 0px : caption.preferred-width + 28px + (root.glyph == Glyph.none ? 0px : 22px);
+    border-radius: Theme.r;
     opacity: 1;
     background: !root.enabled ? Theme.well : root.danger ? (touch.pressed ? Theme.workbench-danger-pressed : touch.has-hover ? Theme.workbench-danger-hover : Theme.workbench-danger-solid) : root.selected ? Theme.accent-soft : root.subtle ? (touch.pressed ? Theme.field-hover : Colors.transparent) : root.primary ? (touch.pressed ? Theme.workbench-action-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : touch.pressed ? Theme.field-active : touch.has-hover ? Theme.field-hover : Theme.field;
-    border-width: 0px;
-    border-color: !root.enabled ? Theme.line : root.danger ? Theme.workbench-danger-solid : root.primary || root.selected ? Theme.accent : Theme.workbench-control-border;
-    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
+    border-width: root.subtle || root.primary || root.danger ? 0px : 1px;
+    border-color: !root.enabled ? Theme.line : root.selected ? Theme.accent : touch.pressed || touch.has-hover ? Theme.workbench-control-border : Theme.line-strong;
+    animate background, border-color { duration: SeeCut.reduced-motion ? 0ms : 140ms; easing: ease-out; }
     property <bool> ring;
     property <brush> ink: !root.enabled ? Theme.fg-dim : root.danger ? Theme.workbench-on-danger : root.selected ? Theme.workbench-selection-ink : root.primary ? Theme.on-accent : root.subtle && !root.subtle-normal-ink ? Theme.fg-muted : Theme.fg;
     accessible-role: button;
@@ -45,8 +45,8 @@ export component AppButton inherits Rectangle {
         }
     }
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
+        padding-left: 14px;
+        padding-right: 14px;
         spacing: Theme.workbench-gap;
         alignment: center;
         if root.glyph != Glyph.none: VerticalLayout {
@@ -87,9 +87,10 @@ export component CloudField inherits Rectangle {
     min-height: root.multiline ? 128px : Theme.workbench-h;
     max-height: root.multiline ? 180px : Theme.workbench-h;
     background: Theme.field;
-    border-radius: root.multiline ? 16px : 8px;
+    border-radius: root.multiline ? Theme.r-lg : Theme.r;
     border-width: 1px;
-    border-color: input.has-focus ? Theme.focus-control : Theme.workbench-control-border;
+    border-color: input.has-focus ? Theme.focus-control : touch.has-hover && root.enabled ? Theme.workbench-control-border : Theme.line-strong;
+    animate border-color { duration: SeeCut.reduced-motion ? 0ms : 140ms; easing: ease-out; }
     clip: true;
     opacity: root.enabled ? 1 : 0.45;
     touch := TouchArea { enabled: root.enabled; mouse-cursor: text; clicked => { input.focus(); } }
@@ -187,9 +188,9 @@ export component NavItem inherits Rectangle {
     width: 44px;
     height: 44px;
     border-radius: Theme.r;
-    background: root.selected ? Theme.accent-soft : Colors.transparent;
+    background: root.selected ? Theme.accent-soft : touch.has-hover ? Theme.field-active : Colors.transparent;
     border-width: 0px;
-    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 140ms; easing: ease-out; }
     property <bool> ring;
     accessible-role: button;
     accessible-label: root.label;
@@ -304,7 +305,9 @@ export component MenuAction inherits Rectangle {
 
 export component WorkspaceSelect inherits Select {
     text-size: Theme.workbench-font; item-height: Theme.workbench-h; height: Theme.workbench-h;
-    border-width: 0px; border-color: Theme.line-strong;
+    border-width: 1px;
+    border-color: self.expanded ? Theme.focus-control : self.hovered && self.enabled ? Theme.workbench-control-border : Theme.line-strong;
+    animate border-color { duration: 120ms; }
 }
 
 /// Shared media well for asset, team, template, and result cards. Card callers

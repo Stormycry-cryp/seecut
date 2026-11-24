@@ -106,7 +106,7 @@ component AssistantMessageRow inherits Rectangle {
         Rectangle {
             width: min(parent.width - 20px, max(80px, user-text.preferred-width + 24px));
             height: user-text.preferred-height + 20px;
-            border-radius: 18px; background: Theme.dark ? #272729 : #eceef2;
+            border-radius: 18px; background: Theme.assistant-bubble;
             user-text := AssistantText { x: 12px; y: 10px; width: max(0px, parent.width - 24px); text: root.message.text; }
         }
     }
@@ -177,7 +177,7 @@ component AssistantInput inherits Rectangle {
     preferred-height: root.multiline ? min(176px, max(112px, input.preferred-height + 72px)) + root.attachment-height : 40px;
     vertical-stretch: 0;
     border-radius: root.multiline ? 22px : 8px;
-    background: root.multiline ? (Theme.dark ? #2c2c2e : #f0f1f4) : Theme.field;
+    background: root.multiline ? Theme.assistant-field-multiline : Theme.field;
     border-width: 1px;
     border-color: root.multiline ? (input.has-focus ? Theme.line-strong : Theme.line) : (input.has-focus ? Theme.focus-control : Theme.workbench-control-border);
     clip: true;
@@ -656,7 +656,7 @@ export component AssistantPanel inherits Rectangle {
     min-width: 300px;
     max-width: 480px;
     min-height: 0px;
-    background: root.floating ? (Theme.dark ? #1b1b1d : #fafafb) : Theme.panel;
+    background: root.floating ? Theme.assistant-floating-surface : Theme.panel;
     border-radius: root.floating ? 20px : 0px;
     border-width: root.floating ? 1px : 0px;
     border-color: Theme.line;

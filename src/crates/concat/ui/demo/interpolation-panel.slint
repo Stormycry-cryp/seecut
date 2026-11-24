@@ -6,6 +6,7 @@ import {
     Section, SectionBody, SectionHeader, SegmentedControl, Select, Stepper, FocusRing,
 } from "../primitives/primitives.slint";
 import { AlignToolbar, EditorHeader } from "editor-chrome.slint";
+import { SeeCut } from "../seecut/state.slint";
 
 // Runs a dot across the row using the live curve as its timing function.
 //
@@ -54,7 +55,7 @@ component EasePreview inherits Rectangle {
         // Brighter under the pointer, so the row reads as the thing that plays
         // rather than looking broken while it sits still.
         background: hover.has-hover ? Theme.fg : Theme.fg-dim;
-        animate background { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
     }
 
     hover := TouchArea {
