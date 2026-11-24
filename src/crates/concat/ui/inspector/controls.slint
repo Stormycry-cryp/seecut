@@ -223,7 +223,7 @@ export component Rail inherits Rectangle {
         drop-shadow-offset-y: 1px;
         drop-shadow-color: Theme.grip-edge;
 
-        animate height, background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        animate height, background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
     }
 
     touch := TouchArea {
@@ -520,7 +520,7 @@ export component Check inherits Rectangle {
     background: root.checked ? Theme.accent : Theme.field-active;
     opacity: root.enabled ? 1.0 : 0.45;
 
-    animate background { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     if root.checked: Icon {
         x: (parent.width - self.width) / 2;
@@ -644,7 +644,7 @@ export component HelpButton inherits Rectangle {
         border-radius: 8px;
         background: touch.has-hover ? Theme.accent-soft : Theme.field;
 
-        animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
         Text {
             x: (parent.width - self.width) / 2;
@@ -698,7 +698,7 @@ export component ResetButton inherits Rectangle {
     background: touch.has-hover && root.dirty ? Theme.field-hover : Theme.field;
     opacity: root.dirty ? 1.0 : 0.4;
 
-    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
     Icon {
         glyph: Glyph.reset;

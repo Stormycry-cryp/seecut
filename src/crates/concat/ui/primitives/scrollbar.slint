@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
 import { Theme } from "../theme/theme.slint";
+import { SeeCut } from "../seecut/state.slint";
 
 // The thin scrollbar.
 //
@@ -55,7 +56,7 @@ export component ThinScrollbar inherits Rectangle {
         border-radius: 2px;
         background: (grab.pressed || grab.has-hover) ? Theme.fg-dim : Theme.line-strong;
 
-        animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+        animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
     }
 
     // Over the whole gutter rather than the thumb: the thumb moves as it is

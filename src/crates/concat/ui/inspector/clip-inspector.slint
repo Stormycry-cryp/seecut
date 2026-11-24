@@ -3,6 +3,7 @@
 
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { Glyph, Icon } from "../icons.slint";
 import {
     IconButton,
@@ -157,7 +158,7 @@ component StarChip inherits Rectangle {
         : Theme.field;
 
     animate background, border-color {
-        duration: 100ms;
+        duration: SeeCut.reduced-motion ? 0ms : 100ms;
         easing: cubic-bezier(0.4, 0, 0.2, 1);
     }
 
@@ -454,7 +455,7 @@ export component PresetStack inherits VerticalLayout {
                     : Theme.field;
 
                 animate background, border-color {
-                    duration: 100ms;
+                    duration: SeeCut.reduced-motion ? 0ms : 100ms;
                     easing: cubic-bezier(0.4, 0, 0.2, 1);
                 }
 

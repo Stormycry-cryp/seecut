@@ -3,6 +3,7 @@
 
 import { I18n } from "../i18n.slint";
 import { Theme, SegmentedControl } from "../primitives/primitives.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { Select } from "../primitives/select.slint";
 import { Pane, PaneBody, PaneScroll } from "pane.slint";
 import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
@@ -394,7 +395,7 @@ export component ConfigPane inherits Rectangle {
                 border-radius: Theme.r;
                 background: modify-touch.has-hover ? Theme.field-hover : Theme.field;
 
-                animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+                animate background { duration: SeeCut.reduced-motion ? 0ms : 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
                 modify-label := Text {
                     x: (parent.width - self.width) / 2;

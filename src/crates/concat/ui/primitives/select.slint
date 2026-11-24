@@ -72,6 +72,8 @@ export component Select inherits Rectangle {
     // Read from the popup rather than tracked here: a click outside closes it
     // without telling us, so a hand-rolled flag goes stale.
     property <bool> open: list.is-open;
+    out property <bool> expanded: root.open;
+    out property <bool> hovered: trigger.has-hover;
     property <int> active;
     property <string> label: (root.current >= 0 && root.current < root.options.length)
         ? root.options[root.current]

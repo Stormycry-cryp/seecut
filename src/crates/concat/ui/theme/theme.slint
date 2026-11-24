@@ -102,18 +102,19 @@ export global Theme {
     out property <length> workbench-h: 40px;
     out property <length> workbench-gap: 8px;
     out property <length> workbench-font: 14px;
-    out property <color> assistant-floating-surface: dark ? #1b1b1d : #fafafb;
+    out property <color> assistant-floating-surface: dark ? Dark.assistant-floating-surface : Light.assistant-floating-surface;
+    out property <color> assistant-bubble: dark ? Dark.assistant-bubble : Light.assistant-bubble;
+    out property <color> assistant-field-multiline: dark ? Dark.assistant-field-multiline : Light.assistant-field-multiline;
     out property <length> workbench-icon: 20px;
-    out property <color> nav: dark ? #232326 : #f4f5f7;
-    out property <color> focus-control: dark ? #b87b6b : #547aa3;
-    out property <color> workbench-control-border: dark ? #797980 : #858c98;
-    out property <color> workbench-action-pressed: dark ? #ed583c : #102e5b;
-    out property <color> workbench-selection-ink: dark ? #ff866e : #17457e;
-    out property <color> workbench-danger-solid: dark ? #b92845 : #b4233d;
-    out property <color> workbench-danger-hover: dark ? #cc3653 : #9e1e35;
-    out property <color> workbench-danger-pressed: dark ? #a91f3b : #86182b;
+    out property <color> nav: dark ? Dark.nav : Light.nav;
+    out property <color> focus-control: dark ? Dark.focus-control : Light.focus-control;
+    out property <color> workbench-control-border: dark ? Dark.workbench-control-border : Light.workbench-control-border;
+    out property <color> workbench-action-pressed: dark ? Dark.workbench-action-pressed : Light.workbench-action-pressed;
+    out property <color> workbench-selection-ink: dark ? Dark.workbench-selection-ink : Light.workbench-selection-ink;
+    out property <color> workbench-danger-solid: dark ? Dark.workbench-danger-solid : Light.workbench-danger-solid;
+    out property <color> workbench-danger-hover: dark ? Dark.workbench-danger-hover : Light.workbench-danger-hover;
+    out property <color> workbench-danger-pressed: dark ? Dark.workbench-danger-pressed : Light.workbench-danger-pressed;
     out property <color> workbench-on-danger: #ffffff;
-    out property <color> workbench-success: dark ? #84caa6 : #237550;
     out property <length> gap: 6px;
     out property <length> pad: 14px;      // panel horizontal padding
     out property <length> label-w: 62px;
@@ -125,11 +126,6 @@ export global Theme {
     out property <color> field: dark ? Dark.field : Light.field;
     out property <color> field-hover: dark ? Dark.field-hover : Light.field-hover;
     out property <color> field-active: dark ? Dark.field-active : Light.field-active;
-
-    // Borderless secondary action surfaces. Keep fields independent.
-    out property <color> button-secondary: dark ? #343438 : #eef0f3;
-    out property <color> button-secondary-hover: dark ? #3e3e43 : #e2e5eb;
-    out property <color> button-secondary-pressed: dark ? #48484e : #d4d9e2;
 
     // hairlines
     out property <color> line: dark ? Dark.line : Light.line;

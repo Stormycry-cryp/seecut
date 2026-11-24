@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
 import { Theme } from "../theme/theme.slint";
+import { SeeCut } from "../seecut/state.slint";
 import { Payload } from "../util.slint";
 import { DockSide } from "../dock.slint";
 import { PaneKind } from "pane-switcher.slint";
@@ -522,7 +523,7 @@ export component Seat inherits Rectangle {
         border-color: Theme.accent;
 
         animate x, y, width, height {
-            duration: 90ms;
+            duration: SeeCut.reduced-motion ? 0ms : 90ms;
             easing: cubic-bezier(0.4, 0, 0.2, 1);
         }
     }
