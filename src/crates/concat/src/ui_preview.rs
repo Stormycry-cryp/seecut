@@ -78,7 +78,7 @@ fn artwork(seed: u8) -> Image {
     for (i, pixel) in buffer.make_mut_slice().iter_mut().enumerate() {
         let x = i as u32 % W;
         let y = i as u32 / W;
-        let base = if y > 356 && (x / 48) % 2 == 0 {
+        let base = if y > 356 && (x / 48).is_multiple_of(2) {
             [70.0_f32, 94.0 + (seed / 4) as f32, 112.0]
         } else {
             [
