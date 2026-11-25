@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Native component fixture. Imports the production UI without copying it.
+import { AppButton } from "../../src/crates/concat/ui/seecut/components.slint";
+import { AssistantPanel, AssistantMessage } from "../../src/crates/concat/ui/seecut/assistant.slint";
+import { Theme } from "../../src/crates/concat/ui/theme/theme.slint";
+
+export component AssistantComponentQA inherits Window {
+    title: "SeeCut Assistant Component QA";
+    preferred-width: 1024px;
+    preferred-height: 720px;
+    min-width: 680px;
+    min-height: 420px;
+    background: Theme.page;
+    in-out property <bool> dark;
+    changed dark => { Theme.dark = root.dark; }
+    in-out property <bool> panel-open: true;
+    in-out property <bool> busy;
+    in-out property <bool> unknown;
+    in-out property <bool> can-send: true;
+    in-out property <bool> connected: true;
+    in-out property <bool> settings-open;
+    in-out property <length> panel-width: 344px;
+    in-out property <int> scroll-token;
+    in-out property <[AssistantMessage]> messages;
+    in-out property <string> draft;
+    in-out property <string> status: "可以发送问题";
+    in-out property <string> observation: "仅使用合成数据，不连接网络";
+    callback fixture(action: string);
+    callback sent(text: string);
+    callback stopped();
+    callback closed();
+    callback connection-requested();
+    callback permission-requested(action: string);
+    callback observed-key(text: string, control: bool, meta: bool);
+
+    FocusScope {
+    width: parent.width;
+    height: parent.height;
+    capture-key-pressed(event) => {
+        root.observed-key(event.text, event.modifiers.control, event.modifiers.meta);
+        return EventResult.reject;
+    }
+    HorizontalLayout {
+        padding: 0px;
+        spacing: 0px;
+        VerticalLayout {
+            padding: 24px;
+            spacing: 12px;
+            alignment: start;
+            Text { text: "助手原生组件验收"; font-size: 20px; color: Theme.fg; }
+            Text { text: "此窗口直接载入产品组件。合成宿主仅记录回调，不连接模型、MCP 或用户工程。"; wrap: word-wrap; color: Theme.fg-muted; }
+            AppButton { label: "短对话"; clicked => { root.fixture("short"); } }
+            AppButton { label: "长对话"; clicked => { root.fixture("long"); } }
+            AppButton { label: "开始流式更新"; clicked => { root.fixture("stream"); } }
+            AppButton { label: "模拟 UNKNOWN"; clicked => { root.fixture("unknown"); } }
+            AppButton { label: "模拟失败"; clicked => { root.fixture("failed"); } }
+            AppButton { label: "恢复可发送"; clicked => { root.fixture("ready"); } }
+            AppButton { label: "模拟未连接"; clicked => { root.fixture("disconnected"); } }
+            AppButton { label: root.dark ? "切换浅色" : "切换深色"; clicked => { root.dark = !root.dark; } }
+            AppButton { label: root.panel-width == 344px ? "面板宽 300" : "面板宽 344"; clicked => { root.panel-width = root.panel-width == 344px ? 300px : 344px; } }
+            AppButton { label: "重新打开助手"; clicked => { root.panel-open = true; panel.focus-composer(); } }
+            Text { text: root.observation; wrap: word-wrap; color: Theme.fg; accessible-role: text; accessible-label: self.text; }
+        }
+        panel := AssistantPanel {
+            developer-tools: true;
+            width: root.panel-width;
+            horizontal-stretch: 0;
+            visible: root.panel-open;
+            current-project: "合成验收工程";
+            provider-label: "本地合成宿主";
+            connection: root.connected ? "已连接合成宿主" : "未连接";
+            status: root.status;
+            busy: root.busy;
+            unknown: root.unknown;
+            can-send: root.can-send;
+            can-stop: root.busy;
+            connected: root.connected;
+            can-connect: !root.connected;
+            can-disconnect: root.connected && !root.busy;
+            connect-label: root.connected ? "断开" : "连接";
+            send-disabled-reason: "尚未连接";
+            messages: root.messages;
+            scroll-token: root.scroll-token;
+            read-granted: false;
+            write-granted: false;
+            can-grant-read: true;
+            read-permission-status: "未授权读取";
+            write-permission-status: "未授权移动";
+            initial-service-url: "http://127.0.0.1:9/synthetic-only";
+            initial-model: "synthetic-only";
+            can-select-files: false;
+            settings-open <=> root.settings-open;
+            draft <=> root.draft;
+            send(text) => { root.sent(text); }
+            stop => { root.stopped(); }
+            close-requested => { root.panel-open = false; root.closed(); }
+            connect(service-url, model-name, api-key, images) => { root.connection-requested(); }
+            disconnect => { root.fixture("disconnected"); }
+            grant-read => { root.permission-requested("read"); }
+            grant-write => { root.permission-requested("write"); }
+        }
+    }
+    }
+}

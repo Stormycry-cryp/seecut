@@ -1,0 +1,39 @@
+{
+  "checkedOn": "2026-10-26",
+  "scope": "migration-source-preservation-only",
+  "currentChecks": {
+    "allManifestSourceBytesMatch": true,
+    "credentialPatternHits": 0,
+    "historicalFixturePythonAst": "passed",
+    "historicalFixtureJavaScriptSyntax": "passed",
+    "historicalSlintFixture": "not-run"
+  },
+  "reusedHistoricalEvidence": [
+    {
+      "candidate": "candidates/editor_mcp_photo_state.rs",
+      "sha256": "a5775613ca23630a5f202f9210cd36c9eaadfdba3cd107f2d158602a08861c14",
+      "testsPassed": 7,
+      "strictClippy": "passed",
+      "originalEvidence": ".toonflow/photocraft-parent-state-root-r1/result.json",
+      "limitations": "Actual host and MCP rlibs with extracted Scope; Some(PhotoDocument) compiled only; no full adapter or GUI."
+    },
+    {
+      "candidate": "candidates/editor_mcp_photo_control.rs",
+      "sha256": "dc164bf70fcbd847b0bbc546c301a79130cd38ddc282d9e6a0879ee243e45d93",
+      "testsPassed": 11,
+      "strictClippy": "passed",
+      "originalEvidence": ".toonflow/photocraft-parent-slice-harness-r1/operation-control-result-r3.json",
+      "limitations": "Actual host/MCP crates with extracted Scope and OperationKey; no full registry, native I/O or GUI."
+    }
+  ],
+  "privateAgentDirectedTests": {
+    "testsPassed": 27,
+    "testsFailed": 0,
+    "realProviderCalled": false,
+    "realModelCalled": false
+  },
+  "productionCodeModified": false,
+  "guiLaunched": false,
+  "modelCalled": false,
+  "applicationAccepted": false
+}

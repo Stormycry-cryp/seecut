@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "sourceHead": "e80320568f965108e5b4f26c3a2a5e3df211bdee",
+  "purpose": "migration-continuation-only",
+  "files": [
+    {
+      "path": "candidates/editor_mcp_photo_state.rs",
+      "sha256": "a5775613ca23630a5f202f9210cd36c9eaadfdba3cd107f2d158602a08861c14",
+      "bytes": 30529,
+      "originalPath": ".toonflow/photocraft-parent-state-candidate/mirror/src/crates/concat/src/editor_mcp_photo_state.rs",
+      "integrationStatus": "not-integrated",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "candidates/editor_mcp_photo_control.rs",
+      "sha256": "dc164bf70fcbd847b0bbc546c301a79130cd38ddc282d9e6a0879ee243e45d93",
+      "bytes": 34765,
+      "originalPath": ".toonflow/photocraft-parent-operation-control-fix-candidate/mirror/src/crates/concat/src/editor_mcp_photo_control.rs",
+      "integrationStatus": "not-integrated",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "candidates/read_worker.rs",
+      "sha256": "d1bac48f9b554af7c9c0546aac7e68d7e525b2729105c100068c07fa0c802b2b",
+      "bytes": 26596,
+      "originalPath": ".toonflow/photocraft-parent-read-worker-candidate/mirror/src/crates/concat/src/photo_workspace/read_worker.rs",
+      "integrationStatus": "not-integrated",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "designs/saved-binding.md",
+      "sha256": "11f25400b53c26d1b32d01186b3b2a4a05e573657b8a7a03ddd845ea9667c0ea",
+      "bytes": 19733,
+      "originalPath": ".toonflow/photocraft-parent-saved-binding-design/REPORT.md",
+      "integrationStatus": "not-integrated",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "designs/write-dispatch.md",
+      "sha256": "13436b71a1b0417658a6e5050549a61134485f965b8a61d4950ccbb828f8995f",
+      "bytes": 18356,
+      "originalPath": ".toonflow/photocraft-parent-write-dispatch-design/REPORT.md",
+      "integrationStatus": "not-integrated",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "designs/human-send.md",
+      "sha256": "dd8935b73075af3475a60ac858b635ac34f1b9fd5e6f36ab82f14f2b62b50db4",
+      "bytes": 20744,
+      "originalPath": ".toonflow/photocraft-parent-human-send-design/REPORT.md",
+      "integrationStatus": "not-integrated",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "designs/runtime-adapter.md",
+      "sha256": "8c025f254ce7946bfca9759f4046e641f07b9f7e436dfb36041f50f228fa8b56",
+      "bytes": 20636,
+      "originalPath": ".toonflow/photocraft-parent-runtime-adapter-design/REPORT.md",
+      "integrationStatus": "not-integrated",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "historical/SEECUT-INTERACTION-REVIEW-2026-09-24.md",
+      "sha256": "c5fec354030031f3e5d059111e1cc9d384719bca3f50dc0402da7e42d76f6e3b",
+      "bytes": 6269,
+      "originalPath": "Concat-figma-implementation/docs/SEECUT-INTERACTION-REVIEW-2026-09-24.md",
+      "integrationStatus": "historical-reference-only",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "historical/CANVAS-REFINEMENT-RESUME.md",
+      "sha256": "196259f3deb26d919d16b2950de6e8fa5942f2bed101252ace2309df868d2758",
+      "bytes": 19966,
+      "originalPath": "Seecut-canvas-refinement/CANVAS-REFINEMENT-RESUME.md",
+      "integrationStatus": "historical-reference-only",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "historical/qa/assistant-component.py",
+      "sha256": "b5fd0bd7fdfbd76ef42440a09eae46aa2d85922ca02b3bf440235873ed95835a",
+      "bytes": 7017,
+      "originalPath": "Seecut-editor-mcp-m1/scripts/qa/assistant-component.py",
+      "integrationStatus": "historical-reference-only",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "historical/qa/assistant-component.slint",
+      "sha256": "ae33256a21546001ddb9ac7335164d2191979cdba3150db1f5abd52c158d4ff4",
+      "bytes": 5161,
+      "originalPath": "Seecut-editor-mcp-m1/scripts/qa/assistant-component.slint",
+      "integrationStatus": "historical-reference-only",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "historical/qa/assistant-provider.mjs",
+      "sha256": "7fd0ede4069ba5b290dd500289910b43ed749fb6a60006f564b13ffb2efd0043",
+      "bytes": 5547,
+      "originalPath": "Seecut-editor-mcp-m1/scripts/qa/assistant-provider.mjs",
+      "integrationStatus": "historical-reference-only",
+      "reviewBeforeUse": true
+    },
+    {
+      "path": "historical/qa/requirements-assistant-component.txt",
+      "sha256": "3f90fc72fced9fa2d57d89aebf160a13ab0ad8d20edbbaaf1a53b86adbbcfc33",
+      "bytes": 218,
+      "originalPath": "Seecut-editor-mcp-m1/scripts/qa/requirements-assistant-component.txt",
+      "integrationStatus": "historical-reference-only",
+      "reviewBeforeUse": true
+    }
+  ]
+}
